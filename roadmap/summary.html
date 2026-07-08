@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Event-Driven Agents — Overview</title>
+<style>
+  :root{
+    --blue:#0f62fe; --ink:#161616; --ink2:#333; --mut:#6f6f6f; --line:#e3e3e3;
+    --bg:#fff; --code:#f2f4f8; --ok:#24a148; --part:#ff832b; --warn:#b28600; --risk:#da1e28;
+    --reuse:#0072c3; --add:#0f62fe; --ap:#8a3ffc;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#fafafa;line-height:1.62;font-size:16px}
+  .doc{max-width:820px;margin:0 auto;background:var(--bg);border-left:1px solid var(--line);border-right:1px solid var(--line);
+       padding:52px 60px 72px;min-height:100vh}
+  .eyebrow{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--blue);font-weight:700}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.4px;margin:8px 0 4px;line-height:1.2}
+  .byline{color:var(--mut);font-size:13.5px;margin-bottom:8px}
+  .byline a{color:var(--blue);text-decoration:none} .byline a:hover{text-decoration:underline}
+  h2{font-size:20px;font-weight:600;margin:38px 0 10px;padding-bottom:6px;border-bottom:2px solid #eee;letter-spacing:-.2px}
+  h3{font-size:14px;font-weight:600;margin:22px 0 6px;color:var(--ink2);text-transform:uppercase;letter-spacing:.3px}
+  p{margin:12px 0;color:var(--ink2)}
+  p.intro{font-size:17.5px;color:var(--ink);line-height:1.55}
+  strong{color:var(--ink)}
+  code{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);
+       padding:1px 5px;border-radius:4px;font-size:13px}
+  ul{margin:12px 0;padding-left:22px} li{margin:7px 0;color:var(--ink2)}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;border-bottom:2px solid #eee}
+  td.nm{font-weight:600;white-space:nowrap}
+  td.ep{font-family:'IBM Plex Mono',monospace;font-size:12.5px;white-space:nowrap}
+  .st{font-weight:600;font-size:13px;white-space:nowrap}
+  .st.ok{color:var(--ok)} .st.part{color:var(--part)} .st.plan{color:var(--mut)}
+  .verb{display:inline-block;min-width:42px;text-align:center;padding:1px 6px;border-radius:4px;font-size:10.5px;font-weight:700;color:#fff;margin-right:4px}
+  .v-get{background:var(--ok)} .v-post{background:var(--blue)} .v-put{background:#8a3ffc} .v-del{background:var(--risk)}
+  .blocks{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+  @media(max-width:720px){.blocks{grid-template-columns:1fr}}
+  .blk{border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  .blk .k{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px}
+  .blk.reuse{border-left:4px solid var(--reuse)} .blk.reuse .k{color:var(--reuse)}
+  .blk.add{border-left:4px solid var(--add)} .blk.add .k{color:var(--add)}
+  .blk.ap{border-left:4px solid var(--ap)} .blk.ap .k{color:var(--ap)}
+  .blk ul{margin:0;padding-left:18px} .blk li{margin:5px 0;font-size:14px}
+  .note{background:#f7f9ff;border:1px solid #e0e8ff;border-left:3px solid var(--blue);border-radius:6px;
+        padding:12px 16px;margin:16px 0;font-size:14.5px;color:var(--ink2)}
+  .note.warn{background:#fffdf5;border-color:#f3e6b3;border-left-color:var(--warn)}
+  .diagram{border:1px solid var(--line);border-radius:8px;background:#fcfcfd;padding:16px;margin:16px 0;overflow-x:auto}
+  .diagram svg{display:block;min-width:640px;width:100%;height:auto}
+  .foot{color:var(--mut);font-size:12.5px;margin-top:40px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="eyebrow">CUGA Event-Driven Agents</div>
+  <h1>What this is, how it's built, and what works</h1>
+  <div class="byline">A technical overview · opt-in behind <code>EVENTS_ENABLED</code> ·
+    deeper detail in <a href="capabilities.html">capabilities</a> · <a href="workflows.html">use cases</a> · <a href="index.html">board</a></div>
+
+  <p class="intro">CUGA today is a request/response agent — you open it, ask, and it answers. This layer makes it
+  <strong>event-driven</strong>: agents that watch inboxes, files and repositories, run on a schedule, hold two-way
+  conversations on chat channels, and deliver answers back on their own. It does this <strong>without rebuilding
+  CUGA's reasoning</strong> — it reuses the existing agent graph, memory, config store and secrets, adds a thin set
+  of endpoints, and delegates all the connection / OAuth / scheduling machinery to Activepieces (AP).</p>
+
+  <p>The whole layer is <strong>opt-in</strong>. With <code>EVENTS_ENABLED</code> off (the default), CUGA behaves
+  byte-for-byte as it does today — no new routes, no new tables, no behavior change. With it on, the events endpoints
+  mount and a background router starts. That's the contract that makes it safe to merge: it's additive, never a rewrite.</p>
+
+  <h2>How it works</h2>
+  <p>A <strong>builder</strong> defines an <strong>agent</strong> — a prompt/skill plus the tools (MCP servers) and the
+  connectors it's allowed to use. End users talk to those agents from <strong>channels</strong>, and set up
+  <strong>triggers</strong> in natural language ("summarize new resumes in Box", "every weekday 8am post the market
+  brief"). A <strong>concierge</strong> router reads the request and does one of three things: answer immediately,
+  arm a standing automation (a "flow"), or decline if nothing fits.</p>
+
+  <p>Setup is either plain English or a single <strong><code>/automate</code></strong> command whose router infers the
+  trigger type from the phrasing — <code>/automate summarize new emails</code> arms a <em>push</em> flow,
+  <code>/automate the market brief every weekday 8am</code> a <em>scheduled</em> one, <code>/automate bitcoin every 5
+  min on a move</code> a <em>poll</em>. It works the same from web chat and from any connected channel, so a user can
+  stand up an automation without leaving Slack.</p>
+
+  <p>Every path — a chat message, a scheduled tick, a new-file event, an external webhook — is normalized onto a single
+  internal endpoint, <code>POST /invoke</code>, which runs the right agent and returns or delivers the answer. Because
+  each agent is a real CUGA <code>agent_id</code> and every request carries a <code>thread_id</code>, conversations keep
+  context and each standing automation accrues its own memory. The reasoning engine isn't reinvented; it's wrapped.</p>
+
+  <h2>The building blocks</h2>
+  <p>The design rule is strict: <strong>don't duplicate CUGA, don't build an OAuth/connection framework — AP owns that.</strong>
+  So the surface splits three ways. Almost everything is reused; a small, self-contained package is new; connections and
+  the clock are delegated.</p>
+  <div class="blocks">
+    <div class="blk reuse"><div class="k">Reused from CUGA (unchanged)</div><ul>
+      <li>The <strong>agent graph</strong> — reasoning, supervisor, sub-agents (<code>DynamicAgentGraph</code>).</li>
+      <li><strong>Memory</strong> per <code>thread_id</code>; the <strong>config store</strong> of agent definitions.</li>
+      <li><strong>Secrets</strong> (Fernet-encrypted) and the existing <strong>auth</strong> guards + chat UI.</li>
+    </ul></div>
+    <div class="blk add"><div class="k">New — the events package</div><ul>
+      <li>The <strong><code>/invoke</code> seam</strong> and the <strong>concierge router</strong> (answer / arm / decline).</li>
+      <li>The <strong><code>AgentRuntime</code> port</strong> — one interface, so swapping the agent framework is one adapter (backends: <code>cuga</code> default, <code>react</code>, <code>stub</code>).</li>
+      <li><strong>Direct channel backends</strong> (Slack, Discord) + a thin <strong>subscription index</strong> of armed flows.</li>
+    </ul></div>
+    <div class="blk ap"><div class="k">Delegated to Activepieces</div><ul>
+      <li><strong>Connections &amp; OAuth</strong> — tokens held and refreshed by AP.</li>
+      <li><strong>Triggers &amp; the clock</strong> — cron, poll, and app-event pieces (new email / PR / file).</li>
+      <li><strong>Run history</strong> for standing flows.</li>
+    </ul></div>
+  </div>
+  <p>Net-new footprint on core CUGA is essentially <strong>the events package plus two guarded lines</strong> in startup
+  (route registration + a lifespan hook), both behind the flag. Two chat channels — Slack and Discord — bypass AP and run
+  as <strong>direct backends</strong>, because AP's connector couldn't accept a pre-issued bot token and its message
+  trigger returned empty payloads; direct is also instant instead of polled.</p>
+
+  <h2>How a request flows</h2>
+  <p>Two phases: a user <em>arms</em> an automation in natural language once; from then on it <em>fires</em> on its own.</p>
+  <div class="diagram">
+    <svg viewBox="0 0 880 512" role="img" aria-label="Sequence diagram: arming and firing an event-driven automation">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#393939"/>
+        </marker>
+      </defs>
+      <!-- phase bands -->
+      <rect x="4" y="70" width="872" height="150" rx="6" fill="#f2f7ff"/>
+      <rect x="4" y="232" width="872" height="264" rx="6" fill="#f7f4ff"/>
+      <text x="16" y="88" font-size="11" font-weight="700" fill="#0f62fe" letter-spacing=".5">PHASE 1 · ARM (once, in natural language)</text>
+      <text x="16" y="250" font-size="11" font-weight="700" fill="#8a3ffc" letter-spacing=".5">PHASE 2 · FIRE (on every event, unattended)</text>
+      <!-- lifeline heads -->
+      <g font-size="11.5" text-anchor="middle" font-weight="600">
+        <g><rect x="14" y="30" width="132" height="34" rx="6" fill="#161616"/><text x="80" y="51" fill="#fff">User · Channel</text></g>
+        <g><rect x="190" y="30" width="140" height="34" rx="6" fill="#0f62fe"/><text x="260" y="46" fill="#fff">CUGA seam</text><text x="260" y="58" fill="#cfe0ff" font-size="9.5" font-weight="500">/invoke · /api/concierge</text></g>
+        <g><rect x="374" y="30" width="132" height="34" rx="6" fill="#0f62fe"/><text x="440" y="46" fill="#fff">Concierge</text><text x="440" y="58" fill="#cfe0ff" font-size="9.5" font-weight="500">router</text></g>
+        <g><rect x="550" y="30" width="140" height="34" rx="6" fill="#8a3ffc"/><text x="620" y="46" fill="#fff">Activepieces</text><text x="620" y="58" fill="#e5d8ff" font-size="9.5" font-weight="500">triggers · clock · OAuth</text></g>
+        <g><rect x="732" y="30" width="132" height="34" rx="6" fill="#24a148"/><text x="798" y="46" fill="#fff">CUGA Worker</text><text x="798" y="58" fill="#d3f0da" font-size="9.5" font-weight="500">agent graph</text></g>
+      </g>
+      <!-- lifelines -->
+      <g stroke="#c8c8c8" stroke-width="1" stroke-dasharray="3 3">
+        <line x1="80" y1="64" x2="80" y2="496"/><line x1="260" y1="64" x2="260" y2="496"/>
+        <line x1="440" y1="64" x2="440" y2="496"/><line x1="620" y1="64" x2="620" y2="496"/>
+        <line x1="798" y1="64" x2="798" y2="496"/>
+      </g>
+      <!-- messages -->
+      <g stroke="#393939" stroke-width="1.6" fill="none">
+        <!-- phase 1 -->
+        <line x1="80" y1="118" x2="256" y2="118" marker-end="url(#ah)"/>
+        <line x1="260" y1="150" x2="436" y2="150" marker-end="url(#ah)"/>
+        <line x1="440" y1="182" x2="616" y2="182" marker-end="url(#ah)"/>
+        <line x1="620" y1="206" x2="264" y2="206" marker-end="url(#ah)" stroke-dasharray="4 3"/>
+        <!-- phase 2 -->
+        <line x1="620" y1="300" x2="264" y2="300" marker-end="url(#ah)"/>
+        <line x1="260" y1="340" x2="794" y2="340" marker-end="url(#ah)"/>
+        <path d="M798,372 h34 v26 h-34" marker-end="url(#ah)"/>
+        <line x1="798" y1="452" x2="84" y2="452" marker-end="url(#ah)" stroke-dasharray="4 3"/>
+      </g>
+      <!-- message labels -->
+      <g font-size="10.5" fill="#393939" text-anchor="middle">
+        <text x="168" y="112">"summarize new resumes in Box"</text>
+        <text x="350" y="144">route request</text>
+        <text x="528" y="176">create flow (cron / poll / push)</text>
+        <text x="445" y="200" fill="#6f6f6f">armed ✓ → confirmed to user</text>
+        <text x="445" y="294">app event → POST /invoke <tspan fill="#8a3ffc">(gateway token)</tspan></text>
+        <text x="527" y="334">run(agent, thread_id, payload)</text>
+        <text x="866" y="388" text-anchor="end">CUGA graph + tools + memory</text>
+        <text x="445" y="446" fill="#6f6f6f">deliver answer — direct backend or AP send</text>
+      </g>
+    </svg>
+  </div>
+  <p style="font-size:14px;color:var(--mut)">The concierge is itself an agent; each worker is a distinct <code>agent_id</code>.
+  A standing flow gets a stable per-subscription <code>thread_id</code>, so each automation carries its own context across firings.</p>
+
+  <h2>The APIs added to CUGA</h2>
+  <p>Two of these are the load-bearing seams; the rest let a builder define agents and let operators manage running
+  automations from CUGA itself — without ever opening the Activepieces console.</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td class="ep"><span class="verb v-post">POST</span>/invoke</td><td>The callback seam. Every trigger (channel / cron / poll / app-event / webhook) normalizes here; runs the agent, returns or delivers. Machine-to-machine, guarded by a gateway token.</td></tr>
+      <tr><td class="ep"><span class="verb v-post">POST</span>/api/concierge</td><td>Natural-language entry: reuse or create a worker and arm a trigger. Supports a dry-run that builds the flow without publishing.</td></tr>
+      <tr><td class="ep"><span class="verb v-post">POST</span>/api/events/agents</td><td>Define an agent (prompt + tools + connectors); <span class="verb v-put">PUT</span> <code>…/agents/{name}</code> to update, <span class="verb v-get">GET</span> to list.</td></tr>
+      <tr><td class="ep"><span class="verb v-get">GET</span>/api/events/subscriptions</td><td>The armed automations, plus <code>…/{id}/flow</code> for the full source→agent→delivery view.</td></tr>
+      <tr><td class="ep"><span class="verb v-post">POST</span>…/subscriptions/{id}/pause · resume</td><td>Lifecycle control — CUGA drives Activepieces for you; <span class="verb v-del">DEL</span> to remove.</td></tr>
+      <tr><td class="ep"><span class="verb v-get">GET</span>/api/events/runs</td><td>Execution log: every standing-flow run joined to its subscription and output; <code>…/{id}</code> for one run.</td></tr>
+      <tr><td class="ep"><span class="verb v-get">GET</span>/api/events/connect/{app}</td><td>Start an integration connection; <code>…/callback</code> completes OAuth, <code>…/token</code> stores a token. AP holds the credential.</td></tr>
+      <tr><td class="ep"><span class="verb v-post">POST</span>/api/events/slack/events · /hook/{name} · /box/poll</td><td>The direct inbound adapters — Slack Events API, generic webhooks, and the Box poller — that bypass AP.</td></tr>
+      <tr><td class="ep"><span class="verb v-post">POST</span>/api/events/link/{channel}</td><td>Account-linking: bind a chat identity to a profile so a shared bot tells users apart. (<span class="verb v-get">GET</span> <code>…/me</code> for the current identity.)</td></tr>
+      <tr><td class="ep"><span class="verb v-get">GET</span>/api/events/status · channels · integrations · mcp-servers</td><td>Read-only Studio views — what's enabled, connected, and available.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Channels in place</h2>
+  <p>Channels are where a human converses with an agent — inbound and outbound, two-way. All four are live.</p>
+  <table>
+    <thead><tr><th>Channel</th><th>How it connects</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Web</td><td>Built-in chat UI on CUGA's server</td><td class="st ok">Live</td></tr>
+      <tr><td class="nm">Slack</td><td>Direct (Events API, signature-verified)</td><td class="st ok">Live</td></tr>
+      <tr><td class="nm">Discord</td><td>Direct (Gateway WebSocket, instant)</td><td class="st ok">Live</td></tr>
+      <tr><td class="nm">Telegram</td><td>Via Activepieces (webhook)</td><td class="st ok">Live</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Integrations in place</h2>
+  <p>Integrations are apps an agent <em>watches or acts on</em>. Credentials live in Activepieces (encrypted, refreshed);
+  CUGA never stores an OAuth token.</p>
+  <table>
+    <thead><tr><th>Integration</th><th>Auth</th><th>What it does</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">GitHub</td><td>Personal access token</td><td>Fires on new PR / issue; can comment &amp; label</td><td class="st ok">Live — real PR</td></tr>
+      <tr><td class="nm">Box</td><td>OAuth, or direct poll</td><td>Fires on a new file in a folder</td><td class="st ok">Live — real upload</td></tr>
+      <tr><td class="nm">Gmail</td><td>OAuth (consent + refresh)</td><td>Fires on new mail; sends mail</td><td class="st ok">Live</td></tr>
+      <tr><td class="nm">Webhook (generic)</td><td>Optional shared key</td><td>Any external system POSTs an event to us</td><td class="st ok">Live (direct, no AP)</td></tr>
+      <tr><td class="nm">Outlook / M365</td><td>—</td><td>—</td><td class="st plan">Planned — not built</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Triggers</h2>
+  <p>An agent can be driven five ways. All are wired and deliver end-to-end.</p>
+  <table>
+    <thead><tr><th>Trigger</th><th>Meaning</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Now</td><td>Answer immediately</td><td>An inbound chat message</td></tr>
+      <tr><td class="nm">Cron</td><td>On a schedule</td><td>AP timer</td></tr>
+      <tr><td class="nm">Poll</td><td>Check every N minutes, alert only on change</td><td>AP poll / direct poller</td></tr>
+      <tr><td class="nm">Push</td><td>The moment an app event fires</td><td>AP piece (new email / PR / file)</td></tr>
+      <tr><td class="nm">Webhook</td><td>An external system pushes to us</td><td>Direct HTTP endpoint</td></tr>
+    </tbody>
+  </table>
+
+  <h2>From a sentence to a flow — examples</h2>
+  <p>What a user actually types, and the automation it becomes. The straightforward cases map cleanly to one trigger:</p>
+  <table>
+    <thead><tr><th>Type</th><th>What the user says</th><th>What it becomes</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Now</td><td>"what's the price of bitcoin?"</td><td>Answer immediately in the chat.</td></tr>
+      <tr><td class="nm">Cron</td><td>"every weekday at 8am, post the market brief to this Slack channel"</td><td>A scheduled flow that runs an agent and delivers on a timer.</td></tr>
+      <tr><td class="nm">Poll</td><td>"watch BTC every 5 minutes and ping me only when it moves 2%"</td><td>A polling flow that checks on an interval and stays silent until something changes.</td></tr>
+      <tr><td class="nm">Push</td><td>"when a resume lands in my Box folder, score it against the rubric"</td><td>An app-event flow that fires the instant the file appears.</td></tr>
+      <tr><td class="nm">Push</td><td>"when a PR opens on <code>owner/repo</code>, summarize it and flag risks"</td><td>A GitHub webhook flow that runs a reviewer agent and comments back.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Where it gets hard</h3>
+  <p>The difficulty isn't running the agent — it's pinning down an ambiguous request and stitching several steps across
+  systems. These are the requests that expose the open questions above:</p>
+  <ul>
+    <li><strong>Ambiguous target or cadence.</strong> "Keep an eye on my repo for problems" — <em>which</em> repo, which
+    event, poll or push, what counts as a problem? The router has to ask, or guess wrong.</li>
+    <li><strong>Branch + approval.</strong> "When a resume lands in Box, score it; if it passes, draft an interview
+    invite and ask a recruiter to approve before it sends." — one sentence, but it needs file-<em>content</em>
+    extraction, a conditional branch, a cross-app hop (Box → Gmail), and a durable pause-for-approval step.</li>
+    <li><strong>Cross-system with a condition.</strong> "When an invoice email arrives, match it to a purchase order and
+    post it to the ledger, but flag mismatches to me." — extract, look up an external record, then deliver
+    <em>conditionally</em> to two different destinations.</li>
+    <li><strong>Compound schedule + query + per-item action.</strong> "Every morning, if any PR is older than three days,
+    nudge its author and send me a summary." — a scheduled trigger, a filtered query, an action <em>per result</em>, and
+    a digest — a single utterance that unfolds into a multi-step flow.</li>
+    <li><strong>Event + timed escalation.</strong> "When a high-severity issue is filed, post it to the on-call channel,
+    and if nobody acknowledges within 15 minutes, escalate to me on Telegram." — an app event, then a <em>timer that
+    depends on whether a human responded</em>, then a conditional second hop. The flow has to hold state and wait.</li>
+    <li><strong>Batch a stream into a digest.</strong> "Instead of pinging me for every new PR, collect them through the
+    day and send one summary at 6pm." — an event trigger whose results are <em>accumulated over a window</em> and
+    released on a schedule. Two triggers, shared state between them.</li>
+    <li><strong>Cross-source correlation.</strong> "Every Monday, compare last week's support emails against our docs and
+    tell me which topics need new documentation." — a schedule that reads <em>two different sources</em>, correlates
+    them, and reasons about the gap — not a lookup, a synthesis.</li>
+    <li><strong>Enrich, score, then route differently.</strong> "When a new lead form comes in, enrich it with company
+    info, score the fit, send hot leads straight to a rep, and queue the rest for nurture." — a webhook, an enrichment
+    step, a branch on the score, and <em>different delivery per branch</em>.</li>
+    <li><strong>Sequential, multi-person approvals.</strong> "When a contract over $50k lands in Box, pull the key terms,
+    send them to legal, and only after legal signs off, notify finance." — content extraction, a branch on value, then
+    <em>approvals chained across two people in order</em> before the final action.</li>
+    <li><strong>Delayed, conditional follow-up.</strong> "When a customer emails asking for a demo, draft a reply, and if
+    they haven't responded in three days, follow up once." — an event, an action, then a <em>scheduled check that only
+    fires if a later event did <u>not</u> happen</em> — the flow has to remember and un-fire itself.</li>
+  </ul>
+  <p>Each of these is achievable, but each stretches the natural-language-to-flow translation and, in some cases, a
+  primitive that isn't fully proven yet (durable approvals, document-body extraction). They're exactly why hardening
+  that translation is the next focus.</p>
+
+  <h2>What works today</h2>
+  <ul>
+    <li>All <strong>four chat channels</strong> converse two-way, live.</li>
+    <li><strong>GitHub, Box and Gmail</strong> are connected and firing; a new PR, file, or email triggers an agent that delivers a result.</li>
+    <li>All <strong>five trigger types</strong> fire and deliver — e.g. an hourly "top trending GitHub repos → Slack" flow runs today.</li>
+    <li>Automations are created in <strong>plain English</strong> or a single <code>/automate</code> command, and managed from one console (pause, resume, delete, and a run log) — operators never touch the Activepieces UI.</li>
+    <li>The whole thing is <strong>tested</strong> (61 offline checks) and <strong>non-breaking</strong> (opt-in, additive; two guarded lines touch core CUGA).</li>
+    <li>Swapping the underlying agent framework is <strong>one adapter</strong>, not a rewrite — the event plane never depends on CUGA internals directly.</li>
+  </ul>
+
+  <h2>What doesn't (yet)</h2>
+  <ul>
+    <li><strong>Box passes the file's name, not its contents.</strong> An agent judging a document currently sees the filename and metadata; reading the body needs a download step added before the agent runs.</li>
+    <li><strong>GitHub's write path needs the right token scope.</strong> Arming a PR trigger creates a repo webhook, which requires a PAT with explicit webhook permissions — the system now surfaces this as a clear instruction instead of a raw error.</li>
+    <li><strong>Instance-level isolation is nominal.</strong> Tenancy works; the finer "instance" grain always collapses to a default today.</li>
+    <li><strong>Outlook</strong> and a couple of internal cleanups (a duplicate flow-builder path that risks drift) are on the roadmap, not done.</li>
+  </ul>
+
+  <div class="note warn"><strong>One security item before any shared, external deployment:</strong> the internal
+  <code>/invoke</code> seam trusts the identity its caller asserts, guarded by a shared gateway token. That's fine for
+  the internal AP→CUGA path and local use, but a multi-tenant public deployment needs an upstream identity layer
+  (signed claims / an IdP) in front. This is the single most important thing to harden, and it's documented, not hidden.
+  A few operational edges (an ephemeral tunnel URL, short-lived dev tokens) will also bite a naïve deploy.</div>
+
+  <h2>Open questions</h2>
+  <p>The honest set of decisions still ahead — none blocking internal use, all worth resolving before a broader rollout.</p>
+  <ul>
+    <li><strong>Multi-tenant isolation.</strong> Tenancy works, but the "instance" grain is nominal today and
+    <code>/invoke</code> trusts a caller-asserted identity behind a shared token. What's the target model for a shared,
+    external deployment — an upstream identity provider, signed scope claims — and when do we commit to it?</li>
+    <li><strong>The cost of depending on Activepieces.</strong> AP buys us connections, OAuth and the clock for free, but
+    it carries real operational weight: an ephemeral tunnel URL that breaks OAuth redirects on restart, a piece-catalog
+    sync that can fail on a network blip, dev tokens that expire in hours, and a hard requirement to run on Postgres. Is
+    the answer to invest in a named tunnel + managed AP, or to reduce the dependency over time?</li>
+    <li><strong>Human-in-the-loop approvals.</strong> Many of the most valuable workflows want a "reply yes to approve"
+    step. It isn't yet confirmed that a standing flow can durably pause for approval and resume on a chat reply — is that
+    a primitive we need to build?</li>
+    <li><strong>Hardening natural-language → flow.</strong> Turning a sentence into a correct automation has two fuzzy
+    seams: understanding what the user meant (which agent, which trigger), and mapping a trigger's raw event payload into
+    exactly what the agent needs to read. Both work for the common cases today, but both need hardening — schema- or
+    model-derived field maps at setup time, and better disambiguation when a request is vague. This is the priority next
+    step; a raw-payload safety net is already in place as a stopgap.</li>
+    <li><strong>Every integration has a real-world cost.</strong> Adding a "piece" isn't just wiring code — each needs
+    real credentials, the right OAuth scopes, sometimes a paid connector, and a live account to prove it actually fires.
+    A piece that looks supported on paper can still be hours of credential setup away from working.</li>
+    <li><strong>Testing this is genuinely hard, and needs a dedicated effort.</strong> The offline suite is green, but
+    proving a <em>live</em> path means real accounts, an ephemeral public URL, tokens that expire in hours, and events
+    you have to manually cause — send the email, open the PR, upload the file. Keeping this honest over time needs stable
+    test accounts and a purpose-built end-to-end harness, not ad-hoc checks.</li>
+  </ul>
+
+  <div class="foot">Sourced from <code>events_docs/</code> (README · ARCHITECTURE · KNOWN_GAPS) and
+  <code>src/cuga/backend/events/</code>. For the full technical account see <a href="capabilities.html" style="color:var(--blue);text-decoration:none">capabilities.html</a>.</div>
+
+</div>
+</body>
+</html>

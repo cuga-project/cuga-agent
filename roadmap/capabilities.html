@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Event-Driven Agents — Capabilities, honestly</title>
+<style>
+  :root{
+    --blue:#0f62fe; --blue-d:#0043ce; --ink:#161616; --ink2:#393939; --mut:#6f6f6f;
+    --line:#e0e0e0; --bg:#f4f4f4; --card:#fff; --ok:#24a148; --warn:#f1c21b; --part:#ff832b;
+    --pend:#8d8d8d; --road:#8a3ffc; --code:#f2f4f8; --risk:#da1e28;
+    --now:#0f62fe; --cron:#8a3ffc; --poll:#007d79; --push:#d02670;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:28px 40px 22px}
+  header.top h1{margin:0 0 4px;font-size:24px;font-weight:600;letter-spacing:-.3px}
+  header.top .sub{color:#c6c6c6;font-size:14px;max-width:960px}
+  header.top .meta{margin-top:10px;font-size:12px;color:#a8a8a8}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px 80px}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--code);color:var(--blue)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:22px 0;padding:22px 26px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:5px;font-size:12px;padding:2px 8px;font-weight:600}
+  h3{font-size:14px;margin:20px 0 8px;color:var(--ink2);text-transform:uppercase;letter-spacing:.4px}
+  p.lead{color:var(--ink2);margin:2px 0 14px;max-width:960px}
+  table{width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  tbody tr:hover{background:#fafcff}
+  td.nm{font-weight:600;white-space:nowrap}
+  code,.mono{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+  .s-live{background:var(--ok)} .s-wired{background:var(--part)} .s-gap{background:var(--warn);color:#3a2c00}
+  .s-plan{background:var(--road)} .s-risk{background:var(--risk)} .s-reuse{background:#0072c3} .s-ap{background:#8a3ffc}
+  .t-now{background:var(--now)} .t-cron{background:var(--cron)} .t-poll{background:var(--poll)} .t-push{background:var(--push)} .t-hook{background:#565656}
+  .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600;background:var(--code);color:var(--ink2);white-space:nowrap}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+  .box{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:#fcfcfc}
+  .box h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  .box.accent{border-left:4px solid var(--blue)}
+  .box.warn{border-left:4px solid var(--warn);background:#fffdf5}
+  .box.risk{border-left:4px solid var(--risk);background:#fff5f5}
+  ul.tight{margin:6px 0;padding-left:18px} ul.tight li{margin:5px 0}
+  a.link{color:var(--blue);text-decoration:none} a.link:hover{text-decoration:underline}
+  pre.blk{background:var(--ink);color:#e8e8e8;border-radius:8px;padding:14px 16px;font-family:'IBM Plex Mono',monospace;
+       font-size:12px;line-height:1.65;overflow-x:auto;margin:10px 0}
+  pre.blk .k{color:#78a9ff} pre.blk .s{color:#a7f0ba} pre.blk .c{color:#8d8d8d} pre.blk .f{color:#f1c21b}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12.5px;color:var(--ink2);background:var(--code);border-radius:6px;padding:10px 14px;margin:12px 0}
+  .legend b{color:var(--ink)}
+  .callout{background:#edf5ff;border:1px solid #d0e2ff;border-left:4px solid var(--blue);border-radius:6px;padding:12px 16px;margin:14px 0;font-size:13.5px}
+  .flowdiag{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin:12px 0;font-size:12.5px}
+  .flowdiag .col{flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#fcfcfc}
+  .flowdiag .col .t{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;margin-bottom:6px}
+  .flowdiag .col.seam{background:#edf5ff;border-color:#d0e2ff}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .kpi .c{flex:1;min-width:130px;border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:#fff;text-align:center}
+  .kpi .c .big{font-size:24px;font-weight:700;color:var(--blue)}
+  .kpi .c .lb{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.3px}
+  @media print{nav.toc{display:none}section{break-inside:avoid}}
+  footer{color:var(--mut);font-size:12px;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CUGA Event-Driven Agents — Capabilities, honestly</h1>
+  <div class="sub">A technical account of what the events layer actually does today — what's verified live, what's
+    wired but unproven, what's a known gap, and what's not built. Not a pitch. The whole layer is opt-in behind
+    <code style="color:#9cf">EVENTS_ENABLED</code>; with the flag off, CUGA is byte-for-byte unchanged.</div>
+  <div class="meta">Grounded in <code>events_docs/</code> (README · ARCHITECTURE · KNOWN_GAPS) + <code>src/cuga/backend/events/</code> ·
+    <a class="link" style="color:#9cf" href="index.html">📑 Contents</a> ·
+    <a class="link" style="color:#9cf" href="workflows.html">Workflow ideas</a> ·
+    <a class="link" style="color:#9cf" href="api.html">API</a> ·
+    <a class="link" style="color:#9cf" href="matrix.html">CUGA vs AP</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#what">What it is</a>
+  <a href="#model">The model</a>
+  <a href="#surface">New surface</a>
+  <a href="#connectors">Connectors</a>
+  <a href="#triggers">Triggers</a>
+  <a href="#reuse">Reuse map</a>
+  <a href="#runtime">Runtime port</a>
+  <a href="#isolation">Isolation</a>
+  <a href="#status">Status</a>
+  <a href="#gaps">Known gaps</a>
+  <a href="#security">Security</a>
+  <a href="#ops">Ops edges</a>
+  <a href="#bottom">Bottom line</a>
+</nav>
+
+<div class="wrap">
+
+<div class="legend" style="margin-top:20px">
+  <span><b>Status key (used throughout):</b></span>
+  <span><span class="pill s-live">LIVE</span> verified end-to-end against a real API</span>
+  <span><span class="pill s-wired">WIRED</span> built &amp; armed, one leg unproven</span>
+  <span><span class="pill s-gap">GAP</span> known limitation, deferred with a plan</span>
+  <span><span class="pill s-plan">PLANNED</span> not built</span>
+  <span><span class="pill s-risk">RISK</span> security caveat</span>
+</div>
+
+<!-- WHAT -->
+<section id="what">
+  <h2><span class="n">1</span> What it is (and isn't)</h2>
+  <p class="lead">The events layer turns CUGA from a <b>request/response</b> agent into an <b>event-driven</b> one:
+    agents that watch inboxes, folders and repos, run on a schedule, converse on chat channels, and deliver answers
+    back — <b>without rebuilding CUGA's reasoning</b>. It reuses CUGA's agent graph, config store, memory, and secrets;
+    it adds two endpoints and a concierge; it delegates connections, OAuth, triggers and the clock to Activepieces.</p>
+  <div class="grid2">
+    <div class="box accent"><h4>The opt-in contract</h4><ul class="tight">
+      <li>Everything is gated by <code>EVENTS_ENABLED</code> (default <b>off</b>).</li>
+      <li>Flag <b>off</b> → vanilla CUGA, byte-for-byte: no routes mounted, no lifespan additions, no new tables. The import is <code>try/except</code>-wrapped so a missing dep can't block boot.</li>
+      <li>Flag <b>on</b> → two endpoints mount, the concierge + AP client start, one extra DB (<code>EVENTS_DB</code>) opens.</li>
+      <li>Net touch on core CUGA: <b>two guarded lines</b> in <code>main.py</code> (route registration + lifespan). Nothing existing changes behavior.</li>
+    </ul></div>
+    <div class="box"><h4>What it deliberately does NOT own</h4><ul class="tight">
+      <li><b>OAuth / connections</b> — Activepieces holds &amp; refreshes tokens. CUGA has no connection framework by design.</li>
+      <li><b>The clock &amp; integration triggers</b> — AP's cron/poll/piece triggers fire and call back.</li>
+      <li><b>A new memory or multi-agent store</b> — it uses CUGA's <code>agent_configs</code> + thread memory as-is.</li>
+      <li>It is <b>not</b> a no-code app builder: the concierge <i>routes to pre-built agents</i>, it never invents tools or agents.</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- MODEL -->
+<section id="model">
+  <h2><span class="n">2</span> The model in one breath</h2>
+  <p class="lead">A <b>builder</b> defines <b>agents</b> (a skill/prompt + MCP tools + the connectors it may use). End users
+    chat from <b>channels</b> and set up <b>triggers</b> in natural language. A <b>concierge</b> router decides: answer now,
+    arm a standing <b>flow</b> (cron / poll / push), or decline. Every path converges on one HTTP seam.</p>
+  <div class="flowdiag">
+    <div class="col"><div class="t">Source</div>channel message · AP cron/poll · AP piece (new-email/PR/file) · external webhook</div>
+    <div class="col seam"><div class="t">The one seam</div><code>POST /invoke</code><br/>normalized envelope<br/>{source, event, text, agent, deliver, scope, thread_id}</div>
+    <div class="col"><div class="t">Decide</div>concierge router:<br/><code>answer_now</code> · <code>find_or_create_flow</code> · decline</div>
+    <div class="col"><div class="t">Run</div>CUGA worker (an <code>agent_id</code>)<br/><code>DynamicAgentGraph</code> + tools + memory(thread_id)</div>
+    <div class="col"><div class="t">Deliver</div>direct backend (Slack/Discord/web) · AP send-step (Telegram/email)</div>
+  </div>
+  <div class="callout">The <b>concierge is itself an agent</b>; each <b>worker is a distinct <code>agent_id</code></b>. The
+    envelope carries <code>thread_id</code> end-to-end, so follow-ups keep context and every standing trigger accrues its
+    own per-subscription memory. No parallel memory is invented.</div>
+</section>
+
+<!-- SURFACE -->
+<section id="surface">
+  <h2><span class="n">3</span> The entire net-new surface</h2>
+  <p class="lead">Two endpoints, a router, a thin index, and the direct channel backends — all inside <code>src/cuga/backend/events/</code>. Everything else is reuse or AP.</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Auth</th><th>What it does</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td class="nm"><code>POST /invoke</code></td><td>gateway token (<code>X-Gateway-Token</code>)</td><td>The AP/channel callback seam. Runs an agent on a normalized envelope; returns or delivers. Every trigger shape lands here.</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td class="nm"><code>POST /api/concierge</code></td><td>user auth</td><td>NL → reuse/create worker + arm a trigger. Reuses the <code>/stream</code> SSE machinery. Supports <code>?dry_run=1</code> (build AP JSON without publishing).</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td class="nm"><code>/automate</code> (slash)</td><td>channel / web</td><td>One command; a hybrid router picks push/cron/poll from phrasing (mode always deterministic; PUSH agent resolved deterministically, CRON/POLL via LLM).</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td class="nm"><code>/api/events/*</code></td><td>user auth</td><td>Studio read views + flow lifecycle: subscriptions, agents, channels, integrations, runs, pause/resume/delete, flows console.</td><td><span class="pill s-live">LIVE</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- CONNECTORS -->
+<section id="connectors">
+  <h2><span class="n">4</span> Connectors — channels &amp; integrations</h2>
+  <p class="lead">Two kinds: <b>channels</b> (you converse with a human) and <b>integrations</b> (an agent watches/acts on an app). Backend column = how the connector talks to the world.</p>
+
+  <h3>Channels — converse two-way</h3>
+  <table>
+    <thead><tr><th>Channel</th><th>Backend</th><th>Notes</th><th>Verified</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Web</td><td>built-in (<code>/api/concierge</code>)</td><td>The Studio chat UI + SSE.</td><td><span class="pill s-live">LIVE</span> offline+live</td></tr>
+      <tr><td class="nm">Telegram</td><td><span class="tag">Activepieces</span> webhook piece</td><td>Inbound via AP webhook → <code>/invoke</code>; outbound via AP send.</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td class="nm">Slack</td><td><span class="tag">direct</span> Events API (signed)</td><td>CUGA owns the socket; AP's OAuth wall + empty-payload piece made direct the right call.</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td class="nm">Discord</td><td><span class="tag">direct</span> Gateway WebSocket</td><td>Instant (no poll latency); needs no public URL.</td><td><span class="pill s-live">LIVE</span></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Integrations — watch &amp; act</h3>
+  <table>
+    <thead><tr><th>Integration</th><th>Auth</th><th>Trigger</th><th>Demo agent</th><th>Verified</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">GitHub</td><td>PAT (token)</td><td>new-PR / new-issue (push)</td><td><code>pr_reviewer</code></td><td><span class="pill s-live">LIVE</span> real PR (read)</td></tr>
+      <tr><td class="nm">Box</td><td>OAuth (default) or direct-poll (<code>EVENTS_BOX_BACKEND=direct</code>)</td><td>new-file</td><td><code>resume_judge</code></td><td><span class="pill s-live">LIVE</span> real upload</td></tr>
+      <tr><td class="nm">Gmail</td><td>OAuth (consent + refresh)</td><td>new-email / send</td><td><code>mailbot</code></td><td><span class="pill s-wired">WIRED</span> connection live; fire unproven</td></tr>
+      <tr><td class="nm">Webhook (generic)</td><td>optional key</td><td>external POST → <code>/api/events/hook/&lt;name&gt;</code></td><td>any</td><td><span class="pill s-live">LIVE</span> (direct, no AP)</td></tr>
+      <tr><td class="nm">Outlook / M365</td><td>—</td><td>—</td><td>—</td><td><span class="pill s-plan">PLANNED</span> shape only</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><b>Honest read on integrations:</b> GitHub &amp; Box are proven with real API calls; Gmail's OAuth
+    connection is live and the watcher arms, but a real <i>fire</i> needs an email actually sent to the connected inbox
+    (the e2e proves connect+arm, not fire). See <a class="link" href="#gaps">§10</a>.</div>
+</section>
+
+<!-- TRIGGERS -->
+<section id="triggers">
+  <h2><span class="n">5</span> Triggers — 4+1 shapes, one envelope</h2>
+  <table>
+    <thead><tr><th>Trigger</th><th>Meaning</th><th>Clock / source</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill t-now">NOW</span></td><td>answer immediately</td><td>the inbound chat message</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td><span class="pill t-cron">CRON</span></td><td>on a schedule</td><td>AP timer (e.g. hourly GitHub-trending → Slack)</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td><span class="pill t-poll">POLL</span></td><td>check every N min, emit-on-change</td><td>AP poll (or the direct Box poller)</td><td><span class="pill s-live">LIVE</span></td></tr>
+      <tr><td><span class="pill t-push">PUSH</span></td><td>when the app fires</td><td>AP piece trigger (new-email / new-PR / new-file)</td><td><span class="pill s-live">LIVE</span> (Gmail fire: <span class="pill s-wired">WIRED</span>)</td></tr>
+      <tr><td><span class="pill t-hook">WEBHOOK</span></td><td>external system POSTs to us</td><td>direct HTTP, no AP</td><td><span class="pill s-live">LIVE</span></td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><b>Push-payload safety net (Tier 0).</b> Every push flow's <code>/invoke</code> body carries curated
+    per-piece fields <b>and always</b> the full raw trigger output as <code>_raw</code>; the envelope prefers curated
+    fields but falls back to <code>_raw</code> when empty — so a new/unmapped piece can never hand the worker a blank
+    payload. The deeper fix (schema/LLM-derived maps at arm time) is still on the roadmap.</div>
+</section>
+
+<!-- REUSE -->
+<section id="reuse">
+  <h2><span class="n">6</span> Reuse map — what's actually new vs. reused vs. AP</h2>
+  <p class="lead">The discipline: <b>don't duplicate CUGA APIs; don't build an OAuth/connection framework — AP owns that.</b> This is why the blast radius on core CUGA is near-zero.</p>
+  <table>
+    <thead><tr><th>Capability</th><th>Verdict</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Create / run an agent; the agent graph; memory; config store; secrets; the frontend; auth</td><td><span class="pill s-reuse">REUSE</span></td><td>CUGA's <code>save_config</code>, <code>DynamicAgentGraph</code>, thread store, <code>/api/secrets</code> (Fernet)</td></tr>
+      <tr><td><code>/invoke</code> + <code>/api/concierge</code>, the events package, concierge router + meta-tools, direct channel backends, subscription index</td><td><span class="pill s-live">ADD</span></td><td><code>src/cuga/backend/events/</code> (~30 flat modules)</td></tr>
+      <tr><td>Connections, OAuth tokens + refresh, triggers (cron/webhook/poll/app-event), integration delivery, run history</td><td><span class="pill s-ap">AP</span></td><td>Activepieces — the thing CUGA lacks by design</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:13px;color:var(--mut);margin-top:10px">Net new on CUGA: essentially <b>two endpoints + a router + a thin index + direct backends</b>. Two genuine touches on <code>main.py</code>, both guarded by the flag.</p>
+</section>
+
+<!-- RUNTIME -->
+<section id="runtime">
+  <h2><span class="n">7</span> The <code>AgentRuntime</code> port — framework-swap in one adapter</h2>
+  <p class="lead">Only two legs bind to an agent framework: <b>defining</b> an agent and <b>running</b> it. Both sit behind one interface, so swapping the worker framework is writing one adapter, not a rewrite. AP and <code>/invoke</code> never mention CUGA.</p>
+  <pre class="blk"><span class="k">class</span> <span class="f">AgentRuntime</span>:            <span class="c"># runtime.py — the port</span>
+    upsert_agent(spec)   -> agent_id
+    get_agent(agent_id)  -> spec | None
+    list_agents()        -> [spec]
+    run(agent_id, thread_id, text, *, deliver?) -> answer   <span class="c"># memory keyed by thread_id</span></pre>
+  <div class="grid3">
+    <div class="box"><h4>CugaRuntime · default</h4><span class="pill s-live">LIVE</span><ul class="tight">
+      <li>Builds a CUGA <code>DynamicAgentGraph</code>; workers get policies / knowledge / supervisor / tools.</li>
+      <li><b>No silent react fallback</b> — fails loud unless <code>EVENTS_CUGA_FALLBACK_REACT=1</code>.</li>
+    </ul></div>
+    <div class="box"><h4>ReactRuntime · reference</h4><span class="pill s-live">LIVE</span><ul class="tight">
+      <li>LangGraph <code>create_react_agent</code> + <code>MemorySaver</code>. The concierge itself runs on this.</li>
+      <li>Serves as the "some other framework" adapter.</li>
+    </ul></div>
+    <div class="box"><h4>StubRuntime · tests</h4><span class="pill s-live">LIVE</span><ul class="tight">
+      <li>Deterministic, offline. Powers the 61-test suite.</li>
+    </ul></div>
+  </div>
+  <p style="font-size:13px;color:var(--mut);margin-top:8px"><b>Honest note on multi-agent:</b> CUGA's own <code>/stream</code> still hardcodes <code>cuga-default</code>. Multi-agent execution is confined to the new <code>/invoke</code> path, which builds a graph per-agent — so it's additive and non-breaking, not a change to core CUGA's request runtime.</p>
+</section>
+
+<!-- ISOLATION -->
+<section id="isolation">
+  <h2><span class="n">8</span> Isolation &amp; identity</h2>
+  <div class="grid2">
+    <div class="box"><h4>Two grains</h4><ul class="tight">
+      <li><b><code>scope</code></b> = tenant/instance/user (per-user) — namespaces threads/memory, subscriptions, and AP connection externalIds (<code>ea::&lt;tenant&gt;::&lt;user&gt;::&lt;app&gt;</code>).</li>
+      <li><b><code>agent_scope</code></b> = tenant/instance (per-tenant) — agent <i>definitions</i> are shared; each user runs them in their own memory namespace.</li>
+    </ul></div>
+    <div class="box"><h4>Shared bot, distinct users</h4><ul class="tight">
+      <li>Every message carries its author (<code>source.user</code> = Slack/Discord id).</li>
+      <li>An account-linking handshake (<code>/link &lt;token&gt;</code>) binds a channel id to a profile.</li>
+      <li>Per-user integrations require each user to OAuth with their own account.</li>
+    </ul></div>
+  </div>
+  <div class="box warn" style="margin-top:12px"><h4>Honest limitations here</h4><ul class="tight">
+    <li><span class="pill s-gap">GAP</span> <code>instance_id</code> is effectively always <code>default</code> — instance-level isolation is nominal today.</li>
+    <li><span class="pill s-risk">RISK</span> <code>/invoke</code> <b>trusts a caller-asserted <code>scope</code></b> behind the gateway token (it's the internal AP→CUGA seam). Real multi-tenant isolation needs an upstream auth layer / signed scope claims — the <b>#1 item to fix before a shared deploy</b>.</li>
+  </ul></div>
+</section>
+
+<!-- STATUS -->
+<section id="status">
+  <h2><span class="n">9</span> Status at a glance</h2>
+  <div class="kpi">
+    <div class="c"><div class="big">61</div><div class="lb">offline tests, green</div></div>
+    <div class="c"><div class="big">2</div><div class="lb">net-new endpoints</div></div>
+    <div class="c"><div class="big">4</div><div class="lb">channels live</div></div>
+    <div class="c"><div class="big">3+1</div><div class="lb">integrations (GH·Box·Gmail + webhook)</div></div>
+    <div class="c"><div class="big">5</div><div class="lb">trigger shapes live</div></div>
+  </div>
+  <p style="font-size:13px;color:var(--mut)">Offline suite = 14 core + 27 dimensions + 20 Studio API, no server/creds, ~0.6s. Live proof is per-connector e2e harnesses (<code>live_github_e2e.py</code>, <code>live_box_e2e.py</code>, <code>live_gmail_e2e.py</code>, Slack/Discord/Telegram checks). <code>make doctor</code> reports which live creds are present; it never fails the build.</p>
+</section>
+
+<!-- GAPS -->
+<section id="gaps">
+  <h2><span class="n">10</span> Known gaps — the reviewer's list</h2>
+  <p class="lead">Deferred trade-offs, each with the plan. Nothing here is a surprise.</p>
+  <table>
+    <thead><tr><th>Gap</th><th>Impact</th><th>Plan</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Gmail PUSH fire leg</td><td>Connection live &amp; watcher arms; a real fire needs an email sent to the inbox. e2e proves connect+arm, not fire.</td><td>Manual send; trigger is AP-native, identical to Box's proven push path.</td></tr>
+      <tr><td class="nm">Box watcher passes file <i>name</i>, not <i>content</i></td><td><code>resume_judge</code> judges filename + metadata, not the body.</td><td>Add a Box download step before <code>/invoke</code>.</td></tr>
+      <tr><td class="nm">GitHub PR trigger creates a repo <b>webhook</b> on publish</td><td>Needs a PAT with explicit <b>Webhooks: R/W</b> (a repo-admin fine-grained PAT alone → 403).</td><td>Reconnect with the right scope; concierge now returns this as an actionable message, and auto-extracts <code>owner/repo</code> from the utterance.</td></tr>
+      <tr><td class="nm"><code>instance_id</code> always <code>default</code></td><td>Instance-level isolation is nominal.</td><td>Add an <code>EVENTS_INSTANCE_ID</code> fallback when instances are needed.</td></tr>
+      <tr><td class="nm">Two flow-builder code paths</td><td><code>flows.py</code> (pure JSON, dry-run/tests) and <code>ap_engine.py</code> (live REST) render the same shapes independently → drift risk.</td><td>Make <code>ap_engine</code> consume <code>flows.build_*</code>, or a shared-shape test.</td></tr>
+      <tr><td class="nm">Outlook connector</td><td>Listed as planned; the one genuinely-unbuilt connector.</td><td>Build when M365/Graph is prioritized.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- SECURITY -->
+<section id="security">
+  <h2><span class="n">11</span> Security posture — before you expose it</h2>
+  <p class="lead">What's guarded, what isn't, and the assumption. Fine for local dev; read this before exposing beyond localhost.</p>
+  <div class="grid2">
+    <div class="box risk"><h4><span class="pill s-risk">RISK</span> The seam trusts caller scope</h4>
+      <p style="margin:6px 0 0"><code>/invoke</code> becomes whatever <code>Principal</code> the caller names, guarded only by the gateway token. By design (internal seam), but real isolation depends on an upstream auth layer + a secret token. Signed scope claims / an IdP is the hardening path.</p></div>
+    <div class="box warn"><h4><span class="pill s-gap">GAP</span> Open by default if unset</h4><ul class="tight">
+      <li>Empty <code>GATEWAY_TOKEN</code> → <code>/invoke</code> + poll/webhook endpoints are unauthenticated (warns loudly at startup).</li>
+      <li>Webhook key gate enforced <b>only if</b> <code>EVENTS_WEBHOOK_KEY</code> set (constant-time compare).</li>
+      <li>Slack signature verification on <b>only if</b> <code>SLACK_SIGNING_SECRET</code> set.</li>
+      <li><code>_is_admin</code> returns True when there's no user store (dev convenience) — production must run with the user store on.</li>
+    </ul></div>
+  </div>
+  <div class="box warn" style="margin-top:12px"><h4><span class="pill s-gap">GAP</span> OAuth <code>state</code> is unsigned</h4>
+    <p style="margin:6px 0 0">base64-JSON, trusted on callback — a crafted <code>state</code> could steer a connection's externalId. Sign/nonce before public OAuth. Tracked, not yet fixed. <span style="color:var(--ok);font-weight:600">Closed this PR:</span> envelope validation now runs on every <code>/invoke</code> (malformed → 400).</p></div>
+</section>
+
+<!-- OPS -->
+<section id="ops">
+  <h2><span class="n">12</span> Operational sharp edges</h2>
+  <p class="lead">The recurring warts — worth knowing so a green flow that "does nothing" doesn't puzzle you.</p>
+  <div class="grid2">
+    <div class="box"><h4>Environment &amp; tunnels</h4><ul class="tight">
+      <li>The quick-tunnel URL is <b>ephemeral</b> — every <code>cloudflared</code> restart invalidates the public URL, Slack Events URL, OAuth redirects, and AP frontend URL. A named tunnel ends this. (Direct Discord + Box poll are outbound-only, so they don't care.)</li>
+      <li>The server <b>caches <code>.env</code> at startup</b> — restart after any change.</li>
+    </ul></div>
+    <div class="box"><h4>Credentials &amp; AP</h4><ul class="tight">
+      <li><b>Do NOT set <code>AP_WORKER_TOKEN</code></b> — AP 0.82 mints it as a JWT; a random value crash-loops the worker.</li>
+      <li>Box dev tokens expire ~60 min; Gmail (Testing) refresh tokens expire after 7 days — re-Connect weekly.</li>
+      <li>Run AP Community Edition on <b>Postgres</b> (the sqlite build wipes its own project).</li>
+      <li>Fresh AP must sync its piece catalog from cloud; a network blip → <code>piece_metadata_not_found</code> 404s. Fix: <code>make ap-pieces</code> (idempotent). <code>make doctor</code> reports piece status.</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- BOTTOM -->
+<section id="bottom">
+  <h2><span class="n">13</span> Bottom line</h2>
+  <div class="grid2">
+    <div class="box accent"><h4>What's genuinely true today</h4><ul class="tight">
+      <li>4 channels + 3 integrations + a generic webhook, all 5 trigger shapes, wired end-to-end and covered by 61 offline tests.</li>
+      <li>GitHub &amp; Box proven against real APIs; Slack/Discord/Telegram/web live; NL and <code>/automate</code> both create real AP flows you manage from CUGA (pause/resume/delete, run log).</li>
+      <li>Near-zero blast radius: opt-in, additive, non-breaking. Framework swap = one adapter.</li>
+    </ul></div>
+    <div class="box warn"><h4>What to be honest about</h4><ul class="tight">
+      <li>Gmail <i>fire</i> and Box <i>content</i> are the two unproven/partial legs; GitHub write-path needs the right PAT scope.</li>
+      <li><code>/invoke</code> trusting caller scope is the #1 thing to harden before a shared multi-tenant deploy.</li>
+      <li>Instance isolation is nominal; two flow-builders risk drift; Outlook is unbuilt.</li>
+      <li>The tunnel/AP operational edges are real and will bite a naïve deploy.</li>
+    </ul></div>
+  </div>
+</section>
+
+</div>
+<footer>CUGA Event-Driven Agents · Capabilities (honest technical account) · sourced from events_docs/README · ARCHITECTURE · KNOWN_GAPS</footer>
+</body>
+</html>
