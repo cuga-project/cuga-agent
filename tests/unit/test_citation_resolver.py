@@ -1,6 +1,8 @@
 # tests/unit/test_citation_resolver.py
 from types import SimpleNamespace
 
+import pytest
+
 from cuga.backend.knowledge.sources import (
     SourceLedger,
     has_citation_markers,
@@ -84,16 +86,38 @@ def test_none_ledger_strips_all_markers():
     assert sources == []
 
 
-def test_fullwidth_cjk_brackets_are_resolved_to_ascii():
-    """Some models emit 【sN】 / ［sN］ instead of ASCII [sN] despite the contract.
-    They must still detect + resolve, and rewrite to ASCII [n] so the frontend
-    chip injector (which matches [n]) works. Regression: chat answer used 【s1】,
-    so citations weren't clickable and no sources showed."""
-    assert has_citation_markers("goal 【s1】 and ［s2］")
-    text, sources = resolve_citations("open 【s2】 transparent ［s1］", _ledger_with())
-    assert text == "open [1] transparent [2]"
-    assert [s["n"] for s in sources] == [1, 2]
-    assert sources[0]["cite_id"] == "s2"
+@pytest.mark.parametrize("marker", ["[s1]", "［s1］", "【s1】", "〔s1〕"])
+def test_square_bracket_family_resolves_to_ascii(marker):
+    """Models drift from ASCII [sN]; the whole square-bracket family (ASCII,
+    fullwidth ［］, lenticular 【】, tortoise-shell 〔〕) must detect + resolve and
+    rewrite to ASCII [n] so the frontend chip injector works. Regression: a chat
+    answer used 【s1】 → citations weren't clickable and no sources showed."""
+    assert has_citation_markers(f"open {marker} done")
+    text, sources = resolve_citations(f"open {marker} done", _ledger_with())
+    assert text == "open [1] done"
+    assert sources[0]["cite_id"] == "s1"
+
+
+def test_unsupported_bracket_style_is_logged_not_silent(caplog):
+    """A cite_id in a bracket style we do NOT resolve, e.g. (s1), must emit a
+    WARNING so silent model-format drift is visible (the failure mode the 【】 bug
+    had). It is left as-is, not rendered."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="cuga.backend.knowledge.sources"):
+        text, sources = resolve_citations("per the goal (s1) holds", _ledger_with())
+    assert "(s1)" in text  # not rewritten
+    assert sources == []
+    assert "unsupported bracket style" in caplog.text
+
+
+def test_unsupported_marker_inside_code_is_not_warned(caplog):
+    """A foo(s1)-style call inside inline code must NOT trip the drift canary."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="cuga.backend.knowledge.sources"):
+        resolve_citations("real [s1] then `foo(s1)` call", _ledger_with())
+    assert "unsupported bracket style" not in caplog.text
 
 
 def test_strip_mode_does_not_warn(caplog):

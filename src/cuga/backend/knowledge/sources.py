@@ -227,11 +227,11 @@ def _reset_all_ledgers_for_tests() -> None:
 
 # [s1] or [s1, s4] or [s1 s4] — case-insensitive. Requires the s-prefix so
 # plain bracketed numbers/text ("[1]", "[note]") never match.
-# Also accepts the FULLWIDTH / CJK bracket variants some models emit instead of
-# ASCII despite the [sN] contract — 【sN】 (lenticular) and ［sN］ (fullwidth).
+# Accepts the whole SQUARE-BRACKET FAMILY, because models drift from the ASCII
+# [sN] contract: ASCII [ ], fullwidth ［ ］, lenticular 【 】, tortoise-shell 〔 〕.
 # Resolution always rewrites the match to ASCII [n], so the frontend chip
 # injector (which matches [n]) works regardless of which brackets the model used.
-_MARKER_RE = re.compile(r"[\[【［]\s*([sS]\d+(?:[\s,]+[sS]\d+)*)\s*[\]】］]")
+_MARKER_RE = re.compile(r"[\[［【〔]\s*([sS]\d+(?:[\s,]+[sS]\d+)*)\s*[\]］】〕]")
 # Segments the answer so markers inside code are never rewritten.
 # Handles: fenced blocks (``` or ~~~, terminated or unterminated/truncated),
 # double-backtick inline spans, and single-backtick inline spans.
@@ -239,9 +239,33 @@ _CODE_RE = re.compile(
     r"(```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|``[^`\n](?:[^`\n]|`[^`\n])*``|`[^`\n]*`)"
 )
 
+# Canary: a cite_id (sN) wrapped in a bracket style resolution does NOT rewrite.
+# Logged (not resolved) so silent model-format drift stays VISIBLE in monitoring
+# instead of producing a broken, unclickable citation — the exact failure the
+# 【sN】 case caused. Excludes the square-bracket family (those ARE resolved), and
+# the check runs on non-code segments only, since parens / angle / brace commonly
+# appear in code (e.g. a ``foo(s1)`` call is not a citation).
+_UNSUPPORTED_MARKER_RE = re.compile(r"[(<{〖｢«⟦]\s*[sS]\d+\s*[)>}〗｣»⟧]")
+
 
 def has_citation_markers(text: str) -> bool:
     return bool(text) and _MARKER_RE.search(text) is not None
+
+
+def _warn_unsupported_markers(text: str) -> None:
+    """Log once if a cite_id appears in a bracket style we don't resolve."""
+    for i, part in enumerate(_CODE_RE.split(text)):
+        if i % 2:  # code segment — left byte-identical, never a citation
+            continue
+        m = _UNSUPPORTED_MARKER_RE.search(part)
+        if m:
+            logger.warning(
+                "citation id in an unsupported bracket style, not rendered as a "
+                "chip: %r — the model deviated from the [sN] contract; add the "
+                "bracket to _MARKER_RE if this recurs.",
+                m.group(0),
+            )
+            return
 
 
 def resolve_citations(
@@ -259,7 +283,11 @@ def resolve_citations(
       to comma-separated ones.
     Returns ``(display_text, sources_snapshots)``.
     """
-    if not text or not has_citation_markers(text):
+    if not text:
+        return text, []
+    # Surface unrecognized-bracket drift even when NO supported marker exists.
+    _warn_unsupported_markers(text)
+    if not has_citation_markers(text):
         return text, []
 
     numbers: dict[str, int] = {}          # cite_id -> display n
@@ -304,7 +332,8 @@ CITATION_DIRECTIVE = (
     "append [<cite_id>] immediately after every claim taken from that chunk "
     "(example: 'The total is 4,521 [s2].'). Use ONLY cite_ids you received in "
     "this conversation; ids from recent searches in this conversation remain "
-    "valid. Never invent ids; never write bare numeric citations like [1]."
+    "valid. Use plain ASCII square brackets [ ], not 【 】 or other bracket "
+    "styles. Never invent ids; never write bare numeric citations like [1]."
 )
 
 
