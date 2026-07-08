@@ -98,6 +98,7 @@ class FlowAgent:
 
         self._hook_agent = None  # CugaAgent for hook policy reasoning — created lazily
         self._pending_completions: Dict[str, Any] = {}  # process_key → asyncio.Future
+        self._gateway_decisions: Dict[str, tuple] = {}  # gateway_id → (flow_id, reason)
 
         self.bridge.register_flow_agent(self)
         if _bridge_owned:
@@ -125,10 +126,11 @@ class FlowAgent:
             }
 
         task_input = self._build_task_input(task_id, ctx)
+        visible = {k: v for k, v in ctx.current_state.process_variables.items() if not k.startswith("_") and k != "cugaProcessKey"}
         tracker.collect_step(
             Step(
                 name=f"Task: {ctx.element_name or task_id} — delegating",
-                data=task_input,
+                data=f"vars={visible}",
             )
         )
         result = await agent.execute(ctx.current_state, task_input)
@@ -147,11 +149,12 @@ class FlowAgent:
         if agent is None:
             return flows[0].id if flows else ""
         try:
-            flow_id = await agent.route(flows, ctx.current_state)
+            flow_id, reason = await agent.route(flows, ctx.current_state)
+            self._gateway_decisions[gateway_id] = (flow_id, reason)
             tracker.collect_step(
                 Step(
                     name=f"Gateway {ctx.element_name or gateway_id}",
-                    data=f"Routed to flow: {flow_id}",
+                    data=f"Routed to flow: {flow_id}" + (f" — {reason}" if reason else ""),
                 )
             )
             return flow_id
@@ -433,13 +436,17 @@ Respond ONLY with a JSON object:
                 parts.append(f"\n{task_name}: Failed — {result.get('error', 'unknown error')}")
             elif status == "skipped":
                 parts.append(f"\n{task_name}: Skipped — {result.get('reason', '')}")
-        if not state.task_results:
-            visible = {
-                k: v for k, v in state.process_variables.items()
-                if not k.startswith("_") and k != "cugaProcessKey"
-            }
-            if visible:
-                parts.append(f"\nOutcome: {visible}")
+        for gw_id, (flow_id, reason) in self._gateway_decisions.items():
+            if reason:
+                element = process.elements.get(gw_id) if process else None
+                gw_name = element.name if element else gw_id
+                parts.append(f"\nGateway '{gw_name}' decision: {reason}")
+        visible = {
+            k: v for k, v in state.process_variables.items()
+            if not k.startswith("_") and k != "cugaProcessKey" and k != "gatewayDecision"
+        }
+        if visible:
+            parts.append(f"\nFinal process state: {visible}")
         return "\n".join(parts)
 
     # ──────────────────────────────────────────────────────────────

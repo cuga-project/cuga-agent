@@ -21,8 +21,7 @@ determines whether the application proceeds to loan processing or rejection.
 
 - If `credit_score` is missing or could not be determined (None / 0.0 with no
   prior task result from the credit checker), **reject** and flag for manual review.
-- If the applicant's `loan_amount` exceeds 50 000, apply a stricter threshold of
-  `credit_score > 0.75` regardless of the base rule above.
+- If the applicant's `loan_amount` exceeds 50000, reject the loan request anyways.
 
 ## Decision Output
 

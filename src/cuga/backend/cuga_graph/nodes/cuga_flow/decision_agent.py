@@ -124,6 +124,7 @@ class _DecisionState(TypedDict):
     condition_result: str  # "TRUE", "FALSE", or "UNKNOWN"
     available_flows: List[Dict[str, str]]  # [{"id": ..., "label": ...}]
     chosen_flow_id: str
+    routing_reason: str
 
 
 # ── DecisionAgent ─────────────────────────────────────────────────────────────
@@ -217,7 +218,9 @@ class DecisionAgent:
             f"Process variables: {state['process_variables']}\n"
             f"Task results:\n{task_results_text}\n\n"
             f"## Available Flows\n{flow_lines}\n\n"
-            f"Based on the policy and condition result, respond with ONLY the chosen flow ID."
+            f"Based on the policy and condition result, respond with ONLY:\n"
+            f"<chosen_flow_id>|<one-sentence reason>\n"
+            f"Example: Flow_0ybszcv|Credit score 0.75 meets the approval threshold of 0.60."
         )
 
         try:
@@ -236,20 +239,31 @@ class DecisionAgent:
                 text = str(result)
 
             available_ids = [f["id"] for f in state["available_flows"]]
-            chosen = next((fid for fid in available_ids if fid in text), available_ids[0])
+            chosen = None
+            reason = ""
+            for line in text.strip().splitlines():
+                if "|" in line:
+                    candidate, _, rest = line.partition("|")
+                    candidate = candidate.strip()
+                    if candidate in available_ids:
+                        chosen = candidate
+                        reason = rest.strip()
+                        break
+            if not chosen:
+                chosen = next((fid for fid in available_ids if fid in text), available_ids[0])
 
             _tracker.collect_step(
                 Step(
                     name=f"Gateway {self.gateway_id}: routing decision",
-                    data=f"→ {chosen}",
+                    data=f"→ {chosen}" + (f" — {reason}" if reason else ""),
                 )
             )
-            logger.info(f"DecisionAgent {self.gateway_id}: decided → {chosen}")
-            return {"chosen_flow_id": chosen}
+            logger.info(f"DecisionAgent {self.gateway_id}: decided → {chosen} ({reason})")
+            return {"chosen_flow_id": chosen, "routing_reason": reason}
 
         except Exception as e:
             logger.error(f"DecisionAgent {self.gateway_id}: decide node error: {e}")
-            return {"chosen_flow_id": state["available_flows"][0]["id"]}
+            return {"chosen_flow_id": state["available_flows"][0]["id"], "routing_reason": ""}
 
     # ── CugaAgent (lazy) ──────────────────────────────────────────────────────
 
@@ -269,7 +283,9 @@ class DecisionAgent:
                     f"You are a BPMN gateway routing agent for gateway '{self.gateway_id}'.\n"
                     "You will receive a condition evaluation result, current process state, "
                     "and a list of available flows with their decision labels.\n"
-                    "Select exactly ONE flow ID from the list. Respond with ONLY the flow ID."
+                    "Select exactly ONE flow ID from the list. Respond with ONLY:\n"
+                    "<chosen_flow_id>|<one-sentence reason>\n"
+                    "Example: Flow_0ybszcv|Credit score 0.75 meets the approval threshold of 0.60."
                 ),
                 model=llm,
                 enable_knowledge=False,
@@ -280,23 +296,23 @@ class DecisionAgent:
 
     # ── Public interface ──────────────────────────────────────────────────────
 
-    async def route(self, flows: List[BPMNFlow], state: FlowState) -> str:
+    async def route(self, flows: List[BPMNFlow], state: FlowState) -> tuple:
         """
-        Run the eval_condition → decide graph and return the chosen flow ID.
+        Run the eval_condition → decide graph and return (chosen_flow_id, reason).
 
         Args:
             flows: Outgoing BPMNFlow objects from this gateway.
             state: Current FlowState.
 
         Returns:
-            The flow ID that should be activated next.
+            Tuple of (flow_id, one-sentence routing reason).
         """
         if not flows:
             logger.error(f"DecisionAgent {self.gateway_id}: no outgoing flows provided")
-            return ""
+            return "", ""
 
         if len(flows) == 1:
-            return flows[0].id
+            return flows[0].id, ""
 
         initial: _DecisionState = {
             "process_variables": dict(state.process_variables or {}),
@@ -306,17 +322,19 @@ class DecisionAgent:
                 {"id": f.id, "label": self.flow_decisions.get(f.id) or f.name or f.id} for f in flows
             ],
             "chosen_flow_id": flows[0].id,
+            "routing_reason": "",
         }
 
         result = await self._compiled_graph.ainvoke(initial)
         chosen = result.get("chosen_flow_id", flows[0].id)
+        reason = result.get("routing_reason", "")
 
         chosen_label = next(
             (self.flow_decisions.get(f.id) or f.name or f.id for f in flows if f.id == chosen),
             chosen,
         )
-        logger.info(f"DecisionAgent {self.gateway_id}: routed to {chosen_label} ({chosen})")
-        return chosen
+        logger.info(f"DecisionAgent {self.gateway_id}: routed to {chosen_label} ({chosen}) — {reason}")
+        return chosen, reason
 
 
 # Made with Bob
