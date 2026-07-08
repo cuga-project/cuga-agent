@@ -50,16 +50,16 @@ tasks:
 #   #   mode: native
 #   #   tool: "write_audit_log"   # calls FlowAgent.tools["write_audit_log"](state)
 
-# gateways:
-#   Gateway_09ad5fc:
-#     mode: decision_agent
-#     condition: "${credit_score} > 0.6"   # evaluated by eval_condition; result forwarded to LLM + policy
-#     policy: "../policies/decision-credit_decision.md"
-#     flows:
-#       Flow_0ybszcv:
-#         decision: "Approve — credit score sufficient"
-#       Flow_1jgea85:
-#         decision: "Reject — credit score insufficient"
+gateways:
+  Gateway_09ad5fc:
+    mode: decision_agent
+    condition: "${credit_score} > 0.6"
+    policy: "../policies/decision-credit_decision.md"
+    flows:
+      Flow_0ybszcv:
+        decision: "Approve — credit score sufficient"
+      Flow_1jgea85:
+        decision: "Reject — credit score insufficient"
 
 #   Gateway_15y9k7z:
 #     mode: native                  # merge gateway — single outgoing flow, no decision needed
