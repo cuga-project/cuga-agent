@@ -1,25 +1,12 @@
 """Detection-only warning for suspect CugaLite tool-call arguments.
 
-History
--------
-This module began as a pre-flight *coercion* layer (Wave-1 Change #4) that
-rewrote a small set of malformed tool arguments — the "dict-as-string" bug and
-friends — into valid values before the call reached the registry.
-
-A 200-task M3 mining pass (bundle ``20260628_162414_default``) found that the
-target failure does not occur in the current corpus/model: there were ZERO
-registry arg-validation errors in agent execution. Every ``Input validation
-error`` string was a *gold-trajectory expectation* surfaced by the scorer
-(``Missing expected tool_responses``), not an error the agent actually hit and
-failed to recover from. With no failure to fix, Change #4 is WONTFIX and the
-coercion behavior was removed.
-
-What remains is the *detector*: a zero-mutation warning that flags when the agent
-passes an argument whose shape/type looks malformed for the tool's schema (a dict
-where a scalar is required, a one-element list, a stringized number, …).
-Arguments are ALWAYS forwarded unchanged — this only logs. It is cheap insurance
-that will surface the dict-as-string failure in the logs if a future model or
-corpus regresses, without silently altering any call.
+Flags when the agent passes an argument whose shape/type looks malformed for
+the tool's schema (a dict where a scalar is required, a one-element list, a
+stringized number, …). Arguments are ALWAYS forwarded unchanged — this only
+logs. Detection-only by design: mining of past eval runs showed the malformed
+shapes do not currently cause agent-visible failures, so mutation (auto-
+coercion) is not warranted; the warning surfaces a regression in the logs if a
+future model or corpus reintroduces them.
 """
 
 from __future__ import annotations

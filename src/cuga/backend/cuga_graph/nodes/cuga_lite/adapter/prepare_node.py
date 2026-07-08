@@ -338,9 +338,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Pre-flight arg WARNING: the sandbox calls tool.coroutine directly,
         # bypassing the StructuredTool's args_schema, so nothing flags malformed
         # kwargs before the registry. This detector logs (never mutates) suspect
-        # shapes — the dict-as-string bug and friends. The former coercion layer
-        # (Wave-1 Change #4) is WONTFIX: a 200-task M3 mining pass found the
-        # failure does not occur in the current corpus. See arg_warning.py.
+        # shapes — the dict-as-string bug and friends. See arg_warning.py.
         _af = getattr(settings, "advanced_features", None)
         _warn_args = bool(getattr(_af, "cuga_lite_warn_suspect_args", True))
 
