@@ -915,6 +915,11 @@ def start(
         "--oak-health",
         help="Enable healthcare insurance OpenAPI (cuga-oak-health; port from settings server_ports.oak_health_api)",
     ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Skip browser/playwright initialization for faster startup (API-only mode)",
+    ),
     reset: bool = typer.Option(
         False,
         "--reset",
@@ -1146,6 +1151,11 @@ def start(
     # the demo_knowledge block below where files_dir is in scope.
     if hard_reset:
         reset = True
+
+    # ─── Browser skip flag ──────────────────────────────────────────────────────
+    if no_browser:
+        os.environ["CUGA_NO_BROWSER"] = "true"
+        logger.info("⚡ CUGA_NO_BROWSER=true - skipping browser initialization for faster startup")
 
     # Embedding overrides — set as DYNACONF env vars BEFORE the service blocks
     # below so the engine picks them up when settings is first loaded. These
