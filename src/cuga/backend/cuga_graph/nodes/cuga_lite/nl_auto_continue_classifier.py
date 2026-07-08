@@ -23,7 +23,14 @@ Return ONLY JSON, no markdown, no prose: {"auto_continue": true} or {"auto_conti
 
 Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution (interim status, incompleteness, upcoming tool calls in reasoning).
 
-Use auto_continue false when the combined picture is an appropriate completed turn: final answer, user question, refusal, error explanation, or clear stop."""
+Use auto_continue false when the combined picture is an appropriate completed turn: final answer, user question, refusal, error explanation, or clear stop. Also false when the turn needs something from the user — a question, missing input, or a choice — regardless of how much future work it mentions.
+
+Examples (visible content → decision):
+- "We need to search student_loan app." → {"auto_continue": true} — interim plan; the work it announces has not happened.
+- "Let me perform the second phase." → {"auto_continue": true} — interim status before more execution.
+- "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan.
+- "I could not find any matching loans." → {"auto_continue": false} — a result, not a plan.
+- "Which account should I use?" → {"auto_continue": false} — clarifying question."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
@@ -63,6 +70,13 @@ _NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A planning statement describes the agent's own next actions. Text that
+# addresses the user in the second person may be requesting input ("Ok I will
+# fetch the information, but first I require your ID") \u2014 auto-continuing there
+# would answer the agent's request with a synthetic "continue" instead of the
+# user's reply. Anything second-person falls through to the LLM classifier.
+_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours)\b", re.IGNORECASE)
+
 _PLANNING_MAX_LEN = 400
 
 
@@ -70,8 +84,10 @@ def looks_like_planning_text(visible: str) -> bool:
     """True for a short first-person intent statement that signals more work to come.
 
     Conservative deterministic detector for the planning-text stall. Returns
-    False for empty text, anything longer than a couple of sentences, or text
-    that reads as a question (clarifying questions should finalize, not loop).
+    False for empty text, anything longer than a couple of sentences, text
+    that reads as a question (clarifying questions should finalize, not loop),
+    or text that addresses the user in the second person (it may be requesting
+    input the user must supply).
     """
     t = (visible or "").strip()
     if not t or len(t) > _PLANNING_MAX_LEN:
@@ -79,6 +95,8 @@ def looks_like_planning_text(visible: str) -> bool:
     if t.rstrip().endswith("?"):
         return False
     if _NEGATION_RE.search(t):
+        return False
+    if _SECOND_PERSON_RE.search(t):
         return False
     return bool(_PLANNING_INTENT_RE.match(t))
 

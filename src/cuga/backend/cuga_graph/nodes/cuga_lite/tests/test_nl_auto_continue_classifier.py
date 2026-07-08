@@ -56,6 +56,10 @@ def test_planning_text_detected(text):
         "Do you want me to include archived rows?",  # clarifying question
         "Let me know if you need anything else.",  # 'know' is not an action verb
         "The answer is United States.",
+        # Second-person guard (PR #416 review): a plan that also requests user
+        # input must not be auto-continued — the user has to reply.
+        "Ok i will fetch the infromation, but first i require your ID",
+        "I will search the records, but please confirm your account number first.",
     ],
 )
 def test_non_planning_text_not_detected(text):
