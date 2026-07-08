@@ -62,7 +62,6 @@ cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
-require_tool_call_before_final = false  # When true, refuse to emit a final answer until at least one code block has been sent to the executor in the task; instead inject a directive and continue. Counts emitted/executed code blocks (not confirmed successful tool calls). CAVEAT: legitimately tool-free tasks (e.g. a greeting) will loop to the step limit and return a step-limit error instead of an answer. Off = current behavior. Env: DYNACONF_ADVANCED_FEATURES__REQUIRE_TOOL_CALL_BEFORE_FINAL
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError

@@ -211,26 +211,12 @@ def create_call_model_node(
                 return approval_command
 
         # ── Metadata update ────────────────────────────────────────────────
-        # Copy: the `code_exec_count` bump below must update only our return
-        # payload, not the live graph-state metadata dict that this may alias.
-        meta_value = dict(adapter.build_metadata_update(state, playbook_fired=playbook_fired))
-        meta_update = {adapter.metadata_key: meta_value}
-
-        # ── Require-tool-call-before-final guard (default-off; gated) ──────
-        # Counts code blocks the model has sent to the executor this task,
-        # carried inside the adapter metadata dict so no graph state schema
-        # change is needed (works for lite / supervisor / core). NOTE: this
-        # counts *emitted/executed code blocks*, not confirmed successful tool
-        # calls — a block like `x = 1`, or one that errors, still counts. It is
-        # a lightweight grounding proxy, not a guarantee that a tool ran.
-        require_tool_call = bool(getattr(settings.advanced_features, "require_tool_call_before_final", False))
-        code_exec_count = int((adapter.get_metadata(state) or {}).get("code_exec_count", 0) or 0)
+        meta_update = {
+            adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
+        }
 
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
-            if require_tool_call:
-                # Record that the model sent at least one code block to the executor.
-                meta_value["code_exec_count"] = code_exec_count + 1
             return Command(
                 goto=adapter.execute_node_name,
                 update={
@@ -248,31 +234,6 @@ def create_call_model_node(
                 goto="call_model",
                 update={
                     adapter.messages_key: final_messages + [HumanMessage(content="continue")],
-                    "script": None,
-                    "final_answer": "",
-                    "execution_complete": False,
-                    "step_count": new_step_count,
-                    **meta_update,
-                },
-            )
-
-        # Model wants to finalize. Guard: refuse a final answer produced without
-        # any tool/code execution (e.g. a confident hallucination); inject a
-        # directive and continue instead. Bounded by the step limit.
-        if require_tool_call and code_exec_count == 0:
-            logger.warning(
-                f"{adapter.sender_name}: require_tool_call_before_final — "
-                "final answer with 0 code blocks executed; injecting directive and continuing"
-            )
-            directive = (
-                "You have not called any tool yet, so this answer is not grounded in retrieved data. "
-                "Call at least one tool to obtain the actual values before giving a final answer. "
-                "Do not answer from prior knowledge."
-            )
-            return Command(
-                goto="call_model",
-                update={
-                    adapter.messages_key: final_messages + [HumanMessage(content=directive)],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
