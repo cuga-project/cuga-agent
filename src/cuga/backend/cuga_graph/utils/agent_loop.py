@@ -687,28 +687,28 @@ class AgentLoop:
                 session_tagged = True
 
             event_msg = self.get_event_message(event)
+
+            # Drain FlowAgent steps collected since the last event.  Must run
+            # before last_step_count advances so that steps from async Flowable
+            # callbacks (added inside FlowAgent.invoke() during
+            # CugaSupervisorCallback's execution) are emitted even when the
+            # enclosing node produces a non-empty event of its own.
+            # Internal tracker steps (Raw_Assistant_Response, etc.) are excluded
+            # by the prefix filter.
+            _FLOW_STEP_PREFIXES = ("Task: ", "Gateway ", "Hook ", "Hook: ")
+            current_step_count = len(self.tracker.steps)
+            for step in self.tracker.steps[last_step_count:current_step_count]:
+                if step.name and step.data and any(step.name.startswith(p) for p in _FLOW_STEP_PREFIXES):
+                    yield StreamEvent(name=step.name, data=step.data).format()
+            last_step_count = current_step_count
+
             # Skip empty events (events with no name or no data)
             if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
                 logger.debug(
                     f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
                 )
-                # Drain FlowAgent reasoning steps that were collected while this
-                # node ran but produced no StreamEvent of their own.  Only steps
-                # whose names begin with a FlowAgent-specific prefix are emitted;
-                # internal CugaAgent steps (Raw_Assistant_Response, Assistant_code,
-                # NL_Auto_Continue_Classifier, etc.) accumulate in the same
-                # tracker singleton and must be excluded here.
-                _FLOW_STEP_PREFIXES = ("Task: ", "Gateway ", "Hook ", "Hook: ")
-                current_step_count = len(self.tracker.steps)
-                for step in self.tracker.steps[last_step_count:current_step_count]:
-                    if step.name and step.data and any(step.name.startswith(p) for p in _FLOW_STEP_PREFIXES):
-                        yield StreamEvent(name=step.name, data=step.data).format()
-                last_step_count = current_step_count
                 continue
 
-            # Advance the baseline past steps produced by this known node so
-            # they are not re-emitted by the drain on a later empty event.
-            last_step_count = len(self.tracker.steps)
             yield event_msg.format()
         yield self.get_output(event)
 
