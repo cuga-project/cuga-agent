@@ -108,3 +108,4 @@ demo_knowledge_docs/
 .venv-events/
 .ap.env
 .events.db
+.box_since.json
