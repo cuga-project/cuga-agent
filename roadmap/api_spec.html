@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Event-Driven CUGA — API Spec (detailed)</title>
+<style>
+  :root{
+    --blue:#0f62fe; --ink:#161616; --ink2:#333; --mut:#6f6f6f; --line:#e3e3e3; --bg:#fff; --code:#f2f4f8;
+    --get:#24a148; --post:#0f62fe; --put:#8a3ffc; --del:#da1e28; --amber:#b28600;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#fafafa;line-height:1.55;font-size:15px}
+  .doc{max-width:960px;margin:0 auto;background:var(--bg);border-left:1px solid var(--line);border-right:1px solid var(--line);
+       padding:44px 48px 80px;min-height:100vh}
+  .eyebrow{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--blue);font-weight:700}
+  h1{font-size:28px;font-weight:600;letter-spacing:-.4px;margin:8px 0 4px}
+  .byline{color:var(--mut);font-size:13.5px;margin-bottom:6px}
+  .byline a{color:var(--blue);text-decoration:none}
+  h2{font-size:18px;font-weight:600;margin:34px 0 6px;padding-bottom:6px;border-bottom:2px solid #eee}
+  h2 .n{color:var(--mut);font-weight:500;font-size:13px}
+  p{margin:9px 0;color:var(--ink2)}
+  code{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  pre{background:#f2f4f8;border:1px solid #e6e9f0;border-radius:7px;padding:12px 14px;overflow-x:auto;font-size:12.5px;
+      font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;line-height:1.5;margin:8px 0;color:#1a2230}
+  .ep{border:1px solid var(--line);border-radius:9px;padding:14px 18px;margin:14px 0}
+  .ep h3{margin:0 0 4px;font-size:15px;font-family:'IBM Plex Mono',Menlo,monospace;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .verb{display:inline-block;min-width:44px;text-align:center;padding:2px 7px;border-radius:5px;font-size:10.5px;font-weight:700;color:#fff}
+  .v-get{background:var(--get)} .v-post{background:var(--post)} .v-put{background:var(--put)} .v-del{background:var(--del)}
+  .ep .desc{color:var(--ink2);font-size:13.5px;margin:2px 0 8px}
+  .meta{display:grid;grid-template-columns:110px 1fr;gap:2px 12px;font-size:13px;margin:8px 0}
+  .meta dt{color:var(--mut);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;padding-top:2px}
+  .meta dd{margin:0;color:var(--ink2)}
+  .io{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
+  @media(max-width:720px){.io{grid-template-columns:1fr}}
+  .io .lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);margin-bottom:3px}
+  .tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:600}
+  .t-gw{background:#e5f6ff;color:#00539a} .t-sig{background:#fff2e8;color:#a3500f}
+  .t-hdr{background:#f4f4f4;color:#525252} .t-adm{background:#fff0f1;color:#a2191f} .t-open{background:#defbe6;color:#0e6027}
+  table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;border-bottom:2px solid #eee}
+  td. p{font-family:'IBM Plex Mono',Menlo,monospace;font-size:12px;white-space:nowrap}
+  .nav{background:#f7f9ff;border:1px solid #e0e8ff;border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;columns:2}
+  .nav a{color:var(--blue);text-decoration:none;display:block;margin:3px 0}
+  .foot{color:var(--mut);font-size:12px;margin-top:34px;border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="doc">
+  <div class="eyebrow">Event-Driven CUGA</div>
+  <h1>API spec — the events endpoints, in detail</h1>
+  <div class="byline">What goes in · what comes out · who calls it &amp; when · from
+    <code>src/cuga/backend/events/app.py</code> (2026-07-08) · overview in
+    <a href="summary.html">summary.html</a> · roadmap in <a href="roadmap_next.html">roadmap_next.html</a></div>
+
+  <h2>Auth model — four gates <span class="n">who's allowed to call what</span></h2>
+  <p>Every endpoint sits behind one of four gates. This is the first thing to know about any call:</p>
+  <table>
+    <thead><tr><th>Gate</th><th>Header / param</th><th>Guards</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag t-gw">Gateway token</span></td><td><code>X-Gateway-Token: &lt;GATEWAY_TOKEN&gt;</code></td><td>Machine-to-machine seams: <code>/invoke</code>, <code>/box/poll</code>. AP and internal adapters carry it. <em>Empty token ⇒ open (warns).</em></td></tr>
+      <tr><td><span class="tag t-sig">Provider signature</span></td><td><code>X-Slack-Signature</code> · <code>?key=</code></td><td>Slack Events (HMAC over the signing secret); the generic webhook's optional shared <code>?key</code>.</td></tr>
+      <tr><td><span class="tag t-hdr">Principal (headers)</span></td><td>identity headers → <code>scope</code></td><td>User-facing reads/writes. Resolves <code>tenant/instance/user</code>; every list is isolated to that scope. <em>⚠ caller-asserted today (roadmap: IdP).</em></td></tr>
+      <tr><td><span class="tag t-adm">Admin / Builder</span></td><td>role on the principal</td><td>Agent create/update (builder); users, channel-arm, OAuth-apps (admin). <em>No user store ⇒ open (dev).</em></td></tr>
+    </tbody>
+  </table>
+
+  <h2>The envelope <span class="n">the one shape every trigger arrives with at /invoke</span></h2>
+  <p>Everything funnels through <code>POST /invoke</code> as this normalized envelope. Learn it once; it explains every trigger.</p>
+  <pre>{
+  "agent":  "mailbot",              // target worker agent_id, or "concierge" to route
+  "text":   "summarize each new email and post it here",   // the prompt / utterance
+  "deliver": true,                  // true = CUGA delivers the answer itself (direct channel)
+  "scope":  "acme/default/alice",   // the principal (tenant/instance/user) the run executes as
+  "source": { "type": "integration",          // channel | integration | time
+              "name": "gmail",                 // slack | gmail | box | github | cron | …
+              "thread_id": "acme/default/alice::gw:slack:C123",  // memory key + return address
+              "user": "U_ALICE" },             // channel-native AUTHOR id (per-user identity)
+  "event":  { "kind": "new_email",             // message|new_email|new_pr|new_issue|new_file|tick|runonce
+              "payload": { "subject":"…", "from":"…", "body":"…", "_raw": {…} } },
+  "trace_id": "tr_ab12"             // optional; generated if absent
+}</pre>
+
+  <h2 id="seams">1 · The load-bearing seams</h2>
+
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /invoke</h3>
+    <div class="desc">The single callback seam. Every trigger normalizes here; runs the agent and returns or delivers the answer.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd>AP flows (their HTTP step) · the direct adapters (Slack/Discord/Box/webhook handlers loop back to it) — <b>never a browser</b>.</dd>
+      <dt>When</dt><dd>Every trigger fires: a cron tick, a push event (new email/PR/file), a channel message, a poll, a webhook.</dd>
+      <dt>Auth</dt><dd><span class="tag t-gw">Gateway token</span></dd>
+      <dt>Routing</dt><dd><code>agent=="concierge"</code> → the NL router; a concrete <code>agent</code> → runs that worker. Delivers when <code>deliver=true</code> and the <code>thread_id</code> names a direct channel.</dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In — a Gmail push firing</div><pre>{ "agent":"mailbot", "deliver":true,
+  "scope":"acme/default/alice",
+  "text":"summarize each new email",
+  "source":{"type":"integration","name":"gmail",
+    "thread_id":"…::gw:slack:C123"},
+  "event":{"kind":"new_email","payload":{
+    "subject":"Q3 board deck",
+    "from":"cfo@acme.com","body":"…"}} }</pre></div>
+      <div><div class="lbl">Out</div><pre>{ "ok":true, "agent":"mailbot",
+  "answer":"Q3 board deck from the CFO — …",
+  "trace_id":"tr_ab12",
+  "meta":{ "agent":"mailbot","backend":"cuga",
+    "mcp":["cuga-finance"],"tools":["get_price"],
+    "ms":4200 } }</pre></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--mut)">Errors: <code>401</code> bad token · <code>400</code> invalid envelope · <code>404</code> unknown agent · <code>500</code> run failed. Special: a channel <code>"/link &lt;code&gt;"</code> message returns <code>{ok,linked}</code> (account binding).</p>
+  </div>
+
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /api/concierge <span class="n">?dry_run=1</span></h3>
+    <div class="desc">Natural-language entry — the web-chat door. Reuse-or-create a worker and arm a trigger, or answer now.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd>The web chat UI (and any programmatic NL client).</dd>
+      <dt>When</dt><dd>A user types NL or a <code>/automate</code> command in web chat. (Channel messages reach the concierge through <code>/invoke</code> instead.)</dd>
+      <dt>Auth</dt><dd><span class="tag t-hdr">Principal (headers)</span> — no gateway token.</dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In</div><pre>{ "text":"every weekday 8am post the
+           market brief to this channel",
+  "thread_id":"web:local" }
+
+// dry-run (no side effects):
+//   POST /api/concierge?dry_run=1</pre></div>
+      <div><div class="lbl">Out — live vs dry-run</div><pre>// live:
+{ "ok":true,
+  "reply":"ARMED cron for market_briefer → web…",
+  "scope":"acme/default/alice","trace_id":"tr_x" }
+// dry_run:
+{ "ok":true,"dry_run":true,
+  "decision":{"mode":"CRON","cadence":{…}}, … }</pre></div>
+    </div>
+  </div>
+
+  <h2 id="triggers">2 · Trigger adapters <span class="n">what fires /invoke, and who calls them</span></h2>
+
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /api/events/slack/events</h3>
+    <div class="desc">Slack Events API receiver (direct backend). Verifies the signature, acks in &lt;3s, answers in the background.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd><b>Slack</b> (Events API), on your app's Request URL.</dd>
+      <dt>When</dt><dd>Every message in a subscribed channel; plus a one-time <code>url_verification</code> handshake.</dd>
+      <dt>Auth</dt><dd><span class="tag t-sig">Slack signature</span></dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In — Slack posts</div><pre>{ "type":"event_callback",
+  "event":{ "type":"message",
+    "text":"@cuga price of bitcoin?",
+    "channel":"C123","user":"U_ALICE",
+    "ts":"1699.5" } }</pre></div>
+      <div><div class="lbl">Out</div><pre>{ "ok":true }
+// (answer is posted back to the
+//  thread out-of-band via chat.postMessage)
+// url_verification → echoes challenge</pre></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--mut)"><b>Discord</b> has no endpoint — it's a Gateway <b>WebSocket background task</b> (<code>_discord_answer</code>) that connects on boot and loops MESSAGE_CREATE → <code>/invoke</code> → reply. Same shape, no public URL.</p>
+  </div>
+
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /api/events/box/poll</h3>
+    <div class="desc">Direct Box watcher (opt-in, <code>EVENTS_BOX_BACKEND=direct</code>). Polls a folder, fires the agent on each new file.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd>An <b>AP schedule flow</b> (schedule → this endpoint), or you, manually / from a test.</dd>
+      <dt>When</dt><dd>Each scheduled tick. Server tracks the per-folder watermark so only files added since the last poll fire.</dd>
+      <dt>Auth</dt><dd><span class="tag t-gw">Gateway token</span></dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In</div><pre>{ "folder_id":"0", "agent":"resume_judge",
+  "deliver_to":"slack", "deliver_target":"C123",
+  "scope":"acme/default/alice",
+  "since":"2026-07-08T06:00:00Z"  // optional; else server-tracked
+}</pre></div>
+      <div><div class="lbl">Out</div><pre>{ "ok":true, "folder":"0",
+  "processed":[{"id":"f1","name":"resume.pdf"}],
+  "newest":"2026-07-08T09:12:00Z",
+  "trace_id":"tr_bp" }</pre></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--mut)">Each new file is dispatched to <code>/invoke</code> with <code>event.kind=new_file</code>, payload <code>{file_id,name}</code> (filename only — the content gap).</p>
+  </div>
+
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /api/events/hook/{name}</h3>
+    <div class="desc">Generic inbound webhook (direct, no AP). Any external system POSTs a payload; an agent triages it.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd><b>Any external system</b> — CI, monitoring, a form, a payment provider.</dd>
+      <dt>When</dt><dd>Whenever that system fires. <code>{name}</code> is your label for the source.</dd>
+      <dt>Auth</dt><dd><span class="tag t-sig">?key</span> (only if <code>EVENTS_WEBHOOK_KEY</code> is set)</dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In — query + any JSON body</div><pre>POST /api/events/hook/ci-failed
+  ?agent=incident_triage
+  &deliver_to=slack&target=C_ONCALL&key=…
+{ "repo":"acme/api","status":"failed",
+  "run":"#4821" }</pre></div>
+      <div><div class="lbl">Out</div><pre>{ "ok":true, "webhook":"ci-failed",
+  "agent":"incident_triage",
+  "answer":"CI failed on acme/api run #4821 — …",
+  "delivered":true, "trace_id":"tr_hk" }</pre></div>
+    </div>
+  </div>
+
+  <h2 id="lifecycle">3 · Flow lifecycle <span class="n">manage armed automations from CUGA — never open the AP console</span></h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>In → Out</th><th>Called by / when</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/subscriptions</td>
+        <td>— → <code>{scope, subscriptions:[{id,mode,target_agent,source_connector,deliver_to,flow_name,ap_flow_id,status,…}]}</code></td>
+        <td>Studio / user — list my armed flows (scope-isolated).</td></tr>
+      <tr><td class="p"><span class="verb v-post">POST</span> …/subscriptions/{id}/pause</td>
+        <td>— → <code>{ok,id,status:"paused"}</code> (also disables the AP flow)</td>
+        <td>User — pause a flow.</td></tr>
+      <tr><td class="p"><span class="verb v-post">POST</span> …/{id}/resume</td>
+        <td>— → <code>{ok,id,status:"active"}</code></td>
+        <td>User — resume.</td></tr>
+      <tr><td class="p"><span class="verb v-del">DEL</span> …/{id}</td>
+        <td>— → <code>{ok,id,deleted:true}</code> (also deletes the AP flow)</td>
+        <td>User — remove.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> …/{id}/flow</td>
+        <td>— → <code>{ok, subscription:{…}, ap_flow:{trigger,steps…}}</code></td>
+        <td>Studio — render the live flow read-only.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/runs</td>
+        <td>— → <code>{scope, runs:[{id,status,agent,mode,integration,channel,utterance,started_at,finished_at}]}</code></td>
+        <td>Studio — the execution log (AP runs joined to subscriptions).</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/runs/{id}</td>
+        <td>— → <code>{ok, run:{…}, answer, trigger_payload, error}</code></td>
+        <td>Studio — one run's detail + the agent's output.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/flows/console</td>
+        <td>— → HTML page</td>
+        <td>A self-contained flows console (no build step).</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="agents">4 · Agent management <span class="n">builders define the worker fleet the concierge routes among</span></h2>
+  <div class="ep">
+    <h3><span class="verb v-post">POST</span> /api/events/agents &nbsp;·&nbsp; <span class="verb v-put">PUT</span> /api/events/agents/{name}</h3>
+    <div class="desc">Create/upsert (POST) or update (PUT) a worker agent. Idempotent by name; agents are tenant-shared.</div>
+    <dl class="meta">
+      <dt>Called by</dt><dd><span class="tag t-adm">Builder / admin</span> — from the Studio agent editor.</dd>
+      <dt>When</dt><dd>Design-time: defining a new automation's brain (prompt + tools + connectors + channels).</dd>
+    </dl>
+    <div class="io">
+      <div><div class="lbl">In</div><pre>{ "name":"morning_assistant",
+  "prompt":"Prepare a morning briefing…",
+  "backend":"cuga",
+  "mcp_servers":["cuga-finance"],
+  "channels":["slack"],
+  "integrations":[{"app":"gmail","ownership":"per-user"}],
+  "access":[] }</pre></div>
+      <div><div class="lbl">Out</div><pre>{ "ok":true, "name":"morning_assistant",
+  "scope":"acme/default" }
+
+// validation errors → 400
+// not builder/admin → 403</pre></div>
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>Endpoint</th><th>In → Out</th><th>Called by</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/agents</td><td>— → <code>{scope, agents:[{name,prompt,backend,mcp_servers,channels,integrations,examples,can_use}]}</code></td><td>Studio — the fleet + "try this" utterances.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/mcp-servers</td><td>— → <code>{servers:[{name,hint}]}</code></td><td>Studio — tools a builder can attach.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="connect">5 · Connections &amp; OAuth <span class="n">CUGA hosts the login; AP holds the token</span></h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>In → Out</th><th>Called by / when</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/connect/{app}</td>
+        <td><code>?scope&amp;agent&amp;ownership</code> → <b>302</b> to the provider's consent (OAuth), or <code>{ok,kind:"token",message}</code> (PAT apps)</td>
+        <td>The user — via a link the concierge relays ("connect your gmail: …").</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> …/connect/{app}/callback</td>
+        <td><code>?code&amp;state</code> → HTML "✅ connected" (or 302 back). Hands AP the code; AP does the token exchange.</td>
+        <td>The <b>OAuth provider</b> redirects here after consent.</td></tr>
+      <tr><td class="p"><span class="verb v-post">POST</span> …/connect/{app}/token</td>
+        <td><code>{token,ownership?}</code> → <code>{ok,app,connection}</code>. <b>Token-auth apps only</b> (GitHub/Telegram/Discord); OAuth apps get a 400.</td>
+        <td>The user — pastes a PAT/bot token in the Studio.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/connections</td>
+        <td>— → <code>{scope, connections:[{id,externalId}]}</code></td>
+        <td>Studio — which integrations I've connected.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="reads">6 · Studio read views <span class="n">the dumb UI reads these; all real state</span></h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Returns</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/status</td><td><code>{enabled, scope, concierge_backend, worker_backend, ap_configured, features:{now,cron,poll,push,channels_inbound}}</code> — what the layer can do right now.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/channels</td><td><code>{channels:[{name,status,…}]}</code> — web/slack/discord/telegram availability.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/integrations</td><td><code>{integrations:[{name,status,backend,connected,note}]}</code> — Box/Gmail/GitHub connection state (+ AP-vs-direct backend).</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/examples</td><td><code>{examples:[…]}</code> — the catalog of demo utterances.</td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/setup-guides</td><td><code>{public_url, guides:[{app,creds:[{key,present,scope}],steps,connect,conn_status,connection_scope}]}</code> — per-connector "how to connect" + live status.</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="identity">7 · Identity &amp; admin <span class="n">who you are; who runs the org</span></h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>In → Out</th><th>Gate</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="verb v-get">GET</span> /api/events/me</td>
+        <td>— → <code>{scope,user_id,email,roles,linked_channels,connections}</code></td><td><span class="tag t-hdr">principal</span></td></tr>
+      <tr><td class="p"><span class="verb v-post">POST</span> /api/events/link/{channel}</td>
+        <td>— → <code>{ok,channel,token,how}</code>. User sends the token to the bot → binds their channel id to this account.</td><td><span class="tag t-hdr">principal</span></td></tr>
+      <tr><td class="p"><span class="verb v-post">POST</span> /api/events/admin/channels/{channel}/arm</td>
+        <td><code>{…trigger inputs}</code> → <code>{ok,channel,ap_flow_id}</code> (AP channels) or <code>{ok,backend:"direct",events_url/note}</code> (Slack/Discord).</td><td><span class="tag t-adm">admin</span></td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span>/<span class="verb v-post">POST</span> /api/events/admin/users</td>
+        <td>list / add <code>{user_id,email,roles,password?}</code> → <code>{ok,user}</code></td><td><span class="tag t-adm">admin</span></td></tr>
+      <tr><td class="p"><span class="verb v-get">GET</span>/<span class="verb v-post">POST</span> /api/events/admin/oauth-apps</td>
+        <td>list configured providers / set <code>{app,client_id,client_secret,scopes}</code> → <code>{ok,configured}</code> (no secrets returned)</td><td><span class="tag t-adm">admin</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>The two phases, in endpoints</h2>
+  <p>To tie it together — a standing automation touches these APIs in order:</p>
+  <pre>ARM (once):  user → POST /api/concierge  (or a channel msg → /invoke → concierge)
+                  → concierge builds the AP flow  → confirms "armed"
+             (first-time per-user integration → GET /connect/{app} → …/callback)
+
+FIRE (every event):  AP trigger / adapter → POST /invoke → run agent → deliver
+MANAGE:  GET /subscriptions · /runs · POST …/pause|resume · DEL …/{id}</pre>
+
+  <div class="foot">Generated from <code>app.py</code> (register_events_routes). Payloads are representative of the real
+    request/response shapes. Companion: <a href="summary.html">summary.html</a> ·
+    <a href="spec_status.html">spec_status.html</a> · <a href="roadmap_next.html">roadmap_next.html</a>.</div>
+</div>
+</body>
+</html>

@@ -41,7 +41,7 @@ GUIDES: dict[str, dict] = {
         ],
     },
     "discord": {
-        "label": "Discord", "kind": "channel", "wiring": "AP (polling, ~5 min)",
+        "label": "Discord", "kind": "channel", "wiring": "direct Gateway (instant)",
         "ownership": ["tenant"], "ownership_default": "tenant",
         "creds": [{"key": "DISCORD_BOT_TOKEN", "label": "Bot Token", "required": True,
                    "where": "Discord Developer Portal → your app → Bot → Token"}],
@@ -49,8 +49,9 @@ GUIDES: dict[str, dict] = {
             "Create an app + bot at discord.com/developers → copy the Bot Token → DISCORD_BOT_TOKEN.",
             "Bot → Privileged Gateway Intents → enable MESSAGE CONTENT INTENT (required).",
             "Invite the bot to your server with Read/Send Messages permissions.",
-            "Connect: POST /api/events/connect/discord/token. Arm with the channel id to watch.",
-            "Post a message — replies arrive on the next poll (~up to 5 min).",
+            "Restart the server — the bot connects on boot. No Connect call, no arm, no public URL.",
+            "Post a message in a channel the bot can see — it replies instantly, in-thread.",
+            "The old AP polling path (~5 min) is still available behind EVENTS_DISCORD_BACKEND=ap.",
         ],
     },
     "github": {

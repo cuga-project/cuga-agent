@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Event-Driven CUGA — Enterprise Flows &amp; Build Spec</title>
+<style>
+  :root{
+    --blue:#0f62fe; --ink:#161616; --ink2:#333; --mut:#6f6f6f; --line:#e3e3e3; --bg:#fff; --code:#f2f4f8; --ap:#8a3ffc;
+    --push:#8a3ffc; --cron:#0f62fe; --poll:#009d9a; --hook:#ee538b; --now:#24a148;
+    --near:#3a9e63; --mid:#c8971f; --far:#c07a5f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#fafafa;line-height:1.55;font-size:15px}
+  .doc{max-width:1080px;margin:0 auto;background:var(--bg);border-left:1px solid var(--line);border-right:1px solid var(--line);
+       padding:44px 48px 80px;min-height:100vh}
+  .eyebrow{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--blue);font-weight:700}
+  h1{font-size:28px;font-weight:600;letter-spacing:-.4px;margin:8px 0 4px}
+  .byline{color:var(--mut);font-size:13.5px;margin-bottom:6px}
+  .byline a{color:var(--blue);text-decoration:none}
+  h2{font-size:16px;font-weight:700;margin:32px 0 4px;padding-bottom:6px;border-bottom:2px solid #eee;text-transform:uppercase;letter-spacing:.4px;color:var(--ink)}
+  p{margin:9px 0;color:var(--ink2)}
+  code{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12px}
+  .legend{background:#f7f9ff;border:1px solid #e0e8ff;border-radius:8px;padding:12px 16px;margin:14px 0;font-size:12.5px;display:flex;flex-wrap:wrap;gap:7px 16px;align-items:center}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .fcard{border:1px solid var(--line);border-radius:9px;padding:14px 16px;display:flex;flex-direction:column}
+  .fcard .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px}
+  .fcard .ttl a{font-weight:600;font-size:14.5px;color:var(--ink);text-decoration:none;border-bottom:1px dotted #bbb}
+  .fcard .ttl a:hover{color:var(--blue);border-bottom-color:var(--blue)}
+  .trg{font-size:10px;font-weight:700;color:#fff;padding:2px 7px;border-radius:5px;letter-spacing:.3px}
+  .g-push{background:var(--push)} .g-cron{background:var(--cron)} .g-poll{background:var(--poll)}
+  .g-hook{background:var(--hook)} .g-now{background:var(--now)}
+  .rdot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-left:auto}
+  .r-near{background:var(--near)} .r-mid{background:var(--mid)} .r-far{background:var(--far)}
+  .fcard .val{font-size:12.5px;color:var(--mut);margin:0 0 8px}
+  pre.flow{background:#fbfbfd;border:1px solid var(--line);border-radius:7px;padding:11px 13px;overflow-x:auto;
+           font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5;color:#1a2230;margin:0 0 9px;flex:1}
+  .needs{display:flex;flex-wrap:wrap;gap:5px;margin-top:auto}
+  .nd{font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .n1{background:#edf5ff;color:var(--blue)} .n2{background:#f6f2ff;color:var(--ap)}
+  .n3{background:#f7f0dc;color:#856313} .n6{background:#e6f4ec;color:#1f7a45}
+  .n7{background:#f4f4f4;color:#525252} .n8{background:#f5ece8;color:#8f5241} .n0{background:#e5f6ff;color:#00539a}
+  /* build detail cards */
+  .bcard{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:9px;padding:14px 18px;margin:14px 0;scroll-margin-top:16px}
+  .bcard.r-near{border-left-color:var(--near)} .bcard.r-mid{border-left-color:var(--mid)} .bcard.r-far{border-left-color:var(--far)}
+  .bcard h3{margin:0 0 2px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .bcard .ready{font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-left:auto}
+  .ready.r-near{background:#e6f4ec;color:#1f7a45} .ready.r-mid{background:#f7f0dc;color:#856313} .ready.r-far{background:#f5ece8;color:#8f5241}
+  .brow{display:grid;grid-template-columns:130px 1fr;gap:3px 12px;font-size:13px;margin:8px 0}
+  .brow dt{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;padding-top:2px}
+  .brow dd{margin:0;color:var(--ink2)}
+  .blocker{background:#fff8f6;border:1px solid #f6d9cf;border-radius:6px;padding:8px 12px;font-size:12.5px;color:#8a2c0d;margin-top:6px}
+  .blocker b{color:#6f1d05}
+  .back{font-size:11.5px;color:var(--blue);text-decoration:none}
+  .foot{color:var(--mut);font-size:12px;margin-top:34px;border-top:1px solid var(--line);padding-top:12px}
+  .kicker{background:#f7f9ff;border:1px solid #e0e8ff;border-left:3px solid var(--blue);border-radius:6px;padding:11px 15px;margin:16px 0;font-size:13px;color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="doc">
+  <div class="eyebrow">Event-Driven CUGA · Enterprise</div>
+  <h1>Enterprise flows — and what it takes to build each</h1>
+  <div class="byline">Multi-step / branched automations across GitHub · Box · Gmail · LinkedIn · Slack ·
+    Calendar · Jira/Confluence/Sheets · <b>click any card title</b> for its AP pieces, agent + tools,
+    concierge features, and blocker · maps to <a href="roadmap_next.html">roadmap</a></div>
+
+  <div class="legend">
+    <span><b>Trigger</b></span><span class="trg g-push">PUSH</span><span class="trg g-cron">CRON</span>
+    <span class="trg g-poll">POLL</span><span class="trg g-hook">WEBHOOK</span>
+    <span style="margin-left:10px"><b>Needs</b></span>
+    <span class="nd n0">✓ works</span><span class="nd n1">#1 state</span><span class="nd n2">#2 branch/multi-step</span>
+    <span class="nd n3">#3 content</span><span class="nd n6">#6 approval</span><span class="nd n7">#7 read</span><span class="nd n8">#8 connector</span>
+    <span style="margin-left:10px"><b>Readiness</b></span>
+    <span><i class="rdot r-near"></i> near</span><span><i class="rdot r-mid"></i> mid</span><span><i class="rdot r-far"></i> far</span>
+  </div>
+
+  <div id="cards"></div>
+
+  <h2>Build details — per flow</h2>
+  <p>The building blocks each flow needs. <b>AP pieces</b> = connectors AP must have installed + connected.
+    <b>Agent + tools</b> = the worker CUGA runs and its MCP tools / reads. <b>Concierge / new features</b> =
+    what the NL→flow layer must learn to emit. <b>Blocker</b> = the one thing gating it today.</p>
+  <div id="details"></div>
+
+  <div class="kicker" id="rollup"></div>
+
+  <div class="foot">Grounded in the 2026-07-08 architecture: AP = trigger · connections · sends/actions;
+    CUGA = read · reason · compose. Feature tags map to <a href="roadmap_next.html">roadmap_next.html</a> ·
+    see also <a href="works_today.html">works-today</a> · <a href="api_spec.html">api_spec</a>.</div>
+</div>
+
+<script>
+// ---- the model: cards + build spec, one source of truth --------------------
+const FLOWS = [
+// ===== Engineering · GitHub =====
+{id:"pr-review", group:"Engineering · GitHub", trig:"PUSH", ready:"mid",
+ title:"PR review & risk flag", value:"Every PR gets an instant reviewer — summary, risks, a team heads-up.",
+ flow:`GitHub·new_pr ─► [read diff #3] ─► /invoke(reviewer)
+      ├─ comment summary + risks ON the PR
+      └─ Slack·send  #eng-reviews`,
+ needs:["3","2"],
+ ap:"github (new_pr trigger + create_comment/label action), slack (send)",
+ tools:"pr_reviewer · cuga-code + text; reads the PR diff",
+ feat:["MULTI-STEP (#2) — two actions after /invoke (PR comment + Slack)","CONTENT (#3) — fetch the diff (push payload is title/url only)"],
+ blocker:"The push path appends no action steps today — only cron delivery does. Needs the multi-action builder (#2) + diff read."},
+
+{id:"oncall", group:"Engineering · GitHub", trig:"PUSH", ready:"far",
+ title:"On-call escalation", value:"High-sev issues never sit unseen — auto-escalate if no one responds.",
+ flow:`GitHub·new_issue(high) ─► /invoke ─► Slack·#oncall
+      └─ [wait 15m · acked? #1] ─► if NO
+              └─ ROUTER #2 ─► Telegram·escalate`,
+ needs:["1","2"],
+ ap:"github (new_issue), slack (send), telegram (send)",
+ tools:"triage agent · cuga-code",
+ feat:["STATE + TIMER (#1) — remember whether a human acked, wake after 15m","BRANCH (#2) — escalate only if not acked"],
+ blocker:"No durable timer or ack-state primitive. This needs the #1 state store extended with a delayed conditional wake — the hardest item here."},
+
+{id:"ci-ticket", group:"Engineering · GitHub", trig:"WEBHOOK", ready:"mid",
+ title:"CI failure → ticket", value:"A red build files itself and pings the right people.",
+ flow:`CI webhook(failed) ─► /invoke(triage)
+      ├─ Jira·create_issue  (bug) #8
+      └─ Slack·send  #oncall`,
+ needs:["2","8"],
+ ap:"webhook (✓ direct /hook), jira (create_issue) NEW, slack (send)",
+ tools:"incident_triage · cuga-code (the default hook agent)",
+ feat:["NEW PIECE (#8) — Jira connector + connection","MULTI-STEP (#2) — a Jira action + Slack send from the hook path"],
+ blocker:"Inbound webhook works today, but it only delivers to one channel. Needs the Jira piece + a multi-action step."},
+
+{id:"stale-pr", group:"Engineering · GitHub", trig:"CRON", ready:"mid",
+ title:"Stale-PR nudge + digest", value:"Nothing rots in review — daily nudges to authors, one digest to the lead.",
+ flow:`cron·9am ─► [list PRs > 3 days #7]
+      ├─ per PR: Slack·DM the author
+      └─ digest ─► Slack·#eng-leads`,
+ needs:["7","2"],
+ ap:"github (list PRs — read), slack (DM + channel send)",
+ tools:"stale-PR agent · cuga-code with a GitHub read tool (list + age)",
+ feat:["READ (#7) — query open PRs and their age","FAN-OUT (#2) — an action per PR (DM each author) + a digest"],
+ blocker:"Needs a GitHub read (#7) and per-item fan-out (#2) — the live engine can't loop an action over a list yet."},
+
+{id:"release-notes", group:"Engineering · GitHub", trig:"PUSH", ready:"mid",
+ title:"Release notes", value:"Cut a tag, get publishable notes — no one hand-compiles changelogs.",
+ flow:`GitHub·new_release ─► [read merged PRs #7] ─► /invoke(draft)
+      ├─ Confluence·create_page #8
+      └─ Slack·#releases`,
+ needs:["7","2","8"],
+ ap:"github (release trigger + read merged PRs), confluence (create_page) NEW, slack",
+ tools:"release-notes agent · cuga-code",
+ feat:["READ (#7) — the PRs merged since the last tag","MULTI-STEP (#2)","NEW PIECE (#8) — Confluence"],
+ blocker:"Confluence piece + reading merged PRs (#7) + multi-action (#2)."},
+
+{id:"team-pulse", group:"Engineering · GitHub", trig:"CRON", ready:"mid",
+ title:"Weekly team pulse", value:"Leadership sees velocity without asking — commits, merges, closed tickets.",
+ flow:`cron·Mon 8am ─► [read GitHub + Jira #7] ─► /invoke(summarize)
+      ├─ Slack·#leadership
+      └─ Gmail·send  the exec list`,
+ needs:["7","2"],
+ ap:"github (read), jira (read) NEW, slack, gmail (send)",
+ tools:"velocity agent · cuga-code + a Jira read tool",
+ feat:["READ (#7) — multi-source (GitHub + Jira)","MULTI-STEP (#2) — two sinks","NEW PIECE (#8) — Jira"],
+ blocker:"#7 multi-source read + the Jira piece + a two-sink flow."},
+
+// ===== Project reporting · GitHub → Slack =====
+{id:"proj-status", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"mid",
+ title:"Weekly project status report", value:"Stakeholders get a real status update — from code + issues, not a meeting.",
+ flow:`cron·Fri 4pm ─► [read this week's #7]
+        merged PRs · commits · issues opened/closed
+      ─► /invoke(status narrative)
+      ├─ Slack·#project-status
+      └─ Gmail·send  stakeholders`,
+ needs:["7","2"],
+ ap:"github (read), slack, gmail (send) — all exist",
+ tools:"status agent · cuga-code with a windowed GitHub read tool",
+ feat:["READ (#7) — GitHub over a time window (this week)","MULTI-STEP (#2) — Slack + email"],
+ blocker:"Every piece exists; the gap is the #7 read (a time-windowed GitHub query) + a two-sink flow (#2). No new connector."},
+
+{id:"sprint", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"far",
+ title:"Sprint / milestone tracker", value:"Know if the sprint is on track before standup — % done, what's at risk.",
+ flow:`cron·daily ─► [read active milestone #7]
+        issues closed vs open · due date
+      ─► [% complete + trend vs last run #1]
+      └─ /invoke(flag at-risk) ─► Slack·#sprint`,
+ needs:["7","2","1"],
+ ap:"github (read milestone), slack",
+ tools:"sprint agent · cuga-code",
+ feat:["READ (#7) — milestone issues + due date","STATE (#1) — store last run's % to show a trend"],
+ blocker:"The trend ('moved from 40% → 55%') needs the #1 state store to remember the prior reading."},
+
+{id:"release-ready", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"mid",
+ title:"Release-readiness check", value:"A daily go / no-go on the release — open PRs, blockers, CI, in one call.",
+ flow:`cron·9am ─► [read open PRs + 'blocker' issues + CI #7]
+      ─► /invoke(ready to ship?)
+      └─ Slack·#releases  "🟢 ready / 🔴 N blockers"`,
+ needs:["7","2"],
+ ap:"github (read PRs/issues/checks), slack",
+ tools:"readiness agent · cuga-code",
+ feat:["READ (#7) — a few GitHub queries (PRs, labelled issues, CI status)"],
+ blocker:"Just the #7 multi-query GitHub read — delivery is a single Slack post."},
+
+{id:"portfolio", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"mid",
+ title:"Cross-repo portfolio rollup", value:"One digest across every repo the org owns — per-project health at a glance.",
+ flow:`cron·Mon 8am ─► [read activity across N repos #7]
+      ─► /invoke(per-project rollup)
+      ├─ Slack·#leadership
+      └─ Confluence·update page #8`,
+ needs:["7","2","8"],
+ ap:"github (read, multi-repo), slack, confluence NEW",
+ tools:"rollup agent · cuga-code",
+ feat:["READ (#7) — activity across many repos","MULTI-STEP (#2)","NEW PIECE (#8) — Confluence"],
+ blocker:"#7 read across repos + the Confluence piece + a two-sink flow."},
+
+{id:"backlog", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"mid",
+ title:"Bug-backlog report", value:"The backlog gets triaged weekly — stale bugs surfaced by owner.",
+ flow:`cron·Mon ─► [issues untouched > 7d, by owner #7]
+      ─► /invoke(prioritize)
+      ├─ per-owner: Slack·DM the nudge
+      └─ digest ─► Slack·#bug-triage`,
+ needs:["7","2"],
+ ap:"github (read issues + activity), slack",
+ tools:"backlog agent · cuga-code",
+ feat:["READ (#7) — issues + last-activity date","FAN-OUT (#2) — a DM per owner + a digest"],
+ blocker:"#7 read + per-owner fan-out (#2)."},
+
+{id:"incident", group:"Project reporting · GitHub → Slack", trig:"CRON", ready:"mid",
+ title:"Incident / postmortem digest", value:"Every closed high-sev issue rolls up into a weekly reliability review.",
+ flow:`cron·Fri ─► [read closed 'incident' issues #7]
+      ─► /invoke(themes + action items)
+      └─ Slack·#reliability + Gmail·SRE lead`,
+ needs:["7","2"],
+ ap:"github (read, label filter), slack, gmail",
+ tools:"reliability agent · cuga-code",
+ feat:["READ (#7) — closed incident-labelled issues","MULTI-STEP (#2) — Slack + email"],
+ blocker:"#7 read + two-sink delivery (#2)."},
+
+// ===== Documents & Legal · Box · Gmail =====
+{id:"resume", group:"Documents & Legal · Box · Gmail", trig:"PUSH", ready:"mid",
+ title:"Resume router", value:"Applicants triaged the moment they land — strong fits reach hiring instantly.",
+ flow:`Box·new_file ─► [download+extract #3] ─► /invoke(judge vs JD)
+      ├─ MATCH → Slack·#hiring
+      └─ else  → Gmail·recruiter`,
+ needs:["3","2"],
+ ap:"box (new_file), slack (send), gmail (send)",
+ tools:"resume_judge · cuga-text (JD in its prompt)",
+ feat:["CONTENT (#3) — download + extract the resume text","BRANCH (#2) — MATCH→Slack / else→Gmail"],
+ blocker:"Both on the near roadmap: file content (#3) + the router with two sinks (#2)."},
+
+{id:"contract", group:"Documents & Legal · Box · Gmail", trig:"PUSH", ready:"far",
+ title:"Contract intake + approval", value:"Big contracts route to legal, then finance — with a real sign-off gate.",
+ flow:`Box·new_file ─► [extract terms #3] ─► if value > $50k
+      └─ Slack·legal "approve?" ─► [PAUSE #6]
+              └─ on YES → Slack·finance + Box·move`,
+ needs:["3","2","6","8"],
+ ap:"box (new_file + move), slack",
+ tools:"contract agent · cuga-text",
+ feat:["CONTENT (#3) — extract terms/value","BRANCH (#2) — value threshold","APPROVAL (#6) — durable pause until legal replies"],
+ blocker:"The durable approval gate (#6) — a flow that pauses and resumes on a chat reply — isn't proven to exist."},
+
+{id:"invoice", group:"Documents & Legal · Box · Gmail", trig:"PUSH", ready:"far",
+ title:"Invoice reconciliation", value:"Invoices match themselves to POs; only mismatches reach a human.",
+ flow:`Gmail·invoice ─► [extract amount #3] ─► [match PO #7]
+      ├─ match    → Sheets·append ledger #8
+      └─ mismatch → Slack·#finance flag`,
+ needs:["3","7","2","8"],
+ ap:"gmail (new_email), sheets (append) NEW, slack",
+ tools:"invoice agent · cuga-text + a PO-lookup read tool",
+ feat:["CONTENT (#3) — read the invoice (often a PDF attachment)","READ (#7) — look up the matching PO","BRANCH (#2)","NEW PIECE (#8) — Sheets"],
+ blocker:"Four things at once: attachment content (#3), the PO lookup (#7), the Sheets piece (#8), and the branch (#2)."},
+
+{id:"doc-summary", group:"Documents & Legal · Box · Gmail", trig:"PUSH", ready:"near",
+ title:"New-doc summary", value:"Every doc dropped in a shared folder gets a plain-English abstract in Slack.",
+ flow:`Box·new_file ─► [download+extract #3] ─► /invoke(summarize)
+      └─ Slack·send  #team-docs`,
+ needs:["3","0"],
+ ap:"box (new_file), slack (send) — both exist",
+ tools:"summarizer · cuga-text",
+ feat:["CONTENT (#3) — download + extract the file body"],
+ blocker:"Only #3. Once file content is wired this is the plain push→direct-Slack shape that already works — the closest of the document flows."},
+
+// ===== Marketing & Social · LinkedIn =====
+{id:"li-box", group:"Marketing & Social · LinkedIn", trig:"PUSH", ready:"mid",
+ title:"LinkedIn post from Box drop", value:"Drop a file, it goes live — the simplest publish pipeline.",
+ flow:`Box·new_file ─► [read content #3] ─► /invoke(format)
+      ├─ LinkedIn·create_post
+      └─ Box·move → "Posted" + Slack ✓`,
+ needs:["3","2"],
+ ap:"box (new_file + move), linkedin (create_post) NEW, slack",
+ tools:"post-format agent · cuga-text",
+ feat:["CONTENT (#3) — read the post text from the file","MULTI-STEP (#2) — the first AP integration ACTION as a sink (LinkedIn create_post), not a channel send","NEW PIECE (#8) — LinkedIn"],
+ blocker:"LinkedIn piece + an AP action step on the push path (generalizes the channel send-step) + file content."},
+
+{id:"content-cal", group:"Marketing & Social · LinkedIn", trig:"CRON", ready:"far",
+ title:"Content calendar", value:"Queue posts in a sheet; they publish on schedule and mark themselves done.",
+ flow:`cron·9am ─► [Sheets·read scheduled #7] ─► if due today
+      ├─ LinkedIn·create_post
+      └─ Sheets·update row = "Published"`,
+ needs:["7","2","8"],
+ ap:"sheets (read + update) NEW, linkedin (create_post) NEW, schedule",
+ tools:"post-format agent · cuga-text",
+ feat:["READ (#7) — Sheets read","BRANCH (#2) — due-today filter","WRITE-BACK — Sheets update (a new action type)","NEW PIECE (#8) — Sheets + LinkedIn"],
+ blocker:"Most-loaded marketing flow: two new pieces, a read, a branch, and a write-back (update-a-record)."},
+
+// ===== Team notifications · Slack =====
+{id:"standup", group:"Team notifications · Slack", trig:"CRON", ready:"mid",
+ title:"My standup digest", value:"Your standup writes itself from yesterday's real activity.",
+ flow:`cron·9am ─► [read GitHub + Jira + Calendar #7] ─► /invoke(compose)
+      └─ Slack·post  #standup`,
+ needs:["7","2"],
+ ap:"github, jira NEW, calendar NEW, slack",
+ tools:"standup agent · cuga-code + Jira & Calendar read tools",
+ feat:["READ (#7) — three sources","NEW PIECE (#8) — Jira + Calendar"],
+ blocker:"#7 multi-source read + two new pieces (Jira, Calendar). Delivery is a single Slack post."},
+
+{id:"sla", group:"Team notifications · Slack", trig:"POLL", ready:"far",
+ title:"Support SLA watcher", value:"No customer question waits — unanswered threads ping the on-call.",
+ flow:`poll·10m ─► [read #support history #7, Slack-as-source]
+      └─ [thread > 30m unanswered? #1] ─► ping on-call`,
+ needs:["1","7"],
+ ap:"slack (read history — Slack-as-source), slack (send)",
+ tools:"SLA agent · a Slack read tool (conversations.history)",
+ feat:["READ (#7) — Slack AS A SOURCE (history), not just a channel","POLL-STATE (#1) — track which threads were already alerted"],
+ blocker:"Two open items: Slack-as-a-source read (#7) and the poll-state store (#1) to avoid re-pinging."},
+
+{id:"deal-won", group:"Team notifications · Slack", trig:"WEBHOOK", ready:"mid",
+ title:"Deal-won broadcast", value:"Wins get celebrated and logged the instant they close.",
+ flow:`CRM webhook(closed-won) ─► /invoke(enrich)
+      ├─ Slack·#sales-wins
+      └─ Sheets·append win-log #8`,
+ needs:["2","8"],
+ ap:"webhook (✓ direct /hook), sheets (append) NEW, slack",
+ tools:"enrich agent · cuga-text (+ optional web enrichment)",
+ feat:["MULTI-STEP (#2) — Slack + Sheets from a hook","NEW PIECE (#8) — Sheets"],
+ blocker:"Inbound webhook works; needs the Sheets piece + a multi-action step."},
+
+{id:"mentions", group:"Team notifications · Slack", trig:"PUSH", ready:"far",
+ title:"Mentions → triage", value:"Customer complaints in a channel become tracked tickets automatically.",
+ flow:`Slack·message(#feedback) ─► /invoke(classify)
+      ├─ complaint → Linear·create #8
+      └─ else → ignore`,
+ needs:["2","8"],
+ ap:"slack (watch a channel), linear (create_issue) NEW",
+ tools:"classify agent · cuga-text",
+ feat:["WATCH→WORKER — route a specific channel's messages to a WORKER (today Slack inbound always goes to the concierge)","BRANCH (#2)","NEW PIECE (#8) — Linear"],
+ blocker:"Three things: a per-channel watch→worker rule, the branch (#2), and the Linear piece."},
+
+// ===== Exec & Ops =====
+{id:"meeting-prep", group:"Exec & Ops", trig:"PUSH", ready:"far",
+ title:"Meeting prep", value:"Walk into every meeting briefed — attendees, context, related docs.",
+ flow:`Calendar·event(30m before) ─► [read attendee + Box docs #7]
+      └─ /invoke(brief) ─► Slack·DM you`,
+ needs:["7","2","8"],
+ ap:"calendar (before-event trigger + read) NEW, box (read), slack",
+ tools:"prep agent · cuga-text + Calendar & Box read tools",
+ feat:["READ (#7) — attendee info + related Box docs","CONTENT (#3) — the docs' bodies","NEW PIECE (#8) — Calendar (trigger + read)"],
+ blocker:"The Calendar piece (a before-event trigger is non-trivial) + #7 read + Box content."},
+
+{id:"doc-gap", group:"Exec & Ops", trig:"CRON", ready:"mid",
+ title:"Doc-gap analysis", value:"Spot what to document — recurring support questions your docs don't cover.",
+ flow:`cron·Mon ─► [read support emails + docs #7] ─► /invoke(correlate)
+      └─ Slack·#docs "topics to write"`,
+ needs:["7","2"],
+ ap:"gmail (read), a docs source (read), slack",
+ tools:"correlate agent · cuga-text with two read tools",
+ feat:["READ (#7) — two sources (support inbox + docs)","reasoning: correlate the gap (agent, not a lookup)"],
+ blocker:"#7 read of two sources; the synthesis itself is the agent's job."},
+];
+
+const NEEDLBL={"0":"✓ works","1":"#1 state","2":"#2 branch/multi-step","3":"#3 content","6":"#6 approval","7":"#7 read","8":"#8 connector"};
+const TRIGCLS={PUSH:"g-push",CRON:"g-cron",POLL:"g-poll",WEBHOOK:"g-hook",NOW:"g-now"};
+
+// ---- render cards, grouped -------------------------------------------------
+const cardsHost=document.getElementById("cards");
+let curGroup=null;
+FLOWS.forEach(f=>{
+  if(f.group!==curGroup){
+    curGroup=f.group;
+    const h=document.createElement("h2");h.textContent=f.group;cardsHost.appendChild(h);
+    const g=document.createElement("div");g.className="grid";g.id="grid-"+FLOWS.indexOf(f);cardsHost.appendChild(g);
+  }
+  const grid=cardsHost.querySelector(".grid:last-of-type");
+  const c=document.createElement("div");c.className="fcard";
+  c.innerHTML=
+    `<div class="top"><span class="trg ${TRIGCLS[f.trig]}">${f.trig}</span>`+
+    `<span class="ttl"><a href="#b-${f.id}">${f.title}</a></span>`+
+    `<span class="rdot r-${f.ready}" title="readiness: ${f.ready}"></span></div>`+
+    `<div class="val">${f.value}</div>`+
+    `<pre class="flow">${f.flow}</pre>`+
+    `<div class="needs">${f.needs.map(n=>`<span class="nd n${n}">${NEEDLBL[n]}</span>`).join("")}</div>`;
+  grid.appendChild(c);
+});
+
+// ---- render build details --------------------------------------------------
+const det=document.getElementById("details");
+FLOWS.forEach(f=>{
+  const b=document.createElement("div");b.className="bcard r-"+f.ready;b.id="b-"+f.id;
+  b.innerHTML=
+    `<h3><span class="trg ${TRIGCLS[f.trig]}">${f.trig}</span> ${f.title}`+
+    `<span class="ready r-${f.ready}">${f.ready.toUpperCase()}</span></h3>`+
+    `<dl class="brow">`+
+      `<dt>AP pieces</dt><dd>${f.ap}</dd>`+
+      `<dt>Agent + tools</dt><dd>${f.tools}</dd>`+
+      `<dt>New features</dt><dd>${f.feat.map(x=>"• "+x).join("<br>")}</dd>`+
+    `</dl>`+
+    `<div class="blocker"><b>Blocker:</b> ${f.blocker}</div>`+
+    `<div style="margin-top:6px"><a class="back" href="#cards">↑ back to flows</a></div>`;
+  det.appendChild(b);
+});
+
+// ---- rollup ----------------------------------------------------------------
+const near=FLOWS.filter(f=>f.ready==="near").length, mid=FLOWS.filter(f=>f.ready==="mid").length, far=FLOWS.filter(f=>f.ready==="far").length;
+const cnt=n=>FLOWS.filter(f=>f.needs.includes(n)).length;
+document.getElementById("rollup").innerHTML=
+  `<b>${FLOWS.length} flows</b> · <span style="color:var(--near)">${near} near</span> · `+
+  `<span style="color:var(--mid)">${mid} mid</span> · <span style="color:var(--far)">${far} far</span>. `+
+  `Recurrence of each building block: <b>#7 read</b> in ${cnt("7")} · <b>#2 branch/multi-step</b> in ${cnt("2")} · `+
+  `<b>#3 content</b> in ${cnt("3")} · <b>#1 state</b> in ${cnt("1")} · <b>#8 connector</b> in ${cnt("8")} · `+
+  `<b>#6 approval</b> in ${cnt("6")}. <b>Ship #2 + #7 + #3 and most of the board turns green;</b> `+
+  `#1 unlocks the watchers/trends, #6 the approvals, and each #8 is a per-connector install.`;
+</script>
+</body>
+</html>

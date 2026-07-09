@@ -53,4 +53,11 @@ send yourself a matching email → a summary is delivered.
   `GET /api/events/connect/gmail`.
 - **`redirect_uri_mismatch`** — the redirect URI in Google Cloud must exactly match
   `<EVENTS_PUBLIC_URL>/api/events/connect/gmail/callback` (https, no trailing slash).
-- **Token expired** — it shouldn't: AP refreshes it. That's the whole reason Gmail stays on AP.
+- **Token expired** — AP refreshes it, so this shouldn't happen *while the OAuth app is published*.
+  But in Google's **Testing** publishing mode the refresh token is invalidated after **7 days**, and
+  no amount of refreshing survives that. Symptom: Gmail worked all week, then every run says
+  `CONNECT NEEDED`. Fix: re-Connect in Studio → Integrations, or move the OAuth app to **In
+  production** in Google Cloud → OAuth consent screen to stop the 7-day clock.
+- **`CONNECT NEEDED` but you're sure you connected** — the connect gate asks *Activepieces* whether
+  the connection exists, and it reports "not connected" when AP is simply **unreachable**. Check AP
+  is up (`curl -s localhost:8081/api/v1/flags`) before re-authorizing anything.

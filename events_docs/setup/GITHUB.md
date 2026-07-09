@@ -44,7 +44,23 @@ With the PAT connected, the `PUSH · github` leg **arms a real AP flow** (an `ap
 subscription). Then open a PR on the watched repo → a summary is delivered.
 
 ## Troubleshooting
-- **`CONNECT NEEDED — connect your github`** — no PAT connected yet; run step 2.
+- **`CONNECT NEEDED — connect your github`** — this message has **three different causes**, and only
+  the first is the one it names. Check them in order:
+  1. **No PAT connected yet** — run step 2.
+  2. **Activepieces is down or unreachable.** The gate calls AP to ask whether the connection exists,
+     and on *any* exception it assumes "not connected". A stopped AP container therefore produces an
+     identical "connect your credentials" message. Check first:
+     `podman ps` and `curl -s localhost:8081/api/v1/flags`.
+  3. **`GITHUB_TOKEN` is in `.env` but auto-connect never landed it in AP.** On a fresh AP database
+     the `@activepieces/piece-github` piece isn't installed, so the connection can't be created. Run
+     `make ap-pieces`, then restart. Confirm with
+     `curl -s localhost:8100/api/events/integrations` — github showing `auto_connect_pending` means
+     exactly this.
+- **Slack asks you to connect even though the Studio says connected** — GitHub credentials are keyed
+  per `(tenant, user)` as `ea::<tenant>::<user>::github`. A Slack sender whose Slack id has never been
+  account-linked falls back to the operator principal (`local`), so it looks up a *different* key than
+  the one the Studio's web session created. Link the account first (`/link <token>`), or set the PAT
+  in `.env` as `GITHUB_TOKEN` so auto-connect creates it under the operator principal.
 - **Webhook never fires** — AP needs a public URL (`EVENTS_PUBLIC_URL`) reachable by GitHub; confirm
   the repo's *Settings → Webhooks* shows AP's endpoint with recent green deliveries.
 - **Why not direct?** GitHub *could* go direct (its webhooks are simple), but it still needs a public

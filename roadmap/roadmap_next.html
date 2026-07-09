@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Event-Driven CUGA — Roadmap to MVP</title>
+<style>
+  :root{
+    --blue:#0f62fe; --ink:#161616; --ink2:#333; --mut:#6f6f6f; --line:#e3e3e3; --bg:#fff; --code:#f2f4f8;
+    --done:#24a148; --now:#0f62fe; --next:#ff832b; --later:#8d8d8d; --ap:#8a3ffc; --risk:#da1e28;
+    --doneb:#defbe6; --nowb:#edf5ff; --nextb:#fff2e8; --laterb:#f4f4f4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#fafafa;line-height:1.55;font-size:15px}
+  .doc{max-width:940px;margin:0 auto;background:var(--bg);border-left:1px solid var(--line);border-right:1px solid var(--line);
+       padding:44px 52px 80px;min-height:100vh}
+  .eyebrow{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--blue);font-weight:700}
+  h1{font-size:28px;font-weight:600;letter-spacing:-.4px;margin:8px 0 4px}
+  .byline{color:var(--mut);font-size:13.5px;margin-bottom:4px}
+  .byline a{color:var(--blue);text-decoration:none}
+  h2{font-size:17px;font-weight:600;margin:30px 0 8px;padding-bottom:6px;border-bottom:2px solid #eee}
+  p{margin:9px 0;color:var(--ink2)}
+  code{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+  .chip{font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:var(--doneb);color:var(--done)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;border-bottom:2px solid #eee}
+  td.p{font-weight:700;white-space:nowrap}
+  .tag{display:inline-block;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap}
+  .t-now{background:var(--nowb);color:var(--now)} .t-next{background:var(--nextb);color:#a3500f}
+  .t-later{background:var(--laterb);color:#525252} .t-done{background:var(--doneb);color:var(--done)}
+  td.eff{white-space:nowrap;color:var(--mut);font-size:12.5px}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0;color:var(--ink2)}
+  .card{border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:10px 0}
+  .card.dec{border-left:4px solid var(--ap)} .card.prob{border-left:4px solid var(--next)}
+  .card.q{border-left:4px solid var(--blue)}
+  .k{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);margin-bottom:6px}
+  .lead{font-size:16px;color:var(--ink)}
+  b{color:var(--ink)}
+  .foot{color:var(--mut);font-size:12px;margin-top:34px;border-top:1px solid var(--line);padding-top:12px}
+  .ptr{font-size:12px;color:var(--mut)}
+  .ptr a{color:var(--blue);text-decoration:none}
+  pre.flow{background:#fbfbfd;border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;
+           font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12px;line-height:1.55;color:#1a2230;margin:6px 0}
+  .fcard{border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}
+  .fcard .ttl{font-weight:600;font-size:14.5px;color:var(--ink)}
+  .fcard .sub{font-size:12.5px;color:var(--mut);margin:2px 0 2px}
+  .needs{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;margin-left:5px;white-space:nowrap}
+  .n1{background:#edf5ff;color:var(--blue)} .n2{background:#f6f2ff;color:var(--ap)}
+  .n3{background:#fff2e8;color:#a3500f} .n6{background:#defbe6;color:#0e6027}
+  .n7{background:#f4f4f4;color:#525252} .n8{background:#fff0f1;color:#a2191f}
+</style>
+</head>
+<body>
+<div class="doc">
+  <div class="eyebrow">Event-Driven CUGA</div>
+  <h1>Roadmap to the MVP — what's left, in order</h1>
+  <div class="byline">Grounded in the 2026-07-08 session ·
+    <a href="DECISIONS_2026-07-08.md">decisions</a> ·
+    <a href="spec_status.html">spec status (61 items)</a> ·
+    <a href="LEARNINGS.md">earlier learnings</a></div>
+
+  <p class="lead"><b>Where we are:</b> <code>now</code> / <code>push</code> / <code>cron</code> and the
+    integration-native path are done. What's left before the MVP is the <em>harder</em> class we mapped
+    today — <b>durable state</b>, <b>branched flows</b>, and <b>file content</b>. Those three unlock most
+    of the still-partial spec rows.</p>
+  <div class="chips">
+    <span class="chip">4 channels</span><span class="chip">Box · Gmail · GitHub</span>
+    <span class="chip">per-user creds</span><span class="chip">now · push · cron</span>
+    <span class="chip">channel publish</span><span class="chip">61 offline tests</span>
+  </div>
+
+  <h2>The plan — prioritized</h2>
+  <p>The MVP (<code>events.md</code>: 6 Slack utterances) is gated mostly by <b>one thing</b>: 3 of its 6
+    rows are <code>pull</code> and every one needs durable state. So state comes first.</p>
+  <table>
+    <thead><tr><th>#</th><th>Workstream</th><th>Why / unlocks</th><th>Effort</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td class="p">1</td><td><b>Poll + durable state</b><br><span class="ptr">poll_state.py · /api/events/poll · create_value_poll_flow</span></td>
+        <td>Unblocks <b>3 of 6 MVP rows</b> (A2, B1, B3) + every "only when it changes / drops / fails" utterance. <code>/invoke</code> untouched; mirrors <code>box_direct</code>.</td>
+        <td class="eff">~1 day</td><td><span class="tag t-now">Now</span></td></tr>
+      <tr><td class="p">2</td><td><b>AP branched flow</b> (AP-as-sink)<br><span class="ptr">port flows.py router_step/send_step → ap_engine</span></td>
+        <td>Match→Slack / else→Gmail, support→Linear/#sales, DM→triage. Decision locked: <b>AP owns all sinks</b>. Live engine has no ROUTER op yet.</td>
+        <td class="eff">~1–2 days</td><td><span class="tag t-now">Now</span></td></tr>
+      <tr><td class="p">3</td><td><b>File-content download</b><br><span class="ptr">download_text pre-step (Box first)</span></td>
+        <td>Resume / contract / invoice / deck pipelines. The one exception to "AP owns everything" — need-basis fetch + PDF→text.</td>
+        <td class="eff">~0.5 day</td><td><span class="tag t-now">Now</span></td></tr>
+      <tr><td class="p">4</td><td><b>NL→intent robustness</b><br><span class="ptr">cadence default · classifier fix · Tier-1 payload maps</span></td>
+        <td>Poll cadence unspecified errors; classifier misreads "if X goes up"; silent field-map failures.</td>
+        <td class="eff">~1–2 days</td><td><span class="tag t-next">Next</span></td></tr>
+      <tr><td class="p">5</td><td><b>Telegram-push delivery fix</b><br><span class="ptr">append AP send-step in create_push_flow for AP channels</span></td>
+        <td>A push armed from Telegram has no wired delivery back (falls to capture). Small, isolated.</td>
+        <td class="eff">~0.5 day</td><td><span class="tag t-next">Next</span></td></tr>
+      <tr><td class="p">6</td><td><b>Approval / resume gate</b> + one-shot / self-cancel<br><span class="ptr">reuses the state store from #1</span></td>
+        <td>"reply yes to approve"; "in 2h check…"; "until CI green, then stop". Inherits durable state.</td>
+        <td class="eff">~1–2 days</td><td><span class="tag t-next">Next</span></td></tr>
+      <tr><td class="p">7</td><td><b>Runtime reads — agent MCP tools</b> (the read side)<br><span class="ptr">Calendar · Todoist · Slack-history · Box-content · per-user OAuth</span></td>
+        <td><b>A third integration role, beyond AP trigger+sink.</b> Unlocks multi-source synthesis — the morning-briefing class, "summarize yesterday's Slack". <b>No new flow primitive</b> (cron/now shape + agent tools); cost is per-connector OAuth.</td>
+        <td class="eff">per connector</td><td><span class="tag t-next">Next</span></td></tr>
+      <tr><td class="p">8</td><td><b>Expansion — decide per need</b><br><span class="ptr">WhatsApp · audio · swarm · new event connectors</span></td>
+        <td>New surfaces, each real credential/piece work. Add per demo, not upfront. See open questions.</td>
+        <td class="eff">varies</td><td><span class="tag t-later">Later</span></td></tr>
+      <tr><td class="p">🔒</td><td><b>/invoke identity hardening</b></td>
+        <td>Not MVP-blocking; <b>gate before any shared/external deploy</b> (caller-asserted scope → IdP / signed claims).</td>
+        <td class="eff">—</td><td><span class="tag t-later">Gate</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>What these unlock — the complex flows</h2>
+  <p>Today the live engine builds only <b>linear</b> flows (<code>trigger → /invoke → deliver</code>). The
+    automations that read like real Activepieces flows — <b>multi-step, branched, stateful</b> — are what the
+    workstreams above buy. Each flow below is tagged with the piece(s) it needs. Legend:
+    <span class="needs n1">#1 state</span> <span class="needs n2">#2 branch/multi-step</span>
+    <span class="needs n3">#3 content</span> <span class="needs n6">#6 approval</span>
+    <span class="needs n7">#7 read</span> <span class="needs n8">#8 connector</span></p>
+
+  <div class="fcard">
+    <div class="ttl">Resume router <span class="needs n3">#3</span><span class="needs n2">#2</span></div>
+    <div class="sub">"On a new resume in Box, match it to the JD — fit → Slack #work, else email it on."</div>
+    <pre class="flow">Box·new_file ─► [download+extract #3] ─► /invoke(judge) ─► ROUTER #2
+                                                    ├─ MATCH → Slack·send  #work
+                                                    └─ else  → Gmail·send  x@acme.com</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">Support triage <span class="needs n2">#2</span><span class="needs n8">#8</span></div>
+    <div class="sub">"When a support email arrives, classify it — bug → Linear, sales → #sales."</div>
+    <pre class="flow">Gmail·new_email ─► /invoke(classify) ─► ROUTER #2
+                                             ├─ bug   → Linear·create_issue #8
+                                             └─ sales → Slack·send  #sales</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">Stock / metric alert <span class="needs n1">#1</span></div>
+    <div class="sub">"Drop me a note if IBM is up 10%." — the state case we designed.</div>
+    <pre class="flow">schedule·15m ─► POST /api/events/poll #1 ─► [baseline compare + latch]
+                                              └─ on crossing → Slack·send</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">PR digest — accumulate, release on a timer <span class="needs n1">#1</span></div>
+    <div class="sub">"Instead of pinging per PR, collect them and send one summary at 6pm." — two triggers, shared state.</div>
+    <pre class="flow">GitHub·new_pr ──► [append to per-sub state #1] ──┐  (shared store)
+schedule·18:00 ─► [read + clear state #1] ─► /invoke(digest) ─► deliver</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">On-call escalation — event + timed conditional <span class="needs n1">#1</span><span class="needs n2">#2</span></div>
+    <div class="sub">"High-sev issue → #oncall; if nobody acks in 15 min, escalate to me on Telegram."</div>
+    <pre class="flow">GitHub·new_issue(high) ─► /invoke ─► Slack·#oncall
+        └─ [wait 15m · did a human ack? #1] ─► if NO → ROUTER #2 → Telegram·escalate</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">Approval gate — durable pause / resume <span class="needs n6">#6</span><span class="needs n2">#2</span></div>
+    <div class="sub">"Score the resume; if it passes, draft an invite and ask a recruiter to approve before it sends."</div>
+    <pre class="flow">Box·new_file ─► /invoke(judge+draft) ─► Slack·"reply YES to approve"
+        └─ [PAUSE, persist pending action #6] ─► on chat "yes" → Gmail·send invite</pre>
+  </div>
+
+  <div class="fcard">
+    <div class="ttl">Morning briefing — multi-source read + synthesize <span class="needs n7">#7</span></div>
+    <div class="sub">"Every weekday 7:30am: weather + Calendar + Todoist → one briefing." No branch, no state.</div>
+    <pre class="flow">schedule·weekday ─► /invoke(assistant)
+        agent reads: weather · Calendar · Todoist  (MCP tools #7, or AP read-steps #2)
+        └─ synthesize ─► deliver to your channel</pre>
+  </div>
+
+  <p style="font-size:12.5px;color:var(--mut)"><b>Read this as the payoff column of the plan:</b> #1 unlocks the
+    alert / digest / escalation family, #2 unlocks every branch, #3 the document pipelines, #6 the approvals,
+    #7 the multi-source assistants. Ship #1 + #2 + #3 and most of this gallery becomes armable.</p>
+
+  <h2>Decisions locked today</h2>
+  <div class="card dec"><div class="k">Architecture</div>
+    <ul>
+      <li><b>AP owns trigger + all sinks.</b> Channels/integrations in <em>and</em> out are AP's; the agent
+        holds <b>no integration creds/tools</b> — it returns a labeled verdict + message, AP routes &amp; sends.
+        (Rejected Route B / agent-self-delivers as the no-build fallback only.)</li>
+      <li><b>Exception: file-content download</b> — AP moves references, not LLM text; read a file body on a
+        <em>need basis</em> (agent read-tool <em>or</em> an inserted download step).</li>
+      <li><b>Poll = a new state primitive</b>, not a prompt hack. Build mirrors <code>box_direct</code>
+        (AP schedule = clock; a CUGA endpoint holds per-sub state, fires on transition). <code>/invoke</code>
+        stays untouched; only the poll kind re-points to <code>/poll</code>.</li>
+    </ul>
+    <div class="ptr">Full write-up → <a href="DECISIONS_2026-07-08.md">DECISIONS_2026-07-08.md</a></div>
+  </div>
+
+  <h2>A third role for integrations — the read side</h2>
+  <p>We've been building AP as <b>trigger</b> and <b>sink</b>. The morning-briefing class ("weather +
+    Calendar + Todoist → a briefing") exposes a <b>third role</b> an integration plays: a
+    <b>runtime read/query</b> the agent makes <em>while reasoning</em>. That isn't AP — AP hands events,
+    not query results. It's the <b>agent's MCP tools</b>, per-user. Same bucket as Slack-as-a-source and
+    Box file-content.</p>
+  <table>
+    <thead><tr><th>Integration role</th><th>Owner</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td class="p"><span class="tag" style="background:var(--unsureb);color:var(--ap)">Trigger</span></td><td>Activepieces</td><td>new email / PR / file fires the flow</td></tr>
+      <tr><td class="p"><span class="tag" style="background:var(--unsureb);color:var(--ap)">Sink</span></td><td>Activepieces</td><td>post to Slack / send a Gmail</td></tr>
+      <tr><td class="p"><span class="tag" style="background:var(--nextb);color:#a3500f">Read / query</span></td><td><b>CUGA agent + MCP</b></td><td>read Calendar, Todoist, Slack history, a file's body — at runtime</td></tr>
+    </tbody>
+  </table>
+  <p>Here CUGA does the real work: <b>picks the user, runs the agent, orchestrates the tool calls, reasons
+    the sources into one answer</b>, delivers. AP couldn't do that with any number of pieces. This tier is
+    <b>additive connector work, not a new flow primitive</b> — it's the lightweight-app thesis reaching real
+    multi-source assistants. (Workstream #7.)</p>
+
+  <h2>Problems we found (in code)</h2>
+  <div class="card prob"><div class="k">Confirmed gaps</div>
+    <ul>
+      <li><b>Poll state is emulated</b> — no store; wrong semantics (last-tick vs baseline); no no-op
+        suppression in <code>/invoke</code> → "nothing changed" spam. Classifier even misreads the phrasing.</li>
+      <li><b>Branch not in the live engine</b> — <code>router_step</code>/<code>send_step</code> exist in the
+        spec layer (<code>flows.py</code>) but <code>ap_engine</code> only builds linear trigger→http→publish.</li>
+      <li><b>Box passes the filename, not the content</b> — the agent judges <code>resume.pdf</code>, not its words.</li>
+      <li><b>Telegram-push delivery unwired</b> — <code>create_push_flow</code> appends no send-step; direct-only
+        channels (Slack) work via <code>thread_id</code>, AP channels don't.</li>
+      <li><b>Flow-builder drift</b> — two builders (<code>flows.py</code> vs <code>ap_engine.py</code>) render
+        shapes independently; the #2 router build should consolidate them.</li>
+    </ul>
+  </div>
+
+  <h2>Open questions — need a call before / during the work</h2>
+  <div class="card q"><div class="k">Decide</div>
+    <ul>
+      <li><b>Poll semantics (blocks #1):</b> baseline = price at arm-time? · after it fires once → stop, or keep watching?</li>
+      <li><b>Slack as a data <em>source</em> (not just a channel).</b> "summarize all Slack activity yesterday"
+        needs reading <code>conversations.history</code> → agent. This is the <b>read tier (#7)</b>, not a new
+        mode. Off the MVP critical path, but the <em>first</em> read-connector to prove the tier alongside
+        Calendar/Todoist. <b>Tackle after the MVP core, or as the read-tier pilot?</b></li>
+      <li><b>Which connectors next?</b> Linear, Stripe, Sheets, PagerDuty, Calendar, LinkedIn each appear in the
+        spec but are real setup work — add <b>per demo</b>, not speculatively.</li>
+      <li><b>Approval-gate primitive</b> — smallest durable pause/resume (pending-action keyed by thread_id)?
+        Shares the store with #1.</li>
+    </ul>
+  </div>
+
+  <div class="foot">Crisp by design. Companion detail in
+    <a href="DECISIONS_2026-07-08.md">DECISIONS_2026-07-08.md</a> and
+    <a href="spec_status.html">spec_status.html</a>. Older context in <a href="LEARNINGS.md">LEARNINGS.md</a>
+    and <a href="summary.html">summary.html</a>.</div>
+</div>
+</body>
+</html>
