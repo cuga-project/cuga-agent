@@ -40,25 +40,32 @@ def parse_markdown_with_frontmatter(file_path: str) -> tuple[Dict[str, Any], str
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Check for frontmatter delimiters
-    if not content.startswith('---'):
+    lines = content.splitlines(keepends=True)
+
+    # Check for frontmatter delimiters on their own lines. ToolGuard policy code
+    # can contain strings/comments with "---", which must not terminate YAML.
+    if not lines or lines[0].strip() != '---':
         raise ValueError(f"File {file_path} missing frontmatter (should start with ---)")
 
-    # Split frontmatter and content
-    parts = content.split('---', 2)
-    if len(parts) < 3:
+    closing_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == '---':
+            closing_index = index
+            break
+
+    if closing_index is None:
         raise ValueError(f"File {file_path} has invalid frontmatter format")
+
+    frontmatter_text = ''.join(lines[1:closing_index])
+    markdown_content = ''.join(lines[closing_index + 1 :]).strip()
 
     # Parse YAML frontmatter
     try:
-        frontmatter = yaml.safe_load(parts[1])
+        frontmatter = yaml.safe_load(frontmatter_text)
         if not isinstance(frontmatter, dict):
             raise ValueError("Frontmatter must be a YAML dictionary")
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in frontmatter: {e}")
-
-    # Get markdown content (everything after second ---)
-    markdown_content = parts[2].strip()
 
     return frontmatter, markdown_content
 

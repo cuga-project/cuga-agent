@@ -168,7 +168,7 @@ class PolicyFilesystemSync:
         # Build markdown file
         import yaml
 
-        frontmatter_yaml = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
+        frontmatter_yaml = yaml.safe_dump(frontmatter, default_flow_style=False, allow_unicode=True)
 
         markdown = f"---\n{frontmatter_yaml}---\n\n{content}"
         return markdown
