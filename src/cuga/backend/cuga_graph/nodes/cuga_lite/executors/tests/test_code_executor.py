@@ -94,6 +94,26 @@ async def test_syntax_error_blocked_before_exec(mock_state, monkeypatch):
     assert "Traceback" not in result
 
 
+@pytest.mark.asyncio
+async def test_syntax_error_blocked_before_exec_in_skills_relaxed_mode(mock_state):
+    """Skills/relaxed execution loosens import checks but must still reject unparseable code
+    before exec() — regression test for the syntax guard being skipped alongside the
+    security checks it was bundled with."""
+    mock_state.reflection_skills_enabled = True
+    code = 'phase2_md = f"""\n# report\n'
+
+    result, new_vars = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={},
+        state=mock_state,
+        mode='local',
+    )
+
+    assert "Python syntax error" in result
+    assert new_vars == {}
+    assert "Traceback" not in result
+
+
 def test_format_syntax_error_hints_for_unterminated_fstring():
     code = 'x = f"""\nhello\n'
     try:

@@ -244,6 +244,19 @@ class LLMManager:
         if hasattr(model, 'model_kwargs') and model.model_kwargs is not None:
             model.model_kwargs = model_kwargs
 
+        # ChatWatsonx sends nested params to the API, not the top-level pydantic fields.
+        try:
+            from langchain_ibm import ChatWatsonx
+
+            if isinstance(model, ChatWatsonx):
+                params = dict(model.params or {})
+                if not is_reasoning:
+                    params["temperature"] = temperature
+                params["max_completion_tokens"] = completion_tokens
+                model.params = params
+        except ImportError:
+            pass
+
         logger.debug(
             f"Updated model parameters: temperature={temperature}, max_tokens={max_tokens}, max_completion_tokens={completion_tokens}"
         )

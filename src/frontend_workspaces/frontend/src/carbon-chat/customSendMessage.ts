@@ -144,6 +144,7 @@ export async function customSendMessage(
   instance.updateIsMessageLoadingCounter("increase");
   let shellMessageCreated = false;
   let loadingIndicatorCleared = false;
+  const collectedSteps: ReasoningStep[] = [];
   const clearLoadingIndicator = () => {
     if (!loadingIndicatorCleared) {
       loadingIndicatorCleared = true;
@@ -167,6 +168,43 @@ export async function customSendMessage(
       });
     }
   };
+  const finalizeStream = (text: string, steps: ReasoningStep[] = collectedSteps) => {
+    if (!shellMessageCreated) return;
+    const completeItem = {
+      response_type: MessageResponseTypes.TEXT,
+      text,
+      streaming_metadata: { id: "text-stream" },
+    };
+    instance.messaging.addMessageChunk({
+      complete_item: completeItem,
+      streaming_metadata: { response_id: responseID },
+    });
+    instance.messaging.addMessageChunk({
+      final_response: {
+        id: responseID,
+        output: { generic: [completeItem] },
+        message_options: {
+          ...(steps.length > 0 ? { reasoning: { steps } } : {}),
+          response_user_profile: RESPONSE_USER_PROFILE,
+        },
+      },
+    });
+  };
+  const handleCancellation = () => {
+    clearLoadingIndicator();
+    if (shellMessageCreated) {
+      finalizeStream("Request was cancelled.");
+    } else {
+      instance.messaging.addMessage({
+        output: {
+          generic: [{
+            response_type: MessageResponseTypes.TEXT,
+            text: "Request was cancelled.",
+          }],
+        },
+      });
+    }
+  };
 
   const baseUrl = api.getApiBaseUrl();
 
@@ -176,7 +214,6 @@ export async function customSendMessage(
     console.log(`User message: ${userMessage}`);
     console.log(`Use Draft: ${useDraft}`);
 
-    const collectedSteps: ReasoningStep[] = [];
     let accumulatedText = "";
     let currentStepTitle = "";
     let currentStepContent = "";
@@ -603,7 +640,9 @@ export async function customSendMessage(
     }
 
     // If stream ended without Complete event, finalize
-    if (!requestOptions.signal?.aborted) {
+    if (requestOptions.signal?.aborted) {
+      handleCancellation();
+    } else {
       const completeItem = {
         response_type: MessageResponseTypes.TEXT,
         text: accumulatedText || "Response completed.",
@@ -628,20 +667,13 @@ export async function customSendMessage(
     }
 
   } catch (error: any) {
-    ensureShellMessage();
-    clearLoadingIndicator();
     console.error("Error calling CUGA backend:", error);
     
     if (error.name === "AbortError") {
-      instance.messaging.addMessage({
-        output: {
-          generic: [{
-            response_type: MessageResponseTypes.TEXT,
-            text: "Request was cancelled.",
-          }],
-        },
-      });
+      handleCancellation();
     } else {
+      ensureShellMessage();
+      clearLoadingIndicator();
       const url = api.getApiBaseUrl();
       const msg = error.message || "Failed to connect to CUGA backend";
       instance.messaging.addMessage({
@@ -654,6 +686,7 @@ export async function customSendMessage(
       });
     }
   } finally {
+    clearLoadingIndicator();
     // Clean up abort listener
     if (requestOptions.signal) {
       requestOptions.signal.removeEventListener("abort", abortHandler);
