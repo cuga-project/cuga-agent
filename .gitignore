@@ -103,3 +103,8 @@ demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+
+# Local development files
+.benchmark/
+scripts/benchmark_startup.py
+src/cuga/cli/fast_entry.py
