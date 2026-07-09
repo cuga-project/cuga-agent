@@ -294,6 +294,43 @@ def test_markdown_filesystem_roundtrip_handles_dashes_inside_tool_guard_code() -
     assert loaded.guards_enabled is True
 
 
+def test_frontmatter_parser_ignores_indented_dashes_inside_yaml_block() -> None:
+    markdown = (
+        "---\n"
+        "id: policy_with_block\n"
+        "name: Policy With Block\n"
+        "description: Block scalar includes indented dashes\n"
+        "type: tool_guide\n"
+        "priority: 50\n"
+        "enabled: true\n"
+        "target_tools:\n"
+        "  - crm_create_account_accounts_post\n"
+        "tool_guards:\n"
+        "  crm_create_account_accounts_post:\n"
+        "    violating_examples: []\n"
+        "    compliance_examples: []\n"
+        "    policy_code: |\n"
+        "      # --- section divider inside YAML block ---\n"
+        "      def guard_tool_call(context):\n"
+        "          return True\n"
+        "---\n"
+        "## guide content\n"
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as tmp:
+        tmp.write(markdown)
+        tmp_path = tmp.name
+
+    try:
+        frontmatter, md_content = parse_markdown_with_frontmatter(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    guard = frontmatter["tool_guards"][TOOL_NAME]
+    assert "# --- section divider inside YAML block ---" in guard["policy_code"]
+    assert md_content == "## guide content"
+
+
 @pytest.mark.asyncio
 async def test_json_import_skips_invalid_guard_entries_and_preserves_valid_ones() -> None:
     policy_dict = copy.deepcopy(FINANCE_POLICY_DICT)

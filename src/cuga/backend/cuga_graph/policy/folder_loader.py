@@ -44,12 +44,12 @@ def parse_markdown_with_frontmatter(file_path: str) -> tuple[Dict[str, Any], str
 
     # Check for frontmatter delimiters on their own lines. ToolGuard policy code
     # can contain strings/comments with "---", which must not terminate YAML.
-    if not lines or lines[0].strip() != '---':
+    if not lines or lines[0].rstrip('\r\n') != '---':
         raise ValueError(f"File {file_path} missing frontmatter (should start with ---)")
 
     closing_index = None
     for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == '---':
+        if line.rstrip('\r\n') == '---':
             closing_index = index
             break
 
