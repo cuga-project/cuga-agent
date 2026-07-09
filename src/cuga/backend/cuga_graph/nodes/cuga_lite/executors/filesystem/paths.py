@@ -300,9 +300,20 @@ def normalize_shell_command_paths(cmd: str) -> str:
     ``read_file`` / ``list_files`` accept ``/workspace/...``; ``run_command`` cwd is the
     physical workspace (local/native) or ``/workspace`` (OpenSandbox). Normalizing to ``./``
     keeps manifest and skill paths working in all sandbox modes.
+
+    Only backslashes *inside* a recognized workspace-path token are touched (so a
+    stray Windows-style separator in ``/workspace\\foo`` still normalizes) — the rest of
+    the command is left alone, since blanket-replacing every backslash would corrupt
+    shell escapes like ``find ... \\( -iname ... \\)``.
     """
     if not cmd:
         return cmd
-    out = cmd.replace("\\", "/")
+
+    def _fix_token(match: re.Match[str]) -> str:
+        return match.group(0).replace("\\", "/")
+
+    root_re = re.escape(VIRTUAL_WORKSPACE_ROOT)
+    out = re.sub(rf"{root_re}(?:[\\/][^\s'\"()]*)?", _fix_token, cmd)
+    out = re.sub(r"/tmp/cuga_workspace/[^/\\\s]+(?:[\\/][^\s'\"()]*)?", _fix_token, out)
     out = re.sub(r"/tmp/cuga_workspace/[^/]+/", "./", out)
     return out.replace(f"{VIRTUAL_WORKSPACE_ROOT}/", "./")
