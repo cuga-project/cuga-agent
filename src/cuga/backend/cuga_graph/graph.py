@@ -202,11 +202,9 @@ class DynamicAgentGraph:
                 model = create_llm_from_config(self.llm_config)
             except Exception as _llm_err:
                 logger.warning(
-                    "build_graph: failed to create LLM from saved config (provider=%s model=%s): %s — "
-                    "falling back to env/TOML settings",
-                    self.llm_config.get("provider"),
-                    self.llm_config.get("model"),
-                    _llm_err,
+                    f"build_graph: failed to create LLM from saved config "
+                    f"(provider={self.llm_config.get('provider')} model={self.llm_config.get('model')}): "
+                    f"{_llm_err} — falling back to env/TOML settings"
                 )
                 llm_manager = LLMManager()
                 llm_manager._models.clear()
@@ -240,9 +238,8 @@ class DynamicAgentGraph:
                 if getattr(settings.supervisor, "enabled", False):
                     llm_manager = LLMManager()
                 logger.info(
-                    "build_graph: using LLM from config — provider=%s model=%s",
-                    self.llm_config.get("provider"),
-                    self.llm_config.get("model"),
+                    f"build_graph: using LLM from config — "
+                    f"provider={self.llm_config.get('provider')} model={self.llm_config.get('model')}"
                 )
         else:
             llm_manager = LLMManager()

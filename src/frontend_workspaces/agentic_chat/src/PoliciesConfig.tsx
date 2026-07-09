@@ -94,6 +94,7 @@ interface ToolGuidePolicy {
   prepend: boolean;
   priority: number;
   tool_guards?: Record<string, ToolGuardData> | null;
+  guards_enabled?: boolean;
 }
 
 interface ToolApprovalPolicy {
@@ -237,6 +238,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
   const [savedToolGuideSnapshots, setSavedToolGuideSnapshots] = useState<Record<string, string>>({});
   const [generatingToolGuardPolicyId, setGeneratingToolGuardPolicyId] = useState<string | null>(null);
+  const [viewingGuardPolicy, setViewingGuardPolicy] = useState<ToolGuidePolicy | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -827,6 +829,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const ToolGuides = config.policies.filter((p) => p.policy_type === "tool_guide") as ToolGuidePolicy[];
   const toolApprovals = config.policies.filter((p) => p.policy_type === "tool_approval") as ToolApprovalPolicy[];
   const outputFormatters = config.policies.filter((p) => p.policy_type === "output_formatter") as OutputFormatterPolicy[];
+  const liveViewingPolicy = viewingGuardPolicy
+    ? (config.policies.find((p) => p.id === viewingGuardPolicy.id) as ToolGuidePolicy | undefined) ?? viewingGuardPolicy
+    : null;
 
   return (
     <>
@@ -927,6 +932,141 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
             lowContrast
           />
         </div>
+      )}
+
+      {/* Tool Guard Viewer Modal */}
+      {liveViewingPolicy && (
+        <ComposedModal open onClose={() => setViewingGuardPolicy(null)} size="lg">
+          <ModalHeader
+            title={`Tool Guards — ${liveViewingPolicy.name}`}
+            buttonOnClick={() => setViewingGuardPolicy(null)}
+          />
+          <ModalBody hasScrollingContent>
+            <div style={{ paddingBottom: "1rem", borderBottom: "1px solid var(--cds-border-subtle)", marginBottom: "1rem" }}>
+              <Toggle
+                id={`guards-enabled-${liveViewingPolicy.id}`}
+                labelText="Guard enforcement"
+                labelA="Disabled"
+                labelB="Enabled"
+                toggled={liveViewingPolicy.guards_enabled !== false}
+                onToggle={(checked: boolean) => updatePolicy(liveViewingPolicy.id, { guards_enabled: checked })}
+                disabled={!config.enablePolicies}
+              />
+            </div>
+            <Tabs>
+              <TabList aria-label="Tool guards">
+                {liveViewingPolicy.target_tools.map((tool) => (
+                  <Tab key={tool}>{tool}</Tab>
+                ))}
+              </TabList>
+              <TabPanels>
+                {liveViewingPolicy.target_tools.map((tool) => {
+                  const guard = liveViewingPolicy.tool_guards?.[tool] ?? {};
+                  return (
+                    <TabPanel key={tool}>
+                      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Violating Examples
+                          </h5>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                            {(guard.violating_examples ?? []).map((example, i) => (
+                              <li
+                                key={`${i}-${example}`}
+                                style={{
+                                  borderLeft: "3px solid var(--cds-support-error)",
+                                  background: "rgba(250, 77, 86, 0.08)",
+                                  padding: "0.5rem 0.75rem",
+                                  borderRadius: "0 4px 4px 0",
+                                  fontSize: "0.875rem",
+                                  lineHeight: 1.5,
+                                  color: "var(--cds-text-primary)",
+                                }}
+                              >
+                                {example}
+                              </li>
+                            ))}
+                          </ol>
+                        </Stack>
+
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Compliance Examples
+                          </h5>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                            {(guard.compliance_examples ?? []).map((example, i) => (
+                              <li
+                                key={`${i}-${example}`}
+                                style={{
+                                  borderLeft: "3px solid var(--cds-support-success)",
+                                  background: "rgba(36, 161, 72, 0.08)",
+                                  padding: "0.5rem 0.75rem",
+                                  borderRadius: "0 4px 4px 0",
+                                  fontSize: "0.875rem",
+                                  lineHeight: 1.5,
+                                  color: "var(--cds-text-primary)",
+                                }}
+                              >
+                                {example}
+                              </li>
+                            ))}
+                          </ol>
+                        </Stack>
+
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Policy Code
+                          </h5>
+                          <pre
+                            className="policy-code-block"
+                            style={{
+                              borderRadius: "4px",
+                              overflowX: "auto",
+                            }}
+                          >
+                            <code>{guard.policy_code ?? ""}</code>
+                          </pre>
+                        </Stack>
+                      </Stack>
+                    </TabPanel>
+                  );
+                })}
+              </TabPanels>
+            </Tabs>
+          </ModalBody>
+          <ModalFooter>
+            <Button kind="secondary" onClick={() => setViewingGuardPolicy(null)}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ComposedModal>
       )}
     </>
   );
@@ -1467,8 +1607,10 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             hasIconOnly
                             renderIcon={Security}
                             iconDescription={
-                              allTargetToolsHaveGuard(policy)
-                                ? "All target tools already have guards"
+                              allTargetToolsHaveGuard(policy) && policy.guards_enabled === false
+                                ? "Guards generated but are disabled"
+                                : allTargetToolsHaveGuard(policy)
+                                ? "View tool guards"
                                 : !policy.enabled
                                 ? "Policy is disabled"
                                 : !config.enablePolicies
@@ -1480,23 +1622,26 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             tooltipPosition="bottom"
                             onClick={() => {
                               if (allTargetToolsHaveGuard(policy)) {
-                                setToastMessage({
-                                  kind: "success",
-                                  title: "Tool guards already generated",
-                                  subtitle: "All target tools already have guards.",
-                                });
+                                setViewingGuardPolicy(policy);
                               } else {
                                 generateToolGuard(policy.id);
                               }
                             }}
                             disabled={
-                              generatingToolGuardPolicyId !== null ||
-                              !config.enablePolicies ||
-                              !policy.enabled ||
-                              allTargetToolsHaveGuard(policy) ||
-                              !hasConcreteTargetTools(policy)
+                              allTargetToolsHaveGuard(policy)
+                                ? false
+                                : generatingToolGuardPolicyId !== null ||
+                                  !config.enablePolicies ||
+                                  !policy.enabled ||
+                                  !hasConcreteTargetTools(policy)
                             }
-                            className={allTargetToolsHaveGuard(policy) ? "guard-generated" : ""}
+                            className={
+                              allTargetToolsHaveGuard(policy) && policy.guards_enabled === false
+                                ? "guard-disabled"
+                                : allTargetToolsHaveGuard(policy)
+                                ? "guard-generated"
+                                : ""
+                            }
                           />
                         )}
                       <Stack orientation="horizontal" gap={2}>
@@ -1529,7 +1674,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                         {allTargetToolsHaveGuard(policy) && (
                           <span
                             style={{
-                              backgroundColor: "var(--cds-support-success)",
+                              backgroundColor: policy.guards_enabled === false
+                                ? "var(--cds-support-error)"
+                                : "var(--cds-support-success)",
                               color: "var(--cds-text-on-color)",
                               padding: "0.125rem 0.5rem",
                               borderRadius: "0.25rem",
@@ -1537,7 +1684,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               fontWeight: 600,
                             }}
                           >
-                            Guarded
+                            {policy.guards_enabled === false ? "Guards disabled" : "Guarded"}
                           </span>
                         )}
                       </Stack>

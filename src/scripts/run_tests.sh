@@ -95,7 +95,9 @@ run_pytest tests/unit/test_toolguard_provider.py \
     tests/unit/test_async_tool_provider_construction.py \
     tests/unit/test_tool_guard_generation.py \
     tests/unit/test_tool_guard_generation_route.py \
-    tests/unit/test_tool_guard_generation_route_sync.py
+    tests/unit/test_tool_guard_generation_route_sync.py \
+    tests/unit/test_policy_frontend_dict_guards_enabled.py \
+    tests/unit/test_toolguard_reuse_roundtrip.py
 echo "Running A2A tests..."
 run_pytest tests/integration/a2a/ \
     tests/unit/test_a2a_simple_runner_hitl.py

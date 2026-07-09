@@ -29,6 +29,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     classify_nl_auto_continue,
     normalize_assistant_text,
 )
+from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
 
@@ -105,6 +106,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     async def ainvoke_model(self, bound: Any, messages: list, invoke_config: dict) -> Any:
         try:
+            clamp_watsonx_completion_for_messages(bound, messages)
             return await bound.ainvoke(messages, config=invoke_config)
         except Exception as exc:
             code = extract_code_from_tool_use_failed(exc)

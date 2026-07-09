@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
-from ..common.security import SecurityValidator
+from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
 
 
@@ -120,6 +120,9 @@ class LocalExecutor(BaseExecutor):
                 f"Error during execution: Execution timed out after {self._timeout} seconds"
                 + traceback.format_exc()
             )
+
+        if isinstance(error, CodeSyntaxError):
+            return f"Error during execution: {error}"
 
         error_msg = f"Error during execution: {repr(error)}"
         error_msg += f"\n{traceback.format_exc()}"

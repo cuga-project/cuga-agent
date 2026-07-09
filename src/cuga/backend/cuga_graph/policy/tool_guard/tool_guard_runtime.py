@@ -187,6 +187,10 @@ class ToolGuardRuntime:
         if not policy.tool_guards:
             return
 
+        if not getattr(policy, "guards_enabled", True):
+            logger.info(f"Guards for policy '{policy.name}' skipped: guards_enabled=False")
+            return
+
         for tool_name, tool_guard in policy.tool_guards.items():
             if not tool_guard.policy_code:
                 logger.debug(

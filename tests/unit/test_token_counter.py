@@ -3,8 +3,16 @@ Unit tests for TokenCounter utility.
 """
 
 import pytest
+from unittest.mock import Mock
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
-from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
+from cuga.backend.cuga_graph.utils.token_counter import (
+    TokenCounter,
+    clamp_completion_tokens,
+    clamp_watsonx_completion_for_messages,
+    ensure_model_context_profile,
+    lookup_model_context_size,
+    resolve_model_identifier,
+)
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
 
 
@@ -63,6 +71,37 @@ class TestTokenCounter:
 
         counter_claude_sonnet = TokenCounter(model_name="claude-3-sonnet")
         assert counter_claude_sonnet.get_model_context_size() == 200000
+
+        counter_gpt_oss = TokenCounter(model_name="openai/gpt-oss-120b")
+        assert counter_gpt_oss.get_model_context_size() == 131072
+
+    def test_get_model_context_size_prefers_known_size_over_stale_profile(self):
+        """ChatWatsonx-style stale 8K profiles must not override gpt-oss-120b."""
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.profile = {"max_input_tokens": 8192}
+
+        counter = TokenCounter(model=model, model_name="gpt-4")
+        assert counter.get_model_context_size(model) == 131072
+
+    def test_ensure_model_context_profile_overrides_stale_watsonx_profile(self):
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.profile = {"max_input_tokens": 8192, "tool_calling": True}
+
+        size = ensure_model_context_profile(model, "openai/gpt-oss-120b")
+        assert size == 131072
+        assert model.profile == {"max_input_tokens": 131072, "tool_calling": True}
+
+    def test_lookup_model_context_size_with_provider_prefix(self):
+        assert lookup_model_context_size("openai/gpt-oss-120b") == 131072
+
+    def test_resolve_model_identifier_prefers_model_id(self):
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.model_name = "gpt-4"
+
+        assert resolve_model_identifier(model, fallback_name="gpt-4") == "openai/gpt-oss-120b"
 
     def test_get_model_context_size_unknown_model(self):
         """Test context size retrieval for unknown model (should default to 131K based on gpt-oss-120b)."""
@@ -206,6 +245,87 @@ class TestTokenCounterWithMockTracker:
         counter = TokenCounter(model_name="gpt-4", tracker=MockTracker())
         usage = counter.get_cumulative_usage()
         assert usage == 1500
+
+
+def test_clamp_completion_tokens_keeps_requested_when_room():
+    assert clamp_completion_tokens(131072, 70000, 16000) == 16000
+
+
+def test_clamp_completion_tokens_never_returns_negative():
+    assert clamp_completion_tokens(8192, 12764, 16000) == 1
+
+
+def test_clamp_watsonx_completion_for_messages_updates_params():
+    pytest.importorskip("langchain_ibm")
+    from langchain_ibm import ChatWatsonx
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 16000, "temperature": 0.1},
+        max_completion_tokens=16000,
+        model_id="openai/gpt-oss-120b",
+        profile={"max_input_tokens": 131072},
+    )
+    huge_messages = [{"role": "user", "content": "word " * 200_000}]
+
+    clamp_watsonx_completion_for_messages(model, huge_messages)
+
+    assert model.params["max_completion_tokens"] >= 1
+    assert model.params["max_completion_tokens"] < 16000
+
+    small_messages = [{"role": "user", "content": "hello"}]
+    clamp_watsonx_completion_for_messages(model, small_messages)
+
+    assert model.params["max_completion_tokens"] == 16000
+
+
+def test_clamp_watsonx_completion_applies_safety_margin_for_undercounted_prompts():
+    """Our approximate counter undercounts real WatsonX tokenization on dense prompts.
+
+    A prompt whose *raw* estimate leaves just enough room for the requested completion
+    must still be clamped once the safety margin/buffer is applied, so we never send a
+    request that watsonx.ai would reject with a negative max_tokens.
+    """
+    pytest.importorskip("langchain_ibm")
+    from unittest.mock import patch
+    from langchain_ibm import ChatWatsonx
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 16000, "temperature": 0.1},
+        max_completion_tokens=16000,
+        model_id="openai/gpt-oss-120b",
+        profile={"max_input_tokens": 131072},
+    )
+    # Raw estimate leaves exactly enough headroom for the old buffer (256) but not for
+    # the safety-margin-inflated estimate plus the larger WatsonX buffer.
+    messages = [{"role": "user", "content": "placeholder"}]
+
+    with patch(
+        "cuga.backend.cuga_graph.utils.token_counter.TokenCounter.count_total_context_tokens",
+        return_value=114_500,
+    ):
+        clamp_watsonx_completion_for_messages(model, messages)
+
+    assert model.params["max_completion_tokens"] < 16000
+    assert model.params["max_completion_tokens"] >= 1
+
+
+def test_update_model_parameters_updates_chat_watsonx_params():
+    pytest.importorskip("langchain_ibm")
+    from langchain_ibm import ChatWatsonx
+
+    from cuga.backend.llm.models import LLMManager
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 1000, "temperature": 0.5},
+        max_tokens=1000,
+        max_completion_tokens=1000,
+        model_id="openai/gpt-oss-120b",
+    )
+    updated = LLMManager()._update_model_parameters(model, temperature=0.2, max_tokens=8000)
+
+    assert updated.params["max_completion_tokens"] == 8000
+    assert updated.params["temperature"] == 0.2
+    assert updated.max_completion_tokens == 8000
 
 
 if __name__ == "__main__":

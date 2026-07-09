@@ -66,6 +66,7 @@ path_segment_index = 1  # Which path segment to use for operation naming (1 = fi
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
+variables_summary_max_length = 12000  # Maximum characters for the "Available Variables" prompt addendum (prevents unbounded growth as sandbox variables accumulate)
 # OpenSandbox shell tools (run_command, write_file, …) and matching prompt guidance. Opt-in: set true when using OpenSandbox shell tools.
 enable_shell_tool = false
 # Sandbox backend for shell tool execution. Options:
@@ -206,7 +207,7 @@ trim_tokens_to_summarize = 500  # Target token count for generated summaries
 summarization_model = "gpt-4o-mini"  # Model to use for generating summaries (fast and cost-effective)
 
 # Trigger conditions (at least one should be set, multiple can be active):
-trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for production)
+trigger_fraction = 0.70  # Trigger at 70% of context window (lowered from 0.75: our token estimator undercounts vs some providers' real tokenizers, e.g. WatsonX, by ~20% on JSON/dict-heavy prompts)
 # trigger_tokens = 2000  # Alternative: trigger when total tokens exceed this count
 # trigger_messages = 20  # Alternative: trigger after N messages since last summary
 
