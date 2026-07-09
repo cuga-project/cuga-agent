@@ -9,8 +9,6 @@ import asyncio
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
