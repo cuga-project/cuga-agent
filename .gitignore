@@ -108,3 +108,5 @@ demo_knowledge_docs/
 .benchmark/
 scripts/benchmark_startup.py
 src/cuga/cli/fast_entry.py
+IMPLEMENTATION_STATUS.md
+PR_*.md
