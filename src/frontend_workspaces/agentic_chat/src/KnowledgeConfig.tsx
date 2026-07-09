@@ -15,6 +15,7 @@ import {
   NumberInput,
   Select,
   SelectItem,
+  SelectItemGroup,
   ActionableNotification,
   InlineNotification,
   InlineLoading,
@@ -28,13 +29,12 @@ import {
   Tile,
   Tag,
   Toggle,
-  Dropdown,
   Accordion,
   AccordionItem,
   AILabel,
   AILabelContent,
 } from "@carbon/react";
-import { Upload, TrashCan, Search, Renew, Document, Quotes, Checkmark, ErrorFilled, Reset, Close, ChevronDown, ChevronUp } from "@carbon/icons-react";
+import { Upload, TrashCan, Search, Renew, Document, Quotes, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 import * as api from "../../frontend/src/api";
 import { EnvPresetsPanel } from "./EnvPresetsPanel";
@@ -169,29 +169,26 @@ function formatElapsedSeconds(seconds: number): string {
 // Survives modal close + page reload so the user sees their bar continue
 // rather than vanish. Cleared whenever a task lands in a terminal state.
 const ACTIVE_UPLOADS_LS_KEY = "cuga.knowledge.activeUploads";
-// Manual provider picker items (grouped: local vs hosted). Module-scope so the
-// static array isn't rebuilt on every render. Group headers are non-selectable.
-// Each real provider carries its OWN field spec — needsKey/needsBaseUrl/
-// keyRequired/modelRequired/cloud — so field visibility, required-ness, the
-// security-critical field RESET, and the "not detected" auto-open all derive
-// from ONE source instead of drifting across parallel hardcoded string lists.
+// Per-provider FIELD SPEC (module-scope; the Provider <Select> options are
+// authored inline as native optgroups). Each provider carries its own
+// needsKey/needsBaseUrl/keyRequired/modelRequired/cloud so field visibility,
+// required-ness, the security-critical field RESET, and the "not detected"
+// logic all derive from ONE source instead of drifting across parallel lists.
 // (`cloud` = participates in the server's detected env-preset list.)
 const KNOWLEDGE_PROVIDER_ITEMS: any[] = [
-  { id: "auto", label: "Auto-detect", sub: "Best available, chosen for you" },
-  { id: "__grp_local", label: "On your machine", group: true, disabled: true },
-  { id: "fastembed", label: "FastEmbed", sub: "Runs locally, no key" },
-  { id: "ollama", label: "Ollama", sub: "Local Ollama server", needsKey: true, needsBaseUrl: true },
-  { id: "huggingface", label: "HuggingFace", sub: "Local, uses your GPU" },
-  { id: "__grp_hosted", label: "Hosted API", group: true, disabled: true },
-  { id: "openai", label: "OpenAI / compatible", sub: "OpenAI, Together, Fireworks, proxies", needsKey: true, needsBaseUrl: true, cloud: true },
-  { id: "openrouter", label: "OpenRouter", sub: "One key, many models", needsKey: true, keyRequired: true, modelRequired: true, cloud: true },
-  { id: "litellm", label: "LiteLLM", sub: "Routes to many providers", needsKey: true, needsBaseUrl: true, modelRequired: true, cloud: true },
+  { id: "auto" },
+  { id: "fastembed" },
+  { id: "ollama", needsKey: true, needsBaseUrl: true },
+  { id: "huggingface" },
+  { id: "openai", needsKey: true, needsBaseUrl: true, cloud: true },
+  { id: "openrouter", needsKey: true, keyRequired: true, modelRequired: true, cloud: true },
+  { id: "litellm", needsKey: true, needsBaseUrl: true, modelRequired: true, cloud: true },
 ];
 // Field spec for a provider id (falls back to an empty spec for auto/fastembed/
 // huggingface/unknown, which need no credentials). Single source of truth for
 // every per-provider decision below.
 const providerSpec = (id: string | undefined | null): any =>
-  KNOWLEDGE_PROVIDER_ITEMS.find((it) => it.id === id && !it.group) ?? {};
+  KNOWLEDGE_PROVIDER_ITEMS.find((it) => it.id === id) ?? {};
 // Drop entries older than 1h to avoid resurrecting tasks the server has
 // long since GC'd. The server's recover_stale_tasks already handles its
 // side; this is the client's belt-and-suspenders.
@@ -634,21 +631,6 @@ export default function KnowledgePanel({
     }
   }, []);
 
-  // "Configure manually" disclosure inside the Embedder section. Hidden on the
-  // happy path (a detected preset is the default); auto-opened once when there's
-  // no easy detected path OR the saved provider isn't one of the detected
-  // presets. A stored preference (from the user toggling it) always wins.
-  const [showManualEmbed, setShowManualEmbed] = useState<boolean>(false);
-  const manualEmbedInit = useRef(false);
-  const persistShowManualEmbed = useCallback((v: boolean) => {
-    setShowManualEmbed(v);
-    manualEmbedInit.current = true;
-    try {
-      localStorage.setItem("cuga.knowledge.manualEmbed", v ? "1" : "0");
-    } catch {
-      /* non-fatal */
-    }
-  }, []);
   // NOTE: the effect that auto-opens this disclosure lives AFTER the envPresets
   // state declaration below — its dependency array reads envPresets, which would
   // otherwise be in its temporal dead zone here and throw on every render.
@@ -940,42 +922,6 @@ export default function KnowledgePanel({
     missing: string[];
   }
   const [envPresets, setEnvPresets] = useState<EnvPreset[] | null>(null);
-  // Auto-open the "Configure manually" disclosure once we know the preset
-  // situation: open when there's no easy detected path OR the saved provider is
-  // not one of the detected presets. A stored preference (user toggled it) wins.
-  // Must live AFTER the envPresets declaration above — its dep array reads it.
-  useEffect(() => {
-    if (manualEmbedInit.current) return;
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem("cuga.knowledge.manualEmbed");
-    } catch {
-      /* ignore */
-    }
-    if (stored === "1" || stored === "0") {
-      setShowManualEmbed(stored === "1");
-      manualEmbedInit.current = true;
-      return;
-    }
-    // envPresets not fetched yet → wait for a definite answer before deciding.
-    if (envPresets == null) return;
-    const p = knowledgeConfig?.embedding_provider;
-    // "No easy path" = EnvPresetsPanel would render nothing. It hides rows with
-    // no env signal (EnvPresetsPanel.tsx: env_vars.some(Boolean)), and the server
-    // returns one preset PER provider regardless — so length===0 is wrong; mirror
-    // the panel's own filter here.
-    const hasDetected = envPresets.some((pr: any) =>
-      Object.values(pr.env_vars || {}).some(Boolean),
-    );
-    // Only a CLOUD provider can be a "detected preset". A local default
-    // (fastembed/huggingface/ollama/auto) is never in envPresets, so it must NOT
-    // force the manual section open just because some unrelated hosted key exists
-    // in the environment.
-    const providerNotDetected =
-      !!providerSpec(p).cloud && !envPresets.some((pr: any) => pr.default_provider === p);
-    setShowManualEmbed(!hasDetected || providerNotDetected);
-    manualEmbedInit.current = true;
-  }, [envPresets, knowledgeConfig?.embedding_provider]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2845,42 +2791,189 @@ export default function KnowledgePanel({
                             </Stack>
                           )}
 
-                          {/* ── Embedder: the primary provider choice, promoted OUT of
-                              "Advanced settings" into the 90%-decision surface. Detected
-                              presets are the default path; the manual provider picker and
-                              throughput knobs sit behind disclosures. ── */}
-                          <Tile>
-                            <Stack gap={4}>
-                              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-                                <div>
-                                  <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Embedder</h4>
-                                  <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
-                                    How your documents are turned into vectors for search.
-                                  </span>
-                                </div>
-                                {embeddingsStatus?.kind === "error" ? (
-                                  <Tag type="red" size="sm" renderIcon={ErrorFilled} title={embeddingsStatus.reason}>
-                                    Needs attention
-                                  </Tag>
-                                ) : embeddingsStatus?.kind === "warning" ? (
-                                  <Tag type="magenta" size="sm" title={embeddingsStatus.reason}>
-                                    Warning
-                                  </Tag>
-                                ) : testResult?.ok ? (
-                                  <Tag type="green" size="sm" renderIcon={Checkmark}>
-                                    Ready
-                                  </Tag>
-                                ) : knowledgeConfig.embedding_provider && knowledgeConfig.embedding_provider !== "auto" ? (
-                                  <Tag type="blue" size="sm" title="Provider selected but not yet verified. Use Test connection.">
-                                    Configured — not tested
-                                  </Tag>
-                                ) : (
-                                  <Tag type="gray" size="sm">
-                                    Not set up
-                                  </Tag>
-                                )}
-                              </div>
 
+                          {/* ── 4. Re-index: warning, progress, or completion ── */}
+                          {agentLevelEnabled && reindexProgress && !reindexProgress.done && (
+                            <Tile>
+                              <Stack gap={4}>
+                                <Stack gap={1}>
+                                  {/* Phase-narrative headline replaces the bare "Re-indexing
+                                      documents..." string. During the model-download phase the
+                                      backend hasn't started per-file work yet, so a "0 of N
+                                      processed" subline reads as broken; we lead with what's
+                                      actually happening ("Preparing your new reading model") and
+                                      surface the file-counter only once embedding starts. */}
+                                  <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>
+                                    {getReindexPhaseHeadline(reindexProgress.tasks)}
+                                  </h4>
+                                  <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                    {reindexProgress.completed + reindexProgress.failed} of {reindexProgress.total} document
+                                    {reindexProgress.total === 1 ? "" : "s"} ready
+                                    {" · "}
+                                    Running for {formatElapsedSeconds(Math.floor((Date.now() - reindexProgress.startedAt) / 1000))}
+                                  </p>
+                                </Stack>
+                                {/* Progress bar */}
+                                <div style={{
+                                  width: "100%", height: 8, borderRadius: 4,
+                                  background: "var(--cds-layer-accent-01, #e0e0e0)",
+                                  overflow: "hidden",
+                                }}>
+                                  <div style={{
+                                    height: "100%", borderRadius: 4,
+                                    width: `${reindexProgress.total > 0 ? ((reindexProgress.completed + reindexProgress.failed) / reindexProgress.total) * 100 : 0}%`,
+                                    background: reindexProgress.failed > 0 ? "var(--cds-support-warning)" : "var(--cds-interactive)",
+                                    transition: "width 0.4s ease",
+                                  }} />
+                                </div>
+                                {/* Per-file status list */}
+                                <div className="knowledge-reindex-list">
+                                  <div className="knowledge-reindex-list__header">
+                                    <span>Document</span>
+                                    <span>Status</span>
+                                  </div>
+                                  {reindexProgress.tasks.map((task) => {
+                                    const taskError = getReindexTaskError(task);
+                                    const progressLabel = getReindexTaskProgressLabel(task);
+                                    return (
+                                      <div
+                                        key={task.task_id}
+                                        className={`knowledge-reindex-item knowledge-reindex-item--${task.status}`}
+                                      >
+                                        <div className="knowledge-reindex-item__icon" aria-hidden="true">
+                                          {task.status === "completed" && (
+                                            <Checkmark size={14} style={{ color: "var(--cds-support-success)" }} />
+                                          )}
+                                          {task.status === "failed" && (
+                                            <ErrorFilled size={14} style={{ color: "var(--cds-support-error)" }} />
+                                          )}
+                                          {(task.status === "pending" || task.status === "running") && (
+                                            <span
+                                              className={`knowledge-reindex-item__spinner knowledge-reindex-item__spinner--${task.status}`}
+                                            />
+                                          )}
+                                        </div>
+                                        <div className="knowledge-reindex-item__body">
+                                          <span className="knowledge-reindex-item__filename">
+                                            {task.filename || task.task_id}
+                                          </span>
+                                          {task.status === "running" && progressLabel && (
+                                            <span
+                                              className="knowledge-reindex-item__progress"
+                                              style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}
+                                            >
+                                              {progressLabel}
+                                            </span>
+                                          )}
+                                          {task.status === "failed" && taskError && (
+                                            <span className="knowledge-reindex-item__error">
+                                              {taskError}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="knowledge-reindex-item__status">
+                                          <Tag
+                                            size="sm"
+                                            type={
+                                              task.status === "completed" ? "green" :
+                                              task.status === "failed" ? "red" :
+                                              task.status === "running" ? "blue" : "gray"
+                                            }
+                                          >
+                                            {getReindexStatusLabel(task.status)}
+                                          </Tag>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </Stack>
+                              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                            </Tile>
+                          )}
+
+                          {agentLevelEnabled && reindexProgress?.done && (
+                            <InlineNotification
+                              kind={reindexProgress.failed > 0 ? "warning" : "success"}
+                              title={reindexProgress.failed > 0 ? "Re-index finished with errors" : "Re-index complete"}
+                              subtitle={`${reindexProgress.completed} succeeded${reindexProgress.failed > 0 ? `, ${reindexProgress.failed} failed` : ""}.`}
+                              lowContrast
+                              onClose={() => setReindexProgress(null)}
+                              // Hide the close button on success — the
+                              // notification auto-dismisses via the effect
+                              // below. On failure, keep X so the user can
+                              // dismiss manually after reading the count.
+                              hideCloseButton={reindexProgress.failed === 0}
+                            />
+                          )}
+
+                          {/* Re-index recommended notice. Trigger restored to
+                              include ``knowledgeReindexNeeded`` (snapshot-vs-
+                              current diff): we no longer auto-reindex on PATCH,
+                              so this banner is how the user knows their config
+                              change requires re-embedding. The save-status pill
+                              only confirms "draft persisted"; it does NOT mean
+                              "vectors are current". Two genuinely different
+                              states now. ``knowledgeStale`` /
+                              ``knowledgeReindexDeferred`` keep their roles for
+                              the persistent stale cases. */}
+                          {agentLevelEnabled && !reindexProgress && !presetGuide && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) &&
+                            (onReindex ? (
+                              // Single primitive: the "Re-index now" CTA lives inside the banner.
+                              <ActionableNotification
+                                kind="info"
+                                lowContrast
+                                hideCloseButton
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads use the new configuration, but already-indexed documents need a re-index to switch."
+                                actionButtonLabel={knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
+                                onActionButtonClick={startReindexWithProgress}
+                              />
+                            ) : (
+                              <InlineNotification
+                                kind="info"
+                                lowContrast
+                                hideCloseButton
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads use the new configuration, but already-indexed documents need a re-index to switch."
+                              />
+                            ))}
+
+                          {/* ── 4. Advanced settings toggle ──
+                              UX rationale: the basic view is just the
+                              ON/OFF gate, agent/session scopes, and the
+                              Retrieval Profile cards — that's the 90%
+                              decision surface. Embeddings/chunking/parsing
+                              /score/limits are operator-grade knobs and
+                              shouldn't compete for attention. The toggle
+                              sits right after Retrieval Profile so its
+                              affordance is discoverable without scrolling
+                              past the whole accordion stack. Choice
+                              persists in localStorage. */}
+                          <Stack
+                            orientation="horizontal"
+                            gap={3}
+                            style={{ alignItems: "center", marginTop: "0.5rem" }}
+                          >
+                            <Toggle
+                              id="knowledge-show-advanced"
+                              labelText="Advanced settings"
+                              labelA="Off"
+                              labelB="On"
+                              toggled={showAdvanced}
+                              onToggle={(v: boolean) => persistShowAdvanced(v)}
+                              size="sm"
+                            />
+                            <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
+                              Embedding model, chunking, parsing, retrieval behavior, score & metric, and limits.
+                            </span>
+                          </Stack>
+
+                          {/* ── 5. Advanced configuration (only when toggle on) ── */}
+                          {showAdvanced && (
+                          <Accordion align="start" size="md">
+                            <AccordionItem title={sectionTitle("Embedding model", embeddingsStatus)}>
+                              <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                               <span style={{ fontSize: "0.8125rem", color: "var(--cds-text-primary)" }}>
                                 {knowledgeConfig.embedding_provider && knowledgeConfig.embedding_provider !== "auto" ? (
                                   <>
@@ -2920,18 +3013,10 @@ export default function KnowledgePanel({
                                     });
                                   }}
                                   onFocusProviderSelect={() => {
-                                    // The provider Dropdown only exists once the manual
-                                    // section is open, so reveal it first, then focus on the
-                                    // next frame (after React mounts it). Carbon puts our id on
-                                    // the ListBox wrapper <div> (not focusable) — focus the inner
-                                    // toggle button, which is the element the user actually tabs to.
-                                    persistShowManualEmbed(true);
-                                    requestAnimationFrame(() => {
-                                      const box = document.getElementById("knowledge-embedding-provider");
-                                      const btn = box?.querySelector("button.cds--list-box__field") as HTMLElement | null;
-                                      (btn ?? box)?.focus();
-                                      box?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                    });
+                                    // The Provider select is always mounted now — just focus/scroll it.
+                                    const el = document.getElementById("knowledge-embedding-provider");
+                                    el?.focus();
+                                    el?.scrollIntoView({ behavior: "smooth", block: "center" });
                                   }}
                                 />
                               )}
@@ -3027,60 +3112,23 @@ export default function KnowledgePanel({
                                 />
                               )}
 
-                              <Button
-                                kind="ghost"
-                                size="sm"
-                                renderIcon={showManualEmbed ? ChevronUp : ChevronDown}
-                                onClick={() => persistShowManualEmbed(!showManualEmbed)}
-                                style={{ paddingLeft: 0 }}
-                              >
-                                {showManualEmbed ? "Hide manual configuration" : "Configure manually — use a different provider or enter keys"}
-                              </Button>
-
-                              {showManualEmbed &&
-                                (() => {
+                              {(() => {
                                   const p = knowledgeConfig.embedding_provider ?? "auto";
-                                  // Show the REAL saved provider even if it isn't one of our
-                                  // known items (e.g. a legacy value) rather than silently
-                                  // mislabeling it as Auto-detect.
-                                  const known = KNOWLEDGE_PROVIDER_ITEMS.find((it) => it.id === p);
-                                  const selectedItem =
-                                    known ??
-                                    (p && p !== "auto"
-                                      ? { id: p, label: p, sub: "Custom provider" }
-                                      : KNOWLEDGE_PROVIDER_ITEMS[0]);
-                                  const providerItems = known
-                                    ? KNOWLEDGE_PROVIDER_ITEMS
-                                    : [selectedItem, ...KNOWLEDGE_PROVIDER_ITEMS];
                                   const spec = providerSpec(p);
                                   const modelRequired = !!spec.modelRequired;
                                   const modelMissing = modelRequired && !(knowledgeConfig.embedding_model || "").trim();
+                                  // Legacy/unknown saved provider → surface it as a real option so the
+                                  // Select shows the true value instead of coercing to Auto-detect.
+                                  const isKnown =
+                                    p === "auto" || KNOWLEDGE_PROVIDER_ITEMS.some((it: any) => it.id === p);
                                   return (
                                     <Stack gap={4}>
-                                      <Dropdown
+                                      <Select
                                         id="knowledge-embedding-provider"
-                                        titleText="Provider"
-                                        label="Select a provider"
-                                        items={providerItems}
-                                        selectedItem={selectedItem}
-                                        itemToString={(item: any) => (item ? item.label : "")}
-                                        itemToElement={(item: any) =>
-                                          item?.group ? (
-                                            <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.02em", textTransform: "uppercase", color: "var(--cds-text-secondary)" }}>
-                                              {item.label}
-                                            </span>
-                                          ) : (
-                                            <div style={{ display: "flex", flexDirection: "column" }}>
-                                              <span>{item?.label}</span>
-                                              {item?.sub ? (
-                                                <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>{item.sub}</span>
-                                              ) : null}
-                                            </div>
-                                          )
-                                        }
-                                        onChange={({ selectedItem: sel }: any) => {
-                                          if (!sel || sel.group) return;
-                                          const newProvider = sel.id;
+                                        labelText="Provider"
+                                        value={p}
+                                        onChange={(e: any) => {
+                                          const newProvider = e.target.value;
                                           if (newProvider === p) return; // no-op re-select
                                           // CRITICAL: switching providers ALWAYS resets the
                                           // provider-specific fields. Otherwise a previously-typed
@@ -3098,7 +3146,20 @@ export default function KnowledgePanel({
                                             embedding_model: "",
                                           });
                                         }}
-                                      />
+                                      >
+                                        {!isKnown && <SelectItem value={p} text={`${p} — custom provider`} />}
+                                        <SelectItem value="auto" text="Auto-detect — best available, chosen for you" />
+                                        <SelectItemGroup label="On your machine">
+                                          <SelectItem value="fastembed" text="FastEmbed — runs locally, no key" />
+                                          <SelectItem value="ollama" text="Ollama — local Ollama server" />
+                                          <SelectItem value="huggingface" text="HuggingFace — local, uses your GPU" />
+                                        </SelectItemGroup>
+                                        <SelectItemGroup label="Hosted API">
+                                          <SelectItem value="openai" text="OpenAI / compatible — OpenAI, Together, Fireworks, proxies" />
+                                          <SelectItem value="openrouter" text="OpenRouter — one key, many models" />
+                                          <SelectItem value="litellm" text="LiteLLM — routes to many providers" />
+                                        </SelectItemGroup>
+                                      </Select>
                                       <TextInput
                                         id="knowledge-embedding-model"
                                         labelText="Model"
@@ -3261,9 +3322,10 @@ export default function KnowledgePanel({
                                   );
                                 })()}
 
-                              <Accordion align="start" size="sm">
-                                <AccordionItem title="Advanced (throughput & hardware)">
-                                  <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
+                              <span style={{ fontSize: "0.8125rem", fontWeight: 600, display: "block", marginTop: "0.25rem", color: "var(--cds-text-secondary)" }}>
+                                {"Throughput & hardware"}
+                              </span>
+                              <Stack gap={4} style={{ paddingTop: "0.25rem" }}>
                                     <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
                                       <Toggle
                                         id="knowledge-use-gpu"
@@ -3389,205 +3451,8 @@ export default function KnowledgePanel({
                                       Reset Embedder to defaults
                                     </Button>
                                   </Stack>
-                                </AccordionItem>
-                              </Accordion>
-                            </Stack>
-                          </Tile>
-
-                          {/* ── 4. Re-index: warning, progress, or completion ── */}
-                          {agentLevelEnabled && reindexProgress && !reindexProgress.done && (
-                            <Tile>
-                              <Stack gap={4}>
-                                <Stack gap={1}>
-                                  {/* Phase-narrative headline replaces the bare "Re-indexing
-                                      documents..." string. During the model-download phase the
-                                      backend hasn't started per-file work yet, so a "0 of N
-                                      processed" subline reads as broken; we lead with what's
-                                      actually happening ("Preparing your new reading model") and
-                                      surface the file-counter only once embedding starts. */}
-                                  <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>
-                                    {getReindexPhaseHeadline(reindexProgress.tasks)}
-                                  </h4>
-                                  <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
-                                    {reindexProgress.completed + reindexProgress.failed} of {reindexProgress.total} document
-                                    {reindexProgress.total === 1 ? "" : "s"} ready
-                                    {" · "}
-                                    Running for {formatElapsedSeconds(Math.floor((Date.now() - reindexProgress.startedAt) / 1000))}
-                                  </p>
-                                </Stack>
-                                {/* Progress bar */}
-                                <div style={{
-                                  width: "100%", height: 8, borderRadius: 4,
-                                  background: "var(--cds-layer-accent-01, #e0e0e0)",
-                                  overflow: "hidden",
-                                }}>
-                                  <div style={{
-                                    height: "100%", borderRadius: 4,
-                                    width: `${reindexProgress.total > 0 ? ((reindexProgress.completed + reindexProgress.failed) / reindexProgress.total) * 100 : 0}%`,
-                                    background: reindexProgress.failed > 0 ? "var(--cds-support-warning)" : "var(--cds-interactive)",
-                                    transition: "width 0.4s ease",
-                                  }} />
-                                </div>
-                                {/* Per-file status list */}
-                                <div className="knowledge-reindex-list">
-                                  <div className="knowledge-reindex-list__header">
-                                    <span>Document</span>
-                                    <span>Status</span>
-                                  </div>
-                                  {reindexProgress.tasks.map((task) => {
-                                    const taskError = getReindexTaskError(task);
-                                    const progressLabel = getReindexTaskProgressLabel(task);
-                                    return (
-                                      <div
-                                        key={task.task_id}
-                                        className={`knowledge-reindex-item knowledge-reindex-item--${task.status}`}
-                                      >
-                                        <div className="knowledge-reindex-item__icon" aria-hidden="true">
-                                          {task.status === "completed" && (
-                                            <Checkmark size={14} style={{ color: "var(--cds-support-success)" }} />
-                                          )}
-                                          {task.status === "failed" && (
-                                            <ErrorFilled size={14} style={{ color: "var(--cds-support-error)" }} />
-                                          )}
-                                          {(task.status === "pending" || task.status === "running") && (
-                                            <span
-                                              className={`knowledge-reindex-item__spinner knowledge-reindex-item__spinner--${task.status}`}
-                                            />
-                                          )}
-                                        </div>
-                                        <div className="knowledge-reindex-item__body">
-                                          <span className="knowledge-reindex-item__filename">
-                                            {task.filename || task.task_id}
-                                          </span>
-                                          {task.status === "running" && progressLabel && (
-                                            <span
-                                              className="knowledge-reindex-item__progress"
-                                              style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}
-                                            >
-                                              {progressLabel}
-                                            </span>
-                                          )}
-                                          {task.status === "failed" && taskError && (
-                                            <span className="knowledge-reindex-item__error">
-                                              {taskError}
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="knowledge-reindex-item__status">
-                                          <Tag
-                                            size="sm"
-                                            type={
-                                              task.status === "completed" ? "green" :
-                                              task.status === "failed" ? "red" :
-                                              task.status === "running" ? "blue" : "gray"
-                                            }
-                                          >
-                                            {getReindexStatusLabel(task.status)}
-                                          </Tag>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
                               </Stack>
-                              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-                            </Tile>
-                          )}
-
-                          {agentLevelEnabled && reindexProgress?.done && (
-                            <InlineNotification
-                              kind={reindexProgress.failed > 0 ? "warning" : "success"}
-                              title={reindexProgress.failed > 0 ? "Re-index finished with errors" : "Re-index complete"}
-                              subtitle={`${reindexProgress.completed} succeeded${reindexProgress.failed > 0 ? `, ${reindexProgress.failed} failed` : ""}.`}
-                              lowContrast
-                              onClose={() => setReindexProgress(null)}
-                              // Hide the close button on success — the
-                              // notification auto-dismisses via the effect
-                              // below. On failure, keep X so the user can
-                              // dismiss manually after reading the count.
-                              hideCloseButton={reindexProgress.failed === 0}
-                            />
-                          )}
-
-                          {/* Re-index recommended notice. Trigger restored to
-                              include ``knowledgeReindexNeeded`` (snapshot-vs-
-                              current diff): we no longer auto-reindex on PATCH,
-                              so this banner is how the user knows their config
-                              change requires re-embedding. The save-status pill
-                              only confirms "draft persisted"; it does NOT mean
-                              "vectors are current". Two genuinely different
-                              states now. ``knowledgeStale`` /
-                              ``knowledgeReindexDeferred`` keep their roles for
-                              the persistent stale cases. */}
-                          {agentLevelEnabled && !reindexProgress && !presetGuide && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
-                            <Stack gap={3}>
-                              {/* Two passes on this notice:
-                                    1. Softened from kind="warning" +
-                                       "danger--tertiary" (alarming for a
-                                       routine change).
-                                    2. Then sharpened — "Update existing
-                                       documents" was too soft, sounded
-                                       optional. The action is in fact
-                                       mandatory if the user wants their
-                                       config change to take effect on
-                                       already-indexed documents (new
-                                       uploads use the new config; existing
-                                       ones don't until re-indexed). Title
-                                       leads with that. */}
-                              <InlineNotification
-                                kind="info"
-                                title="Re-index to apply your changes"
-                                subtitle="Existing documents still use the previous embedder. New uploads will use the new configuration, but already-indexed documents need a re-index to switch."
-                                lowContrast
-                                hideCloseButton
-                              />
-                              {onReindex && (
-                                <Button
-                                  type="button"
-                                  kind="primary"
-                                  size="sm"
-                                  disabled={knowledgeReindexing}
-                                  onClick={startReindexWithProgress}
-                                >
-                                  {knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
-                                </Button>
-                              )}
-                            </Stack>
-                          )}
-
-                          {/* ── 4. Advanced settings toggle ──
-                              UX rationale: the basic view is just the
-                              ON/OFF gate, agent/session scopes, and the
-                              Retrieval Profile cards — that's the 90%
-                              decision surface. Embeddings/chunking/parsing
-                              /score/limits are operator-grade knobs and
-                              shouldn't compete for attention. The toggle
-                              sits right after Retrieval Profile so its
-                              affordance is discoverable without scrolling
-                              past the whole accordion stack. Choice
-                              persists in localStorage. */}
-                          <Stack
-                            orientation="horizontal"
-                            gap={3}
-                            style={{ alignItems: "center", marginTop: "0.5rem" }}
-                          >
-                            <Toggle
-                              id="knowledge-show-advanced"
-                              labelText="Advanced settings"
-                              labelA="Off"
-                              labelB="On"
-                              toggled={showAdvanced}
-                              onToggle={(v: boolean) => persistShowAdvanced(v)}
-                              size="sm"
-                            />
-                            <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
-                              Chunking, parsing, retrieval behavior, score & metric, and limits.
-                            </span>
-                          </Stack>
-
-                          {/* ── 5. Advanced configuration (only when toggle on) ── */}
-                          {showAdvanced && (
-                          <Accordion align="start" size="md">
+                            </AccordionItem>
                             <AccordionItem title={sectionTitle("Chunking", chunkingStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 {ragProfiles && (knowledgeConfig.rag_profile ?? "standard") !== "custom" && (
