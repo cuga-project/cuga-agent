@@ -239,7 +239,19 @@ class ToolGuide(BaseModel):
             "tools use the app name 'runtime_tools', so scoped policies for those tools must include it."
         ),
     )
-    guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
+    guide_content: str = Field(
+        ...,
+        description="Markdown content to append to tool descriptions. Supports Jinja2 templates when context_variables is non-empty.",
+    )
+    context_variables: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Optional variables for rendering guide_content as a Jinja2 template. "
+            "When empty (the default), guide_content is used as-is. "
+            "When non-empty, guide_content is rendered with these variables at enactment time, "
+            "allowing dynamic content such as live session state or counts."
+        ),
+    )
     tool_guards: Dict[str, ToolGuard] = Field(
         default_factory=dict,
         description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)",
