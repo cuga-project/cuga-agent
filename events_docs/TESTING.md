@@ -9,15 +9,56 @@ How to test the events layer: the offline suite (fast, runs anywhere), the live 
 ## 1. Quick test
 
 ```bash
-# OFFLINE — 61 green, no network, run on every change
-make test                             # = pytest tests/events -q   (offline events gate, ~61 green)
+# OFFLINE — no network, run on every change
+make test                             # = pytest tests/events -q   (offline events gate)
 make test-all                         # all OFFLINE tests: pytest tests/events tests/unit -q
-make test-live                        # live e2e (needs `make up` + creds) — the full round-trip
+
+# LIVE — need `make up` + creds. Run in this order; each is broader than the last.
+make test-live                        # 4 channels + 4 flow modes, self-cleaning   (~2 min)
+make test-suite-now                   # every seeded agent, invoked directly       (~13 min)
+make test-suite-flows                 # cron + poll + push                         (~5 min)
+make test-matrix                      # every trigger × every channel sink         (~5 min)
 
 # PREFLIGHT — credential doctor: does every integration work from .env alone? (never fails)
 make doctor                           # = python3 tests/events/preflight.py
 #   watsonx · AP · Telegram · Discord · Slack · Box · MCP
 ```
+
+> **`make sync` is NOT needed for the tests.** Every live harness is pure stdlib (`urllib`, `json`,
+> `hmac`) — no dependencies were added. Run `uv sync` only after a real dependency change.
+
+> **Don't run bare `make test-suite`.** Its default budget is 1500 s and the NOW phase alone takes
+> ~13 min, so the later phases silently skip for time. Run the phases separately (above), or raise it:
+> `SUITE_BUDGET_SECS=2400 make test-suite`.
+
+**Optional env vars, test-only** (all documented in `.env.events.example`; none are required):
+
+| Var | Effect |
+|---|---|
+| `GITHUB_TEST_REPO=owner/repo` | arms the github PUSH row. **Creates a real repo webhook** — the harness snapshots existing hooks and deletes only the ones it made. Unset ⇒ the row correctly asks "which repo?" |
+| `BOX_FOLDER_ID` | stops the box watcher asking which folder |
+| `SLACK_TEST_CHANNEL` · `DISCORD_TEST_CHANNEL_ID` | pin the channel instead of auto-discovering one |
+| `TELEGRAM_CHAT_ID` | proves the real outbound Telegram delivery leg |
+| `SUITE_BUDGET_SECS` · `MATRIX_BUDGET_SECS` · `E2E_BUDGET_SECS` | wall-clock budget per harness |
+
+### Expected results (2026-07-09)
+
+| Command | Expected |
+|---|---|
+| `make test` | **1 pre-existing failure**: `test_box_poll_endpoint_dispatches_new_files` reads the real `.box_since.json` watermark instead of a temp file and asserts a hard-coded date, so it breaks permanently once any real Box poll has run. Fails on a pristine checkout. |
+| `make test-live` | 34 pass · 1 skip (the Slack bad-signature negative control, skipped while `SLACK_SIGNING_SECRET` is unset). |
+| `make test-suite-now` | 18 pass · 2 xfail (`mailbot` cannot fetch Gmail; `support_digest` fabricates). |
+| `make test-suite-flows` | 9 pass · **1 fail** · 1 xfail. The fail is real: *"check … every 15 minutes and tell me only about new items"* arms a **CRON**, not a POLL. The offline classifier agrees, so it is deterministic, not a flaky model pick. |
+| `make test-matrix` | ~13 armed, 0 errors. |
+
+Two results that need a careful read:
+
+- **`★ XPASS` on `now/support_digest/digest` proves nothing on its own.** That agent fabricates on
+  roughly 5 of 7 sampled runs and asks for detail on the other 2. Re-sample before believing a gap closed.
+- **`DANGLING — subscription points at AP flow X, which does not exist`** is the suite working, not
+  breaking. `find_or_create_flow` de-duplicates on `dedup_key` *without* checking the AP flow still
+  exists (`concierge.py:285-289`), so after a `make nuke` the concierge keeps answering "Push flow set
+  up" while the watcher can never fire. `make reset-flows` clears the stale records.
 
 The offline suite is **61 passing**:
 

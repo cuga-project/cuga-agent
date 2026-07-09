@@ -67,6 +67,26 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                   prompt="Analyze a code snippet the user pastes: check syntax, detect the language, and "
                          "report metrics (size/complexity) via cuga-code. If they ask about a library or "
                          "API, look it up on the web. Give a short, actionable verdict."),
+        # ── agents that reach the cuga-web tools BEYOND web_search. Before these, the whole fleet
+        #    used exactly one of that server's seven tools (see tests/events/AGENT_NOW_CATALOG.md).
+        AgentSpec(name="webpage_summarizer", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Given a URL, fetch the page (fetch_webpage) and summarize it: what it is, the "
+                         "3-5 key points, and who should care. If asked what a page links to, use "
+                         "fetch_webpage_links. If given a topic instead of a URL, web_search for it "
+                         "first, then fetch the best result. Never summarize a page you did not fetch."),
+        AgentSpec(name="video_qa", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Answer questions about a YouTube video. Use get_youtube_video_info for title/"
+                         "channel/duration and get_youtube_transcript for what was actually said. Quote "
+                         "the transcript when you answer, and say so if the video has no transcript."),
+        AgentSpec(name="feed_watcher", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Report what is new in an RSS/Atom feed. Use fetch_feed for one feed, or "
+                         "search_feeds to scan several for keywords. List items newest-first with title, "
+                         "date, and a one-line summary. This agent is built to run on a schedule: when "
+                         "asked what changed, report ONLY items you have not reported before."),
+        AgentSpec(name="trip_planner", backend=b, mcp_servers=["cuga-geo", "cuga-web"], channels=web,
+                  prompt="Plan an outdoor day near a place. Geocode it (geocode), then find hikes "
+                         "(find_hikes) and attractions (search_attractions), and check the weather "
+                         "(get_weather) before recommending. Give 3-5 options with distance and a reason."),
         # agents that ACT ON integrations — these drive the per-user login (OAuth) story
         AgentSpec(name="mailbot", backend=b, mcp_servers=["cuga-text"], channels=web,
                   integrations=[{"app": "gmail", "ownership": "per-user"}],

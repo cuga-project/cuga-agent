@@ -63,13 +63,22 @@ make status      # everything up          make tunnels   # both tunnel agents up
 make doctor      # live creds ok          make test      # 61 offline checks green
 ```
 Smoke-test the channels: DM your Telegram bot · post in the Discord/Slack channel · open `localhost:8100/studio`.
-Then the integrations end-to-end (each hits the real API — full matrix in [TESTING.md](TESTING.md)):
+Then the integrations end-to-end (each hits the real API — full matrix + expected results in
+[TESTING.md](TESTING.md)):
 ```bash
-make test-live                                    # all trigger modes in one pass
+make test-live                                    # 4 channels + 4 flow modes, self-cleaning
+make test-suite-now                               # every seeded agent, invoked directly
+make test-suite-flows                             # cron + poll + push
+make test-matrix                                  # every trigger × every channel sink
+
+# These FIRE real data through an armed watcher — the one thing the harnesses above do NOT do
+# (they arm a flow and verify it exists in AP; they never wait for a real event).
 .venv/bin/python tests/events/live_github_e2e.py  # real open PR → pr_reviewer
 .venv/bin/python tests/events/live_box_e2e.py     # real upload → resume_judge  (needs a FRESH BOX_DEV_TOKEN)
 .venv/bin/python tests/events/live_gmail_e2e.py   # Gmail OAuth connection + arm inbox watcher
 ```
+`make sync` is **not** required for any of these — the live harnesses are pure stdlib. Run `uv sync`
+only after a real dependency change.
 And the **`/automate`** create-path — in the Studio Concierge (or any channel) type: `/automate summarize
 new emails` (→PUSH) · `/automate the market brief every weekday 8am` (→CRON) · `/automate check bitcoin
 every 5 min on a move` (→POLL). Manage them with `make flows`.
@@ -106,8 +115,12 @@ Once base CUGA + `.env` are in place (§0–§3), the day-to-day loop is just `m
 | `make public-url` | print the current public URL + the exact Slack/Gmail strings to update |
 | `make flows` | open the Flows console (list · pause/resume · delete · rich flow view) |
 | `make tunnels` / `tunnels-up` / `tunnels-down` | status / (re)start / stop the tunnel agents (cloudflared + ngrok) |
-| `make test` / `make test-all` | offline events suite (~60) / all offline tests (events + unit) |
-| `make test-live` | live e2e — needs the stack up (`make up`) + creds |
+| `make test` / `make test-all` | offline events suite / all offline tests (events + unit) |
+| `make test-live` | live e2e — 4 channels + 4 flow modes. Needs the stack up (`make up`) + creds |
+| `make test-suite-now` | every seeded agent, invoked directly (~13 min) |
+| `make test-suite-flows` | cron + poll + push (~5 min) |
+| `make test-matrix` | every trigger mode × every channel sink (~5 min) |
+| `make reset-flows` | wipe ONLY `events.db` + bounce CUGA — keeps AP connections/pieces/tunnels |
 
 The from-scratch runbook below is what those shortcuts wrap — read it once, then live in `make`.
 

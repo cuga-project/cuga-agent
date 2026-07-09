@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUGA events — live test results</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --panel:#fff; --ink:#1c1b1a; --muted:#6b6866; --line:#e6e3df;
+    --pass:#1a7f4b; --pass-bg:#e8f5ee; --fail:#c0392b; --fail-bg:#fdecea;
+    --xfail:#b06f10; --xfail-bg:#fdf3e2; --xpass:#7a3fa8; --xpass-bg:#f3ebfa;
+    --skip:#8a8785; --skip-bg:#f2f1ef; --accent:#2b5fd9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#16181c; --panel:#1d2025; --ink:#e8e6e3; --muted:#9a9793; --line:#2e3238;
+      --pass:#5ed19a; --pass-bg:#153126; --fail:#ff8a80; --fail-bg:#3a1d1a;
+      --xfail:#f0b95c; --xfail-bg:#372a15; --xpass:#c79bec; --xpass-bg:#2b1e3a;
+      --skip:#8a8785; --skip-bg:#24262b; --accent:#7aa2f7; }
+  }
+  :root[data-theme="dark"]{ --bg:#16181c; --panel:#1d2025; --ink:#e8e6e3; --muted:#9a9793; --line:#2e3238;
+    --pass:#5ed19a; --pass-bg:#153126; --fail:#ff8a80; --fail-bg:#3a1d1a;
+    --xfail:#f0b95c; --xfail-bg:#372a15; --xpass:#c79bec; --xpass-bg:#2b1e3a;
+    --skip:#8a8785; --skip-bg:#24262b; --accent:#7aa2f7; }
+  :root[data-theme="light"]{ --bg:#fbfbfa; --panel:#fff; --ink:#1c1b1a; --muted:#6b6866; --line:#e6e3df;
+    --pass:#1a7f4b; --pass-bg:#e8f5ee; --fail:#c0392b; --fail-bg:#fdecea;
+    --xfail:#b06f10; --xfail-bg:#fdf3e2; --xpass:#7a3fa8; --xpass-bg:#f3ebfa;
+    --skip:#8a8785; --skip-bg:#f2f1ef; --accent:#2b5fd9; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:1.9rem;margin:0 0 6px;letter-spacing:-.02em}
+  h2{font-size:1.15rem;margin:40px 0 4px;letter-spacing:-.01em}
+  h2 .n{color:var(--muted);font-weight:400;font-size:.85em;margin-left:6px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  p{margin:.6em 0}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em}
+  code{background:var(--skip-bg);padding:1px 5px;border-radius:4px}
+  a{color:var(--accent)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+
+  .cards{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 4px}
+  .card{flex:1 1 120px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card .v{font-size:1.7rem;font-weight:600;line-height:1.1}
+  .card .k{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em}
+  .card.pass .v{color:var(--pass)} .card.fail .v{color:var(--fail)}
+  .card.xfail .v{color:var(--xfail)} .card.skip .v{color:var(--skip)}
+
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;width:100%;min-width:640px;font-size:.92rem}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;
+     position:sticky;top:0;background:var(--bg)}
+  tbody tr:hover{background:var(--skip-bg)}
+  td.u{color:var(--muted);font-size:.87rem}
+
+  .b{display:inline-block;padding:1px 8px;border-radius:20px;font-size:.75rem;font-weight:600;white-space:nowrap}
+  .b.pass{color:var(--pass);background:var(--pass-bg)}
+  .b.fail{color:var(--fail);background:var(--fail-bg)}
+  .b.xfail{color:var(--xfail);background:var(--xfail-bg)}
+  .b.xpass{color:var(--xpass);background:var(--xpass-bg)}
+  .b.skip{color:var(--skip);background:var(--skip-bg)}
+
+  .grid td.c{text-align:center;font-weight:700;font-size:1.05rem}
+  .grid td.first{font-weight:600;white-space:nowrap}
+  .g-pass{color:var(--pass)} .g-fail{color:var(--fail)} .g-warn{color:var(--xfail)}
+  .g-reuse{color:var(--accent)} .g-skip{color:var(--skip)} .g-stale{color:var(--xpass)}
+
+  .note{border-left:3px solid var(--accent);padding:2px 0 2px 14px;margin:14px 0;color:var(--muted)}
+  .warn{border-left:3px solid var(--fail);padding:2px 0 2px 14px;margin:14px 0}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;color:var(--muted);font-size:.85rem;margin-top:10px}
+  details{margin:8px 0}
+  summary{cursor:pointer;font-weight:600}
+  .foot{margin-top:60px;color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CUGA events — live test results</h1>
+<p class="sub">Run 2026-07-09 against the live stack (Activepieces up, 18 seeded agents, real Slack /
+Discord / Telegram / Gmail / Box / GitHub). Every row below was executed, not inferred.</p>
+
+<div class="cards">
+  <div class="card pass"><div class="v">31</div><div class="k">passed</div></div>
+  <div class="card fail"><div class="v">1</div><div class="k">failed</div></div>
+  <div class="card xfail"><div class="v">3</div><div class="k">known gaps</div></div>
+  <div class="card skip"><div class="v">0</div><div class="k">skipped</div></div>
+  <div class="card"><div class="v">35</div><div class="k">total cases</div></div>
+</div>
+
+<div class="panel">
+  <strong>Reproduce:</strong>
+  <code>make up</code> → <code>make test-suite</code> (all phases, ~15 min) ·
+  <code>make test-suite-now</code> · <code>make test-suite-flows</code> ·
+  <code>make test-matrix</code> (trigger × sink grid) · <code>make test-live</code> (fast e2e).<br>
+  <span style="color:var(--muted)">Sources:
+  <code>tests/events/live_suite.py</code>, <code>tests/events/live_matrix.py</code>,
+  <code>tests/events/live_e2e.py</code>. Catalog:
+  <code>tests/events/AGENT_NOW_CATALOG.md</code>.</span>
+</div>
+
+<div class="legend">
+  <span><span class="b pass">PASS</span> worked, expected to</span>
+  <span><span class="b fail">FAIL</span> broke, expected to work — the only thing that reddens the bar</span>
+  <span><span class="b xfail">XFAIL</span> broke, and we knew it would (logged gap)</span>
+  <span><span class="b xpass">XPASS</span> worked, expected to break — go delete the expectation</span>
+  <span><span class="b skip">SKIP</span> not configured</span>
+</div>
+
+<!-- ───────────────────────────── NOW ───────────────────────────── -->
+<h2>NOW — every agent, invoked directly <span class="n">20 cases · 18 pass · 2 xfail</span></h2>
+<p>Called through <code>POST /invoke</code> with <code>source.type:"time"</code> + <code>event.kind:"runonce"</code>
+— no concierge, no channel. Assertions check the answer <em>and</em> <code>meta.mcp</code>, so an agent
+cannot pass by answering from the model's memory instead of calling its tools.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Case</th><th>Agent</th><th>MCP reached</th><th>Utterance</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><code>now/pricebot/crypto</code></td><td>pricebot</td><td>cuga-finance</td><td class="u">what is the current price of bitcoin in usd? just the number</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/pricebot/stock</code></td><td>pricebot</td><td>cuga-finance</td><td class="u">what's IBM stock trading at right now?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/geobot/capital</code></td><td>geobot</td><td>cuga-knowledge, cuga-geo</td><td class="u">what is the capital of Peru?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/geobot/population</code></td><td>geobot</td><td>cuga-knowledge, cuga-geo</td><td class="u">what's the population of Portugal, and which region is it in?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/weatherbot/city</code></td><td>weatherbot</td><td>cuga-web</td><td class="u">what's the weather in Tokyo right now?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/papers/arxiv</code></td><td>papers</td><td>cuga-knowledge</td><td class="u">find recent arXiv papers on mixture of experts</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/research_compass/topic</code></td><td>research_compass</td><td>cuga-knowledge, cuga-web</td><td class="u">research retrieval-augmented generation: name the key papers and what to read next</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/city_briefing/lisbon</code></td><td>city_briefing</td><td>cuga-geo, cuga-web, cuga-knowledge</td><td class="u">give me a briefing on Lisbon</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/code_auditor/snippet</code></td><td>code_auditor</td><td>cuga-code, cuga-web</td><td class="u">analyze this snippet: def f(x): return x/0</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/github_trending/repos</code></td><td>github_trending</td><td>cuga-web</td><td class="u">what are the top trending GitHub repos right now?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/webpage_summarizer/url</code></td><td><strong>webpage_summarizer</strong> <span style="color:var(--muted)">new</span></td><td>cuga-web <span style="color:var(--muted)">(fetch_webpage)</span></td><td class="u">summarize https://example.com</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/video_qa/youtube</code></td><td><strong>video_qa</strong> <span style="color:var(--muted)">new</span></td><td>cuga-web <span style="color:var(--muted)">(get_youtube_transcript)</span></td><td class="u">what is this video about? youtube.com/watch?v=dQw4w9WgXcQ</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/feed_watcher/rss</code></td><td><strong>feed_watcher</strong> <span style="color:var(--muted)">new</span></td><td>cuga-web <span style="color:var(--muted)">(fetch_feed)</span></td><td class="u">what is new on https://hnrss.org/frontpage ?</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/trip_planner/boulder</code></td><td><strong>trip_planner</strong> <span style="color:var(--muted)">new</span></td><td>cuga-geo, cuga-web</td><td class="u">plan an outdoor day near Boulder, Colorado</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/incident_triage/alert</code></td><td>incident_triage</td><td>cuga-text</td><td class="u">triage this alert: HighCPU on checkout-api, 97% against an 85% threshold</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/pr_reviewer/diff</code></td><td>pr_reviewer</td><td>cuga-code, cuga-text</td><td class="u">review this diff: <code>- if (x = 1)</code> → <code>+ if (x == 1)</code></td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/resume_judge/pasted</code></td><td>resume_judge</td><td>cuga-text</td><td class="u">judge this resume against this JD (both pasted inline)</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>now/resume_judge/box_fetch</code></td><td>resume_judge</td><td>cuga-text</td><td class="u">judge the latest resume in my Box folder</td><td><span class="b pass">PASS</span><br><span style="color:var(--muted);font-size:.8rem">cannot read Box — correctly asks for the file</span></td></tr>
+<tr><td><code>now/mailbot/inbox</code></td><td>mailbot</td><td>cuga-text</td><td class="u">summarize my unread emails from today</td><td><span class="b xfail">XFAIL</span><br><span style="color:var(--muted);font-size:.8rem">no Gmail tool — fails <em>gracefully</em></span></td></tr>
+<tr><td><code>now/support_digest/digest</code></td><td>support_digest</td><td>cuga-web</td><td class="u">give me the overnight support digest</td><td><span class="b xfail">XFAIL</span><br><span style="color:var(--muted);font-size:.8rem">fabricates ~5 of 7 runs</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="warn">
+<strong>Careful with <code>support_digest</code>.</strong> It is <em>non-deterministic</em>: across seven sampled
+runs it fabricated a digest about five times and asked for detail twice. A single <span class="b xpass">XPASS</span>
+here does not mean the gap closed — re-sample before believing it. The suite says so in its own
+expectation string.
+</div>
+
+<!-- ───────────────────────────── CHANNELS ───────────────────────────── -->
+<h2>Channels — one probe, four surfaces <span class="n">4 cases · 4 pass</span></h2>
+<p>Not all four can be driven identically, and the suite says which is which rather than painting them
+uniformly green.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Channel</th><th>Depth</th><th>What was exercised</th><th>Untested hop</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>web</td><td><strong>FULL</strong></td><td class="u"><code>POST /api/concierge</code> → answer in the response</td><td class="u">—</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td>slack</td><td><strong>FULL</strong></td><td class="u">Post a real message, send a signed Events API callback, read the bot's threaded reply back from <code>conversations.replies</code></td><td class="u">Slack's outbound webhook to us</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td>discord</td><td>PARTIAL</td><td class="u">Drives the exact <code>/invoke</code> envelope the Gateway posts; the outbound REST send is real and verified by reading the channel</td><td class="u">the Gateway socket</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td>telegram</td><td>PARTIAL</td><td class="u">Drives the <code>/invoke</code> envelope AP posts; outbound proven with a real <code>sendMessage</code></td><td class="u">Telegram → AP webhook</td><td><span class="b pass">PASS</span></td></tr>
+</tbody>
+</table>
+</div>
+<p class="note">Discord and Telegram cannot be fully round-tripped: <code>discord_direct.should_process()</code>
+drops bot-authored messages, so the bot provably cannot message itself. Telegram is the same. The
+transport hop is simulated; everything downstream is real.</p>
+
+<!-- ───────────────────────────── FLOWS ───────────────────────────── -->
+<h2>Flows — cron · poll · push <span class="n">11 cases · 9 pass · 1 fail · 1 xfail</span></h2>
+<p>Each armed flow is verified to have a real <code>ap_flow_id</code> that reads back out of Activepieces,
+then deleted. Subscriptions before and after every run: <strong>7 → 7</strong>, no leak.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Case</th><th>Mode</th><th>Sink</th><th>Utterance</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td><code>cron/papers/web</code></td><td>CRON</td><td>web</td><td class="u">every day at 9am send me new arxiv papers on mixture of experts</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>cron/feed_watcher/web</code></td><td>CRON</td><td>web</td><td class="u">every morning at 8am tell me what's new on https://hnrss.org/frontpage</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>cron/pricebot/telegram</code></td><td>CRON</td><td>telegram</td><td class="u">every day at 9am send me the price of bitcoin</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>cron/github_trending/slack</code></td><td>CRON</td><td>slack</td><td class="u">every hour post the top trending GitHub repos in this channel</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>poll/pricebot/web</code></td><td>POLL</td><td>web</td><td class="u">watch bitcoin every 2 minutes and ping me on any move</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>poll/weatherbot/web</code></td><td>POLL</td><td>web</td><td class="u">check the New York weather every hour and ping me only if rain is forecast</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>poll/feed_watcher/discord</code></td><td>POLL</td><td>discord</td><td class="u">check https://hnrss.org/frontpage every 15 minutes and tell me only about new items</td><td><span class="b fail">FAIL</span><br><span style="color:var(--muted);font-size:.8rem">armed a <strong>CRON</strong>, not a POLL</span></td></tr>
+<tr><td><code>push/gmail/web</code></td><td>PUSH</td><td>web</td><td class="u">when an email from my boss arrives, summarize it and message me</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>push/box/web</code></td><td>POLL<span style="color:var(--muted)">*</span></td><td>web</td><td class="u">when a resume lands in my Box, judge it against this JD … and tell me</td><td><span class="b pass">PASS</span></td></tr>
+<tr><td><code>push/github/web</code></td><td>PUSH</td><td>web</td><td class="u">when a pull request opens on anupamamurthi/pachyderm, summarize it and message me</td><td><span class="b xfail">XFAIL</span><br><span style="color:var(--muted);font-size:.8rem">AP's stored token is stale</span></td></tr>
+<tr><td><code>push/webhook/incident_triage</code></td><td>PUSH</td><td>web</td><td class="u">raw JSON POST: <code>{"alert":"HighCPU","service":"checkout-api",…}</code> → P1</td><td><span class="b pass">PASS</span></td></tr>
+</tbody>
+</table>
+</div>
+<p class="note"><span style="color:var(--muted)">*</span> With <code>EVENTS_BOX_BACKEND=direct</code>, a Box
+<em>push</em> request correctly arms <code>mode=POLL</code> (<code>box-poll-resume_judge</code>) — the direct
+backend polls Box's API; there is no AP push trigger. The mode label is not the user's phrasing.</p>
+
+<!-- ───────────────────────────── MATRIX ───────────────────────────── -->
+<h2>Trigger × sink matrix <span class="n">make test-matrix · 28 cells</span></h2>
+<p>The same intent armed from each origin. <code>find_or_create_flow</code> derives the sink from the caller's
+<code>thread_id</code>, and <code>dedup_key</code> embeds the sink — so every cell is a genuinely distinct flow.</p>
+
+<div class="scroll">
+<table class="grid">
+<thead><tr><th>Trigger</th><th style="text-align:center">web</th><th style="text-align:center">slack</th><th style="text-align:center">discord</th><th style="text-align:center">telegram</th></tr></thead>
+<tbody>
+<tr><td class="first">NOW</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td></tr>
+<tr><td class="first">CRON</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td><td class="c g-fail">✗</td><td class="c g-reuse">≡</td></tr>
+<tr><td class="first">POLL</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td><td class="c g-pass">✓</td><td class="c g-stale">!</td></tr>
+<tr><td class="first">PUSH (box)</td><td class="c g-reuse">≡</td><td class="c g-reuse">≡</td><td class="c g-pass">✓</td><td class="c g-stale">!</td></tr>
+<tr><td class="first">PUSH (github)</td><td class="c g-warn">⚠</td><td class="c g-warn">⚠</td><td class="c g-warn">⚠</td><td class="c g-warn">⚠</td></tr>
+<tr><td class="first">PUSH (gmail)</td><td class="c g-pass">✓</td><td class="c g-reuse">≡</td><td class="c g-pass">✓</td><td class="c g-stale">!</td></tr>
+<tr><td class="first">WEBHOOK</td><td class="c g-pass">✓</td><td class="c g-skip">–</td><td class="c g-skip">–</td><td class="c g-skip">–</td></tr>
+</tbody>
+</table>
+</div>
+<div class="legend">
+  <span><span class="g-pass">✓</span> armed (new AP flow)</span>
+  <span><span class="g-reuse">≡</span> reused via dedup_key</span>
+  <span><span class="g-warn">⚠</span> connect-needed</span>
+  <span><span class="g-stale">!</span> model claimed a flow exists; none does</span>
+  <span><span class="g-fail">✗</span> error</span>
+  <span><span class="g-skip">–</span> no per-channel sink</span>
+</div>
+
+<details>
+<summary>Why the telegram column shows <code>!</code></summary>
+<p>Conversation memory is keyed by <code>thread_id</code>. Slack and Discord threads get a <code>#&lt;run&gt;</code>
+suffix for fresh memory — safe because <code>principal.channel_origin</code> strips <code>#</code> at fire time.
+Telegram cannot: <code>concierge.find_or_create_flow</code> does its own parse <em>without</em> stripping
+(<code>concierge.py:262-263</code>), so a suffix would bake <code>chat_id#locus</code> into the AP send step. On a
+second run the model therefore answers <em>"that's already set up"</em> from memory without calling the arm
+tool — even though the flow was deleted. That is a real product behaviour, not a harness artefact: delete a
+flow, ask again, and the concierge tells you it still exists.</p>
+</details>
+
+<!-- ───────────────────────────── BUGS ───────────────────────────── -->
+<h2>What is broken — findings ranked by severity</h2>
+
+<div class="panel">
+<p><strong>1. Rotating a token does nothing. <span class="b fail">bug</span></strong><br>
+<code>ap_engine.ensure_secret_connection</code> (<code>ap_engine.py:465</code>) returns early when the
+<code>externalId</code> already exists — <em>it never updates the secret</em>. So changing
+<code>GITHUB_TOKEN</code> in <code>.env</code>, <em>and pasting a fresh PAT into the Studio's Connect button</em>
+(same function), both silently no-op. AP keeps the old token, GitHub answers <strong>401 Bad credentials</strong>
+when the piece creates the repo webhook, and the concierge relays "reconnect with a token that can manage
+webhooks", which the model paraphrases as <code>CONNECT NEEDED</code>.<br>
+<span style="color:var(--muted)">The connect gate is innocent — instrumented, it logs <code>exists=True</code>.
+The <code>.env</code> PAT is fine: it creates a webhook with HTTP 201. This is the original
+"I already connected my credentials" mystery.</span><br>
+<strong>Fix:</strong> update the connection value on mismatch. <strong>Workaround:</strong> delete the AP
+connection, then reconnect.</p>
+</div>
+
+<div class="panel">
+<p><strong>2. <code>support_digest</code> fabricates. <span class="b fail">bug</span></strong><br>
+It has <code>cuga-web</code> but no source of support tickets, so it Tavily-searches the phrase and dresses up
+whatever it finds. Observed returning a marketing blog <em>template</em> ("Daily support inbox digest ·
+Clourou") with a source URL, as if those were your overnight tickets. Non-deterministic: ~5 of 7 runs
+fabricate, ~2 ask for detail.<br>
+<span style="color:var(--muted)">An agent with a search tool and no data source will always invent an answer.
+This is the dangerous failure mode — <code>mailbot</code>'s and <code>resume_judge</code>'s are graceful by
+comparison, because they ask for the content.</span><br>
+<strong>Fix:</strong> give it a real ticket source, or make it decline when it has no data.</p>
+</div>
+
+<div class="panel">
+<p><strong>3. "every 15 minutes … only new items" arms a CRON, not a POLL. <span class="b fail">bug</span></strong><br>
+Deterministic on both paths — the offline classifier returns <code>{'mode': 'CRON'}</code>, and the LLM
+concierge agrees. This is the NL→intent seam. It is the single <span class="b fail">FAIL</span> in the suite.</p>
+</div>
+
+<div class="panel">
+<p><strong>4. The concierge trusts its memory over the store. <span class="b xfail">gap</span></strong><br>
+After a subscription is deleted, the model still answers "that's already set up" on the same thread —
+without calling the arm tool, so nothing is created. A sharper variant was observed saying "Cron flow set"
+having created nothing at all.</p>
+</div>
+
+<div class="panel">
+<p><strong>5. Slack's endpoint accepts unsigned requests. <span class="b xfail">security</span></strong><br>
+<code>SLACK_SIGNING_SECRET</code> is unset, and <code>slack_direct.verify_signature()</code> returns
+<code>True</code> for every caller when it is missing. So <code>/api/events/slack/events</code> currently
+accepts unsigned requests from anyone who finds your public ngrok URL, and can make your agents run. Given
+Activepieces is already exposed through a cloudflared tunnel, this is worth closing.</p>
+</div>
+
+<div class="panel">
+<p><strong>6. Integration-backed agents get no tools for their integration. <span class="b xfail">by design</span></strong><br>
+Activepieces owns the credential, so <code>mailbot</code> cannot read Gmail, and <code>resume_judge</code>
+cannot read Box — they can only process a payload a flow hands them. Same root cause as the Box watcher
+passing a file's <em>name</em> rather than its <em>content</em>.</p>
+</div>
+
+<div class="panel">
+<p><strong>7. Pre-existing: one offline test is not isolated. <span class="b xfail">flaky</span></strong><br>
+<code>test_box_poll_endpoint_dispatches_new_files</code> reads the <em>real</em> <code>.box_since.json</code>
+watermark instead of a temp file and asserts a hard-coded timestamp, so it broke permanently the first time a
+real Box poll ran. Fails on a pristine checkout; unrelated to this work.</p>
+</div>
+
+<!-- ───────────────────────────── COVERAGE ───────────────────────────── -->
+<h2>Coverage gaps — what these tests do <em>not</em> prove</h2>
+<p>Every PUSH case was <strong>armed, never fired</strong>. No resume was uploaded to Box, no PR was opened, no
+email was sent to the watched inbox. The suite proves the concierge routes the sentence to the right agent and
+creates the right Activepieces flow. It says nothing about whether that flow does the right thing when a real
+event lands. The harnesses that push real data through are
+<code>live_gmail_e2e.py</code>, <code>live_box_e2e.py</code> and <code>live_github_e2e.py</code>, and they were not
+run here.</p>
+
+<p>Also unreached by any seeded agent: <code>cuga-web.fetch_webpage_links</code>,
+<code>cuga-web.search_feeds</code>, <code>cuga-web.get_youtube_video_info</code>,
+<code>cuga-knowledge.search_semantic_scholar</code>. Four of <code>cuga-web</code>'s seven tools now have an
+agent (<code>webpage_summarizer</code>, <code>video_qa</code>, <code>feed_watcher</code>); before this run the
+whole fleet reached only <code>web_search</code>.</p>
+
+<div class="foot">
+Generated from the runs recorded in <code>tests/events/live_suite.py</code>,
+<code>live_matrix.py</code> and <code>live_e2e.py</code> on 2026-07-09.
+Narrative write-up: <code>roadmap/DECISIONS_2026-07-09.md</code> ·
+agent catalog: <code>tests/events/AGENT_NOW_CATALOG.md</code>.
+</div>
+
+</div>
+</body>
+</html>

@@ -15,11 +15,63 @@ APIs). Full recipe + the coverage matrix: [../../events_docs/TESTING.md](../../e
 
 `preflight.py` is the **credential doctor** — reports which live creds are present in `.env`; never fails.
 
+## Live — start here
+Prereqs: `make up` (CUGA on `:8100`, AP on `:8081`) + `make doctor` (creds). Then:
+
+```bash
+make test-live                 # 4 channels + 4 flow modes, ~1-2 min, self-cleaning
+make test-live-channels        # web · slack · discord · telegram only
+make test-live-flows           # NOW · CRON · POLL · PUSH · WEBHOOK only
+make test-suite-now            # EVERY seeded agent, invoked directly (~13 min)
+make test-suite-flows          # cron + poll + push (~5 min)
+make test-matrix               # EVERY trigger mode × EVERY channel sink × EVERY integration (~3-5 min)
+```
+
+`make sync` is **not** needed — the live harnesses are pure stdlib. Don't run bare `make test-suite`:
+its 1500 s budget is shorter than NOW + channels + flows, so the tail silently skips. Use the phase
+targets above, or `SUITE_BUDGET_SECS=2400 make test-suite`.
+
+`live_suite.py` (`make test-suite`) is the **behavioural** harness: every agent answers a NOW question
+(asserted against `meta.mcp`, so an agent can't pass by answering from the model's memory instead of
+calling its tools), then every flow mode arms. It reports **four** outcomes, not two —
+`PASS` · `FAIL` · `XFAIL` (a logged gap, reason printed) · `XPASS` (a gap just closed → go delete the
+expectation). Only `FAIL` reddens the bar. The agent catalog, with each utterance and what it is
+expected to do, is [AGENT_NOW_CATALOG.md](AGENT_NOW_CATALOG.md).
+
+`live_matrix.py` (`make test-matrix`) arms **every cell of the grid** — each mode and each integration
+against each of the four sinks — by POSTing the exact envelope that channel's transport posts, because
+`find_or_create_flow` derives the sink from the caller's `thread_id`. A cell is not pass/fail; it
+records `✓ armed · ≡ reused (dedup) · ? needs-input · ⚠ connect-needed · ! claims-existing-but-none ·
+✗ error · – skip`. Only `✗` fails the run: needs-input and connect-needed are *correct* behaviours.
+Optional `GITHUB_TEST_REPO=owner/repo` arms the github row (it creates a **real repo webhook**, which
+cleanup removes); `BOX_FOLDER_ID` stops the box watcher asking which folder.
+
+`live_e2e.py` is the **canonical live harness**: it sends a real message on every channel, validates
+the answer, arms every flow mode, verifies the Activepieces flow exists, then **deletes only the
+subscriptions it created**. Missing creds are `SKIP`, not `FAIL`. Three things it does that a naive
+harness gets wrong:
+
+- **It probes AP directly before trusting a `CONNECT NEEDED` reply.** The connect gate reports
+  "connect your credentials" when AP is merely unreachable, so without this probe every PUSH leg
+  false-passes when AP is down. See `roadmap/DECISIONS_2026-07-09.md` §2.
+- **It distinguishes a *new* subscription from a *reused* one.** `find_or_create_flow` de-duplicates
+  on `dedup_key`, so re-arming the same intent legitimately creates nothing. Matching on mode alone
+  (as the older harness does) lets a leftover flow from a previous run mask a broken arm.
+- **It matches integration watchers by `source_connector`, not by mode.** With
+  `EVENTS_BOX_BACKEND=direct`, a Box *push* request correctly arms `mode=POLL`
+  (`box-poll-resume_judge`) because the direct backend polls Box's API.
+
+How real is each channel leg — `web` and `slack` are full round trips (Slack posts a real message and
+sends a byte-identical Events API callback; the reply is read back from `conversations.replies`).
+`discord` and `telegram` are partial: a bot cannot send itself a message, so the transport hop
+(Gateway socket / Telegram→AP webhook) is simulated by driving the exact `/invoke` envelope it posts,
+while the **outbound** send is real and verified against the platform. The harness prints which is which.
+
 ## Live — one canonical harness per surface
-Prereqs: CUGA on `:8100`, AP on `:8081`, `GATEWAY_TOKEN`, watsonx creds. Then:
 
 | Surface | Harness | Proves |
 |---|---|---|
+| **Channels + all trigger modes** | **`live_e2e.py`** ⭐ | what `make test-live` runs — see above |
 | **All trigger modes** | `live_integrations_e2e.py` | NOW/CRON/POLL/PUSH across Box/GitHub/Gmail + webhook |
 | **GitHub** | `live_github_e2e.py` | real open PR → `pr_reviewer` reviews the real diff |
 | **Box** | `live_box_e2e.py` | real upload → poll → `resume_judge` → cleanup |
