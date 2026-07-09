@@ -9,7 +9,7 @@ for reactive usage tracking.
 from typing import TYPE_CHECKING, List, Optional, Mapping, Any
 from functools import partial
 from loguru import logger
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
@@ -17,6 +17,14 @@ from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_messag
 # Constants for token estimation
 CHARS_PER_TOKEN_FALLBACK = 4  # Rough estimate: 1 token ≈ 4 characters
 DEFAULT_CONTEXT_SIZE = 131072  # Default context size for unknown models (based on gpt-oss-120b)
+
+# Our approximate counter (count_tokens_approximately + 15% overhead) has been observed to
+# undercount IBM's real tokenizer by ~20% on JSON/dict-heavy prompts (e.g. skill/report
+# generation). Inflate the estimate and reserve a larger buffer before trusting it to size
+# max_completion_tokens for a WatsonX call, so we clamp to a small budget instead of sending
+# a request that watsonx.ai rejects with "max_tokens must be at least 1".
+WATSONX_PROMPT_SAFETY_MARGIN = 0.20
+WATSONX_COMPLETION_BUFFER = 1024
 
 # Model context size constants (in tokens)
 MODEL_CONTEXT_SIZES = {
@@ -332,6 +340,78 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
             return MODEL_CONTEXT_SIZES[key]
 
     return None
+
+
+def clamp_completion_tokens(
+    context_size: int,
+    prompt_tokens: int,
+    requested: int,
+    *,
+    buffer: int = 256,
+) -> int:
+    """Keep completion budget positive when prompt size is near the context window."""
+    remaining = context_size - prompt_tokens - buffer
+    if remaining >= requested:
+        return requested
+    return max(1, remaining)
+
+
+def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
+    """Prevent negative max_completion_tokens when prompt size nears the context window."""
+    try:
+        from langchain_ibm import ChatWatsonx
+    except ImportError:
+        return
+
+    llm = model
+    while hasattr(llm, "bound"):
+        llm = llm.bound
+    if not isinstance(llm, ChatWatsonx):
+        return
+
+    context_size = ensure_model_context_profile(llm)
+    counter = TokenCounter(model=llm)
+    lc_messages = []
+    for message in messages:
+        if isinstance(message, dict):
+            role = (message.get("role") or "user").lower()
+            content = str(message.get("content", ""))
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+        else:
+            lc_messages.append(message)
+    raw_prompt_tokens = counter.count_total_context_tokens(lc_messages)
+    # Inflate: our estimator undercounts vs IBM's real tokenizer on dense/JSON-heavy prompts.
+    prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
+
+    params = dict(llm.params or {})
+    requested = (
+        getattr(llm, "max_completion_tokens", None)
+        or getattr(llm, "max_tokens", None)
+        or params.get("max_completion_tokens")
+        or 16000
+    )
+    requested = int(requested)
+
+    clamped = clamp_completion_tokens(
+        context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
+    )
+    if clamped != requested:
+        logger.warning(
+            "Clamped WatsonX max_completion_tokens {} -> {} "
+            "(~{} raw / ~{} safety-inflated prompt tokens, {} context)",
+            requested,
+            clamped,
+            raw_prompt_tokens,
+            prompt_tokens,
+            context_size,
+        )
+    params["max_completion_tokens"] = clamped
+    llm.params = params
 
 
 def ensure_model_context_profile(model: Optional[Any] = None, model_name: Optional[str] = None) -> int:

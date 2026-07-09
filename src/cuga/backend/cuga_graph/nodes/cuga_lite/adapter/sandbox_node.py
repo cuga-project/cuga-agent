@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
@@ -24,6 +24,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     is_find_tools_listing_markdown,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.utils.context_management_utils import (
+    prepare_reflection_context,
+    truncate_text_for_context,
+)
+from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
 
@@ -122,32 +127,45 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         settings.agent.planner.model
                     )
                     reflection_agent = reflection_task(llm=active_model)
-                    # Format chat messages as history string
-                    agent_history_parts = []
-                    for msg in state.chat_messages:
-                        if isinstance(msg, HumanMessage):
-                            agent_history_parts.append(f"User: {msg.content}")
-                        elif isinstance(msg, AIMessage):
-                            agent_history_parts.append(f"Assistant: {msg.content}")
-                        else:
-                            agent_history_parts.append(
-                                f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}"
-                            )
-                    agent_history = (
-                        "\n".join(agent_history_parts)
-                        if agent_history_parts
-                        else "No previous conversation history"
+                    reflection_text_limit = min(
+                        30_000,
+                        settings.advanced_features.execution_output_max_length // 2,
+                    )
+                    agent_history, coder_output = await prepare_reflection_context(
+                        list(state.chat_messages),
+                        output,
+                        active_model,
+                        max_output_chars=reflection_text_limit,
+                        max_history_chars=reflection_text_limit,
+                        tracker=adapter._tracker,
+                    )
+                    skills_prompt_section = truncate_text_for_context(
+                        state.reflection_skills_prompt_section or "",
+                        reflection_text_limit,
+                        label="Skills prompt section",
+                    )
+                    current_task = reflection_current_task(state) or "(no task text)"
+                    clamp_watsonx_completion_for_messages(
+                        active_model,
+                        [
+                            {
+                                "role": "user",
+                                "content": "\n".join(
+                                    [current_task, agent_history, coder_output, skills_prompt_section]
+                                ),
+                            }
+                        ],
                     )
                     reflection_result = await reflection_agent.ainvoke(
                         {
                             "instructions": "",
-                            "current_task": reflection_current_task(state) or "(no task text)",
+                            "current_task": current_task,
                             "agent_history": agent_history,
-                            "coder_agent_output": output,
+                            "coder_agent_output": coder_output,
                             "apps": state.reflection_apps or [],
                             "enable_find_tools": state.reflection_enable_find_tools,
                             "skills_enabled": state.reflection_skills_enabled,
-                            "skills_prompt_section": state.reflection_skills_prompt_section,
+                            "skills_prompt_section": skills_prompt_section,
                             "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                         },
                         config=config or {},
