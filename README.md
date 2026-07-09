@@ -539,6 +539,38 @@ if __name__ == "__main__":
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
+### Run Receipt
+
+Answer "what did this run cost and where did the time go?" without any external
+observability stack. Enable the flag and every `invoke()` returns a per-run receipt
+with token usage, estimated cost, and an LLM-vs-tools time split:
+
+```toml
+# settings.toml
+[advanced_features]
+run_receipt = true  # default: false — zero overhead when disabled
+```
+
+```python
+result = await agent.invoke("how many accounts are there?")
+print(result.receipt)
+# ┌─ Run Receipt ─────────────────────────────────┐
+# │ model: gpt-4o                                 │
+# │ tokens: 18,342 in / 2,101 out (20,443)        │
+# │ est. cost: $0.0668                            │
+# │ llm calls: 7   tool calls: 4                  │
+# │ time: 9.4s (llm 6.1s / tools 2.8s)            │
+# │ slowest tool: get_accounts 1.9s               │
+# └───────────────────────────────────────────────┘
+result.receipt.cost_usd        # structured access: 0.0668 (None for unknown models)
+result.receipt.tool_timings    # per-tool call counts and total durations
+```
+
+Costs come from a static price table ([`backend/llm/pricing.py`](src/cuga/backend/llm/pricing.py));
+models without a public list price (e.g. self-hosted) show `est. cost: n/a`.
+Tool timings follow the same semantics as `track_tool_calls`: they cover registry/MCP
+tools and functions decorated with `@tracked_tool`.
+
 ### Knowledge Base
 
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
