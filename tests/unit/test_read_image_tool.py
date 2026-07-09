@@ -1,4 +1,4 @@
-"""Unit tests for the analyze_image system tool."""
+"""Unit tests for the read_image system tool."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from cuga.backend.tools.image_analysis import (
     _build_data_url,
     _is_url,
     _resolve_path,
-    analyze_image,
-    create_analyze_image_tool,
+    read_image,
+    create_read_image_tool,
 )
 
 
@@ -92,26 +92,26 @@ def test_build_data_url_jpeg_media_type(tmp_path):
 
 
 def test_create_tool_name_and_description():
-    tool = create_analyze_image_tool()
-    assert tool.name == "analyze_image"
+    tool = create_read_image_tool()
+    assert tool.name == "read_image"
     assert "image" in tool.description.lower()
     assert "vision" in tool.description.lower() or "visual" in tool.description.lower()
 
 
 def test_create_tool_has_coroutine():
-    tool = create_analyze_image_tool()
+    tool = create_read_image_tool()
     assert tool.coroutine is not None
 
 
 def test_create_tool_schema_fields():
-    tool = create_analyze_image_tool()
+    tool = create_read_image_tool()
     schema = tool.args_schema.model_json_schema()
     props = schema.get("properties", {})
     assert "image" in props
     assert "question" in props
 
 
-# ── analyze_image logic ────────────────────────────────────────────────────────
+# ── read_image logic ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_primary_model_used_when_it_succeeds(tmp_path):
         patch("cuga.backend.llm.models.LLMManager", return_value=mock_mgr_instance),
         patch("cuga.config.settings"),
     ):
-        result = await analyze_image(image=str(f), question="What colour is the pixel?")
+        result = await read_image(image=str(f), question="What colour is the pixel?")
 
     assert result == "A red pixel."
     mock_llm.ainvoke.assert_awaited_once()
@@ -165,7 +165,7 @@ async def test_fallback_used_when_primary_fails(tmp_path, monkeypatch):
         patch("cuga.config.settings"),
         patch("litellm.completion", return_value=fake_response),
     ):
-        result = await analyze_image(image=str(f), question="Describe the image.")
+        result = await read_image(image=str(f), question="Describe the image.")
 
     assert result == "Fallback answer."
 
@@ -188,4 +188,4 @@ async def test_fallback_raises_when_no_model_configured(tmp_path, monkeypatch):
         patch("cuga.config.settings"),
     ):
         with pytest.raises(RuntimeError, match="IMAGE_ANALYSIS_MODEL"):
-            await analyze_image(image=str(f), question="What is this?")
+            await read_image(image=str(f), question="What is this?")

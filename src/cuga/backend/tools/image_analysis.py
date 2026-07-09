@@ -1,4 +1,4 @@
-"""System tool: analyze_image.
+"""System tool: read_image.
 
 Accepts a local file path (absolute, relative, or /workspace/...) or an HTTPS
 URL, sends the image to the configured LLM, and returns a text description.
@@ -34,6 +34,13 @@ _KNOWN_NON_VISION_PATTERNS = (
     "gpt-oss",
     "falcon",
 )
+
+# Per-attempt cap for each vision LLM call. read_image can chain a primary
+# attempt followed by an IMAGE_ANALYSIS_MODEL fallback; without this cap a
+# single hung call could ride the model's full HTTP timeout (up to
+# connections.llm_http_timeout, 61s by default) twice, blowing past the
+# sandbox's own wall-clock budget for the whole code block.
+_VISION_CALL_TIMEOUT_SECONDS = 35.0
 
 _MEDIA_TYPE_MAP = {
     ".jpg": "image/jpeg",
@@ -89,7 +96,7 @@ def _build_data_url(source: str) -> str:
     return f"data:{media_type};base64,{encoded}"
 
 
-async def analyze_image(image: str, question: str) -> str:
+async def read_image(image: str, question: str) -> str:
     """Analyze an image and return a text answer.
 
     Tries the primary model first; falls back to IMAGE_ANALYSIS_MODEL if the
@@ -119,7 +126,7 @@ async def analyze_image(image: str, question: str) -> str:
         _primary_name = (_settings.agent.code.model.get("model_name") or "").lower()
         if any(pat in _primary_name for pat in _KNOWN_NON_VISION_PATTERNS):
             logger.info(
-                f"analyze_image: primary model {_primary_name!r} is a known non-vision model, "
+                f"read_image: primary model {_primary_name!r} is a known non-vision model, "
                 "skipping directly to IMAGE_ANALYSIS_MODEL"
             )
             _skip_primary = True
@@ -133,13 +140,18 @@ async def analyze_image(image: str, question: str) -> str:
 
             primary_llm = LLMManager().get_model(settings.agent.code.model)
             msg = HumanMessage(content=multimodal_content)
-            result = await primary_llm.ainvoke([msg])
+            result = await asyncio.wait_for(primary_llm.ainvoke([msg]), timeout=_VISION_CALL_TIMEOUT_SECONDS)
             text = result.content if isinstance(result.content, str) else str(result.content)
-            logger.info("analyze_image: primary model succeeded")
+            logger.info("read_image: primary model succeeded")
             return text
+        except asyncio.TimeoutError:
+            logger.info(
+                f"read_image: primary model did not respond within {_VISION_CALL_TIMEOUT_SECONDS}s, "
+                "falling back to IMAGE_ANALYSIS_MODEL"
+            )
         except Exception as exc:
             logger.info(
-                f"analyze_image: primary model rejected vision content ({type(exc).__name__}: {exc}), "
+                f"read_image: primary model rejected vision content ({type(exc).__name__}: {exc}), "
                 "falling back to IMAGE_ANALYSIS_MODEL"
             )
 
@@ -183,13 +195,22 @@ async def analyze_image(image: str, question: str) -> str:
         completion_args["custom_llm_provider"] = "openai"
 
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, lambda: litellm.completion(**completion_args))
+    try:
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: litellm.completion(**completion_args)),
+            timeout=_VISION_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            f"IMAGE_ANALYSIS_MODEL {fallback_model!r} did not respond within "
+            f"{_VISION_CALL_TIMEOUT_SECONDS}s."
+        ) from exc
     text = response.choices[0].message.content
-    logger.info(f"analyze_image: fallback model {fallback_model!r} succeeded")
+    logger.info(f"read_image: fallback model {fallback_model!r} succeeded")
     return text
 
 
-class _AnalyzeImageInput(BaseModel):
+class _ReadImageInput(BaseModel):
     image: str = Field(
         ...,
         description=("Path to the image file (absolute, relative, or /workspace/filename) or an HTTPS URL."),
@@ -200,11 +221,29 @@ class _AnalyzeImageInput(BaseModel):
     )
 
 
-def create_analyze_image_tool() -> StructuredTool:
-    """Return a StructuredTool wrapping :func:`analyze_image`."""
+def create_read_image_tool(resolve_workspace_path: Optional[callable] = None) -> StructuredTool:
+    """Return a StructuredTool wrapping :func:`read_image`.
+
+    Args:
+        resolve_workspace_path: Optional callable that translates a virtual
+            ``/workspace/...`` path to the real host path for the active
+            thread's sandbox (e.g. a per-thread native/local sandbox root).
+            Without it, ``read_image`` can only find files relative to the
+            backend process's own working directory, which is wrong whenever
+            the file was produced inside a per-thread sandbox workspace.
+    """
+    if resolve_workspace_path is not None:
+
+        async def _read_image_with_resolved_path(image: str, question: str) -> str:
+            return await read_image(resolve_workspace_path(image), question)
+
+        coroutine = _read_image_with_resolved_path
+    else:
+        coroutine = read_image
+
     return StructuredTool.from_function(
-        coroutine=analyze_image,
-        name="analyze_image",
+        coroutine=coroutine,
+        name="read_image",
         description=(
             "Analyze or describe an image. "
             "Use this whenever the user references an image file or URL, asks to "
@@ -213,5 +252,5 @@ def create_analyze_image_tool() -> StructuredTool:
             "Accepts an image path (/workspace/file.png, absolute path, or URL) and "
             "a question. Returns a text description or answer."
         ),
-        args_schema=_AnalyzeImageInput,
+        args_schema=_ReadImageInput,
     )
