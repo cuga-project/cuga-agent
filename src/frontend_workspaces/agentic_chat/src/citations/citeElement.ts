@@ -25,17 +25,30 @@ const TEMPLATE = `
   button:focus-visible { outline: 2px solid var(--cds-focus, #0f62fe); outline-offset: 1px; }
   :host([active]) button { background: var(--cds-link-primary, #0f62fe); color: #ffffff; }
   .card {
-    display: none; position: fixed; transform: translate(-50%, calc(-100% - 8px)); z-index: 9000;
+    display: none; position: fixed; inset: auto; margin: 0;
+    transform: translate(-50%, calc(-100% - 8px)); z-index: 9000;
     width: max-content; max-width: 280px; padding: 10px 12px;
     background: var(--cds-layer-01, #ffffff);
     border: 1px solid var(--cds-border-subtle-01, #e0e0e0);
     border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,.2);
     font: 400 12px/1.4 "IBM Plex Sans", system-ui, sans-serif;
     color: var(--cds-text-primary, #161616); text-align: start; line-height: 1.4;
-    cursor: pointer;
+    cursor: pointer; overflow: visible;
   }
   .card:hover .hint { text-decoration: underline; }
-  :host(:hover) .card, :host(:focus-within) .card { display: block; }
+  /* Modern browsers: the card is shown as a popover in the browser TOP LAYER
+     (driven by JS), which is positioned relative to the viewport and clipped by
+     nothing — the real fix for tooltips cut off inside a markdown table's
+     transformed/overflow scroll wrapper. inset:auto/margin:0 above cancel the
+     UA popover centering so our left/top + transform still place it. */
+  .card:popover-open { display: block; }
+  /* Transparent bridge spanning the 8px gap between the card and the chip, so
+     the pointer never crosses dead space traveling to click the card. */
+  .card::after { content: ""; position: absolute; left: 0; right: 0; bottom: -8px; height: 8px; }
+  /* Fallback (no Popover API): plain position:fixed shown on hover. Escapes
+     overflow clipping but NOT a transformed ancestor. The :not([popover]) guard
+     keeps this from fighting the popover path (which sets the attribute). */
+  :host(:hover) .card:not([popover]), :host(:focus-within) .card:not([popover]) { display: block; }
   .head { display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
   .file { font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; unicode-bidi: plaintext; }
@@ -75,17 +88,64 @@ export class CugaCiteElement extends HTMLElement {
       // The hover card advertises "Click to view source" — honor clicks on
       // the card itself, not just the chip underneath it.
       root.querySelector('.card')!.addEventListener('click', open);
-      // The card is position:fixed so it escapes any ancestor's overflow clip
-      // (e.g. a markdown table's scroll wrapper). Anchor it to the chip on
-      // hover/focus; the CSS transform centers it and pops it above.
+      // The hover card must escape ancestor clipping. position:fixed alone
+      // escapes overflow, but NOT a transformed / contain'd ancestor — and a
+      // markdown-table scroll wrapper is exactly that, re-establishing a
+      // containing block that clips the card. The robust fix: promote the card
+      // to the browser TOP LAYER via the Popover API, which is positioned
+      // relative to the viewport and clipped by nothing. Anchor it to the chip
+      // on hover/focus; the CSS transform centers it and pops it above.
       const card = root.querySelector('.card') as HTMLElement;
+      const usePopover = typeof (card as HTMLElement & { showPopover?: () => void }).showPopover === 'function';
+      if (usePopover) card.setAttribute('popover', 'manual');
       const place = () => {
         const r = this.getBoundingClientRect();
         card.style.left = `${r.left + r.width / 2}px`;
         card.style.top = `${r.top}px`;
       };
-      this.addEventListener('mouseenter', place);
-      this.addEventListener('focusin', place);
+      let hideTimer: number | undefined;
+      const cancelHide = () => {
+        if (hideTimer !== undefined) {
+          clearTimeout(hideTimer);
+          hideTimer = undefined;
+        }
+      };
+      const show = () => {
+        cancelHide();
+        place();
+        // Fallback path (no popover attribute) is shown purely by the CSS
+        // :host(:hover) rule — nothing to do here.
+        if (!usePopover) return;
+        try {
+          if (!card.matches(':popover-open')) (card as HTMLElement & { showPopover: () => void }).showPopover();
+        } catch {
+          /* showPopover throws if already open / not connected — safe to ignore */
+        }
+      };
+      const hideNow = () => {
+        cancelHide();
+        if (!usePopover) return;
+        try {
+          if (card.matches(':popover-open')) (card as HTMLElement & { hidePopover: () => void }).hidePopover();
+        } catch {
+          /* hidePopover throws if not currently open — safe to ignore */
+        }
+      };
+      // Defer the hide so the pointer can travel from the chip up onto the card
+      // — which is promoted to the top layer and sits OUTSIDE the host's box, so
+      // the host's mouseleave fires as the pointer crosses the gap. Entering the
+      // card (or its ::after bridge) cancels the pending hide, keeping the
+      // advertised "Click to view source" affordance reachable.
+      const scheduleHide = () => {
+        cancelHide();
+        hideTimer = window.setTimeout(hideNow, 140);
+      };
+      this.addEventListener('mouseenter', show);
+      this.addEventListener('focusin', show);
+      this.addEventListener('mouseleave', scheduleHide);
+      this.addEventListener('focusout', scheduleHide);
+      card.addEventListener('mouseenter', cancelHide);
+      card.addEventListener('mouseleave', scheduleHide);
     }
     this.render();
   }
