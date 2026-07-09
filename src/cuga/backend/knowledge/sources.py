@@ -188,6 +188,7 @@ _ledgers: OrderedDict[str, SourceLedger] = OrderedDict()
 _registry_lock = threading.Lock()
 _MAX_THREADS = 300
 
+
 def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
     if not thread_id:
         return None
@@ -268,9 +269,7 @@ def _warn_unsupported_markers(text: str) -> None:
             return
 
 
-def resolve_citations(
-    text: str, ledger: SourceLedger | None
-) -> tuple[str, list[dict[str, Any]]]:
+def resolve_citations(text: str, ledger: SourceLedger | None) -> tuple[str, list[dict[str, Any]]]:
     """Rewrite ``[sN]`` markers into per-message display numbers ``[k]``.
 
     - Display numbers are assigned in order of first appearance.
@@ -290,7 +289,7 @@ def resolve_citations(
     if not has_citation_markers(text):
         return text, []
 
-    numbers: dict[str, int] = {}          # cite_id -> display n
+    numbers: dict[str, int] = {}  # cite_id -> display n
     ordered: list[SourceRecord] = []
     warned: set[str] = set()
 
@@ -316,9 +315,7 @@ def resolve_citations(
         return "".join(out)
 
     parts = _CODE_RE.split(text)
-    resolved = "".join(
-        part if i % 2 else _MARKER_RE.sub(_sub, part) for i, part in enumerate(parts)
-    )
+    resolved = "".join(part if i % 2 else _MARKER_RE.sub(_sub, part) for i, part in enumerate(parts))
     sources = [rec.to_snapshot(n=i + 1) for i, rec in enumerate(ordered)]
     return resolved, sources
 

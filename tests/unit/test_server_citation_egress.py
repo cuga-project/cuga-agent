@@ -1,8 +1,9 @@
 # tests/unit/test_server_citation_egress.py
 """Tests for the two citation egress helpers extracted into main.py:
-  - _format_sources_footer  (pure function, no mocking needed)
-  - _rehydrate_citation_ledger  (async, needs a DB stub)
+- _format_sources_footer  (pure function, no mocking needed)
+- _rehydrate_citation_ledger  (async, needs a DB stub)
 """
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ def setup_function():
 # ---------------------------------------------------------------------------
 # _format_sources_footer
 # ---------------------------------------------------------------------------
+
 
 def test_footer_formats_pages_and_omits_none():
     footer = _format_sources_footer(
@@ -50,6 +52,7 @@ def test_footer_page_zero_is_included():
 # _rehydrate_citation_ledger helpers
 # ---------------------------------------------------------------------------
 
+
 def _ev(name, data):
     return SimpleNamespace(event_name=name, event_data=data)
 
@@ -73,6 +76,7 @@ def _app_state_with_engine(events):
 # ---------------------------------------------------------------------------
 # _rehydrate_citation_ledger
 # ---------------------------------------------------------------------------
+
 
 def test_rehydration_restores_only_valid_answer_sources(monkeypatch):
     events = [
@@ -187,9 +191,7 @@ def test_rehydration_honors_session_override_over_agent_flag(monkeypatch):
     app_state = SimpleNamespace(knowledge_engine=engine, agent_id="cuga-default")
     monkeypatch.setattr(_main, "get_conversation_db", lambda: db)
     # per-session override turns citations ON for this thread
-    set_session_override_lookup(
-        lambda tid: {"citations_enabled": True} if tid == "t-override" else {}
-    )
+    set_session_override_lookup(lambda tid: {"citations_enabled": True} if tid == "t-override" else {})
     try:
         asyncio.run(_rehydrate_citation_ledger(app_state, "t-override", "default_user"))
     finally:

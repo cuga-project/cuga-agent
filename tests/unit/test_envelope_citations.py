@@ -11,15 +11,12 @@ from cuga.backend.knowledge.sources import (
 
 
 def _result(text, filename="a.pdf", page=1, scope="agent"):
-    return SimpleNamespace(text=text, filename=filename, page=page, scope=scope,
-                           score=0.8, section_path="")
+    return SimpleNamespace(text=text, filename=filename, page=page, scope=scope, score=0.8, section_path="")
 
 
 def _envelope(results):
-    chunks = [{"source": r.scope, "text": r.text, "filename": r.filename, "page": r.page}
-              for r in results]
-    env = {"scope": "agent", "results": chunks,
-           "retrieval": {"reading_directive": "base directive."}}
+    chunks = [{"source": r.scope, "text": r.text, "filename": r.filename, "page": r.page} for r in results]
+    env = {"scope": "agent", "results": chunks, "retrieval": {"reading_directive": "base directive."}}
     # emulate envelope.py by_source sharing the SAME dict objects
     env["by_source"] = {"agent": [c for c in chunks]}
     return env
@@ -74,7 +71,8 @@ def test_stamping_failure_never_breaks_the_envelope(monkeypatch):
     env = _envelope(results)
     ledger = sources_mod.get_ledger("t-guard")
     monkeypatch.setattr(
-        type(ledger), "register",
+        type(ledger),
+        "register",
         lambda self, result, *, query: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     annotate_envelope_with_citations(env, results, thread_id="t-guard", query="q")

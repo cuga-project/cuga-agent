@@ -75,6 +75,7 @@ def test_effective_enablement_prefers_session_override():
 def test_lookup_errors_fall_back_to_config():
     def boom(tid):
         raise RuntimeError("provider down")
+
     set_session_override_lookup(boom)
     assert citations_enabled_for(KnowledgeConfig(citations_enabled=True), "t") is True
 

@@ -117,9 +117,7 @@ def _client(engine: KnowledgeEngine) -> KnowledgeClient:
 
 
 @pytest.mark.asyncio
-async def test_real_search_stamps_ledger_then_answer_resolves_both_bracket_styles(
-    engine, sample_txt
-):
+async def test_real_search_stamps_ledger_then_answer_resolves_both_bracket_styles(engine, sample_txt):
     """The full net: real ingest → real search stamps a real cite_id into the
     thread ledger → an answer citing that id in ASCII [s1] AND lenticular 【s1】
     resolves to ASCII [n] with a populated source snapshot.
@@ -134,9 +132,7 @@ async def test_real_search_stamps_ledger_then_answer_resolves_both_bracket_style
     await _ingest_and_wait(engine, collection, sample_txt)
 
     # REAL search seam — this is what stamps + registers into get_ledger(thread).
-    envelope = await client.search_envelope(
-        "LangChain vector search", scope="agent", thread_id=thread
-    )
+    envelope = await client.search_envelope("LangChain vector search", scope="agent", thread_id=thread)
     results = envelope["results"]
     assert results, "expected at least one real search hit"
     cid = results[0]["cite_id"]
@@ -148,10 +144,7 @@ async def test_real_search_stamps_ledger_then_answer_resolves_both_bracket_style
 
     # REAL resolution. Model answer cites the real id in BOTH bracket styles.
     state = SimpleNamespace(
-        final_answer=(
-            f"LangChain powers document search [{cid}]. "
-            f"It supports many formats 【{cid}】."
-        ),
+        final_answer=(f"LangChain powers document search [{cid}]. It supports many formats 【{cid}】."),
         thread_id=thread,
         sources=[],
     )
@@ -218,9 +211,7 @@ async def test_disabled_session_override_strips_real_markers(engine, sample_txt)
     client = _client(engine)
     collection = client._resolve_collection("agent")
     await _ingest_and_wait(engine, collection, sample_txt)
-    envelope = await client.search_envelope(
-        "LangChain vector search", scope="agent", thread_id=thread
-    )
+    envelope = await client.search_envelope("LangChain vector search", scope="agent", thread_id=thread)
     cid = envelope["results"][0]["cite_id"]
 
     set_session_override_lookup(lambda tid: {"citations_enabled": False})
@@ -250,9 +241,7 @@ async def test_unsupported_bracket_left_visible_not_silent(engine, sample_txt):
     client = _client(engine)
     collection = client._resolve_collection("agent")
     await _ingest_and_wait(engine, collection, sample_txt)
-    envelope = await client.search_envelope(
-        "LangChain vector search", scope="agent", thread_id=thread
-    )
+    envelope = await client.search_envelope("LangChain vector search", scope="agent", thread_id=thread)
     cid = envelope["results"][0]["cite_id"]
 
     state = SimpleNamespace(final_answer=f"paren cite ({cid}) here", thread_id=thread, sources=[])

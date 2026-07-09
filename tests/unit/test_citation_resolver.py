@@ -15,8 +15,12 @@ def _ledger_with(n=3):
     for i in range(n):
         ledger.register(
             SimpleNamespace(
-                text=f"chunk text {i}", filename=f"f{i}.pdf", page=i + 1,
-                scope="agent", score=0.8, section_path="",
+                text=f"chunk text {i}",
+                filename=f"f{i}.pdf",
+                page=i + 1,
+                scope="agent",
+                score=0.8,
+                section_path="",
             ),
             query=f"query {i}",
         )
@@ -143,11 +147,12 @@ def test_real_ledger_miss_still_warns(caplog):
 
 # --- fix 2: code-fence guard extended ----------------------------------------
 
+
 def test_unterminated_fence_protects_marker():
     """Truncated LLM output: unterminated ``` fence — [s2] inside must survive."""
     raw = "intro [s1]\n```py\nprint(arr[s2])\n# never closed"
     text, sources = resolve_citations(raw, _ledger_with())
-    assert "arr[s2]" in text          # protected — not resolved
+    assert "arr[s2]" in text  # protected — not resolved
     assert text.startswith("intro [1]")
     assert len(sources) == 1
 
@@ -156,12 +161,13 @@ def test_double_backtick_inline_protects_marker():
     """Double-backtick inline span — [s2] inside must survive."""
     raw = "``x[s2]`` inline [s1]"
     text, sources = resolve_citations(raw, _ledger_with())
-    assert "x[s2]" in text            # protected
-    assert "[1]" in text              # [s1] resolved
+    assert "x[s2]" in text  # protected
+    assert "[1]" in text  # [s1] resolved
     assert len(sources) == 1
 
 
 # --- fix 9: whitespace separator in marker list ------------------------------
+
 
 def test_space_separated_marker_list():
     text, sources = resolve_citations("x [s1 s3].", _ledger_with())

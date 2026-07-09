@@ -821,9 +821,7 @@ def _resolve_session_provider(request: Request, identity: KnowledgeIdentity):
 def _apply_session_settings_patch(provider, thread_id: str, body: dict, *, user_id: str, tenant_id: str):
     patch = {k: _coerce_flag(v) for k, v in (body or {}).items() if k in _SESSION_SETTINGS_ALLOWED}
     if not patch:
-        raise ValueError(
-            f"no valid session settings in patch; allowed: {sorted(_SESSION_SETTINGS_ALLOWED)}"
-        )
+        raise ValueError(f"no valid session settings in patch; allowed: {sorted(_SESSION_SETTINGS_ALLOWED)}")
     return provider.patch_session_overrides(thread_id, patch, user_id=user_id, tenant_id=tenant_id)
 
 

@@ -5,6 +5,7 @@ Test 1 - GC: orphaned stream_events (no conversation_history row) are cleaned up
 Test 2 - disable_history save path: events_only=True calls save_stream_events
           but not save_conversation.
 """
+
 import asyncio
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,8 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_events(n: int = 1):
-    return [{"event_name": "Answer", "event_data": f"data-{i}", "timestamp": "t", "sequence": i} for i in range(n)]
+    return [
+        {"event_name": "Answer", "event_data": f"data-{i}", "timestamp": "t", "sequence": i} for i in range(n)
+    ]
 
 
 def _setup_in_memory_db():
@@ -61,6 +65,7 @@ def _teardown_db(original_fn, tmpfile_name, _facade):
 # Test 1 – GC removes orphan rows, keeps rows anchored by conversation_history
 # ---------------------------------------------------------------------------
 
+
 def test_gc_removes_orphan_keeps_anchored():
     """
     thread_A: stream_events only (no conversation_history row)  -> GC must delete
@@ -68,6 +73,7 @@ def test_gc_removes_orphan_keeps_anchored():
     """
     db, tmpfile, orig, facade = _setup_in_memory_db()
     try:
+
         async def _run():
             # thread_A: orphan stream events
             await db.save_stream_events("agent", "thread_A", "user", _make_events(2))
@@ -98,6 +104,7 @@ def test_gc_removes_orphan_keeps_anchored():
 # ---------------------------------------------------------------------------
 # Test 2 – disable_history path: events saved, conversation NOT saved
 # ---------------------------------------------------------------------------
+
 
 def test_disable_history_saves_events_not_conversation():
     """_save_conversation_and_events_async(..., events_only=True) must call

@@ -92,9 +92,7 @@ def test_supervisor_empty_fallback_clears_stale_sources():
         last_planner_answer="",
         sources=[{"n": 1, "cite_id": "s1", "filename": "old.pdf"}],
     )
-    asyncio.run(
-        FinalAnswerNode.node_handler(state, agent=None, name="FinalAnswerAgent", hitl_handler=None)
-    )
+    asyncio.run(FinalAnswerNode.node_handler(state, agent=None, name="FinalAnswerAgent", hitl_handler=None))
     assert state.sources == []
 
 

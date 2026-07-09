@@ -81,7 +81,7 @@ async def test_live_chat_citations_resolve_to_chips_and_sources():
             "fiscal year 2025? Cite the source.",
             thread_id=str(uuid.uuid4()),
         )
-        answer = (getattr(result, "answer", None) or "")
+        answer = getattr(result, "answer", None) or ""
 
         # INVARIANT 1 — no citation-shaped marker left unresolved (any bracket style).
         leftover = _UNRESOLVED_CITE_RE.search(answer)

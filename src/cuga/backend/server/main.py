@@ -241,9 +241,7 @@ async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user
 
         if _get_ledger(thread_id, create=False) is None:
             conversation_db = get_conversation_db()
-            stream_history = await conversation_db.get_stream_events(
-                app_state.agent_id, thread_id, user_id
-            )
+            stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
             events_list = stream_history.events if stream_history else []
             if events_list:
                 _ledger = _get_ledger(thread_id)  # create

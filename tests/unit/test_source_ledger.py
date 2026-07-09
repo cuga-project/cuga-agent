@@ -11,8 +11,12 @@ from cuga.backend.knowledge.sources import (
 
 def _chunk(text="alpha beta", filename="a.pdf", page=1, scope="agent", score=0.9, section_path=""):
     return SimpleNamespace(
-        text=text, filename=filename, page=page, scope=scope,
-        score=score, section_path=section_path,
+        text=text,
+        filename=filename,
+        page=page,
+        scope=scope,
+        score=score,
+        section_path=section_path,
     )
 
 
@@ -49,12 +53,12 @@ def test_get_unknown_returns_none():
 
 def test_cap_evicts_oldest_uncited_first():
     ledger = SourceLedger(max_records=3)
-    ledger.register(_chunk(text="t1"), query="q")   # s1
-    ledger.register(_chunk(text="t2"), query="q")   # s2
+    ledger.register(_chunk(text="t1"), query="q")  # s1
+    ledger.register(_chunk(text="t2"), query="q")  # s2
     ledger.get("s1").cited = True
-    ledger.register(_chunk(text="t3"), query="q")   # s3
-    ledger.register(_chunk(text="t4"), query="q")   # s4 -> evicts s2 (oldest uncited)
-    assert ledger.get("s1") is not None   # cited survives
+    ledger.register(_chunk(text="t3"), query="q")  # s3
+    ledger.register(_chunk(text="t4"), query="q")  # s4 -> evicts s2 (oldest uncited)
+    assert ledger.get("s1") is not None  # cited survives
     assert ledger.get("s2") is None
     assert ledger.get("s4").cite_id == "s4"
 
@@ -63,14 +67,14 @@ def test_re_retrieval_refreshes_recency_before_eviction():
     """Regression: a re-retrieved (still-uncited) chunk must not be evicted
     before newer one-off chunks — register() move_to_end on a content re-hit."""
     ledger = SourceLedger(max_records=3)
-    ledger.register(_chunk(text="t1"), query="q")   # s1
-    ledger.register(_chunk(text="t2"), query="q")   # s2
-    ledger.register(_chunk(text="t3"), query="q")   # s3
+    ledger.register(_chunk(text="t1"), query="q")  # s1
+    ledger.register(_chunk(text="t2"), query="q")  # s2
+    ledger.register(_chunk(text="t3"), query="q")  # s3
     # re-retrieve t1 (same content) — refreshes its recency to newest
     assert ledger.register(_chunk(text="t1"), query="q2") == "s1"
-    ledger.register(_chunk(text="t4"), query="q")   # overflow -> evicts oldest uncited
-    assert ledger.get("s1") is not None   # survived: refreshed by re-retrieval
-    assert ledger.get("s2") is None       # evicted: now the oldest uncited
+    ledger.register(_chunk(text="t4"), query="q")  # overflow -> evicts oldest uncited
+    assert ledger.get("s1") is not None  # survived: refreshed by re-retrieval
+    assert ledger.get("s2") is None  # evicted: now the oldest uncited
     assert ledger.get("s4") is not None
 
 
@@ -90,10 +94,17 @@ def test_get_ledger_without_create_returns_none_on_miss():
 
 # --- restore tests -----------------------------------------------------------
 
-def _snapshot(cite_id="s5", filename="f.pdf", page=1, scope="agent",
-              snippet="text", query="q", **kwargs):
-    return {"cite_id": cite_id, "filename": filename, "page": page,
-            "scope": scope, "snippet": snippet, "query": query, **kwargs}
+
+def _snapshot(cite_id="s5", filename="f.pdf", page=1, scope="agent", snippet="text", query="q", **kwargs):
+    return {
+        "cite_id": cite_id,
+        "filename": filename,
+        "page": page,
+        "scope": scope,
+        "snippet": snippet,
+        "query": query,
+        **kwargs,
+    }
 
 
 def test_restore_then_register_continues_numbering():
@@ -120,8 +131,8 @@ def test_restore_duplicate_is_noop_but_still_bumps_counter():
 
 def test_restore_malformed_cite_id_ignored():
     ledger = SourceLedger()
-    ledger.restore(_snapshot(cite_id="x9"))   # wrong prefix
-    ledger.restore(_snapshot(cite_id=""))     # empty
+    ledger.restore(_snapshot(cite_id="x9"))  # wrong prefix
+    ledger.restore(_snapshot(cite_id=""))  # empty
     assert len(ledger) == 0
 
 
