@@ -74,10 +74,6 @@ enable_shell_tool = false
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
 
-[skills]
-# When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
-enabled = false
-
 [multimodal]
 # Master toggle for the read_image system tool, injected when enabled = true.
 # PDF/PPTX-to-JPEG conversion scripts live in the pptx-generator skill instead
@@ -93,12 +89,16 @@ inherit_parent_tools = true
 max_spawn_depth = 2
 forward_sync_subagent_events = true
 
+[skills]
+# When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
+enabled = false
+
 # Single skills root (no merge). Override with DYNACONF_SKILLS__ROOT env var.
 #   cuga          — <CUGA folder>/skills/ (default; e.g. .cuga/skills/)
 #   agents        — .agents/skills/ (npx skills / skills.sh universal layout)
 #   global_agents — ~/.config/agents/skills/
 #   global_cuga   — ~/.config/cuga/skills/
-root = "agents"
+root = "cuga"
 
 # Docker image for sandboxed execution (advanced_features.opensandbox_sandbox = true).
 opensandbox_image = "opensandbox/code-interpreter:v1.0.2"
