@@ -182,8 +182,9 @@ EXAMPLES = [
              "OAuth, no AP box connection. Set BOX_FOLDER_ID + a fresh BOX_DEV_TOKEN; fires resume_judge per new file"),
     _ex("automate-pr", "⭐ GitHub — watch a repo's PRs", "push",
         "/automate new pull requests on psf/requests and summarize them",
-        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False, star=True,
-        note="GitHub PUSH → pr_reviewer. Name the repo owner/repo; the PAT needs Webhooks:R/W (or admin:repo_hook)"),
+        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=True, star=True,
+        note="GitHub PUSH → pr_reviewer. Name the repo owner/repo. Connect GitHub via OAuth "
+             "(scopes repo + admin:repo_hook) — a pasted PAT is not accepted by AP's github piece"),
     _ex("automate-brief", "⭐ Schedule — weekday market brief", "cron",
         "/automate the market brief every weekday at 8am",
         agent="market_briefer", channel="telegram", phase="run", live=True, star=True,

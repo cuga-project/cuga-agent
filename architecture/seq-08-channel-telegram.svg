@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="748" height="512" viewBox="0 0 748 512" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="748" height="512" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">Channel · Telegram — Activepieces backend</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">Telegram always runs via AP: a polling trigger and an AP send-step. (Discord = direct WS bot.)</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="116" y1="142" x2="116" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="156" height="46" rx="9" fill="#6b6866"/>
+<text x="116" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<line x1="288" y1="142" x2="288" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="210" y="96" width="156" height="46" rx="9" fill="#8a8785"/>
+<text x="288" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Telegram</text>
+<line x1="460" y1="142" x2="460" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="382" y="96" width="156" height="46" rx="9" fill="#b06f10"/>
+<text x="460" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Activepieces</text>
+<line x1="632" y1="142" x2="632" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="554" y="96" width="156" height="46" rx="9" fill="#2b5fd9"/>
+<text x="632" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">CUGA</text>
+<text x="632" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">/invoke</text>
+<text x="202.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">DM the bot</text>
+<line x1="116" y1="160" x2="281" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="374.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">poll new_message</text>
+<line x1="460" y1="212" x2="295" y2="212" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="374.0" y="256" font-size="12" fill="#1c1b1a" text-anchor="middle">message {chat_id, text}</text>
+<line x1="288" y1="264" x2="453" y2="264" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="546.0" y="308" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /invoke {source:channel, thread_id:gw:telegram:&lt;id&gt;}</text>
+<line x1="460" y1="316" x2="625" y2="316" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="546.0" y="360" font-size="12" fill="#1c1b1a" text-anchor="middle">200 {answer}</text>
+<line x1="632" y1="368" x2="467" y2="368" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="374.0" y="412" font-size="12" fill="#1c1b1a" text-anchor="middle">AP send-step → reply to chat</text>
+<line x1="460" y1="420" x2="295" y2="420" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+</svg>
