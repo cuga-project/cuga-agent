@@ -1,6 +1,6 @@
 """FastAPI wiring for the events layer — mounted on CUGA's app, behind ``EVENTS_ENABLED``.
 
-Two new endpoints (DESIGN §5):
+Two new endpoints (events_docs/ARCHITECTURE.md):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
   - ``POST /api/concierge``  — NL → decide; ``?dry_run=1`` builds the flow without publishing.
 

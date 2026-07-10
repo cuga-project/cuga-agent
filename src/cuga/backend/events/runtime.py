@@ -1,7 +1,7 @@
 """The ``AgentRuntime`` port — the single seam between the event plane and "an agent".
 
 Everything agent-related (concierge, /invoke, channels) goes through this interface, so
-swapping frameworks = writing one adapter (DESIGN §4). Three implementations:
+swapping frameworks = writing one adapter (events_docs/ARCHITECTURE.md). Three implementations:
 
   - ``StubRuntime``  — deterministic, in-memory, **no deps** → tests & dry-run.
   - ``ReactRuntime`` — LangGraph ``create_react_agent`` + ``MemorySaver`` (backend="react").
@@ -150,7 +150,7 @@ class ReactRuntime(AgentRuntime):
 # ---- CugaRuntime (backend="cuga") — the DEFAULT worker backend ----------
 class CugaRuntime(AgentRuntime):
     """Runs workers as CUGA agents (a per-``agent_id`` ``DynamicAgentGraph``) so **CUGA does the
-    hard work of reasoning/answering** (policies / knowledge / supervisor / tools; DESIGN §4).
+    hard work of reasoning/answering** (policies / knowledge / supervisor / tools; events_docs/ARCHITECTURE.md).
     Default backend for concierge-provisioned workers (the concierge itself stays react).
 
     - **Storage + isolation** use the shared ``AgentStore`` directly (scope-keyed) — the single

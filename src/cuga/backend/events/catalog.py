@@ -1,5 +1,5 @@
 """The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab AND the
-filterable ``roadmap/examples.html`` board (keep the two in sync; this file is the source of truth).
+filterable ``events_docs/api/examples.html`` board (keep the two in sync; this file is the source of truth).
 
 Agents are PRE-BUILT (see ``seed.py``); the runtime concierge ROUTES an utterance to one outcome.
 Each example is tagged so it can be filtered by **trigger · channel · integration · phase · live**:

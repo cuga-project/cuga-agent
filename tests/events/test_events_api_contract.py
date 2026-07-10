@@ -757,7 +757,7 @@ def test_admin_add_user_without_a_user_store_is_501():
 
 # ── the spec must stay golden ─────────────────────────────────────────────────
 def test_api_spec_is_golden():
-    """`roadmap/api_spec.html` is generated from the endpoint table in `scripts/gen_api_spec.py`,
+    """`events_docs/api/api_spec.html` is generated from the endpoint table in `scripts/gen_api_spec.py`,
     which is itself checked against the routes registered in `events/app.py`.
 
     This fails in two situations, both of which mean the spec is lying:
@@ -776,7 +776,7 @@ def test_api_spec_is_golden():
 
 
 def test_every_route_appears_in_the_api_reference():
-    """`roadmap/api.html` is what we hand people. A route added without a doc row is a route nobody
+    """`events_docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
     outside this repo can discover. Matching is on the path with `{param}`/`<param>` normalised away,
     so renaming a path parameter doesn't spuriously fail."""
     import html as _html
@@ -784,7 +784,7 @@ def test_every_route_appears_in_the_api_reference():
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     src = open(os.path.join(root, "src/cuga/backend/events/app.py")).read()
-    doc = _html.unescape(open(os.path.join(root, "roadmap/api.html")).read())
+    doc = _html.unescape(open(os.path.join(root, "events_docs/api/api.html")).read())
 
     def norm(s):
         return re.sub(r"\{[^}/]+\}|<[a-z_]+>", "*", s)
@@ -792,4 +792,4 @@ def test_every_route_appears_in_the_api_reference():
     routes = {norm(p) for _, p in re.findall(r'@app\.(get|post|delete|put)\("([^"]+)"\)', src)}
     undocumented = sorted(r for r in routes if r not in norm(doc))
     assert not undocumented, (
-        f"{len(undocumented)} route(s) missing from roadmap/api.html: {undocumented}")
+        f"{len(undocumented)} route(s) missing from events_docs/api/api.html: {undocumented}")

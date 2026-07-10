@@ -42,6 +42,8 @@ SSO deployments. Single-tenant self-host (BofA) → tenant fixed; the problem re
 user-resolution + agent-permissions.
 
 ### AP is the connector plane
+
+> **Amended by [ADR-0008](0008-direct-backends-for-channels.md):** Slack/Discord/Box now use DIRECT backends (no AP connection). AP remains the connector plane for Telegram + the OAuth integrations.
 Channel **connections** (bot tokens) + **inbound** (channel trigger → `/invoke`) + **delivery**
 (send steps) all live in **AP**; CUGA does identity resolution + routing + linking. Integrations
 same (AP holds tokens; [0006](0006-auth-connection-model.md)).

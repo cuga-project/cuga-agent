@@ -53,7 +53,7 @@ harness gets wrong:
 
 - **It probes AP directly before trusting a `CONNECT NEEDED` reply.** The connect gate reports
   "connect your credentials" when AP is merely unreachable, so without this probe every PUSH leg
-  false-passes when AP is down. See `roadmap/DECISIONS_2026-07-09.md` §2.
+  false-passes when AP is down. See `events_docs/GAPS.md` §2.
 - **It distinguishes a *new* subscription from a *reused* one.** `find_or_create_flow` de-duplicates
   on `dedup_key`, so re-arming the same intent legitimately creates nothing. Matching on mode alone
   (as the older harness does) lets a leftover flow from a previous run mask a broken arm.

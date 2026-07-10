@@ -4,13 +4,13 @@ The UI is **dumb**: it does not know which channels/integrations exist or how to
 connected. It asks these endpoints and paints the result. So all of that knowledge lives here,
 server-side, next to the code that actually uses it (Principle: UI in sync with functionality).
 
-Two views of one ``connector`` idea (DESIGN §2):
+Two views of one ``connector`` idea (events_docs/ARCHITECTURE.md):
   - **Channel**   — converse-with (web/telegram/discord/slack); a human on the other end.
   - **Integration** — watch/act-on (gmail/box/github/outlook); an app on the other end.
 
 Status is derived from **real state**, never hardcoded "connected":
   - channels  → presence of the bot token in env (the thing that actually enables inbound/outbound).
-  - integrations → an AP **connection** whose externalId names the app (AP owns creds, §10).
+  - integrations → an AP **connection** whose externalId names the app (AP owns creds).
 So what the UI shows is exactly what the backend can do right now.
 
 ``live`` = wired end-to-end and verified. Channels deliver two-way today: web (built-in),

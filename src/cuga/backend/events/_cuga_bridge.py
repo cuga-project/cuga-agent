@@ -1,6 +1,6 @@
 """CUGA adapter bridge — the genuinely-new glue that lets us run an arbitrary CUGA
 ``agent_id`` per request (verified: CUGA's runtime is single-agent today; see
-events_docs/IMPACT_AND_COMPATIBILITY.md §5).
+events_docs/ARCHITECTURE.md).
 
 This is the CUGA half of ``AgentRuntime`` (``runtime.CugaRuntime``). Everything here
 imports CUGA internals **lazily inside functions** and is exercised by the e2e tier
@@ -28,12 +28,12 @@ _AGENT_PREFIX = ""  # optionally namespace event-created agents, e.g. "ev-"
 # runtime.CugaRuntime — it wraps a ReactRuntime for storage + isolation + fallback). So this
 # bridge only holds the CUGA-specific EXECUTION glue (build a graph + run it). Persisting
 # workers as first-class CUGA ``config_store`` rows (tenant_id per-call) is a future step
-# (events_docs/TODO.md); until then the AgentStore is the source of truth for both backends.
+# (events_docs/ROADMAP.md); until then the AgentStore is the source of truth for both backends.
 
 
 async def build_worker_graph(spec: AgentSpec, *, scope: str, ctx: dict):
     """Build a per-agent CUGA ``DynamicAgentGraph`` from an AgentSpec — the piece CUGA lacks
-    today (its runtime is single-agent; IMPACT_AND_COMPATIBILITY.md §5). Faithful to the
+    today (its runtime is single-agent; events_docs/ARCHITECTURE.md). Faithful to the
     startup pattern at ``main.py:814-831``: a per-``agent_id`` ``CombinedToolProvider`` +
     ``DynamicAgentGraph(...)`` + ``build_graph()``.
 
@@ -51,7 +51,7 @@ async def build_worker_graph(spec: AgentSpec, *, scope: str, ctx: dict):
     # Hyphens → underscores: CUGA composes `<app>_<tool>` as a Python identifier, so a hyphenated
     # app ('cuga-finance') would yield 'cuga-finance_get_crypto_price' → parsed as subtraction →
     # NameError. The registry keys are underscore names (cuga_finance); map to match.
-    # Requires the registry running with the cuga-apps config (events_docs/MCP_SETUP.md); no
+    # Requires the registry running with the cuga-apps config (events_docs/ARCHITECTURE.md#mcp-tools); no
     # registry → no tools (the worker still runs, toolless).
     app_names = [n.replace("-", "_") for n in spec.mcp_servers] or None
     tool_provider = CombinedToolProvider(

@@ -1,233 +1,94 @@
-# Testing — Phase 1 & 2
+# Testing
 
-How to test the events layer: the offline suite (fast, runs anywhere), the live e2e harnesses
-(need creds + a running server + AP), and the Studio UI click-through. Cross-links:
-[README.md](README.md) · [SETUP.md](SETUP.md).
+Two layers: an **offline** suite that runs on every change (no stack, no creds), and **live**
+harnesses that drive the real stack. `SETUP.md` §"Which test do I run, and when?" is the task-oriented
+version; here is the reference.
 
----
-
-## 1. Quick test
+## Offline — the fast green gate
 
 ```bash
-# OFFLINE — no network, run on every change
-make test                             # = pytest tests/events -q   (offline events gate)
-make test-all                         # all OFFLINE tests: pytest tests/events tests/unit -q
-
-# LIVE — need `make up` + creds. Run in this order; each is broader than the last.
-make test-live                        # 4 channels + 4 flow modes, self-cleaning   (~2 min)
-make test-suite-now                   # every seeded agent, invoked directly       (~13 min)
-make test-suite-flows                 # cron + poll + push                         (~5 min)
-make test-matrix                      # every trigger × every channel sink         (~5 min)
-
-# PREFLIGHT — credential doctor: does every integration work from .env alone? (never fails)
-make doctor                           # = python3 tests/events/preflight.py
-#   watsonx · AP · Telegram · Discord · Slack · Box · MCP
+make test          # pytest tests/events -q   (154 checks, ~10s, no network)
 ```
 
-> **`make sync` is NOT needed for the tests.** Every live harness is pure stdlib (`urllib`, `json`,
-> `hmac`) — no dependencies were added. Run `uv sync` only after a real dependency change.
+Pure-Python invariants: envelope validation, flow builders, dedup, the API contract (every endpoint's
+status codes + isolation, with AP faked), the Box download shaping, credential rotation, and the
+**consistency gates** that fail the build if docs drift from code:
 
-> **Don't run bare `make test-suite`.** Its default budget is 1500 s and the NOW phase alone takes
-> ~13 min, so the later phases silently skip for time. Run the phases separately (above), or raise it:
-> `SUITE_BUDGET_SECS=2400 make test-suite`.
+- `test_api_spec_is_golden` — `events_docs/api/api_spec.html` must match `scripts/gen_api_spec.py`.
+- `test_every_route_appears_in_the_api_reference` — every route in `app.py` has a row in `api.html`.
+- `test_integrations_auth_matches_the_oauth_provider_registry` — `connectors`, `oauth`, and
+  `setup_guides` must agree on how each app connects.
 
-**Optional env vars, test-only** (all documented in `.env.events.example`; none are required):
+Run this before pushing. A red offline gate is never "just flaky."
 
-| Var | Effect |
-|---|---|
-| `GITHUB_TEST_REPO=owner/repo` | arms the github PUSH row. **Creates a real repo webhook** — the harness snapshots existing hooks and deletes only the ones it made. Unset ⇒ the row correctly asks "which repo?" |
-| `BOX_FOLDER_ID` | stops the box watcher asking which folder |
-| `SLACK_TEST_CHANNEL` · `DISCORD_TEST_CHANNEL_ID` | pin the channel instead of auto-discovering one |
-| `TELEGRAM_CHAT_ID` | proves the real outbound Telegram delivery leg |
-| `SUITE_BUDGET_SECS` · `MATRIX_BUDGET_SECS` · `E2E_BUDGET_SECS` | wall-clock budget per harness |
+## Live — driving the real stack
 
-### Expected results (2026-07-09)
+Need `make up` + creds. Each is broader than the last.
 
-| Command | Expected |
-|---|---|
-| `make test` | **1 pre-existing failure**: `test_box_poll_endpoint_dispatches_new_files` reads the real `.box_since.json` watermark instead of a temp file and asserts a hard-coded date, so it breaks permanently once any real Box poll has run. Fails on a pristine checkout. |
-| `make test-live` | 34 pass · 1 skip (the Slack bad-signature negative control, skipped while `SLACK_SIGNING_SECRET` is unset). |
-| `make test-suite-now` | 18 pass · 2 xfail (`mailbot` cannot fetch Gmail; `support_digest` fabricates). |
-| `make test-suite-flows` | 9 pass · **1 fail** · 1 xfail. The fail is real: *"check … every 15 minutes and tell me only about new items"* arms a **CRON**, not a POLL. The offline classifier agrees, so it is deterministic, not a flaky model pick. |
-| `make test-matrix` | ~13 armed, 0 errors. |
-
-Two results that need a careful read:
-
-- **`★ XPASS` on `now/support_digest/digest` proves nothing on its own.** That agent fabricates on
-  roughly 5 of 7 sampled runs and asks for detail on the other 2. Re-sample before believing a gap closed.
-- **`DANGLING — subscription points at AP flow X, which does not exist`** is the suite working, not
-  breaking. `find_or_create_flow` de-duplicates on `dedup_key` *without* checking the AP flow still
-  exists (`concierge.py:285-289`), so after a `make nuke` the concierge keeps answering "Push flow set
-  up" while the watcher can never fire. `make reset-flows` clears the stale records.
-
-The offline suite is **61 passing**:
-
-| File | Count | Covers |
+| Command | Answers | ~Time |
 |---|---|---|
-| `tests/events/test_events_core.py` | 14 | envelope · MCP catalog · flow builders (cron/poll/push/router) · subscription index · classifier · reason→build planner · StubRuntime memory · 12-utterance oracle |
-| `tests/events/test_events_dimensions.py` | 27 | connectors · catalog · credentials (shared/per-user) · seed agents · flow dedup · OAuth registry · isolation · runtime selection + fallback gating · users · identity map · per-agent permissions · delivery backend + direct delivery |
-| `tests/events/test_events_studio_api.py` | 20 | Studio API contract (status/channels/integrations/examples/subscriptions) · **agent create/update + mcp-servers** · channel direct-vs-AP backend · slack/box direct · poll · webhook triage + key gate |
+| `make test-live` | Is the plumbing alive? 4 channels + 4 flow modes, one probe each | 2 min |
+| `make test-suite-now` | Can each of the 18 agents do its job? (asserts on `meta.mcp`, so it can't pass from memory) | 14 min |
+| `make test-suite-flows` | Does an English sentence become the right AP flow? | 6 min |
+| `make test-matrix` | Is every trigger × sink combination wired? | 6 min |
+| `make test-fire` | **Does an armed flow actually FIRE and answer?** | 9 min |
+| `make doctor` | Live credential doctor — hit each service with its `.env` cred (never fails; reports) | 30 s |
 
-`preflight.py` reads `.env` and reports which integrations are actually reachable — it is a
-diagnostic, so it always exits cleanly (it never fails the run).
+### `test-fire` — the one that proves flows *run*
 
----
+Every other harness stops at *armed* (a flow exists in AP). `test-fire` arms a real 1-minute schedule,
+waits for a genuine tick, and reads the agent's answer out of the run log. It fires **cron/poll**
+(real schedules) and **GitHub push** (a webhook trigger, fed a synthetic PR). It **cannot** fire a
+Gmail or Box watcher, because those are app-*polling* triggers Activepieces will not run out of band —
+for those, only a real inbound event proves the loop (see below).
 
-## 2. Coverage matrix
+Verdicts: `FIRED · ARMED · NOFIRE · FAIL · SKIP`. **ARMED and NOFIRE are not passes** — the flow
+exists but no answer was observed (the schedule never came round, or firing would mutate a real
+repo/inbox). Only `FIRED` proves the loop closes.
 
-Two tiers: **offline** (stdlib / venv, no network — the three `test_events_*.py` files above) and
-**live** (needs the CUGA venv, watsonx, AP on `:8081`, sometimes the registry — the `live_*.py`
-harnesses). Offline files: `test_events_core.py`, `test_events_dimensions.py`,
-`test_events_studio_api.py`. Live harnesses: `live_*.py`.
+### Firing a real event through one integration
 
-| Dimension | Offline test | Live harness |
-|---|---|---|
-| **Channel: web** | `test_events_studio_api.py` (channels endpoint) | Studio Concierge tab / `live_integrations_e2e.py` (NOW) |
-| **Channel: telegram** | `test_events_dimensions.py` (identity/link, connectors) | `live_integrations_e2e.py`, `live_credentials_check.py` (token connect) |
-| **Channel: slack** | `test_events_studio_api.py` (slack direct), `test_events_dimensions.py` (thread scoping, author identity) | `live_slack_check.py` |
-| **Channel: discord** | `test_events_dimensions.py` (connectors) | `live_discord_check.py` |
-| **Integration: gmail** | `test_events_dimensions.py` (integrations status, seed) | `live_gmail_e2e.py`, `live_integrations_e2e.py` (PUSH) |
-| **Integration: box** | `test_events_studio_api.py` (box direct, poll) | `live_box_e2e.py`, `live_box_direct_check.py`, `live_integrations_e2e.py` (PUSH) |
-| **Integration: github** | `test_events_dimensions.py` (seed `pr_reviewer`, full-AP wiring) | `live_github_e2e.py`, `live_integrations_e2e.py` (PUSH) |
-| **Trigger: now** | `test_events_core.py` (planner/oracle) | `live_integrations_e2e.py` (NOW), `live_phase2_watchers.py` |
-| **Trigger: cron** | `test_events_core.py` + `test_events_dimensions.py` (flow builders per-mode) | `live_integrations_e2e.py` (CRON), `live_phase2_watchers.py` (real AP CRON e2e, ~3 min) |
-| **Trigger: poll** | `test_events_studio_api.py` (poll) + `test_events_dimensions.py` (flow builders) | `live_integrations_e2e.py` (POLL), `live_box_direct_check.py` |
-| **Trigger: push** | `test_events_core.py` (push builder) + `test_events_dimensions.py` | `live_integrations_e2e.py` (PUSH box/github/gmail), `live_box_e2e.py` |
-| **Trigger: webhook** | `test_events_studio_api.py` (webhook triage + key gate) | `live_integrations_e2e.py` (WEBHOOK) |
+The polling watchers need a genuine event:
 
-Cross-cutting live harnesses (not per-channel): `live_isolation_check.py` (two tenants → two AP
-projects), `live_identity_check.py` (two users isolated · per-agent permissions · channel link
-handshake), `live_credentials_check.py` (shared vs per-user creds), `live_statefulness_check.py`
-(agent + memory survive a replica restart), `live_phase2_watchers.py` (full AP CRON round-trip).
-
-`live_integrations_e2e.py` is the canonical all-modes harness; the per-integration
-`live_box_e2e.py` / `live_github_e2e.py` / `live_gmail_e2e.py` and the AP-free direct checks
-(`live_box_direct_check.py`, `live_slack_check.py`, `live_discord_check.py`) are the true
-end-to-end ones.
-
-> **Older harnesses being consolidated:** `live_server_e2e_check.py`, `live_concierge_check.py`,
-> and `live_stage2_channels.py` still default to port `7860` / the `/api/concierge` path from an
-> earlier iteration and are being folded into `live_integrations_e2e.py`. Prefer the harnesses in
-> the matrix above; the older ones remain factual but may need `EVENTS_SERVER_URL` overrides.
-
----
-
-## 3. Live e2e recipe
-
-### Prerequisites
-- **Server** on `:8100` with the events layer on: `EVENTS_ENABLED=1 EVENTS_WORKER_BACKEND=cuga
-  EVENTS_SEED_AGENTS=1`. `scripts/events_up.sh` starts registry + tunnels + the CUGA server.
-- **Activepieces** on `AP_BASE_URL` (`:8081`) for the AP-backed legs (CRON/POLL/PUSH, telegram/discord).
-- **`GATEWAY_TOKEN`** in `.env` (the `X-Gateway-Token` on `/invoke`).
-- **watsonx creds** (`WATSONX_APIKEY` / `WATSONX_URL` / `WATSONX_PROJECT_ID`) — the LLM the workers use.
-- For a full PUSH leg, connect the integration first (see [setup/](setup/)): Box/Gmail via
-  `GET /api/events/connect/{app}` (OAuth), GitHub via `POST /api/events/connect/github/token`.
-
-All commands read `.env` for creds. `EVENTS_SERVER_URL` defaults to `http://localhost:8100`.
-
-### All four trigger modes + full-AP integrations
 ```bash
-EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_integrations_e2e.py
-```
-**PASS:** NOW returns a real price; CRON and POLL each create a real AP flow (verified via
-`subscriptions.ap_flow_id`); PUSH box/github/gmail either arm an AP flow (if connected) or return
-the correct CONNECT-NEEDED; WEBHOOK triages and delivers.
-
-### `/automate` slash-command routing (one command, router picks the mode)
-`/automate <what>` is one slash command whose router (a heuristic classifier) picks push/cron/poll
-from the phrasing — verify each of the three modes routes correctly:
-```bash
-for t in "/automate summarize new emails and message me" \
-         "/automate the market brief every weekday at 8am" \
-         "/automate check bitcoin every 5 min on a move"; do
-  curl -s -X POST http://localhost:8100/api/concierge \
-    -H 'content-type: application/json' -H 'x-user-id: admin' \
-    -d "{\"text\":\"$t\"}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('reply','')[:90])"
-done
-```
-**PASS:** 1st arms **PUSH** (gmail → `mailbot`, resolved deterministically from the integration),
-2nd arms **CRON**, 3rd arms **POLL** (the LLM picks the agent with the mode FORCED). The five hidden
-overrides (`/watch` = `/automate`, `/push`, `/schedule`, `/cron`, `/poll`) force a specific mode.
-
-### Box — upload a real file, watcher detects + judges it
-```bash
-BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:8100 GATEWAY_TOKEN=<..> \
-  .venv/bin/python tests/events/live_box_e2e.py
-```
-**PASS:** uploads a real résumé-like file to Box, the new file is detected, `resume_judge` returns
-a verdict, then the file is deleted. (Box dev tokens expire ~60 min — a stale token prints a clear
-"regenerate" message.)
-
-### Box direct (AP-free poll)
-```bash
-BOX_DEV_TOKEN=<fresh> BOX_FOLDER_ID=<folder> EVENTS_SERVER_URL=http://localhost:8100 \
-  .venv/bin/python tests/events/live_box_direct_check.py
-```
-**PASS:** whoami validates the token, folder items list, `new_files_since` baseline is correct, and
-`POST /api/events/box/poll` fires the watcher per new file (direct-channel delivery, no AP).
-
-### GitHub — review a real PR (read-only)
-```bash
-EVENTS_SERVER_URL=http://localhost:8100 GATEWAY_TOKEN=<..> \
-  .venv/bin/python tests/events/live_github_e2e.py
-```
-**PASS:** fetches a real open PR + its diff from a public repo, feeds it to `pr_reviewer` via
-`/invoke`, and gets back a real summary + risk assessment. Zero side effects. Optional
-`E2E_PR="owner/repo#123"` to pin a PR.
-
-### Gmail — arm a real inbox watcher
-```bash
-EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_gmail_e2e.py
-```
-**PASS:** confirms the per-user Gmail OAuth connection exists in AP, arms an inbox watcher, and a
-real AP flow is created (`subscriptions.ap_flow_id`). The final leg (send an email → flow fires →
-`mailbot` summarizes) needs an email sent to the connected account; the harness prints how.
-
-### Slack / Discord direct checks
-```bash
-EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_slack_check.py
-EVENTS_SERVER_URL=http://localhost:8100 DISCORD_CHANNEL_ID=<id> \
-  .venv/bin/python tests/events/live_discord_check.py
-```
-**PASS:** each validates the bot token, confirms the bot can post (delivery leg), and verifies the
-flow/descriptor shape, then prints the one manual step each platform requires (Slack: OAuth
-connection + Events API Request URL; Discord: post a message and wait for the ~5-min poll, Message
-Content Intent on).
-
-### Cross-cutting (mostly `.venv-events`, no server needed)
-```bash
-.venv-events/bin/python tests/events/live_phase2_watchers.py      # AP CRON e2e (~3 min)
-.venv-events/bin/python tests/events/live_isolation_check.py      # two tenants → two AP projects
-.venv/bin/python        tests/events/live_identity_check.py       # users isolated + perms + link
-.venv-events/bin/python tests/events/live_credentials_check.py    # shared vs per-user creds
-.venv-events/bin/python tests/events/live_statefulness_check.py   # survive a replica restart
+.venv/bin/python tests/events/live_github_e2e.py   # real open PR → pr_reviewer
+.venv/bin/python tests/events/live_box_e2e.py      # real upload  → resume_judge  (needs a fresh BOX_DEV_TOKEN)
+.venv/bin/python tests/events/live_gmail_e2e.py    # Gmail OAuth connection + arm the inbox watcher
 ```
 
-Clean AP between runs: `.venv-events/bin/python tests/events/ap_nuke.py --dry` (preview),
-`ap_nuke.py` (delete EA-tagged), `ap_nuke.py --all` (nuclear).
+## The consolidated report
 
----
+```bash
+GITHUB_TEST_REPO=owner/repo make test-report      # runs all 6 harnesses in order (~40 min)
+```
 
-## 4. Studio UI walkthrough
+Writes a timestamped, commit-stamped run to `results/runs/<UTC>/` and emits **two renderings of the
+same run**: `report.md` (→ `results/LATEST.md`, for a PR) and `report.html` (→ `results/index.html`,
+open with `make report`). Both carry the **end-to-end walkthrough** — a row per step in the second
+person, with *utterance · channel · integration · trigger · expected · actually got* columns — plus a
+"Did the flow actually fire?" table. Both are **generated**; never hand-edit `results/index.html`.
 
-The Studio is added **into CUGA's existing React frontend** (not a new app) and is **dumb** — every
-tab just renders a `GET /api/events/*` and the Concierge tab POSTs your text. So clicking through
-the UI *is* testing the backend. Rebuild the bundle after any `.tsx` change:
-`scripts/frontend_build.sh`, then `scripts/events_up.sh`.
+The report is stamped with the commit and whether the tree was **dirty** — a dirty tree means the
+commit id does not describe the code that ran, so commit first if you want a citable result.
 
-Open **http://localhost:8100/studio** (or `/manage` → the **Studio** nav / **"Open Event Studio →"**
-button — hidden in vanilla CUGA). The header shows
-`scope default/default/local · workers cuga · concierge react · AP connected`.
+## What none of the arming harnesses prove
 
-| Tab | Click to prove |
-|---|---|
-| **Concierge** | *"what is the bitcoin price right now?"* → **Send** → live price (a CUGA worker answered). Flip **Preview** → the plan JSON, no side effects (`?dry_run=1`). *"every 1 minute send me new arXiv papers…"* → arms a real AP flow. |
-| **Channels** | web = connected; telegram/discord/slack = connected only when the bot token is set. |
-| **Integrations** | gmail/box/github/slack with **live AP-connection** status + a **Connect** button (OAuth apps open the login popup; token apps prompt for a token). |
-| **Flows** | **Refresh** → the armed watcher appears with a **CRON**/**POLL** badge, its agent, backend, and delivery target. |
-| **Examples** | click **Try it** on "Geography + follow-up memory" → drops the utterance into Concierge → Send, then *"and its population?"* → per-thread memory holds. |
-| **Agents** | the pre-built worker fleet the concierge routes among + each agent's tools/channels/integrations. Use **Add agent** to register a new worker; each agent row shows a **Connected / Reconnect** status for its integrations. |
-| **Profile** | your identity, roles, linked channels (Link buttons: Telegram/Discord), connected integrations. |
-| **Admin** | tenant users + roles; OAuth apps (enter client id/secret in the UI); arm channel inbound flows. |
+`test`, `test-live`, `test-suite-*`, `test-matrix` arm a flow and verify it exists in Activepieces —
+they never wait for a real event. `test-fire` closes that gap for schedule/webhook triggers; the three
+`live_*_e2e.py` close it for polling triggers. A green "armed" row is not a green "it works" row, and
+the harnesses are careful to distinguish the two.
 
-Full reference: [STUDIO_UI.md](STUDIO_UI.md).
+## Verdict vocabulary (across all harnesses)
+
+- **PASS / FAIL** — worked / broke. FAIL is the only thing to act on immediately.
+- **XFAIL** — a known gap, reason printed. Not a regression.
+- **XPASS** — a known gap passed this time; re-sample before believing it (some agents are flaky).
+- **SKIP** — surface not configured.
+- **FIRED / ARMED / NOFIRE** — (fire harness) fired-and-answered / exists-but-didn't-fire / deliberately-not-fired.
+- **CRASH** — the harness died before reporting. Silence is not success.
+
+## When flows mysteriously stop firing
+
+Check AP's tunnel first (`make tunnels`). The cloudflared quick tunnel is ephemeral; when it dies,
+every flow fails with `INTERNAL_ERROR` on AP's payload callback and it looks like a code regression.
+Fix: `make ap`. This is the single most common false alarm — see [GAPS.md](GAPS.md).

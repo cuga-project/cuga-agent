@@ -27,7 +27,8 @@ Each integration on an agent declares a **`credential_ownership`**:
   concierge replies "connect your `<app>`" + the AP connect URL, then proceeds. (Same
   capability-envelope pattern as "tell me what to connect.")
 - **OAuth vs token:** OAuth apps (Gmail/Box) are authorized in AP's connect UI (can't be minted
-  headlessly). Token apps (GitHub PAT, Telegram) can be created via the API (paste a token).
+  headlessly). Token apps (Telegram, Discord bot tokens) paste a token via the API. GitHub is **OAuth**,
+  NOT a pasted PAT — AP's piece-github accepts only OAUTH2 (see ADR-0006).
 
 ## Verified live
 `live_credentials_check.py`: `shared` → alice & bob resolve to the **same** connection

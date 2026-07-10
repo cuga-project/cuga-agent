@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="760" viewBox="0 0 1160 760" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="1160" height="760" fill="#ffffff"/>
+<defs><marker id="a" markerWidth="11" markerHeight="11" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 Z" fill="#1c1b1a"/></marker></defs>
+<text x="40" y="40" font-size="23" font-weight="700" fill="#1c1b1a">CUGA event-driven agents — the two pieces</text>
+<text x="40" y="63" font-size="13" fill="#8a8785">CREATE a flow (connect a credential, then arm it) · FIRE a flow (a trigger runs the agent). /invoke is the single seam; AP owns the tokens.</text>
+<rect x="30" y="84" width="1100" height="168" rx="14" fill="none" stroke="#2b5fd9" stroke-width="1.6" stroke-dasharray="7 5"/><text x="44" y="106" font-size="13" font-weight="700" fill="#2b5fd9" letter-spacing="0.5">CREATE  (arm-time)</text>
+<rect x="56" y="120" width="250" height="108" rx="12" fill="#8a8785"/>
+<text x="70" y="145" font-size="14.5" font-weight="700" fill="#fff">You / Admin</text>
+<text x="70" y="164" font-size="11.5" fill="#fff" fill-opacity="0.92">1. Connect an integration</text>
+<text x="70" y="181" font-size="11.5" fill="#fff" fill-opacity="0.92">   (OAuth consent, or paste a token)</text>
+<text x="70" y="198" font-size="11.5" fill="#fff" fill-opacity="0.92">2. Say what to automate</text>
+<text x="70" y="215" font-size="11.5" fill="#fff" fill-opacity="0.92">   "watch my repo for PRs…"</text>
+<rect x="430" y="120" width="250" height="108" rx="12" fill="#2b5fd9"/>
+<text x="444" y="145" font-size="14.5" font-weight="700" fill="#fff">Concierge (NL→flow)</text>
+<text x="444" y="164" font-size="11.5" fill="#fff" fill-opacity="0.92">POST /api/concierge</text>
+<text x="444" y="181" font-size="11.5" fill="#fff" fill-opacity="0.92">classify → pick agent → build flow</text>
+<text x="444" y="198" font-size="11.5" fill="#fff" fill-opacity="0.92">bakes in {{connections[…]}} —</text>
+<text x="444" y="215" font-size="11.5" fill="#fff" fill-opacity="0.92">a reference, never the token</text>
+<rect x="804" y="120" width="300" height="108" rx="12" fill="#b06f10"/>
+<text x="818" y="145" font-size="14.5" font-weight="700" fill="#fff">Activepieces — the credential vault</text>
+<text x="818" y="164" font-size="11.5" fill="#fff" fill-opacity="0.92">OAuth: exchange code → store OAUTH2</text>
+<text x="818" y="181" font-size="11.5" fill="#fff" fill-opacity="0.92">token: store SECRET_TEXT</text>
+<text x="818" y="198" font-size="11.5" fill="#fff" fill-opacity="0.92">flows + triggers live here</text>
+<text x="818" y="215" font-size="11.5" fill="#fff" fill-opacity="0.92">the agent never sees a token</text>
+<line x1="306" y1="150" x2="430" y2="150" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="368" y="142" font-size="11" fill="#1c1b1a" text-anchor="middle">connect / ask</text>
+<line x1="680" y1="165" x2="804" y2="165" stroke="#b06f10" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="742" y="157" font-size="11" fill="#b06f10" text-anchor="middle">build + publish flow</text>
+<rect x="30" y="276" width="1100" height="452" rx="14" fill="none" stroke="#b06f10" stroke-width="1.6" stroke-dasharray="7 5"/><text x="44" y="298" font-size="13" font-weight="700" fill="#b06f10" letter-spacing="0.5">FIRE  (run-time)</text>
+<rect x="56" y="312" width="232" height="150" rx="12" fill="#8a8785"/>
+<text x="70" y="337" font-size="14.5" font-weight="700" fill="#fff">A trigger fires</text>
+<text x="70" y="356" font-size="11.5" fill="#fff" fill-opacity="0.92">channel msg (slack/discord/tg/web)</text>
+<text x="70" y="373" font-size="11.5" fill="#fff" fill-opacity="0.92">schedule tick (cron/poll)</text>
+<text x="70" y="390" font-size="11.5" fill="#fff" fill-opacity="0.92">integration event:</text>
+<text x="70" y="407" font-size="11.5" fill="#fff" fill-opacity="0.92">  github webhook · gmail poll</text>
+<text x="70" y="424" font-size="11.5" fill="#fff" fill-opacity="0.92">  box file · generic webhook</text>
+<rect x="430" y="322" width="250" height="128" rx="12" fill="#2b5fd9"/>
+<text x="444" y="347" font-size="14.5" font-weight="700" fill="#fff">/invoke — the one seam</text>
+<text x="444" y="366" font-size="11.5" fill="#fff" fill-opacity="0.92">envelope {agent, source, event}</text>
+<text x="444" y="383" font-size="11.5" fill="#fff" fill-opacity="0.92">X-Gateway-Token auth</text>
+<text x="444" y="400" font-size="11.5" fill="#fff" fill-opacity="0.92">runtime.run(agent)</text>
+<text x="444" y="417" font-size="11.5" fill="#fff" fill-opacity="0.92">meta.mcp = tools that ran</text>
+<text x="444" y="434" font-size="11.5" fill="#fff" fill-opacity="0.92">content in — never a token</text>
+<rect x="804" y="300" width="300" height="92" rx="12" fill="#b06f10"/>
+<text x="818" y="325" font-size="14.5" font-weight="700" fill="#fff">AP at fire time</text>
+<text x="818" y="344" font-size="11.5" fill="#fff" fill-opacity="0.92">resolves {{connections[…]}} → token</text>
+<text x="818" y="361" font-size="11.5" fill="#fff" fill-opacity="0.92">polls / receives the webhook</text>
+<text x="818" y="378" font-size="11.5" fill="#fff" fill-opacity="0.92">the token stays inside AP's sandbox</text>
+<rect x="430" y="500" width="250" height="92" rx="12" fill="#1a7f4b"/>
+<text x="444" y="525" font-size="14.5" font-weight="700" fill="#fff">Worker fleet (18 agents)</text>
+<text x="444" y="544" font-size="11.5" fill="#fff" fill-opacity="0.92">pricebot · mailbot · resume_judge …</text>
+<text x="444" y="561" font-size="11.5" fill="#fff" fill-opacity="0.92">each = prompt + MCP tools + access</text>
+<text x="444" y="578" font-size="11.5" fill="#fff" fill-opacity="0.92">its own DynamicAgentGraph</text>
+<rect x="430" y="624" width="250" height="80" rx="12" fill="#1a7f4b"/>
+<text x="444" y="649" font-size="14.5" font-weight="700" fill="#fff">MCP tool servers</text>
+<text x="444" y="668" font-size="11.5" fill="#fff" fill-opacity="0.92">finance · geo · web · knowledge</text>
+<text x="444" y="685" font-size="11.5" fill="#fff" fill-opacity="0.92">code · text (the agents' hands)</text>
+<rect x="804" y="500" width="300" height="108" rx="12" fill="#2b5fd9"/>
+<text x="818" y="525" font-size="14.5" font-weight="700" fill="#fff">Delivery</text>
+<text x="818" y="544" font-size="11.5" fill="#fff" fill-opacity="0.92">direct adapter (Slack/Discord/Box):</text>
+<text x="818" y="561" font-size="11.5" fill="#fff" fill-opacity="0.92">  CUGA-held .env token</text>
+<text x="818" y="578" font-size="11.5" fill="#fff" fill-opacity="0.92">OR AP send-step {{step_1.body.answer}}</text>
+<text x="818" y="595" font-size="11.5" fill="#fff" fill-opacity="0.92">sink from the thread_id origin</text>
+<line x1="288" y1="380" x2="430" y2="386" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="360" y="372" font-size="11" fill="#1c1b1a" text-anchor="middle">event → envelope</text>
+<line x1="804" y1="346" x2="680" y2="380" stroke="#b06f10" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="748" y="336" font-size="11" fill="#b06f10" text-anchor="middle">AP callback (poll/webhook)</text>
+<line x1="555" y1="450" x2="555" y2="500" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="555" y1="592" x2="555" y2="624" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="680" y1="540" x2="804" y2="545" stroke="#2b5fd9" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="744" y="532" font-size="11" fill="#2b5fd9" text-anchor="middle">answer</text>
+<text x="56" y="636" font-size="12" font-weight="700" fill="#1c1b1a">Legend</text>
+<rect x="56" y="645" width="13" height="13" rx="3" fill="#8a8785"/>
+<text x="76" y="656" font-size="11.5" fill="#1c1b1a">external / source</text>
+<rect x="56" y="665" width="13" height="13" rx="3" fill="#2b5fd9"/>
+<text x="76" y="676" font-size="11.5" fill="#1c1b1a">CUGA</text>
+<rect x="56" y="685" width="13" height="13" rx="3" fill="#1a7f4b"/>
+<text x="76" y="696" font-size="11.5" fill="#1c1b1a">agents / tools</text>
+<rect x="56" y="705" width="13" height="13" rx="3" fill="#b06f10"/>
+<text x="76" y="716" font-size="11.5" fill="#1c1b1a">Activepieces (creds)</text>
+</svg>

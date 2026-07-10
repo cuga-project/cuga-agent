@@ -140,11 +140,11 @@ report: ## Open the latest HTML report (results/index.html) — does not run any
 	@test -f results/index.html || { echo "no report yet — run: make test-report"; exit 1; }
 	@open results/index.html 2>/dev/null || echo "results/index.html"
 
-api-spec: ## Regenerate roadmap/api_spec.html and SERVE it (Try-it needs http://, not file://)
+api-spec: ## Regenerate events_docs/api/api_spec.html and SERVE it (Try-it needs http://, not file://)
 	@$(PY) scripts/gen_api_spec.py
 	@echo "API spec → http://localhost:8123/api_spec.html   (ctrl-c to stop)"
 	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
-	@$(PY) -m http.server 8123 --directory roadmap
+	@$(PY) -m http.server 8123 --directory events_docs/api
 
 test-live-integrations: ## The older integration-focused harness (Box · GitHub · Gmail)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py

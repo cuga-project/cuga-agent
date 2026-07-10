@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate `roadmap/api_spec.html` — the golden, try-it-yourself API spec.
+"""Generate `events_docs/api/api_spec.html` — the golden, try-it-yourself API spec.
 
-    python scripts/gen_api_spec.py            # rewrite roadmap/api_spec.html
+    python scripts/gen_api_spec.py            # rewrite events_docs/api/api_spec.html
     python scripts/gen_api_spec.py --check    # exit 1 if the file is stale (used by the test)
 
 **Why a generator.** A hand-written spec rots the moment someone adds a route, and nobody notices
@@ -26,7 +26,7 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 APP = REPO / "src" / "cuga" / "backend" / "events" / "app.py"
-OUT = REPO / "roadmap" / "api_spec.html"
+OUT = REPO / "events_docs" / "api" / "api_spec.html"
 
 # Who the caller is. Rendered as a coloured chip, and it's the thing most readers scan for.
 ACTORS = {
@@ -510,7 +510,7 @@ ENDPOINTS = [
       responses=[(200, {"examples": [{"id": "now-crypto", "agent": "pricebot",
                                       "utterance": "what is the current price of bitcoin?",
                                       "trigger": "NOW", "channel": "web", "live": True}]},
-                  "Source of truth for the Studio's Examples tab and <code>roadmap/examples.html</code>.")]),
+                  "Source of truth for the Studio's Examples tab and <code>events_docs/api/examples.html</code>.")]),
 
     E("GET", "/api/events/setup-guides", "studio",
       "Per-connector setup guide + whether it is <i>actually</i> connected.",

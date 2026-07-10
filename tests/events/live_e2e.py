@@ -32,7 +32,7 @@ WHY WE CHECK AP IS REACHABLE BEFORE ACCEPTING "CONNECT NEEDED": the connect gate
 "connect your credentials" when Activepieces is merely unreachable (concierge.py: a bare `except`
 swallows the AP error and sets exists=False). So an unreachable AP would otherwise make every PUSH leg
 "pass" as a legitimate connect-needed. We probe AP first and refuse to accept connect-needed if AP is
-down. See roadmap/DECISIONS_2026-07-09.md §2.
+down. See events_docs/GAPS.md.
 
 NOTE ON POLL: there is no state primitive today — no poll_state.py, no /api/events/poll. A "poll" is a
 cron-scheduled flow plus a prompt line ("only report if changed"). We assert exactly that and no more.

@@ -1,12 +1,12 @@
 """Activepieces flow **builders** — deterministic, testable, pure functions.
 
 The concierge (an LLM) picks typed slots; these builders render a valid AP flow JSON
-(DESIGN §6 "reason vs. build"). Every flow is: TRIGGER ▸ POST /invoke ▸ [Router] ▸ sink.
+(see events_docs/ARCHITECTURE.md). Every flow is: TRIGGER ▸ POST /invoke ▸ [Router] ▸ sink.
 No LLM here, no I/O — just dict construction, so it's fully unit-testable and diff-able
-against events_docs/examples/sample_flow.*.json.
+against tests/events (offline flow-builder tests).
 
-Piece names/inputs are representative (AP schemas drift across versions); the shapes match
-the sample flows checked into events_docs.
+Piece names/inputs are representative (AP schemas drift across versions); the shapes match the
+offline flow-builder tests in tests/events.
 """
 
 from __future__ import annotations

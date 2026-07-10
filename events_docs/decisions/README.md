@@ -15,8 +15,8 @@ is Context → Decision → Consequences. Verified live (2026-07-02) unless note
 | [0007](0007-identity-profiles-permissions.md) | **Identity, profiles & permissions** | `(tenant,channel,native_id)→user` map + a link-token handshake; per-agent `access` list; the message author is the per-user key. |
 | [0008](0008-direct-backends-for-channels.md) | **Direct backends for chat channels** (amends 0001) | Channels (Slack/Discord) run DIRECT — AP's OAuth wall + poll latency make it wrong for chat; integrations stay on AP. |
 
-**Companion docs:** [../DESIGN.md](../DESIGN.md) (the goal) · [../ARCHITECTURE.md](../ARCHITECTURE.md) ·
-[../TESTING.md](../TESTING.md) · [../KNOWN_GAPS.md](../KNOWN_GAPS.md).
+**Companion docs:** [../ARCHITECTURE.md](../ARCHITECTURE.md) ·
+[../TESTING.md](../TESTING.md) · [../GAPS.md](../GAPS.md).
 
 ## The one-paragraph model
 One **shared AP** engine for a fleet of **stateless CUGA FastAPI replicas**. The AP **project**

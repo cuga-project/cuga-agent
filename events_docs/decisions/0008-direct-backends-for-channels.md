@@ -41,4 +41,4 @@ itself via the channel adapter — no AP send-step.
 - A shared bot token is TENANT-scoped; per-user identity still comes from the message author
   (`source.user`) — see [0007](0007-identity-profiles-permissions.md).
 - Direct backends are outbound/inbound HTTP+WS from CUGA, so they inherit CUGA's own auth posture,
-  not AP's. The Slack receiver verifies the signing secret; see [KNOWN_GAPS.md](../KNOWN_GAPS.md).
+  not AP's. The Slack receiver verifies the signing secret; see [GAPS.md](../GAPS.md).

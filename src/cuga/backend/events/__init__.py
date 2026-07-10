@@ -2,7 +2,7 @@
 
 A concierge turns natural language into worker agents + Activepieces flows; every
 trigger (channel message, app event, cron, run-once) re-enters through ``POST /invoke``.
-See ``events_docs/DESIGN.md``.
+See ``events_docs/ARCHITECTURE.md``.
 
 Import policy: this ``__init__`` stays import-light on purpose. The pure modules
 (``envelope``, ``mcp_catalog``, ``trace``, ``flows``, ``subscriptions``, ``classify``)
