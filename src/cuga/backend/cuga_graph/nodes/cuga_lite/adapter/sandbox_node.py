@@ -75,8 +75,12 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
-        # Start tool call tracking (only if enabled via invoke parameter)
-        ToolCallTracker.start_tracking(enabled=track_tool_calls)
+        # Start tool call tracking (only if enabled via invoke parameter).
+        # "timings_only" (set when tracking is forced for the run receipt)
+        # records tool name/duration but never arguments/results/errors.
+        ToolCallTracker.start_tracking(
+            enabled=bool(track_tool_calls), timings_only=track_tool_calls == "timings_only"
+        )
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
