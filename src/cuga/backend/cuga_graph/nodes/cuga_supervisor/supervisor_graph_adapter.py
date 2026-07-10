@@ -22,6 +22,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool impo
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
     create_prepare_agents_and_prompt_node,
 )
+from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.config import settings
 
 # Backward-compatible alias for tests and callers that imported the private helper.
@@ -81,6 +82,10 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
     def get_invoke_config(self, configurable: dict) -> dict:
         callbacks = configurable.get("callbacks", self._base_callbacks)
         return {"callbacks": callbacks}
+
+    async def ainvoke_model(self, bound: Any, messages: list, invoke_config: dict) -> Any:
+        clamp_watsonx_completion_for_messages(bound, messages)
+        return await bound.ainvoke(messages, config=invoke_config)
 
     def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
         meta = dict(self.get_metadata(state))

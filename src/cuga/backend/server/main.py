@@ -2592,8 +2592,14 @@ def _policy_to_frontend_dict(policy_dict: dict) -> dict:
         frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
         frontend_policy["target_apps"] = policy_dict.get("target_apps")
         frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
-        frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
+        raw_guards = policy_dict.get("tool_guards") or {}
+        frontend_policy["tool_guards"] = (
+            {k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in raw_guards.items()}
+            if raw_guards
+            else policy_dict.get("tool_guards")
+        )
         frontend_policy["prepend"] = policy_dict.get("prepend", False)
+        frontend_policy["guards_enabled"] = policy_dict.get("guards_enabled", True)
     elif policy_type == "tool_approval":
         frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
         frontend_policy["required_apps"] = policy_dict.get("required_apps")

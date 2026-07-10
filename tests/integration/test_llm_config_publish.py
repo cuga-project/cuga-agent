@@ -84,12 +84,18 @@ class TestPublishSetsLLMOverride:
         config = {"llm": VAULT_MODE_CONFIG}
         app_state = _make_app_state()
 
-        with patch("cuga.backend.server.manage_routes.logger"):
-            with patch("cuga.config.settings") as mock_settings:
-                mock_settings.secrets = _vault_settings_stub()
-                mock_settings.agent.code.model.get = MagicMock(return_value=16000)
-                with patch("cuga.backend.llm.models.settings", mock_settings):
+        fake_secrets = _vault_settings_stub()
+        with patch("cuga.config.settings") as mock_cfg:
+            mock_cfg.secrets = fake_secrets
+            with patch("cuga.backend.server.manage_routes.logger"):
+                import cuga.config as cfg_mod
+
+                real_secrets = getattr(cfg_mod.settings, "secrets", None)
+                try:
+                    cfg_mod.settings.secrets = fake_secrets
                     await _apply_published_config(app_state, config)
+                finally:
+                    cfg_mod.settings.secrets = real_secrets
 
         assert getattr(app_state, "current_llm", None) is not None
         llm = app_state.current_llm
@@ -148,12 +154,13 @@ class TestDynamicAgentGraphPicksUpLLMConfig:
             return MagicMock()
 
         with patch("cuga.backend.cuga_graph.graph.create_llm_from_config", side_effect=spy_create_llm):
-            agent = DynamicAgentGraph(
-                None,
-                tool_provider=mock_tp,
-                llm_config=VAULT_MODE_CONFIG,
-            )
-            await agent.build_graph()
+            with patch.object(LLMManager, "get_model", return_value=MagicMock()):
+                agent = DynamicAgentGraph(
+                    None,
+                    tool_provider=mock_tp,
+                    llm_config=VAULT_MODE_CONFIG,
+                )
+                await agent.build_graph()
 
         cfg = captured.get("llm_cfg", {})
         assert cfg.get("provider") == "openai" or cfg.get("platform") == "openai"

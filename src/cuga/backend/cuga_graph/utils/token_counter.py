@@ -9,7 +9,7 @@ for reactive usage tracking.
 from typing import TYPE_CHECKING, List, Optional, Mapping, Any
 from functools import partial
 from loguru import logger
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
@@ -17,6 +17,14 @@ from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_messag
 # Constants for token estimation
 CHARS_PER_TOKEN_FALLBACK = 4  # Rough estimate: 1 token ≈ 4 characters
 DEFAULT_CONTEXT_SIZE = 131072  # Default context size for unknown models (based on gpt-oss-120b)
+
+# Our approximate counter (count_tokens_approximately + 15% overhead) has been observed to
+# undercount IBM's real tokenizer by ~20% on JSON/dict-heavy prompts (e.g. skill/report
+# generation). Inflate the estimate and reserve a larger buffer before trusting it to size
+# max_completion_tokens for a WatsonX call, so we clamp to a small budget instead of sending
+# a request that watsonx.ai rejects with "max_tokens must be at least 1".
+WATSONX_PROMPT_SAFETY_MARGIN = 0.20
+WATSONX_COMPLETION_BUFFER = 1024
 
 # Model context size constants (in tokens)
 MODEL_CONTEXT_SIZES = {
@@ -285,8 +293,150 @@ MODEL_CONTEXT_SIZES = {
     "xai/grok-beta": 128000,
 }
 
+_SORTED_MODEL_CONTEXT_KEYS = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
+
 if TYPE_CHECKING:
     pass
+
+
+def resolve_model_identifier(model: Optional[Any] = None, fallback_name: str = "") -> str:
+    """Return the best-effort model id/name from a LangChain chat model instance."""
+    if model is None:
+        return fallback_name
+
+    try:
+        from langchain_ibm import ChatWatsonx
+
+        if isinstance(model, ChatWatsonx):
+            model_id = getattr(model, "model_id", None)
+            if model_id:
+                return str(model_id)
+    except ImportError:
+        pass
+
+    for attr in ("model_id", "model_name", "model"):
+        value = getattr(model, attr, None)
+        if value:
+            return str(value)
+
+    return fallback_name
+
+
+def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
+    """Look up a known context window size for *model_name*, if available."""
+    if not model_name:
+        return None
+
+    normalized_name = model_name.strip()
+    if "/" in normalized_name:
+        normalized_name = normalized_name.split("/", 1)[1]
+
+    if normalized_name in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[normalized_name]
+
+    sorted_keys = _SORTED_MODEL_CONTEXT_KEYS
+    for key in sorted_keys:
+        if normalized_name.startswith(key):
+            return MODEL_CONTEXT_SIZES[key]
+
+    return None
+
+
+def clamp_completion_tokens(
+    context_size: int,
+    prompt_tokens: int,
+    requested: int,
+    *,
+    buffer: int = 256,
+) -> int:
+    """Keep completion budget positive when prompt size is near the context window."""
+    remaining = context_size - prompt_tokens - buffer
+    if remaining >= requested:
+        return requested
+    return max(1, remaining)
+
+
+def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
+    """Prevent negative max_completion_tokens when prompt size nears the context window."""
+    try:
+        from langchain_ibm import ChatWatsonx
+    except ImportError:
+        return
+
+    llm = model
+    while hasattr(llm, "bound"):
+        llm = llm.bound
+    if not isinstance(llm, ChatWatsonx):
+        return
+
+    context_size = ensure_model_context_profile(llm)
+    counter = TokenCounter(model=llm)
+    lc_messages = []
+    for message in messages:
+        if isinstance(message, dict):
+            role = (message.get("role") or "user").lower()
+            content = str(message.get("content", ""))
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+        else:
+            lc_messages.append(message)
+    raw_prompt_tokens = counter.count_total_context_tokens(lc_messages)
+    # Inflate: our estimator undercounts vs IBM's real tokenizer on dense/JSON-heavy prompts.
+    prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
+
+    params = dict(llm.params or {})
+    requested = (
+        getattr(llm, "max_completion_tokens", None)
+        or getattr(llm, "max_tokens", None)
+        or params.get("max_completion_tokens")
+        or 16000
+    )
+    requested = int(requested)
+
+    clamped = clamp_completion_tokens(
+        context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
+    )
+    if clamped != requested:
+        logger.warning(
+            "Clamped WatsonX max_completion_tokens {} -> {} "
+            "(~{} raw / ~{} safety-inflated prompt tokens, {} context)",
+            requested,
+            clamped,
+            raw_prompt_tokens,
+            prompt_tokens,
+            context_size,
+        )
+    params["max_completion_tokens"] = clamped
+    llm.params = params
+
+
+def ensure_model_context_profile(model: Optional[Any] = None, model_name: Optional[str] = None) -> int:
+    """Ensure *model.profile* reflects the known context window for the resolved model name."""
+    resolved_name = (model_name or "").strip() or resolve_model_identifier(model, fallback_name="")
+    context_size = lookup_model_context_size(resolved_name)
+    if context_size is None:
+        context_size = DEFAULT_CONTEXT_SIZE
+
+    if model is not None:
+        try:
+            existing = getattr(model, "profile", None)
+            if not isinstance(existing, Mapping) or existing.get("max_input_tokens") != context_size:
+                merged = dict(existing) if isinstance(existing, Mapping) else {}
+                merged["max_input_tokens"] = context_size
+                model.profile = merged
+                logger.debug(
+                    "Set model profile: max_input_tokens={} for {}",
+                    context_size,
+                    resolved_name or "unknown",
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to set model.profile: {exc}")
+
+    return context_size
 
 
 class TokenCounter:
@@ -460,7 +610,9 @@ class TokenCounter:
         """
         Get the context window size for a given model.
 
-        First tries to get from model profile, then falls back to hardcoded values.
+        Prefers known model-name mappings over provider-supplied profiles, because
+        some integrations (e.g. ChatWatsonx) ship with generic 8K profiles that
+        do not match large-context models like gpt-oss-120b.
 
         Args:
             model: Optional BaseChatModel instance (uses instance model if not provided)
@@ -468,42 +620,20 @@ class TokenCounter:
         Returns:
             Context window size in tokens
         """
-        # Try to get from model profile first
         model_to_check = model or self.model
+        model_name = resolve_model_identifier(model_to_check, fallback_name=self.model_name)
+
+        known_size = lookup_model_context_size(model_name)
+        if known_size is not None:
+            return known_size
+
         if model_to_check:
             profile_limit = self._get_profile_limits(model_to_check)
             if profile_limit is not None:
                 return profile_limit
 
-        # Fallback to model context sizes constant
-        model_name = self.model_name
-        if model_to_check and hasattr(model_to_check, 'model_name'):
-            model_name = model_to_check.model_name
-
-        # Normalize model name - strip provider prefixes like "Azure/", "OpenAI/", etc.
-        normalized_name = model_name
-        if '/' in model_name:
-            normalized_name = model_name.split('/', 1)[1]
-            logger.debug(f"Normalized model name from '{model_name}' to '{normalized_name}'")
-
-        # Try exact match first
-        if normalized_name in MODEL_CONTEXT_SIZES:
-            return MODEL_CONTEXT_SIZES[normalized_name]
-
-        # Try partial match (e.g., "gpt-4-0613" matches "gpt-4", "gpt-4.1" matches "gpt-4")
-        # Sort keys by length (descending) to match longer prefixes first
-        # This ensures "gpt-4o" matches before "gpt-4"
-        sorted_keys = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
-        for key in sorted_keys:
-            if normalized_name.startswith(key):
-                logger.debug(
-                    f"Matched '{normalized_name}' to '{key}' with context size {MODEL_CONTEXT_SIZES[key]}"
-                )
-                return MODEL_CONTEXT_SIZES[key]
-
-        # Default to 32K for unknown models
         logger.warning(
-            f"Unknown model '{model_name}', defaulting to 32K context window. "
+            f"Unknown model '{model_name}', defaulting to {DEFAULT_CONTEXT_SIZE} context window. "
             "Consider adding the model to MODEL_CONTEXT_SIZES constant or setting model.profile "
             "with max_input_tokens for accurate tracking."
         )

@@ -31,8 +31,6 @@ interface ChatInstance {
 
 interface CustomChatProps {
   onVariablesUpdate?: (variables: Record<string, any>, history: Array<any>) => void;
-  onFileAutocompleteOpen?: () => void;
-  onFileHover?: (filePath: string | null) => void;
   onMessageSent?: (message: string) => void;
   onChatStarted?: (started: boolean) => void;
   onThreadIdChange?: (threadId: string) => void;
@@ -55,7 +53,7 @@ interface CustomChatProps {
   workspaceFilesystemRoot?: string;
 }
 
-export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false, sessionDocsVersion = 0, onSessionDocsChanged, externalThreadId, initialThreadId, knowledgeEnabled, workspaceFilesystemRoot = "cuga_workspace" }: CustomChatProps) {
+export function CustomChat({ onVariablesUpdate, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false, sessionDocsVersion = 0, onSessionDocsChanged, externalThreadId, initialThreadId, knowledgeEnabled, workspaceFilesystemRoot = "cuga_workspace" }: CustomChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -264,15 +262,6 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     setSelectedFileIndex(0);
   }, [showFileAutocomplete, autocompleteQuery, allFiles]);
 
-  // Highlight file when selection changes via keyboard navigation
-  useEffect(() => {
-    if (showFileAutocomplete && filteredFiles.length > 0 && selectedFileIndex >= 0 && selectedFileIndex < filteredFiles.length) {
-      onFileHover?.(filteredFiles[selectedFileIndex].path);
-    } else if (!showFileAutocomplete) {
-      onFileHover?.(null);
-    }
-  }, [selectedFileIndex, showFileAutocomplete, filteredFiles, onFileHover]);
-
   const extractFiles = (nodes: any[]): Array<{ name: string; path: string }> => {
     const files: Array<{ name: string; path: string }> = [];
     for (const node of nodes) {
@@ -437,7 +426,6 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
         const searchTerm = textAfterAt.split(/\s/)[0];
         setAutocompleteQuery(searchTerm);
         setShowFileAutocomplete(true);
-        onFileAutocompleteOpen?.();
       } else {
         setShowFileAutocomplete(false);
       }
@@ -1226,9 +1214,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                     onClick={() => handleFileSelect(file.path)}
                     onMouseEnter={() => {
                       setSelectedFileIndex(index);
-                      onFileHover?.(filteredFiles[index].path);
                     }}
-                    onMouseLeave={() => onFileHover?.(null)}
                   >
                     <FileText size={16} className="file-icon" />
                     <div className="file-info">

@@ -512,10 +512,12 @@ class TestSnapshotAdaptationHash:
         """The publish flow must write a `_adaptation_hash` key into the
         snapshot so version-history diffing works."""
         import inspect
-        from cuga.backend.server import manage_routes
+        from cuga.backend.server.manage_routes import config_routes, knowledge_routes
 
-        src = inspect.getsource(manage_routes)
-        assert '_adaptation_hash' in src, "manage_routes.py must persist _adaptation_hash on publish"
+        src = inspect.getsource(config_routes.save_manage_config_publish) + inspect.getsource(
+            knowledge_routes.patch_draft_knowledge
+        )
+        assert '_adaptation_hash' in src, "manage publish must persist _adaptation_hash on publish"
         # And log the diff event.
         assert "cuga.knowledge.adaptation_patched" in src
         assert "cuga.knowledge.adaptation_published" in src
@@ -954,9 +956,11 @@ class TestAuditFindingFixes:
         """The publish route must write _glossary_hash next to _adaptation_hash
         so version history can show 'glossary changed' indicators."""
         import inspect
-        from cuga.backend.server import manage_routes
+        from cuga.backend.server.manage_routes import config_routes, knowledge_routes
 
-        src = inspect.getsource(manage_routes)
+        src = inspect.getsource(config_routes.save_manage_config_publish) + inspect.getsource(
+            knowledge_routes.patch_draft_knowledge
+        )
         assert "_glossary_hash" in src, "publish must persist _glossary_hash"
         assert "cuga.knowledge.glossary_patched" in src
         assert "cuga.knowledge.glossary_published" in src
