@@ -2265,9 +2265,11 @@ class CugaAgent:
             if settings.advanced_features.run_receipt:
                 receipt_collector = RunMetricsCollector()
                 receipt_started_at = time.monotonic()
-                # Tool durations for the receipt require tracking; the returned
-                # result.tool_calls stays gated on the caller's track_tool_calls.
-                run_config["configurable"]["track_tool_calls"] = True
+                if not track_tool_calls:
+                    # Tool durations for the receipt require tracking, but the
+                    # caller did not opt into payload capture: timings-only mode
+                    # records tool name/duration, never arguments/results/errors.
+                    run_config["configurable"]["track_tool_calls"] = "timings_only"
         except Exception as e:
             logger.debug(f"Run receipt disabled: {e}")
 
@@ -2305,6 +2307,18 @@ class CugaAgent:
             )
 
             from langgraph.types import Command
+
+            # tool_calls accumulate on the thread state across turns; snapshot
+            # the prior count so the receipt covers only this resume segment
+            # (matching the token/time scope of the fresh collector).
+            resume_prior_tool_calls = 0
+            if receipt_collector is not None:
+                try:
+                    prior_state = self.graph.get_state(run_config)
+                    if prior_state and prior_state.values:
+                        resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
+                except Exception as e:
+                    logger.debug(f"Run receipt: could not snapshot prior tool_calls: {e}")
 
             if action_response:
                 logger.info(
@@ -2345,8 +2359,6 @@ class CugaAgent:
 
             _hitl_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
-            # No pre-run snapshot exists on the resume path, so the receipt's
-            # tool timings are thread-cumulative here.
             return InvokeResult(
                 answer=final_answer,
                 tool_calls=tool_calls,
@@ -2354,7 +2366,9 @@ class CugaAgent:
                 error=error_msg,
                 variables=_hitl_variables,
                 receipt=self._build_run_receipt(
-                    receipt_collector, receipt_started_at, result.get("tool_calls") or []
+                    receipt_collector,
+                    receipt_started_at,
+                    (result.get("tool_calls") or [])[resume_prior_tool_calls:],
                 ),
             )
 

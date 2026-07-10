@@ -566,10 +566,17 @@ result.receipt.cost_usd        # structured access: 0.0668 (None for unknown mod
 result.receipt.tool_timings    # per-tool call counts and total durations
 ```
 
-Costs come from a static price table ([`backend/llm/pricing.py`](src/cuga/backend/llm/pricing.py));
-models without a public list price (e.g. self-hosted) show `est. cost: n/a`.
-Tool timings follow the same semantics as `track_tool_calls`: they cover registry/MCP
-tools and functions decorated with `@tracked_tool`.
+Costs come primarily from litellm's bundled model-cost map (cache-read pricing
+included), with a small static fallback table ([`backend/llm/pricing.py`](src/cuga/backend/llm/pricing.py));
+models without a public list price (self-hosted `rits/...` deployments in
+particular) show `est. cost: n/a`.
+
+What enabling costs: tool tracking runs in a **timings-only** mode when the
+caller has not passed `track_tool_calls=True` — only tool name, app, and
+duration are appended to the thread state; arguments, results, and error
+payloads are never captured for the receipt. Tool timings follow the same
+semantics as `track_tool_calls`: they cover registry/MCP tools and functions
+decorated with `@tracked_tool`.
 
 ### Knowledge Base
 
