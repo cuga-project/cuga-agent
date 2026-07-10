@@ -189,6 +189,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                  "plan": planned, "trace_id": tr.id}, 501)
         thread_id = (body or {}).get("thread_id", "web:local")
         principal = resolve_principal(headers=request.headers)
+        # `?flow=1` → also return the flow(s) this utterance armed, so a caller can check the pieces
+        # are right without a second round trip to /subscriptions/<id>/flow. `?flow=full` adds the
+        # raw Activepieces flow JSON. Off by default: it costs one AP call per new subscription.
+        want_flow = request.query_params.get("flow", "") in ("1", "true", "yes", "digest", "full")
+        full_flow = request.query_params.get("flow", "") == "full"
+        before = {s.id for s in store.list(scope=principal.scope)} if (store and want_flow) else set()
         # /watch|/schedule|/cron|/poll|/push slash commands are handled inside concierge.run (so they
         # work from every surface — web chat AND channels), no interception needed here.
         try:
@@ -197,7 +203,62 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         except Exception as e:  # noqa: BLE001
             tr.error("error", err=str(e))
             return JSONResponse({"ok": False, "error": str(e), "trace_id": tr.id}, 500)
-        return {"ok": True, "reply": reply, "scope": principal.scope, "trace_id": tr.id}
+        out = {"ok": True, "reply": reply, "scope": principal.scope, "trace_id": tr.id}
+        if want_flow:
+            out["flows"] = await _armed_flows(before, principal.scope, full=full_flow)
+        return out
+
+    def _flow_digest(ap_flow: dict) -> dict:
+        """The Activepieces flow, reduced to the question people actually ask: which pieces, in what
+        order, wired to what. The raw flow JSON is a few hundred lines of AP bookkeeping."""
+        ver = (ap_flow or {}).get("version") or {}
+        trig = ver.get("trigger") or {}
+        ts = trig.get("settings") or {}
+        steps, node = [], trig.get("nextAction")
+        while node:
+            s = node.get("settings") or {}
+            steps.append({"name": node.get("name"), "display": node.get("displayName"),
+                          "type": node.get("type"),
+                          "piece": s.get("pieceName"), "action": s.get("actionName"),
+                          # the send step's text is a template that reads step_1's HTTP RESPONSE —
+                          # this is the seam that proves the answer flows into the sink
+                          "text": ((s.get("input") or {}).get("text")
+                                   or (s.get("input") or {}).get("message"))})
+            node = node.get("nextAction")
+        return {
+            "id": ap_flow.get("id"), "status": ap_flow.get("status"),
+            "trigger": {"piece": ts.get("pieceName"), "name": ts.get("triggerName"),
+                        "input": ts.get("input")},
+            "steps": steps,
+        }
+
+    async def _armed_flows(before: set, scope: str, *, full: bool = False) -> list[dict]:
+        """Subscriptions this call created, each with its live AP flow. An utterance that REUSED an
+        existing flow adds nothing here — by design, since nothing was armed. The empty list is the
+        honest answer; `GET /api/events/subscriptions` shows what already exists."""
+        if store is None:
+            return []
+        out = []
+        for sub in store.list(scope=scope):
+            if sub.id in before:
+                continue
+            row: dict = {"subscription_id": sub.id, "mode": sub.mode, "agent": sub.target_agent,
+                         "deliver_to": list(sub.deliver_to or []), "flow_name": sub.flow_name,
+                         "ap_flow_id": sub.ap_flow_id, "dedup_key": sub.dedup_key}
+            ap_flow = None
+            if engine is not None and sub.ap_flow_id:
+                try:
+                    ap_flow = await engine.get_flow(sub.ap_flow_id)
+                except Exception as e:  # noqa: BLE001 — AP down must not 500 the arm
+                    row["flow_error"] = str(e)
+            # `ap_flow: null` on a subscription that names an ap_flow_id means DANGLING: the flow does
+            # not exist in AP, so the watcher can never fire. Surface it here rather than let the
+            # caller infer "armed" from a non-empty ap_flow_id.
+            row["exists_in_ap"] = bool(ap_flow)
+            if ap_flow:
+                row["flow"] = ap_flow if full else _flow_digest(ap_flow)
+            out.append(row)
+        return out
 
     @app.get("/api/events/subscriptions")
     async def list_subscriptions(request: Request):

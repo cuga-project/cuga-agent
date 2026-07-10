@@ -410,7 +410,7 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
     <div class="epbody">
       <p class="summary">Natural language → a flow. The web chat's front door.</p>
       <div class="chips"><span class="lbl">called by</span><span class="chip who" title="The web console; it renders whatever these return, no client logic">Studio UI</span><span class="chip who" title="tests/events/*.py">Test harness</span><span class="chip who" title="curl / the Makefile targets">You, from a shell</span></div>
-      <h4>Parameters</h4><table class="params"><tbody><tr><td><code>dry_run</code></td><td class="k">query</td><td><code>1</code> = plan only, no side effects, no LLM</td></tr></tbody></table><h4>Example payloads</h4><div class="tabs"><button class="btab on" data-i="0">Arm a scheduled flow</button><button class="btab" data-i="1">Plan without arming (&lt;code&gt;?dry_run=1&lt;/code&gt;)</button><button class="btab" data-i="2">A one-shot question</button><button class="btab" data-i="3">Arm a POLL — watch something and only speak on change</button><button class="btab" data-i="4">Arm a PUSH watcher on an integration</button><button class="btab" data-i="5">A slash command</button><button class="btab" data-i="6">Override the delivery channel</button><button class="btab" data-i="7">Tear down what you armed</button></div><div class="bpane on" data-i="0"><pre class="blk">{
+      <h4>Parameters</h4><table class="params"><tbody><tr><td><code>dry_run</code></td><td class="k">query</td><td><code>1</code> = plan only, no side effects, no LLM</td></tr><tr><td><code>flow</code></td><td class="k">query</td><td><code>1</code> = also return the flow(s) this utterance armed, as a digest; <code>full</code> = the raw Activepieces flow JSON. Costs one AP call per new subscription, so it is off by default.</td></tr></tbody></table><h4>Example payloads</h4><div class="tabs"><button class="btab on" data-i="0">Arm a scheduled flow</button><button class="btab" data-i="1">Plan without arming (&lt;code&gt;?dry_run=1&lt;/code&gt;)</button><button class="btab" data-i="2">A one-shot question</button><button class="btab" data-i="3">Arm a POLL — watch something and only speak on change</button><button class="btab" data-i="4">Arm a PUSH watcher on an integration</button><button class="btab" data-i="5">A slash command</button><button class="btab" data-i="6">Override the delivery channel</button><button class="btab" data-i="7">Tear down what you armed</button></div><div class="bpane on" data-i="0"><pre class="blk">{
   &quot;text&quot;: &quot;every day at 9am send me the price of bitcoin&quot;,
   &quot;thread_id&quot;: &quot;web:local&quot;
 }</pre><p class=note><code>thread_id</code> keys the conversation memory. Reuse it and the concierge remembers the previous turns — including, unhelpfully, that it already armed something.</p></div><div class="bpane" data-i="1"><pre class="blk">{
@@ -453,7 +453,68 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
     ]
   },
   &quot;trace_id&quot;: &quot;1b9e\u2026&quot;
-}</pre><p class=note>The <code>?dry_run=1</code> path: the plan, and nothing armed.</p></div></div><div class="resp"><span class="code c5">500</span><div class="rbody"><pre class="blk">{
+}</pre><p class=note>The <code>?dry_run=1</code> path: the plan, and nothing armed.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;reply&quot;: &quot;Armed a daily 9am cron for pricebot.&quot;,
+  &quot;scope&quot;: &quot;default/default/local&quot;,
+  &quot;trace_id&quot;: &quot;1b9e\u2026&quot;,
+  &quot;flows&quot;: [
+    {
+      &quot;subscription_id&quot;: &quot;pricebot-88a42a&quot;,
+      &quot;mode&quot;: &quot;CRON&quot;,
+      &quot;agent&quot;: &quot;pricebot&quot;,
+      &quot;deliver_to&quot;: [
+        &quot;telegram&quot;
+      ],
+      &quot;flow_name&quot;: &quot;ea:cron-pricebot-0_9_*_*_*-7c53&quot;,
+      &quot;ap_flow_id&quot;: &quot;DLupsrNjNpIkboZXywNjX&quot;,
+      &quot;dedup_key&quot;: &quot;pricebot|time|0 9 * * *|telegram|default&quot;,
+      &quot;exists_in_ap&quot;: true,
+      &quot;flow&quot;: {
+        &quot;id&quot;: &quot;DLupsrNjNpIkboZXywNjX&quot;,
+        &quot;status&quot;: &quot;ENABLED&quot;,
+        &quot;trigger&quot;: {
+          &quot;piece&quot;: &quot;@activepieces/piece-schedule&quot;,
+          &quot;name&quot;: &quot;cron_expression&quot;,
+          &quot;input&quot;: {
+            &quot;cronExpression&quot;: &quot;0 9 * * *&quot;,
+            &quot;timezone&quot;: &quot;UTC&quot;
+          }
+        },
+        &quot;steps&quot;: [
+          {
+            &quot;name&quot;: &quot;step_1&quot;,
+            &quot;display&quot;: &quot;Invoke CUGA&quot;,
+            &quot;piece&quot;: &quot;@activepieces/piece-http&quot;,
+            &quot;action&quot;: &quot;send_request&quot;,
+            &quot;text&quot;: null
+          },
+          {
+            &quot;name&quot;: &quot;step_2&quot;,
+            &quot;display&quot;: &quot;telegram \u00b7 send&quot;,
+            &quot;piece&quot;: &quot;@activepieces/piece-telegram-bot&quot;,
+            &quot;action&quot;: &quot;send_text_message&quot;,
+            &quot;text&quot;: &quot;{{step_1.body.answer}}&quot;
+          }
+        ]
+      }
+    }
+  ]
+}</pre><p class=note><code>?flow=1</code>. This is how you check the pieces are right. Read the chain: the schedule fires, <code>step_1</code> POSTs to <code>/invoke</code>, and <code>step_2</code> sends <code>{{step_1.body.answer}}</code> — the <b>HTTP response of step_1</b>. There is no callback; Activepieces simply blocks on CUGA's reply.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;reply&quot;: &quot;Push flow set up.&quot;,
+  &quot;flows&quot;: [
+    {
+      &quot;subscription_id&quot;: &quot;mailbot-77c1&quot;,
+      &quot;ap_flow_id&quot;: &quot;gone-abc&quot;,
+      &quot;exists_in_ap&quot;: false
+    }
+  ]
+}</pre><p class=note><b>Dangling.</b> The subscription names a flow Activepieces does not have, so the watcher can never fire. <code>exists_in_ap</code> is the only honest signal — a non-empty <code>ap_flow_id</code> proves nothing.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;reply&quot;: &quot;Bitcoin is about $63,964 USD.&quot;,
+  &quot;flows&quot;: []
+}</pre><p class=note><code>?flow=1</code> on an utterance that armed nothing. An utterance that <i>reused</i> an existing flow also returns <code>[]</code> — nothing was created. Use <code>GET /api/events/subscriptions</code> to see what already exists.</p></div></div><div class="resp"><span class="code c5">500</span><div class="rbody"><pre class="blk">{
   &quot;ok&quot;: false,
   &quot;error&quot;: &quot;AP unreachable&quot;,
   &quot;trace_id&quot;: &quot;1b9e\u2026&quot;
@@ -465,11 +526,11 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
       &quot;mode&quot;: &quot;NOW&quot;
     }
   }
-}</pre><p class=note>No concierge instance — it still hands back the plan.</p></div></div><div class="callout">Slash commands (<code>/watch · /schedule · /cron · /poll · /push</code>) are handled inside <code>concierge.run</code>, so they work identically from web chat and from every channel. There is no interception here.</div>
+}</pre><p class=note>No concierge instance — it still hands back the plan.</p></div></div><div class="callout">Slash commands (<code>/watch · /schedule · /cron · /poll · /push</code>) are handled inside <code>concierge.run</code>, so they work identically from web chat and from every channel. There is no interception here.<br><br><b>To inspect what an utterance built</b>, use <code>?flow=1</code> (digest) or <code>?flow=full</code> (raw AP JSON). For a flow armed earlier, <code>GET /api/events/subscriptions/&lt;id&gt;/flow</code>, or the point-and-click console at <code>GET /api/events/flows/console</code> (<code>make flows</code>).</div>
     <details class="try">
       <summary>Try it</summary>
       <div class="tform">
-        <div class="tparams"><label>?dry_run <input class="qp" data-name="dry_run" value="1"></label></div>
+        <div class="tparams"><label>?dry_run <input class="qp" data-name="dry_run" value="1"></label><label>?flow <input class="qp" data-name="flow" value=""></label></div>
         <textarea class="tbody" rows="8" spellcheck="false">{
   &quot;text&quot;: &quot;every day at 9am send me the price of bitcoin&quot;,
   &quot;thread_id&quot;: &quot;web:local&quot;

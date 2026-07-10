@@ -199,7 +199,10 @@ ENDPOINTS = [
     E("POST", "/api/concierge", "core",
       "Natural language → a flow. The web chat's front door.",
       tier="core", callers=["studio", "tests", "operator"],
-      query=[("dry_run", "<code>1</code> = plan only, no side effects, no LLM", "1")],
+      query=[("dry_run", "<code>1</code> = plan only, no side effects, no LLM", "1"),
+             ("flow", "<code>1</code> = also return the flow(s) this utterance armed, as a digest; "
+                      "<code>full</code> = the raw Activepieces flow JSON. Costs one AP call per new "
+                      "subscription, so it is off by default.", "")],
       body=[
           ("Arm a scheduled flow", {"text": "every day at 9am send me the price of bitcoin",
                                     "thread_id": "web:local"},
@@ -247,6 +250,41 @@ ENDPOINTS = [
           (200, {"ok": True, "dry_run": True, "decision": {"mode": "CRON", "cron": "0 9 * * *"},
                  "flow": {"trigger": "…", "steps": ["…"]}, "trace_id": "1b9e…"},
            "The <code>?dry_run=1</code> path: the plan, and nothing armed."),
+          (200, {"ok": True, "reply": "Armed a daily 9am cron for pricebot.",
+                 "scope": "default/default/local", "trace_id": "1b9e…",
+                 "flows": [{"subscription_id": "pricebot-88a42a", "mode": "CRON",
+                            "agent": "pricebot", "deliver_to": ["telegram"],
+                            "flow_name": "ea:cron-pricebot-0_9_*_*_*-7c53",
+                            "ap_flow_id": "DLupsrNjNpIkboZXywNjX",
+                            "dedup_key": "pricebot|time|0 9 * * *|telegram|default",
+                            "exists_in_ap": True,
+                            "flow": {"id": "DLupsrNjNpIkboZXywNjX", "status": "ENABLED",
+                                     "trigger": {"piece": "@activepieces/piece-schedule",
+                                                 "name": "cron_expression",
+                                                 "input": {"cronExpression": "0 9 * * *",
+                                                           "timezone": "UTC"}},
+                                     "steps": [
+                                         {"name": "step_1", "display": "Invoke CUGA",
+                                          "piece": "@activepieces/piece-http",
+                                          "action": "send_request", "text": None},
+                                         {"name": "step_2", "display": "telegram · send",
+                                          "piece": "@activepieces/piece-telegram-bot",
+                                          "action": "send_text_message",
+                                          "text": "{{step_1.body.answer}}"}]}}]},
+           "<code>?flow=1</code>. This is how you check the pieces are right. Read the chain: the "
+           "schedule fires, <code>step_1</code> POSTs to <code>/invoke</code>, and "
+           "<code>step_2</code> sends <code>{{step_1.body.answer}}</code> — the <b>HTTP response of "
+           "step_1</b>. There is no callback; Activepieces simply blocks on CUGA's reply."),
+          (200, {"ok": True, "reply": "Push flow set up.", "flows": [
+              {"subscription_id": "mailbot-77c1", "ap_flow_id": "gone-abc",
+               "exists_in_ap": False}]},
+           "<b>Dangling.</b> The subscription names a flow Activepieces does not have, so the watcher "
+           "can never fire. <code>exists_in_ap</code> is the only honest signal — a non-empty "
+           "<code>ap_flow_id</code> proves nothing."),
+          (200, {"ok": True, "reply": "Bitcoin is about $63,964 USD.", "flows": []},
+           "<code>?flow=1</code> on an utterance that armed nothing. An utterance that <i>reused</i> "
+           "an existing flow also returns <code>[]</code> — nothing was created. Use "
+           "<code>GET /api/events/subscriptions</code> to see what already exists."),
           (500, {"ok": False, "error": "AP unreachable", "trace_id": "1b9e…"},
            "The concierge raised. The trace_id is the thread to pull."),
           (501, {"ok": False, "reason": "concierge not configured; use ?dry_run=1 for the plan",
@@ -255,7 +293,11 @@ ENDPOINTS = [
       ],
       notes="Slash commands (<code>/watch · /schedule · /cron · /poll · /push</code>) are handled "
             "inside <code>concierge.run</code>, so they work identically from web chat and from every "
-            "channel. There is no interception here."),
+            "channel. There is no interception here.<br><br><b>To inspect what an utterance built</b>, "
+            "use <code>?flow=1</code> (digest) or <code>?flow=full</code> (raw AP JSON). For a flow "
+            "armed earlier, <code>GET /api/events/subscriptions/&lt;id&gt;/flow</code>, or the "
+            "point-and-click console at <code>GET /api/events/flows/console</code> "
+            "(<code>make flows</code>)."),
 
     # ── flows ─────────────────────────────────────────────────────────────────
     E("GET", "/api/events/subscriptions", "flows",

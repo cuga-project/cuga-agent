@@ -208,6 +208,119 @@ def test_concierge_live_returns_reply():
     assert b["ok"] is True and b["reply"] == "Cron flow set up." and b["scope"] == MINE
 
 
+class _ArmingConcierge:
+    """A concierge that arms one flow, the way the real one does — via the store."""
+
+    def __init__(self, store, ap_flow_id="flow-1"):
+        self.store, self.ap_flow_id = store, ap_flow_id
+
+    async def run(self, thread_id, text, principal):
+        self.store.upsert(_sub("armed-1", tenant=principal.scope, ap_flow_id=self.ap_flow_id))
+        return "Armed a cron flow."
+
+
+def test_concierge_flow_param_returns_the_armed_ap_flow():
+    """`?flow=1` answers "what did that sentence actually build?" without a second round trip.
+
+    The digest is the question people ask — which pieces, in what order — not AP's raw bookkeeping.
+    """
+    ap_flow = {"id": "flow-1", "status": "ENABLED", "version": {"trigger": {
+        "settings": {"pieceName": "@activepieces/piece-schedule",
+                     "triggerName": "cron_expression",
+                     "input": {"cronExpression": "0 9 * * *"}},
+        "nextAction": {"name": "step_1", "displayName": "Invoke CUGA", "type": "PIECE",
+                       "settings": {"pieceName": "@activepieces/piece-http",
+                                    "actionName": "send_request"},
+                       "nextAction": {"name": "step_2", "displayName": "telegram · send",
+                                      "type": "PIECE",
+                                      "settings": {"pieceName": "@activepieces/piece-telegram-bot",
+                                                   "actionName": "send_text_message",
+                                                   "input": {"text": "{{step_1.body.answer}}"}}}}}}}
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=_FakeEngine(flow=ap_flow))
+    c = TestClient(app)
+
+    b = c.post("/api/concierge?flow=1", json={"text": "every day at 9am send bitcoin"}).json()
+    assert b["ok"] is True and b["reply"] == "Armed a cron flow."
+    (f,) = b["flows"]
+    assert f["subscription_id"] == "armed-1" and f["mode"] == "CRON" and f["exists_in_ap"] is True
+    assert f["ap_flow_id"] == "flow-1" and "dedup_key" in f
+    d = f["flow"]
+    assert d["status"] == "ENABLED"
+    assert d["trigger"]["piece"] == "@activepieces/piece-schedule"
+    assert d["trigger"]["input"]["cronExpression"] == "0 9 * * *"
+    # the whole chain, in order — and the seam that carries the answer into the sink
+    assert [s["name"] for s in d["steps"]] == ["step_1", "step_2"]
+    assert d["steps"][0]["piece"] == "@activepieces/piece-http"
+    assert d["steps"][1]["text"] == "{{step_1.body.answer}}"
+
+
+def test_concierge_flow_full_returns_the_raw_ap_flow():
+    ap_flow = {"id": "flow-1", "status": "ENABLED", "version": {"trigger": {"settings": {}}}}
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=_FakeEngine(flow=ap_flow))
+    b = TestClient(app).post("/api/concierge?flow=full",
+                             json={"text": "every day at 9am send bitcoin"}).json()
+    assert b["flows"][0]["flow"] == ap_flow          # verbatim, not the digest
+
+
+def test_concierge_flow_param_reports_a_dangling_flow():
+    """The subscription names an ap_flow_id, but AP has no such flow. `exists_in_ap` must say so —
+    otherwise a caller infers "armed" from a non-empty ap_flow_id, which is the original bug."""
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=_FakeEngine(flow=None))          # AP has no such flow
+    b = TestClient(app).post("/api/concierge?flow=1", json={"text": "arm it"}).json()
+    (f,) = b["flows"]
+    assert f["ap_flow_id"] == "flow-1"      # it still claims one
+    assert f["exists_in_ap"] is False       # …but it does not exist
+    assert "flow" not in f
+
+
+def test_concierge_flow_param_survives_ap_being_down():
+    class _Down(_FakeEngine):
+        async def get_flow(self, flow_id):
+            raise RuntimeError("connection refused")
+
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=_Down())
+    r = TestClient(app).post("/api/concierge?flow=1", json={"text": "arm it"})
+    assert r.status_code == 200                     # the arm is not lost because AP is unreachable
+    (f,) = r.json()["flows"]
+    assert f["exists_in_ap"] is False and "connection refused" in f["flow_error"]
+
+
+def test_concierge_flow_param_is_empty_when_nothing_was_armed():
+    """A plain question arms nothing, so there is nothing to show. An empty list is the honest
+    answer — and so is the case where an existing flow was REUSED rather than created."""
+    class _Chatty:
+        async def run(self, *a, **k):
+            return "Bitcoin is about $63,964 USD."
+
+    c, _ = _client(concierge=_Chatty(), engine=_FakeEngine())
+    b = c.post("/api/concierge?flow=1", json={"text": "what is bitcoin worth?"}).json()
+    assert b["ok"] is True and b["flows"] == []
+
+
+def test_concierge_without_flow_param_makes_no_ap_call():
+    """The default path must not pay an AP round trip. Guards against making `?flow=1` the default."""
+    eng = _FakeEngine(flow={"id": "flow-1"})
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=eng)
+    b = TestClient(app).post("/api/concierge", json={"text": "arm it"}).json()
+    assert "flows" not in b
+    assert [c for c in eng.calls if c[0] == "get_flow"] == []
+
+
 def test_concierge_error_is_500_with_trace_id():
     class _Boom:
         async def run(self, *a, **k):
