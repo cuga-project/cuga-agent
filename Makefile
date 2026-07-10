@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live test-live-channels test-live-flows test-suite test-suite-now test-suite-flows test-matrix test-live-integrations sync
+.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live test-live-channels test-live-flows test-suite test-suite-now test-suite-flows test-matrix test-fire test-fire-now test-report report api-spec test-live-integrations sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -126,6 +126,25 @@ test-suite-flows: ## Live suite, cron + poll + push phases only
 
 test-matrix: ## Live matrix — every trigger mode × every channel sink × every integration (~5 min)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_matrix.py $(ARGS)
+
+test-fire: ## Live FIRE — arm a 1-min schedule, WAIT for a real tick, read back the answer (~9 min)
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_fire.py $(ARGS)
+
+test-fire-now: ## Live fire, synchronous surfaces only (NOW · channel · webhook) — fast
+	@$(MAKE) --no-print-directory test-fire ARGS="--only now channel webhook"
+
+test-report: ## Run EVERY harness in order → one timestamped, commit-stamped report, md + html (~40 min)
+	$(PY) scripts/run_all_tests.py $(ARGS)
+
+report: ## Open the latest HTML report (results/index.html) — does not run anything
+	@test -f results/index.html || { echo "no report yet — run: make test-report"; exit 1; }
+	@open results/index.html 2>/dev/null || echo "results/index.html"
+
+api-spec: ## Regenerate roadmap/api_spec.html and SERVE it (Try-it needs http://, not file://)
+	@$(PY) scripts/gen_api_spec.py
+	@echo "API spec → http://localhost:8123/api_spec.html   (ctrl-c to stop)"
+	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
+	@$(PY) -m http.server 8123 --directory roadmap
 
 test-live-integrations: ## The older integration-focused harness (Box · GitHub · Gmail)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py

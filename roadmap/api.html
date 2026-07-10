@@ -193,14 +193,17 @@
     <tbody>
       <tr><td><code>GET /api/events/status</code></td><td><code>{enabled, worker_backend, concierge_backend, ap_configured, project_grain, features:{now,cron,poll,push,channels_inbound}}</code></td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/subscriptions</code></td><td><code>{scope, subscriptions:[…]}</code> — this principal's standing flows</td><td><span class="pill p-live">Live</span></td></tr>
-      <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/pause · /resume</code></td><td>pause/resume a flow — disables/enables it in Activepieces</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/pause</code><br><code>POST /api/events/subscriptions/&lt;id&gt;/resume</code></td><td>pause/resume a flow — disables/enables it in Activepieces, not just in CUGA's row. <code>404</code> (never <code>403</code>) for another principal's id, so ids don't leak across tenants</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>DELETE /api/events/subscriptions/&lt;id&gt;</code></td><td>delete a flow — removes it from Activepieces too</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/subscriptions/&lt;id&gt;/flow</code></td><td>rich flow detail: the CUGA model + the live AP flow JSON (trigger + steps)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/flows/console</code></td><td>the self-contained <b>Flows console</b> page (list · pause/resume · delete · view)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/channels</code></td><td><code>{channels:[{name,status}]}</code> — web/telegram/discord/slack connect state</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/integrations</code></td><td><code>{integrations:[{name,status,backend,auto_connect_pending}]}</code> — box/github/gmail/slack connection state; now also returns <code>backend</code> (via AP vs direct) and an <code>auto_connect_pending</code> status</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/runs</code></td><td>execution log: AP flow-runs joined with subscriptions (agent/mode/integration/channel/status) + per-run output</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/runs/&lt;run_id&gt;</code></td><td><code>{run:{id,status,started_at,finished_at}, answer, trigger_payload, error}</code> — one run, with the agent's <b>answer</b> lifted out of <code>steps.&lt;n&gt;.output.body.answer</code> and the raw event that fired it. <code>404</code> when the run's flow isn't yours</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/agents</code></td><td>the pre-built agents visible to this principal (name, prompt, channels, mcp)</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/agents</code> · <code>PUT /api/events/agents/&lt;name&gt;</code> <span class="tag">builder or admin</span></td><td>create / replace an agent spec (on <code>PUT</code> the body's <code>name</code> must match the URL). <code>403</code> without the builder role, <code>400</code> on a bad spec</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/mcp-servers</code></td><td><code>{servers:[{name,tools:[…]}]}</code> — the tool inventory agents draw on; the Studio's agent editor populates its MCP picker from this</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/examples</code></td><td>tagged catalog examples (channel/integration/trigger/phase/live) for the UI</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/setup-guides</code></td><td>per-connector setup guide with live <code>public_url</code>, cred <code>present</code> status, derived <code>connect</code> type (direct/oauth/token/none)</td><td><span class="pill p-live">Live</span></td></tr>
     </tbody>
@@ -260,6 +263,28 @@
       <p class="lead"><b>Env:</b> <code>BOX_DEV_TOKEN</code> or <code>EVENTS_BOX_TOKEN</code>. Verify with
       <code>tests/events/live_box_direct_check.py</code>. Returns <code>502</code> if the token is
       expired/invalid (Box list fails) so a stale token is loud, not silent.</p>
+    </div>
+
+    <div class="ep">
+      <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/hook/&lt;name&gt;</span>
+        <span class="desc">generic inbound webhook — no AP, no piece, no connection</span></div>
+      <p class="lead">Any external system (monitoring, CI, a form, a payment provider) POSTs JSON to
+      <code>&lt;EVENTS_PUBLIC_URL&gt;/api/events/hook/&lt;name&gt;</code>. CUGA serialises the payload into
+      a prompt, runs an agent on it, and optionally delivers the result to a channel. It is a thin
+      wrapper over the same <code>/invoke</code> seam every AP flow uses.</p>
+      <p class="lead"><b>Query:</b> <code>?agent=</code> (default <code>incident_triage</code>) ·
+      <code>?deliver_to=&lt;channel&gt;</code> + <code>?target=&lt;native id&gt;</code> to post the triage
+      into e.g. a Slack channel · <code>?key=</code> — <b>required</b> iff <code>EVENTS_WEBHOOK_KEY</code>
+      is set, compared with <code>hmac.compare_digest</code>. Unset key ⇒ the endpoint is open to anyone
+      who finds the public URL.</p>
+<pre class="blk">curl -X POST "$PUBLIC/api/events/hook/monitoring?agent=incident_triage&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
+  -H 'content-type: application/json' \
+  -d '{"alert":"HighCPU","service":"checkout-api","value":97,"threshold":85}'</pre>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"webhook"</span>: <span class="s">"monitoring"</span>,
+  <span class="k">"agent"</span>: <span class="s">"incident_triage"</span>, <span class="k">"answer"</span>: <span class="s">"P1 — checkout-api CPU 97% vs 85% threshold…"</span> <span class="k">}</span></pre>
+      <p class="lead"><code>401</code> bad/missing <code>?key</code> · <code>502</code> the internal
+      <code>/invoke</code> call failed. An empty body is accepted — the agent is told
+      <code>(empty body)</code> rather than the request being rejected.</p>
     </div>
   </div>
 </section>

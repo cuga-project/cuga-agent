@@ -50,7 +50,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from live_e2e import (  # noqa: E402  — shared HTTP/env/report plumbing, one source of truth
-    BASE, RUN, env, flow_alive, gw_headers, has_digit, http, srv,
+    BASE, RUN, connect_needed_app, env, flow_alive, gw_headers, has_digit, http, srv,
 )
 
 ARMED, REUSED, NEEDS, CONNECT, ERROR, SKIPPED, STALE = "✓", "≡", "?", "⚠", "✗", "–", "!"
@@ -210,10 +210,13 @@ def classify(reply: str, sub, is_new, app: str | None, ap_live: bool) -> tuple[s
             return ERROR, detail
         return (ARMED if is_new else REUSED), sub["ap_flow_id"][:10]
 
-    if app and "connect" in low and app in low:
+    # The gate fires on the first UNCONNECTED integration the agent needs — not necessarily `app`
+    # (resume_judge declares box AND gmail). Accept a connect prompt naming any of them.
+    want = connect_needed_app(reply) if app else None
+    if want:
         if not ap_live:
             return ERROR, "connect-needed while AP is DOWN — false negative, not a real prompt"
-        return CONNECT, "gate says not connected"
+        return CONNECT, f"gate says '{want}' not connected"
 
     if any(p in low for p in _REUSE_PHRASES):
         return STALE, "model says a flow exists; no subscription with this sink does"

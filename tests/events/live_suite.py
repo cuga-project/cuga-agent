@@ -39,7 +39,9 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from live_e2e import BASE, RUN, env, flow_alive, gw_headers, http, srv  # noqa: E402
+from live_e2e import (  # noqa: E402
+    BASE, RUN, connect_needed_app, env, flow_alive, gw_headers, http, srv,
+)
 
 PASS, FAIL, XFAIL, XPASS, SKIP = "PASS", "FAIL", "XFAIL", "XPASS", "SKIP"
 ICON = {PASS: "\033[32m✓\033[0m", FAIL: "\033[31m✗\033[0m", XFAIL: "\033[33mx\033[0m",
@@ -486,9 +488,12 @@ def phase_push(r: Report, ap_live: bool, conn: dict, created: list):
             r.record("push", cid, alive, expect,
                      detail if alive else f"DANGLING — {detail}", why)
             continue
-        low = reply.lower()
-        if "connect" in low and app in low:
-            note = "CONNECT NEEDED" + ("" if ap_live else " (AP is DOWN — false negative!)")
+        # The gate fires on the first UNCONNECTED integration the AGENT needs, which may not be the
+        # app we asked about (resume_judge needs box AND gmail — it emails the verdict).
+        want = connect_needed_app(reply)
+        if want:
+            note = f"CONNECT NEEDED ({want})" + ("" if ap_live else " — AP is DOWN, so this is a "
+                                                                    "FALSE negative, not a real prompt")
             r.record("push", cid, False, expect, f"{note}: {reply[:60]}", why)
             continue
         r.record("push", cid, False, expect, f"not armed: {reply[:70]}", why)

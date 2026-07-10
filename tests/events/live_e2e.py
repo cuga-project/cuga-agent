@@ -57,6 +57,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from steps import step  # noqa: E402  — no-op unless E2E_STEPS_FILE is set
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BASE = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
 
@@ -219,6 +222,10 @@ def ch_web(r: Report):
     code, rep = srv("POST", "/api/concierge", {"text": PROBE, "thread_id": f"web:{RUN}"}, timeout=200)
     reply = str(rep.get("reply", ""))
     print(f"     → {reply[:120]}")
+    step(phase="channels", surface="web", actor="you",
+         action=f'open the web chat and type "{PROBE}"',
+         expect="the concierge routes it to pricebot and answers with a live price",
+         got=reply, ok=(code == 200 and has_digit(reply)))
     r.ok("web", "concierge answers over HTTP", code == 200 and bool(reply), fail_detail=f"HTTP {code}")
     r.ok("web", "answer is substantive (contains a number)", has_digit(reply))
 
@@ -263,6 +270,10 @@ def ch_slack(r: Report):
     if not posted.get("ok"):
         return r.skip("slack", "slack round trip", f"chat.postMessage failed: {posted.get('error')}")
     ts = posted["ts"]
+    step(phase="channels", surface="slack", actor="you",
+         action=f'post "{PROBE}" in the Slack channel ({chan})',
+         expect="Slack accepts the message and Slack's Events API notifies CUGA",
+         got=f"message posted, ts={ts}", ok=None)
 
     # 2) Forge the Events API callback Slack itself would send, signed with the real secret.
     ev = {"type": "event_callback", "event": {"type": "message", "text": PROBE,
@@ -277,6 +288,10 @@ def ch_slack(r: Report):
     label = ("a correctly-signed Slack event" if secret
              else "an unsigned Slack event (no signing secret configured)")
     code, ack = http("POST", BASE + "/api/events/slack/events", raw_body=raw, timeout=30, headers=hdrs)
+    step(phase="channels", surface="slack", actor="Slack",
+         action=f"POSTs the message event to /api/events/slack/events ({label})",
+         expect="CUGA verifies the signature, acks in <3s, and answers in the background",
+         got=f"HTTP {code} {json.dumps(ack)[:80]}", ok=(code == 200 and bool(ack.get("ok"))))
     if not r.ok("slack", f"server accepts {label}", code == 200 and ack.get("ok"),
                 fail_detail=f"HTTP {code} {ack.get('error', '')}"):
         return
@@ -306,6 +321,11 @@ def ch_slack(r: Report):
         if reply:
             break
     print(f"     → {reply[:120] or '(no reply within budget)'}")
+    step(phase="channels", surface="slack", actor="you",
+         action="look at the thread under your message in Slack",
+         expect="the bot has replied in-thread with the bitcoin price",
+         got=reply or "(no threaded reply within budget)",
+         ok=bool(reply) and has_digit(reply))
     r.ok("slack", "bot replied in-thread via the real Slack API", bool(reply), f"{len(reply)} chars",
          fail_detail="no threaded reply within budget — check the server log for slack.reply")
     if reply:
@@ -339,6 +359,12 @@ def ch_discord(r: Report):
     code, rep = _invoke_channel("discord", f"gw:discord:{chan}", "e2e-user", deliver=True)
     answer = str(rep.get("answer", ""))
     print(f"     → {answer[:120]}")
+    step(phase="channels", surface="discord", actor="you",
+         action=f'type "{PROBE}" in the Discord channel ({chan})',
+         expect="the Gateway relays it to CUGA, which answers with a live price",
+         got=answer, ok=(code == 200 and has_digit(answer)),
+         note="the Gateway socket itself is simulated: a bot cannot message itself "
+              "(discord_direct.should_process drops bot authors)")
     if not r.ok("discord", "concierge answers a discord envelope", code == 200 and bool(answer),
                 fail_detail=f"HTTP {code} {rep.get('error', '')}"):
         return
@@ -351,6 +377,11 @@ def ch_discord(r: Report):
     landed = any(m.get("content") and m.get("timestamp") and
                  time.mktime(time.strptime(m["timestamp"][:19], "%Y-%m-%dT%H:%M:%S")) + 60 > before
                  for m in (msgs if isinstance(msgs, list) else []))
+    step(phase="channels", surface="discord", actor="you",
+         action="scroll the Discord channel",
+         expect="the bot's reply is there — posted by a real REST call, not a mock",
+         got="a new bot message is present" if landed else "no recent bot message",
+         ok=landed)
     r.ok("discord", "reply landed in the channel (real REST send)", landed,
          fail_detail="no recent message in the channel — check discord_direct.send_message")
 
@@ -373,6 +404,11 @@ def ch_telegram(r: Report):
     code, rep = _invoke_channel("telegram", f"gw:telegram:{chat or '0'}", "e2e-user", deliver=False)
     answer = str(rep.get("answer", ""))
     print(f"     → {answer[:120]}")
+    step(phase="channels", surface="telegram", actor="you",
+         action=f'message the bot @{who.get("result", {}).get("username", "bot")} with "{PROBE}"',
+         expect="Activepieces' telegram webhook posts it to CUGA, which answers with a live price",
+         got=answer, ok=(code == 200 and has_digit(answer)),
+         note="the Telegram → AP webhook hop is simulated; a bot cannot message itself")
     r.ok("telegram", "concierge answers a telegram envelope", code == 200 and bool(answer),
          fail_detail=f"HTTP {code} {rep.get('error', '')}")
     if answer:
@@ -384,6 +420,10 @@ def ch_telegram(r: Report):
     _, sent = http("POST", f"{api}/sendMessage",
                    {"chat_id": chat, "text": f"✅ live_e2e: {answer[:200] or 'delivery leg OK'}"},
                    {"Content-Type": "application/json"}, timeout=20)
+    step(phase="channels", surface="telegram", actor="you",
+         action="open the Telegram chat with the bot",
+         expect="the bot's message is delivered for real (sendMessage)",
+         got="delivered" if sent.get("ok") else str(sent.get("description")), ok=bool(sent.get("ok")))
     r.ok("telegram", "real delivery leg (sendMessage)", sent.get("ok"), f"chat {chat}",
          fail_detail=sent.get("description", "sendMessage failed"))
 
@@ -424,6 +464,27 @@ def _match_sub(before_ids: set, mode: str | None = None, source: str | None = No
     return reused, False
 
 
+KNOWN_APPS = ("box", "github", "gmail", "slack", "telegram", "discord")
+
+
+def connect_needed_app(reply: str) -> str | None:
+    """Which integration is the concierge asking the user to connect, if any?
+
+    An agent may need SEVERAL integrations, and the gate fires on the first UNCONNECTED one — which
+    is not necessarily the app you asked about. `resume_judge` declares box AND gmail (it emails the
+    verdict), so "watch my Box folder" legitimately answers "connect your gmail" when gmail is not
+    connected. A harness that only looks for its own app's name reads that as an unexpected reply and
+    fails a case the product got right.
+    """
+    low = (reply or "").lower()
+    if "connect" not in low:
+        return None
+    for app in KNOWN_APPS:
+        if app in low:
+            return app
+    return None
+
+
 def flow_alive(sub) -> tuple[bool, str]:
     """Does the subscription's AP flow actually EXIST in Activepieces? Returns (alive, detail).
 
@@ -452,6 +513,10 @@ def flow_now(r: Report):
     code, rep = srv("POST", "/api/concierge", {"text": PROBE, "thread_id": f"web:{RUN}:now"}, timeout=200)
     reply = str(rep.get("reply", ""))
     print(f"     → {reply[:120]}")
+    step(phase="flows", surface="web", actor="you",
+         action=f'ask "{PROBE}" and expect an answer right now (no flow)',
+         expect="pricebot calls its real MCP tool and returns a live number",
+         got=reply, ok=(code == 200 and has_digit(reply)))
     r.ok("NOW", "agent returns a live number via a real tool", code == 200 and has_digit(reply))
 
 
@@ -479,6 +544,10 @@ def _arm_and_verify(r: Report, phase: str, utter: str, mode: str, thread: str,
         return
     # The flow must EXIST in AP, not merely have an id in our store.
     alive, detail = flow_alive(sub)
+    step(phase="flows", surface=phase.lower(), actor="you",
+         action=f'say "{utter}"',
+         expect=f"the concierge arms a {mode} flow and it really exists in Activepieces",
+         got=f"{reply[:110]} | AP flow: {detail}", ok=alive)
     r.ok(phase, f"{phase}: flow really exists in Activepieces", alive, detail, fail_detail=detail)
 
 
@@ -504,6 +573,14 @@ def flow_push(r: Report, facts: dict, created: list):
         ("github", "when a pull request opens on my repo, summarize it and message me"),
         ("gmail", "when an email from my boss arrives, summarize it and message me"),
     ]
+    def push_step(app, utter, outcome, ok):
+        """Record the push leg only once we know WHICH correct outcome we got. Three are correct:
+        armed, connect-needed (the app isn't connected), or a question for a missing trigger slot."""
+        step(phase="flows", surface=f"push:{app}", actor="you", action=f'say "{utter}"',
+             expect=f"either a real Activepieces watcher on {app}, or — if it is not connected / the "
+                    f"trigger needs a repo or folder — a clear question instead of a silent failure",
+             got=outcome, ok=ok)
+
     for app, utter in cases:
         if budget_left() < 45:
             r.skip("PUSH", f"PUSH {app}", "time budget exhausted")
@@ -523,28 +600,44 @@ def flow_push(r: Report, facts: dict, created: list):
             if is_new:
                 created.append(sub["id"])
             note = f"{sub.get('mode')} · {'new' if is_new else 'reused'}"
+            push_step(app, utter, f"ARMED — AP flow {sub.get('ap_flow_id')} ({note})",
+                      bool(sub.get("ap_flow_id")))
             r.ok("PUSH", f"PUSH {app}: an integration watcher is armed with an AP flow",
                  bool(sub.get("ap_flow_id")), f"{sub.get('ap_flow_id')} ({note})",
                  fail_detail=f"watcher exists ({note}) but has no ap_flow_id")
             continue
 
-        connect_needed = "connect" in low and app in low
-        if connect_needed and not ap_live:
+        # The gate fires on the first UNCONNECTED integration the agent needs — which may not be the
+        # app we asked about (resume_judge needs box AND gmail, and emails the verdict).
+        want = connect_needed_app(reply)
+        if want and not ap_live:
             # The whole point of the preflight AP probe. Without it this branch is a silent false pass.
             r.ok("PUSH", f"PUSH {app}: connect-needed is truthful", False,
                  fail_detail="AP is DOWN — 'connect your credentials' here is a false negative, not a "
                              "real connect prompt (concierge.py swallows the AP error)")
             continue
-        if connect_needed:
-            r.ok("PUSH", f"PUSH {app}: correctly reports connect-needed (AP up, not connected)",
-                 conn.get(app) != "connected",
-                 fail_detail="AP reports this app CONNECTED but the gate still asked to connect — real bug")
+        if want:
+            via = "" if want == app else f" (via {want}, which this agent also needs)"
+            truthful = conn.get(want) != "connected"
+            push_step(app, utter,
+                      f"CONNECT NEEDED — asks you to connect '{want}'"
+                      + ("" if want == app else ", which this agent also needs")
+                      + ("" if truthful else "  — but AP says it IS connected, so this is a real bug"),
+                      truthful)
+            r.ok("PUSH", f"PUSH {app}: correctly reports connect-needed (AP up, not connected){via}",
+                 conn.get(want) != "connected",
+                 fail_detail=f"AP reports '{want}' CONNECTED but the gate still asked to connect it "
+                             f"— real bug")
             continue
         # Connected but the trigger needs a slot the utterance didn't supply (a repo, a folder, a JD).
         # The concierge asks for it; that is correct behaviour, not a failure.
         needs_slot = any(w in low for w in ("repo", "repository", "folder", "which ", "specify",
                                             "job description", " jd", "share the", "provide the",
                                             "attach", "what "))
+        push_step(app, utter,
+                  (f"asks for the missing trigger input: {reply[:90]}" if needs_slot
+                   else f"UNEXPECTED — neither armed, connect-needed, nor a question: {reply[:90]}"),
+                  needs_slot)
         r.ok("PUSH", f"PUSH {app}: connected → asks for the missing trigger input", needs_slot,
              fail_detail=f"neither armed, connect-needed, nor a slot question: {reply[:90]}")
 
@@ -557,6 +650,10 @@ def flow_webhook(r: Report):
     ans = str(rep.get("answer", ""))
     print(f"     → {ans[:140]}")
     r.ok("WEBHOOK", "inbound payload accepted", code == 200 and rep.get("ok"), f"HTTP {code}")
+    step(phase="flows", surface="webhook", actor="your monitoring system",
+         action='POSTs {"alert":"HighCPU","service":"checkout-api","value":"97%"} to /api/events/hook/monitoring',
+         expect="incident_triage summarises it and assigns a P1/P2/P3 severity",
+         got=ans, ok=(code == 200 and any(s in ans for s in ("P1", "P2", "P3", "sever"))))
     r.ok("WEBHOOK", "agent triaged it to a severity", any(s in ans for s in ("P1", "P2", "P3", "sever")))
 
 

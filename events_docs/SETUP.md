@@ -63,22 +63,66 @@ make status      # everything up          make tunnels   # both tunnel agents up
 make doctor      # live creds ok          make test      # 61 offline checks green
 ```
 Smoke-test the channels: DM your Telegram bot · post in the Discord/Slack channel · open `localhost:8100/studio`.
-Then the integrations end-to-end (each hits the real API — full matrix + expected results in
-[TESTING.md](TESTING.md)):
-```bash
-make test-live                                    # 4 channels + 4 flow modes, self-cleaning
-make test-suite-now                               # every seeded agent, invoked directly
-make test-suite-flows                             # cron + poll + push
-make test-matrix                                  # every trigger × every channel sink
 
-# These FIRE real data through an armed watcher — the one thing the harnesses above do NOT do
-# (they arm a flow and verify it exists in AP; they never wait for a real event).
+---
+
+## Which test do I run, and when?
+
+**The one command.** After any reset, or before a demo, or when you want something you can paste into
+a PR:
+
+```bash
+GITHUB_TEST_REPO=owner/repo make test-report        # ~30 min; drop the var to skip the github row
+```
+
+It runs every harness in order, writes each one's raw output to `results/runs/<UTC-timestamp>/`, and
+emits **two renderings of the same run**, both stamped with the UTC time, the commit, the branch, and
+whether the tree was dirty — a dirty tree means the commit id does not describe the code that ran, so
+commit first if you want a citable result:
+
+| Output | Also copied to | Read it when |
+|---|---|---|
+| `report.md` | `results/LATEST.md` | pasting into a PR, an issue, or a terminal |
+| `report.html` | `results/index.html` | reading it yourself — open it in a browser |
+
+Both contain the **end-to-end walkthrough**: a row per step, in the second person ("you post *…* in the
+Slack channel"), with an *Expected* column and an *Actually got* column. The HTML adds what the markdown
+leaves out — every agent's actual answer and the MCP servers it reached, a hoverable trigger × sink grid,
+and a link straight to each harness's raw log. Skip a phase with `ARGS="--skip now"`.
+
+Both are **generated**. Never hand-edit `results/index.html`: the next `make test-report` overwrites it.
+
+**The individual steps**, when you know what you changed and don't want to wait 30 minutes:
+
+| You changed… | Run | Why | Time |
+|---|---|---|---|
+| anything at all, before pushing | `make test` | pure-python invariants; no stack, no creds | 1 s |
+| you just restarted the stack | `make test-live` | is the plumbing alive — 4 channels + 4 flow modes, one probe each | 2 min |
+| `seed.py`, an agent prompt, an MCP server | `make test-suite-now` | can each of the 18 agents still do its job? asserts on `meta.mcp`, so an agent cannot pass by answering from the model's memory instead of calling its tools | 14 min |
+| `concierge.py`, `classify.py`, `ap_engine.py` | `make test-suite-flows` | does an English sentence still become the right Activepieces flow? | 6 min |
+| added a channel or an integration | `make test-matrix` | is every trigger × sink combination wired, or only the ones we happened to try? | 6 min |
+| a watcher's behaviour on real data | the three `live_*_e2e.py` below | **the only harnesses that fire a real event** | varies |
+
+**What none of the four prove.** They arm a flow and verify it exists in Activepieces. They never wait
+for a real event. Whether the watcher does the right thing when an email actually lands is a different
+question:
+
+```bash
 .venv/bin/python tests/events/live_github_e2e.py  # real open PR → pr_reviewer
 .venv/bin/python tests/events/live_box_e2e.py     # real upload → resume_judge  (needs a FRESH BOX_DEV_TOKEN)
 .venv/bin/python tests/events/live_gmail_e2e.py   # Gmail OAuth connection + arm inbox watcher
 ```
-`make sync` is **not** required for any of these — the live harnesses are pure stdlib. Run `uv sync`
-only after a real dependency change.
+
+**Reading the result.** `FAIL` is the only thing to act on. `XFAIL` is a known gap with its reason
+printed. `XPASS` means a known gap started passing — **re-sample before believing it**, because
+`support_digest` fabricates on roughly 5 of 7 runs. `SKIP` means a surface isn't configured and never
+counts as a pass. A `CRASH` row means the harness died before reporting; silence is not success.
+Expected results per harness live in [TESTING.md](TESTING.md).
+
+**Before you run anything live:** the connections must be there. After `make nuke`/`make fresh`, Gmail
+needs a browser re-consent (`localhost:8100/api/events/connect/gmail`); GitHub and Telegram
+auto-connect from `.env`. `make reset-flows` keeps all of them — prefer it. And `make sync` is **not**
+required: every live harness is pure stdlib. Run `uv sync` only after a real dependency change.
 And the **`/automate`** create-path — in the Studio Concierge (or any channel) type: `/automate summarize
 new emails` (→PUSH) · `/automate the market brief every weekday 8am` (→CRON) · `/automate check bitcoin
 every 5 min on a move` (→POLL). Manage them with `make flows`.
