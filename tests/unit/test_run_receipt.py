@@ -55,7 +55,44 @@ async def test_collector_falls_back_to_legacy_llm_output():
         "input_tokens": 50,
         "output_tokens": 10,
         "total_tokens": 60,
+        "cache_read_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_collector_reads_usage_from_llm_output_when_generations_empty():
+    collector = RunMetricsCollector()
+    await collector.on_llm_end(
+        LLMResult(
+            generations=[],
+            llm_output={
+                "token_usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                "model_name": "gpt-4o",
+            },
+        ),
+        run_id=uuid.uuid4(),
+    )
+
+    assert collector.usage_by_model["gpt-4o"]["total_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_collector_accumulates_cache_read_tokens():
+    collector = RunMetricsCollector()
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "total_tokens": 110,
+        "input_token_details": {"cache_read": 80},
+    }
+    await _run_call(collector, usage_metadata=usage, model_name="gpt-4o")
+    await _run_call(collector, usage_metadata=usage, model_name="gpt-4o")
+
+    assert collector.usage_by_model["gpt-4o"]["cache_read_tokens"] == 160
+
+    receipt = build_run_receipt(collector, [], wall_time_s=1.0)
+    assert receipt.cache_read_tokens == 160
+    assert "80% cached" in str(receipt)
 
 
 @pytest.mark.asyncio

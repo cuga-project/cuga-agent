@@ -70,3 +70,22 @@ async def test_no_usage_anywhere_is_a_noop(handler, tracker):
 
     tracker.collect_tokens_usage.assert_not_called()
     tracker.collect_prompt.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_empty_generations_does_not_crash(handler, tracker):
+    response = LLMResult(generations=[], llm_output={"token_usage": {"total_tokens": 9}})
+
+    await handler.on_llm_end(response)
+
+    # no generation text to collect, but usage from llm_output still lands
+    tracker.collect_prompt.assert_not_called()
+    tracker.collect_tokens_usage.assert_called_once_with(9)
+
+
+@pytest.mark.asyncio
+async def test_empty_generations_without_usage_is_a_noop(handler, tracker):
+    await handler.on_llm_end(LLMResult(generations=[], llm_output=None))
+
+    tracker.collect_prompt.assert_not_called()
+    tracker.collect_tokens_usage.assert_not_called()

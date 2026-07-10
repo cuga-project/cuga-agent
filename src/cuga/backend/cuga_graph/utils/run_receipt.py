@@ -31,6 +31,7 @@ class RunReceipt(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0  # subset of input_tokens served from provider prompt cache
     cost_usd: Optional[float] = None  # None when any used model has no known price
     llm_calls: int = 0
     tool_call_count: int = 0
@@ -42,9 +43,12 @@ class RunReceipt(BaseModel):
 
     def __str__(self) -> str:
         cost = f"${self.cost_usd:.4f}" if self.cost_usd is not None else "n/a (unknown model)"
+        tokens_line = f"tokens: {self.input_tokens:,} in / {self.output_tokens:,} out ({self.total_tokens:,})"
+        if self.cache_read_tokens and self.input_tokens:
+            tokens_line += f" — {100 * self.cache_read_tokens // self.input_tokens}% cached"
         lines = [
             f"model: {', '.join(self.models) if self.models else 'unknown'}",
-            f"tokens: {self.input_tokens:,} in / {self.output_tokens:,} out ({self.total_tokens:,})",
+            tokens_line,
             f"est. cost: {cost}",
             f"llm calls: {self.llm_calls}   tool calls: {self.tool_call_count}",
             f"time: {self.wall_time_s:.1f}s (llm {self.llm_time_s:.1f}s / tools {self.tool_time_s:.1f}s)",
@@ -101,9 +105,14 @@ class RunMetricsCollector(AsyncCallbackHandler):
             if started is not None:
                 self.llm_time_s += time.monotonic() - started
 
-            message = getattr(response.generations[0][0], "message", None)
+            # generations can be empty/malformed on some providers; usage may
+            # then still be available via llm_output.
+            generations = getattr(response, "generations", None) or []
+            first = generations[0][0] if generations and generations[0] else None
+            message = getattr(first, "message", None)
             usage = getattr(message, "usage_metadata", None) or {}
-            llm_output = response.llm_output or {}
+            llm_output = getattr(response, "llm_output", None) or {}
+            cache_read_tokens = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
             if not usage:
                 legacy = llm_output.get("token_usage") or {}
                 usage = {
@@ -112,6 +121,12 @@ class RunMetricsCollector(AsyncCallbackHandler):
                     "total_tokens": legacy.get("total_tokens", 0),
                 }
 
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or 0)
+            if not (input_tokens or output_tokens or total_tokens or cache_read_tokens):
+                return  # no usage anywhere — don't record a zero "unknown" model
+
             model_name = (
                 self._pending_model.pop(str(run_id), None)
                 or llm_output.get("model_name")
@@ -119,10 +134,13 @@ class RunMetricsCollector(AsyncCallbackHandler):
                 or "unknown"
             )
             per_model = self.usage_by_model.setdefault(
-                str(model_name), {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                str(model_name),
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_read_tokens": 0},
             )
-            for key in per_model:
-                per_model[key] += int(usage.get(key) or 0)
+            per_model["input_tokens"] += input_tokens
+            per_model["output_tokens"] += output_tokens
+            per_model["total_tokens"] += total_tokens
+            per_model["cache_read_tokens"] += cache_read_tokens
         except Exception as e:
             logger.debug(f"RunMetricsCollector.on_llm_end skipped: {e}")
 
@@ -148,12 +166,19 @@ def build_run_receipt(
         input_tokens = sum(u["input_tokens"] for u in collector.usage_by_model.values())
         output_tokens = sum(u["output_tokens"] for u in collector.usage_by_model.values())
         total_tokens = sum(u["total_tokens"] for u in collector.usage_by_model.values())
+        cache_read_tokens = sum(u.get("cache_read_tokens", 0) for u in collector.usage_by_model.values())
 
         # Cost is only reported when every used model has a known price;
-        # a partial sum would silently understate the real cost.
+        # a partial sum would silently understate the real cost. Cached input
+        # tokens are billed at the model's cache-read rate when known.
         cost_usd: Optional[float] = 0.0
         for model_name, usage in collector.usage_by_model.items():
-            model_cost = estimate_cost(model_name, usage["input_tokens"], usage["output_tokens"])
+            model_cost = estimate_cost(
+                model_name,
+                usage["input_tokens"],
+                usage["output_tokens"],
+                cache_read_tokens=usage.get("cache_read_tokens", 0),
+            )
             if model_cost is None:
                 cost_usd = None
                 break
@@ -166,6 +191,7 @@ def build_run_receipt(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
             cost_usd=cost_usd,
             llm_calls=collector.llm_calls,
             tool_call_count=sum(t.calls for t in tool_timings),
