@@ -286,8 +286,18 @@ def test_box_poll_endpoint_dispatches_new_files():
             posted.append(json)
             return _Resp()
 
+    async def _fake_fetch(file_id, name="", tok=None):
+        return {"kind": "text", "text": "Jane Doe — 8 years of Python.", "truncated": False,
+                "bytes": 28}
+
+    # The watermark file is REAL and module-level: without this the test reads whatever the last live
+    # poll left on disk (so `newest` comes back as that date, not the fixture's) and then WRITES to it.
+    # A test that mutates the developer's state is worse than a test that fails.
     _orig_new, _orig_cli = box_direct.new_files_since, _httpx.AsyncClient
+    _orig_since, _orig_fetch = box_direct._SINCE_FILE, box_direct.fetch_content
+    box_direct._SINCE_FILE = os.path.join(tempfile.mkdtemp(), "box_since.json")
     box_direct.new_files_since = _fake_new
+    box_direct.fetch_content = _fake_fetch
     _httpx.AsyncClient = lambda *a, **k: _Client()
     try:
         app = FastAPI()
@@ -305,8 +315,14 @@ def test_box_poll_endpoint_dispatches_new_files():
         assert len(posted) == 1 and posted[0]["agent"] == "resume_judge"
         assert posted[0]["deliver"] is True and posted[0]["source"]["name"] == "slack"
         assert posted[0]["event"]["payload"]["file_id"] == "9"
+        # THE DOWNLOAD STEP: the agent is handed the file's CONTENT, not just its name. Asked to judge
+        # a resume it cannot read, an LLM will invent one — so this is a correctness check, not polish.
+        assert "Jane Doe — 8 years of Python." in posted[0]["text"]
+        assert posted[0]["event"]["payload"]["content_kind"] == "text"
     finally:
         box_direct.new_files_since = _orig_new
+        box_direct.fetch_content = _orig_fetch
+        box_direct._SINCE_FILE = _orig_since
         _httpx.AsyncClient = _orig_cli
 
 

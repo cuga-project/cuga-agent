@@ -14,7 +14,9 @@ podman machine init && podman machine start          # the Linux VM Podman needs
 ```
 
 **B. Accounts / tokens (one-time, external)** — the irreducible manual part:
-- **ngrok** (for a stable public URL): verify your email → reserve a domain at dashboard.ngrok.com/domains → `ngrok config add-authtoken <token>`
+- **ngrok** (for a stable public URL — do this before wiring Slack/Gmail/Telegram/GitHub): verify your
+  email → `ngrok config add-authtoken <token>` → reserve a domain at dashboard.ngrok.com/domains.
+  Full step-by-step: **[setup/NGROK.md](setup/NGROK.md)**.
 - **Bots/keys**: Telegram (@BotFather), Discord (dev portal + **Message Content Intent**), Slack app, watsonx key, and an AP admin email/password *(you invent it)*. Per-connector guides: [setup/](setup/).
 
 **C. Project config (one-time)**
@@ -101,11 +103,15 @@ Both are **generated**. Never hand-edit `results/index.html`: the next `make tes
 | `seed.py`, an agent prompt, an MCP server | `make test-suite-now` | can each of the 18 agents still do its job? asserts on `meta.mcp`, so an agent cannot pass by answering from the model's memory instead of calling its tools | 14 min |
 | `concierge.py`, `classify.py`, `ap_engine.py` | `make test-suite-flows` | does an English sentence still become the right Activepieces flow? | 6 min |
 | added a channel or an integration | `make test-matrix` | is every trigger × sink combination wired, or only the ones we happened to try? | 6 min |
-| a watcher's behaviour on real data | the three `live_*_e2e.py` below | **the only harnesses that fire a real event** | varies |
+| `ap_engine.py`, a trigger field map, a watcher | `make test-fire` | **does an armed flow actually FIRE and answer?** arms a real 1-minute schedule, waits for a tick, reads the answer out of the run log | 9 min |
+| a specific watcher on real data | the three `live_*_e2e.py` below | fire a real event through one integration | varies |
 
-**What none of the four prove.** They arm a flow and verify it exists in Activepieces. They never wait
-for a real event. Whether the watcher does the right thing when an email actually lands is a different
-question:
+**What the arming harnesses prove, and what they don't.** `test`, `test-live`, `test-suite-*` and
+`test-matrix` arm a flow and verify it exists in Activepieces — they never wait for a real event.
+`test-fire` is the one that closes that gap: it fires a real schedule tick and reads the agent's
+answer back. It fires cron/poll (real 1-minute schedules) and GitHub push (a webhook trigger, fed a
+synthetic PR); it **cannot** fire a Gmail or Box watcher, because those are app-polling triggers that
+Activepieces will not run out of band. For those, only a real inbound event proves the loop:
 
 ```bash
 .venv/bin/python tests/events/live_github_e2e.py  # real open PR → pr_reviewer
@@ -191,16 +197,20 @@ like" check.
 | # | Step | Command | Where | If it breaks |
 |---|---|---|---|---|
 | **0** | **Set up base CUGA** (repo, venv, deps, an LLM key) | `uv venv --python=3.12 && uv sync` | §0 + [root README](../README.md#quick-start) | `.venv` + `.env` exist; `uv run cuga --help` works |
-| **1** | Extra tools the events layer needs | install `podman`, `cloudflared`, `node`/`pnpm` | §1 | `command -v podman cloudflared node pnpm` |
-| **2** | Fill `.env` (LLM + AP + events keys) | `cp .env.events.example .env`, edit, then `make env-check` / `make doctor` | §3 | `make env-check` green |
+| **1** | Extra tools the events layer needs | install `podman`, `cloudflared`, `ngrok`, `node`/`pnpm` | §1 | `command -v podman cloudflared ngrok node pnpm` |
+| **1½** | **Set up ngrok** (stable public URL — before wiring Slack/Gmail/Telegram/GitHub) | `ngrok config add-authtoken …` + reserve a domain | [setup/NGROK.md](setup/NGROK.md) | `EVENTS_NGROK_DOMAIN` set; `make public-url` shows it |
+| **2** | Fill `.env` (LLM + AP + events keys + `EVENTS_NGROK_DOMAIN`) | `cp .env.events.example .env`, edit, then `make env-check` / `make doctor` | §3 | `make env-check` green |
 | **3** | **Start Activepieces** (the event engine) | `make ap` (`scripts/ap_up.sh`) | §2 | `curl -s localhost:8081/api/v1/flags` → 200 |
 | **4** | **Start CUGA + registry + tunnels** (seeds agents) | `make cuga` (`scripts/events_up.sh`) | §4 | `make status` |
 | **4½** | **Arm inbound chat channels** (Telegram/Slack/Discord you have tokens for) | `make channels` | §4 | `make channels-status` |
 | **5** | Verify | `make test` (offline) | [TESTING.md](TESTING.md) | 61 green |
-| **6** | Open the Studio & connect apps | `http://localhost:8100/studio` → Setup tab | [setup/](setup/) per connector | each guide ends with a Verify step |
+| **6** | Open the Studio & connect apps (browser OAuth consent happens here) | `http://localhost:8100/studio` → Setup tab | [setup/](setup/) per connector | each guide ends with a Verify step |
 
-> **Order matters:** AP (step 3) before CUGA (step 4) — `events_up.sh` expects AP reachable and
-> holds the tunnels. Base CUGA (step 0) is a prerequisite for everything.
+> **Order matters:** install + set up ngrok (steps 1–1½) and register bot/OAuth apps *before* bring-up,
+> so the URL is stable when you paste it into Slack/Gmail. AP (step 3) before CUGA (step 4) —
+> `events_up.sh` expects AP reachable and holds the tunnels. Base CUGA (step 0) is a prerequisite for
+> everything. The one thing that *must* wait until after `make up` is the browser **OAuth consent**
+> (step 6) — it needs the callback endpoint live.
    
 ## 0. Set up base CUGA first
 If you've never run CUGA in this repo, do the base install — the [root README **Quick Start**](../README.md#quick-start)
@@ -225,7 +235,7 @@ continue below — §1–§5 add the events platform.
 | **Node + pnpm** | build the Studio UI (pnpm monorepo; `frontend_build.sh` enables pnpm via corepack) | `brew install node` |
 | **Docker or Podman** | run Activepieces | `brew install podman` (or Docker Desktop) |
 | **cloudflared** | public tunnels — the **default** (AP tunnel always; CUGA tunnel when no ngrok) | `brew install cloudflared` |
-| **ngrok** *(recommended)* | a **stable** CUGA public URL via `EVENTS_NGROK_DOMAIN` (no more re-pointing Slack/Gmail). Needs a free account: verify email + reserve a domain at dashboard.ngrok.com, then `ngrok config add-authtoken <token>` | `brew install ngrok` |
+| **ngrok** *(strongly recommended)* | a **stable** CUGA public URL via `EVENTS_NGROK_DOMAIN` (no more re-pointing Slack/Gmail). Needs a free account: verify email + reserve a domain at dashboard.ngrok.com, then `ngrok config add-authtoken <token>`. **Full guide: [setup/NGROK.md](setup/NGROK.md)** | `brew install ngrok` |
 | *(dev only)* **mermaid-cli** | regenerate diagrams | `npm i -g @mermaid-js/mermaid-cli` |
 
 > **Tunnels are local agent processes** — `cloudflared`/`ngrok` must stay running to hold their URL
@@ -328,7 +338,8 @@ to paste into those consoles. Full explainer: **[PUBLIC_URL.md](PUBLIC_URL.md)**
 ## 5. What can NOT be scripted (external, human)
 - **Activepieces container** first-run + admin account (your data lives there).
 - **Bot/app accounts:** Telegram (@BotFather), Discord (dev portal + server invite +
-  Message-Content-Intent), Slack (app + install), Box (business acct or dev token), GitHub PAT.
+  Message-Content-Intent), Slack (app + install), Box (business acct or dev token), GitHub **OAuth App**
+  (client id + secret — *not* a PAT; `piece-github` accepts only OAuth. See setup/GITHUB.md).
 - **watsonx** IBM Cloud API key + project.
 - **Connecting integrations** (one click each in the Studio, or paste-token) — by design.
 

@@ -101,3 +101,94 @@ async def new_files_since(folder_id: str, since_iso: str | None, tok: str | None
     if since_iso:
         items = [i for i in items if (i.get("created_at") or "") > since_iso]
     return items
+
+
+# ── the download step ─────────────────────────────────────────────────────────
+# A watcher that only learns a file's NAME cannot judge a resume. But the agent holds no Box
+# credential — that is the whole point of the design — so it cannot fetch the file either.
+#
+# The server does it. CUGA downloads the bytes with the token it already has, and hands the agent
+# CONTENT rather than a pointer. The credential never leaves this process, and nothing about the
+# agent's tool surface has to change.
+#
+# Two shapes come back, because two shapes are useful:
+#   * decodable text  → inlined into the prompt, so any agent can read it with no tools at all
+#   * anything else   → base64 in the event payload, for an agent with `extract_text_from_bytes`
+#
+# Capped hard. A 300MB video in a watched folder must not become a 300MB prompt, an OOM, or a
+# surprise bill — it becomes a skipped download with a reason the agent can read.
+MAX_DOWNLOAD_BYTES = int(os.environ.get("EVENTS_BOX_MAX_DOWNLOAD_BYTES", str(2 * 1024 * 1024)))
+MAX_INLINE_CHARS = int(os.environ.get("EVENTS_BOX_MAX_INLINE_CHARS", "20000"))
+
+
+def download_enabled() -> bool:
+    """Off with EVENTS_BOX_DOWNLOAD=0 — then the agent sees only the filename, as before."""
+    return os.environ.get("EVENTS_BOX_DOWNLOAD", "1") != "0"
+
+
+async def download_file(file_id: str, tok: str | None = None,
+                        max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
+    """Fetch a file's bytes. Raises on a non-200 so an expired token is loud, and refuses anything
+    over ``max_bytes`` rather than streaming it into memory."""
+    tok = tok or token()
+    if not tok:
+        raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+        async with c.stream("GET", f"{API}/files/{file_id}/content",
+                            headers={"Authorization": f"Bearer {tok}"}) as r:
+            if r.status_code != 200:
+                body = (await r.aread())[:200].decode(errors="replace")
+                raise RuntimeError(f"Box download {file_id} failed: HTTP {r.status_code} {body}")
+            declared = int(r.headers.get("content-length") or 0)
+            if declared > max_bytes:
+                raise ValueError(f"file is {declared} bytes, over the {max_bytes}-byte cap")
+            buf = bytearray()
+            async for chunk in r.aiter_bytes():
+                buf.extend(chunk)
+                # content-length can lie, or be absent on a chunked response. Check as we go.
+                if len(buf) > max_bytes:
+                    raise ValueError(f"file exceeds the {max_bytes}-byte cap")
+            return bytes(buf)
+
+
+async def fetch_content(file_id: str, name: str = "", tok: str | None = None) -> dict:
+    """Download a file and shape it for an agent prompt. Never raises: a failed download must not
+    lose the event, so the reason travels with it and the agent decides what to do.
+
+    Returns one of:
+        {"kind": "text",    "text": "...", "truncated": bool, "bytes": n}
+        {"kind": "binary",  "base64": "...", "bytes": n}
+        {"kind": "skipped", "reason": "..."}
+    """
+    import base64
+
+    if not download_enabled():
+        return {"kind": "skipped", "reason": "downloads disabled (EVENTS_BOX_DOWNLOAD=0)"}
+    try:
+        raw = await download_file(file_id, tok)
+    except Exception as e:  # noqa: BLE001
+        return {"kind": "skipped", "reason": str(e)[:200]}
+    if not _looks_like_text(raw):
+        return {"kind": "binary", "base64": base64.b64encode(raw).decode(), "bytes": len(raw)}
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) > MAX_INLINE_CHARS:
+        return {"kind": "text", "text": text[:MAX_INLINE_CHARS], "truncated": True, "bytes": len(raw)}
+    return {"kind": "text", "text": text, "truncated": False, "bytes": len(raw)}
+
+
+def _looks_like_text(raw: bytes, sniff: int = 4096) -> bool:
+    r"""Decodability is not enough. ``b"%PDF-1.4\x00\x01\x02"`` is valid UTF-8 — every byte is below
+    0x80 — so a naive ``decode()`` check inlines a PDF into the prompt as mojibake. A NUL byte, or a
+    scattering of other control characters, is the reliable tell that this is not prose."""
+    if not raw:
+        return True
+    head = raw[:sniff]
+    if b"\x00" in head:
+        return False
+    try:
+        head.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    # tab / newline / carriage-return are the only control chars that belong in a text file
+    ctrl = sum(1 for b in head if b < 0x20 and b not in (0x09, 0x0A, 0x0D))
+    return ctrl / len(head) < 0.01

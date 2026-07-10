@@ -94,7 +94,17 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(name="resume_judge", backend=b, mcp_servers=["cuga-text"], channels=web,
                   integrations=[{"app": "box", "ownership": "per-user"},
                                 {"app": "gmail", "ownership": "per-user"}],
-                  prompt="When a resume lands in Box, judge fit vs the JD and email the result."),
+                  # The watcher inlines the resume's TEXT into the message — CUGA downloads it
+                  # server-side, because the agent holds no Box credential. Without saying so, the
+                  # agent reaches for its extract_text tool, finds no file on disk, and replies "the
+                  # resume could not be found" while the text sits in front of it.
+                  prompt=("You judge resumes. The resume's full text is given to you INLINE in the "
+                          "message, between '--- contents of ... ---' markers — read it there. Do NOT "
+                          "look for a file on disk, and never say the file is missing. If the message "
+                          "says the file is binary instead, decode event.payload.file_base64 with "
+                          "extract_text_from_bytes. Judge fit against the job description in the "
+                          "message: start your reply with MATCH or SKIP, then two lines of reasoning "
+                          "citing specifics from the resume.")),
         AgentSpec(name="support_digest", backend=b, mcp_servers=["cuga-web"],
                   channels=["web", "slack"],
                   integrations=[{"app": "slack", "ownership": "shared"}],

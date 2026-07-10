@@ -51,10 +51,18 @@ PUSH_PAYLOAD = {
     "gmail": {"subject": "{{trigger.message.subject}}",
               "from": "{{trigger.message.from.value[0].address}}",
               "body": "{{trigger.message.text}}"},
+    # VERIFIED against a real fire (2026-07-10): the github piece's trigger output IS the
+    # pull_request object, so these are direct fields. `body` (the PR description) matters most —
+    # without it the agent receives a title and a URL it cannot open, has no GitHub tool to fetch
+    # the diff, and can only reply "please provide the PR details".
     "github_pr": {"title": "{{trigger.title}}", "repo": "{{trigger.base.repo.full_name}}",
-                  "url": "{{trigger.html_url}}"},
+                  "url": "{{trigger.html_url}}", "body": "{{trigger.body}}",
+                  "author": "{{trigger.user.login}}",
+                  "changed_files": "{{trigger.changed_files}}",
+                  "additions": "{{trigger.additions}}", "deletions": "{{trigger.deletions}}"},
     "github_issue": {"title": "{{trigger.title}}", "repo": "{{trigger.repository.full_name}}",
-                     "url": "{{trigger.html_url}}"},
+                     "url": "{{trigger.html_url}}", "body": "{{trigger.body}}",
+                     "author": "{{trigger.user.login}}"},
 }
 PUSH_PAYLOAD["github"] = PUSH_PAYLOAD["github_pr"]     # router may name the source just 'github'
 

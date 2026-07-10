@@ -55,19 +55,30 @@ GUIDES: dict[str, dict] = {
         ],
     },
     "github": {
-        "label": "GitHub", "kind": "integration", "wiring": "AP (PUSH: PR / issue)", "connect": "token",
+        "label": "GitHub", "kind": "integration", "wiring": "AP (PUSH: PR / issue)", "connect": "oauth",
         "ownership": ["per_user", "tenant"], "ownership_default": "per_user",
-        "creds": [{"key": "GITHUB_TOKEN", "label": "Personal Access Token", "required": True,
-                   "where": "GitHub → Settings → Developer settings → PAT (repo scope)"}],
+        "creds": [
+            {"key": "EVENTS_OAUTH_GITHUB_CLIENT_ID", "label": "OAuth App client id", "required": True,
+             "where": "GitHub → Settings → Developer settings → OAuth Apps → New OAuth App"},
+            {"key": "EVENTS_OAUTH_GITHUB_CLIENT_SECRET", "label": "OAuth App client secret",
+             "required": True, "where": "same page → Generate a new client secret"},
+        ],
         "steps": [
-            "Create a PAT (repo scope) in GitHub → Settings → Developer settings.",
-            "Single-operator: put it in .env as GITHUB_TOKEN [USER] → auto-connected on startup. "
-            "Multi-user: each user pastes their own via Integrations → GitHub → Connect.",
+            "Create an OAuth App: GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.",
+            "Authorization callback URL must be EXACTLY "
+            "<EVENTS_PUBLIC_URL>/api/events/connect/github/callback",
+            "Put the client id + secret in .env as EVENTS_OAUTH_GITHUB_CLIENT_ID / "
+            "_CLIENT_SECRET [TENANT], then `make reload`.",
+            "Each user connects their own GitHub: open "
+            "<EVENTS_PUBLIC_URL>/api/events/connect/github (or Integrations → GitHub → Connect) and "
+            "approve. Requested scopes: repo + admin:repo_hook.",
             "Ask the concierge: 'when a PR opens on <owner/repo>, summarize it and message me' "
             "(name the repo — the PR trigger needs it).",
         ],
-        "note": "Per-user token — GitHub needs no OAuth *app* creds "
-                "(it's token-auth, not OAuth).",
+        "note": "GitHub is OAuth, NOT a pasted PAT. @activepieces/piece-github accepts only "
+                "OAUTH2/CUSTOM_AUTH; a PAT stored as SECRET_TEXT is kept by AP and is unusable by the "
+                "piece, which then fails with '401 Bad credentials' that reads like a scope problem. "
+                "admin:repo_hook is what lets the PR trigger create the repository webhook.",
     },
     "gmail": {
         "label": "Gmail", "kind": "integration", "wiring": "AP (OAuth) · PUSH + email delivery",

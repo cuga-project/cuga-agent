@@ -57,6 +57,9 @@ TIERS = {
            "perform. Safe to ignore unless you are building a UI."),
     "ops": ("OPS", "#7a3fa8",
             "Operator surface. Driven from a shell or the Makefile, not from the console."),
+    "debug": ("DEBUG", "#c0392b",
+              "Debugging aids with <b>real side effects</b>. Not part of the product surface; not "
+              "called by the Studio. Disable them in a shared deployment."),
 }
 
 GROUPS = [
@@ -335,6 +338,80 @@ ENDPOINTS = [
       notes="The live harnesses call this to clean up after themselves — they delete only the "
             "subscriptions <b>they</b> created, tracked by diffing the list before and after."),
 
+    E("POST", "/api/events/subscriptions/{sub_id}/run", "flows",
+      "DEBUG — fire an armed flow now, out of band of its own trigger.",
+      tier="debug", callers=["operator", "tests"], auth="gateway",
+      path_params=[("sub_id", "subscription id", "s1")],
+      query=[("wait", "<code>0</code> = return as soon as AP accepts the trigger; default polls for "
+                      "the run this call produced", "1"),
+             ("timeout", "seconds to wait for the run to finish (max 600)", "120")],
+      body=[("No body — a cron/poll flow", {},
+             "A <b>schedule</b> flow's <code>/invoke</code> body (agent, prompt, thread_id, scope) is "
+             "frozen at arm time, so nothing you POST changes what it does. Fire it as armed."),
+            ("A synthetic event — a PUSH flow", {
+                "title": "Fix race in worker pool shutdown",
+                "html_url": "https://github.com/owner/repo/pull/9999",
+                "body": "Workers could exit before draining the queue, dropping in-flight jobs.",
+                "base": {"repo": {"full_name": "owner/repo"}},
+                "user": {"login": "octocat"},
+                "additions": 42, "deletions": 7, "changed_files": 3},
+             "A <b>push</b> flow's invoke body contains <code>{{trigger.title}}</code>-style "
+             "templates, so the body you POST <i>becomes</i> the trigger output and the agent reasons "
+             "over it. This is the way to exercise a Gmail/GitHub/Box watcher <b>without</b> opening a "
+             "real pull request or sending a real email. Shape it like the piece's real trigger "
+             "output — for github that is the <code>pull_request</code> object itself."),
+            ("A marker body", {"note": "fired by hand"},
+             "On a schedule flow this is inert; it only shows up as the trigger payload in the run "
+             "log, which is a handy way to tell your run apart from a scheduled one.")],
+      responses=[
+          (200, {"ok": True, "debug": True, "subscription_id": "s1",
+                 "ap_flow_id": "stttGLqX2TvgstQDLsboq", "triggered": True,
+                 "warning": "this fired the real flow: it delivered to its real sink",
+                 "run": {"id": "KRxqCBUsr2", "status": "SUCCEEDED",
+                         "started_at": "2026-07-09T09:00:00Z",
+                         "finished_at": "2026-07-09T09:00:06Z"},
+                 "answer": "Bitcoin is currently priced at **$63,924 USD**.",
+                 "trigger_payload": {}, "error": None},
+           "The whole chain ran: schedule → <code>/invoke</code> → sink. The answer is lifted out of "
+           "the run's step tree."),
+          (200, {"ok": True, "triggered": True, "timed_out": True,
+                 "run": {"id": "KRxqCBUsr2", "status": "RUNNING"},
+                 "note": "AP accepted the trigger but no run finished within 120s. Poll "
+                         "GET /api/events/runs, or retry with a larger ?timeout=."},
+           "Triggered but unfinished. Deliberately <b>not</b> an error: the flow is running."),
+          (200, {"ok": True, "debug": True, "triggered": True, "ap_flow_id": "sttt…"},
+           "<code>?wait=0</code>. Fire and forget — no answer, because nothing waited for it."),
+          (401, {"ok": False, "error": "bad or missing X-Gateway-Token"}, ""),
+          (403, {"ok": False, "error": "debug run endpoint disabled (EVENTS_DEBUG_RUN=0)"},
+           "Turn it off in any deployment where an unattended trigger would be a problem."),
+          (404, {"ok": False, "error": "subscription not found"},
+           "Also for another principal's id."),
+          (409, {"ok": False, "error": "DANGLING: subscription points at AP flow X, which does not "
+                                       "exist in Activepieces. Nothing to run.",
+                 "ap_flow_id": "X"},
+           "Checked <i>before</i> triggering — otherwise the call would happily 'succeed' and run "
+           "nothing at all."),
+          (409, {"ok": False, "error": "subscription has no AP flow to run"}, ""),
+          (501, {"ok": False, "error": "AP not configured"}, ""),
+          (502, {"ok": False, "error": "Activepieces refused the trigger: HTTP 404 …"}, ""),
+      ],
+      notes="<b>Not every flow can be fired this way.</b> Verified 2026-07-10: the schedule piece and "
+            "github's <code>trigger_pull_request</code> (a WEBHOOK trigger) both run, but gmail's "
+            "<code>gmail_new_email_received</code> is an app-POLLING trigger — Activepieces accepts the "
+            "trigger POST with <code>200</code> and produces no run at all. A <code>timed_out</code> "
+            "response on a gmail/box watcher therefore means \"this trigger type cannot be fired out of "
+            "band\", not \"the watcher is broken\". Check the piece's trigger <code>type</code> at "
+            "<code>GET &lt;AP&gt;/api/v1/pieces/&lt;piece&gt;</code>.<br><br>"
+            "<b>This is not a dry run.</b> The flow delivers wherever it was armed to deliver: it will "
+            "post to your Slack channel and message your Telegram, and Activepieces' own log will not "
+            "mark the run as a test. <br><br>Mechanically it POSTs to Activepieces' "
+            "<code>/api/v1/webhooks/&lt;flowId&gt;</code>, which fires <i>any</i> flow whatever its "
+            "trigger. The run executes with the flow's own AP connections, so <b>no credential is "
+            "passed here and none is needed</b> — AP resolves them internally, exactly as on a real "
+            "tick. <br><br><b>Security:</b> AP's webhook route takes no authentication of its own. "
+            "Anyone who can reach Activepieces and knows a flow id can fire it. Keep AP off the public "
+            "tunnel; the gate that matters is this endpoint's <code>X-Gateway-Token</code>."),
+
     E("GET", "/api/events/subscriptions/{sub_id}/flow", "flows",
       "The CUGA model plus the live Activepieces flow JSON.",
       tier="ui", callers=["studio", "tests"], path_params=[("sub_id", "subscription id", "s1")],
@@ -597,7 +674,17 @@ ENDPOINTS = [
                   "Box rejected the token. Loud, not silent — a stale <code>BOX_DEV_TOKEN</code> "
                   "would otherwise look like \"no new files\".")],
       notes="Opt-in, behind <code>EVENTS_BOX_BACKEND=direct</code>. It sidesteps AP's OAuth wall and "
-            "Box's paid-app webhook requirement. Box otherwise defaults to an AP push trigger."),
+            "Box's paid-app webhook requirement. Box otherwise defaults to an AP push trigger."
+            "<br><br><b>The download step.</b> A watcher that learns only a filename cannot judge a "
+            "resume, and the agent holds no Box credential to fetch it with. So CUGA downloads the "
+            "bytes with the token it already has and hands the agent <i>contents</i>: decodable text "
+            "is inlined into the prompt, anything else arrives base64 in "
+            "<code>event.payload.file_base64</code> for <code>extract_text_from_bytes</code>. The "
+            "credential never leaves the server. Capped by "
+            "<code>EVENTS_BOX_MAX_DOWNLOAD_BYTES</code> (2 MB) and "
+            "<code>EVENTS_BOX_MAX_INLINE_CHARS</code> (20k); disable with "
+            "<code>EVENTS_BOX_DOWNLOAD=0</code>. A failed download never drops the event — the reason "
+            "travels to the agent, which is told not to invent the contents."),
 
     E("POST", "/api/events/hook/{name}", "inbound",
       "Generic inbound webhook: any system POSTs JSON, an agent triages it.",
@@ -709,10 +796,14 @@ ENDPOINTS = [
                  (404, {"ok": False, "error": "unknown app 'myspace'"}, ""),
                  (500, {"ok": False, "error": "connection_name_already_exists"}, ""),
                  (501, {"ok": False, "error": "AP not configured"}, "")],
-      notes="<b>Known bug.</b> <code>ap_engine.ensure_secret_connection</code> returns early when the "
-            "<code>externalId</code> already exists — it never updates the stored secret. So rotating "
-            "<code>GITHUB_TOKEN</code>, or pasting a fresh PAT here, silently no-ops. Delete the AP "
-            "connection first, then reconnect."),
+      notes="<b>Rotation works here, and only here.</b> This endpoint overwrites an existing "
+            "connection (and, if Activepieces refuses the overwrite, deletes and recreates it), so "
+            "pasting a fresh PAT genuinely replaces the dead one. <i>Fixed 2026-07-09; it used to "
+            "return early, which is why a rotated GitHub token kept failing at run time with "
+            "<code>401 Bad credentials</code> — nowhere near the paste that caused it.</i><br><br>"
+            "Boot-time auto-connect from <code>.env</code> does <b>not</b> overwrite: it only creates "
+            "what is missing, so a connection you authorized by hand is never clobbered by a stale "
+            "environment variable. To rotate, POST here."),
 
     E("GET", "/api/events/connections", "connect",
       "The caller's own Activepieces connections.", tier="ui", callers=["studio"],

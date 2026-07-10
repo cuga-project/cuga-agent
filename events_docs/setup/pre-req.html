@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Events integrations — prerequisites</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --fg:#1c1c1a; --muted:#6b6b66; --card:#fff; --line:#e6e4df;
+    --accent:#b5651d; --accent-soft:#f4e8dc; --code-bg:#f3f1ec; --ok:#1f7a3d;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#1a1a18; --fg:#ececea; --muted:#9a9a93; --card:#232320; --line:#37372f;
+      --accent:#e0995a; --accent-soft:#33291d; --code-bg:#12120f; --ok:#5fd08a; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:36px 22px 80px}
+  h1{font-size:26px;margin:0 0 6px}
+  .lede{color:var(--muted);margin:0 0 22px;max-width:620px}
+  .lede b{color:var(--fg)}
+  code,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+    padding:11px 13px;overflow-x:auto;margin:10px 0}
+  pre code{background:none;padding:0}
+  a{color:var(--accent)}
+  .tabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 20px;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .tab{cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--fg);
+    padding:6px 13px;border-radius:20px;font-size:13.5px;font-weight:500}
+  .tab:hover{border-color:var(--accent)}
+  .tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .panel{display:none;animation:fade .18s ease}
+  .panel.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:14px}
+  .card h2{margin:0 0 4px;font-size:19px}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 16px}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;letter-spacing:.02em;
+    background:var(--accent-soft);color:var(--accent);padding:2px 9px;border-radius:20px;margin-left:6px;vertical-align:2px}
+  h3{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:18px 0 7px}
+  ol,ul{margin:6px 0;padding-left:20px}
+  li{margin:4px 0}
+  .verify{border-left:3px solid var(--ok);background:transparent;padding-left:14px;margin-top:16px}
+  .verify h3{color:var(--ok)}
+  .verify p{margin:6px 0 0;color:var(--muted);font-size:13.5px}
+  .kv{font-size:13.5px}
+  .note{color:var(--muted);font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Events integrations — prerequisites</h1>
+  <p class="lede">Set each integration up <b>manually</b> with the steps below, drop its keys in your
+    <code>.env</code>, then run its <b>check script</b> to confirm the keys actually work. This stage
+    is deliberately <b>independent of CUGA and Activepieces</b> — it only talks to each vendor's API,
+    so a green check means the credential is good before any of the runtime is involved.</p>
+
+  <p class="lede" style="margin-top:-8px">Verify everything at once:
+    <code>python3 events_docs/setup/scripts/check_all.py</code> — unconfigured connectors are
+    skipped, not failed.</p>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="panels"></div>
+</div>
+
+<script>
+const DATA = [
+  {
+    id:"ngrok", name:"ngrok", tag:"public URL · prerequisite",
+    sub:"A stable public HTTPS URL, so the webhook + OAuth connectors (Telegram, Slack, Gmail, GitHub) configure once and never break on restart. Do this first.",
+    need:["A free ngrok account (no domain to buy, no card).","<code>brew install ngrok</code>."],
+    steps:[
+      "Sign up at <a href='https://dashboard.ngrok.com/signup'>dashboard.ngrok.com/signup</a> and <b>verify your email</b> (ngrok blocks the agent until you do).",
+      "Add your authtoken once: <code>ngrok config add-authtoken &lt;token&gt;</code>.",
+      "Reserve your free static domain at <a href='https://dashboard.ngrok.com/domains'>dashboard.ngrok.com/domains</a> — one <code>your-name.ngrok-free.app</code>.",
+      "Put it in <code>.env</code>."
+    ],
+    env:"EVENTS_NGROK_DOMAIN=your-name.ngrok-free.app",
+    check:"check_ngrok.py",
+    checkNote:"Confirms the binary is installed, an authtoken is configured, and the domain is set. Full guide: NGROK.md.",
+    note:"Free tier = one domain, spent on the CUGA server. The Activepieces tunnel stays on a cloudflared quick-tunnel."
+  },
+  {
+    id:"telegram", name:"Telegram", tag:"channel",
+    sub:"1:1 chat with an agent. Instant webhook. The most battle-tested channel.",
+    need:["The Telegram app.","A bot from @BotFather."],
+    steps:[
+      "In Telegram, message <b>@BotFather</b> → <code>/newbot</code> → pick a name + a username ending in <code>bot</code>. It returns a token like <code>8737…:AAE…</code>.",
+      "Put the token + the exact username in <code>.env</code>.",
+      "(Optional) DM your bot once so it has a chat to reply to; the check script will surface your chat id."
+    ],
+    env:"TELEGRAM_BOT_TOKEN=8737…:AAE…\nEVENTS_TELEGRAM_BOT_USERNAME=your_bot        # @handle without the @\n# TELEGRAM_CHAT_ID=…                        # optional: send a real test message",
+    check:"check_telegram.py",
+    checkNote:"Verifies the token (getMe). If TELEGRAM_CHAT_ID is set, it sends you a real message — the delivery leg.",
+  },
+  {
+    id:"discord", name:"Discord", tag:"channel",
+    sub:"Channel chat with an agent over the Gateway. Instant, and needs no public URL (outbound WebSocket).",
+    need:["A Discord server you can add a bot to.","A bot token, with MESSAGE CONTENT INTENT on."],
+    steps:[
+      "<a href='https://discord.com/developers/applications'>discord.com/developers</a> → New Application → Bot → copy the <b>Bot Token</b>.",
+      "In the Bot tab, enable <b>MESSAGE CONTENT INTENT</b> (required to read message text).",
+      "OAuth2 → URL Generator → scope <code>bot</code> + <i>Read Messages</i> + <i>Send Messages</i> → open the URL to invite it.",
+      "Put the token in <code>.env</code>."
+    ],
+    env:"DISCORD_BOT_TOKEN=…\n# DISCORD_TEST_CHANNEL_ID=…                 # optional: post a real test message",
+    check:"check_discord.py",
+    checkNote:"Verifies the token (users/@me). If DISCORD_TEST_CHANNEL_ID is set, it posts a real message to that channel.",
+  },
+  {
+    id:"slack", name:"Slack", tag:"channel",
+    sub:"Channel chat with an agent. Direct backend — a bot token and chat.postMessage, no OAuth consent.",
+    need:["A Slack workspace where you can create an app.","A bot token with the right scopes."],
+    steps:[
+      "<a href='https://api.slack.com/apps'>api.slack.com/apps</a> → Create New App → From scratch.",
+      "OAuth &amp; Permissions → <b>Bot Token Scopes</b>: <code>chat:write</code>, <code>channels:history</code>, <code>channels:read</code> (+ <code>groups:history</code> for private).",
+      "Install to Workspace → copy the <b>Bot User OAuth Token</b> (<code>xoxb-…</code>).",
+      "<code>/invite @your-bot</code> into a channel.",
+      "Put the token in <code>.env</code> (and the signing secret if you have it)."
+    ],
+    env:"SLACK_BOT_TOKEN=xoxb-…\n# SLACK_SIGNING_SECRET=…                    # recommended\n# SLACK_TEST_CHANNEL=C0123456789            # optional: post a real test message",
+    check:"check_slack.py",
+    checkNote:"Verifies the token (auth.test — team + bot identity). If SLACK_TEST_CHANNEL is set, it posts a real message.",
+  },
+  {
+    id:"box", name:"Box", tag:"integration",
+    sub:"A file / résumé watcher. The check does the full round-trip: upload a file, download it, verify the bytes, delete it.",
+    need:["A Box account (free is fine).","A Box Developer Token (~60 min — regenerate when it expires)."],
+    steps:[
+      "<a href='https://app.box.com/developers/console'>app.box.com/developers/console</a> → Create New App → Custom App → User Authentication (OAuth 2.0).",
+      "In the app's <b>Configuration</b> tab → <b>Generate Developer Token</b>.",
+      "Put the token in <code>.env</code>. Optionally set a folder id (default is the root, <code>0</code>)."
+    ],
+    env:"BOX_DEV_TOKEN=…\n# BOX_FOLDER_ID=0                           # optional: which folder to test in",
+    check:"check_box.py",
+    checkNote:"Uploads a small file, downloads it back, checks the content matches, then deletes it — proving the token can both watch a folder and read file content.",
+    note:"Dev tokens expire ~60 min; regenerate in the Box console and rerun."
+  },
+  {
+    id:"github", name:"GitHub", tag:"integration",
+    sub:"A PR / issue watcher. Verified with a Personal Access Token — which proves the same capability headlessly, no browser OAuth grant needed.",
+    need:["A GitHub Personal Access Token with <code>repo</code> + <code>admin:repo_hook</code> scopes."],
+    steps:[
+      "<a href='https://github.com/settings/tokens'>github.com/settings/tokens</a> → generate a token with <code>repo</code> and <code>admin:repo_hook</code> (the latter lets a watcher create the repo webhook).",
+      "Put it in <code>.env</code>. Optionally name a repo to test read + webhook access against."
+    ],
+    env:"GITHUB_TOKEN=ghp_…\n# GITHUB_TEST_REPO=owner/name              # optional: verify repo + webhook access",
+    check:"check_github.py",
+    checkNote:"Verifies the token (/user) and that it carries repo + admin:repo_hook. With GITHUB_TEST_REPO it also reads the repo and lists its webhooks.",
+    note:"CUGA/AP uses an OAuth App for the live path; the PAT here verifies the identical capability without the browser consent."
+  },
+  {
+    id:"gmail", name:"Gmail", tag:"integration",
+    sub:"Email as a delivery sink. The check does the OAuth grant itself — a one-time browser consent over a loopback redirect — then sends a real email.",
+    need:["A Google Cloud OAuth 2.0 client (client id + secret) with the Gmail API enabled."],
+    steps:[
+      "Google Cloud Console → APIs &amp; Services → Credentials → Create OAuth client ID (Web application). Enable the <b>Gmail API</b>.",
+      "Add <code>http://localhost:8765/</code> as an <b>Authorized redirect URI</b> — this one is only for the check script (separate from CUGA's callback).",
+      "Put the client id + secret in <code>.env</code>.",
+      "First run opens a browser to approve; after that the refresh token is cached and it's non-interactive."
+    ],
+    env:"EVENTS_OAUTH_GMAIL_CLIENT_ID=…apps.googleusercontent.com\nEVENTS_OAUTH_GMAIL_CLIENT_SECRET=…\n# GMAIL_TEST_TO=you@example.com            # optional: defaults to your own address",
+    check:"check_gmail.py",
+    checkNote:"Runs the OAuth consent (loopback), caches the refresh token, then sends a real test email — proving the grant + the send sink.",
+    note:"This is the 'approve/grant' step done via the API instead of the Studio's Connect button."
+  },
+];
+
+const tabsEl = document.getElementById("tabs");
+const panelsEl = document.getElementById("panels");
+
+DATA.forEach((d, i) => {
+  const t = document.createElement("button");
+  t.className = "tab" + (i === 0 ? " active" : "");
+  t.textContent = d.name;
+  t.onclick = () => select(i);
+  tabsEl.appendChild(t);
+
+  const p = document.createElement("div");
+  p.className = "panel" + (i === 0 ? " active" : "");
+  p.innerHTML = `
+    <div class="card">
+      <h2>${d.name}<span class="tag">${d.tag}</span></h2>
+      <p class="sub">${d.sub}</p>
+      <h3>You'll need</h3><ul>${d.need.map(x=>`<li>${x}</li>`).join("")}</ul>
+      <h3>Set it up</h3><ol>${d.steps.map(x=>`<li>${x}</li>`).join("")}</ol>
+      <h3>.env</h3><pre class="kv"><code>${d.env}</code></pre>
+      ${d.note ? `<p class="note">${d.note}</p>` : ""}
+      <div class="verify">
+        <h3>Verify</h3>
+        <pre><code>python3 events_docs/setup/scripts/${d.check}</code></pre>
+        <p>${d.checkNote || ""}</p>
+      </div>
+    </div>`;
+  panelsEl.appendChild(p);
+});
+
+function select(i){
+  [...tabsEl.children].forEach((t,j)=>t.classList.toggle("active", j===i));
+  [...panelsEl.children].forEach((p,j)=>p.classList.toggle("active", j===i));
+}
+</script>
+</body>
+</html>

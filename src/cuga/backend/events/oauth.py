@@ -52,8 +52,18 @@ PROVIDERS: dict[str, dict] = {
                 "auth": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
                 "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
                 "scopes": ["Mail.ReadWrite", "offline_access"]},
-    # token apps — no redirect; user pastes a secret (handled by ensure_secret_connection)
-    "github": {"kind": "token", "piece": "@activepieces/piece-github"},
+    # GitHub is an OAuth app, NOT a pasted PAT. `@activepieces/piece-github` accepts only OAUTH2 or
+    # CUSTOM_AUTH — verify with `GET $AP_BASE_URL/api/v1/pieces/@activepieces/piece-github`. A PAT
+    # stored as SECRET_TEXT is accepted by AP's connection store and is then silently unusable: the
+    # piece runs with no credential and GitHub answers "401 Bad credentials", which is
+    # indistinguishable from an under-scoped token. That cost real hours. Don't put it back.
+    # `admin:repo_hook` is what lets the PR/issue trigger create the repository webhook.
+    "github": {"kind": "oauth", "piece": "@activepieces/piece-github",
+               "auth": "https://github.com/login/oauth/authorize",
+               "token": "https://github.com/login/oauth/access_token",
+               "scopes": ["repo", "admin:repo_hook"]},
+    # token apps — no redirect; the user pastes a secret (handled by ensure_secret_connection).
+    # Only pieces whose `auth` really lists SECRET_TEXT belong here.
     "telegram": {"kind": "token", "piece": "@activepieces/piece-telegram-bot"},
     "discord": {"kind": "token", "piece": "@activepieces/piece-discord"},   # Bot Token (SECRET_TEXT)
 }

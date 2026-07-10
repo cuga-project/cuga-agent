@@ -456,21 +456,53 @@ class APEngine:
             return any(x.get("externalId") == external_id for x in await self._connections(c, hdrs, pid))
 
     async def ensure_secret_connection(self, external_id: str, piece: str, token: str,
-                                       project_name: str | None = None) -> str:
-        """Create (idempotently) a SECRET_TEXT connection holding ``token`` — the token/PAT path
-        (Telegram/GitHub). OAuth apps (Gmail/Box) are authorized in AP's connect UI instead."""
+                                       project_name: str | None = None,
+                                       update: bool = True) -> str:
+        """Create **or update** a SECRET_TEXT connection holding ``token`` — the token/PAT path
+        (Telegram/GitHub/Discord). OAuth apps (Gmail/Box) are authorized in AP's connect UI instead.
+
+        This used to return early when a connection with ``external_id`` already existed, which meant
+        a rotated credential silently did nothing: you pasted a fresh PAT, got ``{"ok": true}``, and
+        Activepieces kept using the dead one. The symptom was a flow that armed cleanly and then
+        failed at run time with ``401 Bad credentials`` — nowhere near the paste that caused it.
+
+        AP's ``POST /api/v1/app-connections`` upserts on ``externalId``. We re-POST rather than trust
+        that, and if AP rejects the overwrite (older builds 409 on a duplicate) we delete the stale
+        connection and create it again, which is what a human would do in the console.
+
+        Pass ``update=False`` for the boot-time auto-connect path, where an existing connection the
+        user authorized by hand should NOT be clobbered by whatever is in ``.env``.
+        """
         async with httpx.AsyncClient(timeout=20) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            if any(x.get("externalId") == external_id for x in await self._connections(c, hdrs, pid)):
+            existing = [x for x in await self._connections(c, hdrs, pid)
+                        if x.get("externalId") == external_id]
+            if existing and not update:
                 return external_id
-            r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json={
-                "externalId": external_id, "displayName": external_id, "pieceName": piece,
-                "projectId": pid, "type": "SECRET_TEXT",
-                "value": {"type": "SECRET_TEXT", "secret_text": token}})
-            if r.status_code >= 300:
+
+            body = {"externalId": external_id, "displayName": external_id, "pieceName": piece,
+                    "projectId": pid, "type": "SECRET_TEXT",
+                    "value": {"type": "SECRET_TEXT", "secret_text": token}}
+            r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
+            if r.status_code < 300:
+                if existing:
+                    log.info("AP connection %s updated (token rotated)", external_id)
+                return external_id
+
+            # Overwrite refused. Only worth the destructive fallback when one already exists —
+            # otherwise this is a genuine create failure and the caller should see it.
+            if not existing:
                 raise APError(f"AP create connection '{external_id}' failed: "
                               f"HTTP {r.status_code} {r.text[:200]}")
+            log.warning("AP refused to overwrite %s (HTTP %s); deleting and recreating",
+                        external_id, r.status_code)
+            await c.delete(f"{self.base}/api/v1/app-connections/{existing[0]['id']}", headers=hdrs)
+            r2 = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
+            if r2.status_code >= 300:
+                raise APError(f"AP update connection '{external_id}' failed after delete: "
+                              f"HTTP {r2.status_code} {r2.text[:200]}")
+            log.info("AP connection %s recreated (token rotated)", external_id)
             return external_id
 
     async def ensure_oauth_connection(self, external_id: str, piece: str, code: str,
@@ -489,18 +521,33 @@ class APEngine:
         async with httpx.AsyncClient(timeout=20) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            if any(x.get("externalId") == external_id for x in await self._connections(c, hdrs, pid)):
-                return external_id
+            # Do NOT return early on an existing connection. Consent means "use THIS authorization",
+            # so a re-consent must replace what is stored — including replacing a wrong-TYPE row (a
+            # SECRET_TEXT PAT left behind by an older build), which the piece cannot use and which
+            # would otherwise make the whole OAuth round trip a silent no-op.
+            existing = [x for x in await self._connections(c, hdrs, pid)
+                        if x.get("externalId") == external_id]
             value = {"type": "OAUTH2", "client_id": client_id, "client_secret": client_secret,
                      "code": code, "redirect_url": redirect_url, "scope": scope,
                      "grant_type": "authorization_code", "authorization_method": authorization_method,
                      "props": {}}
-            r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json={
-                "externalId": external_id, "displayName": external_id, "pieceName": piece,
-                "projectId": pid, "type": "OAUTH2", "value": value})
-            if r.status_code >= 300:
+            body = {"externalId": external_id, "displayName": external_id, "pieceName": piece,
+                    "projectId": pid, "type": "OAUTH2", "value": value}
+            r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
+            if r.status_code < 300:
+                return external_id
+            if not existing:
                 raise APError(f"AP create OAUTH2 connection '{external_id}' failed: "
                               f"HTTP {r.status_code} {r.text[:200]}")
+            # An authorization `code` is single-use, so we cannot retry the exchange after a failed
+            # overwrite — but AP consumed nothing on a rejected upsert. Drop the stale row and retry.
+            log.warning("AP refused to overwrite %s (HTTP %s); deleting and recreating",
+                        external_id, r.status_code)
+            await c.delete(f"{self.base}/api/v1/app-connections/{existing[0]['id']}", headers=hdrs)
+            r2 = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
+            if r2.status_code >= 300:
+                raise APError(f"AP update OAUTH2 connection '{external_id}' failed after delete: "
+                              f"HTTP {r2.status_code} {r2.text[:200]}")
             return external_id
 
     async def list_connections(self, project_name: str | None = None) -> list[dict]:
@@ -576,3 +623,29 @@ class APEngine:
         except Exception as e:  # noqa: BLE001
             log.warning("AP get run %s failed: %s", run_id, e)
             return None
+
+    async def trigger_flow(self, flow_id: str, payload: dict | None = None) -> tuple[bool, str]:
+        """Fire an ENABLED flow immediately, out of band of its own trigger. **Debug use only.**
+
+        Activepieces exposes ``POST /api/v1/webhooks/<flowId>`` for *every* flow, whatever its
+        trigger — a schedule flow fires from it just as a webhook flow would. The run executes with
+        the flow's own AP connections, so no credential is passed here and none is needed: AP resolves
+        them internally, exactly as it does on a real tick.
+
+        Two things this canNOT do, both because a standing flow's ``/invoke`` body is frozen at arm
+        time (see ``_invoke_body``):
+          * ``payload`` reaches the trigger's output but nothing downstream reads it, so you cannot
+            parameterise the run;
+          * the answer does not come back here. Read it from the run log.
+
+        NB this endpoint takes **no authentication** on AP's side. Anyone who can reach AP and knows a
+        flow id can fire it. Keep AP off the public tunnel, and put the auth on CUGA's endpoint.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}", json=payload or {})
+            ok = r.status_code in (200, 204)
+            return ok, (f"HTTP {r.status_code}" + (f" {r.text[:120]}" if r.text else ""))
+        except Exception as e:  # noqa: BLE001
+            log.warning("AP trigger flow %s failed: %s", flow_id, e)
+            return False, str(e)

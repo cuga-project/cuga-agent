@@ -1,47 +1,104 @@
 # GitHub setup (Activepieces backend)
 
 GitHub is an **integration**, so it runs on **Activepieces**: AP watches your repo (a `new_pull_request`
-or `new_issue` trigger, using your token) and fires `/invoke`. The concierge arms this when you say
-*"when a PR opens on my repo…"* (`create_push_flow`). GitHub connects with a **Personal Access Token**
-(PAT) — no OAuth consent flow needed (token auth, simpler than Box/Gmail).
+or `new_issue` trigger) and fires `/invoke`. The concierge arms this when you say *"when a PR opens on
+my repo…"* (`create_push_flow`). AP creates a real webhook on the repo, so it needs a public URL
+(`EVENTS_PUBLIC_URL`).
 
 ```
-new PR / issue ─▶ AP github trigger (your PAT) ─▶ /invoke (pr_reviewer) ─▶ deliver (any channel)
+new PR / issue ─▶ AP github trigger (OAuth conn) ─▶ /invoke (pr_reviewer) ─▶ deliver (any channel)
 ```
 
 The seeded **`pr_reviewer`** agent summarizes a PR and flags risks (uses `cuga-code` + `cuga-text`).
 
+## GitHub is OAuth, **not** a pasted PAT
+
+This tripped us for a while, so it is worth being explicit. Activepieces' `@activepieces/piece-github`
+accepts **only** an OAuth2 (or GitHub App) connection — check for yourself:
+
+```bash
+curl -s "$AP_BASE_URL/api/v1/pieces/@activepieces/piece-github" | jq '.auth[].type'
+# → "OAUTH2"   "CUSTOM_AUTH"      (no SECRET_TEXT)
+```
+
+A PAT pasted as a `SECRET_TEXT` connection is *accepted by AP's connection store* and then **unusable
+by the piece**: the flow arms fine and later fails at publish with `401 Bad credentials`, which looks
+exactly like an under-scoped token. `POST /api/events/connect/github/token` now refuses a PAT with a
+`400` for this reason. Connect via OAuth.
+
 ## What you'll need
-- A GitHub **Personal Access Token** with `repo` scope (and `read:org` if you watch an org repo).
-- Activepieces running + reachable (for the webhook, a public URL — `EVENTS_PUBLIC_URL`).
+- A GitHub **OAuth App** (client id + secret). *An OAuth App, not a GitHub App — adjacent pages.*
+- Activepieces running + reachable, and `EVENTS_PUBLIC_URL` set (AP registers the repo webhook there).
 
 ## Steps
-1. **Create a PAT** — GitHub → *Settings → Developer settings → Personal access tokens* →
-   *Tokens (classic)* → generate with **`repo`** scope (+ `read:org` for org repos). Copy it.
+1. **Create an OAuth App** — GitHub → *Settings → Developer settings → OAuth Apps → New OAuth App*
+   ([github.com/settings/developers](https://github.com/settings/developers)).
+   - **Homepage URL**: your `EVENTS_PUBLIC_URL`
+   - **Authorization callback URL**, *exactly* (GitHub does a literal compare — no trailing slash):
+     `<EVENTS_PUBLIC_URL>/api/events/connect/github/callback`
+   - Then **Generate a new client secret** and copy both values.
 
-2. **Connect it** (token auth — no consent redirect):
+2. **Put the app creds in `.env`** and reload:
    ```bash
-   curl -s -X POST localhost:8100/api/events/connect/github/token \
-        -H "content-type: application/json" -H "x-user-id: admin" \
-        -d '{"token":"ghp_…","ownership":"per_user"}'
-   # → {"ok":true,"app":"github","connection":"ea::…::github"}
+   EVENTS_OAUTH_GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
+   EVENTS_OAUTH_GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
    ```
-   *(Or paste it in the Studio → Integrations → GitHub → Connect.)* Ownership: `per_user` (each user
-   their own) or `tenant` (shared).
+   `make reload`. (You may leave `GITHUB_TOKEN` in `.env` — nothing arms AP from it anymore; the
+   live-test harnesses use it to check webhooks directly.)
 
-3. **Arm a watcher** — ask the concierge:
-   *"when a pull request opens on my repo, summarize it and message me."* → it arms an AP push flow
-   (`pr_reviewer`, `github` source). AP registers a webhook on the repo.
+3. **Consent in the browser** — each user connects their own GitHub:
+   open `<EVENTS_PUBLIC_URL>/api/events/connect/github` and approve. Requested scopes: `repo` +
+   `admin:repo_hook` (the second is what lets the PR trigger create the repo webhook).
+   *(Or Studio → Integrations → GitHub → Connect — the button opens this same consent page.)*
+
+4. **Arm a watcher** — ask the concierge, **naming the repo**:
+   *"watch the repo owner/name for new pull requests and summarize each one."* → it arms an AP push
+   flow (`pr_reviewer`, `github` source), and AP registers a `pull_request` webhook on the repo.
 
 ## Verify
 ```bash
-.venv/bin/python tests/events/preflight.py            # (add a github check if desired)
-# full integration e2e (NOW/CRON/POLL + PUSH box/github/gmail):
-GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:8100 \
-  .venv/bin/python tests/events/live_integrations_e2e.py
+# the connection must be OAUTH2, not SECRET_TEXT:
+curl -s "$AP_BASE_URL/api/v1/app-connections?projectId=<pid>" | jq '.data[] | select(.externalId|test("github")) | .type'
+# → "OAUTH2"
+
+# a real webhook appears on the repo after arming:
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/<owner>/<name>/hooks | jq length
+
+# fire it WITHOUT opening a real PR (a push flow's body becomes the trigger output):
+curl -s -X POST "localhost:8100/api/events/subscriptions/<sub_id>/run?timeout=180" \
+  -H "X-Gateway-Token: $GATEWAY_TOKEN" -H 'content-type: application/json' -d '{
+    "title":"Fix race in shutdown","html_url":"https://github.com/owner/name/pull/1",
+    "body":"Adds a WaitGroup and a drain timeout.",
+    "base":{"repo":{"full_name":"owner/name"}},"user":{"login":"octocat"},
+    "additions":42,"deletions":7,"changed_files":3}' | jq '.answer'
 ```
-With the PAT connected, the `PUSH · github` leg **arms a real AP flow** (an `ap_flow_id` appears on the
-subscription). Then open a PR on the watched repo → a summary is delivered.
+Deleting the subscription removes the webhook from the repo.
+
+## Rotating the PAT
+
+A GitHub PAT expires, or gets revoked, and the failure is nastier than it looks: the flow **arms
+cleanly** and then fails at run time with `401 Bad credentials`, nowhere near the paste that caused it.
+Look for it in the run log — `GET /api/events/runs/<id>` surfaces the failing step's error — not in the
+response to the connect call.
+
+To rotate, POST the new token. This **overwrites** the stored connection (and, if Activepieces refuses
+the overwrite, deletes and recreates it):
+
+```bash
+curl -X POST localhost:8100/api/events/connect/github/token \
+  -H 'content-type: application/json' -d '{"token":"ghp_NEW"}'
+```
+
+> Fixed 2026-07-09. Before that, `ensure_secret_connection` returned early whenever a connection with
+> the same `externalId` existed, so pasting a fresh PAT — from the API *or* the Studio's Connect
+> button — silently did nothing and AP kept using the dead token.
+
+**Editing `GITHUB_TOKEN` in `.env` and restarting does not rotate it.** Boot-time auto-connect only
+creates what is *missing*, deliberately: it must never clobber a connection you authorized by hand with
+whatever stale value is sitting in the environment. Rotate through the endpoint above.
+
+The PAT needs `admin:repo_hook` to arm a PUSH watcher — Activepieces creates a repository webhook, and
+GitHub rejects that scope-less.
 
 ## Troubleshooting
 - **`CONNECT NEEDED — connect your github`** — this message has **three different causes**, and only

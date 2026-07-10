@@ -126,7 +126,7 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
 <div class="topbar">
   <strong style="font-size:.9rem">API spec</strong>
   <input id="q" placeholder="filter endpoints…" style="max-width:200px">
-  <div class="tfilter"><button data-t="all" class="on">ALL</button><button data-t="core">CORE 2</button><button data-t="edge">EDGE 4</button><button data-t="ui">UI 25</button><button data-t="ops">OPS 2</button></div>
+  <div class="tfilter"><button data-t="all" class="on">ALL</button><button data-t="core">CORE 2</button><button data-t="edge">EDGE 4</button><button data-t="ui">UI 25</button><button data-t="ops">OPS 2</button><button data-t="debug">DEBUG 1</button></div>
   <div class="bulk"><button id="expand">expand all</button><button id="collapse">collapse all</button></div>
   <label style="font-size:.75rem;color:var(--muted)">base
     <input id="base" class="base" size="22"></label>
@@ -135,10 +135,10 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
   <button class="toggle" title="light / dark">◐</button>
 </div>
 <div class="layout">
-<nav><h3>Core — the reasoning seam</h3><a href="#post-invoke"><span class="v v-post">POST</span>/invoke</a><a href="#post-api-concierge"><span class="v v-post">POST</span>/api/concierge</a><h3>Flows — the standing subscriptions</h3><a href="#get-api-events-subscriptions"><span class="v v-get">GET</span>/subscriptions</a><a href="#post-api-events-subscriptions-sub_id-pause"><span class="v v-post">POST</span>/subscriptions/{sub_id}/pause</a><a href="#post-api-events-subscriptions-sub_id-resume"><span class="v v-post">POST</span>/subscriptions/{sub_id}/resume</a><a href="#delete-api-events-subscriptions-sub_id"><span class="v v-delete">DELETE</span>/subscriptions/{sub_id}</a><a href="#get-api-events-subscriptions-sub_id-flow"><span class="v v-get">GET</span>/subscriptions/{sub_id}/flow</a><a href="#get-api-events-flows-console"><span class="v v-get">GET</span>/flows/console</a><h3>Runs — the execution log</h3><a href="#get-api-events-runs"><span class="v v-get">GET</span>/runs</a><a href="#get-api-events-runs-run_id"><span class="v v-get">GET</span>/runs/{run_id}</a><h3>Studio reads — the UI's data contract</h3><a href="#get-api-events-status"><span class="v v-get">GET</span>/status</a><a href="#get-api-events-channels"><span class="v v-get">GET</span>/channels</a><a href="#get-api-events-integrations"><span class="v v-get">GET</span>/integrations</a><a href="#get-api-events-examples"><span class="v v-get">GET</span>/examples</a><a href="#get-api-events-setup-guides"><span class="v v-get">GET</span>/setup-guides</a><h3>Agents — the worker fleet</h3><a href="#get-api-events-agents"><span class="v v-get">GET</span>/agents</a><a href="#post-api-events-agents"><span class="v v-post">POST</span>/agents</a><a href="#put-api-events-agents-name"><span class="v v-put">PUT</span>/agents/{name}</a><a href="#get-api-events-mcp-servers"><span class="v v-get">GET</span>/mcp-servers</a><h3>Inbound surfaces — events arriving from the outside</h3><a href="#post-api-events-slack-events"><span class="v v-post">POST</span>/slack/events</a><a href="#post-api-events-box-poll"><span class="v v-post">POST</span>/box/poll</a><a href="#post-api-events-hook-name"><span class="v v-post">POST</span>/hook/{name}</a><h3>Connect &amp; credentials</h3><a href="#get-api-events-connect-app"><span class="v v-get">GET</span>/connect/{app}</a><a href="#get-api-events-connect-app-callback"><span class="v v-get">GET</span>/connect/{app}/callback</a><a href="#post-api-events-connect-app-token"><span class="v v-post">POST</span>/connect/{app}/token</a><a href="#get-api-events-connections"><span class="v v-get">GET</span>/connections</a><h3>Identity &amp; account-linking</h3><a href="#get-api-events-me"><span class="v v-get">GET</span>/me</a><a href="#post-api-events-link-channel"><span class="v v-post">POST</span>/link/{channel}</a><h3>Admin</h3><a href="#get-api-events-admin-users"><span class="v v-get">GET</span>/admin/users</a><a href="#post-api-events-admin-users"><span class="v v-post">POST</span>/admin/users</a><a href="#post-api-events-admin-channels-channel-arm"><span class="v v-post">POST</span>/admin/channels/{channel}/arm</a><a href="#get-api-events-admin-oauth-apps"><span class="v v-get">GET</span>/admin/oauth-apps</a><a href="#post-api-events-admin-oauth-apps"><span class="v v-post">POST</span>/admin/oauth-apps</a></nav>
+<nav><h3>Core — the reasoning seam</h3><a href="#post-invoke"><span class="v v-post">POST</span>/invoke</a><a href="#post-api-concierge"><span class="v v-post">POST</span>/api/concierge</a><h3>Flows — the standing subscriptions</h3><a href="#get-api-events-subscriptions"><span class="v v-get">GET</span>/subscriptions</a><a href="#post-api-events-subscriptions-sub_id-pause"><span class="v v-post">POST</span>/subscriptions/{sub_id}/pause</a><a href="#post-api-events-subscriptions-sub_id-resume"><span class="v v-post">POST</span>/subscriptions/{sub_id}/resume</a><a href="#delete-api-events-subscriptions-sub_id"><span class="v v-delete">DELETE</span>/subscriptions/{sub_id}</a><a href="#post-api-events-subscriptions-sub_id-run"><span class="v v-post">POST</span>/subscriptions/{sub_id}/run</a><a href="#get-api-events-subscriptions-sub_id-flow"><span class="v v-get">GET</span>/subscriptions/{sub_id}/flow</a><a href="#get-api-events-flows-console"><span class="v v-get">GET</span>/flows/console</a><h3>Runs — the execution log</h3><a href="#get-api-events-runs"><span class="v v-get">GET</span>/runs</a><a href="#get-api-events-runs-run_id"><span class="v v-get">GET</span>/runs/{run_id}</a><h3>Studio reads — the UI's data contract</h3><a href="#get-api-events-status"><span class="v v-get">GET</span>/status</a><a href="#get-api-events-channels"><span class="v v-get">GET</span>/channels</a><a href="#get-api-events-integrations"><span class="v v-get">GET</span>/integrations</a><a href="#get-api-events-examples"><span class="v v-get">GET</span>/examples</a><a href="#get-api-events-setup-guides"><span class="v v-get">GET</span>/setup-guides</a><h3>Agents — the worker fleet</h3><a href="#get-api-events-agents"><span class="v v-get">GET</span>/agents</a><a href="#post-api-events-agents"><span class="v v-post">POST</span>/agents</a><a href="#put-api-events-agents-name"><span class="v v-put">PUT</span>/agents/{name}</a><a href="#get-api-events-mcp-servers"><span class="v v-get">GET</span>/mcp-servers</a><h3>Inbound surfaces — events arriving from the outside</h3><a href="#post-api-events-slack-events"><span class="v v-post">POST</span>/slack/events</a><a href="#post-api-events-box-poll"><span class="v v-post">POST</span>/box/poll</a><a href="#post-api-events-hook-name"><span class="v v-post">POST</span>/hook/{name}</a><h3>Connect &amp; credentials</h3><a href="#get-api-events-connect-app"><span class="v v-get">GET</span>/connect/{app}</a><a href="#get-api-events-connect-app-callback"><span class="v v-get">GET</span>/connect/{app}/callback</a><a href="#post-api-events-connect-app-token"><span class="v v-post">POST</span>/connect/{app}/token</a><a href="#get-api-events-connections"><span class="v v-get">GET</span>/connections</a><h3>Identity &amp; account-linking</h3><a href="#get-api-events-me"><span class="v v-get">GET</span>/me</a><a href="#post-api-events-link-channel"><span class="v v-post">POST</span>/link/{channel}</a><h3>Admin</h3><a href="#get-api-events-admin-users"><span class="v v-get">GET</span>/admin/users</a><a href="#post-api-events-admin-users"><span class="v v-post">POST</span>/admin/users</a><a href="#post-api-events-admin-channels-channel-arm"><span class="v v-post">POST</span>/admin/channels/{channel}/arm</a><a href="#get-api-events-admin-oauth-apps"><span class="v v-get">GET</span>/admin/oauth-apps</a><a href="#post-api-events-admin-oauth-apps"><span class="v v-post">POST</span>/admin/oauth-apps</a></nav>
 <main>
   <h1>Event-Driven CUGA — API Spec</h1>
-  <p class="sub">33 endpoints. Every one has example payloads, real responses (including the
+  <p class="sub">34 endpoints. Every one has example payloads, real responses (including the
   interesting failures), and the callers that use it in practice. Set a <b>base URL</b> above and hit
   <b>Try it</b> on any endpoint to run it against your own stack.</p>
 
@@ -164,7 +164,7 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
   the outside world; twenty-five exist so the Studio can render a page. Use the tier buttons in the
   bar above to see one group at a time.</p>
   <div class="ep">
-    <table class="params glance"><tbody><tr><td style="white-space:nowrap"><span class="tier t-core">CORE</span><b>2</b></td><td>The reasoning seam. Two endpoints do the actual work; everything else feeds them or reads what they produced. If you are integrating CUGA into another system, these are the only two you need.<div class="note"><code>POST /invoke</code> · <code>POST /api/concierge</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-edge">EDGE</span><b>4</b></td><td>Inbound receivers. An external system — Slack, a monitoring tool, Box — speaks its own dialect here; the handler normalises it into an envelope and calls <code>/invoke</code>. The Studio never calls these.<div class="note"><code>POST /api/events/slack/events</code> · <code>POST /api/events/box/poll</code> · <code>POST /api/events/hook/{name}</code> · <code>GET /api/events/connect/{app}/callback</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-ui">UI</span><b>25</b></td><td>The Studio's data contract. Read endpoints the console renders, plus the writes its forms perform. Safe to ignore unless you are building a UI.<div class="note"><code>GET /api/events/subscriptions</code> · <code>POST /api/events/subscriptions/{sub_id}/pause</code> · <code>POST /api/events/subscriptions/{sub_id}/resume</code> · <code>DELETE /api/events/subscriptions/{sub_id}</code> · <code>GET /api/events/subscriptions/{sub_id}/flow</code> · <code>GET /api/events/runs</code> · <code>GET /api/events/runs/{run_id}</code> · <code>GET /api/events/status</code> · <code>GET /api/events/channels</code> · <code>GET /api/events/integrations</code> · <code>GET /api/events/examples</code> · <code>GET /api/events/setup-guides</code> · <code>GET /api/events/agents</code> · <code>POST /api/events/agents</code> · <code>PUT /api/events/agents/{name}</code> · <code>GET /api/events/mcp-servers</code> · <code>GET /api/events/connect/{app}</code> · <code>POST /api/events/connect/{app}/token</code> · <code>GET /api/events/connections</code> · <code>GET /api/events/me</code> · <code>POST /api/events/link/{channel}</code> · <code>GET /api/events/admin/users</code> · <code>POST /api/events/admin/users</code> · <code>GET /api/events/admin/oauth-apps</code> · <code>POST /api/events/admin/oauth-apps</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-ops">OPS</span><b>2</b></td><td>Operator surface. Driven from a shell or the Makefile, not from the console.<div class="note"><code>GET /api/events/flows/console</code> · <code>POST /api/events/admin/channels/{channel}/arm</code></div></td></tr></tbody></table>
+    <table class="params glance"><tbody><tr><td style="white-space:nowrap"><span class="tier t-core">CORE</span><b>2</b></td><td>The reasoning seam. Two endpoints do the actual work; everything else feeds them or reads what they produced. If you are integrating CUGA into another system, these are the only two you need.<div class="note"><code>POST /invoke</code> · <code>POST /api/concierge</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-edge">EDGE</span><b>4</b></td><td>Inbound receivers. An external system — Slack, a monitoring tool, Box — speaks its own dialect here; the handler normalises it into an envelope and calls <code>/invoke</code>. The Studio never calls these.<div class="note"><code>POST /api/events/slack/events</code> · <code>POST /api/events/box/poll</code> · <code>POST /api/events/hook/{name}</code> · <code>GET /api/events/connect/{app}/callback</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-ui">UI</span><b>25</b></td><td>The Studio's data contract. Read endpoints the console renders, plus the writes its forms perform. Safe to ignore unless you are building a UI.<div class="note"><code>GET /api/events/subscriptions</code> · <code>POST /api/events/subscriptions/{sub_id}/pause</code> · <code>POST /api/events/subscriptions/{sub_id}/resume</code> · <code>DELETE /api/events/subscriptions/{sub_id}</code> · <code>GET /api/events/subscriptions/{sub_id}/flow</code> · <code>GET /api/events/runs</code> · <code>GET /api/events/runs/{run_id}</code> · <code>GET /api/events/status</code> · <code>GET /api/events/channels</code> · <code>GET /api/events/integrations</code> · <code>GET /api/events/examples</code> · <code>GET /api/events/setup-guides</code> · <code>GET /api/events/agents</code> · <code>POST /api/events/agents</code> · <code>PUT /api/events/agents/{name}</code> · <code>GET /api/events/mcp-servers</code> · <code>GET /api/events/connect/{app}</code> · <code>POST /api/events/connect/{app}/token</code> · <code>GET /api/events/connections</code> · <code>GET /api/events/me</code> · <code>POST /api/events/link/{channel}</code> · <code>GET /api/events/admin/users</code> · <code>POST /api/events/admin/users</code> · <code>GET /api/events/admin/oauth-apps</code> · <code>POST /api/events/admin/oauth-apps</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-ops">OPS</span><b>2</b></td><td>Operator surface. Driven from a shell or the Makefile, not from the console.<div class="note"><code>GET /api/events/flows/console</code> · <code>POST /api/events/admin/channels/{channel}/arm</code></div></td></tr><tr><td style="white-space:nowrap"><span class="tier t-debug">DEBUG</span><b>1</b></td><td>Debugging aids with <b>real side effects</b>. Not part of the product surface; not called by the Studio. Disable them in a shared deployment.<div class="note"><code>POST /api/events/subscriptions/{sub_id}/run</code></div></td></tr></tbody></table>
     <div class="callout">The <b>UI</b> column is not a judgement call — it was derived by grepping the
     shipped Studio bundle (<code>src/cuga/frontend/dist</code>) for every path. The console calls 19 of
     the 33 and never touches <code>/invoke</code>, the inbound receivers, the flows console, or channel
@@ -689,6 +689,104 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
       <div class="tform">
         <div class="tparams"><label>sub_id <input class="pp" data-name="sub_id" value="s1"></label></div>
         
+        <div class="tbtns">
+          <button class="send">Send ▸</button>
+          <button class="curl">Copy as curl</button>
+          <span class="tstat"></span>
+        </div>
+        <pre class="tout blk"></pre>
+      </div>
+    </details>
+    </div>
+  </details>
+  <details class="ep" id="post-api-events-subscriptions-sub_id-run" data-verb="POST" data-path="/api/events/subscriptions/{sub_id}/run"
+       data-auth="gateway" data-tier="debug"
+       data-search="post /api/events/subscriptions/{sub_id}/run debug — fire an armed flow now, out of band of its own trigger.">
+    <summary class="hd">
+      <span class="verb v-post">POST</span>
+      <code class="path">/api/events/subscriptions/{sub_id}/run</code>
+      <span class="tier t-debug" title="Debugging aids with real side effects. Not part of the product surface; not called by the Studio. Disable them in a shared deployment.">DEBUG</span>
+      <span class="peek">DEBUG — fire an armed flow now, out of band of its own trigger.</span>
+      <a class="anchor" href="#post-api-events-subscriptions-sub_id-run" title="link to this endpoint">#</a>
+    </summary>
+    <div class="epbody">
+      <p class="summary">DEBUG — fire an armed flow now, out of band of its own trigger.</p>
+      <div class="chips"><span class="lbl">called by</span><span class="chip who" title="curl / the Makefile targets">You, from a shell</span><span class="chip who" title="tests/events/*.py">Test harness</span><span class="chip auth" title="Requires <code>X-Gateway-Token</code> when <code>GATEWAY_TOKEN</code> is set.">🔒 gateway token</span></div>
+      <h4>Parameters</h4><table class="params"><tbody><tr><td><code>sub_id</code></td><td class="k">path</td><td>subscription id</td></tr><tr><td><code>wait</code></td><td class="k">query</td><td><code>0</code> = return as soon as AP accepts the trigger; default polls for the run this call produced</td></tr><tr><td><code>timeout</code></td><td class="k">query</td><td>seconds to wait for the run to finish (max 600)</td></tr></tbody></table><h4>Example payloads</h4><div class="tabs"><button class="btab on" data-i="0">No body — a cron/poll flow</button><button class="btab" data-i="1">A synthetic event — a PUSH flow</button><button class="btab" data-i="2">A marker body</button></div><div class="bpane on" data-i="0"><pre class="blk">{}</pre><p class=note>A <b>schedule</b> flow's <code>/invoke</code> body (agent, prompt, thread_id, scope) is frozen at arm time, so nothing you POST changes what it does. Fire it as armed.</p></div><div class="bpane" data-i="1"><pre class="blk">{
+  &quot;title&quot;: &quot;Fix race in worker pool shutdown&quot;,
+  &quot;html_url&quot;: &quot;https://github.com/owner/repo/pull/9999&quot;,
+  &quot;body&quot;: &quot;Workers could exit before draining the queue, dropping in-flight jobs.&quot;,
+  &quot;base&quot;: {
+    &quot;repo&quot;: {
+      &quot;full_name&quot;: &quot;owner/repo&quot;
+    }
+  },
+  &quot;user&quot;: {
+    &quot;login&quot;: &quot;octocat&quot;
+  },
+  &quot;additions&quot;: 42,
+  &quot;deletions&quot;: 7,
+  &quot;changed_files&quot;: 3
+}</pre><p class=note>A <b>push</b> flow's invoke body contains <code>{{trigger.title}}</code>-style templates, so the body you POST <i>becomes</i> the trigger output and the agent reasons over it. This is the way to exercise a Gmail/GitHub/Box watcher <b>without</b> opening a real pull request or sending a real email. Shape it like the piece's real trigger output — for github that is the <code>pull_request</code> object itself.</p></div><div class="bpane" data-i="2"><pre class="blk">{
+  &quot;note&quot;: &quot;fired by hand&quot;
+}</pre><p class=note>On a schedule flow this is inert; it only shows up as the trigger payload in the run log, which is a handy way to tell your run apart from a scheduled one.</p></div><h4>Responses</h4><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;debug&quot;: true,
+  &quot;subscription_id&quot;: &quot;s1&quot;,
+  &quot;ap_flow_id&quot;: &quot;stttGLqX2TvgstQDLsboq&quot;,
+  &quot;triggered&quot;: true,
+  &quot;warning&quot;: &quot;this fired the real flow: it delivered to its real sink&quot;,
+  &quot;run&quot;: {
+    &quot;id&quot;: &quot;KRxqCBUsr2&quot;,
+    &quot;status&quot;: &quot;SUCCEEDED&quot;,
+    &quot;started_at&quot;: &quot;2026-07-09T09:00:00Z&quot;,
+    &quot;finished_at&quot;: &quot;2026-07-09T09:00:06Z&quot;
+  },
+  &quot;answer&quot;: &quot;Bitcoin is currently priced at **$63,924 USD**.&quot;,
+  &quot;trigger_payload&quot;: {},
+  &quot;error&quot;: null
+}</pre><p class=note>The whole chain ran: schedule → <code>/invoke</code> → sink. The answer is lifted out of the run's step tree.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;triggered&quot;: true,
+  &quot;timed_out&quot;: true,
+  &quot;run&quot;: {
+    &quot;id&quot;: &quot;KRxqCBUsr2&quot;,
+    &quot;status&quot;: &quot;RUNNING&quot;
+  },
+  &quot;note&quot;: &quot;AP accepted the trigger but no run finished within 120s. Poll GET /api/events/runs, or retry with a larger ?timeout=.&quot;
+}</pre><p class=note>Triggered but unfinished. Deliberately <b>not</b> an error: the flow is running.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: true,
+  &quot;debug&quot;: true,
+  &quot;triggered&quot;: true,
+  &quot;ap_flow_id&quot;: &quot;sttt\u2026&quot;
+}</pre><p class=note><code>?wait=0</code>. Fire and forget — no answer, because nothing waited for it.</p></div></div><div class="resp"><span class="code c4">401</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;bad or missing X-Gateway-Token&quot;
+}</pre></div></div><div class="resp"><span class="code c4">403</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;debug run endpoint disabled (EVENTS_DEBUG_RUN=0)&quot;
+}</pre><p class=note>Turn it off in any deployment where an unattended trigger would be a problem.</p></div></div><div class="resp"><span class="code c4">404</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;subscription not found&quot;
+}</pre><p class=note>Also for another principal's id.</p></div></div><div class="resp"><span class="code c4">409</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;DANGLING: subscription points at AP flow X, which does not exist in Activepieces. Nothing to run.&quot;,
+  &quot;ap_flow_id&quot;: &quot;X&quot;
+}</pre><p class=note>Checked <i>before</i> triggering — otherwise the call would happily 'succeed' and run nothing at all.</p></div></div><div class="resp"><span class="code c4">409</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;subscription has no AP flow to run&quot;
+}</pre></div></div><div class="resp"><span class="code c5">501</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;AP not configured&quot;
+}</pre></div></div><div class="resp"><span class="code c5">502</span><div class="rbody"><pre class="blk">{
+  &quot;ok&quot;: false,
+  &quot;error&quot;: &quot;Activepieces refused the trigger: HTTP 404 \u2026&quot;
+}</pre></div></div><div class="callout"><b>Not every flow can be fired this way.</b> Verified 2026-07-10: the schedule piece and github's <code>trigger_pull_request</code> (a WEBHOOK trigger) both run, but gmail's <code>gmail_new_email_received</code> is an app-POLLING trigger — Activepieces accepts the trigger POST with <code>200</code> and produces no run at all. A <code>timed_out</code> response on a gmail/box watcher therefore means "this trigger type cannot be fired out of band", not "the watcher is broken". Check the piece's trigger <code>type</code> at <code>GET &lt;AP&gt;/api/v1/pieces/&lt;piece&gt;</code>.<br><br><b>This is not a dry run.</b> The flow delivers wherever it was armed to deliver: it will post to your Slack channel and message your Telegram, and Activepieces' own log will not mark the run as a test. <br><br>Mechanically it POSTs to Activepieces' <code>/api/v1/webhooks/&lt;flowId&gt;</code>, which fires <i>any</i> flow whatever its trigger. The run executes with the flow's own AP connections, so <b>no credential is passed here and none is needed</b> — AP resolves them internally, exactly as on a real tick. <br><br><b>Security:</b> AP's webhook route takes no authentication of its own. Anyone who can reach Activepieces and knows a flow id can fire it. Keep AP off the public tunnel; the gate that matters is this endpoint's <code>X-Gateway-Token</code>.</div>
+    <details class="try">
+      <summary>Try it</summary>
+      <div class="tform">
+        <div class="tparams"><label>sub_id <input class="pp" data-name="sub_id" value="s1"></label><label>?wait <input class="qp" data-name="wait" value="1"></label><label>?timeout <input class="qp" data-name="timeout" value="120"></label></div>
+        <textarea class="tbody" rows="8" spellcheck="false">{}</textarea>
         <div class="tbtns">
           <button class="send">Send ▸</button>
           <button class="curl">Copy as curl</button>
@@ -1503,7 +1601,7 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
 }</pre></div></div><div class="resp"><span class="code c5">502</span><div class="rbody"><pre class="blk">{
   &quot;ok&quot;: false,
   &quot;error&quot;: &quot;401 Unauthorized&quot;
-}</pre><p class=note>Box rejected the token. Loud, not silent — a stale <code>BOX_DEV_TOKEN</code> would otherwise look like "no new files".</p></div></div><div class="callout">Opt-in, behind <code>EVENTS_BOX_BACKEND=direct</code>. It sidesteps AP's OAuth wall and Box's paid-app webhook requirement. Box otherwise defaults to an AP push trigger.</div>
+}</pre><p class=note>Box rejected the token. Loud, not silent — a stale <code>BOX_DEV_TOKEN</code> would otherwise look like "no new files".</p></div></div><div class="callout">Opt-in, behind <code>EVENTS_BOX_BACKEND=direct</code>. It sidesteps AP's OAuth wall and Box's paid-app webhook requirement. Box otherwise defaults to an AP push trigger.<br><br><b>The download step.</b> A watcher that learns only a filename cannot judge a resume, and the agent holds no Box credential to fetch it with. So CUGA downloads the bytes with the token it already has and hands the agent <i>contents</i>: decodable text is inlined into the prompt, anything else arrives base64 in <code>event.payload.file_base64</code> for <code>extract_text_from_bytes</code>. The credential never leaves the server. Capped by <code>EVENTS_BOX_MAX_DOWNLOAD_BYTES</code> (2 MB) and <code>EVENTS_BOX_MAX_INLINE_CHARS</code> (20k); disable with <code>EVENTS_BOX_DOWNLOAD=0</code>. A failed download never drops the event — the reason travels to the agent, which is told not to invent the contents.</div>
     <details class="try">
       <summary>Try it</summary>
       <div class="tform">
@@ -1691,7 +1789,7 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
 }</pre></div></div><div class="resp"><span class="code c5">501</span><div class="rbody"><pre class="blk">{
   &quot;ok&quot;: false,
   &quot;error&quot;: &quot;AP not configured&quot;
-}</pre></div></div><div class="callout"><b>Known bug.</b> <code>ap_engine.ensure_secret_connection</code> returns early when the <code>externalId</code> already exists — it never updates the stored secret. So rotating <code>GITHUB_TOKEN</code>, or pasting a fresh PAT here, silently no-ops. Delete the AP connection first, then reconnect.</div>
+}</pre></div></div><div class="callout"><b>Rotation works here, and only here.</b> This endpoint overwrites an existing connection (and, if Activepieces refuses the overwrite, deletes and recreates it), so pasting a fresh PAT genuinely replaces the dead one. <i>Fixed 2026-07-09; it used to return early, which is why a rotated GitHub token kept failing at run time with <code>401 Bad credentials</code> — nowhere near the paste that caused it.</i><br><br>Boot-time auto-connect from <code>.env</code> does <b>not</b> overwrite: it only creates what is missing, so a connection you authorized by hand is never clobbered by a stale environment variable. To rotate, POST here.</div>
     <details class="try">
       <summary>Try it</summary>
       <div class="tform">

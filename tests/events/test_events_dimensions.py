@@ -208,7 +208,9 @@ def test_integrations_full_ap_wiring():
     import setup_guides
     # oauth providers (Box/Gmail = OAuth; GitHub = token PAT)
     assert oauth.connect_kind("box") == "oauth" and oauth.connect_kind("gmail") == "oauth"
-    assert oauth.connect_kind("github") == "token"
+    # github is an OAUTH app: `@activepieces/piece-github` accepts only OAUTH2/CUSTOM_AUTH, never
+    # SECRET_TEXT. Storing a PAT there yields a connection AP keeps and the piece cannot use.
+    assert oauth.connect_kind("github") == "oauth"
     # AP piece PUSH triggers use the REAL piece trigger names (verified against the running pieces)
     assert flows.SOURCE_TRIGGER["box"] == ("box", "new_file")
     assert flows.SOURCE_TRIGGER["github_pr"] == ("github", "trigger_pull_request")
@@ -251,9 +253,13 @@ def test_owner_scope_grain_follows_credentials():
 # ---- oauth connect registry (CUGA hosts connect) -------------------------
 def test_oauth_registry_and_authorize_url():
     import oauth
-    assert oauth.connect_kind("gmail") == "oauth" and oauth.connect_kind("github") == "token"
+    assert oauth.connect_kind("gmail") == "oauth" and oauth.connect_kind("github") == "oauth"
+    assert oauth.connect_kind("telegram") == "token"         # piece-telegram-bot: SECRET_TEXT
     assert oauth.connect_kind("nope") is None
     assert oauth.is_configured("telegram") is True           # token apps always connectable
+    # the PR/issue trigger creates a repository webhook, which needs admin:repo_hook
+    assert set(oauth.provider("github")["scopes"]) == {"repo", "admin:repo_hook"}
+    assert oauth.provider("github")["auth"].startswith("https://github.com/login/oauth/")
     # oauth app: not configured until client id/secret present
     for k in ("EVENTS_OAUTH_GMAIL_CLIENT_ID", "EVENTS_OAUTH_GMAIL_CLIENT_SECRET"):
         os.environ.pop(k, None)

@@ -40,6 +40,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # local dev, dangerous in a shared deploy — warn loudly rather than fail silently.
         _elog.warning("events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
                       "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server.")
+    if not os.environ.get("EVENTS_WEBHOOK_KEY"):
+        # The hook runs an agent and can post into a channel. Unset, `?key=` is not merely optional —
+        # it is ignored, so a WRONG key is accepted too. That surprises people; say it plainly.
+        _elog.warning("events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> accepts "
+                      "ANY request, including one with a wrong ?key=. Set it before exposing this "
+                      "server on a public URL.")
+    if not os.environ.get("SLACK_SIGNING_SECRET") and os.environ.get("SLACK_BOT_TOKEN"):
+        _elog.warning("events: SLACK_SIGNING_SECRET is empty — /api/events/slack/events accepts "
+                      "UNSIGNED requests from anyone who finds your public URL.")
 
     # let OAuth app creds come from the admin store (UI) before .env
     if oauth_store is not None:
@@ -352,15 +361,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             })
         return {"scope": scope, "runs": out}
 
-    @app.get("/api/events/runs/{run_id}")
-    async def run_detail(run_id: str, request: Request):
-        """One run's detail + the agent's OUTPUT: the CUGA /invoke answer, the trigger payload, and
-        any error. Scoped to the caller's own flows."""
-        scope = resolve_principal(headers=request.headers).scope
-        owned = {s.get("ap_flow_id") for s in (store.as_dicts(scope=scope) if store else [])}
-        run = await engine.get_run(run_id) if engine is not None else None
-        if run is None or run.get("flowId") not in owned:
-            return JSONResponse({"ok": False, "error": "run not found"}, 404)
+    def _dissect_run(run: dict) -> tuple[str | None, object, str | None]:
+        """(answer, trigger_payload, error) out of an AP run's step tree.
+
+        The agent's answer lives at ``steps.<n>.output.body.answer`` — the shape /invoke returns,
+        which the flow's send step reads as ``{{step_1.body.answer}}``."""
         steps = run.get("steps") or {}
         answer = trigger_payload = error = None
         for name, s in (steps.items() if isinstance(steps, dict) else []):
@@ -373,10 +378,118 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 answer = outp["body"]["answer"]
             if s.get("status") not in ("SUCCEEDED", None) and s.get("errorMessage"):
                 error = s.get("errorMessage")
+        return answer, trigger_payload, error
+
+    @app.get("/api/events/runs/{run_id}")
+    async def run_detail(run_id: str, request: Request):
+        """One run's detail + the agent's OUTPUT: the CUGA /invoke answer, the trigger payload, and
+        any error. Scoped to the caller's own flows."""
+        scope = resolve_principal(headers=request.headers).scope
+        owned = {s.get("ap_flow_id") for s in (store.as_dicts(scope=scope) if store else [])}
+        run = await engine.get_run(run_id) if engine is not None else None
+        if run is None or run.get("flowId") not in owned:
+            return JSONResponse({"ok": False, "error": "run not found"}, 404)
+        answer, trigger_payload, error = _dissect_run(run)
         return {"ok": True,
                 "run": {"id": run.get("id"), "status": run.get("status"),
                         "started_at": run.get("startTime"), "finished_at": run.get("finishTime")},
                 "answer": answer, "trigger_payload": trigger_payload, "error": error}
+
+    @app.post("/api/events/subscriptions/{sub_id}/run")
+    async def run_subscription_now(sub_id: str, request: Request):
+        """**DEBUG ONLY** — fire an armed flow now, out of band of its own trigger.
+
+        A cron flow that runs at 09:00 is painful to test: you either wait, or re-arm it on a
+        one-minute schedule. This fires the real flow immediately, through Activepieces, so the run
+        exercises the real trigger→/invoke→sink chain with the real credentials.
+
+        **This has real side effects.** The flow delivers wherever it was armed to deliver — it will
+        post to your Slack channel, message your Telegram. It is not a dry run. Nothing about the run
+        is marked as a test in Activepieces' own log.
+
+        Whether the body you POST does anything depends on the flow's trigger:
+          * SCHEDULE (cron/poll) — the /invoke body is frozen at arm time (agent, prompt, thread_id,
+            scope), so the body is inert. It surfaces only as the run's trigger payload.
+          * PUSH via a WEBHOOK-trigger piece (github) — the invoke body carries `{{trigger.<field>}}`
+            templates, so the body you POST *becomes* the trigger output. Shape it like the piece's
+            real trigger output and you exercise the watcher without opening a real pull request.
+
+        NOT every flow can be fired this way. Verified 2026-07-10: the schedule piece and github's
+        WEBHOOK trigger both run; gmail's `gmail_new_email_received` is an app-POLLING trigger, and AP
+        accepts the trigger POST with 200 while producing no run at all. So a `timed_out` response on
+        a gmail/box watcher means "this trigger type cannot be fired out of band", not "it is broken".
+        Check the piece's trigger `type` at GET <AP>/api/v1/pieces/<piece>.
+
+        ``?wait=0`` returns as soon as AP accepts the trigger. The default polls the run log for the
+        run this call produced and returns its answer. Disable the endpoint entirely with
+        ``EVENTS_DEBUG_RUN=0``.
+        """
+        import asyncio
+        import time
+
+        if os.environ.get("EVENTS_DEBUG_RUN", "1") == "0":
+            return JSONResponse({"ok": False, "error": "debug run endpoint disabled "
+                                                       "(EVENTS_DEBUG_RUN=0)"}, 403)
+        # Same seam as /invoke: this runs an agent with the caller's credentials and delivers to a
+        # real channel, so it must not be weaker than /invoke's gate.
+        if token and request.headers.get("X-Gateway-Token") != token:
+            return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
+        sub, _ = _owned_sub(sub_id, request)
+        if sub is None:
+            return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if engine is None:
+            return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
+        if not sub.ap_flow_id:
+            return JSONResponse({"ok": False, "error": "subscription has no AP flow to run"}, 409)
+        # A dangling subscription would otherwise 'trigger' happily and never run anything.
+        if not await engine.get_flow(sub.ap_flow_id):
+            return JSONResponse({"ok": False, "error": (
+                f"DANGLING: subscription points at AP flow {sub.ap_flow_id}, which does not exist in "
+                f"Activepieces. Nothing to run."), "ap_flow_id": sub.ap_flow_id}, 409)
+
+        wait = request.query_params.get("wait", "1") not in ("0", "false", "no")
+        try:
+            timeout = min(int(request.query_params.get("timeout", "120")), 600)
+        except ValueError:
+            timeout = 120
+        tr = Trace(new_trace_id())
+        # Snapshot first: AP gives us no run id back, so the new run is identified by difference.
+        before = {r.get("id") for r in await engine.list_runs(limit=60)
+                  if r.get("flowId") == sub.ap_flow_id}
+        ok, detail = await engine.trigger_flow(sub.ap_flow_id, await _safe_json(request))
+        tr("debug.run", sub=sub_id, flow=sub.ap_flow_id, ok=ok, detail=detail)
+        if not ok:
+            return JSONResponse({"ok": False, "error": f"Activepieces refused the trigger: {detail}",
+                                 "ap_flow_id": sub.ap_flow_id, "trace_id": tr.id}, 502)
+        out = {"ok": True, "debug": True, "subscription_id": sub_id, "ap_flow_id": sub.ap_flow_id,
+               "triggered": True, "trace_id": tr.id,
+               "warning": "this fired the real flow: it delivered to its real sink"}
+        if not wait:
+            return out
+
+        deadline = time.time() + timeout
+        run = None
+        while time.time() < deadline:
+            await asyncio.sleep(3)
+            fresh = [r for r in await engine.list_runs(limit=60)
+                     if r.get("flowId") == sub.ap_flow_id and r.get("id") not in before]
+            done = [r for r in fresh if r.get("status") not in ("RUNNING", "PAUSED", None)]
+            if done:
+                run = await engine.get_run(done[0]["id"])
+                break
+            if fresh:
+                out["run"] = {"id": fresh[0]["id"], "status": fresh[0].get("status")}
+        if run is None:
+            # Triggered, but no FINISHED run inside the budget. Say which, rather than imply failure.
+            out["timed_out"] = True
+            out["note"] = (f"AP accepted the trigger but no run finished within {timeout}s. "
+                           f"Poll GET /api/events/runs, or retry with a larger ?timeout=.")
+            return out
+        answer, trigger_payload, error = _dissect_run(run)
+        out["run"] = {"id": run.get("id"), "status": run.get("status"),
+                      "started_at": run.get("startTime"), "finished_at": run.get("finishTime")}
+        out["answer"], out["trigger_payload"], out["error"] = answer, trigger_payload, error
+        return out
 
     # --- Studio read endpoints (dumb UI reads these; all real state) -------------
     @app.get("/api/events/status")
@@ -617,12 +730,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 connect = g["connect"]
             elif app == "slack":
                 connect = "direct"
-            elif any(c["key"].startswith("EVENTS_OAUTH_") for c in g.get("creds", [])):
-                connect = "oauth"
-            elif g.get("creds"):
-                connect = "token"
             else:
-                connect = "none"
+                # Ask the provider registry, not the shape of the guide's cred list. Deriving "token"
+                # from "the guide mentions GITHUB_TOKEN" told users to paste a PAT into an OAuth-only
+                # piece for months. oauth.connect_kind is the single source of truth.
+                from . import oauth as _oauth
+                connect = _oauth.connect_kind(app) or ("token" if g.get("creds") else "none")
             status = st.get(app, "n/a")
             # the CONNECTION is per-USER for integrations (each user logs in) · TENANT for channels (one bot)
             conn_scope = "user" if g.get("kind") == "integration" else "tenant"
@@ -723,34 +836,94 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": str(e)}, 502)
         tr("box.poll", folder=folder, new=len(files), since=since)
         processed, newest = [], since or ""
+        # Resolved once per poll, not per file: a JD in a Box file would otherwise be downloaded
+        # once for every resume in the folder.
+        jd = await _resume_jd(body)
         for f in files:
             newest = max(newest, f.get("created_at") or "")
-            await _box_dispatch(agent, f, deliver_to, body.get("scope"), deliver_target)
+            await _box_dispatch(agent, f, deliver_to, body.get("scope"), deliver_target, jd=jd)
             processed.append({"id": f["id"], "name": f.get("name")})
         if server_tracked and newest and newest != (since or ""):
             box_direct.save_since(folder, newest)      # advance the watermark for the next poll
         return {"ok": True, "folder": folder, "processed": processed, "newest": newest,
                 "trace_id": tr.id}
 
-    async def _box_dispatch(agent: str, file: dict, deliver_to, scope, deliver_target=None) -> None:
+    async def _resume_jd(body: dict) -> str:
+        """The job description a resume is judged against.
+
+        The watcher's prompt has always said "judge fit vs the JD" while supplying no JD, so the agent
+        could only ever ask for one — and, delivered to a channel, that question reaches nobody who can
+        answer it. Sources, in order: the poll body, a Box file id, the environment.
+        """
+        from . import box_direct
+
+        jd = (body or {}).get("jd") or ""
+        if jd:
+            return jd
+        fid = (body or {}).get("jd_file_id") or os.environ.get("EVENTS_RESUME_JD_FILE_ID", "")
+        if fid:
+            got = await box_direct.fetch_content(fid, "job description")
+            if got["kind"] == "text":
+                return got["text"]
+            Trace(new_trace_id()).error("box.jd", file=fid, kind=got["kind"],
+                                        reason=got.get("reason", ""))
+        return os.environ.get("EVENTS_RESUME_JD", "")
+
+    async def _box_dispatch(agent: str, file: dict, deliver_to, scope, deliver_target=None,
+                            jd: str = "") -> None:
         """Fire one Box file through /invoke(agent). If deliver_to is a DIRECT channel the reply is
         sent CUGA-side (no AP); otherwise the answer just rides back in the /invoke response.
         ``deliver_target`` is the channel-native id (e.g. the Slack channel) so the answer lands in
         the right place — without it a direct sink has no destination."""
         import httpx
-        from . import delivery
+        from . import box_direct, delivery
         tr = Trace(new_trace_id())
         port = os.environ.get("EVENTS_CUGA_PORT", "8100")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
         src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target or ''}"}
                if direct else {"type": "integration", "name": "box", "thread_id": f"box:{file['id']}"})
+
+        # THE DOWNLOAD STEP. A watcher that knows only the filename cannot judge a resume, and the
+        # agent holds no Box credential to fetch it with. So the server fetches: CUGA downloads the
+        # bytes with the token it already has and hands the agent CONTENT. The credential never
+        # leaves this process. See box_direct.fetch_content for the caps.
+        name = file.get("name") or file["id"]
+        content = await box_direct.fetch_content(file["id"], name)
+        tr("box.download", file=name, kind=content["kind"], bytes=content.get("bytes"))
+        if content["kind"] == "text":
+            body = content["text"] + ("\n…[truncated]" if content.get("truncated") else "")
+            excerpt = f"\n\n--- contents of {name} ---\n{body}\n--- end ---"
+        elif content["kind"] == "binary":
+            excerpt = (f"\n\nThe file is binary ({content['bytes']} bytes). Its base64 is in "
+                       f"event.payload.file_base64 — decode it with extract_text_from_bytes.")
+        else:
+            excerpt = (f"\n\nThe file could not be downloaded ({content['reason']}). Judge from the "
+                       f"filename alone, or say you could not read it — do not invent its contents.")
+
+        ev_payload = {"file_id": file["id"], "name": name, "content_kind": content["kind"]}
+        if content["kind"] == "binary":
+            ev_payload["file_base64"] = content["base64"]
+        elif content["kind"] == "skipped":
+            ev_payload["download_error"] = content["reason"]
+
+        # No JD means no judgement. Say so, rather than asking a question into a channel where nobody
+        # is listening — a watcher runs unattended, so "please provide the JD" is a dead end.
+        if jd:
+            ask = ("Judge this candidate's fit against the job description below. "
+                   "Start your reply with MATCH or SKIP, then give two lines of reasoning citing the "
+                   f"resume.\n\n--- job description ---\n{jd}\n--- end ---")
+            ev_payload["has_jd"] = True
+        else:
+            ask = ("No job description is configured, so do NOT ask for one — nobody is reading. "
+                   "Start your reply with SKIP, say the JD is missing, and summarise the candidate in "
+                   "two lines so a human can triage.")
+            ev_payload["has_jd"] = False
+
         payload = {"agent": agent, "deliver": bool(direct), "scope": scope or "",
-                   "text": (f"A file '{file.get('name')}' landed in Box. Judge fit vs the JD. "
-                            "Start your reply with MATCH or SKIP."),
+                   "text": f"A file '{name}' landed in Box. {ask}{excerpt}",
                    "source": src,
-                   "event": {"kind": "new_file", "payload": {"file_id": file["id"],
-                                                             "name": file.get("name")}}}
+                   "event": {"kind": "new_file", "payload": ev_payload}}
         try:
             async with httpx.AsyncClient(timeout=180) as c:
                 r = await c.post(f"http://127.0.0.1:{port}/invoke",
@@ -855,12 +1028,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # token-auth pieces whose secret sits in .env → create the operator's SECRET_TEXT AP
         # connection on startup, so "set in .env" == "connected" (mirrors the Studio's connect).
         # Without this the piece's inbound flow can't publish (AP: ConnectionNotFound) at arm time.
-        #   · github   — PAT (integration)
         #   · telegram — bot token; Telegram is ALWAYS the AP backend, so it always needs this
         #   · discord  — bot token, but only when the AP backend is selected (default is the direct
         #                Gateway, which connects the socket on boot and needs no AP connection)
-        autoconn = [("github", os.environ.get("GITHUB_TOKEN", "")),
-                    ("telegram", os.environ.get("TELEGRAM_BOT_TOKEN", ""))]
+        #
+        # github is DELIBERATELY absent. Its AP piece accepts only OAUTH2/CUSTOM_AUTH, so writing
+        # GITHUB_TOKEN here as SECRET_TEXT produces a connection AP stores and the piece cannot use;
+        # the flow then fails at publish with "401 Bad credentials" that reads like a scope problem.
+        # GitHub connects through the OAuth consent flow: GET /api/events/connect/github.
+        autoconn = [("telegram", os.environ.get("TELEGRAM_BOT_TOKEN", ""))]
         if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") == "ap":
             autoconn.append(("discord", os.environ.get("DISCORD_BOT_TOKEN", "")))
         import asyncio
@@ -874,8 +1050,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             for attempt in range(1, 5):
                 try:
                     if not await engine.connection_exists(ext, project_name=p.ap_project_name(grain)):
+                        # update=False: booting must never clobber a connection the user authorized by
+                        # hand with whatever stale value is sitting in .env. To ROTATE a token, use
+                        # POST /api/events/connect/<app>/token (or the Studio's Connect button), which
+                        # overwrites on purpose.
                         await engine.ensure_secret_connection(ext, oauth.provider(app_name)["piece"],
-                                                              tok, project_name=p.ap_project_name(grain))
+                                                              tok, project_name=p.ap_project_name(grain),
+                                                              update=False)
                     log.info("autoconnect: %s connected from .env (%s)", app_name, ext)
                     break
                 except Exception as e:  # noqa: BLE001
@@ -989,7 +1170,36 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             import traceback
             Trace(new_trace_id()).error("connect_token", app=app, err=repr(e), tb=traceback.format_exc())
             return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
-        return {"ok": True, "app": app, "connection": ext}
+        out = {"ok": True, "app": app, "connection": ext}
+        # AP stores any SECRET_TEXT connection without complaint, but a piece that does not ACCEPT
+        # SECRET_TEXT will later run with no usable credential — and the failure surfaces far away, at
+        # flow-publish time, as a bare "401 Bad credentials" that looks like a token-scope problem.
+        # `piece-github` is the live example: OAUTH2 or CUSTOM_AUTH only. Say so here, at the paste.
+        accepted = await _piece_auth_types(prov["piece"])
+        if accepted and "SECRET_TEXT" not in accepted:
+            out["warning"] = (
+                f"Stored — but Activepieces' {prov['piece']} accepts only {', '.join(accepted)}, not "
+                f"SECRET_TEXT. A flow using it will fail at publish with a credentials error that "
+                f"looks like a token-scope problem. Connect this app via OAuth instead.")
+            out["usable_by_piece"] = False
+        return out
+
+    async def _piece_auth_types(piece: str) -> list[str]:
+        """Which connection types the AP piece will actually accept. [] if AP can't be asked."""
+        import httpx
+        if engine is None:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"{engine.base}/api/v1/pieces/{piece}")
+            auth = (r.json() or {}).get("auth") if r.status_code == 200 else None
+        except Exception:  # noqa: BLE001
+            return []
+        if isinstance(auth, list):
+            return [a.get("type") for a in auth if isinstance(a, dict) and a.get("type")]
+        if isinstance(auth, dict) and auth.get("type"):
+            return [auth["type"]]
+        return []
 
     @app.get("/api/events/connections")
     async def list_user_connections(request: Request):

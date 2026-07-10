@@ -413,6 +413,119 @@ def test_subscription_flow_without_ap_configured():
     assert b["ok"] is True and b["ap_flow"] is None
 
 
+# ── POST /subscriptions/{id}/run — the debug trigger ──────────────────────────
+class _RunEngine(_FakeEngine):
+    """An AP that produces a new, finished run the moment the flow is triggered."""
+
+    _MISSING = object()          # so flow=None can mean "AP has no such flow" (the dangling case)
+
+    def __init__(self, *, flow=_MISSING, fail_trigger=False, finish=True, answer="42"):
+        super().__init__(flow=({"id": "flow-1"} if flow is _RunEngine._MISSING else flow))
+        self.fail_trigger, self.finish, self.answer = fail_trigger, finish, answer
+        self._runs: list[dict] = []
+
+    async def trigger_flow(self, flow_id, payload=None):
+        self.calls.append(("trigger_flow", flow_id, payload))
+        if self.fail_trigger:
+            return False, "HTTP 404 flow not found"
+        self._runs.append({"id": "new-run", "flowId": flow_id,
+                           "status": "SUCCEEDED" if self.finish else "RUNNING"})
+        return True, "HTTP 200"
+
+    async def list_runs(self, limit=60):
+        return self._runs
+
+    async def get_run(self, run_id):
+        return {"id": run_id, "flowId": "flow-1", "status": "SUCCEEDED",
+                "startTime": "2026-07-09T09:00:00Z", "finishTime": "2026-07-09T09:00:05Z",
+                "steps": {"trigger": {"output": {"tick": True}},
+                          "step_1": {"status": "SUCCEEDED",
+                                     "output": {"body": {"answer": self.answer}}}}}
+
+
+def test_debug_run_fires_the_flow_and_returns_the_answer():
+    eng = _RunEngine(answer="Bitcoin is $63,924 USD.")
+    c, _ = _client([_sub()], engine=eng)
+    b = c.post("/api/events/subscriptions/s1/run?timeout=5").json()
+    assert b["ok"] is True and b["triggered"] is True and b["debug"] is True
+    assert b["answer"] == "Bitcoin is $63,924 USD."
+    assert b["run"]["status"] == "SUCCEEDED" and b["error"] is None
+    assert ("trigger_flow", "flow-1", {}) in eng.calls
+    # the caller must be told this was not a dry run
+    assert "real" in b["warning"]
+
+
+def test_debug_run_wait_0_returns_immediately_without_an_answer():
+    eng = _RunEngine()
+    c, _ = _client([_sub()], engine=eng)
+    b = c.post("/api/events/subscriptions/s1/run?wait=0").json()
+    assert b["triggered"] is True and "answer" not in b
+    assert [x for x in eng.calls if x[0] == "trigger_flow"]
+
+
+def test_debug_run_reports_a_timeout_rather_than_a_failure():
+    """AP accepted the trigger but nothing finished. That is not the same as 'it failed'."""
+    eng = _RunEngine(finish=False)
+    c, _ = _client([_sub()], engine=eng)
+    b = c.post("/api/events/subscriptions/s1/run?timeout=1").json()
+    assert b["ok"] is True and b["triggered"] is True and b["timed_out"] is True
+    assert "no run finished within 1s" in b["note"]
+    assert b["run"]["status"] == "RUNNING"          # we saw it start
+
+
+def test_debug_run_refuses_a_dangling_subscription():
+    """A subscription naming a flow AP does not have would 'trigger' happily and run nothing."""
+    eng = _RunEngine(flow=None)
+    c, _ = _client([_sub()], engine=eng)
+    r = c.post("/api/events/subscriptions/s1/run")
+    assert r.status_code == 409 and "DANGLING" in r.json()["error"]
+    assert [x for x in eng.calls if x[0] == "trigger_flow"] == []   # never fired
+
+
+def test_debug_run_surfaces_an_ap_refusal_as_502():
+    c, _ = _client([_sub()], engine=_RunEngine(fail_trigger=True))
+    r = c.post("/api/events/subscriptions/s1/run")
+    assert r.status_code == 502 and "Activepieces refused" in r.json()["error"]
+
+
+def test_debug_run_requires_the_gateway_token():
+    """It runs an agent with the caller's credentials and posts to a real channel. Its gate must not
+    be weaker than /invoke's."""
+    c, _ = _client([_sub()], engine=_RunEngine(), gateway_token="s3cret")
+    assert c.post("/api/events/subscriptions/s1/run").status_code == 401
+    r = c.post("/api/events/subscriptions/s1/run?timeout=5",
+               headers={"X-Gateway-Token": "s3cret"})
+    assert r.status_code == 200 and r.json()["triggered"] is True
+
+
+def test_debug_run_can_be_disabled_by_env():
+    os.environ["EVENTS_DEBUG_RUN"] = "0"
+    try:
+        c, _ = _client([_sub()], engine=_RunEngine())
+        r = c.post("/api/events/subscriptions/s1/run")
+        assert r.status_code == 403 and "EVENTS_DEBUG_RUN=0" in r.json()["error"]
+    finally:
+        os.environ.pop("EVENTS_DEBUG_RUN", None)
+
+
+def test_debug_run_another_principals_subscription_is_404():
+    eng = _RunEngine()
+    c, _ = _client([_sub(tenant=THEIRS)], engine=eng)
+    assert c.post("/api/events/subscriptions/s1/run").status_code == 404
+    assert eng.calls == []
+
+
+def test_debug_run_without_ap_is_501():
+    c, _ = _client([_sub()], engine=None)
+    assert c.post("/api/events/subscriptions/s1/run").status_code == 501
+
+
+def test_debug_run_on_a_subscription_with_no_flow_is_409():
+    c, _ = _client([_sub(ap_flow_id=None)], engine=_RunEngine())
+    r = c.post("/api/events/subscriptions/s1/run")
+    assert r.status_code == 409 and "no AP flow" in r.json()["error"]
+
+
 def test_flows_console_serves_html():
     c, _ = _client()
     r = c.get("/api/events/flows/console")
@@ -490,11 +603,11 @@ def test_connect_token_unknown_app_is_404():
 
 def test_connect_token_missing_token_is_400():
     c, _ = _client(engine=_FakeEngine())
-    r = c.post("/api/events/connect/github/token", json={})
+    r = c.post("/api/events/connect/telegram/token", json={})
     assert r.status_code == 400 and "missing 'token'" in r.json()["error"]
 
 
-@pytest.mark.parametrize("app", ["box", "gmail"])
+@pytest.mark.parametrize("app", ["box", "gmail", "github"])
 def test_connect_token_refuses_a_pasted_token_for_an_oauth_app(app):
     """AP's OAuth2 connection schema wants the authorization *code* and does the exchange itself, so
     a pre-obtained access token can never work. Say so plainly instead of forwarding it to AP and
@@ -507,19 +620,32 @@ def test_connect_token_refuses_a_pasted_token_for_an_oauth_app(app):
 
 
 def test_connect_token_creates_a_secret_connection():
+    """telegram, not github: `piece-telegram-bot` really does accept SECRET_TEXT."""
     eng = _FakeEngine()
     c, _ = _client(engine=eng)
-    r = c.post("/api/events/connect/github/token", json={"token": "ghp_xxx"})
+    r = c.post("/api/events/connect/telegram/token", json={"token": "8123:AAH"})
     assert r.status_code == 200
     b = r.json()
-    assert b["ok"] is True and b["app"] == "github" and b["connection"]
+    assert b["ok"] is True and b["app"] == "telegram" and b["connection"]
     made = [x for x in eng.calls if x[0] == "ensure_secret_connection"]
-    assert len(made) == 1 and made[0][3] == "ghp_xxx"
+    assert len(made) == 1 and made[0][3] == "8123:AAH"
+
+
+def test_connect_token_refuses_a_pasted_pat_for_github():
+    """REGRESSION. `@activepieces/piece-github` accepts only OAUTH2/CUSTOM_AUTH. A PAT stored as
+    SECRET_TEXT is accepted by AP's store and then unusable — the piece runs with no credential and
+    GitHub answers `401 Bad credentials`, indistinguishable from an under-scoped token. GitHub is an
+    OAuth app; refuse the paste at the door rather than fail at flow-publish time."""
+    c, _ = _client(engine=_FakeEngine())
+    r = c.post("/api/events/connect/github/token", json={"token": "ghp_xxx"})
+    assert r.status_code == 400
+    e = r.json()["error"]
+    assert "OAuth connector" in e and "/api/events/connect/github" in e
 
 
 def test_connect_token_without_ap_is_501():
     c, _ = _client(engine=None)
-    r = c.post("/api/events/connect/github/token", json={"token": "ghp_xxx"})
+    r = c.post("/api/events/connect/telegram/token", json={"token": "8123:AAH"})
     assert r.status_code == 501 and "AP not configured" in r.json()["error"]
 
 
@@ -529,7 +655,7 @@ def test_connect_token_ap_failure_is_500_not_a_crash():
             raise RuntimeError("connection_name_already_exists")
 
     c, _ = _client(engine=_Broken())
-    r = c.post("/api/events/connect/github/token", json={"token": "ghp_xxx"})
+    r = c.post("/api/events/connect/telegram/token", json={"token": "8123:AAH"})
     assert r.status_code == 500 and "already_exists" in r.json()["error"]
 
 

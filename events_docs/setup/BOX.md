@@ -61,11 +61,37 @@ BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:8100 \
   .venv/bin/python tests/events/live_box_direct_check.py             # whoami → list → poll, end to end
 ```
 
-## Known limitation (follow-up)
-The watcher currently passes the file **name** to `resume_judge`, not its **content** — so the agent
-can reason about the drop but can't yet read the file's bytes (you'll see `cuga_text_extract_text →
-File not found`). Feeding the agent the Box file content (download in `box_direct`, or a Box-read MCP
-tool) is the next step to a true resume judgment. The trigger→dispatch→deliver plumbing is verified.
+## The download step
+
+The watcher passes the file's **content** to `resume_judge`, not just its name. This matters more than
+it sounds: an agent handed only `resume.pdf` and asked to judge a resume will cheerfully invent one.
+
+The agent holds no Box credential — that is the point of the design — so it cannot fetch the file
+itself. **The server fetches.** CUGA downloads the bytes with the token it already has and hands the
+agent contents; the credential never leaves the process, and no agent tool has to change.
+
+Two shapes come back, because two are useful:
+
+| File | What the agent gets |
+|---|---|
+| decodable text (`.txt`, `.md`, `.csv`, JSON…) | inlined into the prompt — readable with no tools at all |
+| anything else (PDF, DOCX, images) | base64 in `event.payload.file_base64`, for `extract_text_from_bytes` |
+
+Detection is not "does it decode as UTF-8". `%PDF-1.4\x00\x01\x02` decodes fine — every byte is below
+0x80 — so a naive check inlines a PDF as mojibake. A NUL byte or a scatter of control characters is
+the tell.
+
+**Caps, because a watched folder is not a trusted input.** A 300 MB video must not become a 300 MB
+prompt:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `EVENTS_BOX_MAX_DOWNLOAD_BYTES` | `2097152` (2 MB) | refuse anything larger, checked *while streaming* (`content-length` can lie or be absent) |
+| `EVENTS_BOX_MAX_INLINE_CHARS` | `20000` | inline at most this much text; the rest is marked `…[truncated]` |
+| `EVENTS_BOX_DOWNLOAD` | `1` | set to `0` for the old filename-only behaviour |
+
+A failed download **never drops the event**. The reason travels to the agent, which is explicitly told
+to say it could not read the file rather than invent its contents.
 
 ## Troubleshooting
 - **`box/poll` → 401** — missing/invalid `X-Gateway-Token` (it's gateway-protected like `/invoke`).

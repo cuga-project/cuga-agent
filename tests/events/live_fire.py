@@ -379,17 +379,30 @@ def phase_push_github(r: Report, created: list):
     """Arm a real GitHub watcher. Firing it means pushing to somebody's repo — we don't."""
     print("\n\033[1m[PUSH · github]\033[0m  arm the watcher; do NOT mutate the repo to fire it")
     repo = env("GITHUB_TEST_REPO")
-    utter = f"watch {repo or 'owner/repo'} and summarize every new pull request"
+    utter = f"watch the repo {repo or 'owner/repo'} for new pull requests and summarize each one"
     if not repo:
         return r.add(case="push/github", verdict=SKIP, utterance=utter, channel="web",
                      integration="github", trigger="PUSH",
                      why="GITHUB_TEST_REPO unset — refusing to guess a repository to arm against")
-    sub, reply = arm(utter, f"web:fire-gh-{RUN}")
+    # The concierge intermittently replies "Which repository?" even though the utterance names it —
+    # the repo never reaches find_or_create_flow's `prompt`. Retry on a fresh thread rather than
+    # score an LLM coin-flip as a broken integration. Two identical asks IS a finding, so it fails.
+    sub = reply = None
+    for attempt in range(2):
+        sub, reply = arm(utter, f"web:fire-gh-{RUN}-{attempt}")
+        if sub is not None or "which rep" not in (reply or "").lower():
+            break
+        print(f"     concierge dropped the repo from the utterance; retrying ({attempt + 1}/2)",
+              flush=True)
     if sub is None:
         app = connect_needed_app(reply)
+        asked = "which rep" in (reply or "").lower()
         return r.add(case="push/github", verdict=(NOFIRE if app else FAIL), utterance=utter,
                      channel="web", integration="github", trigger="PUSH",
-                     why=(f"concierge asked you to connect '{app}'" if app else reply[:90]))
+                     why=(f"concierge asked you to connect '{app}'" if app else
+                          ("the concierge asked 'which repository?' twice, though the utterance names "
+                           f"{repo} — the repo is not reaching the arming tool" if asked
+                           else reply[:90])))
     created.append(sub["id"])
     alive, detail = flow_alive(sub)
     r.add(case="push/github", verdict=(NOFIRE if alive else FAIL), utterance=utter, channel="web",

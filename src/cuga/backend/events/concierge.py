@@ -358,11 +358,26 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     # surfaced by AP as TRIGGER_UPDATE_STATUS / bad credentials). Make that actionable.
                     if base_app == "github" and ("TRIGGER_UPDATE_STATUS" in msg
                             or "credential" in msg.lower() or "webhook" in msg.lower()):
-                        return (f"GitHub wouldn't arm the watcher on {repo_label}: it rejected the "
-                                f"webhook this trigger needs. Reconnect GitHub with a token that can "
-                                f"manage webhooks — a fine-grained PAT needs **Webhooks: Read and "
-                                f"write** (+ Pull requests: Read, Contents: Read) on that repo, or a "
-                                f"classic PAT with `admin:repo_hook` + `repo`.")
+                        # The usual cause is NOT the token's scopes, however much it looks like it.
+                        # `@activepieces/piece-github` accepts only OAUTH2 or CUSTOM_AUTH (GitHub
+                        # App); it does not accept SECRET_TEXT. CUGA stores a PAT as SECRET_TEXT, AP
+                        # accepts the row, and then the piece runs with no usable credential and
+                        # GitHub answers "401 Bad credentials" — identical to an under-scoped token.
+                        # Verify with: curl $AP_BASE_URL/api/v1/pieces/@activepieces/piece-github
+                        # A PAT that creates a webhook fine via `curl` still fails here.
+                        # ALWAYS carry the underlying error: this branch fires on any message merely
+                        # containing "webhook", so it will otherwise blame the token for a missing
+                        # piece, an unreachable AP, or a bad repo name.
+                        return (f"GitHub wouldn't arm the watcher on {repo_label}. The most likely "
+                                f"cause is that Activepieces' github piece accepts only an OAuth2 (or "
+                                f"GitHub App) connection, while this deployment stores a PAT as "
+                                f"SECRET_TEXT — the piece then authenticates with nothing and GitHub "
+                                f"replies 401, which looks exactly like a scope problem. Check "
+                                f"`GET {getattr(engine, 'base', '<AP>')}/api/v1/pieces/"
+                                f"@activepieces/piece-github`. If it does list SECRET_TEXT, then the "
+                                f"token really does lack **Webhooks: Read and write** (fine-grained) "
+                                f"or `admin:repo_hook` + `repo` (classic). "
+                                f"Activepieces said: {msg[:250]}")
                     return f"error: couldn't arm push flow ({e})."
                 sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",
                                    target_agent=agent, tenant=p.scope, backend=spec.backend,

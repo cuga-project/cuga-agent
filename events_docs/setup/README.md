@@ -3,6 +3,11 @@
 One focused, step-by-step guide per integration — what to procure, how to wire it, and the exact
 command to **verify** it works. Pick your integration:
 
+> **Do the two shared prerequisites first** ([below](#before-any-integration--the-two-shared-prerequisites)):
+> a running events server, and a **stable public URL via ngrok** — **[NGROK.md](NGROK.md)**. ngrok is a
+> one-time setup that makes the webhook/OAuth connectors (Telegram, Slack, Gmail, GitHub) configure
+> **once and never break on restart**. Set it up before wiring those four.
+
 **Channels** (converse with an agent):
 
 | Guide | Backend | Inbound | What it's for |
@@ -16,7 +21,7 @@ command to **verify** it works. Pick your integration:
 | Guide | Auth | Trigger | What it's for |
 |---|---|---|---|
 | **[BOX.md](BOX.md)** | AP OAuth (default) · direct token behind a flag | `new_file` | file/résumé watcher (PUSH) |
-| **[GITHUB.md](GITHUB.md)** | AP token (PAT) | `new_pull_request` / `new_issue` | PR/issue watcher (PUSH) |
+| **[GITHUB.md](GITHUB.md)** | AP **OAuth** (client id+secret; *not* a PAT) | `new_pull_request` / `new_issue` | PR/issue watcher (PUSH) |
 | **[GMAIL.md](GMAIL.md)** | AP OAuth (consent + refresh) | `new_email` | inbox watcher (PUSH) + email delivery sink |
 | **[WEBHOOK.md](WEBHOOK.md)** | none (direct) | HTTP POST | generic inbound webhook → triage → deliver |
 
@@ -37,11 +42,12 @@ itself) and, for Slack, its app-event trigger silently dropped events. See
 1. **A running events server** on `:8100` (behind `EVENTS_ENABLED=1`) with the tool registry up.
    See [../SETUP.md](../SETUP.md). Quick check: `curl -s localhost:8100/api/events/status`.
 2. **A public HTTPS URL** (`EVENTS_PUBLIC_URL`) for the connectors that receive webhooks over the
-   internet (Telegram, Slack-direct). `events_up.sh` provides it **automatically** — a **stable
-   ngrok** domain when `EVENTS_NGROK_DOMAIN` is set (recommended: configure Slack/Gmail once), else a
-   cloudflared quick-tunnel it auto-detects and wires into the server (no manual `.env` edit). Full
-   story: [../PUBLIC_URL.md](../PUBLIC_URL.md). **Discord (direct Gateway — outbound WS) and Box
-   (polling) need no public URL.**
+   internet (Telegram, Slack-direct) or do OAuth callbacks (Gmail, GitHub). `events_up.sh` provides it
+   **automatically** — a **stable ngrok** domain when `EVENTS_NGROK_DOMAIN` is set (**strongly
+   recommended** — configure Slack/Gmail once and they never break on restart; step-by-step in
+   **[NGROK.md](NGROK.md)**), else a cloudflared quick-tunnel it auto-detects and wires into the server
+   (no manual `.env` edit, but the URL flaps). Full mechanics: [../PUBLIC_URL.md](../PUBLIC_URL.md).
+   **Discord (direct Gateway — outbound WS) and Box (polling) need no public URL.**
 
 ## Verify them all at once
 

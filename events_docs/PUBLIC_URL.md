@@ -67,7 +67,7 @@ Quick tunnels are random *and can flap mid-session* (the URL changes even withou
 silently breaks Slack/OAuth. Pin a stable URL and the whole problem disappears — configure Slack/Gmail
 **once**, forever.
 
-### ngrok static domain (no domain to buy)
+### ngrok static domain (no domain to buy) — [full step-by-step: setup/NGROK.md](setup/NGROK.md)
 1. Create a free ngrok account and **verify your email** (agent sessions are blocked until you do):
    https://dashboard.ngrok.com/user/settings
 2. `brew install ngrok` and set your token once: `ngrok config add-authtoken <token>`.
