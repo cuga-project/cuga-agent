@@ -585,6 +585,19 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
 
+        # Native function calling opt-in (issue #471): permit tool-call syntax in
+        # the prompt only when the caller requested it. Default/absent => code =>
+        # the prompt renders exactly as before.
+        try:
+            _invocation_mode = (
+                str((config.get("configurable") or {}).get("cuga_lite_tool_invocation_mode") or "code")
+                .strip()
+                .lower()
+            )
+        except Exception:
+            _invocation_mode = "code"
+        allow_native_tool_calls = _invocation_mode in ("native", "hybrid")
+
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
@@ -608,6 +621,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
+                allow_native_tool_calls=allow_native_tool_calls,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "

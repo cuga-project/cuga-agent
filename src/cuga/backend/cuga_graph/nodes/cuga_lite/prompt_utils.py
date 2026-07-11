@@ -593,6 +593,7 @@ def create_mcp_prompt(
     has_knowledge=False,
     few_shot_examples: Optional[List[Dict[str, str]]] = None,
     few_shots_enabled: Optional[bool] = None,
+    allow_native_tool_calls: bool = False,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -668,6 +669,7 @@ def create_mcp_prompt(
             "enable_shell_tool": enable_shell_tool,
             "sandbox_workspace": sandbox_workspace,
             "has_knowledge": has_knowledge,
+            "allow_native_tool_calls": allow_native_tool_calls,
         }
     ).to_string()
     return prompt
