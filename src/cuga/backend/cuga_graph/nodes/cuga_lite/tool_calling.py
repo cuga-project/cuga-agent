@@ -41,6 +41,13 @@ class ToolCalling(BaseModel):
         description="Per-agent cap on tools sent to bind_tools (0 disables the cap). "
         "Overrides advanced_features.cuga_lite_bind_tools_max_count for this run.",
     )
+    tool_choice: Optional[Any] = Field(
+        default=None,
+        description="Passed to bind_tools: 'auto' (model decides), 'required'/'any' "
+        "(force a tool call), 'none', or a provider-specific value. Useful for "
+        "code-preferring models that otherwise never emit native tool calls. "
+        "Providers that don't support it degrade to a plain bind.",
+    )
 
 
 def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
@@ -65,6 +72,8 @@ def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
             cfg["cuga_lite_bind_tools_include_find_tools"] = True
         if tc.max_bound_tools is not None:
             cfg["cuga_lite_bind_tools_max_count"] = int(tc.max_bound_tools)
+        if tc.tool_choice is not None:
+            cfg["cuga_lite_tool_choice"] = tc.tool_choice
         return cfg
     except Exception as e:
         logger.warning(f"ToolCalling serialization failed; native function calling disabled: {e}")

@@ -20,7 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
 )
 
 
-def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatModel:
+def _safe_bind(model: BaseChatModel, tools: List[StructuredTool], tool_choice: Any = None) -> BaseChatModel:
     """Bind ``tools`` to ``model``, falling back to the unbound model if the
     provider does not support ``bind_tools``.
 
@@ -28,8 +28,21 @@ def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatMod
     ``NotImplementedError`` is a subclass of ``RuntimeError`` — so without this
     guard it would be caught by the cap's ``except RuntimeError: raise`` and
     crash ``call_model`` instead of degrading to code-act.
+
+    ``tool_choice`` (auto | required | none | provider-specific) is passed
+    through when supported; providers that reject it fall back to a plain bind
+    rather than error (capability detection).
     """
     try:
+        if tool_choice is not None:
+            try:
+                return model.bind_tools(tools, tool_choice=tool_choice)
+            except (TypeError, NotImplementedError, ValueError) as e:
+                logger.warning(
+                    "bind_tools tool_choice={} unsupported by provider ({}); binding without it",
+                    tool_choice,
+                    type(e).__name__,
+                )
         return model.bind_tools(tools)
     except NotImplementedError:
         logger.warning(
@@ -221,6 +234,10 @@ async def resolve_model_with_bind_tools(
         except (TypeError, ValueError):
             max_count = bind_tools_max_count_from_settings()
 
+    # Optional native tool_choice (issue #471 D5): passed to bind_tools for the
+    # real-tool modes; find_tools-only binds keep provider defaults.
+    tool_choice = cfg.get("cuga_lite_tool_choice")
+
     async def _cap_merge_bound(bound: List[StructuredTool]) -> List[StructuredTool]:
         # Closes over query, tool_provider, llm, max_count, include_find_tools,
         # tools_context_ref, mode — the four mode branches all pass the same kwargs.
@@ -262,7 +279,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(list(by_name.values()))
             if not bound:
                 return active_model
-            return _safe_bind(active_model, bound)
+            return _safe_bind(active_model, bound, tool_choice=tool_choice)
 
         if mode == "apps_and_tools":
             if not tool_provider:
@@ -316,7 +333,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return _safe_bind(active_model, bound)
+            return _safe_bind(active_model, bound, tool_choice=tool_choice)
 
         if mode == "apps":
             if not app_names:
@@ -347,7 +364,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return _safe_bind(active_model, bound)
+            return _safe_bind(active_model, bound, tool_choice=tool_choice)
 
         if mode == "tools":
             if not tool_names:
@@ -385,7 +402,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return _safe_bind(active_model, bound)
+            return _safe_bind(active_model, bound, tool_choice=tool_choice)
 
         logger.warning(
             "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",

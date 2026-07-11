@@ -22,9 +22,21 @@ class _NoBindModel(BaseChatModel):
 
 class _BindModel(_NoBindModel):
     bound: Optional[List[Any]] = None
+    got_tool_choice: Any = None
 
     def bind_tools(self, tools: Any, **kwargs: Any):
-        return self.model_copy(update={"bound": list(tools)})
+        return self.model_copy(update={"bound": list(tools), "got_tool_choice": kwargs.get("tool_choice")})
+
+
+class _NoToolChoiceModel(_NoBindModel):
+    """Supports bind_tools but rejects the tool_choice kwarg (older providers)."""
+
+    plain_bound: bool = False
+
+    def bind_tools(self, tools: Any, **kwargs: Any):
+        if "tool_choice" in kwargs:
+            raise TypeError("tool_choice not supported")
+        return self.model_copy(update={"plain_bound": True})
 
 
 def test_safe_bind_returns_unbound_model_when_unsupported():
@@ -40,3 +52,15 @@ def test_safe_bind_binds_when_supported():
     result = _safe_bind(model, ["tool_a", "tool_b"])
     assert result is not model
     assert result.bound == ["tool_a", "tool_b"]
+
+
+def test_safe_bind_passes_tool_choice_when_supported():
+    result = _safe_bind(_BindModel(), ["tool_a"], tool_choice="required")
+    assert result.bound == ["tool_a"]
+    assert result.got_tool_choice == "required"
+
+
+def test_safe_bind_degrades_when_tool_choice_unsupported():
+    # provider rejects tool_choice -> fall back to a plain bind, don't crash
+    result = _safe_bind(_NoToolChoiceModel(), ["tool_a"], tool_choice="required")
+    assert result.plain_bound is True

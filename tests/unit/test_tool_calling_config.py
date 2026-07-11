@@ -39,3 +39,13 @@ def test_hybrid_apps_with_cap_and_find_tools():
 def test_native_tools_take_precedence_over_apps():
     cfg = tool_calling_to_configurable(ToolCalling(mode="native", native_tools=["a"], apps=["crm"]))
     assert cfg["cuga_lite_bind_tools_mode"] == "tools"
+
+
+def test_tool_choice_serialized():
+    cfg = tool_calling_to_configurable(ToolCalling(mode="native", tool_choice="required"))
+    assert cfg["cuga_lite_tool_choice"] == "required"
+
+
+def test_tool_choice_omitted_when_none():
+    cfg = tool_calling_to_configurable(ToolCalling(mode="native"))
+    assert "cuga_lite_tool_choice" not in cfg
