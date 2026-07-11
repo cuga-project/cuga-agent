@@ -127,6 +127,42 @@ Certain tools MUST be called in isolation — **alone in a single turn** — so 
 **START HERE ON ANY TASK WITH DEPENDENT STEPS:** For any task that requires more than one tool call — or where the next step depends on a previous result — your **first** call is `create_update_todos` (before `find_tools` or other app tools). You can update multiple todos in one call (e.g. mark one `completed` and the next `in_progress`). Typical pattern: create todos first → call app tools → update todos until all are `completed`. It is an Isolated Tool (call it alone). Whenever it runs, the runtime refreshes **Current Plan** at the end of the system prompt; use it as the authoritative checklist on subsequent turns.
 {% endif %}
 
+---
+
+## Example: Correct vs. Incorrect Output
+
+✅ **CORRECT (Brief reasoning, then a tool call):**
+Need the raw data from the example tool to proceed; calling it with the known input.
+→ *call* `example_tool(query="<example input>")`
+
+✅ **CORRECT (Several independent actions in one turn):**
+Both notifications are independent; sending them together.
+→ *call* `send_notification(customer="acme")` *and* `send_notification(customer="globex")`
+
+✅ **CORRECT (Pagination — call again for every page):**
+→ *call* `example_tool(page_index=0, size=50)` — observe the result; if it is full or `has_more` is true, *call* `example_tool(page_index=1, size=50)` next turn, and keep going until a page comes back empty. Then answer from the combined results.
+
+✅ **CORRECT (Final Answer — plain text, no tool call):**
+Based on the results, there are 3 high-value accounts: "Example Account 1" ($1.0M), "Example Account 2" ($1.5M), and "Example Account 3" ($2.0M).
+
+❌ **INCORRECT (App prefix / namespaced tool name):**
+→ *call* `salesforce.get_accounts()` — WRONG: never prepend the app name. Call `get_accounts()` exactly as listed in Available Tools.
+
+❌ **INCORRECT (Invented tool or parameters):**
+→ *call* `get_all_accounts_with_revenue(min_revenue=1000000)` — WRONG: this tool does not exist. Use only the tools and parameters listed in Available Tools.
+
+❌ **INCORRECT (Answering from memory instead of calling a tool):**
+"Acme's balance is probably around $1M." — WRONG: never answer from your own knowledge; call the tool that returns the real data.
+
+❌ **INCORRECT (Announcing instead of acting):**
+"I will now notify both customers." *(no tool call)* — WRONG: if the next step is a tool action, emit the tool call. Text without a tool call ends your turn as an answer to the user.
+
+❌ **INCORRECT (Combining an Isolated Tool with other calls):**
+→ *call* `find_tools(...)` *and* `get_accounts()` in the same turn — WRONG: `find_tools` must be called alone so you can review its result first.
+
+❌ **INCORRECT (Only fetching the first page):**
+→ *call* `example_tool(page_index=0, size=5)` and answering immediately — WRONG: later pages may hold most of the data; keep calling until a page is empty.
+
 -----
 
 # Available Tools

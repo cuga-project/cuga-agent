@@ -14,6 +14,31 @@ from typing import Any, Dict, List, Literal, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
+VALID_INVOCATION_MODES = ("code", "native", "hybrid")
+
+
+def resolve_tool_invocation_mode(configurable: Optional[Dict[str, Any]]) -> str:
+    """Effective tool-invocation mode: ``configurable`` overrides the global
+    ``advanced_features.cuga_lite_tool_invocation_mode`` setting; default ``code``.
+
+    Fully guarded — any error resolves to ``code`` (the unchanged legacy path).
+    """
+    try:
+        mode = (configurable or {}).get("cuga_lite_tool_invocation_mode")
+        if mode is None or not str(mode).strip():
+            from cuga.config import settings
+
+            mode = getattr(settings.advanced_features, "cuga_lite_tool_invocation_mode", "code")
+        mode_s = str(mode).strip().lower()
+        return mode_s if mode_s in VALID_INVOCATION_MODES else "code"
+    except Exception:
+        return "code"
+
+
+def native_tool_calls_enabled(configurable: Optional[Dict[str, Any]]) -> bool:
+    """True when native function calling is opted in (mode native/hybrid)."""
+    return resolve_tool_invocation_mode(configurable) in ("native", "hybrid")
+
 
 class ToolCalling(BaseModel):
     """How the agent may invoke tools.

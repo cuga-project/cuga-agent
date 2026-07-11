@@ -127,13 +127,16 @@ class CoreGraphAdapter(ABC):
 
     # ── Post-invocation hooks ──────────────────────────────────────────────
 
-    def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
+    def normalize_response(
+        self, response: Any, configurable: Optional[dict] = None
+    ) -> Tuple[str, Optional[str]]:
         """Extract ``(content, reasoning)`` from the model response.
 
         Default passes through ``response.content`` and the
         ``reasoning_content`` additional kwarg unchanged.
         Lite overrides to run ``normalize_assistant_text`` and recover
-        tool-call code from proxy responses.
+        tool-call code from proxy responses; ``configurable`` carries the
+        per-run tool-invocation mode (unused here).
         """
         content = response.content or ""
         reasoning = (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")

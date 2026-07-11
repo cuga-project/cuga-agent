@@ -45,3 +45,13 @@ def test_native_prompt_keeps_shared_guidance():
     assert "PAGINATION" in prompt
     assert "DATA FROM TOOLS ONLY" in prompt
     assert "Cuga Agent" in prompt
+
+
+def test_native_prompt_has_correct_and_incorrect_examples():
+    prompt = _render(get_native_mcp_prompt_template())
+    assert "Correct vs. Incorrect" in prompt
+    assert "✅" in prompt and "❌" in prompt
+    # tool-calling-specific bad examples present, no code-act artifacts
+    assert "Announcing instead of acting" in prompt
+    assert "App prefix" in prompt
+    assert "```python" not in prompt

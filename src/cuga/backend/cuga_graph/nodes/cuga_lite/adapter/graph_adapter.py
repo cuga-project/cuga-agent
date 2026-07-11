@@ -29,6 +29,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     classify_nl_auto_continue,
     normalize_assistant_text,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import native_tool_calls_enabled
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
@@ -69,11 +70,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._special_instructions = special_instructions
         self._tools_context = tools_context if tools_context is not None else {}
         self._static_prompt = static_prompt
-        # Native function-calling opt-in (issue #471). Off unless a caller sets
-        # cuga_lite_tool_invocation_mode to native/hybrid (via SDK ToolCalling);
-        # resolved per call_model in resolve_bind_tools. Default keeps the
-        # legacy single-call, empty-content-only behavior byte for byte.
-        self._allow_native_tool_calls = False
         self._thread_id = thread_id
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
@@ -136,12 +132,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
         config: Any = None,
     ) -> Any:
         try:
-            self._allow_native_tool_calls = str(
-                (configurable or {}).get("cuga_lite_tool_invocation_mode") or "code"
-            ).strip().lower() in ("native", "hybrid")
-        except Exception:
-            self._allow_native_tool_calls = False
-        try:
             return await resolve_model_with_bind_tools(
                 active_model,
                 configurable=configurable,
@@ -157,12 +147,17 @@ class AgentGraphAdapter(CoreGraphAdapter):
             logger.warning(f"AgentGraphAdapter.resolve_bind_tools failed: {exc}")
         return None
 
-    def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
+    def normalize_response(
+        self, response: Any, configurable: Optional[dict] = None
+    ) -> Tuple[str, Optional[str]]:
         content = normalize_assistant_text(response.content)
         reasoning = normalize_assistant_text(
             (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
         )
-        allow_native = getattr(self, "_allow_native_tool_calls", False)
+        # Derived per call from configurable/settings (no adapter state: the
+        # adapter is shared across concurrent invokes with possibly different
+        # tool_calling modes).
+        allow_native = native_tool_calls_enabled(configurable)
         if allow_native and "```" not in content:
             # Native FC opted in: honor tool_calls even alongside a text preamble,
             # unless the model already emitted a code block (explicit code-act

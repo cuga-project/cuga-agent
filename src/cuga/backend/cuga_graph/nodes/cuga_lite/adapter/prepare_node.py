@@ -39,6 +39,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     normalize_mcp_few_shot_examples,
     resolve_cuga_lite_few_shots_enabled,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import native_tool_calls_enabled
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.skills import (
@@ -587,17 +588,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             ]
 
         # Native function calling opt-in (issue #471): when enabled, render the
-        # dedicated function-calling prompt instead of the code-act one. The
-        # default/absent case uses the unchanged code-act template.
-        try:
-            _invocation_mode = (
-                str((config.get("configurable") or {}).get("cuga_lite_tool_invocation_mode") or "code")
-                .strip()
-                .lower()
-            )
-        except Exception:
-            _invocation_mode = "code"
-        allow_native_tool_calls = _invocation_mode in ("native", "hybrid")
+        # dedicated function-calling prompt instead of the code-act one. Mode is
+        # resolved configurable > global setting > "code" (default: unchanged
+        # code-act template).
+        allow_native_tool_calls = native_tool_calls_enabled(configurable)
         prompt_template = adapter._prompt_template
         if allow_native_tool_calls:
             try:

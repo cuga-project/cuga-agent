@@ -49,3 +49,28 @@ def test_tool_choice_serialized():
 def test_tool_choice_omitted_when_none():
     cfg = tool_calling_to_configurable(ToolCalling(mode="native"))
     assert "cuga_lite_tool_choice" not in cfg
+
+
+def test_mode_resolver_defaults_to_code():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import resolve_tool_invocation_mode
+
+    assert resolve_tool_invocation_mode(None) == "code"
+    assert resolve_tool_invocation_mode({}) == "code"
+    assert resolve_tool_invocation_mode({"cuga_lite_tool_invocation_mode": "bogus"}) == "code"
+
+
+def test_mode_resolver_honors_global_setting():
+    from unittest.mock import patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import (
+        native_tool_calls_enabled,
+        resolve_tool_invocation_mode,
+    )
+    from cuga.config import settings
+
+    # global setting alone turns it on (no configurable needed)
+    with patch.object(settings.advanced_features, "cuga_lite_tool_invocation_mode", "native", create=True):
+        assert resolve_tool_invocation_mode(None) == "native"
+        assert native_tool_calls_enabled({}) is True
+        # explicit configurable still wins over the global setting
+        assert resolve_tool_invocation_mode({"cuga_lite_tool_invocation_mode": "code"}) == "code"
