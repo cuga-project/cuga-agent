@@ -542,10 +542,13 @@ if __name__ == "__main__":
 ### Native Function Calling
 
 CUGA-lite is a **code-act** agent: by default the model calls tools by writing
-Python. You can opt into **native function calling**, where the model may instead
-emit native tool calls — CUGA executes them through the same guarded, tracked,
-variable-aware pipeline as code. This is **off by default**: without `tool_calling`,
-nothing about the agent changes.
+Python. You can opt into **native function calling**, where the model emits native
+tool calls instead — CUGA executes them through the same guarded, tracked,
+variable-aware pipeline as code. When enabled, CUGA renders a **dedicated
+function-calling system prompt** (a sibling of the code-act prompt, with the
+sandbox/code guidance replaced by tool-calling guidance) so the model actually
+answers with tool calls. This is **off by default**: without `tool_calling`,
+nothing about the agent changes — same prompt, same behavior.
 
 ```python
 from cuga import CugaAgent, ToolCalling
@@ -565,8 +568,10 @@ result = await agent.invoke("...", tool_calling=ToolCalling(mode="code"))
 
 `ToolCalling` options: `mode` (`code` | `native` | `hybrid`), `native_tools=[...]`
 (bind specific tools) or `apps=[...]` (bind whole apps; default binds all),
-`include_find_tools`, and `max_bound_tools`. Whether a given model prefers native
-calls or code is model-dependent — both execute correctly. Runnable example:
+`include_find_tools`, `max_bound_tools`, and `tool_choice` (`"auto"` |
+`"required"` | provider-specific — nudges/forces native calls for models that
+otherwise prefer code; providers that don't support it degrade gracefully).
+Runnable example:
 **[docs/examples/native_function_calling/](./docs/examples/native_function_calling)**.
 
 ### Knowledge Base

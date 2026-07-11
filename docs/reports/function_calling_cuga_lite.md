@@ -218,14 +218,11 @@ def send_email(to: str, subject: str, body: str) -> str: ...
 - *For CUGA's cross-cutting guarantees — today, yes.* The sandbox path is currently the only home of: per-call timeout (`tool_call_timeout` enforced in `executors/common`), `ToolCallTracker` start/stop (`sandbox_node.py:79,199`), result binding into `variables_storage` (what lets the model reference `result_N` in later turns — pure-`ToolMessage` designs lose this), output-length truncation (`execution_output_max_length`), and the error-observation feedback loop. ToolGuard is the exception — it wraps at the *provider* level (`ensure_toolguard_provider`), so guarding survives either route.
 - *Pragmatics:* keep the sandbox as the universal tool bus near-term. For trivial calls the overhead is controllable — the codebase already forces the **local** executor for short internal calls (`find_tools`/`load_skill`, `code_executor.py:183-186`); routing transpiled single-tool-call blocks the same way makes the "sandbox tax" a function call plus validation, not a container round-trip, with zero architectural change. Direct dispatch remains the Phase-3 opt-in, gated on receipt telemetry, and must explicitly re-home timeout/tracking/variables before it ships.
 
-### 5.4 Prompt strategy (fixes D4)
+### 5.4 Prompt strategy (fixes D4) — a dedicated native prompt, not a conditional
 
-`mcp_prompt.jinja2` gains a `tool_invocation_mode` conditional:
-- `code`: keep rule 7 verbatim (the ban is *correct* for this mode).
-- `hybrid`: replace rule 7 with dual-encoding guidance + decision heuristic ("single direct call → tool call; anything with control flow or data shaping → Python").
-- `native`: tool_calls primary; Python escape hatch documented.
+A single flipped rule is **not enough**: the whole `mcp_prompt.jinja2` is a code-act prompt (it repeatedly mandates "output must be a Python code block", frames tools as "async functions in your execution environment", and even lists native tool-call JSON as an ❌ INCORRECT example). A code-preferring model obeys the overwhelming signal and keeps writing code. Confirmed empirically: with the code-act prompt + a flipped rule 7, watsonx gpt-oss-120b emitted **0** native tool calls across task phrasings.
 
-The mode reaches the template through the existing `prepare` render path; one new jinja variable.
+The shipped design is a **dedicated `mcp_prompt_native.jinja2`** — structurally parallel to the code-act prompt (same role, connected apps, tools list, knowledge/skills/todos sections, and the durable data-source + pagination + name-accuracy rules) but with **all** sandbox/code/Python/print/await language removed and every tool reference reframed as native function calling. `prepare_node` selects it when `tool_invocation_mode ∈ {native, hybrid}`; otherwise the code-act prompt renders byte-identical to `main`. Result (verified live): the same watsonx model now returns native tool calls (`native_fired = 2–3` per run) which CUGA executes correctly.
 
 ### 5.5 Ecosystem integration (what this serves)
 
@@ -317,7 +314,9 @@ Treat provider support as **capability-matrix work, not a static claim**: `bind_
 
 Commits: D9 safe-bind fallback · D1 multi-call transpiler + FC gate · D2 preamble handling · prompt rule-7 conditional + config key · `ToolCalling` SDK surface + `max_count` override · docs/example. The four scripted defect tests (real graph + SDK + sandbox, deterministic model) now pass; on `main` they are `xfail`. All new behavior is gated behind `cuga_lite_tool_invocation_mode` / `ToolCalling`; the golden prompt test proves the default prompt is byte-identical.
 
-**Real-API finding (watsonx `gpt-oss-120b`, the `.env` model):** even with native mode enabled and tools bound, this model *prefers to write a Python loop* over emitting native tool calls — a legitimate choice under hybrid semantics — and completes the multi-notify task correctly (all customers notified). So the live-provider run confirms the native path is wired correctly and **non-regressive**, while the deterministic scripted tests are the rigorous proof of the exact D1/D2/D9 before→after (a real code-act model does not reproduce the native-FC bug, which is precisely why it stayed invisible). Whether a real model emits native calls vs code is model-dependent; both execute through the same pipeline.
+**Real-API result (watsonx `gpt-oss-120b`, the `.env` model):** with the **dedicated native prompt** (§5.4), the live model now returns native tool calls (`native_fired = 2–3` per run) which CUGA executes correctly — end-to-end native function calling with the real provider. (With the code-act prompt it emitted 0, writing Python instead — which is what proved the prompt, not the execution wiring, was the gating factor.) The deterministic scripted tests remain the rigorous proof of the exact D1/D2/D9 before→after; the live run proves real models engage the native path once the prompt fits.
+
+Commit added since: **dedicated `mcp_prompt_native.jinja2`** + template selection (code-act prompt reverted to byte-identical `main`), and **`tool_choice`** passthrough with capability-detection fallback (D5).
 
 ---
 
