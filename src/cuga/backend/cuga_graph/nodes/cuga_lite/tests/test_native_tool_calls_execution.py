@@ -122,13 +122,9 @@ async def test_parallel_tool_calls_all_execute():
     assert sorted(NOTIFIED) == ["acme", "globex"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #471 D2: a text preamble alongside tool_calls makes normalize_response "
-    "ignore the tool_calls entirely; zero tools run and the announcement becomes the answer",
-)
 @pytest.mark.asyncio
 async def test_text_preamble_with_tool_calls_still_executes():
+    # issue #471 D2 (fixed): a text preamble no longer suppresses the tool calls.
     model = ScriptedFCModel(
         script=[
             AIMessage(content="I'll notify both customers now.", tool_calls=TWO_TOOL_CALLS),

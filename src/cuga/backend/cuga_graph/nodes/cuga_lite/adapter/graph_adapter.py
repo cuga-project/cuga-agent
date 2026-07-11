@@ -159,15 +159,27 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
         content = normalize_assistant_text(response.content)
+        reasoning = normalize_assistant_text(
+            (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
+        )
         allow_native = getattr(self, "_allow_native_tool_calls", False)
-        if not content:
+        if allow_native and "```" not in content:
+            # Native FC opted in: honor tool_calls even alongside a text preamble,
+            # unless the model already emitted a code block (explicit code-act
+            # intent wins). The preamble is preserved as reasoning, not lost
+            # (issue #471 D2).
+            tool_code = extract_code_from_response_tool_calls(response, multi=True)
+            if tool_code:
+                if content:
+                    reasoning = f"{reasoning}\n{content}".strip() if reasoning else content
+                    logger.warning("Tool calls emitted alongside a text preamble; executing the tool calls")
+                content = tool_code
+        elif not content:
+            # Legacy path (FC off, or FC on with a code block): unchanged behavior.
             tool_code = extract_code_from_response_tool_calls(response, multi=allow_native)
             if tool_code:
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code
-        reasoning = normalize_assistant_text(
-            (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
-        )
         return content, reasoning
 
     def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:
