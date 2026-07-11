@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -12,9 +13,21 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
-from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
+from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates, load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+
+
+@functools.lru_cache(maxsize=1)
+def get_native_mcp_prompt_template():
+    """Load (once) the native function-calling system prompt.
+
+    Used only when native/hybrid tool calling is enabled (issue #471). The
+    default code-act prompt (``mcp_prompt.jinja2``) is untouched and remains the
+    template for the code path.
+    """
+    prompts_dir = Path(__file__).parent / "prompts"
+    return load_one_prompt(str(prompts_dir / "mcp_prompt_native.jinja2"), relative_to_caller=False)
 
 
 def _coerce_bool_setting(val: Any) -> bool:
@@ -593,7 +606,6 @@ def create_mcp_prompt(
     has_knowledge=False,
     few_shot_examples: Optional[List[Dict[str, str]]] = None,
     few_shots_enabled: Optional[bool] = None,
-    allow_native_tool_calls: bool = False,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -669,7 +681,6 @@ def create_mcp_prompt(
             "enable_shell_tool": enable_shell_tool,
             "sandbox_workspace": sandbox_workspace,
             "has_knowledge": has_knowledge,
-            "allow_native_tool_calls": allow_native_tool_calls,
         }
     ).to_string()
     return prompt

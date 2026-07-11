@@ -35,6 +35,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolv
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
+    get_native_mcp_prompt_template,
     normalize_mcp_few_shot_examples,
     resolve_cuga_lite_few_shots_enabled,
 )
@@ -585,9 +586,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
 
-        # Native function calling opt-in (issue #471): permit tool-call syntax in
-        # the prompt only when the caller requested it. Default/absent => code =>
-        # the prompt renders exactly as before.
+        # Native function calling opt-in (issue #471): when enabled, render the
+        # dedicated function-calling prompt instead of the code-act one. The
+        # default/absent case uses the unchanged code-act template.
         try:
             _invocation_mode = (
                 str((config.get("configurable") or {}).get("cuga_lite_tool_invocation_mode") or "code")
@@ -597,6 +598,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         except Exception:
             _invocation_mode = "code"
         allow_native_tool_calls = _invocation_mode in ("native", "hybrid")
+        prompt_template = adapter._prompt_template
+        if allow_native_tool_calls:
+            try:
+                prompt_template = get_native_mcp_prompt_template()
+            except Exception as e:
+                logger.warning(f"Native prompt load failed; using code-act prompt: {e}")
+                prompt_template = adapter._prompt_template
 
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
@@ -611,7 +619,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 task_loaded_from_file=task_loaded_from_file,
                 is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                 or is_autonomous_subtask,
-                prompt_template=adapter._prompt_template,
+                prompt_template=prompt_template,
                 enable_find_tools=enable_find_tools,
                 enable_todos=enable_todos,
                 special_instructions=special_instructions_final,
@@ -621,7 +629,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
-                allow_native_tool_calls=allow_native_tool_calls,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
