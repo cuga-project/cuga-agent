@@ -90,6 +90,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
     DirectLangChainToolsProvider,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import (
+    ToolCalling,
+    tool_calling_to_configurable,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     configure_toolguard_provider,
     ensure_toolguard_provider,
@@ -1605,6 +1609,7 @@ class CugaAgent:
         enable_knowledge: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
+        tool_calling: Optional["ToolCalling"] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1672,6 +1677,11 @@ class CugaAgent:
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
         self._skills_folder = skills_folder  # None = use CUGA_FOLDER / cwd
+
+        # Native function-calling config (issue #471). None / mode="code" => the
+        # agent behaves exactly as today (code-act only). A per-invoke argument
+        # overrides this default.
+        self._tool_calling = tool_calling
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -1775,6 +1785,24 @@ class CugaAgent:
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
         return run_config
+
+    def _apply_tool_calling(self, run_config: dict, tool_calling: Optional[ToolCalling]) -> None:
+        """Merge native function-calling config into run_config['configurable'].
+
+        Per-invoke ``tool_calling`` overrides the constructor default. A caller
+        who already set the raw ``cuga_lite_*`` keys in ``config`` keeps them
+        (we never clobber explicit keys). No-op when FC is off (serializes to {}).
+        """
+        try:
+            effective = tool_calling if tool_calling is not None else self._tool_calling
+            cfg = tool_calling_to_configurable(effective)
+            if not cfg:
+                return
+            configurable = run_config["configurable"]
+            for key, value in cfg.items():
+                configurable.setdefault(key, value)
+        except Exception as e:
+            logger.warning(f"Applying ToolCalling config failed; native function calling disabled: {e}")
 
     def _apply_callbacks(self, run_config: dict) -> None:
         """
@@ -2148,6 +2176,7 @@ class CugaAgent:
         user_context: Optional[str] = None,
         track_tool_calls: bool = False,
         variables: Optional[Dict[str, Any]] = None,
+        tool_calling: Optional[ToolCalling] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2221,6 +2250,10 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+
+        # Native function calling (issue #471): merge ToolCalling into configurable.
+        # No-op unless opted in — default keeps the code-act path untouched.
+        self._apply_tool_calling(run_config, tool_calling)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -2494,6 +2527,7 @@ class CugaAgent:
         thread_id: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
+        tool_calling: Optional[ToolCalling] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -2538,6 +2572,9 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+
+        # Native function calling (issue #471): merge ToolCalling into configurable.
+        self._apply_tool_calling(run_config, tool_calling)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:

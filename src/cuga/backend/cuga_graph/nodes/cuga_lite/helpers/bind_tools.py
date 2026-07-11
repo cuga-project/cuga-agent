@@ -211,7 +211,15 @@ async def resolve_model_with_bind_tools(
         settings_tool_names_fn=_bind_tools_tool_names_from_settings,
         settings_include_fn=lambda: _bind_include_find_tools_from_config({}),
     )
-    max_count = bind_tools_max_count_from_settings()
+    # configurable override (per-agent/run) wins over the global settings default.
+    max_count = cfg.get("cuga_lite_bind_tools_max_count")
+    if max_count is None:
+        max_count = bind_tools_max_count_from_settings()
+    else:
+        try:
+            max_count = int(max_count)
+        except (TypeError, ValueError):
+            max_count = bind_tools_max_count_from_settings()
 
     async def _cap_merge_bound(bound: List[StructuredTool]) -> List[StructuredTool]:
         # Closes over query, tool_provider, llm, max_count, include_find_tools,
