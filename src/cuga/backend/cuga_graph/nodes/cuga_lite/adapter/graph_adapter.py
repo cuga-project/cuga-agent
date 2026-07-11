@@ -158,11 +158,12 @@ class AgentGraphAdapter(CoreGraphAdapter):
         # adapter is shared across concurrent invokes with possibly different
         # tool_calling modes).
         allow_native = native_tool_calls_enabled(configurable)
-        if allow_native and "```" not in content:
+        if allow_native and "```python" not in content:
             # Native FC opted in: honor tool_calls even alongside a text preamble,
-            # unless the model already emitted a code block (explicit code-act
-            # intent wins). The preamble is preserved as reasoning, not lost
-            # (issue #471 D2).
+            # unless the model already emitted a PYTHON code block (explicit
+            # code-act intent wins). A non-python fence (```json / ```text) in the
+            # preamble must NOT suppress the tool calls. The preamble is preserved
+            # as reasoning, not lost (issue #471 D2).
             tool_code = extract_code_from_response_tool_calls(response, multi=True)
             if tool_code:
                 if content:

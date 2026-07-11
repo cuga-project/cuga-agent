@@ -4,10 +4,12 @@ from cuga import ToolCalling
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import tool_calling_to_configurable
 
 
-def test_default_and_code_mode_serialize_to_empty():
+def test_none_serializes_to_empty_but_explicit_object_sets_mode():
+    # None = no opt-in -> {} (global setting/default applies).
     assert tool_calling_to_configurable(None) == {}
-    assert tool_calling_to_configurable(ToolCalling()) == {}
-    assert tool_calling_to_configurable(ToolCalling(mode="code")) == {}
+    # Any explicit ToolCalling object states intent, including the default code
+    # mode, so it sets the key and can override a global native default.
+    assert tool_calling_to_configurable(ToolCalling()) == {"cuga_lite_tool_invocation_mode": "code"}
 
 
 def test_native_all_tools():
@@ -49,6 +51,15 @@ def test_tool_choice_serialized():
 def test_tool_choice_omitted_when_none():
     cfg = tool_calling_to_configurable(ToolCalling(mode="native"))
     assert "cuga_lite_tool_choice" not in cfg
+
+
+def test_none_serializes_to_empty_but_explicit_code_overrides_global():
+    # None = no opt-in -> {}; explicit mode="code" must set the key so a per-invoke
+    # opt-out can override a global native default.
+    assert tool_calling_to_configurable(None) == {}
+    assert tool_calling_to_configurable(ToolCalling(mode="code")) == {
+        "cuga_lite_tool_invocation_mode": "code"
+    }
 
 
 def test_mode_resolver_defaults_to_code():

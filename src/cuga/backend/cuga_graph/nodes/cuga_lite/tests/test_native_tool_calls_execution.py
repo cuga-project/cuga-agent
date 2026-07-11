@@ -18,10 +18,9 @@ hits three defects on the execution side:
       subclass of ``RuntimeError``, so the deliberate cap re-raise in
       helpers/bind_tools.py catches it first.
 
-D1 and D9 are fixed and their tests now pass under native FC (opted in via
-``cuga_lite_tool_invocation_mode="native"``); D2 remains ``xfail(strict=True)``
-until the preamble fix lands. The code-act control test asserts the default
-(no-FC) path is unaffected.
+D1, D2, and D9 are all fixed; these are live passing tests under native FC
+(opted in via ``cuga_lite_tool_invocation_mode="native"``). The code-act control
+test asserts the default (no-FC) path is unaffected.
 """
 
 from typing import Any, List, Optional

@@ -71,19 +71,27 @@ class ToolCalling(BaseModel):
         description="Passed to bind_tools: 'auto' (model decides), 'required'/'any' "
         "(force a tool call), 'none', or a provider-specific value. Useful for "
         "code-preferring models that otherwise never emit native tool calls. "
-        "Providers that don't support it degrade to a plain bind.",
+        "Providers that don't support it degrade to a plain bind. WARNING: "
+        "'required'/'any' forces a tool call on EVERY turn, so the model can "
+        "never emit a plain-text final answer — the run will loop until "
+        "cuga_lite_max_steps and return a truncated result. Prefer 'auto'; use "
+        "'required' only for single-call flows with a low max_steps.",
     )
 
 
 def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
     """Serialize ``ToolCalling`` to graph ``configurable`` keys.
 
-    Returns ``{}`` for ``None`` or ``mode="code"`` so the default path is
-    untouched. Fully guarded: on any error it disables FC rather than raising.
+    Returns ``{}`` for ``None`` (no opt-in). An explicit ``mode="code"`` returns
+    ``{"cuga_lite_tool_invocation_mode": "code"}`` so a per-agent/per-invoke
+    opt-out overrides a global ``native`` default. Fully guarded: on any error it
+    disables FC rather than raising.
     """
     try:
-        if tc is None or tc.mode == "code":
+        if tc is None:
             return {}
+        if tc.mode == "code":
+            return {"cuga_lite_tool_invocation_mode": "code"}
         cfg: Dict[str, Any] = {"cuga_lite_tool_invocation_mode": tc.mode}
         if tc.native_tools:
             cfg["cuga_lite_bind_tools_mode"] = "tools"

@@ -18,6 +18,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
     apply_bind_tools_cap_and_merge,
     bind_tools_max_count_from_settings,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import native_tool_calls_enabled
 
 
 def _safe_bind(model: BaseChatModel, tools: List[StructuredTool], tool_choice: Any = None) -> BaseChatModel:
@@ -224,6 +225,14 @@ async def resolve_model_with_bind_tools(
         settings_tool_names_fn=_bind_tools_tool_names_from_settings,
         settings_include_fn=lambda: _bind_include_find_tools_from_config({}),
     )
+    # Couple native function calling to binding (issue #471): if FC is enabled
+    # (e.g. via the global cuga_lite_tool_invocation_mode setting) but no bind
+    # mode was chosen, bind all tools — otherwise the native prompt tells the
+    # model to call tools that were never bound. The SDK ToolCalling path already
+    # sets a concrete bind mode, so this only fills the global-setting gap.
+    if mode in ("", "none", "false", "0", "off") and native_tool_calls_enabled(cfg):
+        logger.info("Native tool calling on but no bind mode set; defaulting bind to 'all'")
+        mode = "all"
     # configurable override (per-agent/run) wins over the global settings default.
     max_count = cfg.get("cuga_lite_bind_tools_max_count")
     if max_count is None:

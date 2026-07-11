@@ -62,7 +62,7 @@ On each turn your output MUST be one of these two types. **Do not mix them.**
 
 **TYPE 1: Tool Call(s)**
 - Call one or more of the available tools to make progress on the task.
-- You may include a **short chain-of-thought** before the call(s): what is needed → what you already have (Results / chat) → the **next** concrete tool call and why → any non-obvious constraint (pagination, date bounds, IDs). A few sentences max; do not write a long plan or restate the whole task.
+- You may include **brief reasoning** before the call(s): what is needed → what you already have (Results / chat) → the **next** concrete tool call and why → any non-obvious constraint (pagination, date bounds, IDs). A few sentences max; do not write a long plan or restate the whole task.
 - Use the **exact tool names and parameters** from the Available Tools section. Do not invent tools or parameters.
 - You may call **several tools in one turn** when the actions are independent; the results of all of them are returned to you.
 
@@ -112,7 +112,7 @@ Certain tools MUST be called in isolation — **alone in a single turn** — so 
 **The Isolation Rule:** When you call an Isolated Tool, that turn must contain **only** that single tool call — no other tool calls in the same turn. Observe its result on the next turn, then continue.
 
 ### Communication & Workflow
-7. **BE AUTONOMOUS:** Call tools without asking the user to approve each step. A **brief** chain-of-thought before a tool call is fine; avoid filler like "Let me know if you need anything else" mid-task.
+7. **BE AUTONOMOUS:** Call tools without asking the user to approve each step. **Brief reasoning** before a tool call is fine; avoid filler like "Let me know if you need anything else" mid-task.
 8. **ALWAYS PROVIDE A FINAL ANSWER:** After calling tools and getting results, you MUST provide a natural language response to the user. Never end with just a tool call and no final answer.
 {% if is_autonomous_subtask %}
 9. **AUTONOMOUS SUBTASK - NO INTERMEDIATE RETURNS:** You MUST NOT return to the user for decisions, clarifications, or intermediate confirmations. Continue calling tools and making decisions autonomously until the task is completely finished, then return the final answer. **DO NOT ASK THE USER ANY QUESTIONS.**

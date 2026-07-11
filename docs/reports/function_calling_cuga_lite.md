@@ -295,7 +295,7 @@ Treat provider support as **capability-matrix work, not a static claim**: `bind_
 
 **Guiding constraint:** the default is byte-for-byte unchanged. Native FC is inert unless a caller opts in via the SDK. The single explicit signal is a new `cuga_lite_tool_invocation_mode` configurable key (`code` default | `native` | `hybrid`); when absent/`code`, every new branch is bypassed and the prompt renders identically. Everything is `try/except`-guarded and degrades to code-act, never crashes.
 
-**Gating model.** The corrected multi-call transpiler and preamble handling fire **only when FC is opted in** (`tool_invocation_mode ∈ {native, hybrid}`), resolved once in `AgentGraphAdapter.resolve_bind_tools` and stashed as `self._allow_native_tool_calls` (default `False`; the Supervisor adapter never sets it). The lone exception is the D9 fallback, which is ungated because turning a crash into graceful degradation can never change a successful path.
+**Gating model (as shipped).** The corrected multi-call transpiler and preamble handling fire **only when FC is opted in** (`tool_invocation_mode ∈ {native, hybrid}`). The mode is derived **per call** from `configurable` (`configurable > global setting > "code"`) via `native_tool_calls_enabled()` in `nodes/cuga_lite/tool_calling.py` — **not** stored on the shared per-graph adapter, so concurrent invokes with different modes never race (the earlier `adapter._allow_native_tool_calls` field was removed in commit 98e88443). `normalize_response(response, configurable)` and `prepare_node`'s prompt selection both call the resolver. The lone ungated exception is the D9 fallback, because turning a crash into graceful degradation can never change a successful path.
 
 **Commits (6):**
 
