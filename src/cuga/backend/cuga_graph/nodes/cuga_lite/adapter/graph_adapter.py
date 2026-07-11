@@ -69,6 +69,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._special_instructions = special_instructions
         self._tools_context = tools_context if tools_context is not None else {}
         self._static_prompt = static_prompt
+        # Native function-calling opt-in (issue #471). Off unless a caller sets
+        # cuga_lite_tool_invocation_mode to native/hybrid (via SDK ToolCalling);
+        # resolved per call_model in resolve_bind_tools. Default keeps the
+        # legacy single-call, empty-content-only behavior byte for byte.
+        self._allow_native_tool_calls = False
         self._thread_id = thread_id
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
@@ -131,6 +136,12 @@ class AgentGraphAdapter(CoreGraphAdapter):
         config: Any = None,
     ) -> Any:
         try:
+            self._allow_native_tool_calls = str(
+                (configurable or {}).get("cuga_lite_tool_invocation_mode") or "code"
+            ).strip().lower() in ("native", "hybrid")
+        except Exception:
+            self._allow_native_tool_calls = False
+        try:
             return await resolve_model_with_bind_tools(
                 active_model,
                 configurable=configurable,
@@ -148,8 +159,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
         content = normalize_assistant_text(response.content)
+        allow_native = getattr(self, "_allow_native_tool_calls", False)
         if not content:
-            tool_code = extract_code_from_response_tool_calls(response)
+            tool_code = extract_code_from_response_tool_calls(response, multi=allow_native)
             if tool_code:
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code

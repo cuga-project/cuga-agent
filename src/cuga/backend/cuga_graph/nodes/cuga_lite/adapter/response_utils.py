@@ -34,30 +34,64 @@ def tool_call_kwarg_literal(value: Any) -> str:
     return repr(value)
 
 
-def extract_code_from_response_tool_calls(response: Any) -> Optional[str]:
-    """Recover fenced Python from AIMessage.tool_calls when content is empty."""
+def _parse_tool_calls(response: Any) -> list:
+    """Normalize AIMessage.tool_calls (or the legacy additional_kwargs form) to
+    a list of ``(name, args_dict)``; skips malformed / nameless entries."""
     tool_calls = getattr(response, "tool_calls", None) or (
         getattr(response, "additional_kwargs", None) or {}
     ).get("tool_calls")
     if not tool_calls:
+        return []
+    parsed = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        name = tool_call.get("name") or (tool_call.get("function") or {}).get("name")
+        if not name:
+            continue
+        args = tool_call.get("args") or (tool_call.get("function") or {}).get("arguments") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        parsed.append((name, args if isinstance(args, dict) else {}))
+    return parsed
+
+
+def _tool_call_statements(name: str, args: dict, result_var: str) -> list:
+    """One transpiled call: ``<result_var> = await name(...)`` + a print, or a
+    visible skip marker when ``name`` is not a valid Python identifier.
+
+    Names are never spliced blindly into a dynamic lookup — ``getattr``/``globals``/
+    ``eval`` are blocked by SecurityValidator and forbidden by the prompt — so a
+    non-identifier name is reported rather than executed unsafely.
+    """
+    if not name.isidentifier():
+        marker = f"[skipped tool with non-identifier name: {name!r}]"
+        return [f"print({json.dumps(marker)})"]
+    args_str = ", ".join(f"{k}={tool_call_kwarg_literal(v)}" for k, v in args.items())
+    return [f"{result_var} = await {name}({args_str})", f"print({result_var})"]
+
+
+def extract_code_from_response_tool_calls(response: Any, *, multi: bool = False) -> Optional[str]:
+    """Recover fenced Python from AIMessage.tool_calls.
+
+    ``multi=False`` (default) preserves the legacy single-call behavior byte for
+    byte. ``multi=True`` transpiles *every* tool call in the turn into a
+    sequential block — one ``result_i = await …`` per call — so parallel native
+    tool calls are executed rather than silently dropped (issue #471 D1).
+    """
+    calls = _parse_tool_calls(response)
+    if not calls:
         return None
 
-    tool_call = tool_calls[0]
-    if not isinstance(tool_call, dict):
-        return None
+    if not multi:
+        name, args = calls[0]
+        args_str = ", ".join(f"{k}={tool_call_kwarg_literal(v)}" for k, v in args.items())
+        return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
 
-    name = tool_call.get("name") or (tool_call.get("function") or {}).get("name")
-    args = tool_call.get("args") or (tool_call.get("function") or {}).get("arguments") or {}
-    if isinstance(args, str):
-        try:
-            args = json.loads(args)
-        except json.JSONDecodeError:
-            args = {}
-
-    if not name:
-        return None
-
-    args_str = ", ".join(
-        f"{k}={tool_call_kwarg_literal(v)}" for k, v in (args if isinstance(args, dict) else {}).items()
-    )
-    return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
+    lines: list = []
+    for i, (name, args) in enumerate(calls):
+        lines.extend(_tool_call_statements(name, args, f"result_{i}"))
+    return "```python\n" + "\n".join(lines) + "\n```"

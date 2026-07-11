@@ -18,10 +18,10 @@ hits three defects on the execution side:
       subclass of ``RuntimeError``, so the deliberate cap re-raise in
       helpers/bind_tools.py catches it first.
 
-These tests are ``xfail(strict=True)``: they assert the CORRECT behavior and
-are expected to fail until the defects are fixed — at which point they flip
-to hard failures, forcing removal of the markers in the fixing PR. The
-code-act control test at the bottom passes today and must keep passing.
+D1 and D9 are fixed and their tests now pass under native FC (opted in via
+``cuga_lite_tool_invocation_mode="native"``); D2 remains ``xfail(strict=True)``
+until the preamble fix lands. The code-act control test asserts the default
+(no-FC) path is unaffected.
 """
 
 from typing import Any, List, Optional
@@ -85,7 +85,13 @@ TWO_TOOL_CALLS = [
     {"name": "notify", "args": {"customer": "globex"}, "id": "call_2", "type": "tool_call"},
 ]
 FINAL_ANSWER = AIMessage(content="Done — both acme and globex have been notified.")
-BIND_ALL = {"configurable": {"cuga_lite_bind_tools_mode": "all"}}
+# Native function calling opted in: bind all tools + native invocation mode.
+FC_NATIVE = {
+    "configurable": {
+        "cuga_lite_bind_tools_mode": "all",
+        "cuga_lite_tool_invocation_mode": "native",
+    }
+}
 TASK = "notify customers acme and globex"
 
 
@@ -105,17 +111,13 @@ def _reset_ground_truth():
     yield
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #471 D1: only tool_calls[0] is transpiled; parallel native tool "
-    "calls are silently dropped and the final answer claims false success",
-)
 @pytest.mark.asyncio
 async def test_parallel_tool_calls_all_execute():
+    # issue #471 D1 (fixed): every tool_call in the turn executes, not just [0].
     model = ScriptedFCModel(script=[AIMessage(content="", tool_calls=TWO_TOOL_CALLS), FINAL_ANSWER])
     agent = _make_agent(model)
 
-    await agent.invoke(TASK, config=BIND_ALL)
+    await agent.invoke(TASK, config=FC_NATIVE)
 
     assert sorted(NOTIFIED) == ["acme", "globex"]
 
@@ -135,7 +137,7 @@ async def test_text_preamble_with_tool_calls_still_executes():
     )
     agent = _make_agent(model)
 
-    result = await agent.invoke(TASK, config=BIND_ALL)
+    result = await agent.invoke(TASK, config=FC_NATIVE)
 
     assert NOTIFIED, "the announced tool calls never executed"
     assert result.answer != "I'll notify both customers now."
@@ -153,7 +155,7 @@ async def test_model_without_bind_tools_falls_back_gracefully():
     )
     agent = _make_agent(model)
 
-    result = await agent.invoke(TASK, config=BIND_ALL)
+    result = await agent.invoke(TASK, config=FC_NATIVE)
 
     assert result.error is None
     assert NOTIFIED == ["acme"]
