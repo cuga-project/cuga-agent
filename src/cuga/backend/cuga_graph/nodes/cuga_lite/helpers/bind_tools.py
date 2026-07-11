@@ -20,6 +20,25 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
 )
 
 
+def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatModel:
+    """Bind ``tools`` to ``model``, falling back to the unbound model if the
+    provider does not support ``bind_tools``.
+
+    ``BaseChatModel.bind_tools`` raises ``NotImplementedError`` by default, and
+    ``NotImplementedError`` is a subclass of ``RuntimeError`` — so without this
+    guard it would be caught by the cap's ``except RuntimeError: raise`` and
+    crash ``call_model`` instead of degrading to code-act.
+    """
+    try:
+        return model.bind_tools(tools)
+    except NotImplementedError:
+        logger.warning(
+            "Model {} does not support bind_tools; falling back to unbound (code-act) model",
+            getattr(model, "model_name", type(model).__name__),
+        )
+        return model
+
+
 def _bind_tools_mode_from_settings() -> str:
     try:
         m = getattr(settings.advanced_features, "cuga_lite_bind_tools_mode", None)
@@ -213,14 +232,14 @@ async def resolve_model_with_bind_tools(
         if include_find_tools:
             ft_only = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
             if ft_only:
-                return active_model.bind_tools([ft_only])
+                return _safe_bind(active_model, [ft_only])
         return active_model
 
     try:
         if mode == "find_tools":
             ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
             if ft:
-                return active_model.bind_tools([ft])
+                return _safe_bind(active_model, [ft])
             logger.debug(
                 "cuga_lite_bind_tools_mode=find_tools but find_tools StructuredTool is missing "
                 "(shortlisting may be off)"
@@ -235,7 +254,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(list(by_name.values()))
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "apps_and_tools":
             if not tool_provider:
@@ -245,7 +264,7 @@ async def resolve_model_with_bind_tools(
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=apps_and_tools but cuga_lite_bind_tools_apps and "
                     "cuga_lite_bind_tools_tool_names are both empty "
@@ -289,14 +308,14 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "apps":
             if not app_names:
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=apps but cuga_lite_bind_tools_apps is empty "
                     "(set include_find_tools to bind find_tools only)"
@@ -320,14 +339,14 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "tools":
             if not tool_names:
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=tools but cuga_lite_bind_tools_tool_names is empty "
                     "(set include_find_tools to bind find_tools only)"
@@ -358,7 +377,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         logger.warning(
             "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",

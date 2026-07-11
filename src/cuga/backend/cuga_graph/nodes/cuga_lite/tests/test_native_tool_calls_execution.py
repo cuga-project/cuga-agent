@@ -141,14 +141,10 @@ async def test_text_preamble_with_tool_calls_still_executes():
     assert result.answer != "I'll notify both customers now."
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #471 D9: NotImplementedError from bind_tools is a RuntimeError subclass, "
-    "so the cap's 'except RuntimeError: raise' re-raises it and call_model crashes instead "
-    "of falling back to the unbound model",
-)
 @pytest.mark.asyncio
 async def test_model_without_bind_tools_falls_back_gracefully():
+    # issue #471 D9 (fixed): a model whose bind_tools raises NotImplementedError
+    # degrades to the unbound (code-act) model instead of crashing call_model.
     model = NoBindToolsModel(
         script=[
             AIMessage(content="```python\nr = await notify(customer='acme')\nprint(r)\n```"),
