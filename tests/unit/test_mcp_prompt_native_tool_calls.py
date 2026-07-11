@@ -55,3 +55,20 @@ def test_native_prompt_has_correct_and_incorrect_examples():
     assert "Announcing instead of acting" in prompt
     assert "App prefix" in prompt
     assert "```python" not in prompt
+
+
+def test_native_prompt_skills_block_keeps_install_ordering():
+    # native + skills + shell must retain the STEP 0/1/2 install-first ordering
+    # (a loaded skill must install its requirements before use), reframed for
+    # tool calls — no code-act language.
+    prompt = create_mcp_prompt(
+        [],
+        prompt_template=get_native_mcp_prompt_template(),
+        skills_enabled=True,
+        enable_shell_tool=True,
+        skills_prompt_section="<available_skills>demo</available_skills>",
+    )
+    assert "STEP 0" in prompt and "STEP 1" in prompt and "STEP 2" in prompt
+    assert "uv pip install" in prompt
+    assert "load_skill" in prompt
+    assert "```python" not in prompt  # still no code-act artifacts
