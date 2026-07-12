@@ -74,7 +74,6 @@ def _make_app_manager() -> AppManager:
 def _apply_demo_skills_env() -> None:
     """Turn on skills + shell tools for spawned demo/registry (Dynaconf-style env)."""
     os.environ["DYNACONF_SKILLS__ENABLED"] = "true"
-    os.environ["DYNACONF_SKILLS__ROOT"] = "agents"
     os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "true"
     os.environ["DYNACONF_ADVANCED_FEATURES__REFLECTION_ENABLED"] = "true"
 

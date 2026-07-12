@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
+from cuga.backend.skills.tools import create_skill_tools
 
 
 def _write_skill(root: Path, name: str, description: str, body: str = "Body", requirements: str = "") -> None:
@@ -126,6 +127,33 @@ def test_skill_registry_load_skill_without_requirements_skips_install_step() -> 
     assert "STEP 1 — SKILL INSTRUCTIONS" in loaded
     assert "STEP 2 — SKILL INSTRUCTIONS" not in loaded
     assert "Analyze uploads." in loaded
+
+
+def test_load_skill_tool_prints_instructions_even_if_agent_discards_return(capsys) -> None:
+    """The code-agent's stdout capture is the only guaranteed path for skill
+    instructions to reach the agent's context. If the agent's own code discards
+    `load_skill`'s return value instead of printing it, the tool must still
+    surface the instructions via a print side-effect, or the agent never sees
+    them and improvises instead of following the skill.
+    """
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="deck",
+                description="Deck skill",
+                body="## Body\n\nDistinctive skill instructions marker.",
+                source="/skills/deck/SKILL.md",
+            )
+        ]
+    )
+    load_tool = create_skill_tools(registry)[0]
+    assert load_tool.name == "load_skill"
+
+    result = load_tool.func(name="deck")
+
+    printed = capsys.readouterr().out
+    assert "Distinctive skill instructions marker." in printed
+    assert result == printed.rstrip("\n") or "Distinctive skill instructions marker." in result
 
 
 # ---------------------------------------------------------------------------

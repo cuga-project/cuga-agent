@@ -863,7 +863,6 @@ class LLMManager:
                 model=model_name,
                 top_p=0.95,
                 temperature=temperature,
-                timeout=http_timeout,
                 seed=42,
             )
         elif platform == "google-genai":
@@ -1110,21 +1109,20 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         api_key = None
     platform = llm_cfg.get("provider") or "openai"
     model = llm_cfg.get("model") or None
-    toml_url: Optional[str] = None
-    toml_apikey_name: Optional[str] = None
     if use_env:
         try:
             code_model = settings.agent.code.model
             if code_model:
-                _get = (
-                    code_model.get
+                toml_platform = (
+                    code_model.get("platform")
                     if hasattr(code_model, "get")
-                    else lambda k, d=None: getattr(code_model, k, d)
+                    else getattr(code_model, "platform", None)
                 )
-                toml_platform = _get("platform")
-                toml_model = _get("model") or _get("model_name")
-                toml_url = _get("url") or _get("base_url")
-                toml_apikey_name = _get("apikey_name")
+                toml_model = (
+                    code_model.get("model")
+                    if hasattr(code_model, "get")
+                    else getattr(code_model, "model", None)
+                )
                 if toml_platform:
                     platform = toml_platform
                 if toml_model:
@@ -1154,12 +1152,8 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     settings_dict = {
         "platform": platform,
         "model": model,
-        # ui base_url takes precedence; fall back to TOML url so platforms like rits get
-        # their endpoint even when the saved UI config has no base_url
-        "url": llm_cfg.get("base_url") or toml_url or None,
+        "url": llm_cfg.get("base_url") or None,
         "api_key": api_key,
-        # propagate apikey_name so platform handlers (e.g. rits) can resolve the key
-        "apikey_name": llm_cfg.get("apikey_name") or toml_apikey_name or None,
         "temperature": llm_cfg.get("temperature", 0.1),
         "disable_ssl": llm_cfg.get("disable_ssl", False),
         "ssl_ca_bundle": llm_cfg.get("ssl_ca_bundle") or None,

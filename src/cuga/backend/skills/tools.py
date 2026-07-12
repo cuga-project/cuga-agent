@@ -18,21 +18,23 @@ class LoadSkillInput(BaseModel):
 
 
 def _build_callable_tools_from_entry(entry: SkillEntry) -> list[StructuredTool]:
-    """Import and wrap callable tools declared in a SkillEntry's tool_definitions."""
+    """Import and wrap callable tools declared in a SkillEntry's tool_definitions.
+
+    Each definition's ``import_from`` follows the same dotted-path convention as
+    ``supervisor_config.py``'s agent ``import_from``: everything before the last
+    dot is the module path, the final segment is the attribute to import.
+    """
     out: list[StructuredTool] = []
     for raw in entry.tool_definitions:
-        module_path = raw.get("module", "")
-        fn_name = raw.get("function", "")
+        import_from = raw.get("import_from", "")
         tool_name = raw.get("name", "")
         description = raw.get("description", "")
         try:
+            module_path, fn_name = import_from.rsplit(".", 1)
             mod = importlib.import_module(module_path)
-        except ImportError as exc:
-            logger.warning(f"skill {entry.name!r}: cannot import {module_path!r}: {exc}")
-            continue
-        fn = getattr(mod, fn_name, None)
-        if fn is None:
-            logger.warning(f"skill {entry.name!r}: {module_path!r} has no attribute {fn_name!r}")
+            fn = getattr(mod, fn_name)
+        except (ValueError, ImportError, AttributeError) as exc:
+            logger.warning(f"skill {entry.name!r}: cannot import tool {import_from!r}: {exc}")
             continue
         kwargs: dict = {"name": tool_name, "description": description}
         if asyncio.iscoroutinefunction(fn):
@@ -45,7 +47,14 @@ def _build_callable_tools_from_entry(entry: SkillEntry) -> list[StructuredTool]:
 
 def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
     def load_skill_impl(name: str) -> str:
-        return registry.load_skill(name)
+        instructions = registry.load_skill(name)
+        # Print unconditionally: the code-agent's stdout capture is the only
+        # guaranteed way these instructions reach the agent's context. If the
+        # agent's own code discards the return value instead of printing it
+        # (e.g. `await load_skill(...); print("Skill loaded successfully")`),
+        # it otherwise never sees the skill body and improvises from scratch.
+        print(instructions)
+        return instructions
 
     load_tool = StructuredTool.from_function(
         func=load_skill_impl,
@@ -58,7 +67,7 @@ def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
     )
 
     callable_tools: list[StructuredTool] = []
-    for entry in registry._by_name.values():
+    for entry in registry.entries():
         callable_tools.extend(_build_callable_tools_from_entry(entry))
 
     return [load_tool, *callable_tools]

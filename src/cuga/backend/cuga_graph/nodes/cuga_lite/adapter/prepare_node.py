@@ -350,9 +350,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         agents_prompt_section = ""
         agents_enabled = False
 
-        # Resolve thread_id early for per-thread workspace selection.
-        _runtime_thread_id_for_fs = _cfg.get("thread_id") or state.thread_id or adapter._thread_id
-
         # Update tools context with all execution tools.
         # Wrap to make awaitable (agent always uses await). Filesystem path
         # rewriting is no longer needed here — filesystem tools come from
