@@ -3058,7 +3058,7 @@ export default function KnowledgePanel({
                                         onActionButtonClick={startReindexWithProgress}
                                       />
                                     ) : (
-                                      <InlineNotification
+                                      <ActionableNotification
                                         kind="success"
                                         lowContrast
                                         hideCloseButton={false}
