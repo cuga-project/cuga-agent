@@ -2216,7 +2216,7 @@ renderUserDefinedResponse={(state) => {
 
 - [ ] **Step 5: Verify visually**
 
-Run: `bash scripts/build_frontend.sh && uv run cuga start demo`, upload a doc (Manage → Knowledge), ask a question answerable from it.
+Run: `(cd src/frontend_workspaces/frontend && bash build.sh) && uv run cuga start demo`, upload a doc (Manage → Knowledge), ask a question answerable from it.
 Expected: answer shows `[1]` superscript chips; hover shows the card; click opens the panel scrolled to the source with highlighted terms; sources footer renders; reload the page and re-open the thread → chips and footer persist.
 
 - [ ] **Step 6: Commit**
@@ -2428,7 +2428,7 @@ git commit -m "feat(ui): citations toggles — agent-level in Manage, per-sessio
 uv run ruff check src tests
 uv run pytest tests/unit -q
 npm run test -w agentic_chat -- --run
-bash scripts/build_frontend.sh
+(cd src/frontend_workspaces/frontend && bash build.sh)
 ```
 
 Manual E2E script (demo mode, `uv run cuga start demo`):
