@@ -83,6 +83,24 @@ def test_multi_nameless_call_skipped():
     assert code.count("await ") == 1  # only the named call
 
 
+def test_malformed_entries_do_not_crash_and_are_skipped():
+    # untrusted provider output: a truthy non-dict `function`, a non-string
+    # `name`, and a non-dict entry must all be skipped (not raise) — the valid
+    # call still runs (both multi=True and legacy multi=False).
+    resp = _Resp(
+        [
+            {"function": "oops-not-a-dict"},  # truthy non-dict function -> would AttributeError
+            {"name": 123, "args": {"a": 1}},  # non-string name -> would crash isidentifier()
+            "not-a-dict-entry",
+            _tc("notify", {"customer": "acme"}),
+        ]
+    )
+    code = extract_code_from_response_tool_calls(resp, multi=True)
+    assert code.count("await ") == 1 and "notify" in code
+    # a leading malformed entry on the legacy path yields None (not a crash)
+    assert extract_code_from_response_tool_calls(_Resp([{"function": "x"}]), multi=False) is None
+
+
 def test_legacy_form_from_additional_kwargs():
     resp = _Resp(tool_calls=None, additional_kwargs={"tool_calls": [_tc("notify", {"customer": "acme"})]})
     code = extract_code_from_response_tool_calls(resp, multi=True)

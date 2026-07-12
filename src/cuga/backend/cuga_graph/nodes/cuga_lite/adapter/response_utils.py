@@ -36,14 +36,19 @@ def tool_call_kwarg_literal(value: Any) -> str:
 
 
 def _parse_one_tool_call(tool_call: Any) -> Optional[tuple]:
-    """Parse a single tool-call entry to ``(name, args_dict)``, or None if
-    malformed/nameless. Matches the legacy per-element logic exactly."""
+    """Parse a single tool-call entry to ``(name, args_dict)``, or None for any
+    malformed entry — this is untrusted LLM/provider output. Guards a truthy
+    non-dict ``function`` field and a truthy non-string ``name`` so the contract
+    ("malformed → None") holds and callers never crash on the value."""
     if not isinstance(tool_call, dict):
         return None
-    name = tool_call.get("name") or (tool_call.get("function") or {}).get("name")
-    if not name:
+    function = tool_call.get("function")
+    if not isinstance(function, dict):
+        function = {}
+    name = tool_call.get("name") or function.get("name")
+    if not isinstance(name, str) or not name:
         return None
-    args = tool_call.get("args") or (tool_call.get("function") or {}).get("arguments") or {}
+    args = tool_call.get("args") or function.get("arguments") or {}
     if isinstance(args, str):
         try:
             args = json.loads(args)

@@ -46,7 +46,31 @@ def test_native_all_tools():
     assert cfg == {
         "cuga_lite_tool_invocation_mode": "native",
         "cuga_lite_bind_tools_mode": "all",
+        # include_find_tools is always pinned so a global/profile can't widen it
+        "cuga_lite_bind_tools_include_find_tools": False,
     }
+
+
+def test_include_find_tools_is_always_pinned_for_native():
+    # False must be serialized explicitly (not omitted) so a global setting or
+    # model profile that enables find_tools can't widen an explicit selection.
+    off = tool_calling_to_configurable(ToolCalling(mode="native", native_tools=["a"]))
+    assert off["cuga_lite_bind_tools_include_find_tools"] is False
+    on = tool_calling_to_configurable(ToolCalling(mode="native", include_find_tools=True))
+    assert on["cuga_lite_bind_tools_include_find_tools"] is True
+
+
+def test_serialization_fails_closed_to_code_unbind():
+    # a broken tc must fall back to fully-off (code + unbind), NEVER {} which
+    # would let a global/profile keep native binding enabled.
+    class _Boom:
+        mode = "native"
+
+        def __getattr__(self, name):
+            raise RuntimeError("boom")
+
+    cfg = tool_calling_to_configurable(_Boom())
+    assert cfg == {"cuga_lite_tool_invocation_mode": "code", "cuga_lite_bind_tools_mode": "none"}
 
 
 def test_native_specific_tools():

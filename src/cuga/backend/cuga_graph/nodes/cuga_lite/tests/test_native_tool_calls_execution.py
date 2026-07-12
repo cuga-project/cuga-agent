@@ -30,6 +30,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
+from pydantic import Field
 
 from cuga.sdk import CugaAgent
 
@@ -50,7 +51,7 @@ class ScriptedFCModel(BaseChatModel):
     provider, so ``resolve_model_with_bind_tools`` proceeds to invoke it.
     """
 
-    script: List[AIMessage] = []
+    script: List[AIMessage] = Field(default_factory=list)
     calls_made: int = 0
 
     @property

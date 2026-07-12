@@ -5,8 +5,14 @@
 ``cuga_lite_tool_invocation_mode`` ``configurable`` keys — the same channel the
 graph already reads — so no graph rewiring is needed.
 
-Default is ``mode="code"`` → serializes to ``{}`` → nothing is set → the agent
-behaves exactly as it does today (code-act only).
+``None`` (no ``tool_calling`` argument) serializes to ``{}`` → nothing is set →
+the global setting / model profile still apply. An explicit ``ToolCalling`` —
+including the default ``mode="code"`` — states intent: ``mode="code"`` emits
+``cuga_lite_tool_invocation_mode="code"`` + ``cuga_lite_bind_tools_mode="none"``
+so it fully forces code-act (overriding a global native default or a binding
+model profile). Serialization is fail-closed: on any error it returns that same
+code/unbind config rather than ``{}``, so a failure can never leave native
+binding on.
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -86,17 +92,17 @@ def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
     apply). An explicit ``mode="code"`` is a *full* opt-out: it forces the
     code-act prompt/handling AND unbinds tools (``cuga_lite_bind_tools_mode=
     "none"``), overriding a global ``native`` default and any model profile that
-    would otherwise bind (e.g. gpt-oss-20b). Fully guarded: on any error it
-    disables FC rather than raising.
+    would otherwise bind (e.g. gpt-oss-20b). **Fail-closed:** on any error it
+    returns that same code/unbind config (not ``{}``), so a serialization failure
+    can never leave native binding enabled via the global setting / profile.
     """
+    # code-act, tools unbound — the safe, fully-off configuration.
+    code_off = {"cuga_lite_tool_invocation_mode": "code", "cuga_lite_bind_tools_mode": "none"}
     try:
         if tc is None:
             return {}
         if tc.mode == "code":
-            return {
-                "cuga_lite_tool_invocation_mode": "code",
-                "cuga_lite_bind_tools_mode": "none",
-            }
+            return dict(code_off)
         cfg: Dict[str, Any] = {"cuga_lite_tool_invocation_mode": tc.mode}
         if tc.native_tools:
             cfg["cuga_lite_bind_tools_mode"] = "tools"
@@ -106,13 +112,14 @@ def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
             cfg["cuga_lite_bind_tools_apps"] = list(tc.apps)
         else:
             cfg["cuga_lite_bind_tools_mode"] = "all"
-        if tc.include_find_tools:
-            cfg["cuga_lite_bind_tools_include_find_tools"] = True
+        # Always pin the boolean for an explicit native/hybrid selection so a
+        # global setting / profile can't widen it by enabling find_tools.
+        cfg["cuga_lite_bind_tools_include_find_tools"] = bool(tc.include_find_tools)
         if tc.max_bound_tools is not None:
             cfg["cuga_lite_bind_tools_max_count"] = int(tc.max_bound_tools)
         if tc.tool_choice is not None:
             cfg["cuga_lite_tool_choice"] = tc.tool_choice
         return cfg
     except Exception as e:
-        logger.warning(f"ToolCalling serialization failed; native function calling disabled: {e}")
-        return {}
+        logger.warning(f"ToolCalling serialization failed; forcing code-act (fail-closed): {e}")
+        return dict(code_off)

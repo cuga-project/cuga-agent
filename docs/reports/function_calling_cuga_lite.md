@@ -46,13 +46,13 @@ There is **no** `ToolNode`, `ToolExecutor`, `tool_choice`, `parallel_tool_calls`
 When a bound model returns `AIMessage.tool_calls`:
 
 1. `normalize_response` (`graph_adapter.py:149-159`) checks `content` — **only if the text content is empty** does it attempt recovery: `extract_code_from_response_tool_calls(response)`.
-2. That transpiler (`adapter/response_utils.py:37-63`) reads **`tool_calls[0]` only**, JSON-decodes string args, and returns:
-   ```python
-   ```python
-   result = await {name}({args_str})
-   print(result)
-   ```
-   ```
+2. That transpiler (`adapter/response_utils.py:37-63`) reads **`tool_calls[0]` only**, JSON-decodes string args, and returns a fenced Python block:
+````text
+```python
+result = await {name}({args_str})
+print(result)
+```
+````
 3. The fenced string re-enters the normal code path (`shared_nodes.py:197` → `Command(goto="sandbox")` at `:230-239`) and executes in the sandbox against `_tools_context` like any generated code.
 
 A second recovery path exists for providers that *reject* tool attempts (`tool_use_failed`, e.g. Groq 400): `ainvoke_model` catches the exception, extracts the attempted call, and fabricates a `_FakeResponse` whose content is the same fenced Python (`graph_adapter.py:107-124`, `errors.py:101-120`).
@@ -293,7 +293,7 @@ Treat provider support as **capability-matrix work, not a static claim**: `bind_
 
 ## 7. Implementation plan for this PR (P0 + P1, fully gated)
 
-**Guiding constraint:** the default is byte-for-byte unchanged. Native FC is inert unless a caller opts in via the SDK. The single explicit signal is a new `cuga_lite_tool_invocation_mode` configurable key (`code` default | `native` | `hybrid`); when absent/`code`, every new branch is bypassed and the prompt renders identically. Everything is `try/except`-guarded and degrades to code-act, never crashes.
+**Guiding constraint:** the default is byte-for-byte unchanged. Native FC is inert unless a caller opts in. There are **two supported opt-in paths**, both resolved by `resolve_tool_invocation_mode()`: (a) per agent/run via the SDK `ToolCalling` (→ the `cuga_lite_tool_invocation_mode` configurable key), and (b) globally via `advanced_features.cuga_lite_tool_invocation_mode` in settings — `configurable > global setting > "code"`. When it resolves to `code` (default), every new branch is bypassed and the prompt renders identically. Everything is `try/except`-guarded and degrades to code-act, never crashes.
 
 **Gating model (as shipped).** The corrected multi-call transpiler and preamble handling fire **only when FC is opted in** (`tool_invocation_mode ∈ {native, hybrid}`). The mode is derived **per call** from `configurable` (`configurable > global setting > "code"`) via `native_tool_calls_enabled()` in `nodes/cuga_lite/tool_calling.py` — **not** stored on the shared per-graph adapter, so concurrent invokes with different modes never race (the earlier `adapter._allow_native_tool_calls` field was removed in commit 98e88443). `normalize_response(response, configurable)` and `prepare_node`'s prompt selection both call the resolver. The lone ungated exception is the D9 fallback, because turning a crash into graceful degradation can never change a successful path.
 
