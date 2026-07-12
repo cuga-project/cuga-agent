@@ -419,9 +419,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
 
         # ── agent_spawn: tool injection ────────────────────────────────────────────
-        # Always inject spawn_agent + get_agent_result for parent agents.
+        # Inject spawn_agent + get_agent_result for parent agents, unless disabled.
         # Done AFTER all tools are registered so subagents inherit the full parent set.
-        if not _is_subagent:
+        _agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
+        if not _is_subagent and _agent_spawn_enabled:
             from cuga.backend.agent_spawn import (
                 create_spawn_tools,
                 format_available_agents_block,

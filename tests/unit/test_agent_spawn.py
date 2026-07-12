@@ -271,7 +271,7 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "mocked-answer"
 
-    monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
+    monkeypatch.setattr(rt, "_build_agent", lambda tools, parent_thread_id="": object())
     monkeypatch.setattr(rt, "_build_invoke_config", lambda: {})
     monkeypatch.setattr(rt, "_run_stream", _fake_run_stream)
 
@@ -347,7 +347,7 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
     rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
     rt._build_invoke_config = lambda: {}
-    rt._build_agent = lambda tools: object()
+    rt._build_agent = lambda tools, parent_thread_id="": object()
 
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "done"

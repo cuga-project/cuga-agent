@@ -50,8 +50,12 @@ def _emit(event_name: str, data: dict) -> None:
 # Shared future store: future_id → {"status": "running"|"done"|"error", "result": str|None, "error": str|None}
 _spawn_futures: Dict[str, Any] = {}
 
-# Process-level cache keyed by frozenset of tool names.
-_agent_cache: Dict[frozenset, Any] = {}
+# Process-level cache keyed by (parent thread_id, frozenset of tool names).
+# Tools are per-thread closures (e.g. filesystem tools bound to that thread's
+# workspace) even when names repeat across threads, so thread_id must be part
+# of the key or two threads sharing a tool-name set would share one thread's
+# CugaAgent — and its bound tool closures — across sessions.
+_agent_cache: Dict[tuple[str, frozenset], Any] = {}
 
 
 def clear_runtime_caches() -> None:
@@ -91,11 +95,11 @@ class SpawnAgentRuntime:
     def _make_thread_id(self) -> str:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
-    def _build_agent(self, tools: List[StructuredTool]):
+    def _build_agent(self, tools: List[StructuredTool], parent_thread_id: str = ""):
         # Checks to see if there is already cached agent (pre made), if there is returns it, else creatubg a new one.
         no_cache = os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE")
         if not no_cache:
-            cache_key = frozenset(t.name for t in tools)
+            cache_key = (parent_thread_id, frozenset(t.name for t in tools))
             cached = _agent_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -160,7 +164,7 @@ class SpawnAgentRuntime:
 
         token = _spawn_depth.set(depth + 1)
         try:
-            agent = self._build_agent(tools)
+            agent = self._build_agent(tools, parent_thread_id=parent_thread_id)
             answer = await self._run_stream(agent, task, thread_id, invoke_cfg, spawn_id=spawn_id)
         finally:
             _spawn_depth.reset(token)
