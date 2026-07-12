@@ -120,6 +120,6 @@ def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
         if tc.tool_choice is not None:
             cfg["cuga_lite_tool_choice"] = tc.tool_choice
         return cfg
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - intentional fail-closed catch (never re-enable FC on error)
         logger.warning(f"ToolCalling serialization failed; forcing code-act (fail-closed): {e}")
         return dict(code_off)

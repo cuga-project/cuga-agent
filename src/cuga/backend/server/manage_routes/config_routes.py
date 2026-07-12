@@ -7,12 +7,19 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+import asyncio as _asyncio
+
 from cuga.backend.server.manage_routes.apply import apply_published_config, rebuild_production_agent
 from cuga.backend.server.manage_routes.helpers import (
+    agent_draft_lock,
     app_state,
     merge_feature_flags_defaults,
     merge_mcp_yaml_into_config,
     redact_secrets_in_config,
+)
+from cuga.backend.server.manage_routes.knowledge_reindex import (
+    _BACKGROUND_TASKS,
+    deferred_reindex_complete_and_flip,
 )
 from cuga.backend.server.manage_routes.router import router
 
@@ -66,6 +73,28 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     if state is None:
         raise HTTPException(status_code=500, detail="App state not available")
 
+    # Reject a publish while a reindex is in flight for this agent. Publish
+    # calls prepare/commit_knowledge_update directly (not apply_knowledge_config),
+    # so the engine's mid-reindex guard never runs here; without this a
+    # vector-affecting publish during an in-flight Re-index supersedes every
+    # in-flight worker (wasting the reindex) and races the active-pointer write.
+    import re as _re_guard
+
+    _pfx = f"kb_agent_{_re_guard.sub(r'[^a-zA-Z0-9_]', '_', agent_id)}"
+    _pub_engine = getattr(state, "knowledge_engine", None)
+    _in_flight = getattr(_pub_engine, "_reindex_in_progress", None)
+    if _in_flight:
+        _busy = sorted(c for c in _in_flight if c == _pfx or c.startswith(f"{_pfx}_"))
+        if _busy:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reindex_in_progress",
+                    "collections": _busy,
+                    "message": "A re-index is running for this agent. Wait for it to finish before publishing.",
+                },
+            )
+
     data = await request.json()
     config = data.get("config", data) or {}
     agent_meta = config.get("agent")
@@ -75,7 +104,34 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             content={"detail": "Agent name is required"},
         )
 
+    # Serialize the whole publish critical section against a concurrent
+    # same-agent PATCH / reindex_for_config_change — all three mutate
+    # engine._config + bump _apply_generation; the lock (non-reentrant) makes
+    # them mutually exclusive. The deferred-flip tasks are fire-and-forget and
+    # acquire the lock later, after this handler releases it.
+    _pub_lock = agent_draft_lock(str(agent_id))
+    await _pub_lock.acquire()
+    engine = None
+    _old_collection = None
+    _flip_spawned = False
     try:
+        # Re-check the in-flight guard now that we hold the lock. The pre-lock
+        # check above can go stale: a reindex_for_config_change may have acquired
+        # the lock first and started workers between that check and this acquire.
+        _busy2 = sorted(
+            c
+            for c in (getattr(getattr(state, "knowledge_engine", None), "_reindex_in_progress", None) or ())
+            if c == _pfx or c.startswith(f"{_pfx}_")
+        )
+        if _busy2:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reindex_in_progress",
+                    "collections": _busy2,
+                    "message": "A re-index is running for this agent. Wait for it to finish before publishing.",
+                },
+            )
         from cuga.backend.server.config_store import (
             load_config,
             load_draft,
@@ -310,8 +366,12 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     if _secret in kb_pub and kb_pub[_secret]:
                         kb_pub[_secret] = ""
                 published_config["knowledge"] = kb_pub
-        except Exception:
-            published_config = config or {}
+        except Exception as strip_err:
+            # Fail CLOSED: never fall back to saving the unredacted config — that
+            # would persist API keys into the published snapshot (which crosses
+            # machines). A 500 is better than leaking a key.
+            logger.error(f"Failed to strip secrets from published config: {strip_err!r}")
+            raise HTTPException(status_code=500, detail="Failed to sanitize published config") from None
         ver = await save_config(published_config, agent_id)
         state.config_version = ver
         state.tools_include_version = int(ver) if ver else 0
@@ -367,6 +427,13 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             _vec_hash,
                             len(old_docs),
                         )
+                        # Keep the OLD (active) collection busy for the whole
+                        # migration + embed window so uploads/deletes can't land
+                        # in it and be lost when the deferred flip promotes the
+                        # new hash (mirrors the Re-index path). Released in the
+                        # deferred flip's finally, or in the promotion block /
+                        # outer finally for the non-deferred outcomes.
+                        engine._reindex_in_progress.add(_old_collection)
                         try:
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
@@ -377,8 +444,15 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 logger.warning(f"Failed to check docs for migration: {e}")
 
         if _defer_vector_hash_promotion and ver:
-            _promote_failed = reindex_info and reindex_info.get("status") == "failed"
-            if not _promote_failed and reindex_info is not None:
+            _persist_status = reindex_info.get("status") if reindex_info else None
+            # Persist the new vector hash ONLY for a terminal success. For
+            # "started" (async reindex in flight) the strict deferred flip owns
+            # the promotion + durable persist, AFTER all workers succeed — writing
+            # the hash here would activate the new/incomplete collection on a
+            # restart or a later worker failure, breaking the "old collection
+            # stays active until the flip succeeds" guarantee. failed/busy/None
+            # must not promote either.
+            if _persist_status not in ("failed", "started", "busy", None):
                 try:
                     pub_cfg, _ = await load_config(version=ver, agent_id=agent_id)
                     if pub_cfg and isinstance(pub_cfg.get("knowledge"), dict):
@@ -416,15 +490,55 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 logger.warning(f"Failed to check docs for reindex: {e}")
 
         if _vec_hash:
-            if reindex_info and reindex_info.get("status") == "failed":
+            _reindex_status = reindex_info.get("status") if reindex_info else None
+            _pub_task_ids = (reindex_info or {}).get("task_ids") or []
+            if _reindex_status == "started" and _pub_task_ids:
+                # Async reindex in flight: promoting now would activate an
+                # empty/still-filling collection and skip the strict flip.
+                # Defer to the SAME strict flip as the Re-index path — it
+                # promotes + persists ONLY after all workers succeed and the
+                # engine still hashes to _vec_hash. The OLD collection stays
+                # active AND busy until the flip's finally releases it, so
+                # concurrent uploads/deletes can't be lost meanwhile.
+                async def _pub_flip_then_release():
+                    try:
+                        await deferred_reindex_complete_and_flip(
+                            agent_id, engine, state, _new_collection, _vec_hash, _pub_task_ids
+                        )
+                    finally:
+                        engine._reindex_in_progress.discard(_old_collection)
+                        engine._reindex_deferred.discard(_old_collection)
+
+                _bg = _asyncio.create_task(_pub_flip_then_release())
+                _BACKGROUND_TASKS.add(_bg)
+                _bg.add_done_callback(_BACKGROUND_TASKS.discard)
+                _bg.add_done_callback(lambda t: t.exception())
+                _flip_spawned = True
+                logger.info(
+                    "Publish: reindex started for %s; deferring strict pointer flip "
+                    "(all workers must succeed). Old collection stays active+busy meanwhile.",
+                    _new_collection,
+                )
+            elif _reindex_status == "failed":
                 logger.error(
                     "Keeping knowledge_config_hash=%r after vector-config migration/reindex failure "
                     "(would have switched to %s)",
                     getattr(state, "knowledge_config_hash", None),
                     _vec_hash,
                 )
+            elif _reindex_status == "started":
+                logger.warning(
+                    "Publish: reindex of %s returned 'started' without task_ids; "
+                    "NOT flipping pointer (would risk an empty active collection).",
+                    _new_collection,
+                )
             else:
+                # No async reindex in flight (target already populated, no docs,
+                # or migration skipped) — safe to promote immediately.
                 state.knowledge_config_hash = _vec_hash
+        # The OLD-collection busy flag set during migration is released once —
+        # in the outer finally for every non-deferred path, or in the flip
+        # wrapper's finally when a deferred flip took ownership.
 
         if reindex_info:
             response_data["reindex"] = reindex_info
@@ -449,6 +563,16 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             )
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if engine is not None and not _flip_spawned and _old_collection is not None:
+            # Safety: release the OLD-collection busy flag on any path that
+            # didn't hand ownership to a deferred flip (errors / early returns).
+            try:
+                engine._reindex_in_progress.discard(_old_collection)
+                engine._reindex_deferred.discard(_old_collection)
+            except Exception:
+                pass
+        _pub_lock.release()
 
 
 @router.get("/config/history")

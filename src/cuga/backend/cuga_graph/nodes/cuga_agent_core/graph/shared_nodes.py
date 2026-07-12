@@ -223,8 +223,9 @@ def create_call_model_node(
                 return approval_command
 
         # ── Metadata update ────────────────────────────────────────────────
-        meta_value = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
-        meta_update = {adapter.metadata_key: meta_value}
+        meta_update = {
+            adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
+        }
 
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
