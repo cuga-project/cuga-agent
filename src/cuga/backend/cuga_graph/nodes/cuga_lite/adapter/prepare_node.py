@@ -324,7 +324,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
 
         _is_subagent = _agent_spawn_depth.get() > 0
-        _inherit_parent_tools = getattr(settings.agent_spawn, "inherit_parent_tools", False)
+        _inherit_parent_tools = getattr(settings.agent_spawn, "inherit_parent_tools", True)
         if _is_subagent and not _inherit_parent_tools:
             skills_cfg_on = False
         _skill_callable_tools: list = []

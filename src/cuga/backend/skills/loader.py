@@ -121,43 +121,6 @@ def _normalize_requirements(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in candidates if str(item).strip())
 
 
-def _normalize_tool_definitions(value: Any, source: Path) -> tuple[dict, ...]:
-    """Normalize the ``tools:`` frontmatter block.
-
-    Each entry's ``import_from`` follows the same dotted-path convention as
-    ``supervisor_config.py``'s agent ``import_from``: everything before the
-    last dot is the module path, the final segment is the attribute to import.
-    """
-    if value is None:
-        return ()
-    if not isinstance(value, (list, tuple)):
-        logger.warning(f"Skill {source}: 'tools' frontmatter must be a list, got {type(value).__name__}")
-        return ()
-
-    out: list[dict] = []
-    for item in value:
-        if not isinstance(item, dict):
-            logger.warning(f"Skill {source}: skipping invalid tool entry {item!r}")
-            continue
-        import_from = item.get("import_from")
-        name = item.get("name")
-        description = item.get("description")
-        if not import_from or not name or not description:
-            logger.warning(
-                f"Skill {source}: tool entry missing required "
-                f"'import_from', 'name', or 'description': {item!r}"
-            )
-            continue
-        out.append(
-            {
-                "import_from": _sanitize_for_prompt(str(import_from).strip(), "tool.import_from", source),
-                "name": _sanitize_for_prompt(str(name).strip(), "tool.name", source),
-                "description": _sanitize_for_prompt(str(description).strip(), "tool.description", source),
-            }
-        )
-    return tuple(out)
-
-
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
@@ -177,7 +140,6 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
             body=body.strip(),
             source=str(path),
             requirements=_normalize_requirements(frontmatter.get("requirements")),
-            tool_definitions=_normalize_tool_definitions(frontmatter.get("tools"), path),
         )
     except Exception as e:
         logger.warning(f"Skipping invalid skill file {path}: {e}")

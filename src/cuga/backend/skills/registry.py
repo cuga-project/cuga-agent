@@ -20,7 +20,6 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
-    tool_definitions: tuple[dict, ...] = ()  # raw dicts from the tools: frontmatter block
 
 
 class SkillRegistry:
@@ -29,9 +28,6 @@ class SkillRegistry:
 
     def summaries(self) -> List[dict[str, str]]:
         return [{"name": e.name, "description": e.description} for e in self._by_name.values()]
-
-    def entries(self) -> List[SkillEntry]:
-        return list(self._by_name.values())
 
     def load_skill(self, name: str) -> str:
         entry = self._by_name.get(name.strip())

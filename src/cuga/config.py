@@ -210,7 +210,7 @@ validators = [
     # Agent spawning
     Validator("agent_spawn.enabled", default=False),
     Validator("agent_spawn.agents_dir", default=".agents/agents"),
-    Validator("agent_spawn.inherit_parent_tools", default=False),
+    Validator("agent_spawn.inherit_parent_tools", default=True),
     Validator("agent_spawn.max_spawn_depth", default=2),
     Validator("agent_spawn.forward_sync_subagent_events", default=True),
     Validator(
