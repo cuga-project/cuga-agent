@@ -32,7 +32,6 @@ dependencies = [
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
-    "langchain-anthropic>=0.3.0",
     "langchain-litellm",
     # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
     "litellm>=1.84.0",

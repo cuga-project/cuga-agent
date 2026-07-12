@@ -80,12 +80,6 @@ sandbox_mode = "native"
 # When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
 enabled = false
 
-[multimodal]
-# Master toggle for multi-modal system tools (analyze_image, pdf_to_images, pptx_to_images).
-# analyze_image is injected when enabled = true.
-# pdf_to_images and pptx_to_images are additionally gated by skills.enabled.
-enabled = true
-
 [agent_spawn]
 # When false, sub-agent spawning via spawn_agent / get_agent_result is fully disabled.
 # Zero overhead in prompt, tools, and timing when disabled (NFR-1).

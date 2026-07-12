@@ -143,14 +143,6 @@ except ImportError:
     logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
     ChatGoogleGenerativeAI = None
 
-try:
-    from langchain_anthropic import ChatAnthropic
-except ImportError:
-    logger.warning(
-        "Langchain Anthropic not installed. Install langchain-anthropic to use platform='anthropic'."
-    )
-    ChatAnthropic = None
-
 
 class LLMManager:
     """Singleton class to manage LLM instances based on agent name and settings"""
@@ -408,18 +400,6 @@ class LLMManager:
             else:
                 default_model = "gpt-4o"
                 logger.info(f"No model_name specified for LiteLLM, using default: {default_model}")
-                return default_model
-        elif platform == "anthropic":
-            env_model_name = os.environ.get('MODEL_NAME')
-            if env_model_name:
-                logger.info(f"Using MODEL_NAME from environment for Anthropic: {env_model_name}")
-                return env_model_name
-            elif toml_model_name:
-                logger.debug(f"Using model_name from TOML: {toml_model_name}")
-                return toml_model_name
-            else:
-                default_model = "claude-opus-4-5-20251101"
-                logger.info(f"No model_name specified for Anthropic, using default: {default_model}")
                 return default_model
         elif platform == "rits":
             env_model_name = os.environ.get('MODEL_NAME')
@@ -1012,38 +992,6 @@ class LLMManager:
                 if api_key:
                     litellm_params["api_key"] = api_key
             llm = ReasoningChatLiteLLM(**litellm_params)
-        elif platform == "anthropic":
-            if ChatAnthropic is None:
-                raise ValueError(
-                    "langchain-anthropic is not installed. Run: pip install 'langchain-anthropic>=0.3.0'"
-                )
-            api_key = _normalize_secret(resolve_secret("ANTHROPIC_API_KEY")) or os.environ.get(
-                "ANTHROPIC_API_KEY"
-            )
-            anthropic_params: Dict[str, Any] = {
-                "model": model_name,
-                "max_tokens": max_tokens,
-                "temperature": 1.0,
-                "default_request_timeout": http_timeout,
-            }
-            if max_tokens >= 2048:
-                configured_budget = model_settings.get("thinking_budget_tokens")
-                budget_tokens = int(configured_budget) if configured_budget else int(max_tokens * 0.6)
-                budget_tokens = max(1024, min(budget_tokens, max_tokens - 1000))
-                anthropic_params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-                logger.debug(
-                    f"Creating Anthropic model {model_name} with thinking budget_tokens={budget_tokens}"
-                )
-            else:
-                logger.debug(
-                    f"Creating Anthropic model {model_name} without thinking (max_tokens={max_tokens} < 2048)"
-                )
-            if api_key:
-                anthropic_params["anthropic_api_key"] = api_key
-            anthropic_base_url = self._get_base_url(model_settings, platform)
-            if anthropic_base_url:
-                anthropic_params["anthropic_api_url"] = anthropic_base_url
-            llm = ChatAnthropic(**anthropic_params)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 

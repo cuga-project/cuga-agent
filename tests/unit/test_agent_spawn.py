@@ -5,17 +5,6 @@ from pathlib import Path
 import pytest
 
 
-# ── Import targets for tool_definitions tests ──────────────────────────────
-
-
-async def _async_fn(x: int) -> str:
-    return str(x)
-
-
-def _sync_fn(x: int) -> str:
-    return str(x)
-
-
 def _make_adapter(spawn_futures=None):
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import AgentGraphAdapter
 
@@ -56,114 +45,10 @@ def test_agent_spawn_defaults():
 
 
 def test_agent_spawn_package_importable():
-    import cuga.backend.agent_spawn  # must not raise
+    import importlib
 
-
-# ── Phase 3b: Tool Builder ─────────────────────────────────────────────────
-
-
-def test_build_tool_from_definition_async_function():
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-    from cuga.backend.agent_spawn.tool_builder import build_tool_from_definition
-
-    defn = ToolDefinition(
-        name="async_tool",
-        description="desc",
-        module="tests.unit.test_agent_spawn",
-        function="_async_fn",
-    )
-    tool = build_tool_from_definition(defn)
-    assert tool.coroutine is not None
-    assert tool.name == "async_tool"
-
-
-def test_build_tool_from_definition_sync_function():
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-    from cuga.backend.agent_spawn.tool_builder import build_tool_from_definition
-
-    defn = ToolDefinition(
-        name="sync_tool",
-        description="desc",
-        module="tests.unit.test_agent_spawn",
-        function="_sync_fn",
-    )
-    tool = build_tool_from_definition(defn)
-    assert tool.func is not None
-    assert tool.name == "sync_tool"
-
-
-def test_build_tool_invalid_module_raises_tool_definition_error():
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-    from cuga.backend.agent_spawn.tool_builder import ToolDefinitionError, build_tool_from_definition
-
-    defn = ToolDefinition(
-        name="bad",
-        description="d",
-        module="nonexistent.module.path",
-        function="fn",
-    )
-    with pytest.raises(ToolDefinitionError, match="Cannot import module"):
-        build_tool_from_definition(defn)
-
-
-def test_build_tool_missing_function_raises():
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-    from cuga.backend.agent_spawn.tool_builder import ToolDefinitionError, build_tool_from_definition
-
-    defn = ToolDefinition(
-        name="bad",
-        description="d",
-        module="tests.unit.test_agent_spawn",
-        function="_no_such_function",
-    )
-    with pytest.raises(ToolDefinitionError, match="no attribute"):
-        build_tool_from_definition(defn)
-
-
-def test_build_tool_missing_args_schema_raises():
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-    from cuga.backend.agent_spawn.tool_builder import ToolDefinitionError, build_tool_from_definition
-
-    defn = ToolDefinition(
-        name="bad",
-        description="d",
-        module="tests.unit.test_agent_spawn",
-        function="_sync_fn",
-        args_schema="NoSuchClass",
-    )
-    with pytest.raises(ToolDefinitionError, match="args_schema"):
-        build_tool_from_definition(defn)
-
-
-def test_skill_entry_tools_block_parsed(tmp_path):
-    from cuga.backend.skills.loader import _parse_skill_file
-
-    skill_dir = tmp_path / "myskill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: myskill\n"
-        "description: My skill\n"
-        "tools:\n"
-        "  - name: my_tool\n"
-        "    description: does stuff\n"
-        "    module: tests.unit.test_agent_spawn\n"
-        "    function: _sync_fn\n"
-        "---\nBody.\n",
-        encoding="utf-8",
-    )
-    entry = _parse_skill_file(skill_dir / "SKILL.md")
-    assert entry is not None
-    assert len(entry.tool_definitions) == 1
-    assert entry.tool_definitions[0]["name"] == "my_tool"
-
-
-def test_build_tools_from_skill_empty_returns_empty():
-    from cuga.backend.agent_spawn.tool_builder import build_tools_from_skill_tool_definitions
-    from cuga.backend.skills.registry import SkillEntry
-
-    entry = SkillEntry(name="s", description="d", body="b", source="/tmp/SKILL.md")
-    assert build_tools_from_skill_tool_definitions(entry) == []
+    mod = importlib.import_module("cuga.backend.agent_spawn")
+    assert mod is not None
 
 
 # ── Phase 4: SpawnAgentRuntime ─────────────────────────────────────────────
@@ -383,7 +268,7 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
     events: list = []
     runtime.set_event_callback(lambda name, data: events.append((name, data)))
 
-    async def _fake_run_stream(agent, task, thread_id, cfg):
+    async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "mocked-answer"
 
     monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
@@ -432,11 +317,11 @@ def test_build_invoke_config_syncs_langfuse_callbacks(monkeypatch):
 
     sync_calls = []
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.langfuse_tracing.sync_langfuse_callbacks_from_config",
+        "cuga.backend.agent_spawn.runtime.sync_langfuse_callbacks_from_config",
         lambda cfg: sync_calls.append(cfg),
     )
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.utils.langfuse_tracing.get_langfuse_invoke_config",
+        "cuga.backend.agent_spawn.runtime.get_langfuse_invoke_config",
         lambda: {"callbacks": []},
     )
 
@@ -454,7 +339,7 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
 
     session_calls = []
     monkeypatch.setattr(
-        "cuga.backend.observability.openlit_init.set_session_attribute",
+        "cuga.backend.agent_spawn.runtime.set_session_attribute",
         lambda sid: session_calls.append(sid),
     )
 
@@ -464,7 +349,7 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
     rt._build_invoke_config = lambda: {}
     rt._build_agent = lambda tools: object()
 
-    async def _fake_run_stream(agent, task, thread_id, cfg):
+    async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "done"
 
     monkeypatch.setattr(rt, "_run_stream", _fake_run_stream)
@@ -482,7 +367,7 @@ async def test_execute_async_calls_set_session_before_create_task(monkeypatch):
     call_order: list[str] = []
 
     monkeypatch.setattr(
-        "cuga.backend.observability.openlit_init.set_session_attribute",
+        "cuga.backend.agent_spawn.runtime.set_session_attribute",
         lambda sid: call_order.append(f"set_session:{sid}"),
     )
 
@@ -497,7 +382,7 @@ async def test_execute_async_calls_set_session_before_create_task(monkeypatch):
     parent_cfg = {"configurable": {"thread_id": "async-thread"}}
     rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
-    async def _fake_execute(task):
+    async def _fake_execute(task, spawn_id=""):
         return "done"
 
     monkeypatch.setattr(rt, "execute", _fake_execute)
