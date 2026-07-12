@@ -1,5 +1,8 @@
 """The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab AND the
-filterable ``events_docs/api/examples.html`` board (keep the two in sync; this file is the source of truth).
+filterable ``events_docs/api/examples.html`` board. This file is the SOLE source of truth: the board's
+data array is generated from it by ``scripts/gen_examples.py`` and locked by a consistency test
+(``test_examples_board_matches_the_catalog``), so add examples HERE and regenerate — never hand-edit
+the HTML array.
 
 Agents are PRE-BUILT (see ``seed.py``); the runtime concierge ROUTES an utterance to one outcome.
 Each example is tagged so it can be filtered by **trigger · channel · integration · phase · live**:
@@ -58,6 +61,36 @@ EXAMPLES = [
         "what does this talk say about attention? https://www.youtube.com/watch?v=iDulhoQ2pro",
         agent="video_qa", channel="web", phase="run", live=True,
         note="cuga-apps: Video QA — cuga-web.get_youtube_transcript + get_youtube_video_info"),
+    _ex("now-yt-research", "Research a topic via YouTube", "now",
+        "what do top YouTube creators say about RAG vs fine-tuning?",
+        agent="youtube_research", channel="web", phase="run", live=True,
+        note="cuga-apps: YouTube Research — web_search + transcripts across several videos"),
+    _ex("now-ailabs", "AI labs digest", "now", "what's new from OpenAI and Anthropic this week?",
+        agent="ai_labs_news", channel="web", phase="run", live=True,
+        note="cuga-apps: AI Labs News — web_search over the labs' blogs; a natural CRON digest"),
+    _ex("now-wiki", "Deep Wikipedia dive", "now",
+        "give me a deep dive on the history of the transistor — key sections + related topics",
+        agent="wiki_dive", channel="web", phase="run", live=True,
+        note="cuga-apps: Wiki Dive — get_article_sections + cross-links, not just the lead"),
+    _ex("now-movies", "Movie recommendations", "now",
+        "recommend movies like Arrival and Interstellar but a bit lighter",
+        agent="movie_recommender", channel="web", phase="run", live=True,
+        note="cuga-apps: Movie Recommender — taste → grounded picks via web_search"),
+    _ex("now-recipe", "Compose a recipe", "now",
+        "a quick vegetarian dinner with chickpeas, spinach and no dairy",
+        agent="recipe_composer", channel="web", phase="run", live=True,
+        note="cuga-apps: Recipe Composer — stateless, grounds ratios/substitutions on the web"),
+    _ex("now-meetups", "Find meetups", "now", "AI/ML meetups in San Francisco in the next two weeks",
+        agent="meetup_finder", channel="web", phase="run", live=True,
+        note="cuga-apps: Meetup Finder — web_search over Meetup/Luma/Eventbrite"),
+    _ex("now-doctor", "Find a doctor", "now",
+        "an experienced pediatric dentist in Austin who's good with anxious kids",
+        agent="find_a_doctor", channel="web", phase="run", live=True,
+        note="cuga-apps: Find a Doctor — geocode + web listings & review snippets"),
+    _ex("now-ibmdocs", "IBM Cloud docs Q&A", "now",
+        "how do I set up autoscaling on IBM Cloud Kubernetes?",
+        agent="ibm_docs_qa", channel="web", phase="run", live=True,
+        note="cuga-apps: IBM Docs Q&A — web_search site:cloud.ibm.com, answer grounded in the doc"),
     _ex("now-feed", "What's new in a feed", "now", "what's new on https://hnrss.org/frontpage ?",
         agent="feed_watcher", channel="web", phase="run", live=True,
         note="cuga-apps: AI Labs News / Newsletter — cuga-web.fetch_feed; the natural CRON/POLL agent"),
@@ -130,6 +163,23 @@ EXAMPLES = [
         "when my system POSTs to my webhook, run the triage agent and reply",
         agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,
         note="GENERIC WEBHOOK-IN — any external system → incident_triage → Slack, no bespoke piece"),
+    _ex("push-webhook-ci", "CI/deploy failure webhook", "push",
+        "when my CI posts a failed build, triage it and tell me what broke",
+        agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,
+        note="same GENERIC WEBHOOK-IN worker, a build-failure payload "
+             "({repo, branch, job, status:failed, log_url}) — proves it isn't monitoring-specific"),
+    _ex("push-webhook-lead", "Form/lead submission webhook", "push",
+        "when a lead form is submitted, summarize it and post to our channel",
+        agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,
+        note="a lead/form payload ({name, email, company, message}) through the same worker — "
+             "arbitrary JSON, no bespoke piece"),
+    _ex("push-webhook-routed", "⭐ Webhook that picks its own agent", "push",
+        "POST any event to /api/events/hook/<name>?route=1 — CUGA routes it like a chat message",
+        agent="(auto-routed)", channel="slack", integration="webhook", phase="run", live=True,
+        star=True,
+        note="ROUTED webhook-IN: the caller names NO agent; the concierge picks the best-fit pre-built "
+             "agent by capability, exactly like a Slack/web chat message (a PR payload → pr_reviewer, a "
+             "payment dispute → incident_triage). Decouples the external system from the agent catalog"),
     _ex("cron-trending", "GitHub trending → Slack (hourly)", "cron",
         "every hour post the top trending GitHub repos in this channel",
         agent="github_trending", channel="slack", phase="run", live=True,

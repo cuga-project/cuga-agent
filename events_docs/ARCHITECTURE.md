@@ -6,16 +6,38 @@ everything lives behind `EVENTS_ENABLED`, and vanilla CUGA is byte-for-byte unch
 The whole layer is self-contained under `src/cuga/backend/events/` (one flat package; the only core
 touch points are two guarded hooks in the server startup).
 
-## The one idea
+## The two pieces
 
-**`/invoke` is the single seam.** Every trigger, channel, and integration normalises its event into
-one envelope — `{agent, source, event}` — and POSTs it to `/invoke`. Upstream is just different ways
-of producing that envelope; downstream is the worker fleet and delivery. Learn this one endpoint and
-the whole system follows.
+The whole system is **create a flow** (arm-time) and **fire a flow** (run-time).
+
+- **CREATE** — connect a credential, then turn an English sentence into a standing flow. The concierge
+  builds the flow and bakes in a *reference* to the credential, never the secret.
+- **FIRE** — a trigger fires, `/invoke` runs the agent, the answer is delivered.
 
 ![system](architecture/system.png)
 
-Two facts that trip everyone up:
+**`/invoke` is the single seam.** Every fire path normalises its event into one envelope —
+`{agent, source, event}` — and POSTs it to `/invoke`. Learn this one endpoint and the rest follows.
+
+## Credentials — set up, transferred, resolved
+
+The agent never sees a token. There are three credential models, and the sequence diagrams below make
+each explicit:
+
+1. **OAuth via AP** (gmail · github · box-AP) — you consent in the browser; the provider redirects to
+   CUGA's callback with an authorization **code**; CUGA hands AP the *code* (not a token); **AP
+   exchanges it and stores an `OAUTH2` connection** and owns the refresh lifecycle.
+2. **Token via AP** (telegram · discord-AP) — you paste a secret; AP stores it as a `SECRET_TEXT`
+   connection.
+3. **Direct env token** (box-direct · slack · discord) — the token lives in CUGA's `.env`
+   (`BOX_DEV_TOKEN`, `SLACK_BOT_TOKEN`); CUGA's own adapter uses it. Still never handed to the agent.
+
+For (1) and (2), the armed flow references the connection as `{{connections['ea::tenant::user::app']}}`.
+**At fire time, AP resolves that reference to the real token inside its own sandbox** and uses it to
+poll/receive — the token never crosses to CUGA or the agent. This is the security boundary
+([ADR-0001](decisions/0001-ap-as-the-event-engine.md), [ADR-0006](decisions/0006-auth-connection-model.md)).
+
+Two other facts that trip everyone up:
 
 - **Activepieces calls back over `HOST_CALLBACK_URL` (podman-internal DNS), not the public tunnel.**
   The public cloudflared tunnel is *inbound only* — it exists so GitHub/Slack webhooks and OAuth
@@ -54,22 +76,35 @@ AP owns that. That is why merging it is non-breaking.
 - **Box backend** (`EVENTS_BOX_BACKEND`): `direct` (CUGA polls Box with a token and **downloads file
   content** server-side, inlining text / base64-ing binary into the prompt) vs the AP push trigger.
 
-## Sequence diagrams — one per flow shape
+## Sequence diagrams
 
-The nine shapes below are genuinely distinct in code; every other trigger/channel/integration
-combination is a variant of one of them.
+Grouped by the two pieces. Credentials (🔑) are called out in every one.
 
-| Diagram | Shows | Distinct because |
+### CREATE — arm-time
+
+**① Connect a credential** — the OAuth handshake, and where the token ends up (AP, forever).
+
+![connect](architecture/create-1-connect-credential.png)
+
+**② Arm a flow** — the concierge turns a sentence into a flow and bakes in the *connection reference*.
+
+![arm](architecture/create-2-arm-flow.png)
+
+### FIRE — run-time
+
+The eight distinct fire shapes. Every other trigger/channel/integration combination is a variant of
+one of these.
+
+| Diagram | Shows | Credential |
 |---|---|---|
-| ![now](architecture/seq-01-now.png) | **NOW** — one-shot question | no AP, no flow; the answer is the HTTP response |
-| ![concierge](architecture/seq-02-concierge.png) | **Concierge** — sentence → armed flow | the NL→flow door; `?flow=1` returns the flow |
-| ![cron/poll](architecture/seq-03-cron-poll.png) | **CRON / POLL** — scheduled fire | AP owns the trigger; callback is internal |
-| ![push github](architecture/seq-04-push-github.png) | **PUSH · GitHub** — webhook trigger | inbound via tunnel; OAuth conn + `admin:repo_hook` |
-| ![push gmail](architecture/seq-05-push-gmail.png) | **PUSH · Gmail** — polling trigger | AP polls; can't be fired out of band |
-| ![push box](architecture/seq-06-push-box.png) | **PUSH · Box** — direct poll + download | no AP; CUGA fetches file *content* server-side |
-| ![channel slack](architecture/seq-07-channel-slack.png) | **Channel · Slack** — direct, signed | no AP; signature-verified; reply in-thread |
-| ![channel telegram](architecture/seq-08-channel-telegram.png) | **Channel · Telegram** — AP backend | polling trigger + AP send (Discord = direct WS bot) |
-| ![webhook](architecture/seq-09-webhook.png) | **Generic webhook** — any system → agent | no AP, no piece; `?key=` guards it |
+| ![now](architecture/fire-1-now.png) | **① NOW** — one-shot question, no flow | none (the tool authenticates at the MCP server) |
+| ![schedule](architecture/fire-2-schedule.png) | **② CRON / POLL** — scheduled fire | none (a pure schedule; agent uses MCP tools) |
+| ![github](architecture/fire-3-push-github.png) | **③ PUSH · GitHub** — webhook trigger | AP resolves the OAuth connection in its sandbox |
+| ![gmail](architecture/fire-4-push-gmail.png) | **④ PUSH · Gmail** — polling trigger | AP resolves the OAuth connection (same model) |
+| ![box](architecture/fire-5-box-direct.png) | **⑤ PUSH · Box** — direct poll + download | CUGA-held `BOX_DEV_TOKEN` (direct model, no AP) |
+| ![slack](architecture/fire-6-channel-slack.png) | **⑥ Channel · Slack** — direct, signed | CUGA-held `SLACK_*` (signing secret + bot token) |
+| ![telegram](architecture/fire-7-channel-telegram.png) | **⑦ Channel · Telegram** — AP backend | AP bot-token connection (Discord = direct WS bot) |
+| ![webhook](architecture/fire-8-webhook.png) | **⑧ Generic webhook** — any system → agent; the agent is either **pinned** (`?agent=`) or **routed** (`?route=1`, the concierge picks it by capability, like chat) | `EVENTS_WEBHOOK_KEY` (unset = open) |
 
 SVG sources + the generator live in [architecture/](architecture/); regenerate with
 `python events_docs/architecture/gen_diagrams.py`.

@@ -20,8 +20,7 @@ Prereqs: `make up` (CUGA on `:8100`, AP on `:8081`) + `make doctor` (creds). The
 
 ```bash
 make test-live                 # 4 channels + 4 flow modes, ~1-2 min, self-cleaning
-make test-live-channels        # web · slack · discord · telegram only
-make test-live-flows           # NOW · CRON · POLL · PUSH · WEBHOOK only
+#   ↳ scope it:  make test-live ARGS="--only channels"   or   ARGS="--only flows"
 make test-suite-now            # EVERY seeded agent, invoked directly (~13 min)
 make test-suite-flows          # cron + poll + push (~5 min)
 make test-matrix               # EVERY trigger mode × EVERY channel sink × EVERY integration (~3-5 min)

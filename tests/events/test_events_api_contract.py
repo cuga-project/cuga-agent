@@ -775,6 +775,22 @@ def test_api_spec_is_golden():
     assert p.returncode == 0, (p.stdout + p.stderr)
 
 
+def test_examples_board_matches_the_catalog():
+    """`events_docs/api/examples.html` is generated from `events/catalog.py` — the same source that
+    powers the Studio Examples tab. Adding an agent + a catalog example but forgetting to regenerate
+    the board leaves the public doc showing fewer flows than the product actually does. This is exactly
+    the drift that hid 8 agents (the cuga-apps set) from the board.
+
+    Fix: `python scripts/gen_examples.py`.
+    """
+    import subprocess
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
+                       capture_output=True, text=True, cwd=root)
+    assert p.returncode == 0, (p.stdout + p.stderr)
+
+
 def test_every_route_appears_in_the_api_reference():
     """`events_docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
     outside this repo can discover. Matching is on the path with `{param}`/`<param>` normalised away,

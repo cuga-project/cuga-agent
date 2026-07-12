@@ -602,6 +602,20 @@ ENDPOINTS = [
                  (404, {"ok": False, "error": "no such agent 'ghost'"},
                   "<code>PUT</code> updates; use <code>POST</code> to create.")]),
 
+    E("GET", "/api/events/docs/{page}", "studio",
+      "Serve an API reference page so the Studio's API tab can embed it.",
+      tier="ui", callers=["studio"],
+      path_params=[("page", "api | spec | examples", "spec")],
+      responses=[(200, "&lt;html&gt;…&lt;/html&gt;",
+                  "The requested page: <code>api</code>=api.html, <code>spec</code>=api_spec.html, "
+                  "<code>examples</code>=examples.html. Files resolve from <code>events_docs/api/</code> "
+                  "(override with <code>EVENTS_DOCS_DIR</code>)."),
+                 (404, {"ok": False, "error": "unknown page"},
+                  "Only those three page names are served."),
+                 (404, {"ok": False, "error": "api_spec.html not found (set EVENTS_DOCS_DIR)"},
+                  "The file isn't where the server looked.")],
+      try_it=False),
+
     E("GET", "/api/events/mcp-servers", "agents",
       "The tool servers a builder may attach to an agent.", tier="ui", callers=["studio"],
       responses=[(200, {"servers": [{"name": "cuga-finance", "hint": "crypto + stock quotes"},
@@ -690,8 +704,10 @@ ENDPOINTS = [
       "Generic inbound webhook: any system POSTs JSON, an agent triages it.",
       tier="edge", callers=["external"], auth="hookkey",
       path_params=[("name", "a label for this hook; free-form", "monitoring")],
-      query=[("agent", "which agent triages the payload", "incident_triage"),
-             ("deliver_to", "channel to post the triage into", "slack"),
+      query=[("agent", "PINNED mode: which agent triages the payload", "incident_triage"),
+             ("route", "ROUTED mode: 1/true/llm → the concierge picks the agent by capability, like "
+                       "chat (the caller need not know the agent catalog). Overrides ?agent", "1"),
+             ("deliver_to", "channel to post the result into", "slack"),
              ("target", "that channel's native id", "C0BEYJ9NATB"),
              ("key", "required iff EVENTS_WEBHOOK_KEY is set", "")],
       body=[("A monitoring alert", {"alert": "HighCPU", "service": "checkout-api",
@@ -715,21 +731,34 @@ ENDPOINTS = [
             ("A form submission", {"name": "Ada", "email": "ada@corp.com",
                                    "message": "Interested in a demo next week."},
              "With <code>?agent=support_digest</code> this becomes a triaged lead in your channel."),
+            ("ROUTED — no agent named (<code>?route=1</code>)", {
+                "type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"},
+             "With <code>?route=1</code> the caller names NO agent — the concierge routes the payload "
+             "to the best-fit pre-built agent exactly the way it routes a Slack/web chat message. The "
+             "response's <code>agent</code> field reports which one it chose. Decouples the external "
+             "system from your agent catalog; add or rename agents and the URL never changes."),
             ("An empty body", {}, "Accepted. The agent is told <code>(empty body)</code> rather than "
              "the request being rejected — a health-check ping still exercises the whole path."),
             ("A non-object body", [1, 2, 3],
              "Arrays and scalars are serialised into the prompt, but "
              "<code>event.payload</code> is only populated when the body is an object — so the agent "
              "sees the text, and structured consumers see <code>{}</code>.")],
-      responses=[(200, {"ok": True, "webhook": "monitoring", "agent": "incident_triage",
-                        "answer": "P1 — checkout-api CPU 97% vs 85% threshold…"}, ""),
+      responses=[(200, {"ok": True, "webhook": "monitoring", "routed": False,
+                        "agent": "incident_triage",
+                        "answer": "P1 — checkout-api CPU 97% vs 85% threshold…"},
+                  "PINNED: <code>agent</code> is the one you named."),
+                 (200, {"ok": True, "webhook": "stripe", "routed": True,
+                        "agent": "incident_triage", "answer": "P1 — payment dispute…"},
+                  "ROUTED (<code>?route=1</code>): <code>agent</code> is the concierge's pick."),
                  (401, {"ok": False, "error": "bad or missing ?key"},
                   "Compared with <code>hmac.compare_digest</code>."),
                  (502, {"ok": False, "webhook": "monitoring", "error": "…"},
                   "The internal <code>/invoke</code> call failed.")],
       notes="No Activepieces, no piece, no connection — it is a thin wrapper over the "
-            "<code>/invoke</code> seam. <b>Unset <code>EVENTS_WEBHOOK_KEY</code> leaves it open</b> to "
-            "anyone who finds the public URL."),
+            "<code>/invoke</code> seam. Two ways to choose the agent: <b>PINNED</b> "
+            "(<code>?agent=</code>) or <b>ROUTED</b> (<code>?route=1</code>, the concierge picks it "
+            "like chat). <b>Unset <code>EVENTS_WEBHOOK_KEY</code> leaves it open</b> to anyone who "
+            "finds the public URL."),
 
     # ── connect ───────────────────────────────────────────────────────────────
     E("GET", "/api/events/connect/{app}", "connect",
@@ -920,6 +949,23 @@ ENDPOINTS = [
                  (400, {"ok": False, "error": "need app, client_id, client_secret"}, ""),
                  (403, {"ok": False, "error": "admin only"}, ""),
                  (501, {"ok": False, "error": "oauth store not configured"}, "")]),
+
+    E("POST", "/api/events/admin/credential", "admin",
+      "Set/modify one connector credential (its .env variable) from the Studio — the universal "
+      "'edit this credential' seam for channels + integrations. Persists to .env and updates the "
+      "live process; whitelisted to the known connector cred keys so the UI can never inject "
+      "arbitrary environment. Reports whether it applied live or needs <code>make reload</code>.",
+      tier="ui", callers=["studio"], auth="admin",
+      body=[("Rotate the Slack bot token (applies live)",
+             {"key": "SLACK_BOT_TOKEN", "value": "xoxb-…"},
+             "Keys in the live set (Slack/Box tokens, OAuth app secrets) apply immediately."),
+            ("Set the Telegram bot token (needs a reload)",
+             {"key": "TELEGRAM_BOT_TOKEN", "value": "123456:ABC-…"},
+             "Read at startup → the response says to run <code>make reload</code>.")],
+      responses=[(200, {"ok": True, "key": "SLACK_BOT_TOKEN", "live": True,
+                        "note": "Saved to .env and applied live — no restart needed."}, ""),
+                 (400, {"ok": False, "error": "'FOO' is not an editable connector credential"}, ""),
+                 (403, {"ok": False, "error": "admin only"}, "")]),
 ]
 
 AUTH_CHIP = {

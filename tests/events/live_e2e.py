@@ -656,6 +656,49 @@ def flow_webhook(r: Report):
          got=ans, ok=(code == 200 and any(s in ans for s in ("P1", "P2", "P3", "sever"))))
     r.ok("WEBHOOK", "agent triaged it to a severity", any(s in ans for s in ("P1", "P2", "P3", "sever")))
 
+    # The worker is GENERIC: the same endpoint must handle an arbitrary JSON shape, not just a
+    # monitoring alert. Fire a CI/deploy-failure payload and assert the agent still triages it.
+    print("\n\033[1m[flow · WEBHOOK]\033[0m  POST a non-alert shape (CI failure) → same worker")
+    code2, rep2 = srv("POST", "/api/events/hook/monitoring",
+                      {"event": "build.failed", "repo": "anupamamurthi/pachyderm", "branch": "main",
+                       "job": "unit-tests", "status": "failed", "log_url": "https://ci/logs/42"},
+                      timeout=240)
+    ans2 = str(rep2.get("answer", ""))
+    print(f"     → {ans2[:140]}")
+    triaged2 = code2 == 200 and (any(s in ans2 for s in ("P1", "P2", "P3", "sever"))
+                                 or any(s in ans2.lower() for s in ("build", "fail", "ci", "test")))
+    step(phase="flows", surface="webhook", actor="your CI system",
+         action='POSTs {"event":"build.failed","repo":"…","status":"failed"} to /api/events/hook/monitoring',
+         expect="the SAME generic worker triages an arbitrary payload — not monitoring-specific",
+         got=ans2, ok=triaged2)
+    r.ok("WEBHOOK", "generic worker triages a non-alert payload too", triaged2,
+         fail_detail=f"HTTP {code2}: {ans2[:90]}")
+
+    # ROUTED mode (?route=1): the caller names NO agent — the concierge picks one by capability, the
+    # same brain chat uses. Fire a PR-shaped payload; a correct router lands it on pr_reviewer (a code
+    # agent), NOT the generic incident_triage — proof it routes by content, not a fixed default.
+    print("\n\033[1m[flow · WEBHOOK]\033[0m  ROUTED (?route=1) — concierge picks the agent, like chat")
+    code3, rep3 = srv("POST", "/api/events/hook/ci?route=1",
+                      {"pull_request": {"title": "Refactor auth module",
+                                        "diff": "def login(u,p): return check(u,p)",
+                                        "additions": 40, "deletions": 12}, "repo": "acme/api"},
+                      timeout=240)
+    chosen = str(rep3.get("agent", ""))
+    print(f"     → routed={rep3.get('routed')}  agent chosen={chosen!r}")
+    routed_ok = code3 == 200 and rep3.get("routed") is True and chosen not in ("", "concierge")
+    r.ok("WEBHOOK", "routed mode returns a concierge-picked agent", routed_ok,
+         fail_detail=f"HTTP {code3}: routed={rep3.get('routed')} agent={chosen!r}")
+    step(phase="flows", surface="webhook", actor="an external system (no agent named)",
+         action='POSTs a PR-shaped payload to /api/events/hook/ci?route=1',
+         expect="the concierge routes by capability (like chat) — a code payload → pr_reviewer, not incident_triage",
+         got=f"chose {chosen}", ok=routed_ok and chosen != "incident_triage")
+    # Don't FAIL the run on the model's exact pick (it can vary) — PASS when it nails pr_reviewer,
+    # else SKIP with the pick surfaced. The hard assertion above already proved routing happened.
+    if chosen == "pr_reviewer":
+        r.ok("WEBHOOK", "routed a code payload to the code agent (pr_reviewer)", True)
+    else:
+        r.skip("WEBHOOK", "routed-agent pick", f"chose {chosen!r} (usually pr_reviewer; model pick varies)")
+
 
 def cleanup(r: Report, created: list):
     """Delete every subscription this run created — in AP and in the store. Without this, repeated

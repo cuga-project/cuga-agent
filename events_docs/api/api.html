@@ -205,6 +205,7 @@
       <tr><td><code>GET /api/events/agents</code></td><td>the pre-built agents visible to this principal (name, prompt, channels, mcp)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>POST /api/events/agents</code> · <code>PUT /api/events/agents/&lt;name&gt;</code> <span class="tag">builder or admin</span></td><td>create / replace an agent spec (on <code>PUT</code> the body's <code>name</code> must match the URL). <code>403</code> without the builder role, <code>400</code> on a bad spec</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/mcp-servers</code></td><td><code>{servers:[{name,tools:[…]}]}</code> — the tool inventory agents draw on; the Studio's agent editor populates its MCP picker from this</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/docs/&lt;page&gt;</code></td><td>serve an API reference page for the Studio's API tab to embed: <code>api</code>=api.html, <code>spec</code>=api_spec.html, <code>examples</code>=examples.html. Files resolve from <code>events_docs/api/</code> (override with <code>EVENTS_DOCS_DIR</code>); <code>404</code> for any other page name</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/examples</code></td><td>tagged catalog examples (channel/integration/trigger/phase/live) for the UI</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/setup-guides</code></td><td>per-connector setup guide with live <code>public_url</code>, cred <code>present</code> status, derived <code>connect</code> type (direct/oauth/token/none)</td><td><span class="pill p-live">Live</span></td></tr>
     </tbody>
@@ -273,16 +274,30 @@
       <code>&lt;EVENTS_PUBLIC_URL&gt;/api/events/hook/&lt;name&gt;</code>. CUGA serialises the payload into
       a prompt, runs an agent on it, and optionally delivers the result to a channel. It is a thin
       wrapper over the same <code>/invoke</code> seam every AP flow uses.</p>
-      <p class="lead"><b>Query:</b> <code>?agent=</code> (default <code>incident_triage</code>) ·
-      <code>?deliver_to=&lt;channel&gt;</code> + <code>?target=&lt;native id&gt;</code> to post the triage
-      into e.g. a Slack channel · <code>?key=</code> — <b>required</b> iff <code>EVENTS_WEBHOOK_KEY</code>
-      is set, compared with <code>hmac.compare_digest</code>. Unset key ⇒ the endpoint is open to anyone
-      who finds the public URL.</p>
-<pre class="blk">curl -X POST "$PUBLIC/api/events/hook/monitoring?agent=incident_triage&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
+      <p class="lead"><b>Choosing the agent — two ways:</b></p>
+      <ul class="lead" style="margin-top:-6px">
+        <li><b>PINNED</b> — <code>?agent=&lt;agent&gt;</code> (default <code>incident_triage</code>). This
+          exact agent handles every event. Deterministic; best for a high-volume, known source.</li>
+        <li><b>ROUTED</b> — <code>?route=1</code> (aliases <code>true</code>/<code>llm</code>). CUGA picks
+          the best-fit agent <b>the same way the chat concierge does</b> — the caller need not know the
+          agent catalog. It can't ask a clarifying question, so it falls back to a generic triage if
+          nothing fits. The chosen agent is echoed back as <code>agent</code>. Costs one router pass.</li>
+      </ul>
+      <p class="lead"><b>Other query:</b> <code>?deliver_to=&lt;channel&gt;</code> + <code>?target=&lt;native id&gt;</code>
+      to post the result into e.g. a Slack channel · <code>?key=</code> — <b>required</b> iff
+      <code>EVENTS_WEBHOOK_KEY</code> is set, compared with <code>hmac.compare_digest</code>. Unset key ⇒
+      the endpoint is open to anyone who finds the public URL.</p>
+<pre class="blk"><span class="c"># PINNED — you name the agent</span>
+curl -X POST "$PUBLIC/api/events/hook/monitoring?agent=incident_triage&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
   -H 'content-type: application/json' \
-  -d '{"alert":"HighCPU","service":"checkout-api","value":97,"threshold":85}'</pre>
-<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"webhook"</span>: <span class="s">"monitoring"</span>,
-  <span class="k">"agent"</span>: <span class="s">"incident_triage"</span>, <span class="k">"answer"</span>: <span class="s">"P1 — checkout-api CPU 97% vs 85% threshold…"</span> <span class="k">}</span></pre>
+  -d '{"alert":"HighCPU","service":"checkout-api","value":97,"threshold":85}'
+
+<span class="c"># ROUTED — CUGA picks the agent, like chat</span>
+curl -X POST "$PUBLIC/api/events/hook/stripe?route=1&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
+  -H 'content-type: application/json' \
+  -d '{"type":"charge.dispute.created","amount":48000,"reason":"fraudulent"}'</pre>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"webhook"</span>: <span class="s">"stripe"</span>, <span class="k">"routed"</span>: <span class="k">true</span>,
+  <span class="k">"agent"</span>: <span class="s">"incident_triage"</span>, <span class="c">// ← the concierge's pick</span> <span class="k">"answer"</span>: <span class="s">"P1 — payment dispute…"</span> <span class="k">}</span></pre>
       <p class="lead"><code>401</code> bad/missing <code>?key</code> · <code>502</code> the internal
       <code>/invoke</code> call failed. An empty body is accepted — the agent is told
       <code>(empty body)</code> rather than the request being rejected.</p>
@@ -334,6 +349,7 @@
       <tr><td><code>POST /api/events/admin/channels/{channel}/arm</code></td><td>Arm a channel INBOUND flow. <b>Slack (direct):</b> nothing to arm in AP — returns <code>{backend:"direct", events_url, signature_verification, note}</code>. Other channels build an AP inbound flow (Discord passes <code>{channel:"&lt;id&gt;"}</code> to poll).</td></tr>
       <tr><td><code>GET /api/events/admin/oauth-apps</code></td><td>Which OAuth providers have client id/secret configured (via UI or .env). <b>No secrets returned.</b></td></tr>
       <tr><td><code>POST /api/events/admin/oauth-apps</code></td><td>Enter a provider's OAuth client id/secret once (UI instead of .env).</td></tr>
+      <tr><td><code>POST /api/events/admin/credential</code></td><td>Set/modify one connector credential (its <code>.env</code> var) from the Studio. Whitelisted to known connector keys; reports live-vs-reload.</td></tr>
     </tbody>
   </table>
 </section>

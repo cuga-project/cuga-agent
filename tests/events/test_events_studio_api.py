@@ -414,11 +414,63 @@ def test_inbound_webhook_triages_and_delivers():
         assert r.status_code == 200, r.text
         b = r.json()
         assert b["ok"] and b["webhook"] == "monitoring" and "P1" in (b["answer"] or "")
+        assert b["routed"] is False                          # PINNED mode
         # the internal /invoke got the payload as text + the direct-channel sink
         inv = posted[0]
         assert inv["agent"] == "incident_triage" and inv["deliver"] is True
         assert inv["source"]["name"] == "slack" and "HighCPU" in inv["text"]
         assert inv["event"]["payload"]["service"] == "checkout-api"
+    finally:
+        _httpx.AsyncClient = _orig
+        os.environ.pop("GATEWAY_TOKEN", None)
+
+
+def test_inbound_webhook_routed_uses_the_concierge():
+    """?route=1 makes the webhook pick the agent the way chat does: it calls /invoke with
+    agent='concierge' (the runtime router) instead of a pinned agent name — so the caller needs to
+    know nothing about the agent catalog. The concierge's chosen agent is echoed back as `agent`."""
+    import httpx as _httpx
+    posted = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            # /invoke's shape when agent='concierge' routed to a worker: meta.agent is the pick
+            return {"ok": True, "answer": "Payment dispute — P1 — open the case",
+                    "meta": {"agent": "incident_triage"}}
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            posted.append(json)
+            return _Resp()
+
+    _orig = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["GATEWAY_TOKEN"] = "gw"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
+                               gateway_token="gw")
+        c = TestClient(app)
+        r = c.post("/api/events/hook/stripe?route=1&deliver_to=slack&target=C1",
+                   json={"type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"})
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["ok"] and b["routed"] is True
+        # the router (not a pinned agent) handled it, and the CHOSEN agent is surfaced to the caller
+        assert b["agent"] == "incident_triage"               # from meta, the concierge's pick
+        inv = posted[0]
+        assert inv["agent"] == "concierge"                   # routed through the chat brain
+        assert inv["deliver"] is True and inv["source"]["name"] == "slack"
+        assert "route it to the most relevant agent" in inv["text"].lower()
+        assert inv["event"]["payload"]["reason"] == "fraudulent"
     finally:
         _httpx.AsyncClient = _orig
         os.environ.pop("GATEWAY_TOKEN", None)
@@ -559,10 +611,10 @@ def test_integrations_box_direct_backend_reports_connected():
         os.environ.pop("EVENTS_BOX_BACKEND", None) if old_be is None else os.environ.__setitem__("EVENTS_BOX_BACKEND", old_be)
 
 
-def test_integrations_github_env_token_reads_auto_connect_pending():
-    """A .env GITHUB_TOKEN auto-connects on startup; if the AP connection isn't there yet (typically
-    the piece isn't installed on a fresh DB), the status reads 'auto_connect_pending' — NOT a bare
-    'not connected' — so it never looks like a UI bug lying about the connection."""
+def test_integrations_github_env_token_does_not_fake_connected():
+    """A .env GITHUB_TOKEN must NOT make github look connected. GitHub is OAuth (piece-github accepts
+    only OAUTH2), so a PAT in .env doesn't auto-connect anything — the status stays 'not_connected'
+    until the user consents. The old 'auto_connect_pending' heuristic was a lie once github went OAuth."""
     class _Engine:
         base = "http://ap"
         project_grain = "tenant"
@@ -576,8 +628,8 @@ def test_integrations_github_env_token_reads_auto_connect_pending():
         app = FastAPI()
         register_events_routes(app, runtime=object(), store=None, concierge=None, engine=_Engine())
         rows = {i["name"]: i for i in TestClient(app).get("/api/events/integrations").json()["integrations"]}
-        assert rows["github"]["status"] == "auto_connect_pending", rows["github"]
-        assert "GITHUB_TOKEN" in rows["github"]["note"]
+        assert rows["github"]["status"] == "not_connected", rows["github"]
+        assert rows["github"]["auth"] == "oauth"        # connect via consent, not a pasted token
     finally:
         os.environ.pop("GITHUB_TOKEN", None) if old is None else os.environ.__setitem__("GITHUB_TOKEN", old)
 

@@ -9,6 +9,7 @@ import {
   Tile,
   Tag,
   Button,
+  CopyButton,
   InlineLoading,
   InlineNotification,
   Modal,
@@ -56,6 +57,12 @@ const RUN_STATUS_TAG: Record<string, string> = {
 function fmtTime(s?: string): string {
   if (!s) return "—";
   try { return new Date(s).toLocaleString(); } catch { return s; }
+}
+
+// subscription.created_at is epoch SECONDS (a float); AP timestamps are ISO strings — hence two helpers.
+function fmtEpoch(secs?: number): string {
+  if (!secs) return "—";
+  try { return new Date(secs * 1000).toLocaleString(); } catch { return String(secs); }
 }
 
 // router outcomes shown on Examples
@@ -225,6 +232,9 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
   const [localBump, setLocalBump] = useState(0);
   const { data, loading, error } = useEndpoint<any[]>(
     api.getEventsAgents, (d) => d.agents ?? [], refresh + localBump);
+  const mcp = useEndpoint<any>(api.getEventsMcpServers, (d) => d, refresh);
+  const explorerUrl = mcp.data?.explorer_url || "http://localhost:8001/docs";
+  const mcpServers: { name: string }[] = mcp.data?.servers || [];
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const openAdd = () => { setEditing(null); setEditorOpen(true); };
@@ -232,11 +242,24 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
   const onClose = (saved: boolean) => { setEditorOpen(false); if (saved) setLocalBump((n) => n + 1); };
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p className="studio-muted" style={{ margin: 0 }}>
           A builder defines agents (skill + tools + connectors); the concierge routes among them.
         </p>
         <Button size="sm" renderIcon={Add} onClick={openAdd}>Add agent</Button>
+      </div>
+      {/* pointer to the MCP tool explorer — where the tools these agents use come from */}
+      <div className="studio-muted" style={{
+        display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16,
+        fontSize: 13, padding: "8px 12px",
+        border: "1px solid var(--cds-border-subtle, #e0e0e0)", borderRadius: 6,
+      }}>
+        <Plug size={16} />
+        <span>Agents draw on <b>MCP tool servers</b> — browse every server's tools (and try them) in the</span>
+        <Button kind="ghost" size="sm" renderIcon={Launch} href={explorerUrl} target="_blank">MCP tool explorer</Button>
+        {mcpServers.length > 0 && (
+          <span style={{ opacity: 0.85 }}>· {mcpServers.map((s) => s.name).join(", ")}</span>
+        )}
       </div>
       <Loader loading={loading} error={error} />
       {!loading && !error && (data?.length ?? 0) === 0 && (
@@ -387,6 +410,14 @@ function SetupTab({ refresh }: { refresh: number }) {
       .then((r) => r.json())
       .then((res) => alert(res.ok ? `${g.label} OAuth app saved (tenant).` : `Failed: ${res.error || "error"}`));
   };
+  // Edit ANY connector credential (its .env variable) in place — persists to .env + applies live where
+  // the value is read at use-time (Slack/Box/OAuth); flags a reload for the boot-time ones (Discord).
+  const setCred = (c: any) => {
+    const v = window.prompt(`Set ${c.key} — ${c.label}\n(value is written to .env)`, "");
+    if (v == null || v === "") return;
+    api.postEventsSetCredential(c.key, v).then((r) => r.json())
+      .then((res) => alert(res.ok ? `${c.key} saved.\n${res.note}` : `Failed: ${res.error || "error"}`));
+  };
   const pill = (label: string, on: boolean, click?: () => void) => (
     <span onClick={click} style={{ cursor: click ? "pointer" : "default", fontSize: 12, fontWeight: 600,
       padding: "2px 10px", borderRadius: 20, marginRight: 6,
@@ -427,12 +458,14 @@ function SetupTab({ refresh }: { refresh: number }) {
           {(g.creds || []).length === 0
             ? <p className="studio-muted" style={{ fontSize: 13 }}>No credentials needed.</p>
             : (g.creds || []).map((c: any) => (
-              <div key={c.key} style={{ fontSize: 13, margin: "3px 0" }}>
+              <div key={c.key} style={{ fontSize: 13, margin: "3px 0", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                 <Tag type={c.present ? "green" : (c.required ? "red" : "gray")} size="sm">
                   {c.present ? "configured ✓" : (c.required ? "set up →" : "optional")}</Tag>
                 <Tag type={c.scope === "tenant" ? "blue" : "purple"} size="sm">
                   {c.scope === "tenant" ? "TENANT" : "USER"}</Tag>
                 <code>{c.key}</code> — {c.label} <span className="studio-muted">({c.where})</span>
+                <Button kind="ghost" size="sm" renderIcon={Edit} onClick={() => setCred(c)}>
+                  {c.present ? "Edit" : "Set"}</Button>
               </div>
             ))}
           {(g.ownership || []).length > 0 && (
@@ -551,6 +584,8 @@ function FlowsTab({ refresh }: { refresh: number }) {
               {s.flow_name && <p className="studio-muted" style={{ fontSize: 12, margin: "0 0 4px" }}>
                 flow <code>{s.flow_name}</code></p>}
               <p className="studio-muted">{s.prompt || `${s.source_type}/${s.source_connector}`}</p>
+              <p className="studio-muted" style={{ fontSize: 11, margin: "4px 0 0" }}>
+                {paused ? "paused" : "enabled"} · armed {fmtEpoch(s.created_at)}</p>
               <div className="studio-card-foot">
                 <Tag type="outline" size="sm">{s.backend}</Tag>
                 <Tag type={paused ? "gray" : "green"} size="sm">{s.status}</Tag>
@@ -666,8 +701,9 @@ function RunsTab({ refresh }: { refresh: number }) {
       {!loading && !error && (
         <>
           <p className="studio-muted" style={{ margin: "0 0 10px", fontSize: 13 }}>
-            Execution log of your standing flows (cron / poll / push). Click a column to sort;
-            filter with the dropdowns. <Button kind="ghost" size="sm"
+            Every execution, newest first — <b>NOW</b> answers (Studio chat + channel DMs) and
+            standing flows (cron / poll / push). Click a column to sort; filter with the dropdowns.
+            <Button kind="ghost" size="sm"
               onClick={() => setTick((t) => t + 1)}>Refresh</Button>
           </p>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
@@ -679,7 +715,7 @@ function RunsTab({ refresh }: { refresh: number }) {
           </div>
           {runs.length === 0 ? (
             <InlineNotification kind="info" lowContrast hideCloseButton title="No runs yet"
-              subtitle="Once a cron/poll/push flow fires, its runs appear here with success/failure and output." />
+              subtitle="Chat with the Concierge or arm a flow — every answer and flow-fire shows up here with status and output." />
           ) : (
             <Table size="sm">
               <TableHead>
@@ -708,7 +744,7 @@ function RunsTab({ refresh }: { refresh: number }) {
             </Table>
           )}
           <p className="studio-muted" style={{ fontSize: 12, marginTop: 8 }}>
-            Showing {sorted.length} of {runs.length}. (NOW chat answers aren't standing flows, so they're not logged here.)
+            Showing {sorted.length} of {runs.length}. NOW = an immediate chat/DM answer; CRON/POLL/PUSH = a standing flow firing.
           </p>
         </>
       )}
@@ -724,38 +760,67 @@ function RunsTab({ refresh }: { refresh: number }) {
 function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: string) => void }) {
   const { data, loading, error } = useEndpoint<any[]>(api.getEventsExamples, (d) => d.examples ?? [], refresh);
   const [starOnly, setStarOnly] = useState(false);
-  // ⭐ recommended starter flows sort first; optional filter to show only them.
-  const items = (data ?? [])
-    .filter((e) => !starOnly || e.star)
-    .sort((a, b) => (b.star ? 1 : 0) - (a.star ? 1 : 0));
+  const [q, setQ] = useState("");
+
+  const query = q.trim().toLowerCase();
+  const items = (data ?? []).filter((e) =>
+    (!starOnly || e.star) &&
+    (!query || `${e.title} ${e.utterance} ${e.agent} ${e.note}`.toLowerCase().includes(query)));
+
+  // group by agent → a long, copy-pasteable list per agent
+  const groups = new Map<string, any[]>();
+  for (const e of items) {
+    const k = e.agent || "—";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(e);
+  }
+  // agents with a ⭐ example first, then alphabetical
+  const agents = [...groups.keys()].sort((a, b) => {
+    const sa = groups.get(a)!.some((e) => e.star) ? 0 : 1;
+    const sb = groups.get(b)!.some((e) => e.star) ? 0 : 1;
+    return sa - sb || a.localeCompare(b);
+  });
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "0 0 12px", flexWrap: "wrap" }}>
-        <p className="studio-muted" style={{ margin: 0, fontSize: 13 }}>
-          Click <b>Try it</b> to load an example into the Concierge. <b>⭐ = recommended starter flow</b>
-          (one per integration + a cron & poll, all via <code>/automate</code>).
+      <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "0 0 14px", flexWrap: "wrap" }}>
+        <p className="studio-muted" style={{ margin: 0, fontSize: 13, flex: "1 1 320px" }}>
+          Prompts grouped by <b>agent</b>. <b>Copy</b> one to paste anywhere, or <b>Try it</b> to load it
+          into the Concierge. <b>⭐ = recommended starter</b>.
         </p>
+        <TextInput id="ex-search" labelText="" size="sm" placeholder="Filter examples…"
+          value={q} onChange={(e: any) => setQ(e.target.value)} style={{ maxWidth: 220 }} />
         <Checkbox id="ex-star-only" labelText="⭐ Recommended only"
           checked={starOnly} onChange={(_e: any, d: any) => setStarOnly(!!d?.checked)} />
       </div>
-      <div className="studio-grid">
-        <Loader loading={loading} error={error} />
-        {items.map((e) => (
-          <Tile key={e.id} className="studio-card"
-            style={e.star ? { borderLeft: "3px solid #f1c21b" } : undefined}>
-            <div className="studio-card-head">
-              <span className="studio-card-title"><Idea size={18} /> {e.title}</span>
-              <Tag type={(OUTCOME_TAG[e.outcome] as any) ?? "gray"} size="sm">{e.outcome}</Tag>
-            </div>
-            <p className="studio-example-utterance">"{e.utterance}"</p>
-            <p className="studio-muted">agent: {e.agent} — {e.note}</p>
-            <div className="studio-card-foot">
-              {e.star && <Tag type="warm-gray" size="sm">★ recommended</Tag>}
-              <Button kind="tertiary" size="sm" onClick={() => onTry(e.utterance)}>Try it</Button>
-            </div>
-          </Tile>
-        ))}
-      </div>
+      <Loader loading={loading} error={error} />
+      {!loading && !error && agents.length === 0 && <p className="studio-muted">No examples match.</p>}
+      {agents.map((agent) => (
+        <div key={agent} style={{ marginBottom: 22 }}>
+          <h4 style={{ margin: "0 0 6px", display: "flex", alignItems: "center", gap: 8 }}>
+            <Bot size={18} /> {agent}
+            <Tag type="cool-gray" size="sm">{groups.get(agent)!.length}</Tag>
+          </h4>
+          {groups.get(agent)!
+            .sort((a, b) => (b.star ? 1 : 0) - (a.star ? 1 : 0))
+            .map((e) => (
+              <div key={e.id} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "7px 0",
+                borderBottom: "1px solid var(--cds-border-subtle, #e0e0e0)",
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span className="studio-example-utterance" style={{ fontSize: 13 }}>
+                    {e.star && <span title="recommended">⭐ </span>}"{e.utterance}"</span>
+                  {e.note && <p className="studio-muted" style={{ margin: "2px 0 0", fontSize: 11 }}>{e.note}</p>}
+                </div>
+                <Tag type={(OUTCOME_TAG[e.outcome] as any) ?? "gray"} size="sm">{e.trigger || e.outcome}</Tag>
+                <CopyButton iconDescription="Copy prompt" feedback="Copied!"
+                  onClick={() => { try { navigator.clipboard.writeText(e.utterance); } catch { /* noop */ } }} />
+                <Button kind="tertiary" size="sm" onClick={() => onTry(e.utterance)}>Try it</Button>
+              </div>
+            ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -840,6 +905,36 @@ function AdminTab({ refresh }: { refresh: number }) {
   );
 }
 
+// The API reference, embedded — both the human-readable guide and the full OpenAPI spec, served by
+// the backend (/api/events/docs/{api,spec,examples}) so they render inside the Studio.
+function ApiTab() {
+  const base = api.getApiBaseUrl();
+  const pages: { key: string; label: string }[] = [
+    { key: "api", label: "API guide" },
+    { key: "spec", label: "OpenAPI spec" },
+    { key: "examples", label: "Examples board" },
+  ];
+  const [page, setPage] = useState("api");
+  const url = `${base}/api/events/docs/${page}`;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <p className="studio-muted" style={{ margin: 0, fontSize: 13, flex: "1 1 240px" }}>
+          The events API reference, embedded — the human-readable guide and the full OpenAPI spec.
+        </p>
+        {pages.map((p) => (
+          <Button key={p.key} size="sm" kind={page === p.key ? "primary" : "tertiary"}
+            onClick={() => setPage(p.key)}>{p.label}</Button>
+        ))}
+        <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank">Open full page</Button>
+      </div>
+      <iframe title="API reference" src={url}
+        style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
+                 borderRadius: 6, background: "#fff" }} />
+    </div>
+  );
+}
+
 // ---- page --------------------------------------------------------------------
 export function StudioPage() {
   const navigate = useNavigate();
@@ -913,6 +1008,7 @@ export function StudioPage() {
             <Tab renderIcon={Flow}>Flows</Tab>
             <Tab renderIcon={Activity}>Runs</Tab>
             <Tab renderIcon={Idea}>Examples</Tab>
+            <Tab renderIcon={Launch}>API</Tab>
             <Tab renderIcon={User}>Profile</Tab>
             <Tab renderIcon={Settings}>Admin</Tab>
           </TabList>
@@ -925,6 +1021,7 @@ export function StudioPage() {
             <TabPanel><FlowsTab refresh={refresh} /></TabPanel>
             <TabPanel><RunsTab refresh={refresh} /></TabPanel>
             <TabPanel><ExamplesTab refresh={refresh} onTry={onTry} /></TabPanel>
+            <TabPanel><ApiTab /></TabPanel>
             <TabPanel><ProfileTab refresh={refresh} /></TabPanel>
             <TabPanel><AdminTab refresh={refresh} /></TabPanel>
           </TabPanels>

@@ -62,7 +62,7 @@ stop() {
   echo "stopping events services…"
   for p in "$RUN"/*.pid; do [ -f "$p" ] && kill "$(cat "$p")" 2>/dev/null && rm -f "$p" || true; done
   pkill -f "uvicorn cuga.backend.tools_env.registry" 2>/dev/null || true
-  pkill -f "events_up_server.py" 2>/dev/null || true
+  pkill -f "scripts/events_server.py" 2>/dev/null || true
   pkill -f "cloudflared tunnel" 2>/dev/null || true    # kills BOTH tunnel agents (AP + CUGA)
   pkill -f "ngrok http" 2>/dev/null || true            # ngrok agent (when EVENTS_NGROK_DOMAIN is set)
   echo "stopped."
@@ -85,13 +85,14 @@ if [ "${1:-}" = "--public-url" ]; then export_public_url; print_public_url; exit
 # webhook/redirect wired to them) do NOT change. This is the cheap inner loop; use it instead of a
 # full restart whenever you didn't touch AP or the tunnels.
 if [ "${1:-}" = "--reload" ]; then
-  [ -f "$RUN/events_up_server.py" ] || { echo "no prior run to reload — start it first: scripts/events_up.sh"; exit 1; }
+  [ -f "$RUN/cuga.pid" ] || { echo "no prior run to reload — start it first: scripts/events_up.sh"; exit 1; }
   echo "reloading CUGA server (keeping registry + tunnels)…"
   [ -f "$RUN/cuga.pid" ] && kill "$(cat "$RUN/cuga.pid")" 2>/dev/null || true
-  pkill -f "events_up_server.py" 2>/dev/null || true
+  pkill -f "scripts/events_server.py" 2>/dev/null || true
   sleep 2
   export_public_url   # keep the server's EVENTS_PUBLIC_URL matched to the (unchanged) live tunnel
-  .venv/bin/python "$RUN/events_up_server.py" > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
+  export CUGA_REPO="$REPO" EVENTS_CUGA_PORT="$CUGA_PORT" EVENTS_REGISTRY_URL="http://localhost:$REGISTRY_PORT"
+  .venv/bin/python scripts/events_server.py > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
   for i in $(seq 1 30); do
     curl -s --max-time 3 "http://localhost:$CUGA_PORT/api/events/status" >/dev/null 2>&1 && break
     kill -0 "$(cat "$RUN/cuga.pid")" 2>/dev/null || { echo "CUGA died — see $RUN/cuga.log"; tail -15 "$RUN/cuga.log"; exit 1; }
@@ -144,27 +145,10 @@ export_public_url
 echo "   EVENTS_PUBLIC_URL = ${EVENTS_PUBLIC_URL:-<none — tunnel not up yet>}"
 
 echo "== CUGA server :$CUGA_PORT =="
-cat > "$RUN/events_up_server.py" <<PY
-import os
-repo = "$REPO"
-for line in open(os.path.join(repo, ".env")):
-    line = line.strip()
-    if not line or line.startswith("#") or "=" not in line: continue
-    k, v = line.split("=", 1); v = v.split(" #", 1)[0].strip().strip('"').strip("'")
-    os.environ.setdefault(k.strip(), v)
-os.environ["EVENTS_ENABLED"] = "1"
-os.environ.setdefault("EVENTS_WORKER_BACKEND", "cuga")
-os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
-os.environ.setdefault("EVENTS_USER_ID", "admin")   # web Studio browses as admin (matches telegram identity)
-os.environ.setdefault("EVENTS_DB", os.path.join(os.getcwd(), ".events.db"))  # persist subs/identity across restarts
-# arXiv/Semantic Scholar are ~5.5s/call from here; the papers agent does several calls + retries,
-# which blows the 30s default sandbox timeout. 120s gives slow external APIs room to complete.
-os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
-os.environ["DYNACONF_SERVER_PORTS__REGISTRY_HOST"] = "http://localhost:$REGISTRY_PORT"
-import uvicorn
-uvicorn.run("cuga.backend.server.main:app", host="127.0.0.1", port=$CUGA_PORT, log_level="warning")
-PY
-.venv/bin/python "$RUN/events_up_server.py" > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
+# The launcher is a version-controlled file (scripts/events_server.py), not a temp file — so it shows
+# up in `ps` as a recognisable path and is reviewable. Ports/registry/repo come from the env.
+export CUGA_REPO="$REPO" EVENTS_CUGA_PORT="$CUGA_PORT" EVENTS_REGISTRY_URL="http://localhost:$REGISTRY_PORT"
+.venv/bin/python scripts/events_server.py > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
 
 echo "== waiting for CUGA (first boot is slow) =="
 for i in $(seq 1 90); do

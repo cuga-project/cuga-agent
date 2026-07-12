@@ -87,6 +87,57 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                   prompt="Plan an outdoor day near a place. Geocode it (geocode), then find hikes "
                          "(find_hikes) and attractions (search_attractions), and check the weather "
                          "(get_weather) before recommending. Give 3-5 options with distance and a reason."),
+        # ── more cuga-apps ports (cuga-apps/apps/*) — each mapped onto the generic cuga-* tool
+        #    servers (the apps' bespoke tools aren't in this registry, so we do it the github_trending
+        #    way: reach the same goal with web_search / fetch_webpage / the knowledge+geo tools) ──
+        AgentSpec(name="ai_labs_news", backend=b, mcp_servers=["cuga-web"],
+                  channels=["web", "slack", "telegram"],   # digest-y → demoes scheduled delivery
+                  prompt="Produce a glanceable digest of the latest posts from the major AI labs "
+                         "(OpenAI, Anthropic, Google DeepMind, Meta AI, Mistral, …). Use web_search / "
+                         "fetch_feed / fetch_webpage to pull their recent blog & research posts. If the "
+                         "user names labs or topics, focus there. List newest-first: lab · title · date · "
+                         "one-line takeaway. Built to run on a schedule — when asked what's new, report "
+                         "ONLY posts you have not reported before."),
+        AgentSpec(name="wiki_dive", backend=b, mcp_servers=["cuga-knowledge"], channels=web,
+                  prompt="Deep-dive a topic on Wikipedia — not just the lead. search_wikipedia to find "
+                         "the article, get_article_summary for the intro, then get_article_sections to "
+                         "read specific sections in depth, following cross-links to related articles. "
+                         "Synthesize a structured explanation, cite the sections used, and point to "
+                         "related articles worth reading next."),
+        AgentSpec(name="movie_recommender", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Recommend movies/shows from a free-form description of the user's taste. You "
+                         "are STATELESS — infer everything from the current message (liked titles, mood, "
+                         "genre, era, constraints). Use web_search to ground picks in real, current "
+                         "titles and reviews. Return 4-6 recommendations, each with a one-line "
+                         "why-you'll-like-it tied to what they said. Never assume a preference unstated."),
+        AgentSpec(name="recipe_composer", backend=b, mcp_servers=["cuga-web", "cuga-text"], channels=web,
+                  prompt="Compose a recipe from a free-form request. You are STATELESS — use only what "
+                         "the message states (ingredients on hand, cuisine, diet, allergies, time). Use "
+                         "web_search to ground techniques, ratios, and substitutions when unsure. Return "
+                         "a titled recipe: ingredients with quantities, numbered steps, total time, and "
+                         "one substitution tip. Never assume a pantry item or restriction not stated."),
+        AgentSpec(name="meetup_finder", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Find upcoming events/meetups (tech/AI by default) for a topic + city + "
+                         "timeframe. Use web_search and fetch_webpage over Meetup, Luma, and Eventbrite "
+                         "discovery pages. List 5-8 soonest-first: name · date · venue/online · one-line "
+                         "what-and-who, each linked. Say a source had nothing rather than inventing events."),
+        AgentSpec(name="youtube_research", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Research a topic across YouTube. Given a topic (no URL), web_search for the "
+                         "best videos, then get_youtube_video_info + get_youtube_transcript on the top "
+                         "few and synthesize what the creators actually say — attributing points to "
+                         "specific videos. Given a URL, answer from that video's transcript. Quote "
+                         "transcripts; note when a video has none. (Broader than video_qa's single video.)"),
+        AgentSpec(name="find_a_doctor", backend=b, mcp_servers=["cuga-web", "cuga-geo"], channels=web,
+                  prompt="Help find a good doctor/provider in a location, grounded in real listings and "
+                         "review snippets. Geocode the location if useful (cuga-geo), then web_search "
+                         "trusted directories and fetch_webpage the best listings for specialty, "
+                         "experience, and patient-review signals. Return 3-6 candidates: name · specialty "
+                         "· location · why they fit (with a source). Never fabricate a provider or review."),
+        AgentSpec(name="ibm_docs_qa", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  prompt="Answer IBM Cloud questions from real IBM documentation. For each question, "
+                         "web_search with `site:cloud.ibm.com` or `site:ibm.com` prepended, review the "
+                         "snippets, fetch_webpage the most relevant doc, and answer grounded in it. Cite "
+                         "the doc URL. If the docs don't cover it, say so rather than guessing."),
         # agents that ACT ON integrations — these drive the per-user login (OAuth) story
         AgentSpec(name="mailbot", backend=b, mcp_servers=["cuga-text"], channels=web,
                   integrations=[{"app": "gmail", "ownership": "per-user"}],

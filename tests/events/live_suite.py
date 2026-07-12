@@ -196,8 +196,17 @@ POLL_CASES = [
      "watch bitcoin every 2 minutes and ping me on any move", PASS, ""),
     ("poll/weatherbot/web", "POLL", "web",
      "check the New York weather every hour and ping me only if rain is forecast", PASS, ""),
+    # XFAIL: the NL→flow gap (GAPS.md) in one line. The planner deterministically routes
+    # "check <URL> every 15 minutes and tell me only about new items" to CRON, not POLL — "check … every N"
+    # reads as a schedule and the "only about new items" change-signal isn't weighted enough to flip it.
+    # The other two POLL cases ("watch … on any move", "… only if rain") classify correctly, so the POLL
+    # machinery is fine; this is classification, not plumbing. A typed FlowSpec + validation gate is the fix.
     ("poll/feed_watcher/discord", "POLL", "discord",
-     "check https://hnrss.org/frontpage every 15 minutes and tell me only about new items", PASS, ""),
+     "check https://hnrss.org/frontpage every 15 minutes and tell me only about new items", XFAIL,
+     "NL→flow gap: 'check <URL> every N minutes' is deterministically classified CRON, not POLL, even "
+     "with a 'only new items' change-signal (verified 3/3 on the dry-run planner 2026-07-10). POLL "
+     "itself works — the pricebot/weatherbot POLL cases pass. Fix is the typed FlowSpec + validation "
+     "gate tracked in ROADMAP.md, not a plumbing bug."),
 ]
 
 
@@ -460,17 +469,14 @@ def phase_push(r: Report, ap_live: bool, conn: dict, created: list):
         ("push/github/web", "github", "web",
          (f"when a pull request opens on {repo}, summarize it and message me" if repo
           else "when a pull request opens on my repo, summarize it and message me"),
-         XFAIL,
-         "AP's stored github token is STALE. Root-caused 2026-07-09: ap_engine.ensure_secret_connection "
-         "(ap_engine.py:465) returns early when the externalId already exists — it NEVER updates the "
-         "secret. So rotating GITHUB_TOKEN in .env, and even pasting a fresh PAT via the Studio's "
-         "Connect button, silently no-op. AP keeps the old token, GitHub answers 401 Bad credentials "
-         "when the piece creates the repo webhook (TRIGGER_UPDATE_STATUS), and the concierge relays "
-         "'reconnect with a token that can manage webhooks' — which the model paraphrases as CONNECT "
-         "NEEDED. The gate itself is innocent: it logs exists=True. The .env PAT is fine (verified: it "
-         "creates a webhook with HTTP 201). FIX: make ensure_secret_connection UPDATE on mismatch. "
-         "Until then: delete the AP connection, then re-connect. "
-         "Without GITHUB_TEST_REPO it instead (correctly) asks which repo to watch."),
+         PASS if repo else XFAIL,
+         "" if repo else
+         "No GITHUB_TEST_REPO set, so the utterance says 'my repo' — the concierge correctly asks "
+         "*which* repo to watch (needs-input, not a bug). GitHub is OAuth-connected; when "
+         "GITHUB_TEST_REPO=owner/repo is set, this case ARMS a real PUSH watcher (which creates a "
+         "real repo webhook) and passes. Verified live 2026-07-10: named-repo arming + a synthetic-PR "
+         "fire through pr_reviewer both work. Set GITHUB_TEST_REPO to a repo whose webhooks you may "
+         "manage to turn this green."),
     ]
     for cid, app, ch, utter, expect, why in cases:
         if left() < 60:

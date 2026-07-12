@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live test-live-channels test-live-flows test-suite test-suite-now test-suite-flows test-matrix test-fire test-fire-now test-report report api-spec test-live-integrations sync
+.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -109,29 +109,17 @@ test-all: ## All OFFLINE tests (events + unit; no live stack). NB: some tests/un
 test-live: ## Live e2e — 4 channels + 4 flow modes. Needs the stack up (make up) + creds (make doctor)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_e2e.py $(ARGS)
 
-test-live-channels: ## Live e2e, channels only (web · slack · discord · telegram)
-	@$(MAKE) --no-print-directory test-live ARGS="--only channels"
+test-suite-now: ## Live suite — every seeded agent, invoked directly (asserts on meta.mcp)
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only now $(ARGS)
 
-test-live-flows: ## Live e2e, flow modes only (NOW · CRON · POLL · PUSH · WEBHOOK)
-	@$(MAKE) --no-print-directory test-live ARGS="--only flows"
-
-test-suite: ## Live behavioural suite — NOW (all agents) → channels → cron → poll → push (~8 min)
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py $(ARGS)
-
-test-suite-now: ## Live suite, NOW phase only — every seeded agent, invoked directly
-	@$(MAKE) --no-print-directory test-suite ARGS="--only now"
-
-test-suite-flows: ## Live suite, cron + poll + push phases only
-	@$(MAKE) --no-print-directory test-suite ARGS="--only flows"
+test-suite-flows: ## Live suite — cron + poll + push (English sentence → the right AP flow)
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only flows $(ARGS)
 
 test-matrix: ## Live matrix — every trigger mode × every channel sink × every integration (~5 min)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_matrix.py $(ARGS)
 
 test-fire: ## Live FIRE — arm a 1-min schedule, WAIT for a real tick, read back the answer (~9 min)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_fire.py $(ARGS)
-
-test-fire-now: ## Live fire, synchronous surfaces only (NOW · channel · webhook) — fast
-	@$(MAKE) --no-print-directory test-fire ARGS="--only now channel webhook"
 
 test-report: ## Run EVERY harness in order → one timestamped, commit-stamped report, md + html (~40 min)
 	$(PY) scripts/run_all_tests.py $(ARGS)
@@ -146,8 +134,6 @@ api-spec: ## Regenerate events_docs/api/api_spec.html and SERVE it (Try-it needs
 	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
 	@$(PY) -m http.server 8123 --directory events_docs/api
 
-test-live-integrations: ## The older integration-focused harness (Box · GitHub · Gmail)
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py
 
 doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py

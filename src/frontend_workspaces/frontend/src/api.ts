@@ -526,6 +526,16 @@ export function eventsConnectUrl(app: string, ownership?: string): string {
   return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}${own}`;
 }
 
+// Set/modify one connector credential (its .env variable) from the Studio — persists to .env AND
+// applies live where the value is read at use-time (Slack/Box/OAuth-app). Admin only.
+export async function postEventsSetCredential(key: string, value: string): Promise<Response> {
+  return apiFetch("/api/events/admin/credential", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value }),
+  });
+}
+
 // Token apps (GitHub PAT / Telegram bot): store a pasted token as a per-user OR tenant connection.
 export async function postEventsConnectToken(app: string, token: string, ownership?: string): Promise<Response> {
   return apiFetch(`/api/events/connect/${encodeURIComponent(app)}/token`, {
