@@ -358,6 +358,30 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    MODEL_NAME=openai/gpt-4o                    # Override model name
     ```
 
+### Option 7: RITS Support
+**Setup Instructions:**
+1. Obtain a RITS API key from the RITS platform admin.
+2. Add to your `.env` file:
+   ```env
+   # RITS Configuration — direct RITS endpoint (default preset)
+   RITS_API_KEY=your-rits-api-key  # pragma: allowlist secret
+   AGENT_SETTING_CONFIG="settings.rits.toml"
+
+   # Optional overrides — update MODEL_NAME and RITS_BASE_URL together for
+   # direct RITS setups, since each model has a model-specific URL path.
+   # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
+   MODEL_NAME=google/gemma-4-31B-it
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   ```
+
+To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
+
+**Default Values:**
+
+- Model: `google/gemma-4-31B-it` (direct preset)
+- Base URL: gemma-4-31B-it `/v1` endpoint on the RITS 3scale apicast host (direct preset)
+- Local proxy URL: `http://localhost:4000` (proxy preset)
+
 
 ## Configuration Files
 
@@ -368,6 +392,8 @@ CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 - `settings.azure.toml` - Azure OpenAI configuration
 - `settings.groq.toml` - Groq configuration
 - `settings.openrouter.toml` - OpenRouter configuration
+- `settings.rits.toml` - RITS configuration (direct endpoint)
+- `settings.rits.proxy.toml` - RITS configuration (local LiteLLM proxy fronting RITS)
 
 Each file contains agent-specific model settings that can be overridden by environment variables.
 

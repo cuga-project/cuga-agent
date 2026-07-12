@@ -15,6 +15,7 @@ import {
   NumberInput,
   Select,
   SelectItem,
+  ActionableNotification,
   InlineNotification,
   InlineLoading,
   Theme,
@@ -35,6 +36,7 @@ import {
 import { Upload, TrashCan, Search, Renew, Document, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 import * as api from "../../frontend/src/api";
+import { EnvPresetsPanel } from "./EnvPresetsPanel";
 import "./ConfigModal.css";
 
 // ---------------------------------------------------------------------------
@@ -43,7 +45,7 @@ import "./ConfigModal.css";
 interface ReindexTask {
   task_id: string;
   filename?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   file_tasks?: Record<
     string,
     {
@@ -380,7 +382,16 @@ interface KnowledgePanelProps {
   knowledgeReindexNeeded?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
-  onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
+  // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
+  // the tile can render real filenames from millisecond 0 — no
+  // task_xxx flicker waiting for the first /tasks GET to complete.
+  // Backwards-compatible: missing/undefined falls back to placeholder
+  // rows that get enriched by polling, same as before.
+  onReindex?: () => Promise<{
+    count: number;
+    task_ids: string[];
+    tasks?: { task_id: string; filename: string }[];
+  } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
   // Auto-reindex bubbled down from ManagePage: when a draft PATCH
@@ -398,6 +409,18 @@ interface KnowledgePanelProps {
   // without this, the snapshot only updates on Publish, and the banner
   // persists indefinitely after a successful auto-reindex.
   onAutoReindexComplete?: () => void;
+  // Fired when polling reaches terminal state — regardless of success
+  // OR partial failure. Distinct from ``onAutoReindexComplete``:
+  //   - onAutoReindexComplete fires ONLY on full success (5/5 done, 0 failed)
+  //     → ManagePage refreshes snapshot
+  //   - onReindexFinished fires on ANY terminal state (done=true)
+  //     → ManagePage clears ``knowledgeReindexing`` so autosave can resume
+  // The split exists because the snapshot-refresh side-effect is unsafe
+  // on partial-failure (snapshot would claim success that didn't happen),
+  // but the autosave-unblock side-effect is safe either way (workers are
+  // demonstrably no longer running).
+  // Workflow w5i1mbchd / #398 follow-up v2.
+  onReindexFinished?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -413,6 +436,29 @@ interface KnowledgePanelProps {
   // affordance only — never sees a real 422 today).
   adaptationServerError?: AdaptationServerError | null;
   onAdaptationServerError?: (error: AdaptationServerError | null) => void;
+  // Draft autosave status driven by the actual PATCH lifecycle (NOT a
+  // setTimeout). The prior implementation here used a 1500ms timer to
+  // claim "Saved" whether or not the network call actually returned;
+  // the user couldn't distinguish a real save from a silent network
+  // failure (the literal bug they hit). Now sourced from ManagePage's
+  // PATCH .then/.catch handlers — every state corresponds to a real
+  // network event. ``onRetryDraftSave`` re-fires the PATCH from the
+  // "failed" state.
+  draftSaveStatus?:
+    | { kind: "idle" }
+    | { kind: "saving" }
+    | { kind: "saving-slow" }
+    | { kind: "saved" }
+    | { kind: "failed"; error: string };
+  onRetryDraftSave?: () => void;
+  // Dismiss the failure banner WITHOUT retrying (parent resets draftSaveStatus
+  // to idle). The banner's close button uses this; the explicit "Retry" button
+  // uses onRetryDraftSave.
+  onDismissDraftSave?: () => void;
+  // Fired on an explicit env-preset "Use" click so the parent can bypass
+  // the keystroke-coalesce debounce on the autosave PATCH. No payload —
+  // the config change itself goes through onKnowledgeConfigChange.
+  onPresetApplied?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,9 +480,14 @@ export default function KnowledgePanel({
   autoReindexTrigger,
   onAutoReindexConsumed,
   onAutoReindexComplete,
+  onReindexFinished,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
+  draftSaveStatus,
+  onRetryDraftSave,
+  onDismissDraftSave,
+  onPresetApplied,
 }: KnowledgePanelProps) {
   // Uncontrolled-with-initial-value: seed from the prop on first render
   // (the modal is unmounted on close so the prop is always fresh on next
@@ -640,30 +691,31 @@ export default function KnowledgePanel({
     }
   }, [resetTarget, defaultsCache, knowledgeConfig, onKnowledgeConfigChange, onToast]);
 
-  // Save-state indicator: when the user edits a knowledge field, the actual
-  // PATCH happens in ManagePage's debounced effect (800 ms). We can't easily
-  // capture the completion signal from here, so we track it locally based on
-  // change-vs-quiescence. Carbon for AI recommends always surfacing
-  // persistence state so users know what's actually committed. The failure
-  // case is already covered by the toast in ManagePage.
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
-  const knowledgeConfigSig = JSON.stringify(knowledgeConfig ?? {});
-  const firstSigRef = useRef<string | null>(null);
+  // Save-state indicator: driven by the parent's ``draftSaveStatus`` prop,
+  // which is sourced from the actual PATCH lifecycle in ManagePage
+  // (.then/.catch handlers). The prior implementation here used a 1500ms
+  // setTimeout to claim "Saved" whether or not the network call had
+  // returned — the literal bug behind the user's "I changed to Watsonx
+  // but logs show bge-small still" report. Now every visible state
+  // corresponds to a real network event. The "saved" pill auto-hides
+  // after 3s of quiescence via the local ``recentlySaved`` flag below
+  // so the user doesn't see a permanent "Saved" sticker.
+  const saveState: "idle" | "saving" | "saving-slow" | "saved" | "failed" = (() => {
+    if (!draftSaveStatus || draftSaveStatus.kind === "idle") return "idle";
+    if (draftSaveStatus.kind === "saving") return "saving";
+    if (draftSaveStatus.kind === "saving-slow") return "saving-slow";
+    if (draftSaveStatus.kind === "saved") return "saved";
+    return "failed";
+  })();
+  const [recentlySaved, setRecentlySaved] = useState(false);
   useEffect(() => {
-    if (firstSigRef.current === null) {
-      firstSigRef.current = knowledgeConfigSig;
-      return;
+    if (saveState === "saved") {
+      setRecentlySaved(true);
+      const t = setTimeout(() => setRecentlySaved(false), 3000);
+      return () => clearTimeout(t);
     }
-    if (firstSigRef.current === knowledgeConfigSig) return;
-    firstSigRef.current = knowledgeConfigSig;
-    setSaveState("saving");
-    const t1 = setTimeout(() => setSaveState("saved"), 1500); // match ManagePage's ~800ms debounce + small buffer
-    const t2 = setTimeout(() => setSaveState("idle"), 4000);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [knowledgeConfigSig]);
+    setRecentlySaved(false);
+  }, [saveState, draftSaveStatus]);
 
   // Reindex progress state
   const [reindexProgress, setReindexProgress] = useState<{
@@ -690,6 +742,34 @@ export default function KnowledgePanel({
     const id = setInterval(() => setElapsedTick((n) => n + 1), 1000);
     return () => clearInterval(id);
   }, [reindexProgress?.startedAt, reindexProgress?.done]);
+
+  // Auto-dismiss the success notification ~3.5s after a clean reindex.
+  // Why: the "Re-index complete" green InlineNotification used to stay
+  // up until the user clicked X. If the user changed profile right
+  // after a successful reindex, the new "Re-index to apply your
+  // changes" banner was suppressed by the still-visible success
+  // (the banner trigger gates on ``!reindexProgress``, so the next
+  // need-reindex signal couldn't surface until the success was
+  // dismissed). Auto-dismiss on success only — on failure (failed > 0)
+  // we keep the banner up because the user needs to see what failed
+  // and the close-X is the way they acknowledge the warning.
+  //
+  // Edge cases this handles:
+  //   - User changes profile mid-celebration: success dismisses on its
+  //     own, the new "Re-index to apply" banner takes its place.
+  //   - User clicks X during the 3.5s window: cleanup clears the timer,
+  //     no late setState.
+  //   - User closes + reopens modal: reindexProgress is local state,
+  //     resets to null on remount, so the success can't re-fire.
+  //   - User starts another reindex during the window: setReindexProgress
+  //     for the new run resets ``done`` to false; the auto-dismiss
+  //     effect re-evaluates and finds ``!done`` so it doesn't fire.
+  useEffect(() => {
+    if (!reindexProgress?.done) return;
+    if (reindexProgress.failed > 0) return;
+    const t = setTimeout(() => setReindexProgress(null), 3500);
+    return () => clearTimeout(t);
+  }, [reindexProgress?.done, reindexProgress?.failed]);
 
   // Snapshot the documents at reindex-start so the list keeps rendering
   // the user's files (with their ingest dates) throughout the upgrade —
@@ -916,26 +996,59 @@ export default function KnowledgePanel({
   // subscribe). Extracted from the POST flow so a profile-switch migration
   // gets identical progress UI without the user having to click Reindex
   // a second time.
-  const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
+  // #402: merge backend tasks by task_id over the placeholder list so a
+  // partial poll (some tasks not yet visible in metadata) doesn't drop
+  // placeholder rows — the tile keeps showing all N rows from the moment
+  // Re-index fires, enriched with filename + status as they arrive.
+  const mergeTasksById = useCallback(
+    (taskIds: string[], placeholders: ReindexTask[], backendTasks: ReindexTask[]): ReindexTask[] => {
+      const byId = new Map<string, ReindexTask>(placeholders.map((t) => [t.task_id, t]));
+      for (const t of backendTasks) {
+        const enriched = { ...t, filename: getReindexTaskFilename(t) };
+        const prev = byId.get(t.task_id);
+        byId.set(t.task_id, prev ? { ...prev, ...enriched } : enriched);
+      }
+      return taskIds.map(
+        (id) => byId.get(id) ?? { task_id: id, status: "pending" as const },
+      );
+    },
+    [],
+  );
+
+  const armReindexFromTaskIds = useCallback(
+    async (
+      taskIds: string[],
+      total: number,
+      seedTasks?: { task_id: string; filename: string }[],
+    ) => {
     if (!taskIds.length) return;
-    let initialTasks: ReindexTask[] = taskIds.map((id) => ({ task_id: id, status: "pending" as const }));
+    // Seed placeholders with filenames if the POST response carried
+    // them (#402 production sweep). The previous code rendered N rows
+    // of ``task_xxx`` for up to one full polling interval (~2s) before
+    // the first /tasks GET landed and supplied the filenames; with
+    // the seed, the tile shows real names from frame 0.
+    const seedById = new Map<string, string>(
+      (seedTasks ?? []).map((t) => [t.task_id, t.filename]),
+    );
+    const placeholders: ReindexTask[] = taskIds.map(
+      (id): ReindexTask => {
+        const seedFilename = seedById.get(id);
+        return seedFilename
+          ? { task_id: id, status: "pending" as const, filename: seedFilename }
+          : { task_id: id, status: "pending" as const };
+      },
+    );
+    let initialTasks: ReindexTask[] = placeholders;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
-        if (relevantTasks.length > 0) {
-          initialTasks = relevantTasks;
-        }
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
+        initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
-      // Fall back to task IDs until polling resolves filenames.
+      // Fall back to placeholders; polling will enrich as filenames load.
     }
     setReindexProgress({
       taskIds,
@@ -955,29 +1068,39 @@ export default function KnowledgePanel({
         if (!res.ok) return;
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        // Filter to only our reindex tasks
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
         const completed = relevantTasks.filter((t: ReindexTask) => t.status === "completed").length;
-        const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
+        // Count "cancelled" as terminal/failed (#4). A superseded worker writes
+        // status="cancelled" (engine ReindexSupersededError); if the tile only
+        // counted "failed", completed+failed could never reach taskIds.length,
+        // the poll would never reach done, onReindexFinished would never fire,
+        // and the tile would spin forever with knowledgeReindexing stuck true.
+        // The backend deferred flip already treats cancelled as failed.
+        const failed = relevantTasks.filter(
+          (t: ReindexTask) => t.status === "failed" || t.status === "cancelled",
+        ).length;
         const done = completed + failed >= taskIds.length;
 
-        setReindexProgress((prev) => ({
-          taskIds,
-          total: taskIds.length,
-          completed,
-          failed,
-          tasks: relevantTasks,
-          done,
-          // Preserve the wall-clock start stamp set when the operation kicked
-          // off; ``_reindexStartedAt`` only exists in the outer scope of the
-          // ``handleReindex`` invocation and would be undefined here.
-          startedAt: prev?.startedAt ?? Date.now(),
-        }));
+        setReindexProgress((prev) => {
+          const mergedTasks = mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks);
+          // [#402] Per-poll proof of life. If ``rowsRendered`` ever drops
+          // below ``taskIds`` length, the merge regressed. If
+          // ``rowsWithFilename`` stays below taskIds.length past ~1s
+          // after tile-arm, the backend isn't populating ``file_tasks``
+          // — different bug.
+          return {
+            taskIds,
+            total: taskIds.length,
+            completed,
+            failed,
+            // Merge by id so transient polls that don't see every task
+            // (e.g. backend just created task N+1 between our HTTP call
+            // and its insert) don't shrink the tile to fewer rows.
+            tasks: mergedTasks,
+            done,
+            startedAt: prev?.startedAt ?? Date.now(),
+          };
+        });
 
         if (done) {
           if (reindexPollRef.current) clearInterval(reindexPollRef.current);
@@ -985,6 +1108,11 @@ export default function KnowledgePanel({
           // Refresh document list after reindex completes
           loadDocuments();
           checkHealth();
+          // #398 follow-up v2 (workflow w5i1mbchd): fire onReindexFinished
+          // ALWAYS at terminal state — both success AND partial-failure
+          // mean "workers stopped, parent can resume autosave PATCHes".
+          // Distinct from onAutoReindexComplete which is success-only.
+          onReindexFinished?.();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);
             // Tell the parent to refresh its saved-config snapshot so the
@@ -994,7 +1122,29 @@ export default function KnowledgePanel({
             // confusing because the engine HAS already re-embedded.
             onAutoReindexComplete?.();
           } else {
-            onToast?.("warning", "Re-index finished", `${completed} succeeded, ${failed} failed.`);
+            // Partial-failure toast: be loud about the data-integrity story.
+            // Production sweep (workflow w5i1mbchd): the deferred flip is
+            // now STRICT (refuses promotion unless ALL tasks succeeded), so
+            // partial failure means the user's previous embedder is STILL
+            // active. Search keeps working on the old vectors. The user
+            // must fix the failing files and Re-index again, or revert.
+            // Crucially: DO NOT call onAutoReindexComplete — that would
+            // refresh the saved-config snapshot to the NEW (unapplied)
+            // config and clear the "Re-index needed" banner, both of
+            // which would lie about the engine's actual state.
+            const failedNames = relevantTasks
+              .filter((t) => t.status === "failed" || t.status === "cancelled")
+              .map((t) => t.filename || t.task_id)
+              .slice(0, 3)
+              .join(", ");
+            const more = failed > 3 ? ` (+${failed - 3} more)` : "";
+            onToast?.(
+              "error",
+              "Re-index didn't complete",
+              `${completed}/${taskIds.length} succeeded; ${failed} failed: ${failedNames}${more}. ` +
+                `Your previous embedder configuration is still active. ` +
+                `Fix the failing file(s) and Re-index again, or revert your config.`,
+            );
           }
         }
       } catch {
@@ -1004,11 +1154,14 @@ export default function KnowledgePanel({
   }, [loadDocuments, checkHealth, onToast]);
 
   // Manual Reindex button path: POST first to get task IDs, then arm.
+  // Thread ``result.tasks`` (POST response carries [{task_id, filename}]
+  // pairs after the #402 production sweep) so the tile renders real
+  // filenames from frame 0 — no task_xxx placeholder window.
   const startReindexWithProgress = useCallback(async () => {
     if (!onReindex) return;
     const result = await onReindex();
     if (!result || !result.task_ids?.length) return;
-    await armReindexFromTaskIds(result.task_ids, result.count);
+    await armReindexFromTaskIds(result.task_ids, result.count, result.tasks);
   }, [onReindex, armReindexFromTaskIds]);
 
   // Server-side auto-reindex path: ManagePage extracts task IDs from a
@@ -2397,7 +2550,38 @@ export default function KnowledgePanel({
                           {ragProfiles && Object.keys(ragProfiles).length > 0 && (
                             <Stack gap={3}>
                               <Stack gap={1}>
-                                <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Retrieval Profile</h4>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                                  <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Retrieval Profile</h4>
+                                  {/* Save-status pill at the surface the user is
+                                      actually editing. The previous location
+                                      (inside the Advanced accordion, next to
+                                      Test connection) was invisible during the
+                                      most common edit path (clicking profile
+                                      tiles). Reviewer's "second pill" call.
+                                      ``recentlySaved`` keeps "Saved" up only
+                                      for 3s so it doesn't become a permanent
+                                      sticker. */}
+                                  {saveState === "saving" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Saving…
+                                    </Tag>
+                                  )}
+                                  {saveState === "saving-slow" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Still saving
+                                    </Tag>
+                                  )}
+                                  {saveState === "saved" && recentlySaved && (
+                                    <Tag type="green" size="sm" renderIcon={Checkmark}>
+                                      Saved
+                                    </Tag>
+                                  )}
+                                  {saveState === "failed" && (
+                                    <Tag type="red" size="sm" renderIcon={ErrorFilled}>
+                                      Couldn&apos;t save
+                                    </Tag>
+                                  )}
+                                </span>
                                 <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
                                   Balance retrieval accuracy against response speed and cost.
                                 </p>
@@ -2418,8 +2602,17 @@ export default function KnowledgePanel({
                                       knowledgeConfig.embedding_model &&
                                     profile.chunking.chunk_size === knowledgeConfig.chunk_size &&
                                     profile.chunking.chunk_overlap === knowledgeConfig.chunk_overlap;
-                                  // Selected only if the profile name matches AND every vector-config field matches.
-                                  const isSelected = isNamedProfile && vectorConfigMatches;
+                                  // Selected by USER INTENT (the profile name in config), not by
+                                  // exact field-for-field equality. The named profile is the baseline;
+                                  // edits to advanced settings are overrides on top of it, not a
+                                  // reason to drop the profile from the selected state. ``Modified``
+                                  // tag inside the selected tile signals the drift (see below).
+                                  const isSelected = isNamedProfile;
+                                  // True when this is the selected profile AND the user has edited
+                                  // a vector-config field — drives the "Modified" Tag + the in-tile
+                                  // reindex hint. The non-selected reindex hint (offered to OTHER
+                                  // profiles to inform their decision) still uses ``willReindex`` below.
+                                  const isModified = isNamedProfile && !vectorConfigMatches;
                                   const willReindex = !vectorConfigMatches;
                                   return (
                                     <Tile
@@ -2476,8 +2669,13 @@ export default function KnowledgePanel({
                                           }}
                                         />
                                         <Stack gap={1} style={{ flex: 1 }}>
-                                          <span style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
-                                            {profile.name}
+                                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                                            <span style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
+                                              {profile.name}
+                                            </span>
+                                            {isModified && (
+                                              <Tag type="cool-gray" size="sm">Modified</Tag>
+                                            )}
                                           </span>
                                           <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--cds-text-secondary)", lineHeight: 1.5 }}>
                                             {profile.description}
@@ -2485,6 +2683,11 @@ export default function KnowledgePanel({
                                           {!isSelected && willReindex && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
                                               Requires re-indexing existing documents.
+                                            </p>
+                                          )}
+                                          {isModified && (
+                                            <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
+                                              Your edits override profile defaults — re-indexing will run on Publish.
                                             </p>
                                           )}
                                         </Stack>
@@ -2603,27 +2806,55 @@ export default function KnowledgePanel({
                               subtitle={`${reindexProgress.completed} succeeded${reindexProgress.failed > 0 ? `, ${reindexProgress.failed} failed` : ""}.`}
                               lowContrast
                               onClose={() => setReindexProgress(null)}
+                              // Hide the close button on success — the
+                              // notification auto-dismisses via the effect
+                              // below. On failure, keep X so the user can
+                              // dismiss manually after reading the count.
+                              hideCloseButton={reindexProgress.failed === 0}
                             />
                           )}
 
+                          {/* Re-index recommended notice. Trigger restored to
+                              include ``knowledgeReindexNeeded`` (snapshot-vs-
+                              current diff): we no longer auto-reindex on PATCH,
+                              so this banner is how the user knows their config
+                              change requires re-embedding. The save-status pill
+                              only confirms "draft persisted"; it does NOT mean
+                              "vectors are current". Two genuinely different
+                              states now. ``knowledgeStale`` /
+                              ``knowledgeReindexDeferred`` keep their roles for
+                              the persistent stale cases. */}
                           {agentLevelEnabled && !reindexProgress && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
                             <Stack gap={3}>
+                              {/* Two passes on this notice:
+                                    1. Softened from kind="warning" +
+                                       "danger--tertiary" (alarming for a
+                                       routine change).
+                                    2. Then sharpened — "Update existing
+                                       documents" was too soft, sounded
+                                       optional. The action is in fact
+                                       mandatory if the user wants their
+                                       config change to take effect on
+                                       already-indexed documents (new
+                                       uploads use the new config; existing
+                                       ones don't until re-indexed). Title
+                                       leads with that. */}
                               <InlineNotification
-                                kind="warning"
-                                title="Re-index recommended"
-                                subtitle="Settings changed. Existing documents may use outdated embeddings."
+                                kind="info"
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads will use the new configuration, but already-indexed documents need a re-index to switch."
                                 lowContrast
                                 hideCloseButton
                               />
                               {onReindex && (
                                 <Button
                                   type="button"
-                                  kind="danger--tertiary"
+                                  kind="primary"
                                   size="sm"
                                   disabled={knowledgeReindexing}
                                   onClick={startReindexWithProgress}
                                 >
-                                  {knowledgeReindexing ? "Starting..." : "Re-index all documents"}
+                                  {knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
                                 </Button>
                               )}
                             </Stack>
@@ -2664,100 +2895,40 @@ export default function KnowledgePanel({
                           <Accordion align="start" size="md">
                             <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
-                                {/* ── Quick setup from environment ──
-                                    Surface env-detected providers so the user
-                                    doesn't have to know which env var name a
-                                    given provider reads (esp. Watsonx, which
-                                    needs THREE: WATSONX_APIKEY + WATSONX_URL
-                                    + WATSONX_PROJECT_ID). Each "Apply" sets
-                                    provider + model and clears the api-key
-                                    field — engine + LiteLLM then read the
-                                    matching env var at embed time. The
-                                    endpoint returns booleans only; raw values
-                                    never leave the server. */}
+                                {/* "Detected in your environment" panel lives here
+                                    inside the Embeddings section — same scope as
+                                    the manual Provider Select + API key + base URL
+                                    fields below. Picking a preset here populates
+                                    the manual fields; typing in the manual fields
+                                    overrides the preset. One conceptual surface,
+                                    two modes of entry. */}
                                 {envPresets && envPresets.length > 0 && (
-                                  <Tile>
-                                    <Stack gap={3}>
-                                      <Stack gap={1}>
-                                        <span style={{ fontSize: "0.8125rem", fontWeight: 600 }}>
-                                          Quick setup from environment
-                                        </span>
-                                        <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
-                                          Providers detected from your <code>.env</code> or shell. One click pre-fills the form and reads keys from the environment.
-                                        </span>
-                                      </Stack>
-                                      <Stack gap={2}>
-                                        {envPresets.map((preset) => {
-                                          const anyEnvPresent = Object.values(preset.env_vars).some(Boolean);
-                                          // Hide presets where NO env var is set at all — keeps the panel
-                                          // focused on what the user has actually configured.
-                                          if (!anyEnvPresent) return null;
-                                          return (
-                                            <Stack
-                                              key={preset.id}
-                                              orientation="horizontal"
-                                              gap={3}
-                                              style={{ alignItems: "center" }}
-                                            >
-                                              <span
-                                                style={{
-                                                  width: 16,
-                                                  height: 16,
-                                                  borderRadius: "50%",
-                                                  background: preset.ready ? "var(--cds-support-success)" : "var(--cds-support-warning)",
-                                                  flexShrink: 0,
-                                                }}
-                                                aria-hidden="true"
-                                              />
-                                              <Stack gap={0} style={{ flex: 1 }}>
-                                                <span style={{ fontSize: "0.8125rem", fontWeight: 500 }}>
-                                                  {preset.label}
-                                                </span>
-                                                {!preset.ready && preset.missing.length > 0 && (
-                                                  <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
-                                                    Missing: {preset.missing.join(", ")}
-                                                  </span>
-                                                )}
-                                                {preset.ready && (
-                                                  <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
-                                                    Default model: <code>{preset.default_model}</code>
-                                                  </span>
-                                                )}
-                                              </Stack>
-                                              <Button
-                                                kind="tertiary"
-                                                size="sm"
-                                                disabled={!preset.ready}
-                                                onClick={() => {
-                                                  // Apply: set provider + model, clear api_key /
-                                                  // base_url / extra_params so the engine + LiteLLM
-                                                  // read the matching env var (e.g. WATSONX_APIKEY)
-                                                  // at embed time. Autosave fires immediately via
-                                                  // the existing knowledgeConfig watcher in
-                                                  // ManagePage.
-                                                  onKnowledgeConfigChange({
-                                                    ...knowledgeConfig,
-                                                    embedding_provider: preset.default_provider,
-                                                    embedding_model: preset.default_model,
-                                                    embedding_api_key: "",
-                                                    embedding_base_url: "",
-                                                    embedding_extra_params: {},
-                                                  });
-                                                  onToast?.(
-                                                    "success",
-                                                    `${preset.label} applied`,
-                                                    `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
-                                                  );
-                                                }}
-                                              >
-                                                {preset.ready ? "Apply" : "Incomplete"}
-                                              </Button>
-                                            </Stack>
-                                          );
-                                        })}
-                                      </Stack>
-                                    </Stack>
-                                  </Tile>
+                                  <EnvPresetsPanel
+                                    presets={envPresets}
+                                    currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
+                                    currentModel={knowledgeConfig.embedding_model ?? ""}
+                                    onApply={(preset) => {
+                                      onPresetApplied?.();
+                                      onKnowledgeConfigChange({
+                                        ...knowledgeConfig,
+                                        embedding_provider: preset.default_provider,
+                                        embedding_model: preset.default_model,
+                                        embedding_api_key: "",
+                                        embedding_base_url: "",
+                                        embedding_extra_params: {},
+                                      });
+                                      onToast?.(
+                                        "success",
+                                        `${preset.label} applied`,
+                                        `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                      );
+                                    }}
+                                    onFocusProviderSelect={() => {
+                                      const el = document.getElementById("knowledge-embedding-provider");
+                                      el?.focus();
+                                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                    }}
+                                  />
                                 )}
                                 <Stack orientation="horizontal" gap={4}>
                                   <Select
@@ -2814,23 +2985,19 @@ export default function KnowledgePanel({
                                 </Stack>
                                 {knowledgeConfig.embedding_provider === "openrouter" && (
                                   <>
-                                    <InlineNotification
+                                    <ActionableNotification
                                       kind="info"
                                       lowContrast
                                       hideCloseButton
                                       title="OpenRouter"
-                                      subtitle={
-                                        <>
-                                          Paste any embeddings model id from{" "}
-                                          <a
-                                            href="https://openrouter.ai/models?output_modalities=embeddings"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                          >
-                                            openrouter.ai/models
-                                          </a>{" "}
-                                          (e.g. <code>openai/text-embedding-3-small</code>). Both Model and API Key are required.
-                                        </>
+                                      subtitle="Paste any embeddings model id (e.g. openai/text-embedding-3-small). Both Model and API Key are required."
+                                      actionButtonLabel="Browse models"
+                                      onActionButtonClick={() =>
+                                        window.open(
+                                          "https://openrouter.ai/models?output_modalities=embeddings",
+                                          "_blank",
+                                          "noopener,noreferrer",
+                                        )
                                       }
                                     />
                                     <TextInput
@@ -2861,23 +3028,19 @@ export default function KnowledgePanel({
                                         }
                                       />
                                     ) : (
-                                      <InlineNotification
+                                      <ActionableNotification
                                         kind="success"
                                         lowContrast
                                         hideCloseButton
                                         title="LiteLLM ready"
-                                        subtitle={
-                                          <>
-                                            <code>{knowledgeConfig.embedding_model}</code> will be routed via LiteLLM. See{" "}
-                                            <a
-                                              href="https://docs.litellm.ai/docs/embedding/supported_embedding"
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                            >
-                                              supported models
-                                            </a>
-                                            . API key falls back to env var if empty. Base URL is for self-hosted proxies.
-                                          </>
+                                        subtitle={`${knowledgeConfig.embedding_model} will be routed via LiteLLM. API key falls back to env var if empty. Base URL is for self-hosted proxies.`}
+                                        actionButtonLabel="Supported models"
+                                        onActionButtonClick={() =>
+                                          window.open(
+                                            "https://docs.litellm.ai/docs/embedding/supported_embedding",
+                                            "_blank",
+                                            "noopener,noreferrer",
+                                          )
                                         }
                                       />
                                     )}
@@ -3014,16 +3177,45 @@ export default function KnowledgePanel({
                                     {testing ? "Testing…" : "Test connection"}
                                   </Button>
 
-                                  {/* Save-state Tag (Carbon for AI persistence cue) */}
+                                  {/* Save-state indicator: each variant maps to a real
+                                      PATCH lifecycle event (saving/2xx/non-2xx/network).
+                                      The prior 1500ms-setTimeout "Saved" sticker that
+                                      lied is gone — now the user sees a "Saving…" tag
+                                      while the network call is in flight, "Saved" only
+                                      AFTER a 2xx response (auto-hides after 3s via
+                                      ``recentlySaved``), and a red "Couldn't save"
+                                      button-tag with one-click Retry on any failure. */}
                                   {saveState === "saving" && (
                                     <Tag type="gray" size="sm" renderIcon={Renew}>
                                       Saving…
                                     </Tag>
                                   )}
-                                  {saveState === "saved" && (
+                                  {/* saving-slow: 25s+ into the save with no
+                                      response yet. Softer copy than a fail
+                                      state — corporate VPNs / first-time
+                                      Watsonx endpoint resolution can take
+                                      30-45s and a perfectly-healthy save
+                                      shouldn't read as broken. */}
+                                  {saveState === "saving-slow" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Still saving — network is slow
+                                    </Tag>
+                                  )}
+                                  {saveState === "saved" && recentlySaved && (
                                     <Tag type="green" size="sm" renderIcon={Checkmark}>
                                       Saved
                                     </Tag>
+                                  )}
+                                  {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
+                                    <Button
+                                      kind="ghost"
+                                      size="sm"
+                                      renderIcon={ErrorFilled}
+                                      onClick={() => onRetryDraftSave?.()}
+                                      style={{ color: "var(--cds-support-error)" }}
+                                    >
+                                      Couldn&apos;t save — Retry
+                                    </Button>
                                   )}
 
                                   {/* Key-source chip — only shown when no test result is up
@@ -3068,6 +3260,24 @@ export default function KnowledgePanel({
                                         ? "You can now upload documents on the Documents tab."
                                         : testResult.error || "No detail returned."
                                     }
+                                  />
+                                )}
+
+                                {/* Full autosave-failure detail. Replaces the
+                                    prior native ``title=`` attribute tooltip
+                                    on the Retry button (which truncated to
+                                    ~80 chars and was invisible on most
+                                    screens). Surfaces the full server error
+                                    so debugging a 422 / 500 doesn't require
+                                    opening the browser network tab. */}
+                                {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
+                                  <InlineNotification
+                                    kind="error"
+                                    lowContrast
+                                    hideCloseButton={false}
+                                    onCloseButtonClick={() => onDismissDraftSave?.()}
+                                    title="Couldn't save your changes"
+                                    subtitle={draftSaveStatus.error || "No detail returned."}
                                   />
                                 )}
 

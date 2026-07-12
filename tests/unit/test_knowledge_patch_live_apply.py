@@ -60,8 +60,16 @@ async def test_patch_knowledge_applies_to_live_engine(app_with_live_engine, monk
         "cuga.backend.server.config_store.load_draft",
         _fake_load_draft,
     )
+    # patch_draft_knowledge now calls the lock-free variant directly inside
+    # the per-agent lock (7be12e08); _load_and_patch_draft is only used by
+    # the other draft sections. Patch both so the test works regardless of
+    # which path the route takes.
     monkeypatch.setattr(
         "cuga.backend.server.manage_routes._load_and_patch_draft",
+        _fake_load_and_patch_draft,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.server.manage_routes._save_draft_section_unlocked",
         _fake_load_and_patch_draft,
     )
 
