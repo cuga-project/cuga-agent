@@ -207,14 +207,14 @@ async def test_batch_skips_ineligible_imported_policies(monkeypatch):
         generation_agent=object(),
     )
 
-    assert result["status"] == "error"
+    assert result["status"] == "partial"
     assert result["generated"] == {}
-    assert result["skipped"] == [
-        {"policy_id": "disabled_guide", "reason": "disabled"},
-        {"policy_id": "wildcard_guide", "reason": "no_concrete_target_tools"},
-        {"policy_id": "playbook_one", "reason": "not_tool_guide"},
-        {"policy_id": "missing_policy", "reason": "missing"},
-    ]
+    assert {(s["policy_id"], s["reason"]) for s in result["skipped"]} == {
+        ("disabled_guide", "disabled"),
+        ("wildcard_guide", "no_concrete_target_tools"),
+        ("playbook_one", "not_tool_guide"),
+        ("missing_policy", "missing"),
+    }
     assert result["errors"] == []
 
 

@@ -95,14 +95,13 @@ def _batch_status(
     *,
     generated: dict[str, ToolGuardGenerationResult],
     skipped: list[dict[str, str]],
-    errors: list[str],
+    errors: list[str],  # reserved for future batch-level errors
 ) -> str:
-    successful_policy_count = sum(
-        1 for result in generated.values() if result.get("status") == "ok"
-    )
-    failed_policy_count = sum(
-        1 for result in generated.values() if result.get("status") != "ok"
-    )
+    if not generated:
+        return "ok" if not skipped and not errors else "partial"
+
+    successful_policy_count = sum(1 for result in generated.values() if result.get("status") == "ok")
+    failed_policy_count = sum(1 for result in generated.values() if result.get("status") != "ok")
 
     if successful_policy_count == 0:
         return "error"
