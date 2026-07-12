@@ -127,11 +127,11 @@ if (hookResult.action === 'skip_to') {
 }
       ]]></script>
     </scriptTask>
-    <boundaryEvent id="BoundaryError_HookSkip" name="skip to" attachedToRef="Task_HookHttp" cancelActivity="true">
+    <boundaryEvent id="BoundaryError_HookSkip" name="action event" attachedToRef="Task_HookHttp" cancelActivity="true">
       <errorEventDefinition/>
     </boundaryEvent>
     <sequenceFlow id="Flow_BoundaryToReject" sourceRef="BoundaryError_HookSkip" targetRef="Task_DynamicSkip"/>
-    <scriptTask id="Task_DynamicSkip" name="dynamic skip" scriptFormat="javascript" flowable:autoStoreVariables="false">
+    <scriptTask id="Task_DynamicSkip" name="hooks handling" scriptFormat="javascript" flowable:autoStoreVariables="false">
       <script><![CDATA[
 var target = String(execution.getVariable('_hookSkipTarget'));
 var runtimeService = org.flowable.engine.ProcessEngines.getDefaultProcessEngine().getRuntimeService();
