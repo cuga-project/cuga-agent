@@ -1082,6 +1082,115 @@ class PoliciesManager:
 
         return result
 
+    async def generate_tool_guards_from_json(
+        self,
+        file_path: str,
+        clear_existing: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Load policies from a JSON file and generate ToolGuards for imported Tool Guides.
+
+        Generation is scoped to policy IDs present in the JSON file. Existing policies
+        already in storage are not generated unless their IDs are also present in the file.
+
+        Args:
+            file_path: Path to JSON file containing policies
+            clear_existing: If True, clear all existing policies before loading
+
+        Returns:
+            Dictionary with import summary, source policy IDs, generated results,
+            skipped policies, errors, and overall status.
+        """
+        from cuga.backend.cuga_graph.policy.utils import (
+            extract_policies_data_from_json,
+            load_policies_from_json,
+        )
+        from cuga.backend.server import tool_guard_generation
+
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping generate_tool_guards_from_json")
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": ["Policy system is disabled"]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": ["Policy system is disabled"],
+            }
+
+        try:
+            extracted = extract_policies_data_from_json(file_path)
+        except Exception as exc:
+            error_msg = f"Failed to read policies from {file_path}: {exc}"
+            logger.error(error_msg)
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": [error_msg]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        import_result = await load_policies_from_json(
+            file_path=file_path,
+            storage=policy_system.storage,
+            clear_existing=clear_existing,
+        )
+
+        await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
+
+        runtime_tool_provider = self._agent_tool_provider()
+        if runtime_tool_provider is None:
+            error_msg = "Tool provider is not initialized"
+            return {
+                "status": "error",
+                "import": import_result,
+                "source_policy_ids": extracted["policy_ids"],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        _model = None
+        _llm_config = getattr(self._agent, "llm_config", None)
+        if _llm_config:
+            try:
+                from cuga.backend.llm.models import create_llm_from_config
+
+                _model = create_llm_from_config(_llm_config)
+            except ValueError:
+                logger.warning(
+                    "Failed to build model from llm_config for ToolGuard generation; using default"
+                )
+
+        generation_agent = tool_guard_generation.build_tool_guard_generation_agent(
+            policy_system=policy_system,
+            tool_provider=runtime_tool_provider,
+            model=_model,
+        )
+        batch_result = await tool_guard_generation.generate_tool_guards_for_policies(
+            policy_system=policy_system,
+            policy_ids=extracted["policy_ids"],
+            generation_agent=generation_agent,
+        )
+
+        result_errors = [*extracted["errors"], *batch_result.get("errors", [])]
+        status = batch_result.get("status", "error")
+        if result_errors and status == "ok":
+            status = "partial"
+
+        return {
+            "status": status,
+            "import": import_result,
+            "source_policy_ids": extracted["policy_ids"],
+            "generated": batch_result.get("generated", {}),
+            "skipped": batch_result.get("skipped", []),
+            "errors": result_errors,
+        }
+
     async def clear(self) -> bool:
         """
         Clear all policies from storage.
