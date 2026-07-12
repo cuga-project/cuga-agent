@@ -43,7 +43,7 @@ var safeMsg = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\
 var creditScore = execution.getVariable('credit_score');
 var decision = execution.getVariable('decision');
 var cugaKey = execution.getVariable('cugaProcessKey');
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"Gateway_09ad5fc","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Gateway_09ad5fc","element_name":"credit decision","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"}},"execution_history":[],"process_model_summary":{},"available_flows":[{"id":"Flow_0ybszcv","source_ref":"Gateway_09ad5fc","target_ref":"Activity_1h9ix55","name":"yes","condition":null},{"id":"Flow_1jgea85","source_ref":"Gateway_09ad5fc","target_ref":"Activity_131ar38","name":"no","condition":null}]}}},"id":1}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"Gateway_09ad5fc","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Gateway_09ad5fc","element_name":"credit decision","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"}},"execution_history":[],"process_model_summary":{},"available_flows":[{"id":"Flow_0ybszcv","source_ref":"Gateway_09ad5fc","target_ref":"Task_HookHttp","name":"yes","condition":null},{"id":"Flow_1jgea85","source_ref":"Gateway_09ad5fc","target_ref":"Activity_131ar38","name":"no","condition":null}]}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -69,6 +69,33 @@ execution.setVariable('gatewayDecision', flowId);
     </scriptTask>
     <exclusiveGateway id="Gateway_09ad5fc"></exclusiveGateway>
     <exclusiveGateway id="Gateway_15y9k7z"></exclusiveGateway>
+    <scriptTask id="Task_HookHttp" name="Notify CUGA FLO Hook" scriptFormat="javascript" flowable:autoStoreVariables="false">
+      <script><![CDATA[
+var creditScore = execution.getVariable('credit_score');
+var decision = execution.getVariable('decision');
+var cugaKey = execution.getVariable('cugaProcessKey');
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"evaluate_hook","arguments":{"hook_id":"Flow_0ybszcv","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Task_HookHttp","element_name":"Notify CUGA FLO Hook","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '"}},"execution_history":[],"process_model_summary":{}}}},"id":1}';
+var url = new java.net.URL('http://host.docker.internal:8090/mcp');
+var conn = url.openConnection();
+conn.setRequestMethod('POST');
+conn.setRequestProperty('Content-Type', 'application/json');
+conn.setRequestProperty('Accept', 'application/json, text/event-stream');
+conn.setReadTimeout(120000);
+conn.setDoOutput(true);
+var os = conn.getOutputStream();
+os.write(new java.lang.String(body).getBytes('UTF-8'));
+os.close();
+var br = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream(), 'UTF-8'));
+var raw = '';
+var line;
+while ((line = br.readLine()) !== null) {
+    if (line.indexOf('data:') === 0) { raw = line.substring(5).trim(); break; }
+}
+br.close();
+var resp = JSON.parse(raw);
+if (!resp.result) throw new Error('evaluate_hook error: ' + JSON.stringify(resp.error || resp));
+      ]]></script>
+    </scriptTask>
     <scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="javascript" flowable:autoStoreVariables="false">
       <script><![CDATA[execution.setVariable("decision", "give loan");]]></script>
     </scriptTask>
@@ -120,12 +147,13 @@ Accept: application/json, text/event-stream]]></flowable:string>
     <sequenceFlow id="Flow_1e5ztf6" sourceRef="StartEvent_0bpt8wp" targetRef="Activity_0oydey5"></sequenceFlow>
     <sequenceFlow id="Flow_1ji6b0i" sourceRef="Activity_0oydey5" targetRef="Activity_RouteGateway"></sequenceFlow>
     <sequenceFlow id="Flow_GWRoute01" sourceRef="Activity_RouteGateway" targetRef="Gateway_09ad5fc"></sequenceFlow>
-    <sequenceFlow id="Flow_0ybszcv" name="yes" sourceRef="Gateway_09ad5fc" targetRef="Activity_1h9ix55">
+    <sequenceFlow id="Flow_0ybszcv" name="yes" sourceRef="Gateway_09ad5fc" targetRef="Task_HookHttp">
       <conditionExpression xsi:type="tFormalExpression"><![CDATA[${gatewayDecision == 'Flow_0ybszcv'}]]></conditionExpression>
     </sequenceFlow>
     <sequenceFlow id="Flow_1jgea85" name="no" sourceRef="Gateway_09ad5fc" targetRef="Activity_131ar38">
       <conditionExpression xsi:type="tFormalExpression"><![CDATA[${gatewayDecision == 'Flow_1jgea85'}]]></conditionExpression>
     </sequenceFlow>
+    <sequenceFlow id="Flow_HookToLoan" sourceRef="Task_HookHttp" targetRef="Activity_1h9ix55"></sequenceFlow>
     <sequenceFlow id="Flow_0uwnw59" sourceRef="Activity_1h9ix55" targetRef="Gateway_15y9k7z"></sequenceFlow>
     <sequenceFlow id="Flow_1ow7aj3" sourceRef="Activity_131ar38" targetRef="Gateway_15y9k7z"></sequenceFlow>
     <sequenceFlow id="sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" sourceRef="Gateway_15y9k7z" targetRef="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2"></sequenceFlow>
@@ -149,20 +177,23 @@ Accept: application/json, text/event-stream]]></flowable:string>
       <bpmndi:BPMNShape bpmnElement="Gateway_09ad5fc" id="BPMNShape_Gateway_09ad5fc">
         <omgdc:Bounds height="40.0" width="40.0" x="473.0" y="260.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape bpmnElement="Gateway_15y9k7z" id="BPMNShape_Gateway_15y9k7z">
-        <omgdc:Bounds height="40.0" width="40.0" x="738.0" y="255.0"></omgdc:Bounds>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape bpmnElement="Event_13axbio" id="BPMNShape_Event_13axbio">
-        <omgdc:Bounds height="28.0" width="28.0" x="1013.0" y="266.0"></omgdc:Bounds>
+      <bpmndi:BPMNShape bpmnElement="Task_HookHttp" id="BPMNShape_Task_HookHttp">
+        <omgdc:Bounds height="80.0" width="100.0" x="578.0" y="240.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="Activity_1h9ix55" id="BPMNShape_Activity_1h9ix55">
-        <omgdc:Bounds height="80.0" width="100.0" x="578.0" y="240.0"></omgdc:Bounds>
+        <omgdc:Bounds height="80.0" width="100.0" x="748.0" y="240.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_15y9k7z" id="BPMNShape_Gateway_15y9k7z">
+        <omgdc:Bounds height="40.0" width="40.0" x="908.0" y="255.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="Activity_131ar38" id="BPMNShape_Activity_131ar38">
         <omgdc:Bounds height="80.0" width="100.0" x="583.0" y="350.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2" id="BPMNShape_sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2">
-        <omgdc:Bounds height="80.0" width="100.0" x="850.0" y="237.0"></omgdc:Bounds>
+        <omgdc:Bounds height="80.0" width="100.0" x="1020.0" y="237.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Event_13axbio" id="BPMNShape_Event_13axbio">
+        <omgdc:Bounds height="28.0" width="28.0" x="1183.0" y="266.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="TextAnnotation_0shqxfj" id="BPMNShape_TextAnnotation_0shqxfj">
         <omgdc:Bounds height="41.0" width="120.0" x="533.0" y="170.0"></omgdc:Bounds>
@@ -194,24 +225,28 @@ Accept: application/json, text/event-stream]]></flowable:string>
           <omgdc:Bounds x="502.0" y="342.0" width="13.0" height="14.0"></omgdc:Bounds>
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge bpmnElement="Flow_0uwnw59" id="BPMNEdge_Flow_0uwnw59" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="20.0">
+      <bpmndi:BPMNEdge bpmnElement="Flow_HookToLoan" id="BPMNEdge_Flow_HookToLoan" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="50.0" flowable:targetDockerY="40.0">
         <omgdi:waypoint x="677.95" y="280.0"></omgdi:waypoint>
-        <omgdi:waypoint x="738.0" y="276.0"></omgdi:waypoint>
+        <omgdi:waypoint x="748.0" y="280.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0uwnw59" id="BPMNEdge_Flow_0uwnw59" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="20.0">
+        <omgdi:waypoint x="847.95" y="280.0"></omgdi:waypoint>
+        <omgdi:waypoint x="908.0" y="276.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_1ow7aj3" id="BPMNEdge_Flow_1ow7aj3" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="20.0">
         <omgdi:waypoint x="682.95" y="390.0"></omgdi:waypoint>
-        <omgdi:waypoint x="762.0" y="390.0"></omgdi:waypoint>
-        <omgdi:waypoint x="758.95" y="294.95"></omgdi:waypoint>
+        <omgdi:waypoint x="928.0" y="390.0"></omgdi:waypoint>
+        <omgdi:waypoint x="928.0" y="294.95"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" id="BPMNEdge_sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" flowable:sourceDockerX="20.0" flowable:sourceDockerY="20.0" flowable:targetDockerX="50.0" flowable:targetDockerY="40.0">
-        <omgdi:waypoint x="777.95" y="276.0"></omgdi:waypoint>
-        <omgdi:waypoint x="850.0" y="277.0"></omgdi:waypoint>
+        <omgdi:waypoint x="947.95" y="276.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1020.0" y="277.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="sid-BF2F3894-88B6-4AC4-9AF0-01F34D655B02" id="BPMNEdge_sid-BF2F3894-88B6-4AC4-9AF0-01F34D655B02" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="14.0" flowable:targetDockerY="14.0">
-        <omgdi:waypoint x="949.95" y="277.0"></omgdi:waypoint>
-        <omgdi:waypoint x="981.0" y="277.0"></omgdi:waypoint>
-        <omgdi:waypoint x="981.0" y="280.0"></omgdi:waypoint>
-        <omgdi:waypoint x="1013.0" y="280.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1119.95" y="277.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1151.0" y="277.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1151.0" y="280.0"></omgdi:waypoint>
+        <omgdi:waypoint x="1183.0" y="280.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Association_1p70sex" id="BPMNEdge_Association_1p70sex" flowable:sourceDockerX="20.0" flowable:sourceDockerY="20.0" flowable:targetDockerX="60.0" flowable:targetDockerY="41.0">
         <omgdi:waypoint x="504.95" y="272.0"></omgdi:waypoint>

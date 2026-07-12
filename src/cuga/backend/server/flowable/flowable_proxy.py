@@ -326,6 +326,31 @@ class FlowableProxy:
         self._request("POST", f"/runtime/tasks/{task_id}", json=payload)
         logger.info("Completed task id={}", task_id)
 
+    # --- hook realisation ------------------------------------------------
+
+    def realize_hook_action(self, result: Any, process_instance_id: str) -> None:
+        """Translate a HookResult into Flowable REST calls.
+
+        CONTINUE requires no REST interaction — Flowable advances automatically
+        once the script task HTTP response is received. Additional action types
+        (TERMINATE, SKIP_TO, etc.) will be implemented here as they are permitted.
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction
+
+        action = result.action
+        if action == HookAction.CONTINUE:
+            logger.info(
+                "Hook CONTINUE for instance {} — no REST action required, "
+                "Flowable advances after script task response",
+                process_instance_id,
+            )
+        else:
+            logger.warning(
+                "Hook action '{}' for instance {} is not yet implemented in FlowableProxy",
+                action.value,
+                process_instance_id,
+            )
+
 
 def _to_flowable_var(name: str, value: Any) -> dict[str, Any]:
     """Map a Python value to Flowable's variable wire format."""

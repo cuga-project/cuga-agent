@@ -46,6 +46,7 @@ class MCPFlowBridge:
         self._mcp = FastMCP(name)
         self._registry: "ProcessRegistry | None" = None
         self._engine: "LangGraphWorkflowEngine | None" = None
+        self._proxy: "FlowableProxy | None" = None
         logger.debug(f"MCPFlowBridge created: {name!r}")
 
     # ──────────────────────────────────────────────────────────────
@@ -127,14 +128,22 @@ class MCPFlowBridge:
             return await fa._handle_gateway(gateway_id, ctx_obj)
 
         async def evaluate_hook(hook_id: str, ctx: dict) -> dict:
-            """Evaluate a hook via FlowAgent's hook evaluator."""
+            """Evaluate a hook via FlowAgent's hook evaluator, then realize the action via Flowable REST."""
+            from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+            from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction, HookResult
+
             ctx_obj = ControlPointFlowKnowledge.from_dict(ctx)
             hook = next((h for h in fa.hooks if h.id == hook_id), None)
             if hook is None:
-                from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction, HookResult
+                result = HookResult(action=HookAction.CONTINUE, message=f"Hook {hook_id!r} not found")
+                ActivityTracker().collect_step(Step(
+                    name=f"Hook: {hook_id}",
+                    data=f"{result.action.value} — {result.message}",
+                ))
+            else:
+                result = await fa._handle_hook(hook, ctx_obj)
 
-                return HookResult(action=HookAction.CONTINUE, message=f"Hook {hook_id!r} not found").to_dict()
-            result = await fa._handle_hook(hook, ctx_obj)
+            await self._realize_hook_action(result, ctx)
             return result.to_dict()
 
         async def complete_process(process_key: str, state: dict, bpmn: "dict | None" = None) -> dict:
@@ -152,6 +161,22 @@ class MCPFlowBridge:
             self._mcp.tool(name=tool_name)(fn)
 
         logger.info(f"MCPFlowBridge: registered FlowAgent tools for process '{fa.process_key}'")
+
+    async def _realize_hook_action(self, result: "HookResult", ctx: dict) -> None:
+        """Forward a HookResult to FlowableProxy for REST realisation (Flowable-engine mode only)."""
+        if self._proxy is None:
+            return  # LangGraph engine mode — hook realisation handled by the graph
+
+        process_instance_id = ctx.get("process_instance_id")
+        if not process_instance_id:
+            logger.warning("_realize_hook_action: no process_instance_id in ctx")
+            return
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self._proxy.realize_hook_action(result, process_instance_id),
+        )
 
     def register_flowable_engine(
         self,
@@ -174,6 +199,7 @@ class MCPFlowBridge:
         Tool registered:
           run_process(process_key, initial_inputs) → dict
         """
+        self._proxy = proxy
         _deployed: set = set()
         _http_started = False
 

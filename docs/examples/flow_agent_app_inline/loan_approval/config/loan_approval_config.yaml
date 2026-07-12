@@ -67,16 +67,17 @@ gateways:
 action_permissions:
   permitted_actions:
     - continue
-    - skip_to
-    - terminate
   prohibited_actions:
-    - swap_nodes
+    - skip_to
     - skip_node
+    - terminate
+    - swap_nodes
 
-# hooks:
-#   - id: "audit_credit_decision"
-#     type: "edge"
-#     location: "Flow_0ybszcv"
-#     policy: "../policies/hook-audit_credit_decision.md"
+
+hooks:
+  - id: "Flow_0ybszcv"
+    type: "edge"
+    location: "Flow_0ybszcv"
+    policy: "../policies/hook-approval_intercept.md"
 
 # Made with Bob

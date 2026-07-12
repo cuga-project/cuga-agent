@@ -165,7 +165,12 @@ class FlowAgent:
     async def _handle_hook(self, hook: Hook, ctx: ControlPointFlowKnowledge) -> HookResult:
         """Evaluate a hook — check condition, then apply policy or handler."""
         if hook.condition and not hook.condition(ctx.current_state):
-            return HookResult(action=HookAction.CONTINUE)
+            result = HookResult(action=HookAction.CONTINUE)
+            tracker.collect_step(Step(
+                name=f"Hook: {hook.id}",
+                data=f"{result.action.value} — condition not met, skipping policy",
+            ))
+            return result
         if hook.policy:
             result = await self._llm_hook_decision(hook, ctx)
         elif hook.handler:
