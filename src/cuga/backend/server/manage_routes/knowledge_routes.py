@@ -16,7 +16,10 @@ from cuga.backend.server.manage_routes.helpers import (
     is_secret_field_name,
     save_draft_section_unlocked,
 )
-from cuga.backend.server.manage_routes.knowledge_reindex import migrate_and_reindex_for_agent
+from cuga.backend.server.manage_routes.knowledge_reindex import (
+    migrate_and_reindex_for_agent,
+    persist_active_vector_config,
+)
 
 
 @router.post("/knowledge/test_embeddings")
@@ -44,58 +47,65 @@ async def test_embeddings_connection(request: Request):
     from cuga.backend.knowledge.config import KnowledgeConfig
     from cuga.backend.knowledge.engine import create_embeddings
     from pathlib import Path
+    import shutil
     import tempfile
 
-    # Build a throwaway config; reuse the same factory the live engine uses
-    # so the test path matches reality.
+    # Build a throwaway config; reuse the same factory the live engine uses so
+    # the test path matches reality. The temp dir is removed in the outer
+    # finally so a Test Connection call (incl. validation failures / timeouts)
+    # doesn't leak a directory each time.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cuga-test-emb-"))
     try:
-        cfg = KnowledgeConfig(
-            enabled=True,
-            persist_dir=Path(tempfile.mkdtemp(prefix="cuga-test-emb-")),
-            embedding_provider=provider,
-            embedding_model=model,
-            embedding_api_key=api_key,
-            embedding_base_url=base_url,
-            embedding_extra_params=dict(extra_params),
-        )
-        cfg.validate()
-    except (ValueError, TypeError):
-        logger.exception("Knowledge embedding test config validation failed")
-        return JSONResponse(
-            {
-                "ok": False,
-                "error_class": "InvalidEmbeddingConfiguration",
-                "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
-            }
-        )
-
-    def _do_test() -> dict[str, Any]:
-        t0 = _time.monotonic()
         try:
-            emb = create_embeddings(cfg)
-            vec = emb.embed_query("connection test")
-            dt_ms = int((_time.monotonic() - t0) * 1000)
-            return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
-        except Exception:
-            logger.exception("Knowledge embedding connection test failed")
-            return {
-                "ok": False,
-                "error_class": "EmbeddingConnectionFailed",
-                "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
-            }
+            cfg = KnowledgeConfig(
+                enabled=True,
+                persist_dir=tmp_dir,
+                embedding_provider=provider,
+                embedding_model=model,
+                embedding_api_key=api_key,
+                embedding_base_url=base_url,
+                embedding_extra_params=dict(extra_params),
+            )
+            cfg.validate()
+        except (ValueError, TypeError):
+            logger.exception("Knowledge embedding test config validation failed")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_class": "InvalidEmbeddingConfiguration",
+                    "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
+                }
+            )
 
-    try:
-        result = await _asyncio.wait_for(_asyncio.to_thread(_do_test), timeout=10.0)
-        return JSONResponse(result)
-    except _asyncio.TimeoutError:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error_class": "Timeout",
-                "error": "Embedding call did not complete within 10 seconds. "
-                "Check the base URL is reachable and the model is correct.",
-            }
-        )
+        def _do_test() -> dict[str, Any]:
+            t0 = _time.monotonic()
+            try:
+                emb = create_embeddings(cfg)
+                vec = emb.embed_query("connection test")
+                dt_ms = int((_time.monotonic() - t0) * 1000)
+                return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
+            except Exception:
+                logger.exception("Knowledge embedding connection test failed")
+                return {
+                    "ok": False,
+                    "error_class": "EmbeddingConnectionFailed",
+                    "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
+                }
+
+        try:
+            result = await _asyncio.wait_for(_asyncio.to_thread(_do_test), timeout=10.0)
+            return JSONResponse(result)
+        except _asyncio.TimeoutError:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_class": "Timeout",
+                    "error": "Embedding call did not complete within 10 seconds. "
+                    "Check the base URL is reachable and the model is correct.",
+                }
+            )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.get("/knowledge/defaults")
@@ -380,43 +390,14 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if not isinstance(knowledge, dict):
             raise HTTPException(status_code=400, detail="knowledge must be a dict")
 
-        # LAYER 1 GUARD (issue #396): reject the PATCH if a reindex is in
-        # flight for THIS agent's collections. The engine also enforces
-        # this in apply_knowledge_config (Layer 2) for SDK callers; this
-        # check returns a fast, well-typed 409 before we do any DB work
-        # so the FE can show a clean "wait for reindex" toast instead of
-        # surfacing a generic 400 from the engine raise.
-        #
-        # User-visible bug this prevents: clicking Use on Watsonx WHILE
-        # the previous Re-index is still running causes the in-flight
-        # workers to write watsonx-shaped (1024-dim) vectors into a
-        # collection NAMED for the fastembed hash — and silently drops
-        # the two files that were mid-ingest when the apply_generation
-        # bumped. The name-vs-content lie + missing docs both stem from
-        # the same root: PATCH not blocked during reindex.
-        import re as _re_guard
-
-        live_state_pre = getattr(request.app.state, "app_state", None)
-        live_engine_pre = getattr(live_state_pre, "knowledge_engine", None) if live_state_pre else None
-        if live_engine_pre is not None:
-            _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
-            _prefix_pre = f"kb_agent_{_sanitized_pre}"
-            in_flight = sorted(
-                c
-                for c in live_engine_pre._reindex_in_progress
-                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
-            )
-            if in_flight:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "reindex_in_progress",
-                        "collections": in_flight,
-                        "message": (
-                            "Re-index is running. Wait for it to finish before changing knowledge settings."
-                        ),
-                    },
-                )
+        # NOTE (#396): the over-broad route-level Layer-1 pre-check that used to
+        # live here — rejecting ANY PATCH while a reindex was in flight — was
+        # REMOVED. It false-positived on a redundant no-op / non-vector PATCH
+        # (the debounced autosave that races a Save & Reindex click), surfacing a
+        # spurious "Couldn't save". The engine's precise guard
+        # (apply_knowledge_config raises ReindexInProgressError only on a
+        # VECTOR-affecting change) is the single source of truth and is mapped to
+        # a structured 409 below; a non-vector PATCH correctly passes through to 200.
 
         # Imports needed inside the lock.
         from cuga.backend.server.config_store import load_draft
@@ -558,20 +539,63 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         # Do NOT raise — fall through to save the draft so the user
                         # can keep editing without the toast-storm.
                     else:
-                        logger.warning(f"Live engine knowledge apply failed: {live_err}")
+                        # Keep provider detail in the log only; don't echo it in
+                        # the HTTP body — a provider error can carry a credentialed
+                        # base_url / request context. Matches the sanitized 500s.
+                        logger.warning(f"Live engine knowledge apply failed: {live_err!r}")
                         raise HTTPException(
                             status_code=400,
                             detail=(
                                 "Live knowledge engine rejected the new config. "
-                                "Check the embedding provider/key/model and try again. "
-                                f"Underlying error: {live_err}"
+                                "Check the embedding provider, key, and model and try again."
                             ),
-                        )
+                        ) from None
 
             # Save to draft (lock-free variant — we already hold the lock).
             # Post-apply ordering means we only persist configs the engine
             # accepted; the draft serves crash recovery + publish snapshot.
             full_draft = await save_draft_section_unlocked(agent_id, "knowledge", filtered)
+
+            # ADOPT-EXISTING-COLLECTION: keep the ACTIVE pointer consistent with
+            # the embedder we just applied. /documents + retrieval resolve via
+            # app_state.knowledge_config_hash; if that stays on the OLD collection
+            # after applying a config whose embedder maps to an ALREADY-BUILT
+            # collection, the user sees the wrong (or zero) documents — the
+            # "imported config, no documents" report. When the applied embedder's
+            # collection already exists AND is populated, make it active
+            # immediately (no reindex — vectors are already there with the
+            # matching embedder). A NEW embedder (no collection yet) leaves the
+            # pointer alone — the reindex + deferred flip builds and flips it.
+            # Never flip while a reindex is in flight (the strict flip owns the
+            # pointer then). Persist so it survives restart.
+            try:
+                if (
+                    live_state is not None
+                    and live_engine is not None
+                    and not live_engine._reindex_in_progress
+                ):
+                    _adopt_hash = live_engine._config.vector_config_hash()
+                    _cur_hash = getattr(live_state, "knowledge_config_hash", None)
+                    if _adopt_hash and _adopt_hash != _cur_hash:
+                        import re as _re_adopt
+
+                        _adopt_base = f"kb_agent_{_re_adopt.sub(r'[^a-zA-Z0-9_]', '_', str(agent_id))}"
+                        _adopt_coll = f"{_adopt_base}_{_adopt_hash}"
+                        _existing_docs = await live_engine.list_documents(_adopt_coll)
+                        if _existing_docs:
+                            live_state.knowledge_config_hash = _adopt_hash
+                            logger.info(
+                                f"Adopted existing collection {_adopt_coll} ({len(_existing_docs)} docs) "
+                                f"as active after config apply (hash {_cur_hash} -> {_adopt_hash}); "
+                                f"no reindex needed."
+                            )
+                            await persist_active_vector_config(agent_id, live_engine, _adopt_hash)
+                            if isinstance(live_apply_result, dict):
+                                live_apply_result["reindex_recommended"] = False
+                                live_apply_result["adopted_existing_collection"] = True
+                                live_apply_result["active_document_count"] = len(_existing_docs)
+            except Exception as _adopt_err:  # noqa: BLE001 — never break the PATCH
+                logger.warning(f"Adopt-existing-collection check failed (non-fatal): {_adopt_err}")
 
         # Audit log: diff old vs new adaptation hash (NEVER the text itself —
         # PII + prompt-IP). Lets SREs answer "when did the adaptation change"
@@ -619,8 +643,8 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                 # so any reader still using the singular name sees this agent's
                 # data when it's the only configured agent.
                 state.draft_knowledge_config = validated
-            except Exception:
-                pass
+            except Exception as draft_state_err:
+                logger.warning(f"Failed to update draft knowledge app state: {draft_state_err}")
         if state:
             try:
                 base_agent_id = _parse_agent_id(str(agent_id))
@@ -663,6 +687,11 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     "dim_changed",
                     "previous_dim",
                     "new_dim",
+                    # Set when the applied config's collection was already built
+                    # and adopted as active (no reindex needed). The UI uses
+                    # these to clear the reindex banner + show the doc count.
+                    "adopted_existing_collection",
+                    "active_document_count",
                 )
             }
             # If the engine soft-failed (e.g. bad env-var key on provider
@@ -748,7 +777,29 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
         )
 
     try:
-        result = await migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
+        # Serialize against a concurrent publish / PATCH for this agent — they
+        # all mutate engine._config; the reindex must start under the same lock
+        # so it can't interleave with a publish's commit (CR-E). The deferred
+        # flip spawned inside is fire-and-forget and takes the lock later.
+        async with agent_draft_lock(str(agent_id)):
+            # Re-check now that we're serialized — two Re-index clicks (or a
+            # concurrent publish) can both pass the pre-lock guard above; only
+            # the first to acquire the lock should start a reindex.
+            in_flight = sorted(
+                c
+                for c in live_engine._reindex_in_progress
+                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+            )
+            if in_flight:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "reindex_in_progress",
+                        "collections": in_flight,
+                        "message": "Re-index is already running for this agent. Wait for it to finish.",
+                    },
+                )
+            result = await migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
         return JSONResponse(result)
     except Exception as e:
         # Generic client message; full detail (may include embedding-API
