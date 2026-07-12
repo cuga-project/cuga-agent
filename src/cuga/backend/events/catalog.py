@@ -20,13 +20,17 @@ from __future__ import annotations
 
 
 def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integration="none",
-        phase="run", live=False, note="", star=False):
+        phase="run", live=False, note="", star=False, ap_trigger=""):
     outcome = {"now": "answer-now", "cron": "flow-cron", "poll": "flow-poll",
                "push": "flow-push", "connect": "connect", "decline": "decline"}[trigger]
     return {"id": id, "title": title, "trigger": trigger, "outcome": outcome,
             "utterance": utterance, "agent": agent, "channel": channel,
             "integration": integration, "phase": phase, "live": live, "note": note,
-            "star": star}   # star = a curated "recommended starter flow" (featured in the UI)
+            "star": star,   # star = a curated "recommended starter flow" (featured in the UI)
+            # ap_trigger = the SPECIFIC Activepieces piece trigger this example maps to
+            # (e.g. "new_labeled_email"). Set → this is an ADVANCED, trigger-tied example: it is
+            # rendered in the collapsible "Advanced" section grouped by integration, NOT the main list.
+            "ap_trigger": ap_trigger}
 
 
 EXAMPLES = [
@@ -265,7 +269,290 @@ EXAMPLES = [
     _ex("decline-vague", "Ambiguous → clarify/decline", "decline", "do the thing with the stuff",
         agent="—", channel="web", phase="run", live=True,
         note="unresolvable → decline rather than guess"),
+
+    # ═══════════════════════════════════════════════════════════════════════════════════════════════
+    # ADVANCED — one example per REAL Activepieces trigger, tied to an existing agent.
+    # Each names the exact piece trigger (``ap_trigger``) pulled from the running AP catalog, so it is
+    # a flow AP could actually run. Today our NL→flow router maps each integration to its DEFAULT
+    # trigger only (gmail→new_email, github→pull_request, box→new_file); selecting a NON-default
+    # trigger is the next build step — so these are live=False (the AP trigger exists; our mapping to
+    # it is pending). They are the design target for "watch X, not just the obvious thing."
+    # ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+    # ── Gmail ── (triggers: gmail_new_email_received[✓ live above], new_labeled_email, new_attachment, new_label)
+    _ex("adv-gmail-labeled", "Gmail · a label is applied", "push",
+        "when I label an email 'Read-later', summarize it and send me the digest",
+        agent="mailbot", channel="telegram", integration="gmail", phase="run", live=False,
+        ap_trigger="new_labeled_email",
+        note="fires when a LABEL is applied (triage-then-act), not on every inbound email"),
+    _ex("adv-gmail-attach-resume", "Gmail · resume attachment", "push",
+        "when an email arrives with a resume attached, judge it against the JD and message me",
+        agent="resume_judge", channel="telegram", integration="gmail", phase="run", live=False,
+        ap_trigger="new_attachment",
+        note="resume_judge tied to a Gmail ATTACHMENT instead of a Box file — same agent, new source"),
+    _ex("adv-gmail-attach-summ", "Gmail · any attachment", "push",
+        "when an email attachment (PDF or doc) arrives, summarize its contents for me",
+        agent="mailbot", channel="slack", integration="gmail", phase="run", live=False,
+        ap_trigger="new_attachment",
+        note="summarize the FILE, not the email body"),
+    _ex("adv-gmail-newlabel", "Gmail · a new label is created", "push",
+        "when a new Gmail label is created, announce it in our Slack",
+        agent="incident_triage", channel="slack", integration="gmail", phase="run", live=False,
+        ap_trigger="new_label",
+        note="an org-structure change becomes an event — light-touch notify"),
+
+    # ── Slack ── (14 triggers; the converse path is the Events API — these are the OTHER triggers)
+    _ex("adv-slack-msg-anywhere", "Slack · any public message", "push",
+        "when any public message mentions 'CUGA', flag it to our brand channel",
+        agent="incident_triage", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-message",
+        note="New Public Message Posted Anywhere → keyword/brand monitoring across the workspace"),
+    _ex("adv-slack-msg-in-channel", "Slack · a message in a channel", "push",
+        "when a message is posted in #incidents, triage it and thread a severity",
+        agent="incident_triage", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-message-in-channel",
+        note="New Message Posted to Channel → watch ONE channel (vs the converse/DM path)"),
+    _ex("adv-slack-dm", "Slack · a DM to the bot", "push",
+        "when someone DMs the bot, route it to the right agent and reply",
+        agent="(auto-routed)", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-direct-message",
+        note="New Direct Message → concierge routing (like the routed webhook)"),
+    _ex("adv-slack-mention", "Slack · team @mention in a channel", "push",
+        "when the team is @mentioned with a question, draft an answer for review",
+        agent="research_compass", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new_mention",
+        note="New Mention in Channel → draft, don't auto-send"),
+    _ex("adv-slack-mention-dm", "Slack · @mention in a DM", "push",
+        "when I'm @mentioned in a DM thread, summarize what's being asked of me",
+        agent="research_compass", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-mention-in-direct-message",
+        note="New Mention in Direct Message → summarize the ask"),
+    _ex("adv-slack-reaction-bug", "Slack · a :bug: reaction", "push",
+        "when a message gets a :bug: reaction, triage it as an incident and thread the summary",
+        agent="incident_triage", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new_reaction_added",
+        note="a REACTION as a trigger — emoji-as-a-verb (filter on the :bug: emoji)"),
+    _ex("adv-slack-reaction-research", "Slack · a :bookmark: reaction", "push",
+        "when I react :bookmark: to a message with a link, research the topic and DM me",
+        agent="research_compass", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new_reaction_added",
+        note="save-to-research: the reaction picks the message, research_compass does the work"),
+    _ex("adv-slack-reaction-removed", "Slack · a reaction is removed", "push",
+        "when a :white_check_mark: is removed from a task message, re-open it and ping the owner",
+        agent="incident_triage", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new_reaction_removed",
+        note="Reaction Removed → un-done detection (the inverse of a reaction trigger)"),
+    _ex("adv-slack-channel-created", "Slack · a channel is created", "push",
+        "when a new channel is created, post a welcome and suggest a charter",
+        agent="support_digest", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="channel_created",
+        note="workspace lifecycle event → onboarding"),
+    _ex("adv-slack-command", "Slack · a slash command in a channel", "push",
+        "when someone runs a /ask command in a channel, route it to an agent and reply",
+        agent="(auto-routed)", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new_command",
+        note="New Command in Channel → concierge routing (a slash command as the trigger)"),
+    _ex("adv-slack-command-dm", "Slack · a slash command in a DM", "push",
+        "when someone runs /ask in a DM, answer it",
+        agent="(auto-routed)", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-command-in-direct-message",
+        note="New Command in Direct Message → same routing, DM-scoped"),
+    _ex("adv-slack-saved", "Slack · a saved message", "push",
+        "when I save a message, research anything it references and DM me the notes",
+        agent="research_compass", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-saved-message",
+        note="'save for later' → the agent actually does the later"),
+    _ex("adv-slack-newuser", "Slack · a new teammate", "push",
+        "when a new user joins the workspace, send them an onboarding brief",
+        agent="support_digest", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-user",
+        note="New User → personalized welcome"),
+    _ex("adv-slack-emoji", "Slack · a new custom emoji", "push",
+        "when a new custom emoji is added, post a fun announcement about it",
+        agent="support_digest", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-team-custom-emoji",
+        note="New Team Custom Emoji → workspace-culture housekeeping (a light-touch trigger)"),
+    _ex("adv-slack-modal", "Slack · a submitted modal form", "push",
+        "when a Slack modal form is submitted, process the fields and route them",
+        agent="(auto-routed)", channel="slack", integration="slack", phase="run", live=False,
+        ap_trigger="new-modal-interaction",
+        note="New Modal Interaction → treat a form submission like an inbound payload"),
+
+    # ── Discord ── (new_message, new_member)
+    _ex("adv-discord-member", "Discord · a new member joins", "push",
+        "when a new member joins the server, greet them and point to the resources",
+        agent="support_digest", channel="discord", integration="discord", phase="run", live=False,
+        ap_trigger="new_member",
+        note="New Member → welcome + orient"),
+    _ex("adv-discord-help", "Discord · a question in #help", "push",
+        "when someone posts in #help, answer from the docs",
+        agent="ibm_docs_qa", channel="discord", integration="discord", phase="run", live=False,
+        ap_trigger="new_message",
+        note="channel-scoped New Message → docs Q&A (vs the generic converse path)"),
+
+    # ── Telegram ── (new_telegram_message)
+    _ex("adv-telegram-url", "Telegram · a link is sent", "push",
+        "when I send the bot a link, summarize the page and reply",
+        agent="webpage_summarizer", channel="telegram", integration="telegram", phase="run", live=False,
+        ap_trigger="new_telegram_message",
+        note="New Update carrying a URL → webpage_summarizer (a content filter on the channel trigger)"),
+
+    # ── GitHub ── (14 triggers; pull_request[✓ live above] is one — these are the rest)
+    _ex("adv-gh-star", "GitHub · a new star", "push",
+        "when my repo gets a new star, post a thank-you and who starred it",
+        agent="github_trending", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="trigger_star",
+        note="New Star → social signal"),
+    _ex("adv-gh-issue", "GitHub · a new issue", "push",
+        "when a new issue is filed, triage its severity and suggest a label",
+        agent="incident_triage", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="trigger_issues",
+        note="New Issue → triage + label suggestion"),
+    _ex("adv-gh-release", "GitHub · a new release", "push",
+        "when a new release is published, summarize the changelog for the team",
+        agent="webpage_summarizer", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_release",
+        note="New Release → changelog digest"),
+    _ex("adv-gh-push", "GitHub · a push to main", "push",
+        "when code is pushed to main, audit the diff for obvious risks",
+        agent="code_auditor", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="trigger_push",
+        note="Push → code_auditor on the diff"),
+    _ex("adv-gh-discussion", "GitHub · a new discussion", "push",
+        "when a new discussion opens, summarize it and surface related prior work",
+        agent="research_compass", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="trigger_discussion",
+        note="New Discussion → summary + related work"),
+    _ex("adv-gh-comment", "GitHub · a new comment", "push",
+        "when a comment is posted on an issue, flag if it names a blocker",
+        agent="incident_triage", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="trigger_discussion_comment",
+        note="New Comment → blocker detection"),
+    _ex("adv-gh-review-req", "GitHub · review requested", "push",
+        "when I'm requested to review a PR, summarize the diff and flag the risks",
+        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False,
+        ap_trigger="new_review_request",
+        note="New Review Request → pr_reviewer, scoped to PRs assigned to you"),
+    _ex("adv-gh-commit", "GitHub · a new commit", "push",
+        "when a commit lands on any branch, audit it for obvious bugs",
+        agent="code_auditor", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_commit",
+        note="New Commit → per-commit audit"),
+    _ex("adv-gh-milestone", "GitHub · a new milestone", "push",
+        "when a milestone is created, draft a plan and a checklist for it",
+        agent="support_digest", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_milestone",
+        note="New Milestone → planning"),
+    _ex("adv-gh-branch", "GitHub · a new branch", "push",
+        "when a new branch is created, note it and check it against our naming convention",
+        agent="incident_triage", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_branch",
+        note="New Branch → convention check + log"),
+    _ex("adv-gh-collaborator", "GitHub · a new collaborator", "push",
+        "when a collaborator is added to the repo, log it and note their access level",
+        agent="incident_triage", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_collaborator",
+        note="New Collaborator → access audit trail"),
+    _ex("adv-gh-label", "GitHub · a new label", "push",
+        "when a new label is created in the repo, announce it to the team",
+        agent="incident_triage", channel="slack", integration="github", phase="run", live=False,
+        ap_trigger="new_label",
+        note="New Label → housekeeping notify"),
+    _ex("adv-gh-mention", "GitHub · a mention of me", "push",
+        "when my repo @mentions me anywhere, summarize the surrounding context",
+        agent="research_compass", channel="telegram", integration="github", phase="run", live=False,
+        ap_trigger="new_mention",
+        note="New Mention → context summary so you can respond fast"),
+
+    # ── Box ── (new_file[✓ live above], new_folder, new_comment)
+    _ex("adv-box-folder", "Box · a new folder", "push",
+        "when a new folder appears in Box, index its contents and summarize what's inside",
+        agent="support_digest", channel="slack", integration="box", phase="run", live=False,
+        ap_trigger="new_folder",
+        note="New Folder → index + summary"),
+    _ex("adv-box-comment", "Box · a comment on a file", "push",
+        "when someone comments on a Box file, summarize the thread and flag action items",
+        agent="incident_triage", channel="slack", integration="box", phase="run", live=False,
+        ap_trigger="new_comment",
+        note="New Comment → discussion summary + actions"),
+    _ex("adv-box-file-summ", "Box · any document", "push",
+        "when a document lands in Box, summarize it for me",
+        agent="webpage_summarizer", channel="telegram", integration="box", phase="run", live=False,
+        ap_trigger="new_file",
+        note="New File → a SUMMARIZE flavor (vs resume_judge on the same trigger)"),
+
+    # ── Webhook ── (not an AP piece — the generic inbound endpoint; its "trigger" is any POST.
+    # The live pinned + routed + CI + lead examples are in the main list above; these round out the
+    # per-source coverage in the Advanced section for completeness.)
+    _ex("adv-webhook-pinned", "Webhook · pinned agent", "push",
+        "POST any JSON to /api/events/hook/<name>?agent=incident_triage — that agent triages it",
+        agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,
+        ap_trigger="inbound (pinned)",
+        note="generic inbound webhook, PINNED: you name the agent in the URL (deterministic)"),
+    _ex("adv-webhook-routed", "Webhook · routed agent", "push",
+        "POST any JSON to /api/events/hook/<name>?route=1 — the concierge picks the agent, like chat",
+        agent="(auto-routed)", channel="slack", integration="webhook", phase="run", live=True,
+        ap_trigger="inbound (routed)",
+        note="generic inbound webhook, ROUTED: the concierge routes by capability (a PR payload → "
+             "pr_reviewer, a dispute → incident_triage). No agent catalog knowledge needed"),
 ]
+
+
+def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
+    """CAN WE TEST THIS TODAY? Returns (tier, needs) for a trigger-tied example.
+
+    Arming a PUSH watcher via the concierge has TWO gates, both must hold:
+      G1  an AGENT declares that integration — only mailbot[gmail], resume_judge[box],
+          support_digest[slack], pr_reviewer[github] do (seed.py).
+      G2  flows.SOURCE_TRIGGER maps the specific trigger — only box/new_file, github/PR,
+          github/issue, gmail/new_email today; anything else builds a non-existent trigger.
+    Plus a FIRE gate: github (webhook) triggers can be synth-fired via /run; gmail/box (polling)
+    need a real event; slack/discord run on the DIRECT backend (no AP connection at all).
+
+    Tiers:
+      now      — arms + verifies today (only the webhook endpoint clears every gate out of the box).
+      select   — the trigger and/or a declaring agent is missing, but the connection exists; NL→flow +
+                 (agent | SOURCE_TRIGGER | payload-map) work closes it. github is closest (synth-fire ready).
+      backend  — Slack/Discord (direct-event handling, no AP connection) or Box folders/comments
+                 (the direct poller lists files only). A larger lift than trigger-selection.
+    Grounded in flows.SOURCE_TRIGGER, seed.py integrations, delivery._DEFAULT_BACKEND, box_direct (2026-07-11)."""
+    i, t = integration, ap_trigger
+    if not t:
+        return ("", "")
+    if i == "webhook":
+        return ("now", "live today — pinned + routed both proven end-to-end (the webhook endpoint "
+                       "bypasses the concierge, so neither gate applies)")
+    if i == "github":
+        if t == "trigger_issues":
+            return ("select", "CLOSEST: trigger_issues IS in SOURCE_TRIGGER — the only gap is an AGENT "
+                             "that handles issues (pr_reviewer declares github but the router treats it "
+                             "as PR-only). Add issue handling to pr_reviewer (or a new issue agent), then "
+                             "it arms + synth-fires via /run like PR")
+        return ("select", "add the trigger to SOURCE_TRIGGER + a PUSH_PAYLOAD field-map AND an agent "
+                          "that declares github for it; then arms + synth-fires via /run (github OAuth connected)")
+    if i == "box":
+        if t == "new_file":
+            return ("select", "the new_file poll is LIVE (resume_judge uses it); routing it to a "
+                             "DIFFERENT agent needs that agent to declare box — or drive it directly via "
+                             "POST /api/events/box/poll?agent=…")
+        return ("backend", "extend box_direct: the poller lists FILES only (should_process skips "
+                           "subfolders) and has no Box comments API")
+    if i == "gmail":
+        return ("select", "non-default trigger — map it in SOURCE_TRIGGER (+ label/search config). "
+                          "mailbot already declares gmail, so the agent is fine; firing still needs a "
+                          "real email (polling trigger, can't be fired out of band)")
+    if i == "telegram":
+        return ("select", "a content-filter on the existing AP telegram message trigger")
+    if i in ("slack", "discord"):
+        transport = ("Slack Events API" if i == "slack" else "Discord Gateway")
+        return ("backend", f"{i} runs on the DIRECT backend — no AP {i} connection. We already receive "
+                           f"the {transport}; route THIS event type in our own handler")
+    return ("select", "")
+
+
+# Stamp every example with its testability AS OF TODAY (basic examples get ("","")).
+for _e in EXAMPLES:
+    _e["feasibility"], _e["needs"] = _feasibility(_e["integration"], _e.get("ap_trigger", ""))
 
 
 def as_list() -> list[dict]:

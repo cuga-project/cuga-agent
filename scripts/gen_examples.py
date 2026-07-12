@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML = ROOT / "events_docs" / "api" / "examples.html"
 # keys the board renders, in a stable order → deterministic diff
 KEYS = ["id", "title", "trigger", "outcome", "utterance", "agent", "channel",
-        "integration", "phase", "live", "note", "star"]
+        "integration", "phase", "live", "note", "star", "ap_trigger", "feasibility", "needs"]
 MARKER = re.compile(r"const EX = (\[.*?\]);", re.S)
 
 
