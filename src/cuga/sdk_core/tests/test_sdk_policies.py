@@ -955,3 +955,6 @@ async def test_generate_tool_guards_from_json_clear_existing_replaces_storage(tm
     assert result["source_policy_ids"] == ["replacement_guide"]
     assert result["import"]["count"] == 1
     assert result["generated"]["replacement_guide"]["status"] == "ok"
+    # Verify the old policy was cleared from storage by clear_existing=True.
+    # Access internal storage directly to avoid triggering a filesystem re-sync.
+    assert await agent._policy_system.storage.get_policy("existing_guide") is None

@@ -1101,10 +1101,7 @@ class PoliciesManager:
             Dictionary with import summary, source policy IDs, generated results,
             skipped policies, errors, and overall status.
         """
-        from cuga.backend.cuga_graph.policy.utils import (
-            extract_policies_data_from_json,
-            load_policies_from_json,
-        )
+        from cuga.backend.cuga_graph.policy.utils import extract_policies_data_from_json
         from cuga.backend.server import tool_guard_generation
 
         policy_system = await self._ensure_policy_system()
@@ -1133,11 +1130,19 @@ class PoliciesManager:
                 "errors": [error_msg],
             }
 
-        import_result = await load_policies_from_json(
-            file_path=file_path,
-            storage=policy_system.storage,
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+        apply_result = await apply_policies_data_to_storage(
+            policy_system.storage,
+            extracted["policies"],
             clear_existing=clear_existing,
+            filesystem_sync=None,
         )
+        import_result = {
+            "count": apply_result["count"],
+            "enabled": extracted["enabled"],
+            "errors": [*extracted["errors"], *apply_result["errors"]],
+        }
 
         await policy_system.initialize()
         self._invalidate_toolguard_runtime()
@@ -1161,7 +1166,7 @@ class PoliciesManager:
                 from cuga.backend.llm.models import create_llm_from_config
 
                 _model = create_llm_from_config(_llm_config)
-            except ValueError:
+            except Exception:
                 logger.warning(
                     "Failed to build model from llm_config for ToolGuard generation; using default"
                 )
@@ -1177,7 +1182,7 @@ class PoliciesManager:
             generation_agent=generation_agent,
         )
 
-        result_errors = [*extracted["errors"], *batch_result.get("errors", [])]
+        result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
         status = batch_result.get("status", "error")
         if result_errors and status == "ok":
             status = "partial"

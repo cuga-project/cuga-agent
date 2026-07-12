@@ -321,9 +321,7 @@ def extract_policies_data_from_json(file_path: str) -> Dict[str, Any]:
     if isinstance(data, dict) and "policies" in data:
         enabled = data.get("enablePolicies", True)
         policies_data = data["policies"]
-        logger.info(
-            f"Loading {len(policies_data)} policies from frontend export format (enabled: {enabled})"
-        )
+        logger.info(f"Loading {len(policies_data)} policies from frontend export format (enabled: {enabled})")
     elif isinstance(data, list):
         policies_data = data
         logger.info(f"Loading {len(policies_data)} policies from array format")
@@ -333,6 +331,8 @@ def extract_policies_data_from_json(file_path: str) -> Dict[str, Any]:
 
     policy_ids: List[str] = []
     errors: List[str] = []
+    valid_policies: List[Dict[str, Any]] = []
+    seen_ids: set = set()
     for index, policy_data in enumerate(policies_data):
         if not isinstance(policy_data, dict):
             errors.append(f"Policy at index {index} must be an object")
@@ -341,11 +341,15 @@ def extract_policies_data_from_json(file_path: str) -> Dict[str, Any]:
         if not policy_id:
             errors.append(f"Policy at index {index} is missing required field 'id'")
             continue
-        policy_ids.append(str(policy_id))
+        policy_id = str(policy_id)
+        valid_policies.append(policy_data)
+        if policy_id not in seen_ids:
+            seen_ids.add(policy_id)
+            policy_ids.append(policy_id)
 
     return {
         "enabled": enabled,
-        "policies": policies_data,
+        "policies": valid_policies,
         "policy_ids": policy_ids,
         "errors": errors,
     }
