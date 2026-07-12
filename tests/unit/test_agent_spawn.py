@@ -149,6 +149,58 @@ def test_format_available_agents_block_adhoc_description():
     assert "json.dumps" in block
     assert "print" in block
     assert "opaque" in block
+    assert "share_workspace" in block
+    assert "both ways" in block
+
+
+def test_resolve_thread_ids_isolated_by_default():
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
+    rt = SpawnAgentRuntime([], parent_config={"configurable": {"thread_id": "parent-1"}})
+    conversation_id, workspace_id = rt._resolve_thread_ids(share_workspace=False)
+    assert conversation_id.startswith("sub_cuga_")
+    assert workspace_id == conversation_id
+
+
+def test_resolve_thread_ids_share_workspace_reuses_parent():
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
+    rt = SpawnAgentRuntime([], parent_config={"configurable": {"thread_id": "parent-1"}})
+    conversation_id, workspace_id = rt._resolve_thread_ids(share_workspace=True)
+    assert conversation_id.startswith("sub_cuga_")
+    assert workspace_id == "parent-1"
+    assert conversation_id != workspace_id
+
+
+@pytest.mark.asyncio
+async def test_execute_share_workspace_sets_workspace_thread_id_in_config(monkeypatch):
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
+    parent_cfg = {"configurable": {"thread_id": "parent-ws"}}
+    rt = SpawnAgentRuntime([], parent_config=parent_cfg)
+    captured = {}
+
+    monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
+
+    async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
+        captured["thread_id"] = thread_id
+        captured["cfg"] = cfg
+        return "ok"
+
+    monkeypatch.setattr(rt, "_run_stream", _fake_run_stream)
+    monkeypatch.setattr("cuga.backend.agent_spawn.runtime.set_session_attribute", lambda sid: None)
+    monkeypatch.setattr(
+        "cuga.backend.agent_spawn.runtime.sync_langfuse_callbacks_from_config",
+        lambda cfg: None,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.agent_spawn.runtime.get_langfuse_invoke_config",
+        lambda: {"configurable": {}},
+    )
+
+    await rt.execute("task", share_workspace=True)
+    assert captured["thread_id"].startswith("sub_cuga_")
+    assert captured["cfg"]["configurable"]["workspace_thread_id"] == "parent-ws"
 
 
 def test_agents_prompt_warns_against_nested_fstrings_for_spawn_task():
@@ -164,6 +216,7 @@ def test_agents_prompt_warns_against_nested_fstrings_for_spawn_task():
     assert "json.dumps" in prompt
     assert "triple quotes" in prompt
     assert "Inspect results before follow-up" in prompt
+    assert "share_workspace" in prompt
 
 
 # ── Phase 6: Graph Closure (spawn_futures ref) ─────────────────────────────
@@ -290,7 +343,7 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
         return "mocked-answer"
 
     monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
-    monkeypatch.setattr(rt, "_build_invoke_config", lambda: {})
+    monkeypatch.setattr(rt, "_build_invoke_config", lambda workspace_thread_id="": {})
     monkeypatch.setattr(rt, "_run_stream", _fake_run_stream)
 
     try:
@@ -385,7 +438,7 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
     parent_cfg = {"configurable": {"thread_id": "parent-thread"}}
     rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
-    rt._build_invoke_config = lambda: {}
+    rt._build_invoke_config = lambda workspace_thread_id="": {}
     rt._build_agent = lambda tools: object()
 
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
@@ -421,7 +474,7 @@ async def test_execute_async_calls_set_session_before_create_task(monkeypatch):
     parent_cfg = {"configurable": {"thread_id": "async-thread"}}
     rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
-    async def _fake_execute(task, spawn_id=""):
+    async def _fake_execute(task, spawn_id="", share_workspace=False):
         return "done"
 
     monkeypatch.setattr(rt, "execute", _fake_execute)

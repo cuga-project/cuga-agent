@@ -93,6 +93,22 @@ class SpawnAgentRuntime:
     def _make_thread_id(self) -> str:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
+    def _parent_thread_id(self) -> str:
+        return self._parent_config.get("configurable", {}).get("thread_id", "") or ""
+
+    def _resolve_thread_ids(self, share_workspace: bool) -> tuple[str, str]:
+        """Return (conversation_thread_id, workspace_thread_id).
+
+        Conversation thread is always a fresh sub_cuga_* id (isolated chat/checkpointer).
+        Workspace thread defaults to that same id; with share_workspace=True it reuses the
+        parent thread so fs/run_command see parent uploads and session files.
+        """
+        conversation_thread_id = self._make_thread_id()
+        parent_thread_id = self._parent_thread_id()
+        if share_workspace and parent_thread_id:
+            return conversation_thread_id, parent_thread_id
+        return conversation_thread_id, conversation_thread_id
+
     def _build_agent(self, tools: List[StructuredTool]):
         # Fresh agent per spawn: parallel async subagents from the same parent
         # share tool names + parent thread_id, so a process-level cache would
@@ -101,10 +117,15 @@ class SpawnAgentRuntime:
 
         return CugaAgent(tools=tools, special_instructions=_SUBAGENT_SPECIAL_INSTRUCTIONS)
 
-    def _build_invoke_config(self) -> dict:
+    def _build_invoke_config(self, workspace_thread_id: str = "") -> dict:
         if self._parent_config:
             sync_langfuse_callbacks_from_config(self._parent_config)
-        return get_langfuse_invoke_config()
+        cfg = get_langfuse_invoke_config()
+        if workspace_thread_id:
+            configurable = dict(cfg.get("configurable") or {})
+            configurable["workspace_thread_id"] = workspace_thread_id
+            cfg = {**cfg, "configurable": configurable}
+        return cfg
 
     async def _run_stream(self, agent, task: str, thread_id: str, cfg: dict, spawn_id: str = "") -> str:
         final_answer = ""
@@ -126,7 +147,7 @@ class SpawnAgentRuntime:
                 final_answer = candidate
         return final_answer
 
-    async def execute(self, task: str, spawn_id: str = "") -> str:
+    async def execute(self, task: str, spawn_id: str = "", share_workspace: bool = False) -> str:
         """Run the sub-agent synchronously; return its final_answer."""
         depth = _spawn_depth.get()
         max_depth = getattr(settings.agent_spawn, "max_spawn_depth", 2)
@@ -134,10 +155,10 @@ class SpawnAgentRuntime:
             return f"[SpawnError] max_spawn_depth={max_depth} exceeded"
 
         tools = self._parent_structured_tools
-        thread_id = self._make_thread_id()
-        invoke_cfg = self._build_invoke_config()
+        thread_id, workspace_thread_id = self._resolve_thread_ids(share_workspace)
+        invoke_cfg = self._build_invoke_config(workspace_thread_id=workspace_thread_id)
 
-        parent_thread_id = self._parent_config.get("configurable", {}).get("thread_id", "")
+        parent_thread_id = self._parent_thread_id()
         set_session_attribute(parent_thread_id)
 
         _emit(
@@ -147,6 +168,8 @@ class SpawnAgentRuntime:
                 "task": task[:200],
                 "mode": "async" if spawn_id else "sync",
                 "thread_id": thread_id,
+                "workspace_thread_id": workspace_thread_id,
+                "share_workspace": bool(share_workspace and parent_thread_id),
                 "spawn_id": spawn_id,
             },
         )
@@ -163,6 +186,7 @@ class SpawnAgentRuntime:
             {
                 "agent_name": "SubCuga",
                 "thread_id": thread_id,
+                "workspace_thread_id": workspace_thread_id,
                 "status": "success",
                 "answer": answer[:500],
                 "spawn_id": spawn_id,
@@ -170,19 +194,19 @@ class SpawnAgentRuntime:
         )
         return answer
 
-    async def execute_async(self, task: str) -> str:
+    async def execute_async(self, task: str, share_workspace: bool = False) -> str:
         """Fire-and-forget spawn; return future_id for get_agent_result."""
-        parent_thread_id = self._parent_config.get("configurable", {}).get("thread_id", "")
+        parent_thread_id = self._parent_thread_id()
         set_session_attribute(parent_thread_id)
 
         future_id = f"future_{uuid4().hex[:8]}"
         self._spawn_futures[future_id] = {"status": "running", "result": None, "error": None}
-        asyncio.create_task(self._execute_and_store(future_id, task))
+        asyncio.create_task(self._execute_and_store(future_id, task, share_workspace=share_workspace))
         return future_id
 
-    async def _execute_and_store(self, future_id: str, task: str) -> None:
+    async def _execute_and_store(self, future_id: str, task: str, share_workspace: bool = False) -> None:
         try:
-            result = await self.execute(task, spawn_id=future_id)
+            result = await self.execute(task, spawn_id=future_id, share_workspace=share_workspace)
             self._spawn_futures[future_id] = {"status": "done", "result": result, "error": None}
         except Exception as e:
             logger.warning(f"agent_spawn: async execute failed for future_id={future_id}: {e}")

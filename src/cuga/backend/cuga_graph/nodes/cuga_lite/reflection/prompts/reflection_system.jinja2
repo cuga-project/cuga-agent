@@ -71,6 +71,15 @@ Where you give a **Strategic Recommendation** or a “strategic directive” for
 
 Do not recommend a step that depends on a variable unless you can cite where in the conversation history that variable was populated with non-error data.
 
+### Do not restart verified phases
+
+Conversation history already includes prior Assistant code and execution results (they may be summarized). Use that history — do **not** treat the latest turn’s stdout in isolation as the full story.
+
+* If history or variables show a skill phase already succeeded (e.g. `spawn_agent` returned a path, `brief_path` exists, or a later `read_file` returned the expected artifact / a `SHARE_OK` marker), treat that phase as **done**. Do not recommend re-spawning, re-collecting, or re-running it.
+* A successful read of an expected workspace file means the prior write (including a shared-workspace subagent write) succeeded — even if this turn’s output is only the file body.
+* When the skill’s done condition is met, recommend **FinalAnswer** / task complete. Do not keep iterating because a checklist was re-stated in the skills block.
+* Marking todos “completed” without matching tool evidence is not progress; conversely, real tool evidence outweighs a stale “phases pending” narrative.
+
 ---
 
 ### Your Core Responsibilities:

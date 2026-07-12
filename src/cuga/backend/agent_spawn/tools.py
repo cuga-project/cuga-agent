@@ -21,6 +21,15 @@ class SpawnAgentInput(BaseModel):
         max_length=4000,
     )
     mode: str = Field(default="sync", description="'sync' waits for result; 'async' returns a future_id")
+    share_workspace: bool = Field(
+        default=False,
+        description=(
+            "If True, parent and child share one workspace both ways: the child can read "
+            "existing session uploads/files, and files it creates (e.g. .md reports) appear "
+            "in the parent session workspace. Default False = isolated empty workspace "
+            "(safer for parallel async spawns)."
+        ),
+    )
 
 
 class GetAgentResultInput(BaseModel):
@@ -35,7 +44,7 @@ def create_spawn_tools(
 ) -> list[StructuredTool]:
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
-    async def spawn_agent(task: str = "", mode: str = "sync") -> str:
+    async def spawn_agent(task: str = "", mode: str = "sync", share_workspace: bool = False) -> str:
         rt = SpawnAgentRuntime.from_parent(
             parent_config,
             spawn_futures_ref=spawn_futures,
@@ -43,8 +52,8 @@ def create_spawn_tools(
         )
 
         if mode == "async":
-            return await rt.execute_async(task)
-        return await rt.execute(task)
+            return await rt.execute_async(task, share_workspace=share_workspace)
+        return await rt.execute(task, share_workspace=share_workspace)
 
     async def get_agent_result(future_id: str, timeout: float = 60.0) -> str:
         if future_id not in spawn_futures:
@@ -71,7 +80,11 @@ def create_spawn_tools(
             "mode='sync' (default): blocks until the subagent finishes — use only for a single sequential subtask. "
             "mode='async': returns a future_id immediately so you can spawn multiple subagents in parallel before "
             "collecting results with get_agent_result. Use mode='async' whenever you have two or more independent "
-            "subtasks that could run simultaneously."
+            "subtasks that could run simultaneously. "
+            "share_workspace=False (default): isolated empty workspace. "
+            "share_workspace=True: same workspace both ways — child reads parent uploads/files and "
+            "anything the child writes (reports, .md, outputs) is visible in the parent session "
+            "(avoid for parallel async writers on the same files)."
         ),
         args_schema=SpawnAgentInput,
     )

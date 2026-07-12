@@ -406,7 +406,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
             cfg = config.get("configurable", {}) if config else {}
-            runtime_thread_id = (
+            # Spawn may set workspace_thread_id to the parent thread while keeping a
+            # fresh conversation thread_id for checkpointer/chat isolation.
+            runtime_thread_id = cfg.get("workspace_thread_id") or (
                 cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or adapter._thread_id)
             )
         else:
