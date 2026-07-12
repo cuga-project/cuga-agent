@@ -82,16 +82,21 @@ class ToolCalling(BaseModel):
 def tool_calling_to_configurable(tc: Optional[ToolCalling]) -> Dict[str, Any]:
     """Serialize ``ToolCalling`` to graph ``configurable`` keys.
 
-    Returns ``{}`` for ``None`` (no opt-in). An explicit ``mode="code"`` returns
-    ``{"cuga_lite_tool_invocation_mode": "code"}`` so a per-agent/per-invoke
-    opt-out overrides a global ``native`` default. Fully guarded: on any error it
+    Returns ``{}`` for ``None`` (no opt-in — global setting / model profile still
+    apply). An explicit ``mode="code"`` is a *full* opt-out: it forces the
+    code-act prompt/handling AND unbinds tools (``cuga_lite_bind_tools_mode=
+    "none"``), overriding a global ``native`` default and any model profile that
+    would otherwise bind (e.g. gpt-oss-20b). Fully guarded: on any error it
     disables FC rather than raising.
     """
     try:
         if tc is None:
             return {}
         if tc.mode == "code":
-            return {"cuga_lite_tool_invocation_mode": "code"}
+            return {
+                "cuga_lite_tool_invocation_mode": "code",
+                "cuga_lite_bind_tools_mode": "none",
+            }
         cfg: Dict[str, Any] = {"cuga_lite_tool_invocation_mode": tc.mode}
         if tc.native_tools:
             cfg["cuga_lite_bind_tools_mode"] = "tools"
