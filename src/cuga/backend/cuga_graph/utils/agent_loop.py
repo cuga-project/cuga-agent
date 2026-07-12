@@ -263,21 +263,25 @@ class StreamEvent(BaseModel):
 def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
     """Convert a runtime spawn event to an SSE StreamEvent for the UI."""
     if name == "SpawnAgent":
-        payload = json.dumps({
-            "type": "start",
-            "agent_name": data.get("agent_name", ""),
-            "task": data.get("task", ""),
-            "spawn_id": data.get("spawn_id", ""),
-        })
+        payload = json.dumps(
+            {
+                "type": "start",
+                "agent_name": data.get("agent_name", ""),
+                "task": data.get("task", ""),
+                "spawn_id": data.get("spawn_id", ""),
+            }
+        )
         return StreamEvent(name="SubAgent", data=payload)
     if name == "SpawnAgentResult":
-        payload = json.dumps({
-            "type": "result",
-            "agent_name": data.get("agent_name", ""),
-            "status": data.get("status", ""),
-            "answer": data.get("answer", ""),
-            "spawn_id": data.get("spawn_id", ""),
-        })
+        payload = json.dumps(
+            {
+                "type": "result",
+                "agent_name": data.get("agent_name", ""),
+                "status": data.get("status", ""),
+                "answer": data.get("answer", ""),
+                "spawn_id": data.get("spawn_id", ""),
+            }
+        )
         return StreamEvent(name="SubAgent", data=payload)
     if name == "CodeAgent":
         agent_name = data.get("subagent", "sub-agent")
@@ -290,12 +294,14 @@ def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
             val = data.get(key)
             if val and isinstance(val, str):
                 safe_data[key] = val
-        payload = json.dumps({
-            "type": "step",
-            "agent_name": agent_name,
-            "spawn_id": data.get("spawn_id", ""),
-            **safe_data,
-        })
+        payload = json.dumps(
+            {
+                "type": "step",
+                "agent_name": agent_name,
+                "spawn_id": data.get("spawn_id", ""),
+                **safe_data,
+            }
+        )
         return StreamEvent(name="SubAgent", data=payload)
     return None
 

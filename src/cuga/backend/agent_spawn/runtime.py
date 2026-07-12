@@ -21,9 +21,15 @@ from cuga.config import settings
 _spawn_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_spawn_depth", default=0)
 
 # Tools that should never be passed down to subagents (would cause recursion or confusion).
-_SPAWN_INTERNAL_TOOL_NAMES: frozenset[str] = frozenset({
-    "spawn_agent", "get_agent_result", "load_skill", "find_tools", "create_update_todos",
-})
+_SPAWN_INTERNAL_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "spawn_agent",
+        "get_agent_result",
+        "load_skill",
+        "find_tools",
+        "create_update_todos",
+    }
+)
 
 _event_callback: Optional[Callable[[str, dict], None]] = None
 
@@ -79,17 +85,13 @@ class SpawnAgentRuntime:
         language (e.g. "⚠️ USE SUBAGENTS") without requiring a predefined AGENT.md.
         Spawn/skill meta-tools are filtered out to prevent recursive spawning.
         """
-        filtered = [
-            t for t in (parent_structured_tools or [])
-            if t.name not in _SPAWN_INTERNAL_TOOL_NAMES
-        ]
+        filtered = [t for t in (parent_structured_tools or []) if t.name not in _SPAWN_INTERNAL_TOOL_NAMES]
         return cls(filtered, parent_config, spawn_futures_ref)
 
     def _make_thread_id(self) -> str:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
     def _build_agent(self, tools: List[StructuredTool]):
-
         # Checks to see if there is already cached agent (pre made), if there is returns it, else creatubg a new one.
         no_cache = os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE")
         if not no_cache:
@@ -99,6 +101,7 @@ class SpawnAgentRuntime:
                 return cached
 
         from cuga.sdk import CugaAgent
+
         agent = CugaAgent(tools=tools)
 
         if not no_cache:
@@ -111,7 +114,6 @@ class SpawnAgentRuntime:
         return get_langfuse_invoke_config()
 
     async def _run_stream(self, agent, task: str, thread_id: str, cfg: dict, spawn_id: str = "") -> str:
-
         final_answer = ""
         forward = getattr(settings.agent_spawn, "forward_sync_subagent_events", True)
         async for chunk in agent.stream(task, thread_id=thread_id, config=cfg):
@@ -119,7 +121,7 @@ class SpawnAgentRuntime:
 
             if not isinstance(state_dict, dict):
                 continue
-            
+
             node_data = next(iter(state_dict.values()), None)
 
             if not isinstance(node_data, dict):
@@ -145,13 +147,16 @@ class SpawnAgentRuntime:
         parent_thread_id = self._parent_config.get("configurable", {}).get("thread_id", "")
         set_session_attribute(parent_thread_id)
 
-        _emit("SpawnAgent", {
-            "agent_name": "SubCuga",
-            "task": task[:200],
-            "mode": "async" if spawn_id else "sync",
-            "thread_id": thread_id,
-            "spawn_id": spawn_id,
-        })
+        _emit(
+            "SpawnAgent",
+            {
+                "agent_name": "SubCuga",
+                "task": task[:200],
+                "mode": "async" if spawn_id else "sync",
+                "thread_id": thread_id,
+                "spawn_id": spawn_id,
+            },
+        )
 
         token = _spawn_depth.set(depth + 1)
         try:
@@ -160,13 +165,16 @@ class SpawnAgentRuntime:
         finally:
             _spawn_depth.reset(token)
 
-        _emit("SpawnAgentResult", {
-            "agent_name": "SubCuga",
-            "thread_id": thread_id,
-            "status": "success",
-            "answer": answer[:500],
-            "spawn_id": spawn_id,
-        })
+        _emit(
+            "SpawnAgentResult",
+            {
+                "agent_name": "SubCuga",
+                "thread_id": thread_id,
+                "status": "success",
+                "answer": answer[:500],
+                "spawn_id": spawn_id,
+            },
+        )
         return answer
 
     async def execute_async(self, task: str) -> str:
