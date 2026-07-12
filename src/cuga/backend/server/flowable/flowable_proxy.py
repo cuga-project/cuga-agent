@@ -328,28 +328,106 @@ class FlowableProxy:
 
     # --- hook realisation ------------------------------------------------
 
-    def realize_hook_action(self, result: Any, process_instance_id: str) -> None:
+    def realize_hook_action(
+        self,
+        result: Any,
+        process_instance_id: str,
+        current_activity_id: str | None = None,
+    ) -> None:
         """Translate a HookResult into Flowable REST calls.
 
         CONTINUE requires no REST interaction — Flowable advances automatically
-        once the script task HTTP response is received. Additional action types
-        (TERMINATE, SKIP_TO, etc.) will be implemented here as they are permitted.
+        once the script task HTTP response is received.
+
+        SKIP_TO suspends the process instance first so no competing token can
+        advance while the state change is applied, then resumes after.
+        current_activity_id is used as a cancel-ID hint when the execution query
+        returns an empty activityId list (which happens when Flowable's script task
+        is mid-execution and hasn't flushed its activityId to DB yet).
         """
         from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction
 
         action = result.action
+
         if action == HookAction.CONTINUE:
             logger.info(
                 "Hook CONTINUE for instance {} — no REST action required, "
                 "Flowable advances after script task response",
                 process_instance_id,
             )
+
+        elif action == HookAction.SKIP_TO:
+            target = result.skip_to_node
+            logger.info(
+                "Hook SKIP_TO for instance {} to {} — routing via BPMN boundary event + Task_DynamicSkip",
+                process_instance_id,
+                target,
+            )
+
         else:
             logger.warning(
                 "Hook action '{}' for instance {} is not yet implemented in FlowableProxy",
                 action.value,
                 process_instance_id,
             )
+
+    def _set_suspension_state(self, process_instance_id: str, *, suspend: bool) -> None:
+        """Suspend or resume a process instance."""
+        action = "suspend" if suspend else "activate"
+        self._request(
+            "PUT",
+            f"/runtime/process-instances/{process_instance_id}",
+            json={"action": action},
+        )
+        logger.debug(
+            "Process instance {} {}", process_instance_id, "suspended" if suspend else "activated"
+        )
+
+    def _change_process_state(
+        self,
+        process_instance_id: str,
+        target_activity_id: str,
+        hint_cancel_id: str | None = None,
+    ) -> None:
+        """Cancel all current active activities and start execution at target_activity_id.
+
+        hint_cancel_id is used as a fallback when the executions query returns no
+        activityId values — this happens when the hook script task is mid-execution
+        and Flowable hasn't flushed its activityId to the DB yet.
+        """
+        data = self._request(
+            "GET", "/runtime/executions",
+            params={"processInstanceId": process_instance_id},
+        )
+        executions = (data or {}).get("data", [])
+        cancel_ids = [e["activityId"] for e in executions if e.get("activityId")]
+        if not cancel_ids and hint_cancel_id:
+            cancel_ids = [hint_cancel_id]
+        self._request(
+            "POST",
+            f"/runtime/process-instances/{process_instance_id}/change-state",
+            json={"cancelActivityIds": cancel_ids, "startActivityIds": [target_activity_id]},
+        )
+        logger.info(
+            "Changed state for instance {}: cancelled {} → started {}",
+            process_instance_id, cancel_ids, target_activity_id,
+        )
+
+    def realize_skip_to(self, process_instance_id: str, target_activity_id: str) -> None:
+        """Move execution to target_activity_id via change-state (called from Task_DynamicSkip)."""
+        self._change_process_state(
+            process_instance_id, target_activity_id, hint_cancel_id="Task_DynamicSkip"
+        )
+
+    def _set_process_variables(self, process_instance_id: str, variables: dict[str, Any]) -> None:
+        """Set or update process variables by name before a state change."""
+        for name, value in variables.items():
+            self._request(
+                "PUT",
+                f"/runtime/process-instances/{process_instance_id}/variables/{name}",
+                json=_to_flowable_var(name, value),
+            )
+            logger.debug("Set process variable '{}' on instance {}", name, process_instance_id)
 
 
 def _to_flowable_var(name: str, value: Any) -> dict[str, Any]:

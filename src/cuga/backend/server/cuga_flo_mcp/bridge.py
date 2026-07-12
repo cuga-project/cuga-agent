@@ -172,10 +172,13 @@ class MCPFlowBridge:
             logger.warning("_realize_hook_action: no process_instance_id in ctx")
             return
 
+        current_activity_id = ctx.get("element_id")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
-            lambda: self._proxy.realize_hook_action(result, process_instance_id),
+            lambda: self._proxy.realize_hook_action(
+                result, process_instance_id, current_activity_id=current_activity_id
+            ),
         )
 
     def register_flowable_engine(

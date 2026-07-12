@@ -39,10 +39,18 @@ task script tasks, but calling `route_gateway` instead of `execute_task`.
 <scriptTask id="Activity_RouteGATEWAY_ID" name="route gateway decision"
     scriptFormat="javascript" flowable:autoStoreVariables="false">
   <script><![CDATA[
-var msg = execution.getVariable('_user_message') || '';
-var safeMsg = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-PROCESS_VARIABLE_GETTERS
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"GATEWAY_ID","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"GATEWAY_ID","element_name":"GATEWAY_NAME","current_state":{"process_variables":{PROCESS_VARIABLES_JSON}},"execution_history":[],"process_model_summary":{},"available_flows":[AVAILABLE_FLOWS_JSON]}}},"id":1}';
+var allVars = execution.getVariables(); var varKeys = allVars.keySet().toArray(); var varParts = [];
+for (var vi = 0; vi < varKeys.length; vi++) {
+    var vk = varKeys[vi]; var vv = allVars.get(vk);
+    if (vv === null || vv === undefined) { varParts.push('"' + vk + '":null'); }
+    else { var sv = String(vv);
+        if (sv.trim() !== '' && !isNaN(sv)) { varParts.push('"' + vk + '":' + sv); }
+        else if (sv === 'true' || sv === 'false') { varParts.push('"' + vk + '":' + sv); }
+        else { varParts.push('"' + vk + '":"' + sv.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"'); }
+    }
+}
+var processVarsJson = '{' + varParts.join(',') + '}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"GATEWAY_ID","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"GATEWAY_ID","element_name":"GATEWAY_NAME","current_state":{"process_variables":' + processVarsJson + '},"execution_history":[],"process_model_summary":{},"available_flows":[AVAILABLE_FLOWS_JSON]}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -101,19 +109,9 @@ comparison in JUEL.
 
 ## Template Parameters
 
-### `PROCESS_VARIABLE_GETTERS`
-Same as for task script tasks — one `var` per variable needed in the request body:
-```javascript
-var creditScore = execution.getVariable('credit_score');
-var decision    = execution.getVariable('decision');
-var cugaKey     = execution.getVariable('cugaProcessKey');
-```
-
-### `PROCESS_VARIABLES_JSON`
-Inline JSON fragment — same rules as for task script tasks (numbers unquoted, strings quoted):
-```
-"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"
-```
+### Process Variables
+All Flowable process variables are forwarded automatically using `execution.getVariables()` —
+same dynamic snippet as task script tasks. No per-variable declarations needed.
 
 ### `AVAILABLE_FLOWS_JSON`
 Array of objects, one per outgoing flow from the gateway.
@@ -206,7 +204,7 @@ Given:
 - `policy_file`, `flow_labels` from the YAML `gateways:` block
 
 Steps:
-1. Add `<scriptTask id="Activity_Route{gateway_id}" ...>` with the `route_gateway` script
+1. Add `<scriptTask id="Activity_Route{gateway_id}" ...>` with the `route_gateway` script (dynamic variable snippet + static `available_flows`)
 2. Change the incoming `<sequenceFlow>` targetRef from `gateway_id` to the new script task
 3. Add a new `<sequenceFlow>` from the script task to `gateway_id`
 4. Replace each outgoing flow's `<conditionExpression>` with `${ROUTING_VAR == 'FLOW_ID'}`

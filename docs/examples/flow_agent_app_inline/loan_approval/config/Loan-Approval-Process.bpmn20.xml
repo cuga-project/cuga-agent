@@ -1,16 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:flowable="http://flowable.org/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC" xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI" typeLanguage="http://www.w3.org/2001/XMLSchema" expressionLanguage="http://www.w3.org/1999/XPath" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Flowable Open Source Modeler" exporterVersion="6.8.0">
+  <error id="Error_SkipTo" name="SkipToError" errorCode="SKIP_TO"/>
   <process id="Process_1s3q83l" name="Loan-Approval-Process" isExecutable="true">
     <documentation>Loan approval process</documentation>
     <startEvent id="StartEvent_0bpt8wp" flowable:formFieldValidation="true"></startEvent>
     <scriptTask id="Activity_0oydey5" name="check credit" scriptFormat="javascript" flowable:autoStoreVariables="false">
       <script><![CDATA[
-var msg = execution.getVariable('_user_message') || '';
-var safeMsg = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-var creditScore = execution.getVariable('credit_score');
-var decision = execution.getVariable('decision');
-var cugaKey = execution.getVariable('cugaProcessKey');
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"execute_task","arguments":{"task_id":"Activity_0oydey5","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Activity_0oydey5","element_name":"check credit","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"}},"execution_history":[],"process_model_summary":{}}}},"id":1}';
+var allVars = execution.getVariables(); var varKeys = allVars.keySet().toArray(); var varParts = [];
+for (var vi = 0; vi < varKeys.length; vi++) {
+    var vk = varKeys[vi]; var vv = allVars.get(vk);
+    if (vv === null || vv === undefined) { varParts.push('"' + vk + '":null'); }
+    else { var sv = String(vv);
+        if (sv.trim() !== '' && !isNaN(sv)) { varParts.push('"' + vk + '":' + sv); }
+        else if (sv === 'true' || sv === 'false') { varParts.push('"' + vk + '":' + sv); }
+        else { varParts.push('"' + vk + '":"' + sv.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"'); }
+    }
+}
+var processVarsJson = '{' + varParts.join(',') + '}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"execute_task","arguments":{"task_id":"Activity_0oydey5","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Activity_0oydey5","element_name":"check credit","current_state":{"process_variables":' + processVarsJson + '},"execution_history":[],"process_model_summary":{}}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -38,12 +45,18 @@ if (vars && vars.credit_score !== undefined) {
     </scriptTask>
     <scriptTask id="Activity_RouteGateway" name="route gateway decision" scriptFormat="javascript" flowable:autoStoreVariables="false">
       <script><![CDATA[
-var msg = execution.getVariable('_user_message') || '';
-var safeMsg = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-var creditScore = execution.getVariable('credit_score');
-var decision = execution.getVariable('decision');
-var cugaKey = execution.getVariable('cugaProcessKey');
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"Gateway_09ad5fc","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Gateway_09ad5fc","element_name":"credit decision","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"}},"execution_history":[],"process_model_summary":{},"available_flows":[{"id":"Flow_0ybszcv","source_ref":"Gateway_09ad5fc","target_ref":"Task_HookHttp","name":"yes","condition":null},{"id":"Flow_1jgea85","source_ref":"Gateway_09ad5fc","target_ref":"Activity_131ar38","name":"no","condition":null}]}}},"id":1}';
+var allVars = execution.getVariables(); var varKeys = allVars.keySet().toArray(); var varParts = [];
+for (var vi = 0; vi < varKeys.length; vi++) {
+    var vk = varKeys[vi]; var vv = allVars.get(vk);
+    if (vv === null || vv === undefined) { varParts.push('"' + vk + '":null'); }
+    else { var sv = String(vv);
+        if (sv.trim() !== '' && !isNaN(sv)) { varParts.push('"' + vk + '":' + sv); }
+        else if (sv === 'true' || sv === 'false') { varParts.push('"' + vk + '":' + sv); }
+        else { varParts.push('"' + vk + '":"' + sv.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"'); }
+    }
+}
+var processVarsJson = '{' + varParts.join(',') + '}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"route_gateway","arguments":{"gateway_id":"Gateway_09ad5fc","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Gateway_09ad5fc","element_name":"credit decision","current_state":{"process_variables":' + processVarsJson + '},"execution_history":[],"process_model_summary":{},"available_flows":[{"id":"Flow_0ybszcv","source_ref":"Gateway_09ad5fc","target_ref":"Task_HookHttp","name":"yes","condition":null},{"id":"Flow_1jgea85","source_ref":"Gateway_09ad5fc","target_ref":"Activity_131ar38","name":"no","condition":null}]}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -71,10 +84,18 @@ execution.setVariable('gatewayDecision', flowId);
     <exclusiveGateway id="Gateway_15y9k7z"></exclusiveGateway>
     <scriptTask id="Task_HookHttp" name="Notify CUGA FLO Hook" scriptFormat="javascript" flowable:autoStoreVariables="false">
       <script><![CDATA[
-var creditScore = execution.getVariable('credit_score');
-var decision = execution.getVariable('decision');
-var cugaKey = execution.getVariable('cugaProcessKey');
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"evaluate_hook","arguments":{"hook_id":"Flow_0ybszcv","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Task_HookHttp","element_name":"Notify CUGA FLO Hook","current_state":{"process_variables":{"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '"}},"execution_history":[],"process_model_summary":{}}}},"id":1}';
+var allVars = execution.getVariables(); var varKeys = allVars.keySet().toArray(); var varParts = [];
+for (var vi = 0; vi < varKeys.length; vi++) {
+    var vk = varKeys[vi]; var vv = allVars.get(vk);
+    if (vv === null || vv === undefined) { varParts.push('"' + vk + '":null'); }
+    else { var sv = String(vv);
+        if (sv.trim() !== '' && !isNaN(sv)) { varParts.push('"' + vk + '":' + sv); }
+        else if (sv === 'true' || sv === 'false') { varParts.push('"' + vk + '":' + sv); }
+        else { varParts.push('"' + vk + '":"' + sv.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"'); }
+    }
+}
+var processVarsJson = '{' + varParts.join(',') + '}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"evaluate_hook","arguments":{"hook_id":"Flow_0ybszcv","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"Task_HookHttp","element_name":"Notify CUGA FLO Hook","current_state":{"process_variables":' + processVarsJson + '},"execution_history":[],"process_model_summary":{}}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -94,6 +115,30 @@ while ((line = br.readLine()) !== null) {
 br.close();
 var resp = JSON.parse(raw);
 if (!resp.result) throw new Error('evaluate_hook error: ' + JSON.stringify(resp.error || resp));
+var hookResult = JSON.parse(resp.result.content[0].text);
+if (hookResult.action === 'skip_to') {
+    execution.setVariable('_hookSkipTarget', hookResult.skip_to_node);
+    if (hookResult.state_updates) {
+        for (var k in hookResult.state_updates) {
+            if (hookResult.state_updates.hasOwnProperty(k)) { execution.setVariable(k, hookResult.state_updates[k]); }
+        }
+    }
+    throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
+}
+      ]]></script>
+    </scriptTask>
+    <boundaryEvent id="BoundaryError_HookSkip" name="skip to" attachedToRef="Task_HookHttp" cancelActivity="true">
+      <errorEventDefinition/>
+    </boundaryEvent>
+    <sequenceFlow id="Flow_BoundaryToReject" sourceRef="BoundaryError_HookSkip" targetRef="Task_DynamicSkip"/>
+    <scriptTask id="Task_DynamicSkip" name="dynamic skip" scriptFormat="javascript" flowable:autoStoreVariables="false">
+      <script><![CDATA[
+var target = String(execution.getVariable('_hookSkipTarget'));
+var runtimeService = org.flowable.engine.ProcessEngines.getDefaultProcessEngine().getRuntimeService();
+runtimeService.createChangeActivityStateBuilder()
+    .processInstanceId(execution.getProcessInstanceId())
+    .moveActivityIdTo(execution.getCurrentActivityId(), target)
+    .changeState();
       ]]></script>
     </scriptTask>
     <scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="javascript" flowable:autoStoreVariables="false">
@@ -180,6 +225,12 @@ Accept: application/json, text/event-stream]]></flowable:string>
       <bpmndi:BPMNShape bpmnElement="Task_HookHttp" id="BPMNShape_Task_HookHttp">
         <omgdc:Bounds height="80.0" width="100.0" x="578.0" y="240.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="BoundaryError_HookSkip" id="BPMNShape_BoundaryError_HookSkip">
+        <omgdc:Bounds height="30.0" width="30.0" x="613.0" y="305.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_DynamicSkip" id="BPMNShape_Task_DynamicSkip">
+        <omgdc:Bounds height="80.0" width="100.0" x="740.0" y="450.0"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape bpmnElement="Activity_1h9ix55" id="BPMNShape_Activity_1h9ix55">
         <omgdc:Bounds height="80.0" width="100.0" x="748.0" y="240.0"></omgdc:Bounds>
       </bpmndi:BPMNShape>
@@ -228,6 +279,11 @@ Accept: application/json, text/event-stream]]></flowable:string>
       <bpmndi:BPMNEdge bpmnElement="Flow_HookToLoan" id="BPMNEdge_Flow_HookToLoan" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="50.0" flowable:targetDockerY="40.0">
         <omgdi:waypoint x="677.95" y="280.0"></omgdi:waypoint>
         <omgdi:waypoint x="748.0" y="280.0"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_BoundaryToReject" id="BPMNEdge_Flow_BoundaryToReject" flowable:sourceDockerX="15.0" flowable:sourceDockerY="30.0" flowable:targetDockerX="50.0" flowable:targetDockerY="0.0">
+        <omgdi:waypoint x="628.0" y="335.0"></omgdi:waypoint>
+        <omgdi:waypoint x="790.0" y="335.0"></omgdi:waypoint>
+        <omgdi:waypoint x="790.0" y="450.0"></omgdi:waypoint>
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge bpmnElement="Flow_0uwnw59" id="BPMNEdge_Flow_0uwnw59" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="20.0">
         <omgdi:waypoint x="847.95" y="280.0"></omgdi:waypoint>

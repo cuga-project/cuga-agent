@@ -17,6 +17,7 @@ workflow_engine:
 variables:
   credit_score: 0.0
   decision: "undecided"
+  applicant_id: ""
 
 tasks:
   - id: "Activity_0oydey5"
@@ -67,8 +68,8 @@ gateways:
 action_permissions:
   permitted_actions:
     - continue
-  prohibited_actions:
     - skip_to
+  prohibited_actions:
     - skip_node
     - terminate
     - swap_nodes

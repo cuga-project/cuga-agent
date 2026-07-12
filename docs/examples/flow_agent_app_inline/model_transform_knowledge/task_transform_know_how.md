@@ -37,10 +37,18 @@ No subprocess, no extra flows, no second BPMNDiagram block.
 <scriptTask id="TASK_ID" name="TASK_NAME"
     scriptFormat="javascript" flowable:autoStoreVariables="false">
   <script><![CDATA[
-var msg = execution.getVariable('_user_message') || '';
-var safeMsg = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-PROCESS_VARIABLE_GETTERS
-var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"execute_task","arguments":{"task_id":"TASK_ID","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"TASK_ID","element_name":"TASK_NAME","current_state":{"process_variables":{PROCESS_VARIABLES_JSON}},"execution_history":[],"process_model_summary":{}}}},"id":1}';
+var allVars = execution.getVariables(); var varKeys = allVars.keySet().toArray(); var varParts = [];
+for (var vi = 0; vi < varKeys.length; vi++) {
+    var vk = varKeys[vi]; var vv = allVars.get(vk);
+    if (vv === null || vv === undefined) { varParts.push('"' + vk + '":null'); }
+    else { var sv = String(vv);
+        if (sv.trim() !== '' && !isNaN(sv)) { varParts.push('"' + vk + '":' + sv); }
+        else if (sv === 'true' || sv === 'false') { varParts.push('"' + vk + '":' + sv); }
+        else { varParts.push('"' + vk + '":"' + sv.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"'); }
+    }
+}
+var processVarsJson = '{' + varParts.join(',') + '}';
+var body = '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"execute_task","arguments":{"task_id":"TASK_ID","ctx":{"process_instance_id":"' + execution.processInstanceId + '","element_id":"TASK_ID","element_name":"TASK_NAME","current_state":{"process_variables":' + processVarsJson + '},"execution_history":[],"process_model_summary":{}}}},"id":1}';
 var url = new java.net.URL('http://host.docker.internal:8090/mcp');
 var conn = url.openConnection();
 conn.setRequestMethod('POST');
@@ -70,32 +78,18 @@ OUTPUT_VARIABLE_SETTERS
 
 ## Template Parameters
 
-### `PROCESS_VARIABLE_GETTERS`
-One `var` per process variable needed in the request body.
-Variables starting with `_` cannot appear as bare EL identifiers in Flowable, so read
-them via `execution.getVariable()` and store under a plain name (the sanitize block for
-`_user_message` already handles this — it writes `safeMsg`):
+### Process Variables
+All Flowable process variables are forwarded automatically using `execution.getVariables()`.
+No per-variable `getVariable` calls or hardcoded JSON fragments are needed.
+The dynamic snippet iterates the full variable map and serialises each entry:
 
-```javascript
-var creditScore = execution.getVariable('credit_score');
-var decision    = execution.getVariable('decision');
-var cugaKey     = execution.getVariable('cugaProcessKey');
-```
+- Numbers (`credit_score`, etc.) → JSON number (unquoted)
+- Booleans (`true`/`false` string values) → JSON boolean
+- Strings (including `_user_message`, `cugaProcessKey`, etc.) → JSON string with escaping
+- null/undefined → JSON `null`
 
-### `PROCESS_VARIABLES_JSON`
-Inline JSON fragment inside the body string — one entry per variable.
-Numeric values are unquoted; strings are quoted with the JS variable reference inside:
-
-```
-"credit_score":' + creditScore + ',"decision":"' + decision + '","cugaProcessKey":"' + cugaKey + '","user_message":"' + safeMsg + '"
-```
-
-Rules:
-- Always include `cugaProcessKey` (routing key injected at start)
-- Always include `user_message` mapped to `safeMsg` (the escaped `_user_message`)
-- Add one entry per variable in the YAML `variables:` block
-- Numeric variables: `' + varName + '` (no surrounding quotes in the JSON string)
-- String variables: `"' + varName + '"` (quoted)
+This means `_user_message` is always present in `process_variables` for every task callback,
+so task policies can read the raw user message without explicit forwarding.
 
 ### `OUTPUT_VARIABLE_SETTERS`
 One block per entry in the YAML `output_mapping:` for this task:
@@ -163,8 +157,7 @@ Given:
 
 Steps:
 1. Replace `<bpmn:task id=task_id name=task_name>` with `<scriptTask id=task_id name=task_name scriptFormat="javascript" flowable:autoStoreVariables="false">`
-2. Populate `PROCESS_VARIABLE_GETTERS` from the YAML `variables:` keys
-3. Populate `PROCESS_VARIABLES_JSON` with a typed inline JSON fragment for each variable
-4. Populate `OUTPUT_VARIABLE_SETTERS` from the YAML `output_mapping:` entries
-5. In the `BPMNDiagram`: replace the `BPMNShape` element — change element type label if needed, keep bounds unchanged
-6. Leave all incoming/outgoing `sequenceFlow` elements untouched
+2. Insert the dynamic variable snippet (iterates `execution.getVariables()` to build `processVarsJson`)
+3. Populate `OUTPUT_VARIABLE_SETTERS` from the YAML `output_mapping:` entries
+4. In the `BPMNDiagram`: replace the `BPMNShape` element — change element type label if needed, keep bounds unchanged
+5. Leave all incoming/outgoing `sequenceFlow` elements untouched
