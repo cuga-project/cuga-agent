@@ -146,6 +146,24 @@ def test_format_available_agents_block_adhoc_description():
     block = format_available_agents_block()
     assert "spawn_agent" in block
     assert "Ad-hoc" in block
+    assert "json.dumps" in block
+    assert "print" in block
+    assert "opaque" in block
+
+
+def test_agents_prompt_warns_against_nested_fstrings_for_spawn_task():
+    from cuga.backend.agent_spawn.prompt_utils import format_available_agents_block
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt
+
+    prompt = create_mcp_prompt(
+        [],
+        agents_enabled=True,
+        agents_prompt_section=format_available_agents_block(),
+        prompt_template=_get_prompt_template(),
+    )
+    assert "json.dumps" in prompt
+    assert "triple quotes" in prompt
+    assert "Inspect results before follow-up" in prompt
 
 
 # ── Phase 6: Graph Closure (spawn_futures ref) ─────────────────────────────
@@ -271,7 +289,7 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "mocked-answer"
 
-    monkeypatch.setattr(rt, "_build_agent", lambda tools, parent_thread_id="": object())
+    monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
     monkeypatch.setattr(rt, "_build_invoke_config", lambda: {})
     monkeypatch.setattr(rt, "_run_stream", _fake_run_stream)
 
@@ -283,6 +301,27 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
         assert "SpawnAgentResult" in names
     finally:
         runtime.set_event_callback(None)
+
+
+def test_build_agent_returns_fresh_instance_each_call(monkeypatch):
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime, _SUBAGENT_SPECIAL_INSTRUCTIONS
+
+    created = []
+
+    class FakeAgent:
+        def __init__(self, tools=None, special_instructions=None):
+            created.append(self)
+            self.tools = tools
+            self.special_instructions = special_instructions
+
+    monkeypatch.setattr("cuga.sdk.CugaAgent", FakeAgent)
+
+    rt = SpawnAgentRuntime([])
+    a1 = rt._build_agent([])
+    a2 = rt._build_agent([])
+    assert a1 is not a2
+    assert len(created) == 2
+    assert a1.special_instructions == _SUBAGENT_SPECIAL_INSTRUCTIONS
 
 
 @pytest.mark.asyncio
@@ -347,7 +386,7 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
     rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
     rt._build_invoke_config = lambda: {}
-    rt._build_agent = lambda tools, parent_thread_id="": object()
+    rt._build_agent = lambda tools: object()
 
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "done"

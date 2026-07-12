@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import os
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
@@ -31,6 +30,12 @@ _SPAWN_INTERNAL_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Keep subagent FinalAnswer short — parent needs parseable raw results, not chat.
+_SUBAGENT_SPECIAL_INSTRUCTIONS = (
+    "You are a short-lived subagent. Complete the assigned task and return ONLY the raw result. "
+    "No preamble, no markdown fencing, no offers to help further."
+)
+
 _event_callback: Optional[Callable[[str, dict], None]] = None
 
 
@@ -50,17 +55,10 @@ def _emit(event_name: str, data: dict) -> None:
 # Shared future store: future_id → {"status": "running"|"done"|"error", "result": str|None, "error": str|None}
 _spawn_futures: Dict[str, Any] = {}
 
-# Process-level cache keyed by (parent thread_id, frozenset of tool names).
-# Tools are per-thread closures (e.g. filesystem tools bound to that thread's
-# workspace) even when names repeat across threads, so thread_id must be part
-# of the key or two threads sharing a tool-name set would share one thread's
-# CugaAgent — and its bound tool closures — across sessions.
-_agent_cache: Dict[tuple[str, frozenset], Any] = {}
-
 
 def clear_runtime_caches() -> None:
-    """Clear the process-level agent cache (use in tests or after tool changes)."""
-    _agent_cache.clear()
+    """No-op kept for callers/tests. Agents are never cached across spawns."""
+    return
 
 
 class SpawnAgentRuntime:
@@ -95,22 +93,13 @@ class SpawnAgentRuntime:
     def _make_thread_id(self) -> str:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
-    def _build_agent(self, tools: List[StructuredTool], parent_thread_id: str = ""):
-        # Checks to see if there is already cached agent (pre made), if there is returns it, else creatubg a new one.
-        no_cache = os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE")
-        if not no_cache:
-            cache_key = (parent_thread_id, frozenset(t.name for t in tools))
-            cached = _agent_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
+    def _build_agent(self, tools: List[StructuredTool]):
+        # Fresh agent per spawn: parallel async subagents from the same parent
+        # share tool names + parent thread_id, so a process-level cache would
+        # hand them the same CugaAgent and race shared sandbox/tool state.
         from cuga.sdk import CugaAgent
 
-        agent = CugaAgent(tools=tools)
-
-        if not no_cache:
-            _agent_cache[cache_key] = agent  # type: ignore[possibly-undefined]
-        return agent
+        return CugaAgent(tools=tools, special_instructions=_SUBAGENT_SPECIAL_INSTRUCTIONS)
 
     def _build_invoke_config(self) -> dict:
         if self._parent_config:
@@ -164,7 +153,7 @@ class SpawnAgentRuntime:
 
         token = _spawn_depth.set(depth + 1)
         try:
-            agent = self._build_agent(tools, parent_thread_id=parent_thread_id)
+            agent = self._build_agent(tools)
             answer = await self._run_stream(agent, task, thread_id, invoke_cfg, spawn_id=spawn_id)
         finally:
             _spawn_depth.reset(token)

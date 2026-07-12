@@ -96,6 +96,16 @@ The following applications are available for you, you can view their tools and p
 >
 > **Async / parallel:** `fid = await spawn_agent(task="...", mode="async")` then
 > `await get_agent_result(fid)` to retrieve later; spawn multiple for parallel work.
+>
+> **Inspect results before follow-up code (CRITICAL):** After `get_agent_result`, `print` the
+> returned value and read it before writing any parse/format/follow-up spawn code. Subagent
+> answers may be chatty — do not assume a fixed shape. Treat returned strings as opaque data.
+>
+> **Passing collected results into a follow-up spawn (CRITICAL):** Never build `task=` with
+> nested f-strings / triple quotes around prior outputs (`f'''..."""{cpu_out}"""...'''`).
+> That causes `unterminated string / f-string` syntax errors. Safe pattern:
+> `task = "Format as markdown table (Metric|Value). Inputs JSON: " + json.dumps({"cpu": cpu_out, "disk": disk_out, "uptime": uptime_out})`
+> then `await spawn_agent(task=task, mode="sync")`.
 
 {% endif %}
 # INSTRUCTIONS

@@ -66,6 +66,8 @@ def create_spawn_tools(
             "Spawn a SubCuga subagent with fresh context to handle a task independently. "
             "The subagent inherits all your tools and runs without any prior conversation history. "
             "Pass the complete task description — everything the subagent needs to succeed. "
+            "When including prior results in task, build it with string concat + json.dumps "
+            "(never nested f-strings/triple quotes around those values). "
             "mode='sync' (default): blocks until the subagent finishes — use only for a single sequential subtask. "
             "mode='async': returns a future_id immediately so you can spawn multiple subagents in parallel before "
             "collecting results with get_agent_result. Use mode='async' whenever you have two or more independent "

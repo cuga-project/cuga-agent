@@ -10,5 +10,12 @@ def format_available_agents_block() -> str:
         "For multiple independent subtasks, always prefer parallel spawning: "
         "call `await spawn_agent(..., mode='async')` for each subtask first (collecting future_ids), "
         "then retrieve all results with `await get_agent_result(future_id)`. "
-        "Only use the default mode='sync' when there is a single subtask or when each subtask depends on the previous result."
+        "Only use the default mode='sync' when there is a single subtask or when each subtask depends on the previous result. "
+        "**Inspect before you act (CRITICAL):** after each `get_agent_result`, `print` the returned value in that "
+        "same code block (or an isolated follow-up block) and read the actual text before writing any parsing, "
+        "formatting, or follow-up `spawn_agent` code. Subagent answers may be chatty or wrapped — do not assume "
+        "a fixed shape like `cpu: 10`. Treat returned strings as opaque data. "
+        "When passing prior results into a new spawn task, never embed them in nested f-strings or triple quotes — "
+        "build the task with concatenation and `json.dumps(...)`, e.g. "
+        '`task = "Format as a markdown table. Inputs JSON: " + json.dumps({"cpu": cpu_out, "disk": disk_out})`.'
     )
