@@ -42,7 +42,6 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
-> | **Memory** (optional) | `enable_memory` in `settings.toml` · `uv sync --extra memory` · `cuga start memory` |
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
@@ -359,6 +358,30 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    MODEL_NAME=openai/gpt-4o                    # Override model name
     ```
 
+### Option 7: RITS Support
+**Setup Instructions:**
+1. Obtain a RITS API key from the RITS platform admin.
+2. Add to your `.env` file:
+   ```env
+   # RITS Configuration — direct RITS endpoint (default preset)
+   RITS_API_KEY=your-rits-api-key
+   AGENT_SETTING_CONFIG="settings.rits.toml"
+
+   # Optional overrides — update MODEL_NAME and RITS_BASE_URL together for
+   # direct RITS setups, since each model has a model-specific URL path.
+   # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
+   MODEL_NAME=google/gemma-4-31B-it
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   ```
+
+To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
+
+**Default Values:**
+
+- Model: `google/gemma-4-31B-it` (direct preset)
+- Base URL: gemma-4-31B-it `/v1` endpoint on the RITS 3scale apicast host (direct preset)
+- Local proxy URL: `http://localhost:4000` (proxy preset)
+
 
 ## Configuration Files
 
@@ -369,6 +392,8 @@ CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 - `settings.azure.toml` - Azure OpenAI configuration
 - `settings.groq.toml` - Groq configuration
 - `settings.openrouter.toml` - OpenRouter configuration
+- `settings.rits.toml` - RITS configuration (direct endpoint)
+- `settings.rits.proxy.toml` - RITS configuration (local LiteLLM proxy fronting RITS)
 
 Each file contains agent-specific model settings that can be overridden by environment variables.
 

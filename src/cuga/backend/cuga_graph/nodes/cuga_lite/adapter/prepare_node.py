@@ -10,6 +10,7 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
@@ -356,6 +357,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Wrap to make awaitable (agent always uses await). Filesystem path
         # rewriting is no longer needed here — filesystem tools come from
         # the consolidated runtime class below, not from MCP.
+        # Pre-flight arg WARNING: the sandbox calls tool.coroutine directly,
+        # bypassing the StructuredTool's args_schema, so nothing flags malformed
+        # kwargs before the registry. This detector logs (never mutates) suspect
+        # shapes — the dict-as-string bug and friends. See arg_warning.py.
+        _af = getattr(settings, "advanced_features", None)
+        _warn_args = bool(getattr(_af, "cuga_lite_warn_suspect_args", True))
+
         for tool in tools_for_execution:
             # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
             # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
@@ -370,6 +378,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 tool_func = getattr(tool, '_run', None)
 
             if tool_func:
+                tool_func = make_arg_warning_callable(
+                    tool_func,
+                    getattr(tool, "args_schema", None),
+                    enable=_warn_args,
+                )
                 adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
             else:
                 logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
@@ -470,13 +483,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 """Translate a virtual /workspace/ path or bare filename to a real host path."""
                 if not path:
                     return path
-                from pathlib import Path as _Path  # noqa: PLC0415
                 p = path.strip()
                 workspace_root = _host_workspace_root(_img_thread_id)
                 # /workspace/foo  or  workspace/foo
                 for prefix in ("/workspace/", "workspace/"):
                     if p.startswith(prefix):
-                        return str(workspace_root / p[len(prefix):])
+                        return str(workspace_root / p[len(prefix) :])
                 if p in ("/workspace", "workspace"):
                     return str(workspace_root)
                 # bare filename or relative path — probe workspace root first
@@ -505,14 +517,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             adapter._tools_context["pdf_to_images"] = make_tool_awaitable(
                 _wrap_with_workspace(_pdf_to_images_tool.func)
             )
-            logger.info("pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)")
+            logger.info(
+                "pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)"
+            )
 
             _pptx_to_images_tool = create_pptx_to_images_tool()
             tools_for_prompt.append(_pptx_to_images_tool)
             adapter._tools_context["pptx_to_images"] = make_tool_awaitable(
                 _wrap_with_workspace(_pptx_to_images_tool.func)
             )
-            logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + python-pptx fallback)")
+            logger.info(
+                "pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + python-pptx fallback)"
+            )
         else:
             logger.debug(
                 "pdf_to_images/pptx_to_images: skipped "

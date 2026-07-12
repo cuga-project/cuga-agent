@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 from pydantic import ConfigDict
@@ -43,6 +43,18 @@ from cuga.backend.storage.facade import get_storage_connection_params
 from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 
 logger = loguru_logger
+
+# Hard ceiling on a background reindex worker. A wedged embedding-provider call
+# (no per-request timeout at the litellm layer) would otherwise hang
+# asyncio.gather forever, leaving the collection pinned in _reindex_in_progress
+# and blocking every future reindex/publish for that agent with no self-heal
+# short of a process restart.
+_REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock cap
+
+# Strong-ref set for fire-and-forget reindex worker tasks — the event loop keeps
+# only WEAK refs to create_task() results, so a GC mid-run would drop the finally
+# that clears the busy flag. done_callback discards on completion.
+_BACKGROUND_REINDEX_TASKS: set[Any] = set()
 
 
 # Docling's plugin factory emits a WARNING every time it scans for plugins:
@@ -1165,6 +1177,170 @@ def _tiktoken_docling_tokenizer_cls():
     return _TiktokenDoclingTokenizer
 
 
+# Route prefixes LiteLLM / OpenRouter / watsonx use to address embedders.
+# Stripped once before checking tiktoken / HF Hub naming. Single-strip only —
+# ``litellm/openai/text-embedding-3-small`` -> ``openai/text-embedding-3-small``.
+_LITELLM_ROUTE_PREFIXES = (
+    "openai/",
+    "azure/",
+    "openrouter/",
+    "litellm/",
+    "watsonx/",
+    "ibm/",
+    "huggingface/",
+    "hf/",
+)
+
+
+def _strip_litellm_route_prefix(name: str) -> str:
+    """Strip ONE matching route prefix (case-insensitive). Single-strip so
+    ``litellm/openai/x`` becomes ``openai/x``, not ``x``."""
+    n = (name or "").strip()
+    lo = n.lower()
+    for p in _LITELLM_ROUTE_PREFIXES:
+        if lo.startswith(p):
+            return n[len(p) :]
+    return n
+
+
+# Aliases for litellm/openrouter model names that DON'T match a public HF
+# repo path directly. Saves one Hub HEAD miss per process per unknown
+# repo (cf. workflow w5i1mbchd synth, R1+R3 fix #3). Conservative:
+# only entries where the public HF mirror's existence is well-known.
+# Add via PR, not at runtime — the value of the map is that it's
+# auditable, not exhaustive.
+#
+# Note: cohere/voyage embeddings DON'T have public HF tokenizer
+# mirrors (Cohere and Voyage publish models but not their tokenizers
+# as standalone HF repos). They fall through to the approximate kind
+# via char-based RecursiveCharacterTextSplitter, which is the correct
+# behavior for closed-vendor embedders.
+_HF_REPO_ALIASES: dict[str, str] = {
+    # Jina embeddings — litellm exposes ``jina_ai/jina-embeddings-v3``,
+    # ``jina-embeddings-v3`` and similar shorter forms; the canonical
+    # HF path is ``jinaai/`` (no underscore).
+    "jina-embeddings-v3": "jinaai/jina-embeddings-v3",
+    "jina-embeddings-v2-base-en": "jinaai/jina-embeddings-v2-base-en",
+    "jina_ai/jina-embeddings-v3": "jinaai/jina-embeddings-v3",
+    # Nomic embeddings — the ``nomic-ai/`` org prefix isn't always set
+    # explicitly by users; map the bare name.
+    "nomic-embed-text-v1.5": "nomic-ai/nomic-embed-text-v1.5",
+    "nomic-embed-text-v1": "nomic-ai/nomic-embed-text-v1",
+}
+
+
+def _hf_repo_id_candidate(model_name: str) -> Optional[str]:
+    """Return the stripped model name as a CANDIDATE HF repo id (e.g.
+    ``intfloat/multilingual-e5-large``) when ``model_name`` looks
+    HF-style (contains a slash after route-prefix stripping).
+    The loader (``_load_hf_tokenizer_for_chunking``) does the
+    actual ``AutoTokenizer.from_pretrained`` and decides via try/except
+    whether the repo exists on the Hub. We let HF Hub be the source of
+    truth instead of maintaining a curated allow-list (deleted in PR-A,
+    cf. workflow ``w9y9xtyse`` synth) — failed lookups log + lru_cache
+    the None so each unknown model costs at most one Hub HEAD per
+    process.
+
+    Aliases (``_HF_REPO_ALIASES``) are consulted FIRST so litellm
+    model names like ``jina-embeddings-v3`` resolve to the canonical
+    HF repo ``jinaai/jina-embeddings-v3`` without a wasted 404 HEAD."""
+    stripped = _strip_litellm_route_prefix(model_name)
+    alias = _HF_REPO_ALIASES.get(stripped.lower())
+    if alias is not None:
+        return alias
+    if "/" not in stripped:
+        return None
+    return stripped
+
+
+@functools.lru_cache(maxsize=8)
+def _load_hf_tokenizer_cached(repo_id: str):
+    """Inner cache for ``_load_hf_tokenizer_for_chunking``. Only caches
+    SUCCESSFUL loads — failures propagate to the outer wrapper, which
+    logs them but does NOT cache. Reason: a transient Hub 503 used to
+    permanently downgrade a model to char-based until process restart
+    (workflow w5i1mbchd synth, R2's operational quirk). The cost of
+    a retry on permanent 404 is one Hub HEAD per ingest (~50ms);
+    cheaper than the operational pager-call on a transient 503."""
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(repo_id)
+
+
+def _load_hf_tokenizer_for_chunking(repo_id: str):
+    """Load HF tokenizer with retry-on-transient-failure semantics.
+    Successes are lru_cached via ``_load_hf_tokenizer_cached``; failures
+    are logged and dropped (NOT cached) so a flaky Hub doesn't lock the
+    model out of HF-tokenizer-mode for the rest of the process."""
+    try:
+        tok = _load_hf_tokenizer_cached(repo_id)
+        # [#400] Fires once per (process, repo_id) — lru_cache on the
+        # inner function makes the second call a hit. Grep ``[#400]
+        # hub-hit`` to count distinct HF HEADs the deleted allow-list
+        # now causes us to perform.
+        logger.debug(
+            f"[#400] hub-hit repo={repo_id!r} model_max_length={getattr(tok, 'model_max_length', '?')}"
+        )
+        return tok
+    except ImportError:
+        logger.debug("transformers missing; HF tokenizer skipped for chunk sizing.")
+        return None
+    except Exception as e:
+        logger.warning(
+            f"[#400] hub-miss repo={repo_id!r} err={e!r}; "
+            f"falling back to tiktoken. Pre-cache via HF_HOME to silence."
+        )
+        return None
+
+
+# Backwards-compat shim. The lru_cache moved to ``_load_hf_tokenizer_cached``
+# (workflow w5i1mbchd synth fix #4: only successes are cached, failures
+# retry on transient Hub 503s). Existing tests call
+# ``_load_hf_tokenizer_for_chunking.cache_clear()`` — forward to the
+# inner cache so they don't need to know about the split.
+_load_hf_tokenizer_for_chunking.cache_clear = _load_hf_tokenizer_cached.cache_clear  # type: ignore[attr-defined]
+
+
+# Safety margin subtracted from the HF tokenizer's raw model_max_length
+# before we hand the cap to the chunker / splitter. Covers two
+# embedder-side overheads the local tokenizer doesn't see at chunk-count
+# time:
+#
+#   (a) BOS/EOS asymmetry — ``tokenizer.encode(text)`` adds them when the
+#       chunker measures, but some hosted embedders re-tokenize the
+#       chunk text with their own special-token policy on top.
+#   (b) e5-family ``"query: "`` / ``"passage: "`` prefix that hosted
+#       providers (notably watsonx) auto-prepend before embed — 3-4
+#       XLM-RoBERTa tokens the chunker never sees.
+#
+# User-reported smoking gun on PR #383 manual QA (cuga 16:22:28 log):
+# chunker capped at 512, watsonx still rejected with
+# ``This model's maximum context length is 512 tokens. However, you
+#  requested 518 tokens`` — a +6 overhead consistent with prefix + BOS.
+# 16 is generous enough for any current provider's wrapping; we'd
+# rather lose ~3% of context window than fail ingest on edge chunks.
+_HF_TOKEN_SAFETY_MARGIN = 16
+
+
+def _hf_tokenizer_seq_limit(tok) -> int:
+    """Return the safe chunk-token cap for this tokenizer's model.
+
+    NOT the raw ``model_max_length`` — that's the embedder's HARD limit,
+    and the chunker can't count provider-side wrapping (special tokens,
+    e5 prefixes). Subtracts ``_HF_TOKEN_SAFETY_MARGIN`` so chunks at
+    the returned cap survive the embedder's wrapping. See the constant's
+    docstring for the user-reported bug this prevents.
+
+    Sentinel (>= 1e6) means 'unset' → defaults to 512 - margin (BERT /
+    XLM-RoBERTa convention)."""
+    try:
+        mml = int(getattr(tok, "model_max_length", 0) or 0)
+    except (TypeError, ValueError):
+        return max(1, 512 - _HF_TOKEN_SAFETY_MARGIN)
+    raw = mml if 0 < mml < 1_000_000 else 512
+    return max(1, raw - _HF_TOKEN_SAFETY_MARGIN)
+
+
 def _resolve_tiktoken_encoding(model_name: str):
     """Pick the right tiktoken encoding for the embedding model.
 
@@ -1174,17 +1350,105 @@ def _resolve_tiktoken_encoding(model_name: str):
     """
     import tiktoken
 
-    name = (model_name or "").strip().lower()
-    # Strip common provider prefixes that LiteLLM / OpenRouter use so
-    # ``encoding_for_model`` can find the actual OpenAI model name.
-    for prefix in ("openai/", "azure/", "openrouter/", "litellm/"):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
+    name = _strip_litellm_route_prefix(model_name).lower()
     try:
         return tiktoken.encoding_for_model(name)
     except KeyError:
         return tiktoken.get_encoding("cl100k_base")
+
+
+@dataclass(frozen=True)
+class ChunkingTokenizer:
+    """Single-dispatch contract: given a provider+model, what tokenizer
+    sizes the chunks?
+
+    Replaces the per-callsite branching that existed in both
+    ``_build_docling_chunker`` and ``_build_text_splitter`` (each ~60 LOC
+    of provider dispatch repeating the same logic). After this refactor,
+    each builder switches on ``kind`` once and hands off to the
+    appropriate primitive.
+
+    Always present — never ``None``. The ``approximate`` kind covers the
+    no-precise-tokenizer case (cohere / voyage / gemini / mistral-embed
+    via litellm) so callers can keep a single switch.
+
+    Two distinct caps (workflow w5i1mbchd synth, fix #2):
+
+      * ``safe_max_tokens`` is the HARD CEILING — chunks above this will
+        be truncated by the embedder (silent retrieval-quality loss).
+        Already margined via ``_hf_tokenizer_seq_limit`` for HF kinds.
+      * ``recommended_chunk_tokens`` is the RETRIEVAL-QUALITY DEFAULT.
+        For ≥2K-ctx embedders, capped at 512 to match published
+        evidence (LongEmbed EMNLP 2024, BAAI bge-m3 maintainer at HF
+        discussion #59, voyage-context-3's own 512 default on its 32K
+        model). Letting a chunk grow to 8K just because the embedder
+        allows it makes retrieval WORSE — pooled embeddings dilute the
+        signal across more concepts.
+
+    Callers use ``min(chunk_size, safe_max_tokens)`` as today; the
+    chunker builders also warn when ``chunk_size > recommended_chunk_tokens``
+    so users with long-context embedders don't crank chunk_size
+    thinking 'more context = better'."""
+
+    kind: str  # Literal["hf", "tiktoken", "fastembed", "approximate"]
+    encoder: Any  # HF tokenizer | tiktoken Encoding | fastembed model | None
+    name: str  # repo id / "cl100k_base" / "fastembed:<model>" / "char-based"
+    safe_max_tokens: int  # already margined for HF; sensible default for others
+    recommended_chunk_tokens: int  # retrieval-quality default (≤512 for long-ctx)
+
+
+# OpenAI text-embedding-3-* hard limit. The API rejects at >8191 tokens
+# with InvalidRequestError. Subtracting the same safety margin used for
+# HF embedders so the tiktoken branch is internally consistent (workflow
+# w5i1mbchd synth, fix #1: previously this branch used 8192 with zero
+# margin, an off-by-one + missing-margin both flagged by R1 and R2).
+_OPENAI_TIKTOKEN_HARD_CAP = 8191
+_TIKTOKEN_SAFE_MAX = _OPENAI_TIKTOKEN_HARD_CAP - _HF_TOKEN_SAFETY_MARGIN  # 8175
+
+# Sensible char-based fallback cap when no precise tokenizer is
+# available. 8192 lets the user's chunk_size knob remain the effective
+# limit; the char-based splitter doesn't risk an embedder-side
+# context-window-exceeded error because it splits by chars, not tokens.
+_DEFAULT_APPROXIMATE_CAP = 8192
+
+
+@functools.lru_cache(maxsize=32)
+def _warn_chunk_oversized_for_retrieval(
+    model_name: str, chunk_size: int, recommended: int, safe_max: int
+) -> None:
+    """Dedup'd one-shot warning when a user's chunk_size is within the
+    hard ceiling but above the retrieval-quality recommendation. The
+    lru_cache key makes this fire at most once per (model, chunk_size,
+    recommended) tuple per process — chunker rebuilds on every file
+    ingest don't spam the log. Workflow w5i1mbchd synth fix #2."""
+    logger.warning(
+        f"[#400] chunk_size={chunk_size} exceeds retrieval-quality "
+        f"recommendation {recommended} for embedder {model_name!r} "
+        f"(hard ceiling {safe_max}). Published evidence (LongEmbed "
+        f"EMNLP 2024 +24% MRR, voyage-context-3 default, BAAI bge-m3 "
+        f"maintainer) shows 256-512 token chunks retrieve BETTER than "
+        f"larger chunks regardless of embedder context. Consider "
+        f"chunk_size={recommended} in config unless you have a "
+        f"specific reason to chunk larger."
+    )
+
+
+def _recommended_chunk_tokens(safe_max: int) -> int:
+    """Retrieval-quality default. For ≥2K-ctx embedders, cap at 512
+    regardless of the hard ceiling. For <2K-ctx (bge-small at 496,
+    e5-large at 496) just use the full safe_max — there's no quality
+    reason to chunk smaller than the embedder's own window.
+
+    Evidence (workflow w5i1mbchd synth):
+      - LongEmbed (EMNLP 2024): 512-chunking outperforms 1024+ by
+        +24% MRR on long-context retrieval benchmarks.
+      - BAAI maintainer (bge-m3 HF discussion #59): 'despite 8192 ctx,
+        512-token chunks remain recommended default'.
+      - Voyage AI: voyage-context-3 ships with chunk_size=512 default
+        on its OWN 32K-context model.
+      - Cohere: recommends 300 of their 512-token window.
+      - Jina: recommends 128-512 of jina-v3's 8192."""
+    return min(safe_max, 512) if safe_max >= 2048 else safe_max
 
 
 @functools.lru_cache(maxsize=1)
@@ -1461,6 +1725,13 @@ class KnowledgeEngine:
         # Reindex coordination flags (in-memory, single-process only — flock ensures this)
         self._reindex_in_progress: set[str] = set()
         self._reindex_deferred: set[str] = set()
+
+        # Cached live-availability probe of the active embedder, surfaced in
+        # health() so the UI can warn when a collection's vectors are stranded
+        # behind an unreachable embedder. (vector_config_hash, available, error,
+        # monotonic_ts); invalidated on config apply. ponytail: a single cached
+        # tuple, not a probe-scheduler.
+        self._embedder_probe_cache: tuple[str, bool, str | None, float] | None = None
 
         # Background tasks
         self._shutdown_event = asyncio.Event()
@@ -2233,6 +2504,14 @@ class KnowledgeEngine:
             # and insert. Dedup correctness depends on this being serialized;
             # the parse above is not.
             async with self._get_collection_lock(collection):
+                # Re-check supersede INSIDE the lock, immediately before the
+                # collection config is pinned + vectors inserted. The check at
+                # 2477 is outside the lock, so a concurrent commit_knowledge_update
+                # could bump _apply_generation between there and here; without
+                # this a stale worker would pin _ensure_collection_config to the
+                # NEW provider/dim and write old-embedder vectors under it — a
+                # name-vs-content mismatch within the target collection.
+                _check_supersede()
                 await self._ensure_collection_config(collection)
                 await self._ensure_vector_store_cached(collection)
                 result = await self._insert_documents_async(
@@ -2542,10 +2821,32 @@ class KnowledgeEngine:
         collection = _sanitize_collection(collection)
         filename = _sanitize_filename(filename)
 
-        if not await self._metadata.mark_deleting(collection, filename):
-            raise DocumentNotFoundError(filename)
+        # Reject deletes while THIS collection is being reindexed (mirrors the
+        # upload guard in _sanitize_and_validate / _create_task_entry). During a
+        # config-change reindex the source files were already mirrored into the
+        # in-flight target and its file_list snapshotted; deleting from the
+        # active (source) collection now would let the worker re-embed the
+        # deleted doc into the target, RESURRECTING it after the pointer flips.
+        # The source collection stays in _reindex_in_progress for the whole
+        # migration lifetime (see _migrate_and_reindex_for_agent), so this
+        # exact-collection check covers the active-collection delete.
+        # Fast-path reject (re-checked under the lock below).
+        if collection in self._reindex_in_progress:
+            raise ReindexInProgressError(
+                f"Reindex in progress for {collection}; deletes are rejected until it completes."
+            )
 
         async with self._get_collection_lock(collection):
+            # Re-check under the lock: reindex() flags the collection AND
+            # snapshots its file_list under this same lock, so a delete that
+            # slipped the fast-path guard above is caught here before it can
+            # race that snapshot and resurrect the doc (CR-D).
+            if collection in self._reindex_in_progress:
+                raise ReindexInProgressError(
+                    f"Reindex in progress for {collection}; deletes are rejected until it completes."
+                )
+            if not await self._metadata.mark_deleting(collection, filename):
+                raise DocumentNotFoundError(filename)
             await self._ensure_vector_store_cached(collection)
             try:
                 await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
@@ -3402,11 +3703,17 @@ class KnowledgeEngine:
 
     def commit_knowledge_update(self, prepared: PreparedKnowledgeUpdate) -> dict[str, Any]:
         """Commit a prepared update. Pure in-memory mutation, no external calls."""
+        # Any config apply (incl. a key/base-url fix that doesn't change the
+        # vector hash) should force a fresh embedder probe on the next health.
+        self._embedder_probe_cache = None
         old_use_gpu = self._config.use_gpu
         old_dim = self._default_embedding_dim
         old_pdf_mode = self._config.docling_pdf_mode
         old_layout_engine = self._config.docling_layout_engine
         old_qt = getattr(self._config, "search_query_transform", "off")
+        old_api_key = getattr(self._config, "embedding_api_key", "") or ""
+        old_base_url = getattr(self._config, "embedding_base_url", "") or ""
+        old_extra = dict(getattr(self._config, "embedding_extra_params", {}) or {})
 
         for f in dc_fields(KnowledgeConfig):
             if f.name != "persist_dir":
@@ -3451,6 +3758,25 @@ class KnowledgeEngine:
                 old_use_gpu,
                 self._config.use_gpu,
             )
+        elif self._default_embeddings is not None and (
+            old_api_key != (getattr(self._config, "embedding_api_key", "") or "")
+            or old_base_url != (getattr(self._config, "embedding_base_url", "") or "")
+            or old_extra != (getattr(self._config, "embedding_extra_params", {}) or {})
+        ):
+            # Credential / base-url-only fix: provider+model unchanged, so
+            # prepare_knowledge_update produced no new_embeddings — but the OLD
+            # client (rejected key / stale base_url) is still cached. Rebuild it
+            # so the fix takes effect WITHOUT a restart; vectors stay valid (same
+            # model) → no reindex. Construction doesn't hit the network, so a
+            # still-bad key surfaces later on embed, not here.
+            try:
+                self._default_embeddings = create_embeddings(self._config)
+                with self._vector_store_lock:
+                    self._vector_stores.clear()
+                    self._record_managers.clear()
+                logger.info("Embedder client rebuilt after credential/base-url change; vectors unchanged.")
+            except Exception as _rebuild_err:
+                logger.warning(f"Failed to rebuild embedder client after credential change: {_rebuild_err!r}")
 
         # Invalidate any cached Docling converters whose shape depended on the
         # changed knobs. Without this, switching layout_engine at runtime would
@@ -3506,9 +3832,58 @@ class KnowledgeEngine:
             "docling_changed": docling_changed,
         }
 
+    def _incoming_changes_vector_config(self, knowledge_cfg: dict) -> bool:
+        """Cheap (no model load / no network) check: does this incoming config
+        plainly change a vector-affecting field vs the live config? Used to
+        reject a reindex conflict BEFORE the expensive embedding preflight.
+        Conservative — ``prepare_knowledge_update`` is the authoritative check.
+        """
+        if not isinstance(knowledge_cfg, dict):
+            return False
+        # A rag_profile switch expands into chunk_size/overlap, so a *changed*
+        # profile is potentially vector-affecting (same profile is not).
+        prof = knowledge_cfg.get("rag_profile")
+        if prof and str(prof) != str(getattr(self._config, "rag_profile", None)):
+            return True
+        for field in ("embedding_provider", "embedding_model", "chunk_size", "chunk_overlap", "metric_type"):
+            if field in knowledge_cfg:
+                incoming = knowledge_cfg.get(field)
+                if incoming is not None and str(incoming) != str(getattr(self._config, field, None)):
+                    return True
+        return False
+
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
-        """Convenience: prepare + commit in one call. Used by update_settings() compat."""
+        """Convenience: prepare + commit in one call. Used by update_settings() compat.
+
+        Refuses vector-affecting changes (embedding / chunking / metric) while
+        any reindex is in flight — committing a new embedder mid-reindex
+        causes the in-flight workers to write the WRONG-dim vectors into
+        the collection named for the OLD config's hash, producing a
+        name-vs-content lie that breaks future resolve_collection lookups.
+        Non-vector-affecting updates (rerank, search settings, rag_profile
+        knobs that don't change chunking) are still allowed mid-reindex
+        because they don't perturb the worker contract.
+        """
+        # Cheap reindex-conflict guard BEFORE prepare (Sami review): prepare
+        # runs a model load + embedding preflight (a provider round-trip). If a
+        # reindex is in flight and the incoming config plainly changes a
+        # vector-affecting field, reject now rather than paying that cost for a
+        # change we'll refuse anyway. The authoritative post-prepare check below
+        # still backstops profile-expansion / coercion edge cases.
+        if self._reindex_in_progress and self._incoming_changes_vector_config(knowledge_cfg):
+            raise ReindexInProgressError(
+                f"Reindex in progress for {sorted(self._reindex_in_progress)}; "
+                f"vector-affecting changes (embedding/chunking/metric) are rejected "
+                f"until all worker tasks terminate."
+            )
         prepared = self.prepare_knowledge_update(knowledge_cfg)
+        vector_affecting = prepared.embedding_changed or prepared.chunking_changed or prepared.metric_changed
+        if vector_affecting and self._reindex_in_progress:
+            raise ReindexInProgressError(
+                f"Reindex in progress for {sorted(self._reindex_in_progress)}; "
+                f"vector-affecting changes (embedding/chunking/metric) are rejected "
+                f"until all worker tasks terminate."
+            )
         return self.commit_knowledge_update(prepared)
 
     # --- Settings ---
@@ -3618,12 +3993,79 @@ class KnowledgeEngine:
         self.apply_knowledge_config(kwargs)
         return self.get_settings()
 
+    def _scrub_secret_text(self, text: str) -> str:
+        """Strip secret material from provider error strings before they reach a
+        log or an HTTP response. Replaces the ACTUAL configured key first (it may
+        not match a known shape — e.g. a watsonx / custom key), then shape-based
+        tokens (credentialed base_url, bearer, sk-*, api_key=...)."""
+        import re as _re
+
+        configured_key = (getattr(self._config, "embedding_api_key", "") or "").strip()
+        if len(configured_key) >= 6:
+            text = text.replace(configured_key, "***")
+        text = _re.sub(r"(https?://)[^/@\s]+@", r"\1***@", text)
+        text = _re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        text = _re.sub(r"\b(sk-|xai-|or-v1-|or-)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        text = _re.sub(r"(?i)(api[_-]?key\"?\s*[:=]\s*\"?)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        return text
+
+    async def probe_active_embedder(self) -> dict[str, Any]:
+        """Cached live availability probe of the ACTIVE embedder.
+
+        A collection's vectors are useless if its embedder can't embed queries
+        (missing/invalid key, provider down, model unresolvable) — search would
+        fail or return nothing. We round-trip a tiny ``embed_query`` to detect
+        that, cached per vector-config-hash with a 60s TTL so the polled health
+        endpoint doesn't hit the provider on every call. Cache is invalidated on
+        config apply (see ``commit_knowledge_update``) so fixing a key re-probes.
+
+        Returns ``{available, error, model}``; ``available`` is None when
+        knowledge is disabled (nothing to probe).
+        """
+        import time as _t
+
+        model = f"{self._config.embedding_provider or ''}/{self._config.embedding_model or ''}".strip("/")
+        if not self._config.enabled:
+            return {"available": None, "error": None, "model": model}
+        try:
+            cfg_hash = self._config.vector_config_hash()
+        except Exception:
+            cfg_hash = ""
+        now = _t.monotonic()
+        cache = self._embedder_probe_cache
+        if cache and cache[0] == cfg_hash and (now - cache[3]) < 60:
+            return {"available": cache[1], "error": cache[2], "model": model}
+
+        available, error = True, None
+        try:
+            # _ensure_embeddings can load a local model / construct a provider
+            # client — run it off the event loop so a cold engine doesn't stall
+            # the polled health endpoint.
+            await asyncio.to_thread(self._ensure_embeddings)
+            embeddings = self._default_embeddings
+            if embeddings is None:
+                raise RuntimeError("embedding initialization produced no client")
+            await asyncio.to_thread(embeddings.embed_query, "ping")
+        except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
+            available = False
+            # Scrub the FULL error THEN truncate — truncating first could cut a
+            # configured key mid-string so the literal replace no longer matches.
+            error = self._scrub_secret_text(str(e))[:300] or e.__class__.__name__
+        self._embedder_probe_cache = (cfg_hash, available, error, now)
+        if not available:
+            logger.warning(f"Active embedder probe failed ({model}): {error}")
+        return {"available": available, "error": error, "model": model}
+
     async def health(self, collection: str | None = None) -> dict[str, Any]:
+        _emb = await self.probe_active_embedder()
         h: dict[str, Any] = {
             "status": "healthy",
             "engine": f"knowledge-{self._knowledge_vector_backend()}",
             "settings": self.get_settings()["knowledge"],
             "embeddings_initialized": self._default_embeddings is not None,
+            "embedder_available": _emb["available"],
+            "embedder_error": _emb["error"],
+            "embedder_model": _emb["model"],
             "reindex_in_progress": list(self._reindex_in_progress),
             "stale": False,
             "reindex_deferred": False,
@@ -3690,28 +4132,48 @@ class KnowledgeEngine:
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
     async def copy_source_files(self, source_collection: str, target_collection: str) -> int:
-        """Copy source files from one collection to another.
-
-        Returns the number of files copied. Does not re-ingest — call reindex()
-        on the target collection after copying.
-        """
+        """Mirror source's files into target. Removes stale files in target
+        (files not present in source) BEFORE copying so a prior failed
+        migration can't leave ghosts that get re-embedded at next reindex.
+        Refuses source==target (would delete source's own files). Does not
+        re-ingest — call reindex() on target after."""
         import shutil
 
         source_collection = _sanitize_collection(source_collection)
         target_collection = _sanitize_collection(target_collection)
+        if source_collection == target_collection:
+            return 0
         src_dir = self._files_dir / source_collection
         dst_dir = self._files_dir / target_collection
-
         if not src_dir.exists():
             return 0
 
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        count = 0
-        for f in src_dir.iterdir():
-            if f.is_file():
-                shutil.copy2(str(f), str(dst_dir / f.name))
-                count += 1
-        logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
+        def _mirror() -> tuple[int, int]:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            src_names = {f.name for f in src_dir.iterdir() if f.is_file()}
+            _stale = 0
+            for f in list(dst_dir.iterdir()):
+                if f.is_file() and f.name not in src_names:
+                    f.unlink()
+                    _stale += 1
+            _count = 0
+            for f in src_dir.iterdir():
+                if f.is_file():
+                    shutil.copy2(str(f), str(dst_dir / f.name))
+                    _count += 1
+            return _stale, _count
+
+        # Run the synchronous filesystem mirror off the event loop (Sami
+        # review): a large migration (many/large files) would otherwise block
+        # every concurrent request for its whole duration. Same to_thread
+        # pattern used for ingest + delete I/O in this file.
+        stale, count = await asyncio.to_thread(_mirror)
+        if stale:
+            logger.info(
+                f"Removed {stale} stale file(s) from {target_collection}; copied {count} from {source_collection}"
+            )
+        else:
+            logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
     async def reindex(self, collection: str) -> dict[str, Any]:
@@ -3727,11 +4189,13 @@ class KnowledgeEngine:
         if not files_dir.exists():
             return {"status": "no_documents", "count": 0}
 
-        file_list = [f for f in files_dir.iterdir() if f.is_file()]
-        if not file_list:
-            return {"status": "no_documents", "count": 0}
-
         task_ids: list[str] = []
+        # Parallel list of {task_id, filename} pairs so the route can return
+        # filenames in the POST response and the FE can render the reindex
+        # tile with real names from millisecond 0 — instead of flashing
+        # ``task_xxx`` placeholders until the next /tasks poll arrives
+        # (#402 follow-up: production sweep).
+        task_entries: list[dict[str, str]] = []
         try:
             lock = self._get_collection_lock(collection)
             async with lock:
@@ -3743,11 +4207,21 @@ class KnowledgeEngine:
                 if pending:
                     raise ReindexBusyError(len(pending))
                 self._reindex_in_progress.add(collection)
+                # Snapshot the file list AFTER flagging, under the same lock, so a
+                # concurrent delete either ran before the flag (and is excluded)
+                # or is rejected by delete_document's in-lock re-check — closing
+                # the delete/reindex TOCTOU that could resurrect a deleted doc
+                # (CR-D).
+                file_list = [f for f in files_dir.iterdir() if f.is_file()]
+                if not file_list:
+                    self._reindex_in_progress.discard(collection)
+                    return {"status": "no_documents", "count": 0}
                 await self.drop_collection_vectors(collection)
 
             for file_path in file_list:
                 task_info = await self._create_reindex_task_entry(collection, file_path.name)
                 task_ids.append(task_info["task_id"])
+                task_entries.append({"task_id": task_info["task_id"], "filename": file_path.name})
 
             # Background worker. Files re-ingest concurrently — _run_ingest is
             # bounded by _ingest_sem (max_ingest_workers), so this amortizes the
@@ -3756,20 +4230,58 @@ class KnowledgeEngine:
             # marks its own task failed).
             async def _reindex_worker():
                 try:
-                    await asyncio.gather(
-                        *(
-                            self._run_ingest(
-                                collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
-                            )
-                            for fp, tid in zip(file_list, task_ids)
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(
+                                self._run_ingest(
+                                    collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
+                                )
+                                for fp, tid in zip(file_list, task_ids)
+                            ),
+                            return_exceptions=True,
                         ),
-                        return_exceptions=True,
+                        timeout=_REINDEX_WORKER_TIMEOUT_S,
                     )
+                except asyncio.TimeoutError:
+                    # A wedged provider call must not pin the collection forever.
+                    logger.error(
+                        f"Reindex worker for {collection} exceeded "
+                        f"{_REINDEX_WORKER_TIMEOUT_S}s (wedged provider call?); "
+                        f"failing unfinished tasks + releasing busy flag."
+                    )
+                    # Terminalize any still-pending/running task rows — otherwise
+                    # the next reindex() sees them as active and raises
+                    # ReindexBusyError, so the timeout wouldn't actually self-heal
+                    # (the finally only clears the collection busy flag).
+                    try:
+                        _rows = {t["task_id"]: t for t in await self._metadata.list_tasks(collection)}
+                    except Exception:
+                        _rows = {}
+                    for fp, tid in zip(file_list, task_ids):
+                        _row = _rows.get(tid)
+                        if _row is None or _row.get("status") in ("pending", "running"):
+                            try:
+                                await self._metadata.update_task(
+                                    tid,
+                                    status="failed",
+                                    file_tasks={
+                                        fp.name: {
+                                            "filename": fp.name,
+                                            "status": "failed",
+                                            "error": "reindex timeout",
+                                        }
+                                    },
+                                )
+                            except Exception as _term_err:
+                                logger.warning(f"Failed to terminalize timed-out task {tid}: {_term_err!r}")
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)
 
-            asyncio.create_task(_reindex_worker())
+            _bg_reindex = asyncio.create_task(_reindex_worker())
+            _BACKGROUND_REINDEX_TASKS.add(_bg_reindex)
+            _bg_reindex.add_done_callback(_BACKGROUND_REINDEX_TASKS.discard)
+            _bg_reindex.add_done_callback(lambda t: t.exception())
         except ReindexBusyError:
             raise  # Don't clear flag (was never set for this collection)
         except Exception:
@@ -3781,7 +4293,12 @@ class KnowledgeEngine:
                     pass
             raise
 
-        return {"status": "started", "count": len(file_list), "task_ids": task_ids}
+        return {
+            "status": "started",
+            "count": len(file_list),
+            "task_ids": task_ids,
+            "tasks": task_entries,
+        }
 
     # --- Document loading ---
 
@@ -3810,6 +4327,212 @@ class KnowledgeEngine:
         """Get chunk_size and chunk_overlap from _config (source of truth after publish)."""
         return self._config.chunk_size, self._config.chunk_overlap
 
+    def get_chunking_tokenizer(self) -> ChunkingTokenizer:
+        """Resolve the tokenizer + safe max for the active embedder.
+        SINGLE dispatcher. Both ``_build_docling_chunker`` and
+        ``_build_text_splitter`` consume this; before the refactor each
+        had its own copy of the provider branching.
+
+        Dispatch (first match wins):
+          1. fastembed -> Rust ONNX tokenizer (exact match w/ embedder)
+          2. huggingface -> the embedder's own ``_tokenizer`` attr
+          3a. litellm/openrouter/openai routed to openai/azure -> tiktoken
+              cl100k_base (no Hub HEAD; correct encoding for these models)
+          3b. litellm/openrouter/openai with any other slash-containing
+              model -> AutoTokenizer.from_pretrained via HF Hub (PR-A
+              made the Hub the source of truth; no curated allow-list)
+          4. everything else -> 'approximate' kind (cohere/voyage/gemini
+              when their HF lookup 404s, plain-named local models, etc.)
+        """
+        provider = (self._config.embedding_provider or "").lower()
+        model_raw = self._config.embedding_model or ""
+
+        def _make(kind: str, encoder: Any, name: str, safe_max: int) -> ChunkingTokenizer:
+            """Construct + log a ChunkingTokenizer in one place. Computes
+            ``recommended_chunk_tokens`` from ``safe_max`` via the global
+            policy (≤2K-ctx → safe_max; ≥2K-ctx → 512). Workflow
+            w5i1mbchd synth fix #2 + #6."""
+            t = ChunkingTokenizer(
+                kind=kind,
+                encoder=encoder,
+                name=name,
+                safe_max_tokens=safe_max,
+                recommended_chunk_tokens=_recommended_chunk_tokens(safe_max),
+            )
+            # [#400] INFO (not DEBUG) — operators need this visible by
+            # default. When a customer reports a context-window error,
+            # the first question is which dispatch branch ran (workflow
+            # w5i1mbchd synth fix #6, R1's explicit ask).
+            logger.info(
+                f"[#400] tokenizer-dispatch provider={provider!r} "
+                f"model={model_raw!r} -> kind={t.kind} name={t.name!r} "
+                f"safe_max_tokens={t.safe_max_tokens} "
+                f"recommended_chunk_tokens={t.recommended_chunk_tokens}"
+            )
+            return t
+
+        # 1. fastembed — exact match via the embedder's own ONNX tokenizer.
+        if provider == "fastembed":
+            try:
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if isinstance(emb, _FastEmbedEmbeddings):
+                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
+                    return _make(
+                        "fastembed",
+                        emb._model,
+                        f"fastembed:{self._config.embedding_model or 'default'}",
+                        seq,
+                    )
+            except Exception:
+                pass  # fall through to approximate
+
+        # 2. HuggingFace provider — embedder loaded its own tokenizer.
+        if provider == "huggingface":
+            try:
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if getattr(emb, "_tokenizer", None) is not None:
+                    return _make(
+                        "hf",
+                        emb._tokenizer,
+                        self._config.embedding_model or "huggingface",
+                        _hf_tokenizer_seq_limit(emb._tokenizer),
+                    )
+            except Exception:
+                pass
+
+        # 3. litellm/openrouter/openai routes.
+        if provider in ("litellm", "openrouter", "openai"):
+            # 3a. tiktoken FIRST for openai-native + azure routes (no HTTP
+            # cost). Strip only the outer routing prefix (litellm/ or
+            # openrouter/) so we can still see the inner openai/ or
+            # azure/ marker.
+            outer = model_raw.lower()
+            for outer_prefix in ("litellm/", "openrouter/"):
+                if outer.startswith(outer_prefix):
+                    outer = outer[len(outer_prefix) :]
+                    break
+            if provider == "openai" or outer.startswith(("openai/", "azure/")):
+                try:
+                    import tiktoken
+
+                    # _TIKTOKEN_SAFE_MAX = 8191 - 16 = 8175. The OpenAI API
+                    # rejects at >8191; matching the HF branch's margin
+                    # keeps the dispatcher internally consistent
+                    # (workflow w5i1mbchd synth fix #1).
+                    return _make(
+                        "tiktoken",
+                        tiktoken.get_encoding("cl100k_base"),
+                        "cl100k_base",
+                        _TIKTOKEN_SAFE_MAX,
+                    )
+                except Exception:
+                    pass
+
+            # 3b. Try HF Hub as the source of truth (PR-A, workflow
+            # w9y9xtyse synth). Static aliases in ``_HF_REPO_ALIASES``
+            # short-circuit known-good redirects (jina, nomic) to skip
+            # a guaranteed Hub HEAD miss.
+            repo_id = _hf_repo_id_candidate(model_raw)
+            if repo_id:
+                auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
+                if auto_tok is not None:
+                    return _make(
+                        "hf",
+                        auto_tok,
+                        repo_id,
+                        _hf_tokenizer_seq_limit(auto_tok),
+                    )
+
+        # 4. everything else — no precise tokenizer available. Caller
+        # decides how to react (chunker uses a HybridChunker default;
+        # text-splitter falls back to char-based recursive split).
+        return _make("approximate", None, "char-based", _DEFAULT_APPROXIMATE_CAP)
+
+    def _warn_chunk_size_above_retrieval_recommended(self, chunk_size: int, tok: ChunkingTokenizer) -> None:
+        """Advisory log when ``chunk_size`` is within the hard ceiling
+        but exceeds the retrieval-quality recommendation. Fires at most
+        once per (model, chunk_size, recommended) tuple per process so
+        per-file chunker rebuilds don't spam the log.
+
+        Workflow w5i1mbchd synth fix #2: published evidence (LongEmbed
+        EMNLP 2024 +24% MRR for 512 vs 1024, voyage-context-3 default,
+        BAAI bge-m3 maintainer) shows retrieval quality peaks at
+        256-512 tokens regardless of embedder context length. Letting
+        a chunk grow to 8K just because the embedder allows it tends
+        to hurt retrieval (pooled embeddings dilute the signal). This
+        warning surfaces the recommendation without changing the
+        behavior — users who explicitly want larger chunks can ignore
+        it; users who left chunk_size at 800 on a 32K embedder know
+        they're potentially sub-optimal."""
+        if chunk_size <= tok.recommended_chunk_tokens:
+            return
+        # Same-tuple dedup. The lru_cache is a single-call no-op that
+        # ensures the wrapped logger.info fires at most once for any
+        # (model, chunk_size, recommended) tuple this process sees.
+        _warn_chunk_oversized_for_retrieval(
+            tok.name, chunk_size, tok.recommended_chunk_tokens, tok.safe_max_tokens
+        )
+
+    def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
+        """Token-aware splitter via the unified ``get_chunking_tokenizer``
+        dispatch. See #387 follow-up — both this and ``_build_docling_chunker``
+        used to carry their own provider-branch copy; now they share the
+        accessor and just switch on ``tok.kind``.
+
+        ``tok.safe_max_tokens`` already accounts for the embedder-wrapping
+        margin for HF kinds (see ``_hf_tokenizer_seq_limit`` /
+        ``_HF_TOKEN_SAFETY_MARGIN``)."""
+        tok = self.get_chunking_tokenizer()
+        self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok)
+        cap = min(chunk_size, tok.safe_max_tokens)
+        overlap = min(chunk_overlap, max(cap // 4, 1))
+
+        if tok.kind == "hf":
+            try:
+                # ``from_huggingface_tokenizer`` overcounts BOS/EOS by ~2
+                # tokens (langchain#30184) — harmless under-fill, not the
+                # 518>512 truncation that the safety margin handles.
+                return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                    tok.encoder, chunk_size=cap, chunk_overlap=overlap
+                )
+            except Exception as e:
+                logger.warning(f"from_huggingface_tokenizer failed ({e}); char fallback.")
+
+        if tok.kind == "tiktoken":
+            try:
+                # cap (not raw chunk_size) — same bound the hf branch uses.
+                # The Fix-4 post-chunk guard delegates its re-split here; if
+                # this passed the raw chunk_size, an over-limit tiktoken chunk
+                # (chunk_size > safe_max for an openai embedder) would be
+                # re-split at the raw value and STILL exceed 8191 → the exact
+                # silent-truncation the guard exists to prevent.
+                return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                    encoding_name=tok.name, chunk_size=cap, chunk_overlap=overlap
+                )
+            except Exception as e:
+                logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
+
+        # ``approximate`` (cohere/voyage/gemini/etc.), ``fastembed`` plain-text
+        # path, AND the hf/tiktoken exception fallbacks above all land here:
+        # char-based fallback. Use the token-aware ``cap``/``overlap`` (NOT the
+        # raw chunk_size) so a failed tokenizer path can't emit a chunk that
+        # exceeds the embedder's boundary (CR — the whole point of the cap).
+        return RecursiveCharacterTextSplitter(chunk_size=cap, chunk_overlap=overlap)
+
+    @staticmethod
+    def _exact_chunk_tokens(text: str, tok: "ChunkingTokenizer") -> int:
+        """Exact token count for a finished chunk in the embedder's OWN
+        tokenizer. Defined only for the kinds with a cheap local counter
+        and a HARD context limit (``hf`` e.g. e5=512, ``tiktoken`` e.g.
+        openai=8191) — the post-chunk boundary guard restricts itself to
+        those. ``tok.encoder`` is the HF AutoTokenizer (``hf``) or the
+        tiktoken Encoding (``tiktoken``)."""
+        if tok.kind == "hf":
+            return len(tok.encoder.tokenize(text))
+        return len(tok.encoder.encode(text))
+
     def _build_docling_chunker(self, chunk_size: int):
         """Build a HybridChunker that respects our chunk_size config.
 
@@ -3826,85 +4549,88 @@ class KnowledgeEngine:
         try:
             from docling_core.transforms.chunker import HybridChunker
 
-            if self._config.embedding_provider == "fastembed":
-                self._ensure_embeddings()
-                emb = self._default_embeddings
-                if isinstance(emb, _FastEmbedEmbeddings):
-                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
-                    cap = min(chunk_size, seq)
-                    fe = emb._model
-                    tok = _fastembed_docling_tokenizer_cls()(
-                        text_embedding=fe,
-                        max_tokens=cap,
+            tok_info = self.get_chunking_tokenizer()
+            self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok_info)
+            cap = min(chunk_size, tok_info.safe_max_tokens)
+            provider = (self._config.embedding_provider or "").lower()
+            model_str = self._config.embedding_model or "default"
+
+            if tok_info.kind == "fastembed":
+                tok = _fastembed_docling_tokenizer_cls()(text_embedding=tok_info.encoder, max_tokens=cap)
+                logger.debug(
+                    f"HybridChunker tokenizer: fastembed ONNX (model={tok_info.name!r}, "
+                    f"chunk_token_limit={cap}, model_seq_limit={tok_info.safe_max_tokens})"
+                )
+                return HybridChunker(tokenizer=tok)
+
+            if tok_info.kind == "hf":
+                try:
+                    from docling_core.transforms.chunker.tokenizer.huggingface import (
+                        HuggingFaceTokenizer,
                     )
-                    mn = getattr(fe, "model_name", None)
+
+                    if cap < chunk_size:
+                        logger.info(
+                            f"Capping chunk_size {chunk_size} -> {cap} for embedder "
+                            f"{tok_info.name} (safe_max_tokens={tok_info.safe_max_tokens}). "
+                            f"Chunks at the original size would have been truncated at embed time."
+                        )
+                    # Mute transformers' benign "Token indices sequence length is
+                    # longer than the specified maximum (N > model_max)" warning.
+                    # HybridChunker MEASURES candidate windows that transiently
+                    # exceed model_max (via tokenizer.tokenize) before backing off
+                    # to emit chunks <= max_tokens=cap — see _split_using_plain_text
+                    # (reserves heading room) + the merge step's <= max_tokens guard.
+                    # The warning fires from that measurement, NOT from an emitted
+                    # or embedded chunk, but operators read "550 > 512" as a failure.
+                    # Pre-set transformers' own fire-once flag rather than raising
+                    # model_max_length (which would corrupt safe_max_tokens on the
+                    # next dispatch for long-context HF embedders).
+                    _dw = getattr(tok_info.encoder, "deprecation_warnings", None)
+                    if isinstance(_dw, dict):
+                        _dw["sequence-length-is-longer-than-the-specified-maximum"] = True
+                    tok = HuggingFaceTokenizer(tokenizer=tok_info.encoder, max_tokens=cap)
                     logger.debug(
-                        "HybridChunker tokenizer: fastembed ONNX (same model as embeddings) "
-                        "(model_name={!r}, chunk_token_limit={}, model_seq_limit={})",
-                        mn,
-                        cap,
-                        seq,
+                        f"HybridChunker tokenizer: HF AutoTokenizer "
+                        f"(repo={tok_info.name!r}, chunk_token_limit={cap}, "
+                        f"safe_max_tokens={tok_info.safe_max_tokens}, provider={provider!r})"
                     )
                     return HybridChunker(tokenizer=tok)
-                logger.debug(
-                    "HybridChunker tokenizer: expected _FastEmbedEmbeddings for provider=fastembed, "
-                    "got {}; using Docling default (HuggingFace MiniLM tokenizer)",
-                    type(emb).__name__,
-                )
-            # HuggingFace provider: the embedding wrapper already loaded the
-            # model's own tokenizer — reuse it. Perfect match, zero extra cost.
-            if self._config.embedding_provider == "huggingface":
-                try:
-                    self._ensure_embeddings()
-                    emb = self._default_embeddings
-                    if hasattr(emb, "_tokenizer") and emb._tokenizer is not None:
-                        from docling_core.transforms.chunker.tokenizer.huggingface import (
-                            HuggingFaceTokenizer,
-                        )
-
-                        tok = HuggingFaceTokenizer(
-                            tokenizer=emb._tokenizer,
-                            max_tokens=chunk_size,
-                        )
-                        logger.debug(
-                            "HybridChunker tokenizer: HuggingFace (model's own — already loaded by "
-                            "_PyTorchEmbeddings; embedding_provider='huggingface', model={!r})",
-                            self._config.embedding_model or "default",
-                        )
-                        return HybridChunker(tokenizer=tok)
-                except Exception as hf_err:  # pragma: no cover - defensive
+                except Exception as wrap_err:
                     logger.warning(
-                        "HuggingFace chunker tokenizer reuse failed ({}); falling back to tiktoken.",
-                        hf_err,
+                        f"HuggingFaceTokenizer wrap failed for {tok_info.name!r} ({wrap_err}); "
+                        f"falling back to tiktoken."
                     )
 
-            # All other providers (openai / openrouter / litellm / ollama /
-            # auto / unknown): use tiktoken. Reasons:
-            #   - openai/openrouter/litellm: perfect match (cl100k_base BPE)
-            #   - ollama / other: free BPE approximation; better than the
-            #     90 MB HF MiniLM weights Docling would otherwise download
-            #   - tiktoken's encodings ship inside the wheel — ZERO extra
-            #     disk or download regardless of provider
+            if tok_info.kind == "tiktoken":
+                try:
+                    tok = _tiktoken_docling_tokenizer_cls()(encoding=tok_info.encoder, max_tokens=cap)
+                    logger.debug(
+                        f"HybridChunker tokenizer: tiktoken (encoding={tok_info.name!r}, "
+                        f"provider={provider!r}, model={model_str!r}); zero-download"
+                    )
+                    return HybridChunker(tokenizer=tok)
+                except Exception as tok_err:  # pragma: no cover - defensive
+                    logger.warning(f"tiktoken chunker tokenizer failed ({tok_err}); Docling default.")
+
+            # ``approximate`` kind — last-resort tiktoken cl100k_base + canary.
+            # Same path the pre-refactor "everything else" branch took, just
+            # consolidated. Operator canary fires for unlisted slash-models
+            # on litellm/openrouter routes (the splitter mirrors this with
+            # "char_based_split" key so chunker vs splitter origin is
+            # distinguishable in operator logs).
             try:
-                encoding = _resolve_tiktoken_encoding(self._config.embedding_model or "")
-                tok = _tiktoken_docling_tokenizer_cls()(
-                    encoding=encoding,
-                    max_tokens=chunk_size,
-                )
+                import tiktoken
+
+                encoding = tiktoken.get_encoding("cl100k_base")
+                tok = _tiktoken_docling_tokenizer_cls()(encoding=encoding, max_tokens=cap)
                 logger.debug(
-                    "HybridChunker tokenizer: tiktoken (encoding={!r}, "
-                    "embedding_provider={!r}, model={!r}); zero-download fallback",
-                    getattr(encoding, "name", "?"),
-                    self._config.embedding_provider,
-                    self._config.embedding_model or "default",
+                    f"HybridChunker tokenizer: cl100k_base (approximate; "
+                    f"provider={provider!r}, model={model_str!r})"
                 )
                 return HybridChunker(tokenizer=tok)
             except Exception as tok_err:  # pragma: no cover - defensive
-                logger.warning(
-                    "tiktoken chunker tokenizer failed ({}), Docling will fall back "
-                    "to its default (may trigger MiniLM download).",
-                    tok_err,
-                )
+                logger.warning(f"tiktoken approximate path failed ({tok_err}); Docling default.")
 
             return HybridChunker(max_tokens=chunk_size)
         except Exception as e:
@@ -4238,10 +4964,11 @@ class KnowledgeEngine:
             ".conf",
         ):
             text = file_path.read_text(errors="replace")
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-            )
+            # Token-aware split when we have an HF tokenizer for the active
+            # embedder — guarantees no chunk exceeds the model's max_seq_length.
+            # Falls back to char-based for providers without an HF tokenizer
+            # (legacy fastembed default, cohere/voyage/gemini under cl100k).
+            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
             chunks = splitter.split_text(text)
             docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
         else:
@@ -4263,16 +4990,78 @@ class KnowledgeEngine:
 
         logger.info(f"Loaded {len(docs)} raw chunks from {file_path.name}")
 
-        # Post-process: re-split any oversized chunks from Docling
-        # This ensures stored chunk_size/chunk_overlap settings are respected
-        # even for Docling-parsed formats.
-        if docs and any(len(d.page_content) > chunk_size * 2 for d in docs):
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-            )
+        # Post-process re-split (issue #387 follow-up). The old version of
+        # this block fired whenever any chunk's CHAR length exceeded
+        # ``chunk_size * 2`` (with ``chunk_size`` being the user's
+        # token-target like 800). That conflates two units:
+        #   - HybridChunker measures in TOKENS via the model's tokenizer
+        #     and produces chunks bounded by ``min(chunk_size, model_max_seq_length)``
+        #     in those tokens (after #387 fix).
+        #   - RecursiveCharacterTextSplitter measures in CHARS. Feeding it
+        #     ``chunk_size=800`` produced 800-char pieces, which for dense
+        #     content (academic English, multilingual, code) can be
+        #     600-800 XLM-RoBERTa tokens — past e5-large's 512 ceiling.
+        #     The embedder then silently truncated, evidenced in user
+        #     logs by ``[transformers] Token indices sequence length is
+        #     longer than the specified maximum sequence length for this
+        #     model (716 > 512)``.
+        #
+        # The re-split exists as a safety net for the rare case Docling
+        # returns a single pathological mega-chunk (file with no natural
+        # breaks, or a non-tokenizer-aware fallback path). Raise the
+        # threshold so the safety net only fires for those, not for
+        # normal HybridChunker output. Anything HybridChunker produces
+        # with a configured tokenizer is already token-bounded; this
+        # split would only WEAKEN that guarantee.
+        # STRICT chunk->embedder boundary guard (issue #387). HybridChunker
+        # already bounds chunks to max_tokens=cap, but for providers with a
+        # HARD context limit we VERIFY in the embedder's own tokenizer and
+        # re-split anything that slipped through (a single indivisible doc
+        # item, or a docling-core regression). This converts a SILENT
+        # embedder-side truncation — degraded retrieval, near-impossible to
+        # debug — into a clean token-aware re-split plus one visible WARNING.
+        # Only ``hf``/``tiktoken`` have a cheap exact local counter; fastembed
+        # is docling-bounded (<=512 always) and the char-based ``approximate``
+        # path has no exact counter here, so both fall to the coarse net below.
+        if docs:
+            tok_info = self.get_chunking_tokenizer()
+            if tok_info.kind in ("hf", "tiktoken"):
+                try:
+                    over = sum(
+                        1
+                        for d in docs
+                        if self._exact_chunk_tokens(d.page_content, tok_info) > tok_info.safe_max_tokens
+                    )
+                except Exception as e:  # noqa: BLE001 — never let the guard break ingest
+                    logger.debug(f"post-chunk token check skipped for {file_path.name}: {e!r}")
+                    over = 0
+                if over:
+                    splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+                    n_before = len(docs)
+                    docs = splitter.split_documents(docs)
+                    logger.warning(
+                        f"Token-bound re-split for {file_path.name}: {over}/{n_before} chunk(s) "
+                        f"exceeded safe_max_tokens={tok_info.safe_max_tokens} for "
+                        f"{tok_info.name!r}; token-aware split -> {len(docs)} chunks. "
+                        f"HybridChunker emitted an over-limit chunk — investigate if recurrent."
+                    )
+
+        # Coarse net for the paths WITHOUT an exact token counter above
+        # (fastembed / char-based ``approximate``) and any pathological
+        # mega-chunk Docling returns for a file with no natural breaks.
+        _EMERGENCY_CHAR_THRESHOLD = 100_000  # ~25k tokens — past any embedder context
+        if docs and any(len(d.page_content) > _EMERGENCY_CHAR_THRESHOLD for d in docs):
+            # Use the token-aware splitter — guarantees the safety-split
+            # output fits the embedder regardless of script density.
+            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+            n_before = len(docs)
             docs = splitter.split_documents(docs)
-            logger.info(f"Re-split into {len(docs)} chunks (chunk_size={chunk_size})")
+            logger.warning(
+                f"Emergency re-split for {file_path.name}: HybridChunker "
+                f"returned a chunk > {_EMERGENCY_CHAR_THRESHOLD} chars; "
+                f"token-aware split {n_before} -> {len(docs)} chunks. "
+                f"Investigate the source file's structure if this is recurrent."
+            )
 
         return docs
 

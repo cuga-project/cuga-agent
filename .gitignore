@@ -7,6 +7,7 @@ output
 *.db
 cuga_workspace/
 .idea
+mcp.db*
 node_modules
 .pnpm-store/
 .agents

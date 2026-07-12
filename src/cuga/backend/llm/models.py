@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
@@ -145,7 +146,9 @@ except ImportError:
 try:
     from langchain_anthropic import ChatAnthropic
 except ImportError:
-    logger.warning("Langchain Anthropic not installed. Install langchain-anthropic to use platform='anthropic'.")
+    logger.warning(
+        "Langchain Anthropic not installed. Install langchain-anthropic to use platform='anthropic'."
+    )
     ChatAnthropic = None
 
 
@@ -248,6 +251,19 @@ class LLMManager:
         # Update model_kwargs if it exists
         if hasattr(model, 'model_kwargs') and model.model_kwargs is not None:
             model.model_kwargs = model_kwargs
+
+        # ChatWatsonx sends nested params to the API, not the top-level pydantic fields.
+        try:
+            from langchain_ibm import ChatWatsonx
+
+            if isinstance(model, ChatWatsonx):
+                params = dict(model.params or {})
+                if not is_reasoning:
+                    params["temperature"] = temperature
+                params["max_completion_tokens"] = completion_tokens
+                model.params = params
+        except ImportError:
+            pass
 
         logger.debug(
             f"Updated model parameters: temperature={temperature}, max_tokens={max_tokens}, max_completion_tokens={completion_tokens}"
@@ -369,6 +385,18 @@ class LLMManager:
                 default_model = "anthropic/claude-3.5-sonnet"
                 logger.info(f"No model_name specified for OpenRouter, using default: {default_model}")
                 return default_model
+        elif platform == "minimax":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for MiniMax: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "MiniMax-M3"
+                logger.info(f"No model_name specified for MiniMax, using default: {default_model}")
+                return default_model
         elif platform == "litellm":
             env_model_name = os.environ.get('MODEL_NAME')
             if env_model_name:
@@ -393,6 +421,19 @@ class LLMManager:
                 default_model = "claude-opus-4-5-20251101"
                 logger.info(f"No model_name specified for Anthropic, using default: {default_model}")
                 return default_model
+        elif platform == "rits":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for RITS: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML for RITS: {toml_model_name}")
+                return toml_model_name
+            else:
+                raise ValueError(
+                    "model_name must be specified for platform rits "
+                    "(set MODEL_NAME env var or model_name in the TOML)"
+                )
         else:
             # For other platforms, use TOML or default
             if toml_model_name:
@@ -496,6 +537,19 @@ class LLMManager:
         if platform == "groq":
             return None
 
+        # RITS: let RITS_BASE_URL env override the TOML so model/endpoint can be
+        # swapped from .env without editing every per-role TOML block.
+        if platform == "rits":
+            env_base_url = os.environ.get('RITS_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using RITS_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+            toml_url = model_settings.get("base_url") or model_settings.get("url")
+            if toml_url and str(toml_url).strip():
+                logger.debug(f"Using url from TOML for RITS: {toml_url}")
+                return str(toml_url).strip()
+            return None
+
         config_url = model_settings.get("base_url") or model_settings.get("url")
         if config_url and str(config_url).strip():
             return str(config_url).strip()
@@ -533,6 +587,21 @@ class LLMManager:
                 f"No base URL specified for OpenRouter, will raise error if not set, falling back to: {default_openrouter}"
             )
             return default_openrouter
+        elif platform == "minimax":
+            env_base_url = os.environ.get('MINIMAX_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using MINIMAX_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+
+            # Check TOML settings
+            toml_url = model_settings.get('url')
+            if toml_url:
+                logger.debug(f"Using url from TOML: {toml_url}")
+                return toml_url
+
+            default_minimax = "https://api.minimax.io/v1"
+            logger.debug(f"No base URL specified for MiniMax, falling back to: {default_minimax}")
+            return default_minimax
         elif platform == "litellm":
             env_base_url = os.environ.get('OPENAI_BASE_URL') or os.environ.get('LITELLM_API_BASE')
             if env_base_url:
@@ -645,6 +714,20 @@ class LLMManager:
         api_version = self._get_api_version(model_settings, platform)
         base_url = self._get_base_url(model_settings, platform)
         http_timeout = self._get_http_timeout(model_settings)
+        # Compute effective sampling values *after* reasoning-model suppression and
+        # platform-specific overrides, so the INFO log reflects what is actually sent.
+        is_reasoning = self._is_reasoning_model(model_name)
+        effective_temperature = None if is_reasoning else temperature
+        effective_top_p = (
+            None
+            if is_reasoning
+            else (0.95 if platform == "rits-restricted" else model_settings.get('top_p', 1.0))
+        )
+        logger.info(
+            f"Sampling config for {platform}/{model_name}: "
+            f"temperature={effective_temperature}, top_p={effective_top_p}, "
+            f"max_tokens={max_tokens}"
+        )
         if platform == "azure":
             api_version = str(model_settings.get('api_version'))
             is_reasoning = self._is_reasoning_model(model_name)
@@ -664,6 +747,7 @@ class LLMManager:
                     timeout=http_timeout,
                     azure_deployment=model_name + "-" + api_version,
                     temperature=temperature,
+                    top_p=model_settings.get('top_p', 1.0),
                     max_tokens=max_tokens,
                 )
         elif platform == "openai":
@@ -677,12 +761,19 @@ class LLMManager:
 
             if not is_reasoning:
                 openai_params["temperature"] = temperature
+                # Only send top_p when explicitly configured. Some Bedrock Claude
+                # models (e.g. opus-4-5/4-6, sonnet-4-5) reject requests that
+                # specify both temperature and top_p.
+                if 'top_p' in model_settings:
+                    openai_params["top_p"] = model_settings['top_p']
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
                 if model_name.startswith('claude-'):
                     configured_budget = model_settings.get("thinking_budget_tokens")
                     budget = int(configured_budget) if configured_budget else max(1024, int(max_tokens * 0.6))
-                    openai_params["model_kwargs"] = {"extra_body": {"thinking": {"type": "enabled", "budget_tokens": budget}}}
+                    openai_params["model_kwargs"] = {
+                        "extra_body": {"thinking": {"type": "enabled", "budget_tokens": budget}}
+                    }
                     logger.debug(f"Enabling Claude thinking via proxy: budget_tokens={budget}")
 
             auth_headers = self._get_auth_headers(model_settings, platform)
@@ -757,22 +848,30 @@ class LLMManager:
                 raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
 
             llm = ChatWatsonx(**watsonx_params)
+            ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
                 api_key = os.environ.get(apikey_name)
-            llm = ChatOpenAI(
-                api_key=api_key,
-                base_url=model_settings.get('url'),
-                max_tokens=max_tokens,
-                model=model_name,
-                temperature=temperature,
-                timeout=http_timeout,
-                max_retries=2,
-                seed=42,
-                default_headers={"RITS_API_KEY": api_key} if api_key else None,
-            )
+            # RITS authenticates via the custom RITS_API_KEY header, not
+            # Authorization: Bearer. Pass a dummy api_key so ChatOpenAI does not
+            # also send the real key on the Authorization header — matches the
+            # `openai` branch's pattern when auth_headers are in play.
+            rits_params: Dict[str, Any] = {
+                "api_key": "dummy" if api_key else None,
+                "base_url": base_url,
+                "max_tokens": max_tokens,
+                "model": model_name,
+                "seed": 42,
+                "timeout": http_timeout,
+                "max_retries": 2,
+                "default_headers": {"RITS_API_KEY": api_key} if api_key else None,
+            }
+            if not is_reasoning:
+                rits_params["temperature"] = temperature
+                rits_params["top_p"] = model_settings.get('top_p', 1.0)
+            llm = ChatOpenAI(**rits_params)
         elif platform == "rits-restricted":
             api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
                 "RITS_API_KEY_RESTRICT"
@@ -823,6 +922,7 @@ class LLMManager:
 
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
+                openrouter_params["top_p"] = model_settings.get('top_p', 1.0)
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 
@@ -837,6 +937,31 @@ class LLMManager:
                 openrouter_params["default_headers"] = default_headers
 
             llm = ReasoningChatOpenAI(**openrouter_params)
+        elif platform == "minimax":
+            logger.debug(f"Creating MiniMax model: {model_name}")
+            is_reasoning = self._is_reasoning_model(model_name)
+
+            api_key = _normalize_secret(resolve_secret("MINIMAX_API_KEY")) or os.environ.get(
+                "MINIMAX_API_KEY"
+            )
+            if not api_key:
+                raise ValueError("MINIMAX_API_KEY environment variable not set")
+
+            minimax_params: Dict[str, Any] = {
+                "model_name": model_name,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+                "openai_api_key": api_key,
+                "openai_api_base": base_url,
+            }
+
+            if not is_reasoning:
+                minimax_params["temperature"] = temperature
+                minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+
+            llm = ReasoningChatOpenAI(**minimax_params)
         elif platform == "litellm" and ReasoningChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
             ssl_verify = self._get_ssl_verify(model_settings)
@@ -855,6 +980,7 @@ class LLMManager:
             }
             if not is_reasoning:
                 litellm_params["temperature"] = temperature
+                litellm_params["top_p"] = model_settings.get('top_p', 1.0)
             else:
                 logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
             # Tell litellm to use the OpenAI-compatible code path without parsing
@@ -889,8 +1015,7 @@ class LLMManager:
         elif platform == "anthropic":
             if ChatAnthropic is None:
                 raise ValueError(
-                    "langchain-anthropic is not installed. "
-                    "Run: pip install 'langchain-anthropic>=0.3.0'"
+                    "langchain-anthropic is not installed. Run: pip install 'langchain-anthropic>=0.3.0'"
                 )
             api_key = _normalize_secret(resolve_secret("ANTHROPIC_API_KEY")) or os.environ.get(
                 "ANTHROPIC_API_KEY"
@@ -906,9 +1031,13 @@ class LLMManager:
                 budget_tokens = int(configured_budget) if configured_budget else int(max_tokens * 0.6)
                 budget_tokens = max(1024, min(budget_tokens, max_tokens - 1000))
                 anthropic_params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
-                logger.debug(f"Creating Anthropic model {model_name} with thinking budget_tokens={budget_tokens}")
+                logger.debug(
+                    f"Creating Anthropic model {model_name} with thinking budget_tokens={budget_tokens}"
+                )
             else:
-                logger.debug(f"Creating Anthropic model {model_name} without thinking (max_tokens={max_tokens} < 2048)")
+                logger.debug(
+                    f"Creating Anthropic model {model_name} without thinking (max_tokens={max_tokens} < 2048)"
+                )
             if api_key:
                 anthropic_params["anthropic_api_key"] = api_key
             anthropic_base_url = self._get_base_url(model_settings, platform)
@@ -939,7 +1068,10 @@ class LLMManager:
         if is_mock_llm_enabled():
             mock = clone_load_test_mock_chat_model()
             return self._update_model_parameters(
-                mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+                mock,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
             )
 
         # Check if pre-instantiated model is available
@@ -947,7 +1079,9 @@ class LLMManager:
             logger.debug(f"Using pre-instantiated model: {type(self._pre_instantiated_model).__name__}")
             # Update parameters for the task
             updated_model = self._update_model_parameters(
-                self._pre_instantiated_model, temperature=0.1, max_tokens=max_tokens
+                self._pre_instantiated_model,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
             )
             return updated_model
 
@@ -966,7 +1100,10 @@ class LLMManager:
             # Update parameters for the task
             cached_model = self._models[cache_key]
             updated_model = self._update_model_parameters(
-                cached_model, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+                cached_model,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
             )
             return updated_model
 
@@ -978,7 +1115,11 @@ class LLMManager:
         self._models[cache_key] = model
 
         # Update parameters for the task
-        updated_model = self._update_model_parameters(model, temperature=0.1, max_tokens=max_tokens)
+        updated_model = self._update_model_parameters(
+            model,
+            temperature=model_settings.get('temperature', 0.1),
+            max_tokens=max_tokens,
+        )
         return updated_model
 
 
@@ -1027,7 +1168,11 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         try:
             code_model = settings.agent.code.model
             if code_model:
-                _get = code_model.get if hasattr(code_model, "get") else lambda k, d=None: getattr(code_model, k, d)
+                _get = (
+                    code_model.get
+                    if hasattr(code_model, "get")
+                    else lambda k, d=None: getattr(code_model, k, d)
+                )
                 toml_platform = _get("platform")
                 toml_model = _get("model") or _get("model_name")
                 toml_url = _get("url") or _get("base_url")
@@ -1037,9 +1182,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
                 if toml_model:
                     model = toml_model
                 logger.debug(
-                    "create_llm_from_config: using agent.code from TOML (local mode) — provider=%s model=%s",
-                    platform,
-                    model,
+                    f"create_llm_from_config: using agent.code from TOML (local mode) — provider={platform} model={model}"
                 )
         except Exception:
             pass

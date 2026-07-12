@@ -57,27 +57,3 @@ platform = "openrouter"
 model_name = "openai/gpt-4.1"
 temperature = 0.1
 max_tokens = 700
-
-[memory.mem0.model]
-platform = "openrouter"
-model_name = "openai/gpt-4.1"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.step_processing.model]
-platform = "openrouter"
-model_name = "openai/gpt-4.1"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.fact_extraction.model]
-platform = "openrouter"
-model_name = "openai/gpt-4.1"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
-platform = "openrouter"
-model_name = "openai/gpt-4.1"
-temperature = 0.1
-max_tokens = 5000

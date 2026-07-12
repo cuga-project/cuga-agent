@@ -41,6 +41,12 @@ tool_guards={
 }
 ```
 
+A `ToolGuide` also carries a `guards_enabled` flag (default `True`). Setting it to `False` disables guard enforcement for the entire policy while keeping the tool description enrichment active. This lets you temporarily bypass guards without deleting them or disabling the whole policy.
+
+```python
+guards_enabled=False  # guards still exist, but are not enforced at runtime
+```
+
 ### `ToolGuardingToolProvider`
 
 `ToolGuardingToolProvider` wraps a normal tool provider.
@@ -68,6 +74,7 @@ It follows these rules:
 | No policy exists | tool runs normally |
 | ToolGuide exists but has no guard for this tool | tool runs normally |
 | Guard exists for a different tool | current tool runs normally |
+| ToolGuide has `guards_enabled=False` | guards skipped, tool runs normally |
 | Applicable guard exists and passes | original tool runs |
 | Applicable guard exists and blocks | original tool is not called |
 | Applicable guard exists but runtime/domain cannot load | tool call is blocked |
