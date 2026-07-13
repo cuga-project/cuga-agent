@@ -1148,7 +1148,7 @@ All tests run through pytest (configured in `pyproject.toml`):
 - Fast Mode: Get top account by revenue, list accounts, find VP sales high-value accounts
 - CRM Workflows: Contacts management, email operations, tool discovery
 - HF Utterances: Account queries, revenue calculations, playbook execution
-- Execution: Parallel via `pytest-xdist`, 88% pass-rate threshold in CI
+- Execution: Sequential (`-n0`) so the 88% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 88`
 
 ## Running Tests
 

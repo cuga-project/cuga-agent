@@ -5,16 +5,13 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from system_tests.load.options import (
-    add_load_test_users_option,
-    configure_load_test_users,
-)
-
-_stability_outcomes: list[bool] = []
-_non_stability_failure = False
+_stability_outcomes: dict[str, bool] = {}
+_hard_failure = False
 
 
 def pytest_addoption(parser):
+    from system_tests.load.options import add_load_test_users_option
+
     add_load_test_users_option(parser)
     parser.addoption(
         "--stability-threshold",
@@ -26,6 +23,8 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    from system_tests.load.options import configure_load_test_users
+
     configure_load_test_users(config)
 
 
@@ -46,9 +45,9 @@ def _seed_cuga_workspace() -> None:
 
 
 def pytest_sessionstart(session):
-    global _stability_outcomes, _non_stability_failure
-    _stability_outcomes = []
-    _non_stability_failure = False
+    global _stability_outcomes, _hard_failure
+    _stability_outcomes = {}
+    _hard_failure = False
 
     # xdist workers each have workerinput; seed once on the controller only.
     if getattr(session.config, "workerinput", None) is not None:
@@ -57,18 +56,35 @@ def pytest_sessionstart(session):
 
 
 def pytest_runtest_logreport(report):
-    global _non_stability_failure
+    """Track one stability outcome per nodeid.
+
+    Prefer ``call`` when present. Count setup failure only when the test never
+    reached call. Teardown failures do not rewrite the rate (avoids
+    double-counting) and are treated as hard failures so the threshold cannot
+    mask cleanup errors.
+    """
+    global _hard_failure
     keywords = getattr(report, "keywords", {})
+    is_stability = "stability" in keywords
+
     if report.when == "call":
-        if "stability" in keywords:
-            _stability_outcomes.append(report.passed)
+        if is_stability:
+            _stability_outcomes[report.nodeid] = report.passed
         elif report.failed:
-            _non_stability_failure = True
-    elif report.failed:
-        if "stability" in keywords:
-            _stability_outcomes.append(False)
-        else:
-            _non_stability_failure = True
+            _hard_failure = True
+        return
+
+    if not report.failed:
+        return
+
+    if is_stability:
+        if report.when == "setup" and report.nodeid not in _stability_outcomes:
+            _stability_outcomes[report.nodeid] = False
+        elif report.when == "teardown":
+            _hard_failure = True
+        return
+
+    _hard_failure = True
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -76,12 +92,12 @@ def pytest_sessionfinish(session, exitstatus):
     if threshold is None or not _stability_outcomes:
         return
 
-    passed = sum(_stability_outcomes)
+    passed = sum(_stability_outcomes.values())
     total = len(_stability_outcomes)
     pass_rate = 100.0 * passed / total
     print(f"\nStability pass rate: {pass_rate:.1f}% ({passed}/{total}), threshold: {threshold}%")
 
-    if _non_stability_failure:
+    if _hard_failure:
         return
 
     session.exitstatus = 0 if pass_rate >= threshold else 1
