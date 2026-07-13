@@ -86,7 +86,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run Windows smoke stability tests
-        run: uv run pytest -m windows_smoke
+        run: uv run pytest -m windows_smoke --stability-threshold 88 -n0
 
       - name: Upload test logs
         if: always()

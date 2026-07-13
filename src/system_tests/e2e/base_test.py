@@ -32,14 +32,14 @@ MCP_SERVERS_FILE_PATH = os.path.join(os.path.dirname(__file__), "config", "mcp_s
 
 
 def _apply_base_test_env_defaults() -> None:
-    """(Re-)apply process env defaults this test base relies on.
+    """Apply process env defaults this test base relies on.
 
     Other test bases (e.g. ``BaseCRMTestServerStream``) mutate these same
     process-wide env vars in their own ``asyncSetUp``. Since every e2e test
     module is imported once into the same pytest session, module-level
-    assignment here would only "win" for whichever base module happens to
-    import last. Re-applying in ``asyncSetUp`` keeps this base's expectations
-    intact regardless of test run order.
+    assignment would only "win" for whichever base module happens to import
+    last. Apply only from ``asyncSetUp`` so this base's expectations hold
+    regardless of import order.
     """
     os.environ["MCP_SERVERS_FILE"] = MCP_SERVERS_FILE_PATH
     os.environ["CUGA_TEST_ENV"] = "true"
@@ -49,9 +49,6 @@ def _apply_base_test_env_defaults() -> None:
         "DYNACONF_SERVER_PORTS__DIGITAL_SALES_API",
         str(settings.server_ports.digital_sales_api),
     )
-
-
-_apply_base_test_env_defaults()
 
 
 def get_preexec_fn():
