@@ -63,10 +63,47 @@ make public-url         # prints the public URL + the exact strings to paste int
 **Verify:**
 ```bash
 make status      # everything up + tunnel URLs      make doctor   # live creds ok
-make test        # 154 offline checks green         make tunnels  # both tunnels reachable
+make test        # 156 offline checks green         make tunnels  # both tunnels reachable
 ```
-Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. Full test
-menu (live harnesses, the one-command report) is in [TESTING.md](TESTING.md).
+Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. For a
+full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
+interactive [checklist.html](checklist.html); the automated report + live harnesses are in [TESTING.md](TESTING.md).
+
+## Clean run from zero (the hand-off rehearsal)
+
+The exact sequence to take a machine from wiped to fully tested — hand this to a new tester and they
+follow it top to bottom, no guidance needed. A fresh AP boot needs `ap-pieces` (step 3) and the two
+browser consents (step 8) that a nuke wipes; everything else is the commands above, in order.
+
+```bash
+make nuke          # 1. wipe AP volumes + .events.db (keeps .env, so your tokens/keys survive)
+make up            # 2. AP (container + tunnel) then CUGA (registry + tunnel + server)
+make ap-pieces     # 3. a fresh AP boots WITHOUT the schedule piece — install the catalog (run once;
+                   #    if 'schedule' still shows missing, run it a second time — a cold-boot race)
+make channels      # 4. arm inbound channels from .env bot tokens
+make status        # 5. registry + cuga both 200, 3 containers Up, both tunnel URLs printed
+make doctor        # 6. every live cred green — incl. a FRESH BOX_DEV_TOKEN (starts a ~60-min clock)
+make test          # 7. 156 offline checks
+```
+
+8. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
+   consent. Open `https://<domain>/api/events/connect/gmail` and `…/connect/github`, approve each,
+   then `curl -s localhost:8100/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
+
+```bash
+make test-live     # 9. 34-check live smoke — 4 channels + 4 flow modes (green even before step 8,
+                   #    since an unconnected integration correctly reports 'connect-needed')
+```
+
+10. **Then test exhaustively** — two complementary tools:
+    - **[checklist.html](checklist.html)** — an interactive, hand-off-ready **manual** checklist: 66 items
+      spanning every agent (web/Telegram/Discord/Slack chat, CRON/POLL/PUSH arming, Gmail/Box/GitHub,
+      webhooks), each with a pass/fail/skip status saved in the browser and a *Copy report* button. An
+      editable "environment" panel templates your URL/channel/repo into every command. Open it directly,
+      or serve it: `cd events_docs && python3 -m http.server 8899` → `localhost:8899/checklist.html`.
+    - **`make test-report`** — the **automated** counterpart: runs every harness (offline · live · now ·
+      flows · matrix · fire) and writes a timestamped HTML report to `results/index.html` (~40 min; needs
+      Gmail/GitHub connected and a fresh Box token, so start it right after step 8).
 
 ## Day-to-day
 

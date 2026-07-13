@@ -7,7 +7,7 @@ version; here is the reference.
 ## Offline — the fast green gate
 
 ```bash
-make test          # pytest tests/events -q   (154 checks, ~10s, no network)
+make test          # pytest tests/events -q   (156 checks, ~10s, no network)
 ```
 
 Pure-Python invariants: envelope validation, flow builders, dedup, the API contract (every endpoint's

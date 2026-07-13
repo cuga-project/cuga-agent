@@ -59,9 +59,12 @@ def sh(cmd: list[str], **kw) -> str:
 
 def provenance() -> dict:
     dirty = bool(sh(["git", "status", "--porcelain"]))
+    now = time.localtime()
     return {
         "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "local": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "local": time.strftime("%Y-%m-%d %H:%M:%S %Z", now),
+        # human-readable run-dir name (local time, filesystem-safe, sorts chronologically)
+        "stamp": time.strftime("%Y-%m-%d_%H-%M-%S", now),
         "commit": sh(["git", "rev-parse", "--short", "HEAD"]) or "unknown",
         "commit_full": sh(["git", "rev-parse", "HEAD"]) or "unknown",
         "branch": sh(["git", "branch", "--show-current"]) or "detached",
@@ -179,8 +182,7 @@ def main() -> int:
     a = ap.parse_args()
 
     prov = provenance()
-    stamp = prov["utc"].replace(":", "").replace("-", "")
-    outdir = pathlib.Path(a.outdir or (REPO / "results" / "runs" / stamp))
+    outdir = pathlib.Path(a.outdir or (REPO / "results" / "runs" / prov["stamp"]))
     outdir.mkdir(parents=True, exist_ok=True)
 
     print(f"\033[1mCUGA test report\033[0m  {prov['local']}")
