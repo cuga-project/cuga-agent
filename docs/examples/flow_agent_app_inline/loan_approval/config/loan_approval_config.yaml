@@ -69,13 +69,17 @@ action_permissions:
   permitted_actions:
     - continue
     - skip_to
+    - terminate
   prohibited_actions:
     - skip_node
-    - terminate
     - swap_nodes
 
 
 hooks:
+  - id: "Flow_1e5ztf6"
+    type: "edge"
+    location: "Flow_1e5ztf6"
+    policy: "../policies/hook-screen-before-credit-check.md"
   - id: "Flow_0ybszcv"
     type: "edge"
     location: "Flow_0ybszcv"

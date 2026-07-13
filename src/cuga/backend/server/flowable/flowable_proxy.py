@@ -364,6 +364,12 @@ class FlowableProxy:
                 target,
             )
 
+        elif action == HookAction.TERMINATE:
+            logger.info(
+                "Hook TERMINATE for instance {} — routing via BPMN boundary event + Task_DynamicSkip to complete process task",
+                process_instance_id,
+            )
+
         else:
             logger.warning(
                 "Hook action '{}' for instance {} is not yet implemented in FlowableProxy",
