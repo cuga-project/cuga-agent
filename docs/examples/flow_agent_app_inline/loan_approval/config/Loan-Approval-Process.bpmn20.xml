@@ -49,6 +49,7 @@ if (hookResult.action === 'skip_to') {
     throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
 } else if (hookResult.action === 'terminate') {
     execution.setVariable('_hookAction', 'terminate');
+    execution.setVariable('_haltReason', hookResult.message || 'Hook screening terminated the process');
     throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
 }
       ]]></script>
@@ -179,6 +180,7 @@ if (hookResult.action === 'skip_to') {
     throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
 } else if (hookResult.action === 'terminate') {
     execution.setVariable('_hookAction', 'terminate');
+    execution.setVariable('_haltReason', hookResult.message || 'Hook terminated the process');
     throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
 }
       ]]></script>
@@ -235,7 +237,8 @@ Accept: application/json, text/event-stream]]></flowable:string>
         },
         "messages": [],
         "is_complete": false,
-        "is_halted": false
+        "is_halted": ${_hookAction == 'terminate'},
+        "halt_reason": "${_haltReason}"
       }
     }
   },

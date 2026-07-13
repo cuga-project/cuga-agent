@@ -379,6 +379,9 @@ Respond ONLY with a JSON object:
             initial_inputs["_user_message"] = input_data
         elif isinstance(input_data, dict):
             initial_inputs.update(input_data)
+        # Ensure hook-control variables always exist in Flowable so EL expressions are safe
+        initial_inputs.setdefault("_hookAction", "")
+        initial_inputs.setdefault("_haltReason", "")
 
         loop = asyncio.get_running_loop()
         completion_future: asyncio.Future = loop.create_future()
