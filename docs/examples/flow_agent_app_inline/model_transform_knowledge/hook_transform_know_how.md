@@ -4,7 +4,7 @@
 
 A CUGA FLO hook is an intercept point attached to a sequence flow edge. When the process
 reaches that edge, CUGA FLO is given the opportunity to evaluate a policy and decide an
-action (e.g. CONTINUE, SKIP_TO).
+action (CONTINUE, SKIP_TO, or TERMINATE).
 
 In Flowable the hook is realised as a `<scriptTask>` inserted **on the flow** between the
 upstream element (typically a gateway) and the original downstream task. The script calls
@@ -12,12 +12,17 @@ the `evaluate_hook` MCP tool via HTTP. CUGA FLO evaluates the configured hook po
 responds synchronously.
 
 - **CONTINUE**: Flowable naturally advances to the downstream task via the hook task's normal outgoing flow.
-- **SKIP_TO**: The hook script sets `_hookSkipTarget` (and any `state_updates` variables), then throws a `BpmnError('SKIP_TO')`. A boundary error event on the hook task catches this and routes to a shared `Task_DynamicSkip` script task, which uses Flowable's internal Java API (`RuntimeService.createChangeActivityStateBuilder().moveActivityIdTo(...)`) to move the execution token to the target activity. This all happens within the same Flowable transaction, avoiding any race conditions. The FlowableProxy performs no REST calls for SKIP_TO.
+- **SKIP_TO**: The hook script sets `_hookAction = 'skip_to'`, `_hookSkipTarget`, and any `state_updates` variables, then throws a `BpmnError('SKIP_TO')`. A boundary error event on the hook task catches this and routes to a shared `Task_DynamicSkip` script task, which uses Flowable's internal Java API (`RuntimeService.createChangeActivityStateBuilder().moveActivityIdTo(...)`) to move the execution token to the target activity.
+- **TERMINATE**: The hook script sets `_hookAction = 'terminate'` and `_haltReason`, then throws the same `BpmnError('SKIP_TO')`. `Task_DynamicSkip` detects `_hookAction == 'terminate'` and routes directly to the `complete_process` HTTP service task, bypassing the rest of the process. CUGA FLO marks the flow as halted.
+
+Both SKIP_TO and TERMINATE share the same BpmnError code and boundary event. Routing diverges in `Task_DynamicSkip` based on `_hookAction`. The FlowableProxy performs no REST calls for either — everything happens within Flowable's internal Java API.
+
+`_hookAction` and `_haltReason` are always present as process variables: FlowAgent.invoke() injects them as empty-string defaults before starting the Flowable process, so the `complete_process` EL expressions always resolve cleanly.
 
 Unlike task and gateway script tasks, the hook script task:
 - Uses the **flow ID** (not an element ID) as the `hook_id`
-- Does **not** set a routing variable — Flowable advances automatically after the script returns
-- For SKIP_TO: sets `_hookSkipTarget` and state_updates variables in-script before throwing `BpmnError`
+- Does **not** set a routing variable — Flowable advances automatically after the script returns (CONTINUE)
+- For SKIP_TO / TERMINATE: sets `_hookAction` (and related variables) in-script before throwing `BpmnError`
 
 ---
 
@@ -80,12 +85,17 @@ var resp = JSON.parse(raw);
 if (!resp.result) throw new Error('evaluate_hook error: ' + JSON.stringify(resp.error || resp));
 var hookResult = JSON.parse(resp.result.content[0].text);
 if (hookResult.action === 'skip_to') {
+    execution.setVariable('_hookAction', 'skip_to');
     execution.setVariable('_hookSkipTarget', hookResult.skip_to_node);
     if (hookResult.state_updates) {
         for (var k in hookResult.state_updates) {
             if (hookResult.state_updates.hasOwnProperty(k)) { execution.setVariable(k, hookResult.state_updates[k]); }
         }
     }
+    throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
+} else if (hookResult.action === 'terminate') {
+    execution.setVariable('_hookAction', 'terminate');
+    execution.setVariable('_haltReason', hookResult.message || 'Hook terminated the process');
     throw new org.flowable.engine.delegate.BpmnError('SKIP_TO');
 }
   ]]></script>
@@ -94,7 +104,7 @@ if (hookResult.action === 'skip_to') {
 
 ### 1b. Add boundary error event and shared dynamic-skip task
 
-Add a boundary error event on `Task_Hook_FLOW_ID` to intercept SKIP_TO, routing to the shared
+Add a boundary error event on `Task_Hook_FLOW_ID` to intercept SKIP_TO/TERMINATE, routing to the shared
 `Task_DynamicSkip` task. If `Task_DynamicSkip` doesn't exist yet in the process, add it once:
 
 ```xml
@@ -102,15 +112,18 @@ Add a boundary error event on `Task_Hook_FLOW_ID` to intercept SKIP_TO, routing 
 <error id="Error_SkipTo" name="SkipToError" errorCode="SKIP_TO"/>
 
 <!-- boundary event (one per hook task) — catch-all: no errorRef needed -->
-<boundaryEvent id="BoundaryError_FLOW_ID" name="skip to" attachedToRef="Task_Hook_FLOW_ID" cancelActivity="true">
+<boundaryEvent id="BoundaryError_FLOW_ID" name="action event" attachedToRef="Task_Hook_FLOW_ID" cancelActivity="true">
   <errorEventDefinition/>
 </boundaryEvent>
 <sequenceFlow id="Flow_BoundarySkip_FLOW_ID" sourceRef="BoundaryError_FLOW_ID" targetRef="Task_DynamicSkip"/>
 
-<!-- shared generic skip task (add once per process) — no outgoing sequence flows -->
-<scriptTask id="Task_DynamicSkip" name="dynamic skip" scriptFormat="javascript" flowable:autoStoreVariables="false">
+<!-- shared generic skip/terminate task (add once per process) — no outgoing sequence flows -->
+<scriptTask id="Task_DynamicSkip" name="hooks handling" scriptFormat="javascript" flowable:autoStoreVariables="false">
   <script><![CDATA[
-var target = String(execution.getVariable('_hookSkipTarget'));
+var action = String(execution.getVariable('_hookAction') || 'skip_to');
+var target = (action === 'terminate')
+    ? 'COMPLETE_PROCESS_TASK_ID'
+    : String(execution.getVariable('_hookSkipTarget'));
 var runtimeService = org.flowable.engine.ProcessEngines.getDefaultProcessEngine().getRuntimeService();
 runtimeService.createChangeActivityStateBuilder()
     .processInstanceId(execution.getProcessInstanceId())
@@ -120,9 +133,37 @@ runtimeService.createChangeActivityStateBuilder()
 </scriptTask>
 ```
 
+`COMPLETE_PROCESS_TASK_ID` is the `id` of the `complete_process` HTTP service task in the process
+(the terminal task that calls CUGA back). Replace with the actual element ID from the BPMN.
+
 `Task_DynamicSkip` is shared across all hooks in the process — multiple boundary events can point to it.
-Each hook script writes to `_hookSkipTarget` immediately before throwing, so there is no collision
-(only one hook executes at a time within a process instance).
+Each hook script writes to `_hookAction` (and `_hookSkipTarget` for skip_to) immediately before
+throwing, so there is no collision (only one hook executes at a time within a process instance).
+
+### 1c. Update the `complete_process` HTTP service task body
+
+The terminal `complete_process` HTTP service task must use EL expressions for the halt fields so
+TERMINATE is propagated to CUGA:
+
+```json
+{
+  "process_key": "${cugaProcessKey}",
+  "state": {
+    "process_id": "${cugaProcessKey}",
+    "process_name": "PROCESS_DISPLAY_NAME",
+    "process_variables": { ... },
+    "messages": [],
+    "is_complete": false,
+    "is_halted": ${_hookAction == 'terminate'},
+    "halt_reason": "${_haltReason}"
+  }
+}
+```
+
+`${_hookAction == 'terminate'}` evaluates to the JSON boolean `true` / `false`.
+`"${_haltReason}"` interpolates the string value (empty string when not halted).
+Both variables are always present because FlowAgent.invoke() injects empty-string defaults
+before starting the Flowable process.
 
 ### 2. Split the intercepted flow into two
 
@@ -150,8 +191,10 @@ to it as before. Only its `targetRef` changes to point at the hook task.
 ### Process Variables
 All Flowable process variables are forwarded automatically using `execution.getVariables()` —
 same dynamic snippet as task and gateway script tasks. This includes `_user_message`, which
-hook policies can read directly to extract values (e.g. `applicant_id`) without requiring
-that value to be pre-extracted into a separate process variable.
+hook policies can read directly to extract values (e.g. applicant name, applicant ID) without
+requiring those values to be pre-extracted into separate process variables. Hook LLM policies
+should always check `_user_message` as a fallback when a target field is absent or empty in
+the formal process variables.
 
 ---
 
@@ -159,30 +202,34 @@ that value to be pre-extracted into a separate process variable.
 
 | Tool | `resp.result.content[0].text` is… | What the script does with it |
 |------|-----------------------------------|------------------------------|
-| `evaluate_hook` | JSON string (`{"action": "continue", ...}` or `{"action": "skip_to", "target_node": "...", "state_updates": {...}}`) | parsed; SKIP_TO sets variables + throws BpmnError; CONTINUE is a no-op |
+| `evaluate_hook` | JSON string: `{"action":"continue"}` or `{"action":"skip_to","skip_to_node":"...","state_updates":{...}}` or `{"action":"terminate","message":"..."}` | parsed; SKIP_TO sets `_hookAction`/`_hookSkipTarget`/state_updates + throws BpmnError; TERMINATE sets `_hookAction`/`_haltReason` + throws BpmnError; CONTINUE is a no-op |
 
-The script throws on `!resp.result` (MCP error). For SKIP_TO, all state (`_hookSkipTarget`,
-`state_updates` keys) is set via `execution.setVariable()` in the same Flowable transaction
-before the BpmnError is thrown. The FlowableProxy performs no REST calls for SKIP_TO — routing
-is handled entirely within Flowable via the boundary event and `Task_DynamicSkip`.
+The script throws on `!resp.result` (MCP error). For SKIP_TO and TERMINATE, all state is set
+via `execution.setVariable()` in the same Flowable transaction before the BpmnError is thrown.
+The FlowableProxy performs no REST calls for either action — routing is handled entirely within
+Flowable via the boundary event and `Task_DynamicSkip`.
 
 ---
 
 ## YAML Config
 
 ### `action_permissions`
-Declare which hook actions the process is allowed to use. Start with only `continue`:
+Declare which hook actions the process is allowed to use:
 
 ```yaml
 action_permissions:
   permitted_actions:
     - continue
     - skip_to        # add when the policy needs to reroute execution
+    - terminate      # add when the policy may terminate the process early
   prohibited_actions:
     - skip_node
-    - terminate
     - swap_nodes
 ```
+
+`terminate` must be in `permitted_actions` (not `prohibited_actions`) for the LangGraph hook
+engine to pass it through. If absent from `permitted_actions`, the engine silently downgrades
+`terminate` to `continue` and the process will not halt.
 
 ### `hooks`
 Add one entry per hook, keyed by the flow edge ID that is intercepted:
@@ -213,7 +260,9 @@ warning — the process is not blocked.
 | `Accept` header | `application/json, text/event-stream` | FastMCP requires both; omitting `text/event-stream` returns HTTP 406 |
 | `setReadTimeout` | `120000` | Hook policy evaluation via LLM can take 10–60 s; default 5 s causes IO exception |
 | Response parsing | strip `data:` prefix before `JSON.parse` | FastMCP wraps its response in SSE framing (`data: {...}\n\n`) |
-| No routing variable | — | The hook does not affect gateway routing; Flowable advances to the downstream task automatically |
+| No routing variable | — | The hook does not affect gateway routing; Flowable advances to the downstream task automatically (CONTINUE) |
+| `_hookAction` default | `""` (empty string) | Injected by FlowAgent.invoke() via setdefault; `complete_process` EL `${_hookAction == 'terminate'}` evaluates to false when not set |
+| `_haltReason` default | `""` (empty string) | Injected by FlowAgent.invoke() via setdefault; safe to interpolate as empty string in `complete_process` body |
 
 ---
 
@@ -258,7 +307,7 @@ that sit between the boundary event and `Task_DynamicSkip`:
   <omgdi:waypoint x="DOWNSTREAM_X" y="DOWNSTREAM_CENTRE_Y"/>
 </bpmndi:BPMNEdge>
 
-<!-- boundary event to Task_DynamicSkip (SKIP_TO path) -->
+<!-- boundary event to Task_DynamicSkip (SKIP_TO / TERMINATE path) -->
 <bpmndi:BPMNEdge bpmnElement="Flow_BoundarySkip_FLOW_ID" ...
     flowable:sourceDockerX="15.0" flowable:sourceDockerY="30.0"
     flowable:targetDockerX="50.0" flowable:targetDockerY="0.0">
@@ -280,15 +329,17 @@ wide) plus spacing (≥ 30 px gap on each side).
 Given:
 - `flow_id` — the sequence flow ID that is the hook intercept point
 - `upstream_element_id`, `downstream_task_id` — the flow's current `sourceRef` / `targetRef`
+- `complete_process_task_id` — the ID of the terminal HTTP service task that calls CUGA back
 - `variables` available at the intercept point (from YAML config)
 - `hook_policy_file` from the YAML `hooks:` entry
 
 Steps:
-1. Add `<scriptTask id="Task_Hook_{flow_id}" ...>` with the `evaluate_hook` script (dynamic variable snippet + SKIP_TO block that sets `_hookSkipTarget` / `state_updates` and throws `BpmnError('SKIP_TO')`)
-2. If not already present: add `<error id="Error_SkipTo" .../>` before `<process>` and add `<scriptTask id="Task_DynamicSkip" ...>` (shared, no outgoing flows, uses internal Flowable Java API)
+1. Add `<scriptTask id="Task_Hook_{flow_id}" ...>` with the `evaluate_hook` script (dynamic variable snippet + SKIP_TO block that sets `_hookAction`/`_hookSkipTarget`/`state_updates` and throws `BpmnError('SKIP_TO')` + TERMINATE block that sets `_hookAction`/`_haltReason` and throws the same `BpmnError('SKIP_TO')`)
+2. If not already present: add `<error id="Error_SkipTo" .../>` before `<process>` and add `<scriptTask id="Task_DynamicSkip" ...>` (shared, no outgoing flows; reads `_hookAction` to choose between `COMPLETE_PROCESS_TASK_ID` and `_hookSkipTarget`)
 3. Add `<boundaryEvent id="BoundaryError_{flow_id}" attachedToRef="Task_Hook_{flow_id}" ...>` + `<sequenceFlow ... sourceRef="BoundaryError_{flow_id}" targetRef="Task_DynamicSkip"/>`
 4. Change `<sequenceFlow id=flow_id>` `targetRef` from `downstream_task_id` to `Task_Hook_{flow_id}`
 5. Add a new `<sequenceFlow id="Flow_HookTo_{downstream_task_id}" sourceRef="Task_Hook_{flow_id}" targetRef=downstream_task_id/>`
-6. In the YAML: add `hooks:` entry with `id: flow_id`, `type: edge`, `location: flow_id`, `policy: hook_policy_file`
-7. In the YAML: ensure `action_permissions.permitted_actions` contains at least `continue`; add `skip_to` if the policy may reroute
-8. In the BPMNDiagram: add shape for hook task; add shape for boundary event (bottom-centre of hook task); add shape for `Task_DynamicSkip` (once); update edge waypoints for `FLOW_ID`; add edge for the new connecting flow; add edge from boundary event to `Task_DynamicSkip`
+6. Update the `complete_process` HTTP service task body to use `${_hookAction == 'terminate'}` for `is_halted` and `"${_haltReason}"` for `halt_reason`
+7. In the YAML: add `hooks:` entry with `id: flow_id`, `type: edge`, `location: flow_id`, `policy: hook_policy_file`
+8. In the YAML: ensure `action_permissions.permitted_actions` contains `continue`; add `skip_to` if the policy may reroute; add `terminate` if the policy may halt the process early (must NOT be in `prohibited_actions`)
+9. In the BPMNDiagram: add shape for hook task; add shape for boundary event (bottom-centre of hook task); add shape for `Task_DynamicSkip` (once); update edge waypoints for `FLOW_ID`; add edge for the new connecting flow; add edge from boundary event to `Task_DynamicSkip`
