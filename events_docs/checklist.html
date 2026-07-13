@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Events — Acceptance Checklist</title>
+<style>
+  :root{--blue:#0f62fe;--ink:#161616;--ink2:#393939;--mut:#6f6f6f;--line:#e0e0e0;--bg:#f4f4f4;--card:#fff;
+        --ok:#24a148;--okbg:#defbe6;--fail:#da1e28;--failbg:#fff1f1;--skip:#8d8d8d;--skipbg:#f2f2f2;--code:#f2f4f8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:var(--ink);
+       background:var(--bg);line-height:1.5;font-size:15px}
+  header{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:20px 32px}
+  header h1{margin:0 0 3px;font-size:21px} header .sub{color:#c6c6c6;font-size:13.5px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px 90px}
+  .bar{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);padding:10px 20px;
+       box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .barin{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .prog{flex:1;min-width:180px;height:10px;background:#e8e8e8;border-radius:6px;overflow:hidden;display:flex}
+  .prog i{display:block;height:100%}
+  .prog .p{background:var(--ok)} .prog .f{background:var(--fail)} .prog .s{background:var(--skip)}
+  .stat{font-size:13px;color:var(--ink2);white-space:nowrap}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  .btn:hover{border-color:var(--blue);color:var(--blue)}
+  .cfg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:18px 0}
+  .cfg h3{margin:0 0 4px;font-size:14px} .cfg p{margin:0 0 10px;font-size:12.5px;color:var(--mut)}
+  .cfg .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+  .cfg label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);margin-bottom:3px;font-weight:600}
+  .cfg input{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+  details.sec{border:1px solid var(--line);border-radius:10px;margin:12px 0;background:#fff;overflow:hidden}
+  details.sec>summary{cursor:pointer;list-style:none;padding:13px 16px;font-weight:700;font-size:15px;
+       display:flex;align-items:center;gap:10px;background:#fafafa;position:sticky}
+  details.sec>summary::-webkit-details-marker{display:none}
+  details.sec>summary::before{content:'▸';color:var(--blue);font-size:12px;transition:transform .15s}
+  details.sec[open]>summary::before{transform:rotate(90deg)}
+  details.sec>summary .cnt{margin-left:auto;font-weight:500;color:var(--mut);font-size:12px}
+  details.sec>summary .pill{font-size:11px;font-weight:700;border-radius:10px;padding:1px 9px}
+  .secdesc{font-size:12.5px;color:var(--mut);padding:2px 16px 8px}
+  .item{border-top:1px solid var(--line);padding:12px 16px}
+  .item .top{display:flex;gap:12px;align-items:flex-start}
+  .item .num{font-size:11px;color:var(--mut);font-family:ui-monospace,monospace;padding-top:3px;min-width:34px}
+  .item .body{flex:1;min-width:0}
+  .item .t{font-weight:600;font-size:14.5px}
+  .item .agent{font-size:11px;font-weight:600;color:var(--blue);background:#e5f0ff;border-radius:4px;padding:1px 7px;margin-left:6px}
+  .item .who{font-size:11px;font-weight:600;border-radius:4px;padding:1px 7px;margin-left:6px}
+  .who-you{background:#f0e6ff;color:#6929c4}.who-test{background:#fff2d9;color:#8e6a00}
+  .item .do{font-size:13.5px;color:var(--ink2);margin-top:4px}
+  .item .exp{font-size:12.5px;color:var(--mut);margin-top:4px}
+  .item .exp b{color:var(--ok)}
+  pre.cmd{background:#0b0b0d;color:#e8e8e8;border-radius:7px;padding:9px 12px;margin:8px 0 0;font-size:12.5px;
+       font-family:ui-monospace,Menlo,monospace;overflow-x:auto;white-space:pre;position:relative}
+  pre.cmd .cp{position:absolute;top:6px;right:6px;background:#2a2a2e;color:#ddd;border:0;border-radius:5px;
+       padding:3px 8px;font-size:11px;cursor:pointer}
+  pre.cmd .cp:hover{background:#3a3a40}
+  .utt{background:var(--code);border-left:3px solid var(--blue);border-radius:0 5px 5px 0;padding:6px 10px;margin-top:6px;
+       font-family:ui-monospace,Menlo,monospace;font-size:13px;cursor:pointer}
+  .utt:hover{background:#e8ecf5}
+  .sbtns{display:flex;gap:6px;margin-top:9px;align-items:center;flex-wrap:wrap}
+  .sb{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:12.5px;font-weight:600}
+  .sb.pass.on{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
+  .sb.fail.on{background:var(--failbg);border-color:var(--fail);color:var(--fail)}
+  .sb.skip.on{background:var(--skipbg);border-color:var(--skip);color:var(--skip)}
+  .note{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12.5px;
+       font-family:inherit;resize:vertical;min-height:0;display:none}
+  .item.has-note .note{display:block}
+  .item.pass{background:#fbfffc}.item.fail{background:#fffafa}
+  code{font-family:ui-monospace,monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .pill-ok{background:var(--okbg);color:var(--ok)}.pill-part{background:#fff8e1;color:#8e6a00}.pill-none{background:#f2f2f2;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1>CUGA Events — Acceptance Checklist</h1>
+  <div class="sub">Nuke → set up → verify one integration at a time, 3–4 examples each, across every agent.
+    Mark each item; your status is saved in this browser. Built for hand-off.</div>
+</header>
+
+<div class="bar"><div class="barin">
+  <div class="prog" id="prog"><i class="p" style="width:0"></i><i class="f" style="width:0"></i><i class="s" style="width:0"></i></div>
+  <div class="stat" id="stat">0 / 0</div>
+  <button class="btn" onclick="expandAll(true)">Expand all</button>
+  <button class="btn" onclick="expandAll(false)">Collapse</button>
+  <button class="btn" onclick="copyReport()">Copy report</button>
+  <button class="btn" onclick="resetAll()">Reset</button>
+</div></div>
+
+<div class="wrap">
+  <div class="cfg">
+    <h3>Your environment</h3>
+    <p>Fill these once — they're substituted into every command below (and saved in this browser). Defaults are this machine's values.</p>
+    <div class="grid">
+      <div><label>Tester name</label><input id="c-tester" data-cfg="TESTER" placeholder="your name"></div>
+      <div><label>Machine / date</label><input id="c-machine" data-cfg="MACHINE" placeholder="macbook · 2026-07-11"></div>
+      <div><label>Public URL (ngrok)</label><input id="c-public" data-cfg="PUBLIC" value="https://pregnant-reveal-defile.ngrok-free.dev"></div>
+      <div><label>Slack channel id</label><input id="c-slack" data-cfg="SLACK" value="C0BEYJ9NATB"></div>
+      <div><label>Telegram bot</label><input id="c-bot" data-cfg="BOT" value="time4fun_bot"></div>
+      <div><label>Box folder id</label><input id="c-box" data-cfg="BOXFOLDER" value="0"></div>
+      <div><label>GitHub test repo</label><input id="c-repo" data-cfg="REPO" value="anupamamurthi/pachyderm"></div>
+    </div>
+  </div>
+  <div id="list"></div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// The checklist. {{PUBLIC}} {{SLACK}} {{BOT}} {{BOXFOLDER}} {{REPO}} are substituted from the config.
+// who: 'you' (operator setup) | 'test' (manual verification). cmd = copyable shell. utt = a chat utterance.
+const DATA = [
+{s:"A · One-time prereqs (per machine)", d:"Skip if this machine already ran CUGA. Everything after assumes these pass.", items:[
+  {id:"a1", who:"you", t:"Tools installed", do:"Install the toolchain and start podman's Linux VM.",
+   cmd:"brew install uv node podman cloudflared ngrok\npodman machine init && podman machine start", exp:"all five on PATH; podman VM running"},
+  {id:"a2", who:"you", t:"Project built", do:"Sync deps and build the Studio UI.",
+   cmd:"uv sync --python 3.12\nscripts/frontend_build.sh", exp:".venv present; Studio UI built"},
+  {id:"a3", who:"you", t:".env complete", do:"Copy the template, fill keys, then verify.",
+   cmd:"cp .env.events.example .env   # then fill it in\nmake env-check", exp:"env-check prints GREEN"},
+]},
+{s:"B · Nuke & fresh boot", d:"A true from-zero rebuild — the state a new tester starts from.", items:[
+  {id:"b1", who:"you", t:"Nuke everything", do:"Wipe AP volumes + events.db.", cmd:"make nuke", exp:"clean — AP volumes + .events.db gone"},
+  {id:"b2", who:"you", t:"Bring the stack up", do:"AP (container + tunnel) then CUGA (registry + tunnel + server).", cmd:"make up", exp:"both up; AP + CUGA tunnel URLs printed"},
+  {id:"b3", who:"you", t:"Pieces installed", do:"Ensure the AP piece catalog has gmail/github/box/telegram/schedule.", cmd:"make ap-pieces", exp:"all needed pieces present"},
+  {id:"b4", who:"you", t:"Channels armed", do:"Register inbound webhooks for every bot token in .env.", cmd:"make channels", exp:"web/telegram/discord/slack armed"},
+  {id:"b5", who:"you", t:"Status green", do:"Everything running + tunnels reachable.", cmd:"make status", exp:"registry+cuga 200; 3 containers up; both tunnel URLs"},
+  {id:"b6", who:"you", t:"Doctor green", do:"Ping each service with its real .env cred.", cmd:"make doctor", exp:"all green: watsonx, AP, telegram, discord, slack, box, github, 7/7 MCP"},
+  {id:"b7", who:"you", t:"Offline suite", do:"Pure-python invariants + consistency gates.", cmd:"make test", exp:"156 passed"},
+]},
+{s:"C · Connect the OAuth integrations (browser · once per nuke)", d:"Nuke wipes AP connections — only a human can re-consent.", items:[
+  {id:"c1", who:"you", t:"Connect Gmail", do:"Open the connect URL in a browser and approve.", cmd:"open {{PUBLIC}}/api/events/connect/gmail", exp:"redirects back; gmail = connected"},
+  {id:"c2", who:"you", t:"Connect GitHub", do:"Open the connect URL and approve (scopes repo + admin:repo_hook).", cmd:"open {{PUBLIC}}/api/events/connect/github", exp:"redirects back; github = connected"},
+  {id:"c3", who:"you", t:"Fresh Box token", do:"Paste a fresh BOX_DEV_TOKEN into .env (expires ~60 min), then reload CUGA.", cmd:"# edit .env: BOX_DEV_TOKEN=...\nmake reload", exp:"doctor shows box green"},
+  {id:"c4", who:"you", t:"Verify all three connected", do:"Confirm the integration status.", cmd:"curl -s http://localhost:8100/api/events/integrations", exp:"gmail / box / github all show connected"},
+]},
+{s:"D · Smoke — the plumbing is alive", d:"One automated probe of every surface before manual testing.", items:[
+  {id:"d1", who:"you", t:"Live e2e suite", do:"4 channels + 4 flow modes, one probe each.", cmd:"make test-live", exp:"34 passed · 0 failed"},
+  {id:"d2", who:"test", t:"Studio loads", do:"Open the web Studio.", cmd:"open http://localhost:8100/studio", exp:"loads; shows Agents / Examples / Integrations tabs"},
+]},
+{s:"E · Web chat · NOW — exercise the agents", d:"In the Studio web chat, type each utterance (click to copy). Each routes to a different agent and answers immediately.", items:[
+  {id:"e1", who:"test", t:"Price now", agent:"pricebot", utt:"what is the current price of bitcoin in usd?", exp:"a live USD number"},
+  {id:"e2", who:"test", t:"Geo + memory", agent:"geobot", utt:"what is the capital of Japan?", do:"Then follow up: “and its population?” — memory must hold.", exp:"Tokyo, then a population figure for Japan"},
+  {id:"e3", who:"test", t:"Weather now", agent:"weatherbot", utt:"what's the weather in Tokyo right now?", exp:"temperature + conditions"},
+  {id:"e4", who:"test", t:"Latest papers", agent:"papers", utt:"3 latest arXiv papers on mixture-of-experts", exp:"three real arXiv papers"},
+  {id:"e5", who:"test", t:"Research a topic", agent:"research_compass", utt:"research parameter-efficient fine-tuning (LoRA) — papers + web, with citations", exp:"a cited summary"},
+  {id:"e6", who:"test", t:"City briefing", agent:"city_briefing", utt:"brief me on Lisbon — weather, key facts, things to do", exp:"weather + facts + activities"},
+  {id:"e7", who:"test", t:"Audit code", agent:"code_auditor", utt:"check this Python function for syntax and complexity: def f(x): return x*2", exp:"a syntax/complexity read"},
+  {id:"e8", who:"test", t:"Summarize a page", agent:"webpage_summarizer", utt:"summarize https://arxiv.org/abs/1706.03762", exp:"a summary of the Attention paper"},
+  {id:"e9", who:"test", t:"YouTube Q&A", agent:"video_qa", utt:"what does this talk say about attention? https://www.youtube.com/watch?v=iDulhoQ2pro", exp:"an answer grounded in the transcript"},
+  {id:"e10", who:"test", t:"Movie picks", agent:"movie_recommender", utt:"recommend movies like Arrival and Interstellar but a bit lighter", exp:"grounded recommendations"},
+  {id:"e11", who:"test", t:"Compose a recipe", agent:"recipe_composer", utt:"a quick vegetarian dinner with chickpeas, spinach and no dairy", exp:"a coherent recipe"},
+  {id:"e12", who:"test", t:"Find meetups", agent:"meetup_finder", utt:"AI/ML meetups in San Francisco in the next two weeks", exp:"real listings"},
+  {id:"e13", who:"test", t:"Find a doctor", agent:"find_a_doctor", utt:"an experienced pediatric dentist in Austin who's good with anxious kids", exp:"listings + review snippets"},
+  {id:"e14", who:"test", t:"Wikipedia dive", agent:"wiki_dive", utt:"give me a deep dive on the history of the transistor — key sections + related topics", exp:"sections + cross-links"},
+  {id:"e15", who:"test", t:"IBM docs Q&A", agent:"ibm_docs_qa", utt:"how do I set up autoscaling on IBM Cloud Kubernetes?", exp:"a doc-grounded answer"},
+  {id:"e16", who:"test", t:"Plan an outdoor day", agent:"trip_planner", utt:"plan an outdoor day near Boulder, Colorado", exp:"hikes/attractions plan"},
+  {id:"e17", who:"test", t:"YouTube research", agent:"youtube_research", utt:"what do top YouTube creators say about RAG vs fine-tuning?", exp:"synthesis across videos"},
+  {id:"e18", who:"test", t:"AI labs digest", agent:"ai_labs_news", utt:"what's new from OpenAI and Anthropic this week?", exp:"recent items from the labs"},
+  {id:"e19", who:"test", t:"Feed now", agent:"feed_watcher", utt:"what's new on https://hnrss.org/frontpage ?", exp:"current front-page items"},
+  {id:"e20", who:"test", t:"Market brief now", agent:"market_briefer", utt:"give me a market brief right now", exp:"a market summary"},
+  {id:"e21", who:"test", t:"Trending repos now", agent:"github_trending", utt:"show me the top trending GitHub repos right now", exp:"a list of trending repos"},
+]},
+{s:"F · Telegram · NOW", d:"DM the bot @{{BOT}}. Real send verified back from Telegram.", items:[
+  {id:"f1", who:"test", t:"Price via Telegram", agent:"pricebot", utt:"price of ethereum?", exp:"the bot replies with a number"},
+  {id:"f2", who:"test", t:"Weather via Telegram", agent:"weatherbot", utt:"weather in Mumbai?", exp:"weather reply"},
+  {id:"f3", who:"test", t:"Geo via Telegram", agent:"geobot", utt:"capital of Brazil?", exp:"Brasília"},
+]},
+{s:"G · Discord · NOW", d:"Post in the Discord channel the bot is in.", items:[
+  {id:"g1", who:"test", t:"Price via Discord", agent:"pricebot", utt:"what's the price of bitcoin?", exp:"bot replies in channel"},
+  {id:"g2", who:"test", t:"Papers via Discord", agent:"papers", utt:"3 latest papers on transformers", exp:"papers reply"},
+]},
+{s:"H · Slack · NOW (round-trip)", d:"Post in #eda-test ({{SLACK}}). The bot replies in-thread via a real Events API round-trip.", items:[
+  {id:"h1", who:"test", t:"Price via Slack", agent:"pricebot", utt:"what is the price of bitcoin? just the number", exp:"a threaded reply with a price"},
+  {id:"h2", who:"test", t:"Geo via Slack", agent:"geobot", utt:"capital of France?", exp:"Paris, in-thread"},
+]},
+{s:"I · CRON flows — arm (and optionally fire)", d:"Say each in the web chat. It arms a real Activepieces schedule flow.", items:[
+  {id:"i1", who:"test", t:"Daily arXiv digest", agent:"papers", utt:"every day at 9am send me new arXiv papers on mixture-of-experts", exp:"“Flow created” + a CRON subscription"},
+  {id:"i2", who:"test", t:"Weekday market brief", agent:"market_briefer", utt:"every weekday at 8am send me a market brief", exp:"armed CRON flow"},
+  {id:"i3", who:"test", t:"Hourly trending → Slack", agent:"github_trending", utt:"every hour post the top trending GitHub repos in this channel", do:"Say this from Slack so the sink is the channel.", exp:"armed CRON flow, sink = slack"},
+  {id:"i4", who:"test", t:"Overnight support digest", agent:"support_digest", utt:"every morning at 7am post an overnight support digest to our Slack channel", exp:"armed CRON flow (support_digest)"},
+  {id:"i5", who:"you", t:"Verify + fire one", do:"List the armed flows, then fire one immediately (replace ID).", cmd:"make flows\ncurl -s -X POST http://localhost:8100/api/events/subscriptions/<ID>/run -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2-)", exp:"flow list shows all 4; the fired one returns a real answer"},
+]},
+{s:"J · POLL flows — arm", d:"Interval + emit-on-change. Say each in the web chat.", items:[
+  {id:"j1", who:"test", t:"Bitcoin move watcher", agent:"pricebot", utt:"watch bitcoin every 2 minutes and ping me on any move", exp:"armed POLL flow"},
+  {id:"j2", who:"test", t:"Rain watcher", agent:"weatherbot", utt:"check the New York weather every hour and ping me only if rain is forecast", exp:"armed POLL flow"},
+  {id:"j3", who:"test", t:"New-papers watcher", agent:"papers", utt:"every 5 minutes check for new MoE papers and tell me only if there are new ones", exp:"armed POLL flow"},
+]},
+{s:"K · Gmail · PUSH (arm + real fire)", d:"Gmail is a polling trigger — firing needs a real email you send.", items:[
+  {id:"k1", who:"test", t:"Arm the inbox watcher", agent:"mailbot", utt:"when a new email arrives, summarize it and message me", exp:"“Flow created” + a PUSH subscription (mailbot)"},
+  {id:"k2", who:"test", t:"Fire it for real", agent:"mailbot", do:"Send an email to the connected Gmail account, then wait a minute.", exp:"mailbot summarizes the email and delivers it to you"},
+]},
+{s:"L · Box · PUSH (arm + fire)", d:"Direct poll — a real upload proves the whole path.", items:[
+  {id:"l1", who:"you", t:"Box e2e (upload → poll → judge)", agent:"resume_judge", do:"Runs the canonical Box harness: uploads a real résumé, polls, fires resume_judge, cleans up.", cmd:".venv/bin/python tests/events/live_box_e2e.py", exp:"PASS — uploaded → detected → judged"},
+  {id:"l2", who:"test", t:"Arm via chat", agent:"resume_judge", utt:"when a resume lands in my Box, judge it against the JD and message me", exp:"armed (or a clear connect/slot prompt)"},
+]},
+{s:"M · GitHub · PUSH (arm + synthetic fire)", d:"Webhook trigger — armable AND synth-fireable, no real PR needed. Uses {{REPO}}.", items:[
+  {id:"m1", who:"test", t:"Arm PR watcher", agent:"pr_reviewer", utt:"when a new pull request opens on {{REPO}}, summarize it and message me", exp:"“Flow created” + a real repo webhook on {{REPO}}"},
+  {id:"m2", who:"you", t:"Fire a synthetic PR", agent:"pr_reviewer", do:"Fire the armed flow with a PR-shaped payload (replace <ID> from the arm reply / make flows).",
+   cmd:"curl -s -X POST http://localhost:8100/api/events/subscriptions/<ID>/run \\\n -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env|cut -d= -f2-) -H 'content-type: application/json' \\\n -d '{\"title\":\"Add retry to Box client\",\"base\":{\"repo\":{\"full_name\":\"{{REPO}}\"}},\"html_url\":\"https://github.com/{{REPO}}/pull/999\",\"body\":\"adds backoff retry\",\"user\":{\"login\":\"tester\"},\"changed_files\":3,\"additions\":84,\"deletions\":12}'", exp:"pr_reviewer returns a PR summary"},
+  {id:"m3", who:"you", t:"Clean up", do:"Delete the subscription AND the repo webhook it created.", cmd:"curl -s -X DELETE http://localhost:8100/api/events/subscriptions/<ID>\n# then remove the webhook in {{REPO}} → Settings → Webhooks", exp:"0 subscriptions; 0 webhooks on {{REPO}}"},
+]},
+{s:"N · Webhook — pinned + routed", d:"The generic inbound endpoint. Pinned = you name the agent; routed = the concierge picks it.", items:[
+  {id:"n1", who:"you", t:"Pinned · monitoring alert", agent:"incident_triage",
+   cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/monitoring?deliver_to=slack&target={{SLACK}}\" -H 'content-type: application/json' \\\n -d '{\"alert\":\"HighCPU\",\"service\":\"checkout-api\",\"value\":\"97%\",\"threshold\":\"85%\"}'", exp:"a P1 triage lands in #eda-test"},
+  {id:"n2", who:"you", t:"Pinned · CI failure", agent:"incident_triage",
+   cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/ci?deliver_to=slack&target={{SLACK}}\" -H 'content-type: application/json' \\\n -d '{\"event\":\"build.failed\",\"repo\":\"{{REPO}}\",\"status\":\"failed\",\"job\":\"unit-tests\"}'", exp:"the same worker triages a non-alert shape"},
+  {id:"n3", who:"you", t:"Pinned · lead form", agent:"incident_triage",
+   cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/leads?deliver_to=slack&target={{SLACK}}\" -H 'content-type: application/json' \\\n -d '{\"name\":\"Dana Lee\",\"email\":\"dana@acme.io\",\"company\":\"Acme\",\"message\":\"enterprise pricing for 200 seats\"}'", exp:"triaged into #eda-test"},
+  {id:"n4", who:"you", t:"Routed · PR → pr_reviewer", agent:"(auto-routed)",
+   cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/x?route=1\" -H 'content-type: application/json' \\\n -d '{\"pull_request\":{\"title\":\"Refactor auth\",\"diff\":\"def login(u,p): return check(u,p)\",\"additions\":40}}'", exp:"response shows agent = pr_reviewer"},
+  {id:"n5", who:"you", t:"Routed · dispute → incident_triage", agent:"(auto-routed)",
+   cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/stripe?route=1\" -H 'content-type: application/json' \\\n -d '{\"type\":\"charge.dispute.created\",\"amount\":48000,\"reason\":\"fraudulent\"}'", exp:"response shows agent = incident_triage"},
+]},
+{s:"O · Teardown / hand-off", d:"", items:[
+  {id:"o1", who:"you", t:"Stop (keep data)", do:"Stop both services; keep AP connections + armed flows.", cmd:"make stop", exp:"both down; data intact"},
+  {id:"o2", who:"you", t:"Hand-off note", do:"For the next tester: after a nuke they must reconnect Gmail + GitHub (browser) and paste a fresh Box token. Everything else is `make`.", exp:"noted"},
+]},
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+const LS="cuga-checklist-v1", LSC="cuga-checklist-cfg-v1";
+let state=JSON.parse(localStorage.getItem(LS)||"{}");
+let cfg=JSON.parse(localStorage.getItem(LSC)||"{}");
+function saveState(){localStorage.setItem(LS,JSON.stringify(state));}
+function saveCfg(){localStorage.setItem(LSC,JSON.stringify(cfg));}
+function sub(s){return (s||"").replace(/\{\{(\w+)\}\}/g,(m,k)=>cfg[k]||m);}
+function esc(s){return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+const allItems=DATA.flatMap(s=>s.items);
+
+// config inputs
+document.querySelectorAll('[data-cfg]').forEach(inp=>{
+  const k=inp.dataset.cfg;
+  if(cfg[k]!==undefined) inp.value=cfg[k]; else cfg[k]=inp.value;
+  inp.addEventListener('input',()=>{cfg[k]=inp.value;saveCfg();render();});
+});
+saveCfg();
+
+function setStatus(id,st){
+  const cur=state[id]||{};
+  cur.st = (cur.st===st? "" : st);
+  state[id]=cur; saveState(); render();
+}
+function setNote(id,v){state[id]=state[id]||{};state[id].note=v;saveState();updateProgress();}
+
+function render(){
+  const host=document.getElementById('list');
+  host.innerHTML=DATA.map(sec=>{
+    const rows=sec.items.map(it=>{
+      const st=(state[it.id]||{}).st||"";
+      const note=(state[it.id]||{}).note||"";
+      const whoCls=it.who==='you'?'who-you':'who-test';
+      const whoTxt=it.who==='you'?'operator':'verify';
+      const cmd=it.cmd?`<pre class="cmd"><button class="cp" onclick="cpFrom(this)">copy</button>${esc(sub(it.cmd))}</pre>`:"";
+      const utt=it.utt?`<div class="utt" onclick="cp(this.dataset.u,this)" data-u="${esc(sub(it.utt))}">${esc(sub(it.utt))}</div>`:"";
+      const doo=it.do?`<div class="do">${esc(sub(it.do))}</div>`:"";
+      return `<div class="item ${st} ${note?'has-note':''}" id="row-${it.id}">
+        <div class="top">
+          <div class="num">${it.id.toUpperCase()}</div>
+          <div class="body">
+            <div class="t">${esc(it.t)}${it.agent?`<span class="agent">${esc(it.agent)}</span>`:""}<span class="who ${whoCls}">${whoTxt}</span></div>
+            ${doo}${utt}${cmd}
+            ${it.exp?`<div class="exp">expect: <b>${esc(sub(it.exp))}</b></div>`:""}
+            <div class="sbtns">
+              <button class="sb pass ${st==='pass'?'on':''}" onclick="setStatus('${it.id}','pass')">✓ pass</button>
+              <button class="sb fail ${st==='fail'?'on':''}" onclick="setStatus('${it.id}','fail')">✗ fail</button>
+              <button class="sb skip ${st==='skip'?'on':''}" onclick="setStatus('${it.id}','skip')">– skip</button>
+              <button class="sb" onclick="document.getElementById('row-${it.id}').classList.toggle('has-note');const n=document.getElementById('note-${it.id}');if(n)n.focus();">note</button>
+            </div>
+            <textarea class="note" id="note-${it.id}" placeholder="note (saved)" oninput="setNote('${it.id}',this.value)">${esc(note)}</textarea>
+          </div>
+        </div></div>`;
+    }).join('');
+    const done=sec.items.filter(i=>(state[i.id]||{}).st==='pass').length;
+    const fail=sec.items.filter(i=>(state[i.id]||{}).st==='fail').length;
+    const pill = fail? `<span class="pill pill-part">${fail} fail</span>` : (done===sec.items.length? `<span class="pill pill-ok">done</span>` : `<span class="pill pill-none">${done}/${sec.items.length}</span>`);
+    const open = fail>0 || done<sec.items.length ? 'open' : '';
+    return `<details class="sec" ${open}><summary>${esc(sec.s)} ${pill}<span class="cnt">${done}/${sec.items.length} pass</span></summary>
+      ${sec.d?`<div class="secdesc">${esc(sub(sec.d))}</div>`:""}${rows}</details>`;
+  }).join('');
+  updateProgress();
+}
+function updateProgress(){
+  const n=allItems.length;
+  const p=allItems.filter(i=>(state[i.id]||{}).st==='pass').length;
+  const f=allItems.filter(i=>(state[i.id]||{}).st==='fail').length;
+  const s=allItems.filter(i=>(state[i.id]||{}).st==='skip').length;
+  const bar=document.getElementById('prog');
+  bar.children[0].style.width=(100*p/n)+'%';
+  bar.children[1].style.width=(100*f/n)+'%';
+  bar.children[2].style.width=(100*s/n)+'%';
+  document.getElementById('stat').textContent=`${p} pass · ${f} fail · ${s} skip · ${n-p-f-s} left  (of ${n})`;
+}
+function expandAll(v){document.querySelectorAll('details.sec').forEach(d=>d.open=v);}
+function resetAll(){if(confirm('Clear all statuses and notes on this machine?')){state={};saveState();render();}}
+function cp(text,el){navigator.clipboard.writeText(text).then(()=>{const o=el.style.background;el.style.background='#defbe6';setTimeout(()=>el.style.background=o,500);});}
+function cpFrom(btn){const pre=btn.parentElement;const t=pre.innerText.replace(/^copy\n?/,'');navigator.clipboard.writeText(t).then(()=>{btn.textContent='copied';setTimeout(()=>btn.textContent='copy',900);});}
+function copyReport(){
+  const lines=[`CUGA Events — acceptance report`,
+    `tester: ${cfg.TESTER||'?'}   machine: ${cfg.MACHINE||'?'}`,
+    `public: ${cfg.PUBLIC||'?'}`,``];
+  DATA.forEach(sec=>{
+    lines.push(`## ${sec.s}`);
+    sec.items.forEach(it=>{
+      const s=(state[it.id]||{});
+      const mark={pass:'[x]',fail:'[FAIL]',skip:'[skip]'}[s.st]||'[ ]';
+      lines.push(`  ${mark} ${it.id.toUpperCase()} ${it.t}${it.agent?' ('+it.agent+')':''}${s.note?'  — '+s.note:''}`);
+    });
+    lines.push('');
+  });
+  const p=allItems.filter(i=>(state[i.id]||{}).st==='pass').length;
+  const f=allItems.filter(i=>(state[i.id]||{}).st==='fail').length;
+  lines.splice(3,0,`result: ${p} pass · ${f} fail · of ${allItems.length}`,'');
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>alert('Report copied to clipboard — paste it into the hand-off doc.'));
+}
+render();
+</script>
+</body>
+</html>
