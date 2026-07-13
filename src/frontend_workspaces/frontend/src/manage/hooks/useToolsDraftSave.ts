@@ -44,6 +44,7 @@ export function useToolsDraftSave(opts: {
               Object.entries(data.tool_errors as Record<string, { error?: string; message?: string }>).forEach(
                 ([toolName, err]) => addToast("warning", `Tool: ${toolName}`, err?.error || err?.message || "Unknown error"),
               );
+              addToast("info", "Draft saved with warnings", "Some tools failed to load");
             } else {
               addToast("success", "Draft saved", "Tools saved to draft");
             }

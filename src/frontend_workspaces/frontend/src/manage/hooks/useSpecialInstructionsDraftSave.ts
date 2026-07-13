@@ -32,15 +32,13 @@ export function useSpecialInstructionsDraftSave(opts: {
         if (res.ok) {
           setCurrentVersion("draft");
           if (showToast) addToast("success", "Draft saved", "Special instructions saved to draft");
-        } else if (showToast) {
+        } else {
           addToast("error", "Draft Save Failed", `Failed to save (${res.status} ${res.statusText})`);
         }
       } catch (err) {
         if (isAbortError(err)) return;
-        if (showToast) {
-          setDraftSaving(false);
-          addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
-        }
+        if (showToast) setDraftSaving(false);
+        addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
       }
     },
     [effectiveAgentId, addToast, setCurrentVersion, setDraftSaving],

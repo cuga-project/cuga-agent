@@ -68,6 +68,7 @@ export function useKnowledgeDraftSave(opts: {
   } = opts;
 
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
+  const [saveAttempt, setSaveAttempt] = useState(0);
   const knowledgeAbortRef = useRef<AbortController | null>(null);
 
   const isSavingFamily =
@@ -106,7 +107,7 @@ export function useKnowledgeDraftSave(opts: {
       clearTimeout(slow);
       clearTimeout(fail);
     };
-  }, [isSavingFamily]);
+  }, [isSavingFamily, saveAttempt]);
 
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
@@ -126,6 +127,7 @@ export function useKnowledgeDraftSave(opts: {
     const t = setTimeout(async () => {
       if (knowledgeAbortRef.current !== ac) return;
       setDraftSaveStatus({ kind: "saving" });
+      setSaveAttempt((n) => n + 1);
       try {
         const res = await api.patchManageConfigDraftKnowledge(
           knowledgeConfig,

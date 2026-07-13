@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../../api";
-import type { AddToast } from "./saveHelpers";
+import { isAbortError, type AddToast } from "./saveHelpers";
 import type { DraftSaveStatus } from "./useKnowledgeDraftSave";
 
 type LiveKnowledge = {
@@ -56,6 +56,27 @@ export function usePublishConfig(opts: {
   } = opts;
 
   const [showReindexConfirm, setShowReindexConfirm] = useState(false);
+  const publishAbortRef = useRef<AbortController | null>(null);
+  const reindexPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reindexTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearReindexTimers = useCallback(() => {
+    if (reindexPollRef.current) {
+      clearInterval(reindexPollRef.current);
+      reindexPollRef.current = null;
+    }
+    if (reindexTimeoutRef.current) {
+      clearTimeout(reindexTimeoutRef.current);
+      reindexTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      publishAbortRef.current?.abort();
+      clearReindexTimers();
+    };
+  }, [clearReindexTimers]);
 
   const saveConfig = useCallback(async () => {
     setShowReindexConfirm(false);
@@ -64,14 +85,20 @@ export function usePublishConfig(opts: {
       return;
     }
     setSaveStatus("saving");
+    publishAbortRef.current?.abort();
+    clearReindexTimers();
+    const ac = new AbortController();
+    publishAbortRef.current = ac;
     try {
       let toSave = assembleConfig();
       if (!toSave.policies) {
         toSave = { ...toSave, policies: { enablePolicies: true, policies: [] } };
       }
-      const res = await api.postManageConfig(toSave, effectiveAgentId);
+      const res = await api.postManageConfig(toSave, effectiveAgentId, ac.signal);
+      if (ac.signal.aborted) return;
       if (res.ok) {
         const data = await res.json();
+        if (ac.signal.aborted) return;
 
         const hasPartialErrors = data.status === "partial" && data.tool_errors;
 
@@ -110,12 +137,15 @@ export function usePublishConfig(opts: {
             await new Promise<void>((resolve) => {
               let polling = false;
               const cleanup = () => {
-                clearInterval(pollInterval);
-                clearTimeout(timeoutId);
+                clearReindexTimers();
                 resolve();
               };
 
-              const pollInterval = setInterval(async () => {
+              reindexPollRef.current = setInterval(async () => {
+                if (ac.signal.aborted) {
+                  cleanup();
+                  return;
+                }
                 if (polling) return;
                 polling = true;
                 try {
@@ -127,6 +157,10 @@ export function usePublishConfig(opts: {
                         .catch(() => ({ status: "unknown" })),
                     ),
                   );
+                  if (ac.signal.aborted) {
+                    cleanup();
+                    return;
+                  }
                   const completed = statuses.filter((t: { status?: string }) => t.status === "completed").length;
                   const failed = statuses.filter((t: { status?: string }) => t.status === "failed").length;
 
@@ -141,6 +175,7 @@ export function usePublishConfig(opts: {
                       .listKnowledgeDocuments()
                       .then((r) => (r.ok ? r.json() : null))
                       .then((d) => {
+                        if (ac.signal.aborted) return;
                         if (d) setKnowledgeDocCount(d.documents?.length ?? 0);
                       })
                       .catch(() => {});
@@ -152,8 +187,9 @@ export function usePublishConfig(opts: {
                 }
               }, 2000);
 
-              const timeoutId = setTimeout(() => {
+              reindexTimeoutRef.current = setTimeout(() => {
                 cleanup();
+                if (ac.signal.aborted) return;
                 addToast("warning", "Re-index timeout", "Still running. Check knowledge health.");
               }, 300000);
             });
@@ -161,6 +197,8 @@ export function usePublishConfig(opts: {
         } else if (data.reindex && data.reindex.status === "busy") {
           addToast("warning", "Re-index deferred", "Uploads in progress. Re-publish after uploads complete.");
         }
+
+        if (ac.signal.aborted) return;
 
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
@@ -186,7 +224,10 @@ export function usePublishConfig(opts: {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
         loadHistory();
-        setTimeout(() => setSaveStatus("idle"), 2000);
+        setTimeout(() => {
+          if (ac.signal.aborted) return;
+          setSaveStatus("idle");
+        }, 2000);
       } else {
         let errorMsg = `Failed to save configuration (${res.status} ${res.statusText})`;
         try {
@@ -198,13 +239,20 @@ export function usePublishConfig(opts: {
 
         setSaveStatus("error");
         addToast("error", "Save Failed", errorMsg);
-        setTimeout(() => setSaveStatus("idle"), 2000);
+        setTimeout(() => {
+          if (ac.signal.aborted) return;
+          setSaveStatus("idle");
+        }, 2000);
       }
     } catch (error) {
+      if (isAbortError(error) || ac.signal.aborted) return;
       const errorMsg = error instanceof Error ? error.message : "Network error occurred";
       setSaveStatus("error");
       addToast("error", "Network Error", errorMsg);
-      setTimeout(() => setSaveStatus("idle"), 2000);
+      setTimeout(() => {
+        if (ac.signal.aborted) return;
+        setSaveStatus("idle");
+      }, 2000);
     }
   }, [
     agentName,
@@ -220,6 +268,7 @@ export function usePublishConfig(opts: {
     setDraftSaveStatus,
     refreshKnowledgeHealth,
     loadHistory,
+    clearReindexTimers,
   ]);
 
   const handleSaveClick = useCallback(() => {

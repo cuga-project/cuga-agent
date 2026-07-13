@@ -1,6 +1,6 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import * as api from "../../api";
-import type { AddToast } from "./saveHelpers";
+import { isAbortError, type AddToast } from "./saveHelpers";
 
 export function useFullDraftSave(opts: {
   assembleConfig: (overrides?: object) => object;
@@ -21,15 +21,28 @@ export function useFullDraftSave(opts: {
     refreshKnowledgeHealth,
   } = opts;
 
+  const fullSaveAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      fullSaveAbortRef.current?.abort();
+    };
+  }, []);
+
   const performDraftSave = useCallback(
     async (partial?: object) => {
       const toSave = partial ? { ...assembleConfig(), ...partial } : assembleConfig();
       setDraftSaving(true);
+      fullSaveAbortRef.current?.abort();
+      const ac = new AbortController();
+      fullSaveAbortRef.current = ac;
       try {
-        const res = await api.postManageConfigDraft(toSave, effectiveAgentId);
+        const res = await api.postManageConfigDraft(toSave, effectiveAgentId, ac.signal);
+        if (ac.signal.aborted) return;
         setDraftSaving(false);
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
+          if (ac.signal.aborted) return;
           setCurrentVersion("draft");
           const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
           if (hasPartialErrors) {
@@ -55,6 +68,7 @@ export function useFullDraftSave(opts: {
           addToast("error", "Draft Save Failed", errorMsg);
         }
       } catch (error) {
+        if (isAbortError(error)) return;
         setDraftSaving(false);
         const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
         addToast("error", "Draft Save Failed", errorMsg);
