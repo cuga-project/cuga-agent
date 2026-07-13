@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime, pop_spawn_future
 
 
 class SpawnAgentInput(BaseModel):
@@ -20,7 +20,9 @@ class SpawnAgentInput(BaseModel):
         ),
         max_length=4000,
     )
-    mode: str = Field(default="sync", description="'sync' waits for result; 'async' returns a future_id")
+    mode: Literal["sync", "async"] = Field(
+        default="sync", description="'sync' waits for result; 'async' returns a future_id"
+    )
     share_workspace: bool = Field(
         default=False,
         description=(
@@ -44,7 +46,11 @@ def create_spawn_tools(
 ) -> list[StructuredTool]:
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
-    async def spawn_agent(task: str = "", mode: str = "sync", share_workspace: bool = False) -> str:
+    parent_thread_id = (parent_config or {}).get("configurable", {}).get("thread_id", "") or ""
+
+    async def spawn_agent(
+        task: str = "", mode: Literal["sync", "async"] = "sync", share_workspace: bool = False
+    ) -> str:
         rt = SpawnAgentRuntime.from_parent(
             parent_config,
             spawn_futures_ref=spawn_futures,
@@ -58,13 +64,20 @@ def create_spawn_tools(
     async def get_agent_result(future_id: str, timeout: float = 60.0) -> str:
         if future_id not in spawn_futures:
             return f"Unknown future_id: {future_id!r}"
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
             entry = spawn_futures[future_id]
             if entry["status"] == "done":
-                return entry.get("result") or ""
+                result = entry.get("result") or ""
+                pop_spawn_future(parent_thread_id, future_id)
+                spawn_futures.pop(future_id, None)
+                return result
             if entry["status"] == "error":
-                return f"[SpawnError] {entry.get('error', 'unknown error')}"
+                err = f"[SpawnError] {entry.get('error', 'unknown error')}"
+                pop_spawn_future(parent_thread_id, future_id)
+                spawn_futures.pop(future_id, None)
+                return err
             await asyncio.sleep(0.5)
         return f"[SpawnTimeout] Agent {future_id!r} did not complete within {timeout}s"
 

@@ -672,15 +672,13 @@ class LLMManager:
         return _DEFAULT_LLM_HTTP_TIMEOUT
 
     def _is_reasoning_model(self, model_name: str) -> bool:
-        """Check if model is a reasoning model that doesn't support temperature overrides.
+        """Check if model is a reasoning model that doesn't support temperature
 
-        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature.
-        Claude models use extended thinking (temperature must stay at 1.0) and must not
-        be overridden to 0.1 by _update_model_parameters.
+        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature parameter
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5', 'claude-')
+        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
         return model_name.startswith(reasoning_prefixes)
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
@@ -748,13 +746,6 @@ class LLMManager:
                     openai_params["top_p"] = model_settings['top_p']
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
-                if model_name.startswith('claude-'):
-                    configured_budget = model_settings.get("thinking_budget_tokens")
-                    budget = int(configured_budget) if configured_budget else max(1024, int(max_tokens * 0.6))
-                    openai_params["model_kwargs"] = {
-                        "extra_body": {"thinking": {"type": "enabled", "budget_tokens": budget}}
-                    }
-                    logger.debug(f"Enabling Claude thinking via proxy: budget_tokens={budget}")
 
             auth_headers = self._get_auth_headers(model_settings, platform)
             if auth_headers:
@@ -844,8 +835,6 @@ class LLMManager:
                 "max_tokens": max_tokens,
                 "model": model_name,
                 "seed": 42,
-                "timeout": http_timeout,
-                "max_retries": 2,
                 "default_headers": {"RITS_API_KEY": api_key} if api_key else None,
             }
             if not is_reasoning:

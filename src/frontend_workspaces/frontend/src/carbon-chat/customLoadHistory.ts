@@ -139,12 +139,15 @@ async function customLoadHistory(
           try { subAgentData = typeof actualData === "string" ? JSON.parse(actualData) : (actualData || {}); } catch { /* ignore */ }
 
           const agentName = subAgentData.agent_name || "sub-agent";
-          const agentLabel = `Sub-Agent: ${agentName}`;
+          const spawnKey = subAgentData.spawn_id || agentName;
+          const agentLabel = subAgentData.spawn_id
+            ? `Sub-Agent: ${agentName} (${String(subAgentData.spawn_id).slice(0, 12)})`
+            : `Sub-Agent: ${agentName}`;
 
-          if (!subAgentAccumulators.has(agentName)) {
-            subAgentAccumulators.set(agentName, []);
+          if (!subAgentAccumulators.has(spawnKey)) {
+            subAgentAccumulators.set(spawnKey, []);
           }
-          const iterations = subAgentAccumulators.get(agentName)!;
+          const iterations = subAgentAccumulators.get(spawnKey)!;
 
           let newIteration: { title: string; content: string } | null = null;
           if (subAgentData.type === "start") {

@@ -304,22 +304,25 @@ export async function customSendMessage(
           try { subAgentData = typeof event.data === "string" ? JSON.parse(event.data) : (event.data || {}); } catch { /* ignore */ }
 
           const agentName = subAgentData.agent_name || "sub-agent";
-          const agentLabel = `Sub-Agent: ${agentName}`;
+          const spawnKey = subAgentData.spawn_id || agentName;
+          const agentLabel = subAgentData.spawn_id
+            ? `Sub-Agent: ${agentName} (${String(subAgentData.spawn_id).slice(0, 12)})`
+            : `Sub-Agent: ${agentName}`;
 
           // Switching to a different sub-agent or entering for the first time — flush pending step
-          if (currentSubAgentName !== agentName) {
+          if (currentSubAgentName !== spawnKey) {
             if (currentStepTitle && currentStepContent) {
               collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
               currentStepTitle = "";
               currentStepContent = "";
             }
-            currentSubAgentName = agentName;
-            if (!subAgentAccumulators.has(agentName)) {
-              subAgentAccumulators.set(agentName, []);
+            currentSubAgentName = spawnKey;
+            if (!subAgentAccumulators.has(spawnKey)) {
+              subAgentAccumulators.set(spawnKey, []);
             }
           }
 
-          const iterations = subAgentAccumulators.get(agentName)!;
+          const iterations = subAgentAccumulators.get(spawnKey)!;
           let newIteration: { title: string; content: string } | null = null;
 
           if (subAgentData.type === "start") {

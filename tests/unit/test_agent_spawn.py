@@ -217,6 +217,8 @@ def test_agents_prompt_warns_against_nested_fstrings_for_spawn_task():
     assert "triple quotes" in prompt
     assert "Inspect results before follow-up" in prompt
     assert "share_workspace" in prompt
+    assert "Named agent" not in prompt
+    assert 'name="<agent_name>"' not in prompt
 
 
 # ── Phase 6: Graph Closure (spawn_futures ref) ─────────────────────────────
@@ -319,14 +321,41 @@ def test_set_event_callback_and_emit():
     from cuga.backend.agent_spawn import runtime
 
     events: list = []
-    runtime.set_event_callback(lambda name, data: events.append((name, data)))
+    token = runtime.set_event_callback(lambda name, data: events.append((name, data)))
     try:
         runtime._emit("SpawnAgent", {"agent_name": "x"})
         assert len(events) == 1
         assert events[0][0] == "SpawnAgent"
         assert events[0][1]["agent_name"] == "x"
     finally:
-        runtime.set_event_callback(None)
+        runtime.reset_event_callback(token)
+
+
+@pytest.mark.asyncio
+async def test_event_callbacks_are_isolated_across_concurrent_contexts():
+    """Regression: concurrent sessions must not share one process-global callback."""
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime
+
+    q_a: asyncio.Queue = asyncio.Queue()
+    q_b: asyncio.Queue = asyncio.Queue()
+
+    async def session(label: str, queue: asyncio.Queue):
+        token = runtime.set_event_callback(lambda name, data: queue.put_nowait((label, name, data)))
+        try:
+            await asyncio.sleep(0.01)  # overlap with the other session
+            runtime._emit("SpawnAgent", {"agent_name": label})
+            await asyncio.sleep(0.01)
+        finally:
+            runtime.reset_event_callback(token)
+
+    await asyncio.gather(session("A", q_a), session("B", q_b))
+
+    assert q_a.qsize() == 1
+    assert q_b.qsize() == 1
+    assert q_a.get_nowait()[0] == "A"
+    assert q_b.get_nowait()[0] == "B"
 
 
 @pytest.mark.asyncio
@@ -337,7 +366,7 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
     rt = SpawnAgentRuntime([])
 
     events: list = []
-    runtime.set_event_callback(lambda name, data: events.append((name, data)))
+    token = runtime.set_event_callback(lambda name, data: events.append((name, data)))
 
     async def _fake_run_stream(agent, task, thread_id, cfg, spawn_id=""):
         return "mocked-answer"
@@ -352,8 +381,10 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
         names = [e[0] for e in events]
         assert "SpawnAgent" in names
         assert "SpawnAgentResult" in names
+        spawn = next(e for e in events if e[0] == "SpawnAgent")
+        assert spawn[1]["spawn_id"]
     finally:
-        runtime.set_event_callback(None)
+        runtime.reset_event_callback(token)
 
 
 def test_build_agent_returns_fresh_instance_each_call(monkeypatch):
@@ -385,7 +416,7 @@ async def test_forward_sync_subagent_events_includes_subagent_key(monkeypatch):
     rt = SpawnAgentRuntime([])
 
     events: list = []
-    runtime.set_event_callback(lambda name, data: events.append((name, data)))
+    token = runtime.set_event_callback(lambda name, data: events.append((name, data)))
 
     class FakeAgent:
         async def stream(self, task, thread_id, config):
@@ -398,7 +429,49 @@ async def test_forward_sync_subagent_events_includes_subagent_key(monkeypatch):
         assert len(code_agent_events) == 1
         assert code_agent_events[0][1]["subagent"] == "SubCuga"
     finally:
-        runtime.set_event_callback(None)
+        runtime.reset_event_callback(token)
+
+
+def test_thread_spawn_futures_are_isolated_per_thread():
+    from cuga.backend.agent_spawn.runtime import clear_runtime_caches, thread_spawn_futures
+
+    clear_runtime_caches()
+    try:
+        a = thread_spawn_futures("thread-a")
+        b = thread_spawn_futures("thread-b")
+        a["f1"] = {"status": "running"}
+        assert "f1" not in b
+        assert thread_spawn_futures("thread-a") is a
+    finally:
+        clear_runtime_caches()
+
+
+@pytest.mark.asyncio
+async def test_execute_emits_error_event_on_failure(monkeypatch):
+    from cuga.backend.agent_spawn import runtime
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
+    rt = SpawnAgentRuntime([])
+    events: list = []
+    token = runtime.set_event_callback(lambda name, data: events.append((name, data)))
+
+    monkeypatch.setattr(rt, "_build_agent", lambda tools: object())
+    monkeypatch.setattr(rt, "_build_invoke_config", lambda workspace_thread_id="": {})
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("subagent crashed")
+
+    monkeypatch.setattr(rt, "_run_stream", _boom)
+    monkeypatch.setattr("cuga.backend.agent_spawn.runtime.set_session_attribute", lambda sid: None)
+
+    try:
+        result = await rt.execute("task")
+        assert "[SpawnError]" in result
+        results = [e for e in events if e[0] == "SpawnAgentResult"]
+        assert len(results) == 1
+        assert results[0][1]["status"] == "error"
+    finally:
+        runtime.reset_event_callback(token)
 
 
 # ── Phase 10: Observability (Langfuse + OTEL) ──────────────────────────────

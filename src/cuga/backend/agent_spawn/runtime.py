@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 from langchain_core.tools import StructuredTool
@@ -19,7 +19,13 @@ from cuga.config import settings
 
 _spawn_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_spawn_depth", default=0)
 
+# Per-request emit callback — ContextVar so concurrent AgentLoop streams never share one global.
+_event_callback: contextvars.ContextVar[Optional[Callable[[str, dict], None]]] = contextvars.ContextVar(
+    "_event_callback", default=None
+)
+
 # Tools that should never be passed down to subagents (would cause recursion or confusion).
+# Children that may nest get spawn tools re-injected in prepare_node when depth allows.
 _SPAWN_INTERNAL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "spawn_agent",
@@ -36,29 +42,90 @@ _SUBAGENT_SPECIAL_INSTRUCTIONS = (
     "No preamble, no markdown fencing, no offers to help further."
 )
 
-_event_callback: Optional[Callable[[str, dict], None]] = None
+# Per-parent-thread async future store + task tracking (graph is process-wide).
+_futures_by_thread: Dict[str, Dict[str, Any]] = {}
+_tasks_by_thread: Dict[str, Set[asyncio.Task]] = {}
 
 
-def set_event_callback(cb: Optional[Callable[[str, dict], None]]) -> None:
-    global _event_callback
-    _event_callback = cb
+def set_event_callback(cb: Optional[Callable[[str, dict], None]]) -> contextvars.Token:
+    """Install a per-context spawn event callback. Returns a token for reset_event_callback."""
+    return _event_callback.set(cb)
+
+
+def reset_event_callback(token: contextvars.Token) -> None:
+    _event_callback.reset(token)
 
 
 def _emit(event_name: str, data: dict) -> None:
-    if _event_callback:
+    cb = _event_callback.get()
+    if cb:
         try:
-            _event_callback(event_name, data)
+            cb(event_name, data)
         except Exception:
             pass  # never let event emission crash the agent
 
 
-# Shared future store: future_id → {"status": "running"|"done"|"error", "result": str|None, "error": str|None}
-_spawn_futures: Dict[str, Any] = {}
+def thread_spawn_futures(thread_id: str) -> Dict[str, Any]:
+    """Return the mutable futures map for a parent conversation thread."""
+    key = thread_id or "_default"
+    return _futures_by_thread.setdefault(key, {})
 
 
-def clear_runtime_caches() -> None:
-    """No-op kept for callers/tests. Agents are never cached across spawns."""
-    return
+def pop_spawn_future(thread_id: str, future_id: str) -> None:
+    store = _futures_by_thread.get(thread_id or "_default")
+    if store is not None:
+        store.pop(future_id, None)
+        if not store:
+            _futures_by_thread.pop(thread_id or "_default", None)
+
+
+def clear_runtime_caches(thread_id: Optional[str] = None) -> None:
+    """Clear spawn futures (and cancel tracked async tasks) for one thread or all."""
+    if thread_id is None:
+        for tid, tasks in list(_tasks_by_thread.items()):
+            for t in list(tasks):
+                t.cancel()
+            tasks.clear()
+        _tasks_by_thread.clear()
+        _futures_by_thread.clear()
+        return
+    key = thread_id or "_default"
+    for t in list(_tasks_by_thread.get(key, ())):
+        t.cancel()
+    _tasks_by_thread.pop(key, None)
+    _futures_by_thread.pop(key, None)
+
+
+def pending_spawn_tasks(thread_id: str) -> List[asyncio.Task]:
+    key = thread_id or "_default"
+    return [t for t in _tasks_by_thread.get(key, set()) if not t.done()]
+
+
+async def wait_pending_spawns(thread_id: str, timeout: float = 60.0) -> None:
+    """Await in-flight async spawns for this parent thread (best-effort)."""
+    pending = pending_spawn_tasks(thread_id)
+    if not pending:
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"agent_spawn: {len(pending_spawn_tasks(thread_id))} async spawn(s) still running "
+            f"after {timeout}s for thread={thread_id!r}"
+        )
+
+
+def _track_task(thread_id: str, task: asyncio.Task) -> None:
+    key = thread_id or "_default"
+    bucket = _tasks_by_thread.setdefault(key, set())
+    bucket.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        bucket.discard(t)
+        if not bucket:
+            _tasks_by_thread.pop(key, None)
+
+    task.add_done_callback(_done)
 
 
 class SpawnAgentRuntime:
@@ -70,9 +137,11 @@ class SpawnAgentRuntime:
     ) -> None:
         self._parent_structured_tools = parent_structured_tools
         self._parent_config = parent_config or {}
-        self._spawn_futures: Dict[str, Any] = (
-            spawn_futures_ref if spawn_futures_ref is not None else _spawn_futures
-        )
+        # Prefer explicit ref (tests); else per-parent-thread store.
+        if spawn_futures_ref is not None:
+            self._spawn_futures: Dict[str, Any] = spawn_futures_ref
+        else:
+            self._spawn_futures = thread_spawn_futures(self._parent_thread_id())
 
     @classmethod
     def from_parent(
@@ -81,11 +150,10 @@ class SpawnAgentRuntime:
         spawn_futures_ref: Optional[Dict[str, Any]] = None,
         parent_structured_tools: Optional[List[StructuredTool]] = None,
     ) -> "SpawnAgentRuntime":
-        """Create a runtime that inherits all parent tools with a fresh context.
+        """Create a runtime that inherits parent tools with a fresh context.
 
-        The "fresh eyes" pattern: a skill instructs CUGA to delegate via natural
-        language (e.g. "⚠️ USE SUBAGENTS") without requiring a predefined AGENT.md.
-        Spawn/skill meta-tools are filtered out to prevent recursive spawning.
+        Spawn/skill meta-tools are filtered out; nesting re-injects spawn tools
+        in the child's prepare_node when depth allows.
         """
         filtered = [t for t in (parent_structured_tools or []) if t.name not in _SPAWN_INTERNAL_TOOL_NAMES]
         return cls(filtered, parent_config, spawn_futures_ref)
@@ -154,6 +222,9 @@ class SpawnAgentRuntime:
         if depth >= max_depth:
             return f"[SpawnError] max_spawn_depth={max_depth} exceeded"
 
+        if not spawn_id:
+            spawn_id = f"sync_{uuid4().hex[:8]}"
+
         tools = self._parent_structured_tools
         thread_id, workspace_thread_id = self._resolve_thread_ids(share_workspace)
         invoke_cfg = self._build_invoke_config(workspace_thread_id=workspace_thread_id)
@@ -166,7 +237,7 @@ class SpawnAgentRuntime:
             {
                 "agent_name": "SubCuga",
                 "task": task[:200],
-                "mode": "async" if spawn_id else "sync",
+                "mode": "sync" if spawn_id.startswith("sync_") else "async",
                 "thread_id": thread_id,
                 "workspace_thread_id": workspace_thread_id,
                 "share_workspace": bool(share_workspace and parent_thread_id),
@@ -175,9 +246,15 @@ class SpawnAgentRuntime:
         )
 
         token = _spawn_depth.set(depth + 1)
+        status = "success"
+        answer = ""
         try:
             agent = self._build_agent(tools)
             answer = await self._run_stream(agent, task, thread_id, invoke_cfg, spawn_id=spawn_id)
+        except Exception as e:
+            status = "error"
+            answer = f"[SpawnError] {e}"
+            logger.warning(f"agent_spawn: sync execute failed spawn_id={spawn_id}: {e}")
         finally:
             _spawn_depth.reset(token)
 
@@ -187,8 +264,8 @@ class SpawnAgentRuntime:
                 "agent_name": "SubCuga",
                 "thread_id": thread_id,
                 "workspace_thread_id": workspace_thread_id,
-                "status": "success",
-                "answer": answer[:500],
+                "status": status,
+                "answer": (answer or "")[:500],
                 "spawn_id": spawn_id,
             },
         )
@@ -201,7 +278,10 @@ class SpawnAgentRuntime:
 
         future_id = f"future_{uuid4().hex[:8]}"
         self._spawn_futures[future_id] = {"status": "running", "result": None, "error": None}
-        asyncio.create_task(self._execute_and_store(future_id, task, share_workspace=share_workspace))
+        task_obj = asyncio.create_task(
+            self._execute_and_store(future_id, task, share_workspace=share_workspace)
+        )
+        _track_task(parent_thread_id, task_obj)
         return future_id
 
     async def _execute_and_store(self, future_id: str, task: str, share_workspace: bool = False) -> None:
@@ -211,3 +291,12 @@ class SpawnAgentRuntime:
         except Exception as e:
             logger.warning(f"agent_spawn: async execute failed for future_id={future_id}: {e}")
             self._spawn_futures[future_id] = {"status": "error", "result": None, "error": str(e)}
+            _emit(
+                "SpawnAgentResult",
+                {
+                    "agent_name": "SubCuga",
+                    "status": "error",
+                    "answer": str(e)[:500],
+                    "spawn_id": future_id,
+                },
+            )

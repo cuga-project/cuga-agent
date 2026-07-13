@@ -733,12 +733,13 @@ class AgentLoop:
 
         unified_queue: asyncio.Queue = asyncio.Queue()
         agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
+        cb_token = None
 
         def _on_spawn_event(name: str, data: dict) -> None:
             unified_queue.put_nowait((_SPAWN_TAG, name, data))
 
         if agent_spawn_enabled:
-            _spawn_runtime.set_event_callback(_on_spawn_event)
+            cb_token = _spawn_runtime.set_event_callback(_on_spawn_event)
 
         async def _feed_graph():
             exc_to_raise = None
@@ -788,9 +789,16 @@ class AgentLoop:
                     continue
                 yield event_msg.format()
 
-            # Drain any remaining spawn events after the graph finishes
-            while not unified_queue.empty():
-                item = unified_queue.get_nowait()
+            # Wait for fire-and-forget async spawns so late SubAgent events still
+            # reach this stream, then drain whatever is left (get_nowait, not empty()).
+            if agent_spawn_enabled:
+                await _spawn_runtime.wait_pending_spawns(self.thread_id, timeout=60.0)
+
+            while True:
+                try:
+                    item = unified_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
                 if item[0] == _SPAWN_TAG:
                     _, sname, sdata = item
                     spawn_evt = _spawn_to_stream_event(sname, sdata)
@@ -799,8 +807,8 @@ class AgentLoop:
 
             yield self.get_output(event)
         finally:
-            if agent_spawn_enabled:
-                _spawn_runtime.set_event_callback(None)
+            if cb_token is not None:
+                _spawn_runtime.reset_event_callback(cb_token)
             if not graph_task.done():
                 graph_task.cancel()
                 try:

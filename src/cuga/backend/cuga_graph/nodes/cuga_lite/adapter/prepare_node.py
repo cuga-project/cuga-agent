@@ -323,10 +323,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         )
         from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
 
-        _is_subagent = _agent_spawn_depth.get() > 0
-        _inherit_parent_tools = getattr(settings.agent_spawn, "inherit_parent_tools", True)
-        if _is_subagent and not _inherit_parent_tools:
-            skills_cfg_on = False
+        _spawn_depth_now = _agent_spawn_depth.get()
         _skill_callable_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
@@ -421,21 +418,29 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
 
         # ── agent_spawn: tool injection ────────────────────────────────────────────
-        # Inject spawn_agent + get_agent_result for parent agents, unless disabled.
-        # Done AFTER all tools are registered so subagents inherit the full parent set.
+        # Inject spawn_agent + get_agent_result when nesting is still allowed.
+        # Done AFTER all tools are registered so children always inherit the parent set.
         _agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
-        if not _is_subagent and _agent_spawn_enabled:
+        _max_spawn_depth = getattr(settings.agent_spawn, "max_spawn_depth", 2)
+        if _agent_spawn_enabled and _spawn_depth_now < _max_spawn_depth:
             from cuga.backend.agent_spawn import (
                 create_spawn_tools,
                 format_available_agents_block,
+                thread_spawn_futures,
             )
 
             _parent_structured_tools_for_subagent = (
                 list(tools_for_execution) + _skill_callable_tools + list(_runtime_bundle.prompt_tools)
             )
 
+            _spawn_thread_id = (
+                (config or {}).get("configurable", {}).get("thread_id")
+                or getattr(state, "thread_id", None)
+                or adapter._thread_id
+                or ""
+            )
             agent_spawn_tools = create_spawn_tools(
-                spawn_futures=adapter._spawn_futures,
+                spawn_futures=thread_spawn_futures(_spawn_thread_id),
                 parent_config=config,
                 parent_structured_tools=_parent_structured_tools_for_subagent,
             )
@@ -447,7 +452,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
             agents_prompt_section = format_available_agents_block()
             agents_enabled = True
-            logger.info("agent_spawn: injected spawn_agent + get_agent_result (ad-hoc SubCuga spawning)")
+            logger.info(
+                f"agent_spawn: injected spawn_agent + get_agent_result "
+                f"(depth={_spawn_depth_now}, max={_max_spawn_depth})"
+            )
         # ── end agent_spawn ────────────────────────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
