@@ -1,4 +1,6 @@
-from typing import Optional
+from typing import List, Optional
+
+from langchain_core.tools import BaseTool
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END, START
@@ -59,6 +61,12 @@ from cuga.backend.llm.models import LLMManager, create_llm_from_config
 from cuga.config import settings
 from loguru import logger
 
+from cuga.backend.cuga_graph.tooling import (
+    ToolMode,
+    ToolingProfile,
+    build_tooling_profile,
+)
+
 
 class DynamicAgentGraph:
     def __init__(
@@ -67,6 +75,9 @@ class DynamicAgentGraph:
         langfuse_handler=None,
         policy_system: Optional[PolicyConfigurable] = None,
         tool_provider: Optional[ToolProviderInterface] = None,
+        tool_mode: ToolMode = "internal",
+        external_tools: Optional[List[BaseTool]] = None,
+        tooling_profile: Optional[ToolingProfile] = None,
         cuga_folder: Optional[str] = None,
         filesystem_sync: Optional[bool] = None,
         enable_todos: Optional[bool] = None,
@@ -100,6 +111,11 @@ class DynamicAgentGraph:
         self.langfuse_handler = langfuse_handler
         self.policy_system = policy_system or PolicyConfigurable.get_instance()
         self.tool_provider = tool_provider
+        
+        self.tool_mode = tool_mode
+        self.external_tools = external_tools or []
+        self.tooling_profile = tooling_profile
+        
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
         self.filesystem_sync = (
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
@@ -177,7 +193,16 @@ class DynamicAgentGraph:
         # Create and add CugaLite subgraph.
         # Use provided tool provider or create default CombinedToolProvider,
         # then wrap it with ToolGuard at the provider boundary.
-        base_provider = self.tool_provider or CombinedToolProvider()
+        # Resolve the tool surface once at the graph composition root.
+        # Lower-level graph nodes consume the resolved provider/capabilities.
+        if self.tooling_profile is None:
+            self.tooling_profile = build_tooling_profile(
+                tool_mode=self.tool_mode,
+                tools=self.external_tools,
+                tool_provider=self.tool_provider,
+            )
+
+        base_provider = self.tooling_profile.base_tool_provider
         policy_storage = (
             self.policy_system.storage
             if self.policy_system is not None and hasattr(self.policy_system, "storage")
@@ -261,6 +286,7 @@ class DynamicAgentGraph:
             apps_list=apps_list,
             callbacks=[self.langfuse_handler] if self.langfuse_handler else None,
             model_settings=model_config,
+            tooling_profile=self.tooling_profile,
         )
 
         # Compile and add as a subgraph node
@@ -306,7 +332,7 @@ class DynamicAgentGraph:
                     logger.warning(f"Supervisor config file not found: {config_path}")
 
             # If no config or config failed, create default 3-agent setup
-            if not agents:
+            if (not agents and self.tooling_profile.capabilities.enable_supervisor_default_agents):
                 from cuga.sdk import CugaAgent
                 from langchain_core.tools import tool
 

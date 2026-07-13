@@ -123,6 +123,13 @@ from cuga.backend.cuga_graph.policy.models import (
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
+from cuga.backend.cuga_graph.tooling import (
+    ToolMode,
+    ToolingProfile,
+    build_tooling_profile,
+)
+
+
 llm_manager = LLMManager()
 
 
@@ -1594,6 +1601,8 @@ class CugaAgent:
         self,
         tools: Optional[List[BaseTool]] = None,
         tool_provider: Optional[ToolProviderInterface] = None,
+        tool_mode: ToolMode = "internal",
+        tooling_profile: Optional[ToolingProfile] = None,
         model: Optional[BaseChatModel] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         policy_system: Optional[PolicyConfigurable] = None,
@@ -1612,6 +1621,8 @@ class CugaAgent:
         Args:
             tools: List of LangChain tools (BaseTool or @tool decorated functions)
             tool_provider: Custom tool provider (overrides tools parameter)
+            tool_mode: Tooling mode. "internal" uses CUGA's default product tool surface. "external" uses only runtime tools supplied to this agent.
+            tooling_profile: Optional pre-resolved tooling profile. Advanced override.
             model: Language model to use (defaults to configured model)
             callbacks: List of callback handlers
             policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
@@ -1675,16 +1686,33 @@ class CugaAgent:
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
+        # Resolve the tool surface once at the SDK composition root.
+        # Lower-level nodes should consume the resolved profile/capabilities, not
+        # check tool_mode strings themselves.
+        self.tool_mode = tool_mode
+        self.tooling_profile = tooling_profile or build_tooling_profile(
+            tool_mode=tool_mode,
+            tools=tools,
+            tool_provider=tool_provider,
+        )
+
+        base_provider = self.tooling_profile.base_tool_provider
+
+        if tooling_profile is not None:
+            logger.info("Using provided ToolingProfile")
+        elif tool_provider is not None:
+            logger.info("Using custom tool provider through ToolingProfile")
+        elif tool_mode == "external":
+            logger.info(
+                "Using external tool mode with %d runtime tools",
+                len(tools or []),
+            )
+        elif tool_mode == "internal":
+            logger.info("Using internal tool mode")
+
+        # ToolGuard is installed immediately as a transparent provider-level decorator
+        # so create-agent-first, add-guard-later flows work.
         policy_storage = self._policy_system.storage if self._policy_system is not None else None
-        if tool_provider:
-            base_provider = tool_provider
-            logger.info("Using custom tool provider")
-        elif tools:
-            base_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
-            logger.info(f"Created DirectLangChainToolsProvider with {len(tools)} tools")
-        else:
-            base_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
-            logger.warning("No tools provided - agent will have limited capabilities")
 
         self.tool_provider = ensure_toolguard_provider(
             base_provider,
@@ -1821,6 +1849,12 @@ class CugaAgent:
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
             await self.tool_provider.initialize()
 
+        # External/strict profiles may disable CUGA knowledge completely.
+        # In that case, do not auto-inject knowledge tools into the runtime provider.
+        if not self.tooling_profile.capabilities.enable_knowledge:
+            self._knowledge_auto_injected = True
+            return
+
         # Auto-inject knowledge tools (lazy, once, deduplicated)
         if not self._knowledge_auto_injected:
             try:
@@ -1896,6 +1930,7 @@ class CugaAgent:
             thread_id=thread_id,
             callbacks=self._build_callbacks(),
             special_instructions=self._special_instructions,
+            tooling_profile=self.tooling_profile,
         )
         # Compile subgraph without checkpointer so it streams internal updates
         compiled_subgraph = cuga_lite_subgraph.compile()
@@ -2682,6 +2717,45 @@ class CugaAgent:
         """
         for tool in tools:
             self.add_tool(tool)
+
+
+    def set_external_tools(self, tools: List[BaseTool]) -> None:
+        """
+        Replace runtime tools for external mode.
+
+        This is intended for benchmark/integration scenarios where each task
+        provides a different tool surface, for example tau.
+        """
+        if self.tool_mode != "external":
+            raise ValueError(
+                "set_external_tools() is only supported in external tool mode. "
+                "For normal product usage, pass tools at construction time or use add_tool()."
+            )
+
+        base_provider = unwrap_tool_provider(self.tool_provider)
+
+        if not isinstance(base_provider, DirectLangChainToolsProvider):
+            raise ValueError(
+                "set_external_tools() requires the active provider to be a "
+                "DirectLangChainToolsProvider. If you supplied a custom provider, "
+                "update that provider directly."
+            )
+
+        base_provider.tools = tools or []
+        base_provider._validate_tools()
+        base_provider.initialized = False
+
+        invalidate_toolguard_provider(self.tool_provider)
+
+        # Force graph recreation so stale tool context cannot leak.
+        self._graph = None
+        self._compiled_graph = None
+
+        logger.info(
+            "Replaced external runtime tools with %d tools. "
+            "Graph will be recreated on next invocation.",
+            len(tools or []),
+        )
 
 
 class CugaSupervisor:

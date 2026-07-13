@@ -49,6 +49,24 @@ from cuga.backend.skills import (
 from cuga.config import settings
 
 
+def _cap_enabled(adapter: Any, capability_name: str, default: bool = True) -> bool:
+    """
+    Return whether a runtime tooling capability is enabled.
+
+    This function intentionally knows nothing about tool modes such as
+    "internal" or "external". The mode is resolved earlier into a
+    ToolingProfile, and this function only reads concrete capabilities.
+    """
+    tooling_profile = getattr(adapter, "_tooling_profile", None)
+    tooling_caps = getattr(tooling_profile, "capabilities", None)
+
+    if tooling_caps is None:
+        return default
+
+    return bool(getattr(tooling_caps, capability_name, default))
+
+
+
 def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -> Callable:
     async def prepare_tools_and_apps(state: Any, config: Optional[RunnableConfig] = None) -> Command:
         """Prepare tools, apps, and prompt once at the start of the graph.
@@ -85,10 +103,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             state.task_todos = None
 
         configurable = config.get("configurable", {}) if config else {}
-        enable_todos = (
+        enable_todos_setting = (
             configurable.get("enable_todos")
             if "enable_todos" in configurable
             else settings.advanced_features.enable_todos
+        )
+        enable_todos = bool(enable_todos_setting) and _cap_enabled(
+            adapter,
+            "enable_todos",
         )
         shortlisting_threshold = (
             configurable.get("shortlisting_tool_threshold")
@@ -201,7 +223,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 app_tools = await adapter._base_tool_provider.get_tools(app.name)
                 app_to_tools_map[app.name] = app_tools
 
-        enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
+        enable_find_tools = (
+            total_tool_count > shortlisting_threshold or _web_search_enabled()
+        ) and _cap_enabled(adapter, "enable_find_tools")
 
         if enable_find_tools:
             logger.info(
@@ -314,7 +338,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             part for part in (adapter._special_instructions, configurable_special) if part
         )
         _cfg_skills = _cfg.get("skills_enabled")
-        skills_cfg_on = _cfg_skills if _cfg_skills is not None else getattr(settings.skills, "enabled", False)
+        skills_cfg_on = (
+            _cfg_skills
+            if _cfg_skills is not None
+            else getattr(settings.skills, "enabled", False)
+        )
+        skills_cfg_on = bool(skills_cfg_on) and _cap_enabled(
+            adapter,
+            "enable_skills",
+        )
         cuga_folder_for_skills = _cfg.get("skills_folder") or os.getenv(
             "CUGA_FOLDER", settings.policy.cuga_folder
         )
@@ -370,7 +402,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # live in cuga_agent_core (behavior-identical to the previous
         # inline block); filesystem and run_command remain independently
         # gated by enable_filesystem_tools / enable_shell_tool.
-        _runtime_backends = resolve_runtime_backends(settings, configurable)
+        runtime_configurable = dict(configurable)
+        if not _cap_enabled(adapter, "enable_filesystem_tools"):
+            runtime_configurable["enable_filesystem_tools"] = False
+
+        if not _cap_enabled(adapter, "enable_shell_tool"):
+            runtime_configurable["enable_shell_tool"] = False
+
+        _runtime_backends = resolve_runtime_backends(settings, runtime_configurable)
 
         if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
             cfg = config.get("configurable", {}) if config else {}
@@ -420,6 +459,31 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         knowledge_tool_names = {
             tool.name for tool in tools_for_execution if getattr(tool, "name", "").startswith("knowledge_")
         }
+
+        if not _cap_enabled(adapter, "enable_knowledge"):
+            if knowledge_tool_names:
+                tools_for_execution = [
+                    tool
+                    for tool in tools_for_execution
+                    if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+
+                tools_for_prompt = [
+                    tool
+                    for tool in tools_for_prompt
+                    if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+
+                apps_for_prompt = [
+                    app
+                    for app in (apps_for_prompt or [])
+                    if getattr(app, "name", "") != "knowledge"
+                ]
+
+                for tool_name in knowledge_tool_names:
+                    adapter._tools_context.pop(tool_name, None)
+
+            knowledge_tool_names = set()
 
         if knowledge_tool_names and not allowed_knowledge_scopes:
             tools_for_execution = [
@@ -604,8 +668,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 special_instructions=special_instructions_final,
                 skills_enabled=skills_enabled,
                 skills_prompt_section=skills_prompt_section,
-                enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
-                has_knowledge=has_knowledge_tools,
+                enable_shell_tool=(
+                    getattr(settings.advanced_features, "enable_shell_tool", False)
+                    and _cap_enabled(adapter, "enable_shell_tool")
+                ),
+                has_knowledge=(
+                    has_knowledge_tools
+                    and _cap_enabled(adapter, "enable_knowledge")
+                ),
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
             )
@@ -643,6 +713,28 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # state.task_todos fallback path in prepare_system_content sees an
             # empty value on the next turn.
             update_payload["task_todos"] = None
+
+        print("==== PREPARE_TOOLS DEBUG ====", flush=True)
+        print("adapter type:", type(adapter), flush=True)
+        print("tooling_profile:", getattr(adapter, "_tooling_profile", None), flush=True)
+        print("tool_provider:", type(getattr(adapter, "_tool_provider", None)), flush=True)
+
+        for name in [
+            "tools",
+            "lc_bind_tools",
+            "lc_bind_tools_meta",
+            "tools_context",
+            "available_tools",
+            "tool_schemas",
+        ]:
+            value = locals().get(name, "<not in locals>")
+            try:
+                length = len(value)
+            except Exception:
+                length = "n/a"
+            print(f"{name}: type={type(value)} len={length} value={value}", flush=True)
+
+        print("==== END PREPARE_TOOLS DEBUG ====", flush=True)
 
         return Command(goto="call_model", update=update_payload)
 

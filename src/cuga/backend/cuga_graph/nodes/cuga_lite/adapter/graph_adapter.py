@@ -32,6 +32,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
 
+from cuga.backend.cuga_graph.tooling.profile import ToolingProfile
+
 
 class AgentGraphAdapter(CoreGraphAdapter):
     """CoreGraphAdapter implementation for the CugaLite single-agent graph."""
@@ -56,6 +58,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         tools_context: Optional[Dict[str, Any]] = None,
         static_prompt: Any = None,
         thread_id: Any = None,
+        tooling_profile: Optional[ToolingProfile] = None,
     ) -> None:
         self._tracker = tracker
         self._base_callbacks = base_callbacks or []
@@ -69,6 +72,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._tools_context = tools_context if tools_context is not None else {}
         self._static_prompt = static_prompt
         self._thread_id = thread_id
+        self._tooling_profile = tooling_profile
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
         return list(state.chat_messages or [])

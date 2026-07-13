@@ -33,6 +33,13 @@ except ImportError:
         logger.warning("Langfuse is not installed, LangfuseCallbackHandler will be None")
         LangfuseCallbackHandler = None
 
+from langchain_core.tools import BaseTool
+from cuga.backend.cuga_graph.tooling import (
+    ToolMode,
+    ToolingProfile,
+    build_tooling_profile,
+)
+
 tracker = ActivityTracker()
 
 
@@ -45,13 +52,27 @@ class ExperimentResult(BaseModel):
 
 
 class AgentRunner:
-    def __init__(self, browser_enabled=True, thread_id: str = "1"):
+    def __init__(
+        self,
+        browser_enabled=True,
+        thread_id: str = "1",
+        tool_mode: ToolMode = "internal",
+        external_tools: Optional[List[BaseTool]] = None,
+        tooling_profile: Optional[ToolingProfile] = None,
+    ):
         self.browser_enabled = browser_enabled
         self.thread_id = thread_id
         self.env = None
         self.obs = None
         self.info = None
         self.agent_loop_obj = None
+        
+        self.tool_mode = tool_mode
+        self.external_tools = external_tools or []
+        self.tooling_profile = tooling_profile or build_tooling_profile(
+            tool_mode=tool_mode,
+            tools=self.external_tools,
+        )
         pass
 
     @staticmethod
@@ -190,7 +211,13 @@ class AgentRunner:
             langfuse_handler = LangfuseCallbackHandler()
             logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+        agent = DynamicAgentGraph(
+            None,
+            langfuse_handler=langfuse_handler,
+            tool_mode=self.tool_mode,
+            external_tools=self.external_tools,
+            tooling_profile=self.tooling_profile,
+        )
         await agent.build_graph()
         state: AgentState = default_state(
             page=self.env.page if self.env else None,
@@ -215,6 +242,11 @@ class AgentRunner:
         i = 0
         while True:
             if agent_response.has_tools:
+                if not self.tooling_profile.capabilities.enable_browser_actions:
+                    raise RuntimeError(
+                        "Browser action tool calls are disabled by the active tooling profile."
+                    )
+
                 i += 1
                 state = self.get_current_state()
                 feedback = await AgentRunner.process_event_async(
@@ -296,7 +328,13 @@ class AgentRunner:
             langfuse_handler = LangfuseCallbackHandler()
             logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+        agent = DynamicAgentGraph(
+            None,
+            langfuse_handler=langfuse_handler,
+            tool_mode=self.tool_mode,
+            external_tools=self.external_tools,
+            tooling_profile=self.tooling_profile,
+        )
         await agent.build_graph()
         state: AgentState = default_state(
             page=self.env.page if self.env else None,
@@ -330,6 +368,11 @@ class AgentRunner:
 
                 if isinstance(event, AgentLoopAnswer):
                     if event.has_tools:
+                        if not self.tooling_profile.capabilities.enable_browser_actions:
+                            raise RuntimeError(
+                                "Browser action tool calls are disabled by the active tooling profile."
+                            )
+
                         i += 1
                         state = self.get_current_state()
                         feedback = await AgentRunner.process_event_async(
