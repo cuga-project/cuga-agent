@@ -430,10 +430,11 @@ Respond ONLY with a JSON object:
     # ──────────────────────────────────────────────────────────────
 
     def _build_completion_message(self, state: FlowState, process: Any) -> str:
-        parts = [f"Workflow '{state.process_name}' completed."]
         if state.is_halted:
-            parts.append(f"Process was halted: {state.halt_reason}")
+            parts = [f"Workflow '{state.process_name}' was terminated early — no further steps will run."]
+            parts.append(f"Reason: {state.halt_reason or 'Hook screening terminated the process'}")
             return "\n".join(parts)
+        parts = [f"Workflow '{state.process_name}' completed."]
         for task_id, result in state.task_results.items():
             element = process.elements.get(task_id) if process else None
             task_name = element.name if element else task_id
