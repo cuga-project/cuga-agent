@@ -739,7 +739,11 @@ class LLMManager:
 
             if not is_reasoning:
                 openai_params["temperature"] = temperature
-                openai_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly configured. Some Bedrock Claude
+                # models (e.g. opus-4-5/4-6, sonnet-4-5) reject requests that
+                # specify both temperature and top_p.
+                if 'top_p' in model_settings:
+                    openai_params["top_p"] = model_settings['top_p']
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 

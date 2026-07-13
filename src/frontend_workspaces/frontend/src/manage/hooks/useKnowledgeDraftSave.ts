@@ -31,6 +31,11 @@ export function useKnowledgeDraftSave(opts: {
   addToast: AddToast;
   skipDraftSaveRef: MutableRefObject<boolean>;
   forceImmediateSaveRef: MutableRefObject<boolean>;
+  knowledgeReindexing: boolean;
+  knowledgeSaveRetryRef: MutableRefObject<number>;
+  knowledgeSaveRetryTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
+  knowledgeSaveRetryNonce: number;
+  setKnowledgeSaveRetryNonce: (updater: (n: number) => number) => void;
   setCurrentVersion: (v: number | "draft" | null) => void;
   setAdaptationServerError: (v: AdaptationServerErrorShape | null) => void;
   setAutoReindexTrigger: (
@@ -41,6 +46,8 @@ export function useKnowledgeDraftSave(opts: {
           prev: { taskIds: string[]; total: number; triggerKey: string } | null,
         ) => { taskIds: string[]; total: number; triggerKey: string } | null),
   ) => void;
+  setKnowledgeSavedSnapshot: (v: unknown) => void;
+  setKnowledgeDocCount: (v: number) => void;
 }) {
   const {
     knowledgeConfig,
@@ -48,9 +55,16 @@ export function useKnowledgeDraftSave(opts: {
     addToast,
     skipDraftSaveRef,
     forceImmediateSaveRef,
+    knowledgeReindexing,
+    knowledgeSaveRetryRef,
+    knowledgeSaveRetryTimerRef,
+    knowledgeSaveRetryNonce,
+    setKnowledgeSaveRetryNonce,
     setCurrentVersion,
     setAdaptationServerError,
     setAutoReindexTrigger,
+    setKnowledgeSavedSnapshot,
+    setKnowledgeDocCount,
   } = opts;
 
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
@@ -60,10 +74,15 @@ export function useKnowledgeDraftSave(opts: {
     draftSaveStatus.kind === "saving" || draftSaveStatus.kind === "saving-slow";
 
   useEffect(() => {
+    setDraftSaveStatus({ kind: "idle" });
+  }, [effectiveAgentId]);
+
+  useEffect(() => {
     return () => {
       knowledgeAbortRef.current?.abort();
+      if (knowledgeSaveRetryTimerRef.current) clearTimeout(knowledgeSaveRetryTimerRef.current);
     };
-  }, []);
+  }, [knowledgeSaveRetryTimerRef]);
 
   useEffect(() => {
     if (!isSavingFamily) return;
@@ -92,6 +111,11 @@ export function useKnowledgeDraftSave(opts: {
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
 
+    if (knowledgeReindexing) {
+      knowledgeAbortRef.current?.abort();
+      return;
+    }
+
     knowledgeAbortRef.current?.abort();
     const ac = new AbortController();
     knowledgeAbortRef.current = ac;
@@ -112,10 +136,18 @@ export function useKnowledgeDraftSave(opts: {
         if (res.ok) {
           setCurrentVersion("draft");
           setAdaptationServerError(null);
+          knowledgeSaveRetryRef.current = 0;
           try {
             const body = await res.clone().json();
             if (ac.signal.aborted) return;
             setDraftSaveStatus({ kind: "saved" });
+            const _lc = body?.live_changes;
+            if (_lc?.adopted_existing_collection) {
+              setKnowledgeSavedSnapshot({ ...(knowledgeConfig as object) });
+              if (typeof _lc.active_document_count === "number") {
+                setKnowledgeDocCount(_lc.active_document_count);
+              }
+            }
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
@@ -161,16 +193,34 @@ export function useKnowledgeDraftSave(opts: {
             // 409 without a JSON body
           }
           if (ac.signal.aborted) return;
-          const msg =
-            detail?.error === "reindex_in_progress"
-              ? detail?.message ||
-                "Re-index is running. Wait for it to finish, then try again."
-              : "Save conflicts with current server state. Try again.";
-          setDraftSaveStatus({ kind: "failed", error: msg });
+
+          if (detail?.error === "reindex_in_progress") {
+            setDraftSaveStatus({ kind: "saving" });
+            const MAX_REINDEX_SAVE_RETRIES = 20;
+            if (knowledgeSaveRetryRef.current < MAX_REINDEX_SAVE_RETRIES) {
+              knowledgeSaveRetryRef.current += 1;
+              if (knowledgeSaveRetryTimerRef.current) clearTimeout(knowledgeSaveRetryTimerRef.current);
+              knowledgeSaveRetryTimerRef.current = setTimeout(
+                () => setKnowledgeSaveRetryNonce((n) => n + 1),
+                3000,
+              );
+            } else {
+              setDraftSaveStatus({
+                kind: "failed",
+                error: "Re-index still running — click Retry once it finishes.",
+              });
+            }
+            return;
+          }
+
+          setDraftSaveStatus({
+            kind: "failed",
+            error: "Save conflicts with current server state. Try again.",
+          });
           addToast(
             "warning",
             "Can't change settings yet",
-            "A Re-index is running. Wait for it to finish, then this change will save.",
+            "A re-index or other config update was in progress. Your change will save on the next attempt.",
           );
         } else {
           if (ac.signal.aborted) return;
@@ -181,7 +231,7 @@ export function useKnowledgeDraftSave(opts: {
           } catch {
             // ignore
           }
-          console.error(`[ManagePage] knowledge PATCH failed: ${res.status}`, detail);
+          console.error(`[useKnowledgeDraftSave] knowledge PATCH failed: ${res.status}`, detail);
           setDraftSaveStatus({
             kind: "failed",
             error: detail ? `Save failed (${res.status}): ${detail}` : `Save failed (${res.status})`,
@@ -189,7 +239,7 @@ export function useKnowledgeDraftSave(opts: {
         }
       } catch (err) {
         if (isAbortError(err)) return;
-        console.error("[ManagePage] knowledge PATCH threw:", err);
+        console.error("[useKnowledgeDraftSave] knowledge PATCH threw:", err);
         setDraftSaveStatus({
           kind: "failed",
           error: err instanceof Error ? err.message : "Couldn't save — check your connection",
@@ -202,12 +252,19 @@ export function useKnowledgeDraftSave(opts: {
   }, [
     knowledgeConfig,
     effectiveAgentId,
+    knowledgeReindexing,
+    knowledgeSaveRetryNonce,
     addToast,
     skipDraftSaveRef,
     forceImmediateSaveRef,
+    knowledgeSaveRetryRef,
+    knowledgeSaveRetryTimerRef,
+    setKnowledgeSaveRetryNonce,
     setCurrentVersion,
     setAdaptationServerError,
     setAutoReindexTrigger,
+    setKnowledgeSavedSnapshot,
+    setKnowledgeDocCount,
   ]);
 
   return { draftSaveStatus, setDraftSaveStatus };

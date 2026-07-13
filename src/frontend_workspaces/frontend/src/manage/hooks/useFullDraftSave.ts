@@ -9,8 +9,17 @@ export function useFullDraftSave(opts: {
   setDraftSaving: (v: boolean) => void;
   setCurrentVersion: (v: number | "draft" | null) => void;
   importStatus: "idle" | "ok" | "error";
+  refreshKnowledgeHealth: () => void | Promise<void>;
 }) {
-  const { assembleConfig, effectiveAgentId, addToast, setDraftSaving, setCurrentVersion, importStatus } = opts;
+  const {
+    assembleConfig,
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+    importStatus,
+    refreshKnowledgeHealth,
+  } = opts;
 
   const performDraftSave = useCallback(
     async (partial?: object) => {
@@ -55,10 +64,16 @@ export function useFullDraftSave(opts: {
   );
 
   useEffect(() => {
-    if (importStatus === "ok") {
-      performDraftSave();
-    }
-  }, [importStatus, performDraftSave]);
+    if (importStatus !== "ok") return;
+    let cancelled = false;
+    (async () => {
+      await performDraftSave();
+      if (!cancelled) void refreshKnowledgeHealth();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [importStatus, performDraftSave, refreshKnowledgeHealth]);
 
   return { performDraftSave };
 }

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import * as api from "../../api";
 import type { AddToast } from "./saveHelpers";
+import type { DraftSaveStatus } from "./useKnowledgeDraftSave";
 
 type LiveKnowledge = {
   provider: string;
@@ -32,6 +33,7 @@ export function usePublishConfig(opts: {
   setLiveKnowledge: (v: LiveKnowledge) => void;
   setKnowledgeSavedSnapshot: (v: any) => void;
   setKnowledgeDocCount: (v: number) => void;
+  setDraftSaveStatus: (v: DraftSaveStatus) => void;
   refreshKnowledgeHealth: () => void;
   loadHistory: () => void;
 }) {
@@ -48,6 +50,7 @@ export function usePublishConfig(opts: {
     setLiveKnowledge,
     setKnowledgeSavedSnapshot,
     setKnowledgeDocCount,
+    setDraftSaveStatus,
     refreshKnowledgeHealth,
     loadHistory,
   } = opts;
@@ -178,6 +181,7 @@ export function usePublishConfig(opts: {
         });
         setKnowledgeSavedSnapshot({ ...knowledgeConfig });
         refreshKnowledgeHealth();
+        setDraftSaveStatus({ kind: "idle" });
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
@@ -213,6 +217,7 @@ export function usePublishConfig(opts: {
     setLiveKnowledge,
     setKnowledgeSavedSnapshot,
     setKnowledgeDocCount,
+    setDraftSaveStatus,
     refreshKnowledgeHealth,
     loadHistory,
   ]);
