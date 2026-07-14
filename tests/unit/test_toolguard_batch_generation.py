@@ -14,6 +14,7 @@ def _write_json(tmp_path, payload):
     return path
 
 
+@pytest.mark.unit
 def test_extract_policies_data_from_frontend_export(tmp_path):
     path = _write_json(
         tmp_path,
@@ -39,6 +40,7 @@ def test_extract_policies_data_from_frontend_export(tmp_path):
     }
 
 
+@pytest.mark.unit
 def test_extract_policies_data_from_array(tmp_path):
     path = _write_json(
         tmp_path,
@@ -59,6 +61,7 @@ def test_extract_policies_data_from_array(tmp_path):
     assert result["errors"] == []
 
 
+@pytest.mark.unit
 def test_extract_policies_data_from_single_object(tmp_path):
     path = _write_json(
         tmp_path,
@@ -73,6 +76,7 @@ def test_extract_policies_data_from_single_object(tmp_path):
     assert result["errors"] == []
 
 
+@pytest.mark.unit
 def test_extract_policies_data_reports_missing_policy_id(tmp_path):
     path = _write_json(
         tmp_path,
@@ -106,6 +110,7 @@ class _FakePolicySystem:
         self.storage = _FakeStorage(policies)
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_generates_only_requested_eligible_policy_ids(monkeypatch):
     eligible = ToolGuide(
@@ -162,6 +167,7 @@ async def test_batch_generates_only_requested_eligible_policy_ids(monkeypatch):
     assert result["errors"] == []
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_skips_ineligible_imported_policies(monkeypatch):
     disabled = ToolGuide(
@@ -218,6 +224,7 @@ async def test_batch_skips_ineligible_imported_policies(monkeypatch):
     assert result["errors"] == []
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_continues_after_policy_generation_failure(monkeypatch):
     failing = ToolGuide(
@@ -273,6 +280,7 @@ async def test_batch_continues_after_policy_generation_failure(monkeypatch):
     assert result["errors"] == []
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_batch_status_is_partial_when_generation_succeeds_with_skips(monkeypatch):
     eligible = ToolGuide(

@@ -818,6 +818,7 @@ class TestSDKPolicyManagement:
         assert policy["id"] == custom_id
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generate_tool_guards_from_json_scopes_to_imported_policy_ids(tmp_path, monkeypatch):
     import json
@@ -889,6 +890,7 @@ async def test_generate_tool_guards_from_json_scopes_to_imported_policy_ids(tmp_
     assert "existing_unrelated_guide" not in result["generated"]
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generate_tool_guards_from_json_clear_existing_replaces_storage(tmp_path, monkeypatch):
     import json
