@@ -18,6 +18,8 @@ event into one envelope and POSTs it there. Learn that endpoint and the rest fol
 | 5 | **[ROADMAP.md](ROADMAP.md)** | the sequenced "what's next" |
 | 6 | **[SETUP.md](SETUP.md)** + [setup/](setup/) | fresh machine → running stack; per-connector setup guides |
 | 7 | **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) |
+| 8 | **[slides.html](slides.html)** | the event-driven-agents deck — triggers, channels, integrations, all 33 triggers per app, with examples. Generated (`make slides`); good for a walkthrough or handoff |
+| 9 | **[checklist.html](checklist.html)** | the exhaustive manual-test checklist (markable status, per integration) |
 
 ## New here? Read in this order
 
@@ -28,7 +30,8 @@ event into one envelope and POSTs it there. Learn that endpoint and the rest fol
 
 ## Conventions
 
-- **Generated, don't hand-edit:** `api/api_spec.html` (`scripts/gen_api_spec.py`), the diagrams
+- **Generated, don't hand-edit:** `api/api_spec.html` (`scripts/gen_api_spec.py`), the examples
+  board's data (`scripts/gen_examples.py`), `slides.html` (`scripts/gen_slides.py`), the diagrams
   (`architecture/gen_diagrams.py`), `results/index.html` (`scripts/run_all_tests.py`). Offline tests
   fail the build if the generated artifacts drift from the code.
 - **Source of truth is the code** under `src/cuga/backend/events/`. When a doc and the code disagree,

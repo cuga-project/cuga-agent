@@ -20,17 +20,26 @@ _PUSH = re.compile(r"\bwhen (a |an |someone |my |the )?\b|\bwhenever\b|\blands?\
 _POLL = re.compile(r"\bonly (if|when)\b|\b(if|when) it (changes?|moves?|drops?|crosses?|rises?|"
                    r"spikes?|jumps?|goes|hits)\b|\b(on|upon) a (move|change|dip|spike|jump|drop|"
                    r"rise|swing)\b|\bwatch\b.*\b(change|move|>|<|%|threshold|drops?|rises?)\b|"
-                   r"\bnotify me (only|when)\b", re.I)
+                   r"\bnotify me (only|when)\b|"
+                   # "tell me only about new items" / "only if there are new ones": an interval that
+                   # emits only on NEW content is a POLL, not a plain CRON — the proven feed_watcher
+                   # misroute (armed CRON 3/3 on the dry-run planner, 2026-07-10).
+                   r"\bonly\b[^.]{0,40}\bnew\b", re.I)
 # recurring clock words → CRON
 _CRON = re.compile(r"\bevery\b|\bdaily\b|\bhourly\b|\bweekday\b|\beach (morning|day|week|friday|"
                    r"monday|hour)\b|\bat \d{1,2}(:\d\d)?\s*(am|pm)?\b|\bcron\b", re.I)
 
-# native sources → (source, event)
-_SOURCES = [
-    (re.compile(r"\bbox\b", re.I), ("box", "new_file")),
-    (re.compile(r"\b(pull requests?|\bPRs?\b|new pr)\b", re.I), ("github_pr", "new_pull_request")),
-    (re.compile(r"\bissue\b", re.I), ("github_issue", "new_issue")),
-    (re.compile(r"\b(e-?mails?|gmail|inbox)\b", re.I), ("gmail", "new_email")),
+# native sources → (app, event) — GENERATED from the trigger registry (triggers.py), so a new
+# trigger's phrases are picked up here automatically. Longer (more specific) phrases are tried
+# first: "review request" must win over the generic "PRs" phrase. Legacy rss/webhook rows keep
+# their old labels for the dry-run planner.
+try:
+    from .triggers import classifier_sources as _registry_sources
+except ImportError:  # bare import (tests put the events dir on sys.path)
+    from triggers import classifier_sources as _registry_sources  # type: ignore
+
+_SOURCES = [(re.compile(rx, re.I), se) for rx, se in _registry_sources()]
+_SOURCES += [
     (re.compile(r"\brss|blog|feed\b", re.I), ("rss", "new_item")),
     (re.compile(r"\bwebhook\b", re.I), ("webhook", "catch_webhook")),
 ]
@@ -54,11 +63,18 @@ def classify(text: str) -> str:
 
 
 def source_of(text: str) -> tuple[str, str] | None:
-    """Best-effort (source, event) for a PUSH utterance, else None."""
-    for rx, se in _SOURCES:
-        if rx.search(text or ""):
-            return se
-    return None
+    """Best-effort (app, event) for a PUSH utterance, else None.
+
+    Two-stage, because phrase length alone is a fragile tiebreak: "when someone posts in #help on
+    DISCORD" matched slack's channel-message phrase and discord's by one character. So when the
+    utterance NAMES a platform explicitly, a trigger of that platform wins over any other app's
+    match — an unambiguous signal beats a longer regex."""
+    t = text or ""
+    hits = [se for rx, se in _SOURCES if rx.search(t)]
+    if not hits:
+        return None
+    named = [se for se in hits if re.search(rf"\b{re.escape(se[0])}\b", t, re.I)]
+    return (named or hits)[0]
 
 
 def cadence_of(text: str) -> dict:

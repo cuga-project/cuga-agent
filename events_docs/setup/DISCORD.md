@@ -63,3 +63,24 @@ The server log shows `discord gateway READY as <bot>` on startup.
 - **Per-user identity** — the Gateway message carries the full `author` object; CUGA forwards
   `author.id` as `source.user`, so a user who `/link`s their Discord id gets per-user creds/permissions.
 - **Want the old polling behavior?** Set `EVENTS_DISCORD_BACKEND=ap` (watches one channel, ~5 min).
+
+## Discord WATCHERS — member joins (optional)
+
+Beyond the chat bot, CUGA can arm a **watcher** on new members — *"when a new member joins the server,
+greet them and point to the resources"*. It arms as a CUGA-owned direct subscription on the Gateway
+CUGA already holds (no Activepieces).
+
+`GUILD_MEMBER_ADD` is a **privileged** Gateway intent, so it is **opt-in in two places** and requesting
+it unapproved **closes the entire gateway with error 4014** (your chat bot stops working too):
+
+1. **Discord Developer Portal** → your app → **Bot** → **Privileged Gateway Intents** → enable
+   **SERVER MEMBERS INTENT** → Save.
+2. **`.env`** → `EVENTS_DISCORD_MEMBERS_INTENT=1` → `make reload`.
+
+Do them in that order. With the env flag set but the portal toggle off, the gateway will refuse to
+connect. If Discord suddenly goes quiet after enabling this, that is the cause — unset the flag,
+`make reload`, and the bot comes straight back.
+
+```
+/push when a new member joins the server on discord, greet them
+```

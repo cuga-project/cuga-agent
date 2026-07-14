@@ -484,7 +484,8 @@ export interface AgentSpecBody {
   backend?: string;                 // cuga | react
   mcp_servers?: string[];
   channels?: string[];
-  integrations?: { app: string; ownership: string }[];
+  // triggers = WHICH of the app's events this agent handles; absent/empty = all of them
+  integrations?: { app: string; ownership: string; triggers?: string[] }[];
   access?: string[];
 }
 
@@ -508,6 +509,12 @@ export async function putEventsAgent(name: string, spec: AgentSpecBody): Promise
 
 export async function getEventsExamples(): Promise<Response> {
   return apiFetch("/api/events/examples");
+}
+
+// The trigger registry — every (integration, event) the platform can watch, grouped per app.
+// Drives the Agent editor's trigger-grain picker; generated from the backend registry.
+export async function getEventsTriggers(): Promise<Response> {
+  return apiFetch("/api/events/triggers");
 }
 
 // The caller's own connected integrations (which apps they've logged into).

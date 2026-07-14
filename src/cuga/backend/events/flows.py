@@ -24,47 +24,73 @@ PIECE = {
     "rss": "@activepieces/piece-rss",
 }
 
-# AP piece + trigger for each integration/channel source we support.
-SOURCE_TRIGGER = {
-    "box": ("box", "new_file"),
-    "github_pr": ("github", "trigger_pull_request"),
-    "github_issue": ("github", "trigger_issues"),
-    "gmail": ("gmail", "gmail_new_email_received"),
+# ── trigger resolution — the registry (triggers.py) is the single source of truth ──────────────
+# ``SOURCE_TRIGGER``/``PUSH_PAYLOAD`` used to be hand-maintained dicts with exactly one trigger per
+# integration; they are now *generated views* over the registry, kept only so legacy callers and
+# older tests keep working. New code calls ``resolve_trigger(source, event)`` and gets the full
+# registry row — and an UNKNOWN (source, event) raises instead of silently building a flow on a
+# nonexistent ``new_item`` trigger that could never publish.
+try:
+    from . import triggers as _registry
+except ImportError:  # bare import path (tests put the events dir itself on sys.path)
+    import triggers as _registry  # type: ignore
+
+
+def resolve_trigger(source: str, event: str = ""):
+    """(source, event) → the registry Trigger row (ANY backend). Raises ValueError only on a
+    genuinely-unknown trigger — loudly, at build time, instead of arming a flow that can never
+    publish. Returns None for the legacy channel/webhook/rss rows (caller falls back to
+    ``_LEGACY_SOURCE_TRIGGER``). Callers that need an AP-armable trigger must check ``.backend``."""
+    t = _registry.get(source, event)
+    if t is None:
+        legacy = _LEGACY_SOURCE_TRIGGER.get(source)
+        if legacy:
+            return None  # caller falls back to the legacy (piece, trigger) pair
+        known = ", ".join(f"{x.app}/{x.event}" for x in _registry.rows())
+        raise ValueError(f"unknown push trigger {source!r}/{event!r} — known: {known}")
+    return t
+
+
+# Legacy channel/misc rows that predate the registry (converse flows + the AP webhook piece).
+_LEGACY_SOURCE_TRIGGER = {
     "rss": ("rss", "new_item"),
-    "telegram": ("telegram", "new_message"),
+    "telegram": ("telegram", "new_telegram_message"),
     "discord": ("discord", "new_message"),
-    "slack": ("slack", "new_message"),
+    "slack": ("slack", "new-message"),
     "webhook": ("webhook", "catch_webhook"),
 }
-SOURCE_TRIGGER["github"] = SOURCE_TRIGGER["github_pr"]   # bare 'github' source (e.g. inferred from an
-#                                                         agent's integration) defaults to the PR trigger
 
-# The trigger fields we hand the worker in the /invoke payload, per source — so the agent reasons
-# over real content (an email's subject/body, a PR's title) instead of just a filename. Values are
-# AP mustache refs into the PIECE TRIGGER's output object (NOT ``trigger.body`` — that's only for raw
-# webhook triggers; a piece trigger's output is referenced directly as ``{{trigger.<field>}}``). Paths
-# the piece doesn't emit render empty (harmless — envelope.worker_input skips empties). The gmail
-# shape is verified against a live fire: output = {message:{subject, from:{value:[{address}]}, text,
-# html, …}, thread}. box/github paths are best-effort — VERIFY against a real fire before trusting.
-PUSH_PAYLOAD = {
-    "box": {"name": "{{trigger.name}}", "id": "{{trigger.id}}"},
-    "gmail": {"subject": "{{trigger.message.subject}}",
-              "from": "{{trigger.message.from.value[0].address}}",
-              "body": "{{trigger.message.text}}"},
-    # VERIFIED against a real fire (2026-07-10): the github piece's trigger output IS the
-    # pull_request object, so these are direct fields. `body` (the PR description) matters most —
-    # without it the agent receives a title and a URL it cannot open, has no GitHub tool to fetch
-    # the diff, and can only reply "please provide the PR details".
-    "github_pr": {"title": "{{trigger.title}}", "repo": "{{trigger.base.repo.full_name}}",
-                  "url": "{{trigger.html_url}}", "body": "{{trigger.body}}",
-                  "author": "{{trigger.user.login}}",
-                  "changed_files": "{{trigger.changed_files}}",
-                  "additions": "{{trigger.additions}}", "deletions": "{{trigger.deletions}}"},
-    "github_issue": {"title": "{{trigger.title}}", "repo": "{{trigger.repository.full_name}}",
-                     "url": "{{trigger.html_url}}", "body": "{{trigger.body}}",
-                     "author": "{{trigger.user.login}}"},
-}
-PUSH_PAYLOAD["github"] = PUSH_PAYLOAD["github_pr"]     # router may name the source just 'github'
+# Generated legacy view: one (piece, ap_trigger) per source name older callers use.
+SOURCE_TRIGGER = dict(_LEGACY_SOURCE_TRIGGER)
+for _t in _registry.rows():
+    if _t.backend == "ap" and _t.default:
+        SOURCE_TRIGGER[_t.app] = (_t.piece, _t.ap_trigger)
+for _alias, (_app, _ev) in _registry.SOURCE_ALIASES.items():
+    _row = _registry.get(_app, _ev)
+    if _row is not None and _row.backend == "ap":
+        SOURCE_TRIGGER[_alias] = (_row.piece, _row.ap_trigger)
+
+# Generated legacy view of the curated /invoke payload per source name. Field paths follow each
+# piece's OWN sample output (fetched from the live AP catalog — see triggers.py); unknown paths
+# render empty and the `_raw` net (ap_engine) carries the full payload regardless.
+PUSH_PAYLOAD = {}
+for _t in _registry.rows():
+    if _t.backend == "ap" and _t.payload:
+        if _t.default:
+            PUSH_PAYLOAD[_t.app] = dict(_t.payload)
+        PUSH_PAYLOAD[f"{_t.app}/{_t.event}"] = dict(_t.payload)
+for _alias, (_app, _ev) in _registry.SOURCE_ALIASES.items():
+    _row = _registry.get(_app, _ev)
+    if _row is not None and _row.payload:
+        PUSH_PAYLOAD[_alias] = dict(_row.payload)
+
+
+def push_payload(source: str, event: str = "") -> dict:
+    """The curated payload map for (source, event) — registry-first, legacy-name fallback."""
+    t = _registry.get(source, event)
+    if t is not None and t.payload:
+        return dict(t.payload)
+    return dict(PUSH_PAYLOAD.get(source, {}))
 
 # CHANNEL descriptors — the ONLY place channel specifics live, as declarative config (AP owns the
 # execution; CUGA just names the piece + which trigger fields hold the message/sender and which
@@ -191,8 +217,23 @@ def _schedule_trigger(cron: str | None, interval_seconds: int | None, nxt: dict)
             "settings": settings, "nextAction": nxt}
 
 
-def _piece_trigger(source: str, nxt: dict, source_input: dict | None = None) -> dict:
-    piece, trig = SOURCE_TRIGGER.get(source, (source, "new_item"))
+def _piece_trigger(source: str, nxt: dict, source_input: dict | None = None,
+                   event: str = "") -> dict:
+    """(source, event) → a PIECE_TRIGGER node. Registry-resolved; unknown triggers raise
+    (the old code silently fell back to a nonexistent ``new_item`` trigger). A DIRECT-backend row
+    (slack/discord/box-folder watchers — CUGA receives the event, no AP piece) renders a
+    descriptive placeholder node: only the dry-run planner ever builds those as flows."""
+    t = resolve_trigger(source, event)
+    if t is not None and t.backend == "direct":
+        return {"name": "trigger", "displayName": f"CUGA direct · {t.app}/{t.event}",
+                "type": "PIECE_TRIGGER",
+                "settings": {"pieceName": "cuga-direct", "triggerName": t.direct_kind or t.event,
+                             "input": dict(source_input or {})},
+                "nextAction": nxt}
+    if t is not None:
+        piece, trig = t.piece, t.ap_trigger
+    else:
+        piece, trig = _LEGACY_SOURCE_TRIGGER[source]
     return {"name": "trigger", "displayName": f"{piece.title()} · {trig}", "type": "PIECE_TRIGGER",
             "settings": {"pieceName": PIECE.get(piece, f"@activepieces/piece-{piece}"),
                          "triggerName": trig, "input": dict(source_input or {})},
@@ -240,16 +281,22 @@ def build_runonce_flow(*, agent: str, thread_id: str, prompt: str, sink: dict | 
 
 def build_push_flow(*, agent: str, thread_id: str, prompt: str, source: str,
                     source_input: dict | None = None, branches: list[dict] | None = None,
-                    sink: dict | None = None, event_kind: str = "new_file",
+                    sink: dict | None = None, event_kind: str = "",
                     display: str = "push flow") -> dict:
     """PUSH: <source>·<event> ▸ /invoke ▸ Router(branches) or send. Powers the resume
-    watcher (source='box', branches MATCH→gmail / SKIP→stop) and the PR reviewer."""
+    watcher (source='box', branches MATCH→gmail / SKIP→stop) and the PR reviewer.
+
+    ``event_kind`` selects the SPECIFIC trigger via the registry; empty → the app's default
+    trigger (the old signature hardcoded ``new_file``, which every non-box source ignored).
+    The /invoke payload carries the trigger's curated fields plus the ``_raw`` net."""
+    row = _registry.get(source, event_kind)
+    kind = event_kind or (row.event if row is not None else "new_file")
     step1 = invoke_step(agent, thread_id, prompt, source_type="integration", source_name=source,
-                        event_kind=event_kind,
-                        payload={"file_id": "{{trigger.id}}", "name": "{{trigger.name}}"})
+                        event_kind=kind,
+                        payload={**push_payload(source, kind), "_raw": "{{trigger}}"})
     step1["nextAction"] = router_step(branches) if branches else sink
     return {"displayName": display, "valid": True,
-            "trigger": _piece_trigger(source, step1, source_input)}
+            "trigger": _piece_trigger(source, step1, source_input, event=kind)}
 
 
 def build_inbound_flow(*, channel: str, agent: str = "concierge",
@@ -265,8 +312,18 @@ def build_inbound_flow(*, channel: str, agent: str = "concierge",
                         source_name=channel, event_kind="message", deliver=False,
                         source_user=d.get("user_ref", ""))
     step1["nextAction"] = send_step(channel, native, "{{step_1.body.answer}}")
+    # The trigger comes from the CHANNELS descriptor — the same row the LIVE path
+    # (ap_engine.create_inbound_flow) arms. The old lookup went through SOURCE_TRIGGER, whose
+    # telegram/slack trigger names had silently drifted from CHANNELS (new_message vs
+    # new_telegram_message / new-message), so the offline builder rendered a different flow
+    # than the live one armed.
+    trig = {"name": "trigger", "displayName": f"{d['piece'].title()} · {d['trigger']}",
+            "type": "PIECE_TRIGGER",
+            "settings": {"pieceName": PIECE[d["piece"]], "triggerName": d["trigger"],
+                         "input": dict(d.get("trigger_const", {}))},
+            "nextAction": step1}
     return {"displayName": display or f"{channel}-inbound → {agent}", "valid": True,
-            "trigger": _piece_trigger(channel, step1)}
+            "trigger": trig}
 
 
 def build_resume_watcher_flow(*, agent: str = "resume_judge", thread_id: str,

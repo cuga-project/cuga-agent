@@ -15,7 +15,17 @@ import json
 from dataclasses import dataclass, field, asdict
 
 SOURCE_TYPES = ("channel", "integration", "time")
-EVENT_KINDS = ("message", "new_email", "new_pr", "new_issue", "new_file", "tick", "runonce")
+# Base kinds + every canonical kind in the trigger registry (triggers.py) — one source of truth.
+# The registry is stdlib-only, so this import keeps envelope dependency-free. Dual-mode import:
+# tests put the events dir itself on sys.path and import `envelope` bare.
+try:
+    from .triggers import event_kinds as _registry_kinds
+except ImportError:  # bare import (tests / scripts with the events dir on sys.path)
+    from triggers import event_kinds as _registry_kinds  # type: ignore
+
+EVENT_KINDS = tuple(dict.fromkeys(
+    ("message", "new_email", "new_pr", "new_issue", "new_file", "tick", "runonce")
+    + _registry_kinds()))
 
 
 def normalize_kind(kind: str | None) -> str:

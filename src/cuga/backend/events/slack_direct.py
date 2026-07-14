@@ -19,18 +19,25 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import time
 
 import httpx
 
 
 def bot_token() -> str:
-    return (os.environ.get("SLACK_BOT_TOKEN", "") or "").split(" #", 1)[0].strip()
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load (tests put the events dir on sys.path)
+        from secret_seam import secret as _secret
+    return _secret("SLACK_BOT_TOKEN")
 
 
 def signing_secret() -> str:
-    return (os.environ.get("SLACK_SIGNING_SECRET", "") or "").split(" #", 1)[0].strip()
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load (tests put the events dir on sys.path)
+        from secret_seam import secret as _secret
+    return _secret("SLACK_SIGNING_SECRET")
 
 
 def verify_signature(headers, raw_body: str) -> tuple[bool, str]:

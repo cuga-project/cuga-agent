@@ -134,6 +134,10 @@ api-spec: ## Regenerate events_docs/api/api_spec.html and SERVE it (Try-it needs
 	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
 	@$(PY) -m http.server 8123 --directory events_docs/api
 
+slides: ## Regenerate events_docs/slides.html (the event-driven-agents deck) and open it
+	@$(PY) scripts/gen_slides.py
+	@open events_docs/slides.html 2>/dev/null || echo "→ events_docs/slides.html"
+
 
 doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py

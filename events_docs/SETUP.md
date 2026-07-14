@@ -63,7 +63,7 @@ make public-url         # prints the public URL + the exact strings to paste int
 **Verify:**
 ```bash
 make status      # everything up + tunnel URLs      make doctor   # live creds ok
-make test        # 156 offline checks green         make tunnels  # both tunnels reachable
+make test        # the offline suite green          make tunnels  # both tunnels reachable
 ```
 Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. For a
 full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
@@ -83,7 +83,7 @@ make ap-pieces     # 3. a fresh AP boots WITHOUT the schedule piece — install 
 make channels      # 4. arm inbound channels from .env bot tokens
 make status        # 5. registry + cuga both 200, 3 containers Up, both tunnel URLs printed
 make doctor        # 6. every live cred green — incl. a FRESH BOX_DEV_TOKEN (starts a ~60-min clock)
-make test          # 7. 156 offline checks
+make test          # 7. the full offline suite (no stack or creds needed — must be all green)
 ```
 
 8. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
@@ -91,7 +91,7 @@ make test          # 7. 156 offline checks
    then `curl -s localhost:8100/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
 
 ```bash
-make test-live     # 9. 34-check live smoke — 4 channels + 4 flow modes (green even before step 8,
+make test-live     # 9. live smoke — 4 channels + 4 flow modes (green even before step 8,
                    #    since an unconnected integration correctly reports 'connect-needed')
 ```
 
@@ -124,6 +124,26 @@ into the container; ⚠ changing the encryption key invalidates stored connectio
 → `make restart` (read when the tunnel starts); a **channel bot token or the public URL** → `make reload`
 **then `make channels`** (re-register the webhook). If a Connect 404s with `piece_metadata_not_found`,
 run `make ap-pieces`.
+
+## Which test do I run, and when?
+
+Six targets because "does it work?" is six different questions at six different costs — one
+40-minute monolith would just mean nobody runs tests. Each rung names the layer that broke.
+
+| Target | The question it answers | Cost | Run it when |
+|---|---|---|---|
+| `make test` | Is the code internally correct? (no stack, no creds) | 30 s | **after every change** |
+| `make test-live` | Is the running stack plumbed? one probe per channel + flow mode | 2 min | after touching the stack / `.env` / a reload |
+| `make test-suite-now` | Can each agent actually do its job? | 14 min | after changing agents or their tools |
+| `make test-suite-flows` | Does an English sentence become the *right* AP flow? | 6 min | after touching the concierge / classifier / registry |
+| `make test-matrix` | Is every trigger × sink combination wired? | 6 min | after touching flow building or delivery |
+| `make test-fire` | Does an armed flow genuinely FIRE on a real tick? | 9 min | before claiming "it works end to end" |
+
+Day to day you need the first two. **`make test-report`** runs all six in order and writes the
+timestamped HTML report (`results/index.html`) — the one command for a handoff or a citable result.
+`make doctor` isn't a test — it pings each service with its real `.env` cred and never fails, only
+reports. Full reference (verdict vocabulary, what each harness can and cannot prove, the live
+GitHub/Slack harnesses): [TESTING.md](TESTING.md).
 
 ## Resets — know the difference
 

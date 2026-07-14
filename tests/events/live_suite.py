@@ -196,17 +196,12 @@ POLL_CASES = [
      "watch bitcoin every 2 minutes and ping me on any move", PASS, ""),
     ("poll/weatherbot/web", "POLL", "web",
      "check the New York weather every hour and ping me only if rain is forecast", PASS, ""),
-    # XFAIL: the NL→flow gap (GAPS.md) in one line. The planner deterministically routes
-    # "check <URL> every 15 minutes and tell me only about new items" to CRON, not POLL — "check … every N"
-    # reads as a schedule and the "only about new items" change-signal isn't weighted enough to flip it.
-    # The other two POLL cases ("watch … on any move", "… only if rain") classify correctly, so the POLL
-    # machinery is fine; this is classification, not plumbing. A typed FlowSpec + validation gate is the fix.
+    # CLOSED 2026-07-13 (was XFAIL): "check <URL> every N minutes and tell me only about NEW items"
+    # used to classify as CRON — an interval that emits only on new content is a POLL. classify._POLL
+    # now carries the change-signal `only … new`, and this routes correctly. Pinned offline by
+    # test_classifier_poll_vs_cron_new_items.
     ("poll/feed_watcher/discord", "POLL", "discord",
-     "check https://hnrss.org/frontpage every 15 minutes and tell me only about new items", XFAIL,
-     "NL→flow gap: 'check <URL> every N minutes' is deterministically classified CRON, not POLL, even "
-     "with a 'only new items' change-signal (verified 3/3 on the dry-run planner 2026-07-10). POLL "
-     "itself works — the pricebot/weatherbot POLL cases pass. Fix is the typed FlowSpec + validation "
-     "gate tracked in ROADMAP.md, not a plumbing bug."),
+     "check https://hnrss.org/frontpage every 15 minutes and tell me only about new items", PASS, ""),
 ]
 
 

@@ -98,7 +98,9 @@ function Loader({ loading, error }: { loading: boolean; error: string | null }) 
 
 // ---- tabs --------------------------------------------------------------------
 const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord"];
-const KNOWN_INTEGRATIONS = ["gmail", "box", "github", "outlook"];
+// Fallback only — the editor derives the live list (and each app's triggers) from
+// /api/events/triggers, the backend registry, so the UI can never drift from the code.
+const KNOWN_INTEGRATIONS = ["box", "discord", "github", "gmail", "slack", "telegram", "webhook"];
 // Fallback tool catalog so the picker is NEVER empty (used if /api/events/mcp-servers is
 // unreachable, e.g. an older running server). Enriched with live hints when the fetch succeeds.
 const FALLBACK_MCP = [
@@ -124,6 +126,11 @@ function AgentEditor({ open, editing, onClose }: {
   const [mcp, setMcp] = useState<string[]>([]);
   const [channels, setChannels] = useState<string[]>(["web"]);
   const [integrations, setIntegrations] = useState<Record<string, string>>({});
+  // trigger-grain: app → the trigger events this agent handles ([] = ALL of the app's triggers).
+  // This used to be dropped on save, silently widening an agent to every trigger of the app.
+  const [trigs, setTrigs] = useState<Record<string, string[]>>({});
+  // the registry (app → its triggers) from /api/events/triggers; drives the picker below
+  const [registry, setRegistry] = useState<Record<string, { event: string; title: string }[]>>({});
   const [access, setAccess] = useState("");
   const [servers, setServers] = useState<{ name: string; hint: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -138,12 +145,24 @@ function AgentEditor({ open, editing, onClose }: {
     setMcp(editing?.mcp_servers ?? []);
     setChannels(editing?.channels?.length ? editing.channels : ["web"]);
     const im: Record<string, string> = {};
-    (editing?.integrations ?? []).forEach((i: any) => { im[i.app] = i.ownership || "per-user"; });
+    const tm: Record<string, string[]> = {};
+    (editing?.integrations ?? []).forEach((i: any) => {
+      im[i.app] = i.ownership || "per-user";
+      tm[i.app] = Array.isArray(i.triggers) ? i.triggers : [];
+    });
     setIntegrations(im);
+    setTrigs(tm);
     setAccess((editing?.access ?? []).join(", "));
     setServers(FALLBACK_MCP);   // always have a catalog; enrich from the server if reachable
     api.getEventsMcpServers().then((r) => r.json())
       .then((d) => { if (d.servers?.length) setServers(d.servers); })
+      .catch(() => {});
+    api.getEventsTriggers().then((r) => r.json())
+      .then((d) => {
+        const reg: Record<string, { event: string; title: string }[]> = {};
+        (d.apps ?? []).forEach((a: any) => { reg[a.app] = a.triggers ?? []; });
+        setRegistry(reg);
+      })
       .catch(() => {});
   }, [open, editing]);
 
@@ -155,7 +174,9 @@ function AgentEditor({ open, editing, onClose }: {
     const spec: api.AgentSpecBody = {
       name: name.trim(), backend, prompt,
       mcp_servers: mcp, channels,
-      integrations: Object.entries(integrations).map(([app, ownership]) => ({ app, ownership })),
+      integrations: Object.entries(integrations).map(([app, ownership]) => ({
+        app, ownership, ...(trigs[app]?.length ? { triggers: trigs[app] } : {}),
+      })),
       access: access.split(",").map((s) => s.trim()).filter(Boolean),
     };
     const req = isEdit ? api.putEventsAgent(editing.name, spec) : api.postEventsAgent(spec);
@@ -203,20 +224,46 @@ function AgentEditor({ open, editing, onClose }: {
         </div>
         <div>
           <div className="cds--label">Integrations (watch / act on)</div>
-          {KNOWN_INTEGRATIONS.map((app) => (
-            <div key={app} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <Checkbox id={`int-${app}`} labelText={app} checked={app in integrations}
-                onChange={(_: any, { checked }: any) => setIntegrations((prev) => {
-                  const next = { ...prev };
-                  if (checked) next[app] = next[app] || "per-user"; else delete next[app];
-                  return next;
-                })} />
-              {app in integrations && (
-                <Select id={`own-${app}`} labelText="" size="sm" value={integrations[app]}
-                  inline onChange={(e) => setIntegrations((prev) => ({ ...prev, [app]: e.target.value }))}>
-                  <SelectItem value="per-user" text="per-user (each user logs in)" />
-                  <SelectItem value="shared" text="shared (one service account)" />
-                </Select>
+          {(Object.keys(registry).length ? Object.keys(registry).sort() : KNOWN_INTEGRATIONS).map((app) => (
+            <div key={app} style={{ marginBottom: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <Checkbox id={`int-${app}`} labelText={app} checked={app in integrations}
+                  onChange={(_: any, { checked }: any) => setIntegrations((prev) => {
+                    const next = { ...prev };
+                    if (checked) next[app] = next[app] || "per-user"; else delete next[app];
+                    return next;
+                  })} />
+                {app in integrations && (
+                  <Select id={`own-${app}`} labelText="" size="sm" value={integrations[app]}
+                    inline onChange={(e) => setIntegrations((prev) => ({ ...prev, [app]: e.target.value }))}>
+                    <SelectItem value="per-user" text="per-user (each user logs in)" />
+                    <SelectItem value="shared" text="shared (one service account)" />
+                  </Select>
+                )}
+              </div>
+              {/* trigger-grain: pick WHICH of the app's triggers this agent handles. Nothing
+                  selected = all of them (the registry default). */}
+              {app in integrations && (registry[app]?.length ?? 0) > 0 && (
+                <div style={{ margin: "2px 0 6px 28px" }}>
+                  <div className="studio-muted" style={{ fontSize: 12, marginBottom: 2 }}>
+                    Triggers — {trigs[app]?.length
+                      ? `${trigs[app].length} of ${registry[app].length} selected`
+                      : `all ${registry[app].length} (none selected = all)`}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+                    {registry[app].map((t) => (
+                      <Checkbox key={t.event} id={`trg-${app}-${t.event}`}
+                        labelText={`${t.event} — ${t.title}`}
+                        checked={(trigs[app] ?? []).includes(t.event)}
+                        onChange={() => setTrigs((prev) => {
+                          const cur = prev[app] ?? [];
+                          const next = cur.includes(t.event)
+                            ? cur.filter((e) => e !== t.event) : [...cur, t.event];
+                          return { ...prev, [app]: next };
+                        })} />
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -283,7 +330,10 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
                 <Tag key={c} type="outline" size="sm">{c}</Tag>
               ))}
               {a.integrations?.map((i: any) => (
-                <Tag key={i.app} type="purple" size="sm">{i.app} ({i.ownership})</Tag>
+                <Tag key={i.app} type="purple" size="sm"
+                  title={i.triggers?.length ? i.triggers.join(", ") : "all triggers"}>
+                  {i.app} ({i.ownership}){i.triggers?.length ? ` · ${i.triggers.length} trigger${i.triggers.length > 1 ? "s" : ""}` : ""}
+                </Tag>
               ))}
               {a.restricted && (
                 <Tag type={a.can_use ? "green" : "red"} size="sm">
@@ -337,6 +387,10 @@ function ChannelsTab({ refresh }: { refresh: number }) {
 
 function IntegrationsTab({ refresh }: { refresh: number }) {
   const { data, loading, error } = useEndpoint<any[]>(api.getEventsIntegrations, (d) => d.integrations ?? [], refresh);
+  // the trigger registry, so each card can say WHAT the integration can watch
+  const reg = useEndpoint<any[]>(api.getEventsTriggers, (d) => d.apps ?? [], refresh);
+  const trigsFor = (app: string) =>
+    (reg.data ?? []).find((a: any) => a.app === app)?.triggers ?? [];
 
   // "log in with your own account" — OAuth apps open the consent flow; token apps paste a secret.
   const connect = (i: any) => {
@@ -362,6 +416,19 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
             <StatusTag status={i.status} />
           </div>
           <p className="studio-muted">{i.note}</p>
+          {trigsFor(i.name).length > 0 && (
+            <details style={{ marginBottom: 8 }}>
+              <summary className="studio-muted" style={{ cursor: "pointer", fontSize: 12 }}>
+                {trigsFor(i.name).length} trigger{trigsFor(i.name).length > 1 ? "s" : ""}
+              </summary>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                {trigsFor(i.name).map((t: any) => (
+                  <Tag key={t.event} type={t.backend === "direct" ? "cyan" : "gray"} size="sm"
+                    title={t.title}>{t.event}{t.default ? " ★" : ""}</Tag>
+                ))}
+              </div>
+            </details>
+          )}
           <div className="studio-card-foot">
             <Tag type={i.backend === "direct" ? "teal" : "blue"} size="sm">
               {i.backend === "direct" ? "direct backend" : "via Activepieces"}

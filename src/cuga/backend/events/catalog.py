@@ -501,53 +501,61 @@ EXAMPLES = [
 def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
     """CAN WE TEST THIS TODAY? Returns (tier, needs) for a trigger-tied example.
 
-    Arming a PUSH watcher via the concierge has TWO gates, both must hold:
-      G1  an AGENT declares that integration — only mailbot[gmail], resume_judge[box],
-          support_digest[slack], pr_reviewer[github] do (seed.py).
-      G2  flows.SOURCE_TRIGGER maps the specific trigger — only box/new_file, github/PR,
-          github/issue, gmail/new_email today; anything else builds a non-existent trigger.
-    Plus a FIRE gate: github (webhook) triggers can be synth-fired via /run; gmail/box (polling)
-    need a real event; slack/discord run on the DIRECT backend (no AP connection at all).
+    Derived from the TRIGGER REGISTRY (``triggers.py``) — the same table the router, the flow
+    builders and the tests all read — so this can no longer drift from what the code actually does.
+    Every registry trigger is now ARMABLE: the router selects the specific trigger, the registry
+    validates its slots, and the flow builder renders that trigger's own piece + payload map.
+    What still differs per trigger is how it can be FIRED end-to-end:
 
-    Tiers:
-      now      — arms + verifies today (only the webhook endpoint clears every gate out of the box).
-      select   — the trigger and/or a declaring agent is missing, but the connection exists; NL→flow +
-                 (agent | SOURCE_TRIGGER | payload-map) work closes it. github is closest (synth-fire ready).
-      backend  — Slack/Discord (direct-event handling, no AP connection) or Box folders/comments
-                 (the direct poller lists files only). A larger lift than trigger-selection.
-    Grounded in flows.SOURCE_TRIGGER, seed.py integrations, delivery._DEFAULT_BACKEND, box_direct (2026-07-11)."""
-    i, t = integration, ap_trigger
-    if not t:
+      now      — arms AND fires by machine today.
+                 github: all 14 (WEBHOOK triggers, synth-fired via POST /subscriptions/{id}/run
+                 with the piece's real delivery header); webhook: the inbound endpoint.
+      real     — arms today; firing needs a real local action we control (drop a file in Box,
+                 post/react in Slack, a Discord join). Verified by the live harnesses/checklist.
+      manual   — arms today; firing needs a real EXTERNAL event we cannot synthesize (a real
+                 email). Gmail's triggers are POLLING: Activepieces will not run a polling trigger
+                 out of band, so no machine can fire them. Arm-verified only, by design.
+      setup    — arms today, but the transport must be enabled first: the Slack app must be
+                 subscribed to that event type, and Discord's member events need the privileged
+                 Server Members intent (EVENTS_DISCORD_MEMBERS_INTENT=1).
+    """
+    if not ap_trigger:
         return ("", "")
-    if i == "webhook":
-        return ("now", "live today — pinned + routed both proven end-to-end (the webhook endpoint "
-                       "bypasses the concierge, so neither gate applies)")
-    if i == "github":
-        if t == "trigger_issues":
-            return ("select", "CLOSEST: trigger_issues IS in SOURCE_TRIGGER — the only gap is an AGENT "
-                             "that handles issues (pr_reviewer declares github but the router treats it "
-                             "as PR-only). Add issue handling to pr_reviewer (or a new issue agent), then "
-                             "it arms + synth-fires via /run like PR")
-        return ("select", "add the trigger to SOURCE_TRIGGER + a PUSH_PAYLOAD field-map AND an agent "
-                          "that declares github for it; then arms + synth-fires via /run (github OAuth connected)")
-    if i == "box":
-        if t == "new_file":
-            return ("select", "the new_file poll is LIVE (resume_judge uses it); routing it to a "
-                             "DIFFERENT agent needs that agent to declare box — or drive it directly via "
-                             "POST /api/events/box/poll?agent=…")
-        return ("backend", "extend box_direct: the poller lists FILES only (should_process skips "
-                           "subfolders) and has no Box comments API")
-    if i == "gmail":
-        return ("select", "non-default trigger — map it in SOURCE_TRIGGER (+ label/search config). "
-                          "mailbot already declares gmail, so the agent is fine; firing still needs a "
-                          "real email (polling trigger, can't be fired out of band)")
-    if i == "telegram":
-        return ("select", "a content-filter on the existing AP telegram message trigger")
-    if i in ("slack", "discord"):
-        transport = ("Slack Events API" if i == "slack" else "Discord Gateway")
-        return ("backend", f"{i} runs on the DIRECT backend — no AP {i} connection. We already receive "
-                           f"the {transport}; route THIS event type in our own handler")
-    return ("select", "")
+    try:
+        from . import triggers as _tr
+    except ImportError:  # flat load
+        import triggers as _tr  # type: ignore
+    row = _tr.get(integration, "")
+    rows = {t.ap_trigger or t.direct_kind: t for t in _tr.events_for(integration)}
+    t = rows.get(ap_trigger) or row
+    if integration == "webhook":
+        return ("now", "live — pinned + routed, both proven end-to-end")
+    if integration == "github":
+        return ("now", "armed by the router and FIRED by machine: POST /subscriptions/{id}/run "
+                       "replays the piece's real payload with its X-GitHub-Event delivery header. "
+                       "All 14 github triggers verified live end-to-end.")
+    if integration == "gmail":
+        return ("manual", "arms today (the router selects this exact trigger; the label slot is "
+                          "passed to the piece). Gmail's triggers are POLLING — Activepieces will "
+                          "not run a polling trigger out of band, so the fire needs a real email.")
+    if integration == "box":
+        return ("real", "arms today; the direct poller handles files, folders and comments "
+                        "(POST /api/events/box/poll?kind=…). Fire it by dropping a file / creating "
+                        "a folder / commenting — needs a fresh BOX_DEV_TOKEN (~60 min).")
+    if integration == "slack":
+        return ("setup", "arms today as a CUGA-owned direct watcher (no AP flow). The Slack app "
+                         "must be SUBSCRIBED to this event type in its Event Subscriptions — see "
+                         "events_docs/setup/SLACK.md — then a real reaction/mention/join fires it.")
+    if integration == "discord":
+        need = ("; new_member additionally needs the privileged Server Members intent "
+                "(dev portal + EVENTS_DISCORD_MEMBERS_INTENT=1)"
+                if (t is not None and t.event == "new_member") else "")
+        return ("setup", "arms today as a CUGA-owned direct watcher on the Gateway CUGA already "
+                         "holds" + need + ".")
+    if integration == "telegram":
+        return ("real", "arms today as a content-filter watcher on the bot's message stream — "
+                        "send the bot a matching message to fire it.")
+    return ("real", "")
 
 
 # Stamp every example with its testability AS OF TODAY (basic examples get ("","")).

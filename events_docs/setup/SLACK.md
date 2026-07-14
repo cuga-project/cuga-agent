@@ -55,6 +55,42 @@ Slack channel message ─▶ Slack Events API ─▶ POST /api/events/slack/even
 
 7. **Invite the bot** to the channel: `/invite @your-bot-name`.
 
+## Slack WATCHERS — the other 7 triggers (optional)
+
+Steps 1–7 give you the **chat bot** (a human talks, an agent answers). Slack also exposes 7 more
+triggers CUGA can arm as **watchers** — *"when a message gets a `:bug:` reaction, triage it"*, *"when a
+new teammate joins, send an onboarding brief"*. These arm as **CUGA-owned direct subscriptions**: no
+Activepieces flow, no AP Slack connection — CUGA already receives the Slack Events API.
+
+They cannot fire until the Slack app is **subscribed to that event type**. Add whichever you want
+under **Event Subscriptions → Subscribe to bot events**, then **reinstall the app** and add the paired
+OAuth scope under **OAuth & Permissions → Bot Token Scopes**:
+
+| Trigger (what you say) | Slack bot event | Scope also needed |
+|---|---|---|
+| `new_reaction` — *"when a message gets a `:bug:` reaction…"* | `reaction_added` | `reactions:read` |
+| `reaction_removed` — *"when a `:white_check_mark:` is removed…"* | `reaction_removed` | `reactions:read` |
+| `new_slack_mention` — *"when the team is @mentioned…"* | `app_mention` | `app_mentions:read` |
+| `channel_created` — *"when a new channel is created…"* | `channel_created` | `channels:read` |
+| `new_slack_user` — *"when a new user joins the workspace…"* | `team_join` | `users:read` |
+| `new_emoji` — *"when a new custom emoji is added…"* | `emoji_changed` | `emoji:read` |
+| `saved_message` — *"when I save a message…"* | `star_added` | `stars:read` |
+| `new_channel_message` — *"when a message is posted in #incidents…"* | `message.channels` | *(already have it)* |
+
+**You only need the rows you actually want.** An event you never subscribe to simply never arrives —
+the watcher arms, sits idle, and nothing breaks. CUGA reports the requirement when you arm one:
+
+```
+ARMED direct watcher (slack/new_reaction [emoji=bug]) for incident_triage → web
+  (the Slack app must be subscribed to this event type — see events_docs/setup/SLACK.md)
+```
+
+Then arm it in chat:
+
+```
+/push when a message gets a :bug: reaction in slack, triage it as an incident
+```
+
 ## Verify
 
 ```bash

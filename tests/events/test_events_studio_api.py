@@ -595,6 +595,56 @@ def test_agent_create_validation_rejects_bad_input():
     assert r.status_code == 404
 
 
+def test_agent_triggers_survive_the_save_round_trip():
+    """Trigger-grain declarations must round-trip through the editor's save path. Both the Studio
+    form and _agent_spec_from_body used to keep only {app, ownership} — so EDITING an agent silently
+    widened it from 2 declared GitHub triggers to all 14. Aliases canonicalize on the way in
+    ('pull_request' is the legacy name for new_pr) and duplicates collapse."""
+    rt = _FakeRuntime()
+    c = _agent_client(rt)
+    body = {"name": "pr_bot", "backend": "cuga",
+            "integrations": [
+                {"app": "github", "ownership": "per-user",
+                 "triggers": ["new_pr", "pull_request", "new_review_request"]},
+                {"app": "gmail", "ownership": "per-user"}]}
+    r = c.post("/api/events/agents", json=body, headers={"x-user-id": "admin"})
+    assert r.status_code == 200 and r.json()["ok"], r.text
+    a = {x["name"]: x for x in c.get("/api/events/agents").json()["agents"]}["pr_bot"]
+    gh = next(i for i in a["integrations"] if i["app"] == "github")
+    gm = next(i for i in a["integrations"] if i["app"] == "gmail")
+    assert gh["triggers"] == ["new_pr", "new_review_request"]   # canonical, deduped, order kept
+    assert "triggers" not in gm                                 # no declaration = all triggers
+
+
+def test_agent_create_rejects_an_unknown_trigger():
+    """A typo'd trigger is a 400 naming the known events — not a silently-stored declaration the
+    concierge can never match."""
+    c = _agent_client(_FakeRuntime())
+    r = c.post("/api/events/agents",
+               json={"name": "x", "integrations": [
+                   {"app": "github", "ownership": "per-user", "triggers": ["new_prr"]}]},
+               headers={"x-user-id": "admin"})
+    assert r.status_code == 400
+    assert "new_prr" in r.json()["error"] and "new_pr" in r.json()["error"]
+
+
+def test_triggers_endpoint_serves_the_registry():
+    """GET /api/events/triggers is the registry, verbatim — the Studio's trigger picker and the
+    slides deck both render it, so it must agree with triggers.py exactly."""
+    from events import triggers as tr
+    r = _agent_client(_FakeRuntime()).get("/api/events/triggers")
+    assert r.status_code == 200
+    d = r.json()
+    assert {a["app"] for a in d["apps"]} == set(tr.apps())
+    assert d["total"] == len(tr.rows()) and sorted(d["kinds"]) == sorted(tr.event_kinds())
+    gh = next(a for a in d["apps"] if a["app"] == "github")
+    assert len(gh["triggers"]) == len(tr.events_for("github"))
+    assert gh["triggers"][0]["default"] is True                 # the app default leads its group
+    row = next(t for t in gh["triggers"] if t["event"] == "new_pr")
+    assert row["backend"] == "ap" and row["fire"] == "synth"
+    assert row["slots"][0]["name"] == "repo" and row["slots"][0]["required"] is True
+
+
 def test_integrations_box_direct_backend_reports_connected():
     """With EVENTS_BOX_BACKEND=direct + a token, Box reads 'connected' even though there's no AP
     connection — the direct-backend override (else the UI would show a live token as disconnected)."""

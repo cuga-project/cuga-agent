@@ -112,7 +112,9 @@ def test_flow_dispatcher_and_inbound():
     assert flows.build_flow("POLL", agent="p", thread_id="t", prompt="x",
                             interval_seconds=60).get("__mode") == "poll"
     inb = flows.build_inbound_flow(channel="telegram", agent="concierge")
-    assert inb["trigger"]["settings"]["triggerName"] == "new_message"
+    # the CHANNELS descriptor's trigger — the SAME one the live path (ap_engine.create_inbound_flow)
+    # arms. This used to assert "new_message", a name that had silently drifted from the live flow.
+    assert inb["trigger"]["settings"]["triggerName"] == "new_telegram_message"
     assert inb["trigger"]["nextAction"]["nextAction"]["settings"]["pieceName"] == flows.PIECE["telegram"]
     try:
         flows.build_flow("BOGUS", agent="a", thread_id="t", prompt="p")
@@ -162,7 +164,11 @@ def test_classify_cadence_and_source():
     assert classify.cadence_of("daily at 9am")["cron"] == "0 9 * * *"
     assert classify.cadence_of("every weekday at 9am")["cron"] == "0 9 * * 1-5"
     assert classify.source_of("when a file lands in Box") == ("box", "new_file")
-    assert classify.source_of("when a PR opens")[0] == "github_pr"
+    # canonical registry names now: (app, event) — the old ("github_pr", "new_pull_request")
+    # sub-trigger labels resolve through triggers.SOURCE_ALIASES for legacy callers.
+    assert classify.source_of("when a PR opens") == ("github", "new_pr")
+    assert classify.source_of("when a release is published") == ("github", "new_release")
+    assert classify.source_of("when I label an email 'Read-later'") == ("gmail", "new_labeled_email")
     d = classify.decision("when a resume lands in my Box folder, email me")
     assert d["mode"] == "PUSH" and d["source"] == "box"
 

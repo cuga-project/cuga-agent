@@ -196,7 +196,17 @@ def test_seed_agents_carry_connectors():
     assert any(i["app"] == "github" for i in pr.integrations)
     assert "incident_triage" in names                               # the generic webhook worker
     it = rt.get_agent("incident_triage", scope="acme/·/alice")
-    assert "slack" in it.channels and not it.integrations           # triage → channel, no integration
+    # triage now ALSO owns trigger-grain watcher events (github issues, :bug: reactions, box
+    # comments) — declarations carry a "triggers" list naming WHICH events of the app they handle.
+    assert "slack" in it.channels
+    assert any(i["app"] == "github" and "new_issue" in i.get("triggers", [])
+               for i in it.integrations)
+    # trigger-grain on pr_reviewer: PR-shaped events only (repo lifecycle lives on repo_watcher)
+    assert any("new_pr" in i.get("triggers", []) for i in pr.integrations)
+    assert "repo_watcher" in names                                  # github lifecycle watcher
+    rw = rt.get_agent("repo_watcher", scope="acme/·/alice")
+    assert any(i["app"] == "github" and "new_release" in i.get("triggers", [])
+               for i in rw.integrations)
     rj = rt.get_agent("resume_judge", scope="acme/·/alice")
     assert {i["app"] for i in rj.integrations} >= {"box", "gmail"}   # Box + Gmail watcher
 

@@ -55,6 +55,8 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         # ── cuga-apps-inspired agents (see cuga-apps/apps/*): richer, tool-combining skills ──
         AgentSpec(name="research_compass", backend=b, mcp_servers=["cuga-knowledge", "cuga-web"],
                   channels=web,   # inspired by cuga-apps: Paper Scout + Web Researcher
+                  integrations=[{"app": "slack", "ownership": "shared",
+                                 "triggers": ["new_slack_mention", "saved_message"]}],
                   prompt="Research any topic. Search arXiv + Semantic Scholar (cuga-knowledge) AND the "
                          "web (cuga-web), then synthesize the findings with citations, name the 2-3 most "
                          "important papers/sources, and suggest what to read next. Be concrete."),
@@ -70,6 +72,8 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         # ── agents that reach the cuga-web tools BEYOND web_search. Before these, the whole fleet
         #    used exactly one of that server's seven tools (see tests/events/AGENT_NOW_CATALOG.md).
         AgentSpec(name="webpage_summarizer", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  integrations=[{"app": "telegram", "ownership": "shared",
+                                 "triggers": ["new_channel_message"]}],
                   prompt="Given a URL, fetch the page (fetch_webpage) and summarize it: what it is, the "
                          "3-5 key points, and who should care. If asked what a page links to, use "
                          "fetch_webpage_links. If given a topic instead of a URL, web_search for it "
@@ -134,6 +138,8 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                          "experience, and patient-review signals. Return 3-6 candidates: name · specialty "
                          "· location · why they fit (with a source). Never fabricate a provider or review."),
         AgentSpec(name="ibm_docs_qa", backend=b, mcp_servers=["cuga-web"], channels=web,
+                  integrations=[{"app": "discord", "ownership": "shared",
+                                 "triggers": ["new_channel_message"]}],
                   prompt="Answer IBM Cloud questions from real IBM documentation. For each question, "
                          "web_search with `site:cloud.ibm.com` or `site:ibm.com` prepended, review the "
                          "snippets, fetch_webpage the most relevant doc, and answer grounded in it. Cite "
@@ -158,12 +164,38 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                           "citing specifics from the resume.")),
         AgentSpec(name="support_digest", backend=b, mcp_servers=["cuga-web"],
                   channels=["web", "slack"],
-                  integrations=[{"app": "slack", "ownership": "shared"}],
-                  prompt="You post an overnight support digest to a shared Slack channel."),
+                  integrations=[{"app": "slack", "ownership": "shared",
+                                 "triggers": ["channel_created", "new_slack_user", "new_emoji"]},
+                                {"app": "discord", "ownership": "shared",
+                                 "triggers": ["new_member"]},
+                                {"app": "box", "ownership": "per-user",
+                                 "triggers": ["new_folder"]}],
+                  prompt="You post an overnight support digest to a shared Slack channel, and handle "
+                         "workspace-lifecycle events: welcome a new teammate or server member with a "
+                         "short onboarding note, announce a newly-created channel with a suggested "
+                         "charter, note a new custom emoji, or index a new Box folder."),
         AgentSpec(name="pr_reviewer", backend=b, mcp_servers=["cuga-code", "cuga-text"], channels=web,
-                  integrations=[{"app": "github", "ownership": "per-user"}],
-                  prompt="When a pull request opens, summarize what it changes and flag risks "
-                         "(bugs, security, breaking changes). Uses the user's own GitHub (PAT)."),
+                  # trigger-grain declaration: WHICH github events this agent handles. Issues and
+                  # repo-lifecycle events belong to incident_triage / repo_watcher below.
+                  integrations=[{"app": "github", "ownership": "per-user",
+                                 "triggers": ["new_pr", "new_review_request"]}],
+                  prompt="When a pull request opens (or your review is requested), summarize what it "
+                         "changes and flag risks (bugs, security, breaking changes)."),
+        # repo lifecycle watcher — the home for github's NON-PR/issue triggers (star, release,
+        # push, branch, milestone, …). One thin agent instead of overloading pr_reviewer, and it
+        # keeps per-user github OFF agents that have live cron examples (their connect gate).
+        AgentSpec(name="repo_watcher", backend=b, mcp_servers=["cuga-text", "cuga-web"],
+                  channels=["web", "slack", "telegram"],
+                  integrations=[{"app": "github", "ownership": "per-user",
+                                 "triggers": ["new_star", "new_release", "new_push", "new_commit",
+                                              "new_branch", "new_collaborator", "new_repo_label",
+                                              "new_milestone", "new_discussion", "new_gh_mention"]}],
+                  prompt="You announce and summarize repository lifecycle events (stars, releases, "
+                         "pushes, commits, branches, collaborators, labels, milestones, discussions, "
+                         "mentions). Read the event payload you are given, say plainly what happened "
+                         "and who did it, and add one useful next step when it is obvious (e.g. a "
+                         "release → one-line changelog digest; a push → note what changed). Concise, "
+                         "chat-friendly."),
         # a scheduled digest agent → posts to a chat channel (demoes CRON → Slack delivery)
         AgentSpec(name="github_trending", backend=b, mcp_servers=["cuga-web"],
                   channels=["web", "slack", "telegram"],
@@ -173,9 +205,21 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                          "— this posts to a busy chat channel."),
         # the generic inbound-webhook worker: any external system POSTs a payload → this triages it
         AgentSpec(name="incident_triage", backend=b, mcp_servers=["cuga-text"], channels=["web", "slack"],
-                  prompt="You triage an inbound alert/incident payload from a webhook. Summarize what "
-                         "happened in one line, classify severity (P1/P2/P3), name the likely component, "
-                         "and suggest the first action. Be concise — this goes to a busy on-call channel."),
+                  # triage-shaped triggers beyond the webhook: new github issues / blocker comments,
+                  # :bug:-reaction escalations, box file-comment action items. slack is a DIRECT
+                  # backend (no AP connection) and box comments ride the direct poller.
+                  integrations=[{"app": "github", "ownership": "per-user",
+                                 "triggers": ["new_issue", "new_discussion_comment"]},
+                                {"app": "slack", "ownership": "shared",
+                                 "triggers": ["new_reaction", "reaction_removed",
+                                              "new_channel_message"]},
+                                {"app": "box", "ownership": "per-user",
+                                 "triggers": ["new_box_comment"]}],
+                  prompt="You triage an inbound alert/incident payload from a webhook or watcher "
+                         "(a monitoring alert, a new GitHub issue, a :bug: reaction, a comment "
+                         "flagging a blocker). Summarize what happened in one line, classify severity "
+                         "(P1/P2/P3), name the likely component, and suggest the first action. Be "
+                         "concise — this goes to a busy on-call channel."),
     ]
 
 

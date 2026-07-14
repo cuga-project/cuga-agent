@@ -7,7 +7,7 @@ version; here is the reference.
 ## Offline — the fast green gate
 
 ```bash
-make test          # pytest tests/events -q   (156 checks, ~10s, no network)
+make test          # pytest tests/events -q   (~30s, no stack, no network)
 ```
 
 Pure-Python invariants: envelope validation, flow builders, dedup, the API contract (every endpoint's
@@ -16,8 +16,55 @@ status codes + isolation, with AP faked), the Box download shaping, credential r
 
 - `test_api_spec_is_golden` — `events_docs/api/api_spec.html` must match `scripts/gen_api_spec.py`.
 - `test_every_route_appears_in_the_api_reference` — every route in `app.py` has a row in `api.html`.
+- `test_examples_board_matches_the_catalog` — `examples.html` must match `events/catalog.py`.
+- `test_slides_deck_matches_the_registry` — `events_docs/slides.html` (the deck) must match
+  `triggers.py` + `catalog.py` (`make slides` regenerates).
 - `test_integrations_auth_matches_the_oauth_provider_registry` — `connectors`, `oauth`, and
   `setup_guides` must agree on how each app connects.
+
+### The trigger suite — `test_events_triggers.py` (22 checks)
+
+The registry ([`events/triggers.py`](../src/cuga/backend/events/triggers.py)) is the source of truth
+for all 33 triggers, so its tests are **parametrized over every row** — a new trigger is tested the
+moment it is added, and cannot be added half-wired:
+
+- `test_every_ap_row_builds_its_own_flow` — the core regression the registry exists to prevent:
+  `(app, event)` must select *that event's* piece trigger and *that event's* payload map. The old code
+  ignored `event` and armed the app default for everything.
+- `test_classifier_eval_set_routes_every_trigger` — a **31-utterance labelled eval set**, one per
+  trigger. A misroute here is a user arming the *wrong* watcher, silently.
+  `test_classifier_eval_covers_every_ap_and_channel_trigger` stops the eval falling behind the
+  registry.
+- `test_github_synths_satisfy_the_pieces_real_run_filters` — pins **two Activepieces bugs** found by
+  reading `piece-github@0.8.5`'s bundled source: its `new_release` trigger only accepts
+  `action: "created"` while its own sample data ships `"published"`, and its `new_commit` trigger keeps
+  only commits with `distinct: true`, which its sample omits. **A payload copied faithfully from either
+  sample is silently discarded** — AP accepts the trigger and no run is ever created.
+- `test_every_github_trigger_declares_its_delivery_header` + `test_debug_run_sends_the_github_delivery_header`
+  — one repo webhook carries *every* subscribed event type, so the piece disambiguates on
+  `X-GitHub-Event`. A synthetic fire without it makes the piece emit **nothing**.
+- `test_validate_gate_asks_for_missing_slots_and_rejects_unknowns` — the arm-time gate.
+- `test_oauth_state_signature_roundtrip_tamper_and_expiry` — a forged/unsigned/expired `state` is a
+  hard reject (it used to be trusted, allowing a connection hijack).
+- `test_dedup_unique_index_turns_the_race_into_reuse` — the check-then-write race is now refereed by a
+  DB constraint.
+- `test_direct_match_applies_config_filters` / `test_direct_dispatch_posts_the_invoke_envelope` — the
+  direct (Slack/Discord/Telegram) watcher matching + dispatch.
+
+### Live — every GitHub trigger, end to end
+
+```bash
+.venv/bin/python tests/events/live_github_triggers.py            # all 14
+.venv/bin/python tests/events/live_github_triggers.py new_star   # one
+```
+
+For each of the 14 GitHub triggers: **arm** (a real Activepieces flow whose publish creates a real
+repo webhook) → **fire** synthetically via `POST /subscriptions/{id}/run` with the piece's real payload
+and delivery header → assert a real agent answer → **clean up** (delete the subscription *and* strip
+the repo webhooks — deleting an AP flow does **not** remove its webhook).
+
+**Safety:** hard-pinned to `anupamamurthi/pachyderm` (`ALLOWED_REPOS`) and it only ever creates and
+deletes repo *webhooks* — never an issue, PR, comment, or any content. Last run: **14/14 in 91s.**
 
 Run this before pushing. A red offline gate is never "just flaky."
 

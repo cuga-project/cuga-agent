@@ -512,6 +512,23 @@ ENDPOINTS = [
                                       "trigger": "NOW", "channel": "web", "live": True}]},
                   "Source of truth for the Studio's Examples tab and <code>events_docs/api/examples.html</code>.")]),
 
+    E("GET", "/api/events/triggers", "studio",
+      "The trigger registry — every (integration, event) the platform can watch.",
+      tier="ui", callers=["studio", "tests"],
+      responses=[(200, {"apps": [{"app": "github", "triggers": [
+          {"event": "new_pr", "title": "New Pull Request", "backend": "ap", "default": True,
+           "fire": "synth", "piece": "github", "ap_trigger": "trigger_pull_request",
+           "direct_kind": "",
+           "slots": [{"name": "repo", "question": "Which repository (owner/repo) should I watch?",
+                      "required": True}]}]}],
+                        "total": 33, "kinds": ["channel_created", "new_pr", "…"]},
+                  "Grouped per app, the app's default trigger first.")],
+      notes="Generated straight from <code>triggers.py</code> — drives the Studio agent editor's "
+            "trigger-grain picker and the slides deck, so neither can drift from the code. "
+            "<code>backend</code> says who receives the event (<code>ap</code> = an Activepieces "
+            "flow, <code>direct</code> = CUGA itself); <code>fire</code> says how it can be "
+            "verified (<code>synth</code> / <code>real</code> / <code>manual</code>)."),
+
     E("GET", "/api/events/setup-guides", "studio",
       "Per-connector setup guide + whether it is <i>actually</i> connected.",
       tier="ui", callers=["studio"],
@@ -605,13 +622,14 @@ ENDPOINTS = [
     E("GET", "/api/events/docs/{page}", "studio",
       "Serve an API reference page so the Studio's API tab can embed it.",
       tier="ui", callers=["studio"],
-      path_params=[("page", "api | spec | examples", "spec")],
+      path_params=[("page", "api | spec | examples | slides", "spec")],
       responses=[(200, "&lt;html&gt;…&lt;/html&gt;",
                   "The requested page: <code>api</code>=api.html, <code>spec</code>=api_spec.html, "
-                  "<code>examples</code>=examples.html. Files resolve from <code>events_docs/api/</code> "
-                  "(override with <code>EVENTS_DOCS_DIR</code>)."),
+                  "<code>examples</code>=examples.html, <code>slides</code>=the event-driven-agents "
+                  "deck (from <code>events_docs/</code>, one level up). Files resolve from "
+                  "<code>events_docs/api/</code> (override with <code>EVENTS_DOCS_DIR</code>)."),
                  (404, {"ok": False, "error": "unknown page"},
-                  "Only those three page names are served."),
+                  "Only those page names are served."),
                  (404, {"ok": False, "error": "api_spec.html not found (set EVENTS_DOCS_DIR)"},
                   "The file isn't where the server looked.")],
       try_it=False),
@@ -656,9 +674,20 @@ ENDPOINTS = [
             "The live harness exercises it unsigned on purpose, and prints a warning."),
 
     E("POST", "/api/events/box/poll", "inbound",
-      "Poll a Box folder for new files and fire the watcher agent on each.",
+      "Poll a Box folder and fire the watcher agent on each new item. <code>kind</code> selects "
+      "WHICH box trigger: <code>new_file</code> (default), <code>new_folder</code>, or "
+      "<code>new_box_comment</code> — the three box rows in the trigger registry, all served by the "
+      "same CUGA-side poller (no Activepieces, no OAuth).",
       tier="edge", callers=["operator", "cuga"], auth="gateway",
-      body=[("Server-tracked watermark (a standing poll)", {"folder_id": "0"},
+      body=[("Watch for new FOLDERS", {"folder_id": "0", "kind": "new_folder",
+                                       "agent": "support_digest"},
+             "The poller lists subfolders created after the watermark. (It used to list files only — "
+             "<code>should_process</code> explicitly skipped folders.)"),
+            ("Watch for new COMMENTS on the folder's files",
+             {"folder_id": "0", "kind": "new_box_comment", "agent": "incident_triage"},
+             "Box has no folder-level comments feed, so the poller walks the folder's files and "
+             "collects each file's comments. Fine at watched-folder scale; not a general Box crawler."),
+            ("Server-tracked watermark (a standing poll)", {"folder_id": "0"},
              "Omitting <code>since</code> makes the server use its own last-seen watermark for that "
              "folder, so a scheduled poll only fires on genuinely new files. This is the call you put "
              "on a timer."),

@@ -11,8 +11,10 @@ Auth: AP_EMAIL/AP_PASSWORD (community edition → JWT) or AP_API_KEY (cloud). Co
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 
 import httpx
 
@@ -28,18 +30,30 @@ class APError(RuntimeError):
 
 class APEngine:
     kind = "activepieces"
+    # AP's JWT lives much longer than this; a short TTL keeps us resilient to AP restarts while
+    # still collapsing a burst of operations onto ONE sign-in.
+    TOKEN_TTL_SECS = 10 * 60
 
     def __init__(self) -> None:
+        try:
+            from .secret_seam import secret as _secret
+        except ImportError:  # flat load (tests put the events dir on sys.path)
+            from secret_seam import secret as _secret
         self.base = os.environ["AP_BASE_URL"].rstrip("/")
-        self.api_key = os.environ.get("AP_API_KEY", "")
+        # secrets go through the events secret seam: the .env value may be plaintext (dev) or a
+        # vault://…-style reference (prod). AP_PASSWORD is the one GAPS.md says to vault — it
+        # guards an internet-tunneled AP admin console.
+        self.api_key = _secret("AP_API_KEY")
         self.email = os.environ.get("AP_EMAIL", "")
-        self.password = os.environ.get("AP_PASSWORD", "")
+        self.password = _secret("AP_PASSWORD")
         self.project_id = os.environ.get("AP_PROJECT_ID", "")
         self.invoke_url = (os.environ.get("HOST_CALLBACK_URL")
                            or os.environ.get("EA_INVOKE_URL")
                            or "http://host.docker.internal:8000/invoke")
         self.gateway_token = os.environ.get("GATEWAY_TOKEN", "")
         self._token = ""
+        self._token_exp = 0.0                       # cached-JWT expiry (see _auth)
+        self._auth_lock = asyncio.Lock()
         self._piece_cache: dict[str, str] = {}
         self._project_cache: dict[str, str] = {}   # project displayName -> id
         self._degraded = False                      # set if the AP plan refuses extra projects
@@ -63,13 +77,36 @@ class APEngine:
         if not self.project_id:
             self.project_id = body.get("projectId", "")
 
-    async def _auth(self, c: httpx.AsyncClient) -> dict:
+    async def _auth(self, c: httpx.AsyncClient, *, force: bool = False) -> dict:
+        """AP auth headers, with the JWT CACHED and refreshed under a lock.
+
+        This used to sign in on EVERY operation. Arming one flow is a dozen AP calls, so a burst
+        (e.g. 14 trigger arms) became well over a hundred sign-ins — AP slowed/refused, the
+        connection check then threw, and the concierge's gate reported "connect your credentials"
+        for an account that WAS connected. Cache + refresh removes the storm at the source; the
+        lock stops a thundering herd of concurrent refreshes.
+        """
         if self.api_key:
             return {"Authorization": f"Bearer {self.api_key}"}
         if not (self.email and self.password):
             raise APError("AP needs AP_API_KEY or AP_EMAIL+AP_PASSWORD")
-        await self._sign_in(c)   # fresh each op — robust to AP restarts
+        now = time.time()
+        if not force and self._token and now < self._token_exp:
+            return {"Authorization": f"Bearer {self._token}"}
+        async with self._auth_lock:
+            # another coroutine may have refreshed while we waited for the lock
+            if not force and self._token and time.time() < self._token_exp:
+                return {"Authorization": f"Bearer {self._token}"}
+            await self._sign_in(c)
+            self._token_exp = time.time() + self.TOKEN_TTL_SECS
         return {"Authorization": f"Bearer {self._token}"}
+
+    async def _auth_retry(self, c: httpx.AsyncClient, resp) -> dict | None:
+        """A cached token can be invalidated by an AP restart. On a 401/403, sign in once more and
+        let the caller retry — otherwise a stale cache would look like a broken credential."""
+        if resp is not None and resp.status_code in (401, 403):
+            return await self._auth(c, force=True)
+        return None
 
     async def _piece_version(self, c: httpx.AsyncClient, name: str) -> str:
         if name in self._piece_cache:
@@ -413,12 +450,26 @@ class APEngine:
         externalId (wired as auth on the trigger — REQUIRED for the flow to publish). ``source_input``
         supplies trigger-specific inputs (e.g. github needs a ``repository``, box a ``folder``)."""
         from . import flows
-        piece_key, trig = flows.SOURCE_TRIGGER.get(source, (source, event))
+        # Registry-resolved: (source, event) selects the SPECIFIC piece trigger. The old lookup
+        # keyed on source alone and IGNORED `event` for known apps — gmail/new_attachment armed the
+        # new-email trigger, and a second trigger on the same app could never exist.
+        row = flows.resolve_trigger(source, event)
+        if row is not None and row.backend == "direct":
+            raise ValueError(f"{source}/{row.event} is a DIRECT trigger (CUGA receives it) — "
+                             "it is not armable as an Activepieces flow")
+        if row is not None:
+            piece_key, trig = row.piece, row.ap_trigger
+        else:                                    # legacy channel/webhook/rss rows
+            piece_key, trig = flows._LEGACY_SOURCE_TRIGGER[source]
         piece = flows.PIECE.get(piece_key, f"@activepieces/piece-{piece_key}")
+        # The default flow name must include the EVENT: _new_flow deletes any existing flow with
+        # the same name, so the old `push-{source}-{agent}` naming meant arming a SECOND trigger on
+        # the same app silently destroyed the first one's flow.
+        default_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}"
         async with httpx.AsyncClient(timeout=30) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            flow_id = await self._new_flow(c, hdrs, name or f"push-{source}-{agent}", pid, scope)
+            flow_id = await self._new_flow(c, hdrs, name or default_name, pid, scope)
             tver = await self._piece_version(c, piece)
             hver = await self._piece_version(c, flows.PIECE["http"])
             tinp = dict(source_input or {})
@@ -426,13 +477,13 @@ class APEngine:
                 tinp["auth"] = f"{{{{connections['{connection}']}}}}"
             await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
             # Pass the trigger's meaningful fields into the /invoke payload so the worker has real
-            # content to reason over (not just a filename). Field paths are the AP piece's trigger
-            # output shape; unknown paths render empty (harmless). See flows.PUSH_PAYLOAD.
+            # content to reason over (not just a filename). Field paths follow the piece's OWN
+            # sample output, per (source, event) from the registry (see triggers.py).
             # ROBUSTNESS (Tier 0): ALWAYS also forward the FULL raw trigger output as `_raw`. If the
             # curated per-piece paths are wrong or missing (a new/unmapped piece), the worker still
             # gets the whole payload — envelope.worker_input falls back to `_raw` when the curated
             # fields come back empty. Retires the "flow ran green but the agent got nothing" class.
-            payload = {**flows.PUSH_PAYLOAD.get(source, {}), "_raw": "{{trigger}}"}
+            payload = {**flows.push_payload(source, event), "_raw": "{{trigger}}"}
             body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": payload}}
@@ -444,9 +495,21 @@ class APEngine:
 
     # ---- connections (credentials) --------------------------------------
     async def _connections(self, c: httpx.AsyncClient, hdrs: dict, project_id: str) -> list:
+        """The project's AP connections. RAISES on a non-200 instead of returning [].
+
+        Returning an empty list on an error made "AP is unhappy" indistinguishable from "this user
+        has connected nothing" — which is precisely how a working credential got reported as
+        CONNECT NEEDED. A 401/403 (a cached JWT invalidated by an AP restart) is retried once with
+        a fresh sign-in before giving up."""
         r = await c.get(f"{self.base}/api/v1/app-connections", headers=hdrs,
                         params={"projectId": project_id, "limit": 100})
-        return r.json().get("data", []) if r.status_code == 200 else []
+        if r.status_code in (401, 403):
+            fresh = await self._auth(c, force=True)
+            r = await c.get(f"{self.base}/api/v1/app-connections", headers=fresh,
+                            params={"projectId": project_id, "limit": 100})
+        if r.status_code != 200:
+            raise APError(f"AP list-connections failed: HTTP {r.status_code} {r.text[:160]}")
+        return r.json().get("data", [])
 
     async def connection_exists(self, external_id: str, project_name: str | None = None) -> bool:
         """True if an AP connection with this externalId exists (per-user connect check)."""
@@ -624,7 +687,8 @@ class APEngine:
             log.warning("AP get run %s failed: %s", run_id, e)
             return None
 
-    async def trigger_flow(self, flow_id: str, payload: dict | None = None) -> tuple[bool, str]:
+    async def trigger_flow(self, flow_id: str, payload: dict | None = None,
+                           headers: dict | None = None) -> tuple[bool, str]:
         """Fire an ENABLED flow immediately, out of band of its own trigger. **Debug use only.**
 
         Activepieces exposes ``POST /api/v1/webhooks/<flowId>`` for *every* flow, whatever its
@@ -643,7 +707,11 @@ class APEngine:
         """
         try:
             async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}", json=payload or {})
+                # `headers` lets the caller reproduce the PROVIDER's delivery headers (e.g. GitHub's
+                # X-GitHub-Event). One repo webhook carries many event types, so a piece trigger
+                # disambiguates on that header — omit it and the piece emits nothing at all.
+                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}", json=payload or {},
+                                 headers=headers or None)
             ok = r.status_code in (200, 204)
             return ok, (f"HTTP {r.status_code}" + (f" {r.text[:120]}" if r.text else ""))
         except Exception as e:  # noqa: BLE001

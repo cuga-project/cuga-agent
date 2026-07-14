@@ -52,12 +52,59 @@ Two other facts that trip everyone up:
 | Component | Role |
 |---|---|
 | **`/invoke`** | the seam. Envelope in → agent runs → answer out. `X-Gateway-Token` auth. `meta.mcp` = the tools that actually ran. |
-| **Concierge** | the NL→flow router (`POST /api/concierge`). Classifies an utterance, picks a pre-built agent, reuses-or-creates the AP flow. It **never creates agents** — it routes among the fleet. |
-| **Worker fleet** | 18 pre-built agents (`seed.py`), each = prompt + MCP tools + access rules. On the `cuga` backend, each materialises its own `DynamicAgentGraph`. |
+| **Concierge** | the NL→flow router (`POST /api/concierge`). Classifies an utterance, picks a pre-built agent, **validates the trigger against the registry**, reuses-or-creates the flow. It **never creates agents** — it routes among the fleet. |
+| **Trigger registry** | **`events/triggers.py` — one row per `(app, event)`**: its AP piece trigger *or* direct transport kind, the payload map, required slots, classifier phrases, a synthetic fire payload, and the provider's delivery header. The single source of truth (below). |
+| **Worker fleet** | 27 pre-built agents (`seed.py`), each = prompt + MCP tools + access rules + the **integration triggers it handles**. On the `cuga` backend, each materialises its own `DynamicAgentGraph`. |
 | **MCP tool servers** | the agents' hands: `cuga-finance · geo · web · knowledge · code · text`. Attached per agent by name (see [MCP notes](#mcp-tools)). |
-| **Activepieces (AP)** | owns triggers **and all credentials** (the agent holds none). Schedule/gmail/github/telegram pieces. Connections are OAUTH2 or SECRET_TEXT. |
+| **Activepieces (AP)** | owns AP-backed triggers **and all credentials** (the agent holds none). Connections are OAUTH2 or SECRET_TEXT. |
+| **Direct watchers** | Slack/Discord/Telegram/Box triggers CUGA receives *itself* (`events/direct_events.py`). No AP flow, no AP connection — the subscription row has `ap_flow_id = NULL`. |
 | **Delivery** | direct adapter or AP send-step; sink from the `thread_id` origin. |
 | **Studio UI** | a *dumb* React console — it renders exactly what the read endpoints report, no client-side business logic. |
+
+## The trigger registry — one row per `(app, event)`
+
+Every integration exposes **many** triggers, not one. GitHub alone has 14 (PR, issue, star, push,
+release, commit, branch, milestone, collaborator, label, discussion, discussion-comment,
+review-request, mention). The layer used to hard-code exactly one per app — `create_push_flow` took an
+`event` argument and *ignored* it — so a second trigger on an app was structurally impossible.
+
+[`events/triggers.py`](../src/cuga/backend/events/triggers.py) now holds **33 triggers across 7
+integrations**, and everything else derives from it:
+
+```
+                        ┌──────────── triggers.py ────────────┐
+                        │  (app, event) →                     │
+                        │    piece + ap_trigger | direct_kind │
+                        │    payload map   (curated {{…}})    │
+                        │    slots         (repo/label/emoji) │
+                        │    phrases       (NL classifier)    │
+                        │    synth         (machine fire)     │
+                        │    hook_event    (X-GitHub-Event)   │
+                        └──┬────┬────┬────┬────┬────┬─────────┘
+       flows.build_push_flow │    │    │    │    │  envelope.EVENT_KINDS
+        ap_engine.create_push_flow │    │    │  classify (NL → trigger)
+            concierge.validate ────┘    │    └── docs (examples feasibility)
+                                        └─────── tests (parametrized per trigger)
+```
+
+Adding a trigger is **one row** plus an agent that declares it. An unknown `(app, event)` now **raises
+at build time** — the old code silently fell back to a nonexistent `new_item` trigger and armed a flow
+that could never publish.
+
+**How each trigger can be fired** is a property of the trigger, not a limitation of the code:
+
+| | Fire | Why |
+|---|---|---|
+| **GitHub** (14) | **by machine** | WEBHOOK triggers — `POST /subscriptions/{id}/run` replays the piece's real payload *with its `X-GitHub-Event` delivery header*. All 14 verified live end-to-end. |
+| **Gmail** (4) | real email | POLLING triggers — Activepieces will not run one out of band. Arm-verified by design. |
+| **Box** (3) | real action | the CUGA-side poller (files · folders · comments). Drop a file to fire it. |
+| **Slack** (8) · **Discord** (2) | real action + setup | direct watchers; the Slack app must be *subscribed* to the event, Discord member events need the privileged intent. |
+| **Webhook** | by machine | the inbound endpoint is always live (pinned or concierge-routed). |
+
+**Agents declare triggers, not just apps.** An `integrations` entry may carry
+`"triggers": ["new_pr", "new_review_request"]`, so `pr_reviewer` gets PR-shaped events while
+`repo_watcher` takes repo lifecycle and `incident_triage` takes issues and `:bug:` reactions. Without
+a list, the agent handles all of that app's triggers (legacy declarations are unchanged).
 
 ## What is reused vs added vs delegated
 

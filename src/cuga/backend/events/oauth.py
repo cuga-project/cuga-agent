@@ -31,8 +31,12 @@ so the layer degrades gracefully.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
+import time
 
 # provider registry — endpoints + default scopes + the AP piece the connection is for.
 PROVIDERS: dict[str, dict] = {
@@ -97,7 +101,11 @@ def _env(app: str, key: str) -> str:
                 return v
         except Exception:  # noqa: BLE001
             pass
-    return os.environ.get(f"EVENTS_OAUTH_{app.upper()}_{key}", "")
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load
+        from secret_seam import secret as _secret
+    return _secret(f"EVENTS_OAUTH_{app.upper()}_{key}")
 
 
 class OAuthAppStore:
@@ -168,13 +176,50 @@ def redirect_uri(app: str) -> str:
     return f"{public_base()}/api/events/connect/{app}/callback"
 
 
+_RANDOM_STATE_KEY: bytes | None = None
+STATE_MAX_AGE_SECS = 15 * 60
+
+
+def _state_key() -> bytes:
+    """The HMAC key for OAuth ``state``. Prefers an explicit EVENTS_STATE_KEY; falls back to other
+    server-held secrets so single-box deploys are signed without extra config; last resort is a
+    per-process random key (state still verifies within one process — a `make reload` mid-consent
+    just means clicking Connect again). Multi-replica deploys must set EVENTS_STATE_KEY."""
+    for var in ("EVENTS_STATE_KEY", "GATEWAY_TOKEN", "AP_JWT_SECRET", "AP_PASSWORD"):
+        v = (os.environ.get(var, "") or "").split(" #", 1)[0].strip()
+        if v:
+            return hashlib.sha256(f"events-state:{v}".encode()).digest()
+    global _RANDOM_STATE_KEY
+    if _RANDOM_STATE_KEY is None:
+        _RANDOM_STATE_KEY = secrets.token_bytes(32)
+    return _RANDOM_STATE_KEY
+
+
 def encode_state(**kw) -> str:
-    return base64.urlsafe_b64encode(json.dumps(kw).encode()).decode()
+    """HMAC-signed, expiring OAuth state: ``b64(payload).hexsig``.
+
+    The callback is UNAUTHENTICATED and used to trust a plain-base64 state for the principal —
+    a crafted state could bind a freshly-authorized credential into an arbitrary user's scope
+    (login-CSRF / connection hijack) and use ``ret`` as an open redirect. Signing makes the state
+    tamper-proof; the timestamp bounds the replay window."""
+    kw["ts"] = int(time.time())
+    payload = base64.urlsafe_b64encode(json.dumps(kw).encode()).decode()
+    sig = hmac.new(_state_key(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
 
 
 def decode_state(state: str) -> dict:
+    """Verify + decode a signed state. Returns {} on ANY failure (bad signature, expired,
+    malformed) — callers must treat {} as a hard reject, not a fallback."""
     try:
-        return json.loads(base64.urlsafe_b64decode(state.encode()).decode())
+        payload, sig = state.rsplit(".", 1)
+        want = hmac.new(_state_key(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(want, sig):
+            return {}
+        d = json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
+        if int(time.time()) - int(d.get("ts", 0)) > STATE_MAX_AGE_SECS:
+            return {}
+        return d
     except Exception:  # noqa: BLE001
         return {}
 

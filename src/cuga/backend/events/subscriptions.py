@@ -18,6 +18,13 @@ from dataclasses import dataclass, field, asdict
 MODES = ("NOW", "CRON", "PUSH", "POLL")
 
 
+class DuplicateSubscription(Exception):
+    """A concurrent arm with the same dedup identity won the race — treat as REUSE, not an error."""
+    def __init__(self, dedup_key: str):
+        super().__init__(f"a subscription with dedup_key {dedup_key!r} already exists")
+        self.dedup_key = dedup_key
+
+
 @dataclass
 class Subscription:
     id: str
@@ -38,6 +45,11 @@ class Subscription:
     # flow grain follows the credentials (a matching key → reuse instead of a duplicate flow).
     dedup_key: str = ""
     flow_name: str = ""            # the AP flow's readable display name (e.g. push-gmail-mailbot)
+    # trigger grain (added with the trigger registry): WHICH event of the integration this watches
+    # ("new_pr", "new_reaction", …) and its per-watch config (slots: repo/label/channel/emoji/
+    # pattern/folder). Empty for legacy rows.
+    event: str = ""
+    config: dict = field(default_factory=dict)
 
 
 class SubscriptionStore:
@@ -75,27 +87,50 @@ class SubscriptionStore:
             self._db.execute("ALTER TABLE subscription ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''")
         if "flow_name" not in cols:
             self._db.execute("ALTER TABLE subscription ADD COLUMN flow_name TEXT NOT NULL DEFAULT ''")
+        if "event" not in cols:
+            self._db.execute("ALTER TABLE subscription ADD COLUMN event TEXT NOT NULL DEFAULT ''")
+        if "config" not in cols:
+            self._db.execute("ALTER TABLE subscription ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
+        # Dedup used to be check-then-write with no constraint — two concurrent arms with the same
+        # identity both missed the check and created duplicate AP flows. The partial UNIQUE index
+        # makes the database the referee; upsert() surfaces the loser as a DuplicateSubscription.
+        # try/except: a pre-existing DB may already hold duplicates — warn, don't brick the boot.
+        try:
+            self._db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_dedup
+                     ON subscription(dedup_key) WHERE dedup_key != '' AND status != 'deleted'""")
+        except sqlite3.OperationalError as e:                    # legacy dupes present
+            import logging
+            logging.getLogger("events.subscriptions").warning(
+                "could not create the dedup unique index (%s) — legacy duplicate rows exist; "
+                "dedup stays advisory for this DB", e)
         self._db.commit()
 
     # ---- writes ----------------------------------------------------------
     def upsert(self, sub: Subscription) -> Subscription:
         if not sub.created_at:
             sub.created_at = time.time()
-        self._db.execute(
-            """INSERT INTO subscription
-                 (id,mode,target_agent,tenant,backend,source_type,source_connector,ap_flow_id,
-                  deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                 mode=excluded.mode, target_agent=excluded.target_agent, tenant=excluded.tenant,
-                 backend=excluded.backend, source_type=excluded.source_type,
-                 source_connector=excluded.source_connector, ap_flow_id=excluded.ap_flow_id,
-                 deliver_to=excluded.deliver_to, thread_id=excluded.thread_id,
-                 prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key,
-                 flow_name=excluded.flow_name""",
-            (sub.id, sub.mode, sub.target_agent, sub.tenant, sub.backend, sub.source_type,
-             sub.source_connector, sub.ap_flow_id, json.dumps(sub.deliver_to),
-             sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key, sub.flow_name))
+        try:
+            self._db.execute(
+                """INSERT INTO subscription
+                     (id,mode,target_agent,tenant,backend,source_type,source_connector,ap_flow_id,
+                      deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name,event,config)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     mode=excluded.mode, target_agent=excluded.target_agent, tenant=excluded.tenant,
+                     backend=excluded.backend, source_type=excluded.source_type,
+                     source_connector=excluded.source_connector, ap_flow_id=excluded.ap_flow_id,
+                     deliver_to=excluded.deliver_to, thread_id=excluded.thread_id,
+                     prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key,
+                     flow_name=excluded.flow_name, event=excluded.event, config=excluded.config""",
+                (sub.id, sub.mode, sub.target_agent, sub.tenant, sub.backend, sub.source_type,
+                 sub.source_connector, sub.ap_flow_id, json.dumps(sub.deliver_to),
+                 sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key,
+                 sub.flow_name, sub.event, json.dumps(sub.config or {})))
+        except sqlite3.IntegrityError as e:
+            if "uq_subscription_dedup" in str(e) or "dedup" in str(e):
+                raise DuplicateSubscription(sub.dedup_key) from e
+            raise
         self._db.commit()
         return sub
 
@@ -120,6 +155,7 @@ class SubscriptionStore:
     def _row(self, r: sqlite3.Row) -> Subscription:
         d = dict(r)
         d["deliver_to"] = json.loads(d.get("deliver_to") or "[]")
+        d["config"] = json.loads(d.get("config") or "{}")
         return Subscription(**d)
 
     def get(self, sub_id: str) -> Subscription | None:

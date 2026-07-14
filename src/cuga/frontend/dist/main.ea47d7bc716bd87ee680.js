@@ -13664,7 +13664,9 @@ function Loader({
 
 // ---- tabs --------------------------------------------------------------------
 const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord"];
-const KNOWN_INTEGRATIONS = ["gmail", "box", "github", "outlook"];
+// Fallback only — the editor derives the live list (and each app's triggers) from
+// /api/events/triggers, the backend registry, so the UI can never drift from the code.
+const KNOWN_INTEGRATIONS = ["box", "discord", "github", "gmail", "slack", "telegram", "webhook"];
 // Fallback tool catalog so the picker is NEVER empty (used if /api/events/mcp-servers is
 // unreachable, e.g. an older running server). Enriched with live hints when the fetch succeeds.
 const FALLBACK_MCP = [{
@@ -13705,6 +13707,11 @@ function AgentEditor({
   const [mcp, setMcp] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]);
   const [channels, setChannels] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(["web"]);
   const [integrations, setIntegrations] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
+  // trigger-grain: app → the trigger events this agent handles ([] = ALL of the app's triggers).
+  // This used to be dropped on save, silently widening an agent to every trigger of the app.
+  const [trigs, setTrigs] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
+  // the registry (app → its triggers) from /api/events/triggers; drives the picker below
+  const [registry, setRegistry] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
   const [access, setAccess] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)("");
   const [servers, setServers] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]);
   const [saving, setSaving] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
@@ -13719,14 +13726,24 @@ function AgentEditor({
     setMcp(editing?.mcp_servers ?? []);
     setChannels(editing?.channels?.length ? editing.channels : ["web"]);
     const im = {};
+    const tm = {};
     (editing?.integrations ?? []).forEach(i => {
       im[i.app] = i.ownership || "per-user";
+      tm[i.app] = Array.isArray(i.triggers) ? i.triggers : [];
     });
     setIntegrations(im);
+    setTrigs(tm);
     setAccess((editing?.access ?? []).join(", "));
     setServers(FALLBACK_MCP); // always have a catalog; enrich from the server if reachable
     _api__WEBPACK_IMPORTED_MODULE_4__.getEventsMcpServers().then(r => r.json()).then(d => {
       if (d.servers?.length) setServers(d.servers);
+    }).catch(() => {});
+    _api__WEBPACK_IMPORTED_MODULE_4__.getEventsTriggers().then(r => r.json()).then(d => {
+      const reg = {};
+      (d.apps ?? []).forEach(a => {
+        reg[a.app] = a.triggers ?? [];
+      });
+      setRegistry(reg);
     }).catch(() => {});
   }, [open, editing]);
   const toggle = (list, set, v) => set(list.includes(v) ? list.filter(x => x !== v) : [...list, v]);
@@ -13741,7 +13758,10 @@ function AgentEditor({
       channels,
       integrations: Object.entries(integrations).map(([app, ownership]) => ({
         app,
-        ownership
+        ownership,
+        ...(trigs[app]?.length ? {
+          triggers: trigs[app]
+        } : {})
       })),
       access: access.split(",").map(s => s.trim()).filter(Boolean)
     };
@@ -13833,8 +13853,12 @@ function AgentEditor({
     onChange: () => toggle(channels, setChannels, ch)
   })))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "cds--label"
-  }, "Integrations (watch / act on)"), KNOWN_INTEGRATIONS.map(app => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  }, "Integrations (watch / act on)"), (Object.keys(registry).length ? Object.keys(registry).sort() : KNOWN_INTEGRATIONS).map(app => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     key: app,
+    style: {
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -13869,7 +13893,36 @@ function AgentEditor({
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.SelectItem, {
     value: "shared",
     text: "shared (one service account)"
-  }))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TextInput, {
+  }))), app in integrations && (registry[app]?.length ?? 0) > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      margin: "2px 0 6px 28px"
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-muted",
+    style: {
+      fontSize: 12,
+      marginBottom: 2
+    }
+  }, "Triggers \u2014 ", trigs[app]?.length ? `${trigs[app].length} of ${registry[app].length} selected` : `all ${registry[app].length} (none selected = all)`), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "0 16px"
+    }
+  }, registry[app].map(t => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Checkbox, {
+    key: t.event,
+    id: `trg-${app}-${t.event}`,
+    labelText: `${t.event} — ${t.title}`,
+    checked: (trigs[app] ?? []).includes(t.event),
+    onChange: () => setTrigs(prev => {
+      const cur = prev[app] ?? [];
+      const next = cur.includes(t.event) ? cur.filter(e => e !== t.event) : [...cur, t.event];
+      return {
+        ...prev,
+        [app]: next
+      };
+    })
+  }))))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TextInput, {
     id: "agent-access",
     labelText: "Access (roles / user-ids, comma-separated \xB7 blank = everyone)",
     value: access,
@@ -13983,8 +14036,9 @@ function AgentsTab({
   }, c)), a.integrations?.map(i => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     key: i.app,
     type: "purple",
-    size: "sm"
-  }, i.app, " (", i.ownership, ")")), a.restricted && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    size: "sm",
+    title: i.triggers?.length ? i.triggers.join(", ") : "all triggers"
+  }, i.app, " (", i.ownership, ")", i.triggers?.length ? ` · ${i.triggers.length} trigger${i.triggers.length > 1 ? "s" : ""}` : "")), a.restricted && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: a.can_use ? "green" : "red",
     size: "sm"
   }, a.can_use ? "restricted · you can use" : "restricted")), (a.examples?.length ?? 0) > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -14062,6 +14116,9 @@ function IntegrationsTab({
     loading,
     error
   } = useEndpoint(_api__WEBPACK_IMPORTED_MODULE_4__.getEventsIntegrations, d => d.integrations ?? [], refresh);
+  // the trigger registry, so each card can say WHAT the integration can watch
+  const reg = useEndpoint(_api__WEBPACK_IMPORTED_MODULE_4__.getEventsTriggers, d => d.apps ?? [], refresh);
+  const trigsFor = app => (reg.data ?? []).find(a => a.app === app)?.triggers ?? [];
 
   // "log in with your own account" — OAuth apps open the consent flow; token apps paste a secret.
   const connect = i => {
@@ -14094,7 +14151,29 @@ function IntegrationsTab({
     status: i.status
   })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted"
-  }, i.note), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  }, i.note), trigsFor(i.name).length > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("details", {
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("summary", {
+    className: "studio-muted",
+    style: {
+      cursor: "pointer",
+      fontSize: 12
+    }
+  }, trigsFor(i.name).length, " trigger", trigsFor(i.name).length > 1 ? "s" : ""), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 4,
+      marginTop: 6
+    }
+  }, trigsFor(i.name).map(t => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    key: t.event,
+    type: t.backend === "direct" ? "cyan" : "gray",
+    size: "sm",
+    title: t.title
+  }, t.event, t.default ? " ★" : "")))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-card-foot"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: i.backend === "direct" ? "teal" : "blue",
@@ -15696,6 +15775,7 @@ function UnauthorizedPage() {
 /* harmony export */   getEventsSetupGuides: function() { return /* binding */ getEventsSetupGuides; },
 /* harmony export */   getEventsStatus: function() { return /* binding */ getEventsStatus; },
 /* harmony export */   getEventsSubscriptions: function() { return /* binding */ getEventsSubscriptions; },
+/* harmony export */   getEventsTriggers: function() { return /* binding */ getEventsTriggers; },
 /* harmony export */   getKnowledgeAccelerator: function() { return /* binding */ getKnowledgeAccelerator; },
 /* harmony export */   getKnowledgeDefaults: function() { return /* binding */ getKnowledgeDefaults; },
 /* harmony export */   getKnowledgeDocumentFile: function() { return /* binding */ getKnowledgeDocumentFile; },
@@ -16247,6 +16327,12 @@ async function putEventsAgent(name, spec) {
 }
 async function getEventsExamples() {
   return apiFetch("/api/events/examples");
+}
+
+// The trigger registry — every (integration, event) the platform can watch, grouped per app.
+// Drives the Agent editor's trigger-grain picker; generated from the backend registry.
+async function getEventsTriggers() {
+  return apiFetch("/api/events/triggers");
 }
 
 // The caller's own connected integrations (which apps they've logged into).
@@ -19131,4 +19217,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.be1c205b3eadc3ba6a6e.js.map
+//# sourceMappingURL=main.ea47d7bc716bd87ee680.js.map

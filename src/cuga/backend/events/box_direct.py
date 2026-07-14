@@ -52,9 +52,14 @@ def save_since(folder_id: str, created_at: str) -> None:
 
 
 def token() -> str:
-    """The Box bearer token — dev token (fast, OAuth-free) or a configured access token."""
+    """The Box bearer token — dev token (fast, OAuth-free) or a configured access token.
+    Reads through the events secret seam (vault://-capable; plaintext unchanged)."""
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load (tests put the events dir on sys.path)
+        from secret_seam import secret as _secret
     for key in ("EVENTS_BOX_TOKEN", "BOX_DEV_TOKEN"):
-        v = (os.environ.get(key, "") or "").split(" #", 1)[0].strip().strip('"').strip("'")
+        v = _secret(key)
         if v:
             return v
     return ""
@@ -101,6 +106,58 @@ async def new_files_since(folder_id: str, since_iso: str | None, tok: str | None
     if since_iso:
         items = [i for i in items if (i.get("created_at") or "") > since_iso]
     return items
+
+
+async def new_folders_since(folder_id: str, since_iso: str | None,
+                            tok: str | None = None) -> list[dict]:
+    """Subfolders of ``folder_id`` created strictly after ``since_iso`` — the box/new_folder
+    trigger. Same watermark mechanics as files (the poller stores max created_at seen)."""
+    items = [i for i in await list_folder_items(folder_id, tok)
+             if i.get("type") == "folder" and i.get("id")]
+    if since_iso:
+        items = [i for i in items if (i.get("created_at") or "") > since_iso]
+    return items
+
+
+async def file_comments(file_id: str, tok: str | None = None) -> list[dict]:
+    """GET /files/{id}/comments — every comment on one file (box/new_box_comment support)."""
+    tok = tok or token()
+    if not tok:
+        raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(f"{API}/files/{file_id}/comments",
+                        params={"fields": "id,message,created_by,created_at,item", "limit": 100},
+                        headers={"Authorization": f"Bearer {tok}"})
+        if r.status_code != 200:
+            raise RuntimeError(f"Box comments {file_id} failed: HTTP {r.status_code} {r.text[:200]}")
+        return (r.json() or {}).get("entries", []) or []
+
+
+async def new_comments_since(folder_id: str, since_iso: str | None,
+                             tok: str | None = None) -> list[dict]:
+    """Comments (across the folder's files) created strictly after ``since_iso``.
+
+    Box has no folder-level comments feed, so this walks the folder's files and collects each
+    file's comments — fine at watched-folder scale (≤200 items, resume-drop folders), NOT a
+    general-purpose Box crawler. Each returned comment carries ``file`` (name) + ``file_id``."""
+    out: list[dict] = []
+    for f in await list_folder_items(folder_id, tok):
+        if f.get("type") != "file":
+            continue
+        try:
+            comments = await file_comments(f["id"], tok)
+        except RuntimeError:
+            continue                      # one file 403ing must not kill the sweep
+        for cm in comments:
+            created = cm.get("created_at") or ""
+            if since_iso and created <= since_iso:
+                continue
+            out.append({"id": cm.get("id"), "message": cm.get("message"),
+                        "by": ((cm.get("created_by") or {}).get("name")
+                               or (cm.get("created_by") or {}).get("login") or ""),
+                        "created_at": created, "file": f.get("name"), "file_id": f.get("id")})
+    out.sort(key=lambda x: x.get("created_at") or "")
+    return out
 
 
 # ── the download step ─────────────────────────────────────────────────────────

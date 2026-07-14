@@ -424,8 +424,10 @@ class _RunEngine(_FakeEngine):
         self.fail_trigger, self.finish, self.answer = fail_trigger, finish, answer
         self._runs: list[dict] = []
 
-    async def trigger_flow(self, flow_id, payload=None):
-        self.calls.append(("trigger_flow", flow_id, payload))
+    async def trigger_flow(self, flow_id, payload=None, headers=None):
+        # `headers` mirrors the real engine: /run reproduces the provider's delivery headers
+        # (github's X-GitHub-Event) so the piece can identify the event.
+        self.calls.append(("trigger_flow", flow_id, payload, headers))
         if self.fail_trigger:
             return False, "HTTP 404 flow not found"
         self._runs.append({"id": "new-run", "flowId": flow_id,
@@ -450,9 +452,34 @@ def test_debug_run_fires_the_flow_and_returns_the_answer():
     assert b["ok"] is True and b["triggered"] is True and b["debug"] is True
     assert b["answer"] == "Bitcoin is $63,924 USD."
     assert b["run"]["status"] == "SUCCEEDED" and b["error"] is None
-    assert ("trigger_flow", "flow-1", {}) in eng.calls
+    # headers=None for a non-github trigger; a github sub sends X-GitHub-Event (see
+    # test_debug_run_sends_the_github_delivery_header)
+    assert ("trigger_flow", "flow-1", {}, None) in eng.calls
     # the caller must be told this was not a dry run
     assert "real" in b["warning"]
+
+
+def test_debug_run_sends_the_github_delivery_header():
+    """A GitHub repo webhook carries EVERY subscribed event type, so the piece disambiguates on the
+    X-GitHub-Event header. /run must reproduce it from the subscription's registry row — without it
+    the piece emits nothing at all (AP accepts the trigger, no run is ever created). Proven live on
+    new_release / new_commit before this was wired."""
+    eng = _RunEngine(answer="ok")
+    sub = _sub(mode="PUSH", source_connector="github", event="new_release")
+    c, _ = _client([sub], engine=eng)
+    c.post("/api/events/subscriptions/s1/run?timeout=5", json={"action": "created"})
+    call = next(x for x in eng.calls if x[0] == "trigger_flow")
+    assert call[3] == {"X-GitHub-Event": "release"}, call
+    # new_commit is delivered under GitHub's `push` event, not a `commit` event
+    eng2 = _RunEngine(answer="ok")
+    c2, _ = _client([_sub(source_connector="github", event="new_commit")], engine=eng2)
+    c2.post("/api/events/subscriptions/s1/run?timeout=5", json={})
+    assert next(x for x in eng2.calls if x[0] == "trigger_flow")[3] == {"X-GitHub-Event": "push"}
+    # a non-github trigger sends no delivery header
+    eng3 = _RunEngine(answer="ok")
+    c3, _ = _client([_sub(source_connector="cron")], engine=eng3)
+    c3.post("/api/events/subscriptions/s1/run?timeout=5", json={})
+    assert next(x for x in eng3.calls if x[0] == "trigger_flow")[3] is None
 
 
 def test_debug_run_wait_0_returns_immediately_without_an_answer():
@@ -787,6 +814,18 @@ def test_examples_board_matches_the_catalog():
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
+                       capture_output=True, text=True, cwd=root)
+    assert p.returncode == 0, (p.stdout + p.stderr)
+
+
+def test_slides_deck_matches_the_registry():
+    """`events_docs/slides.html` (the event-driven-agents deck) is generated from triggers.py +
+    catalog.py. A trigger or example added without regenerating means the story we present disagrees
+    with what the product does. Fix: `python scripts/gen_slides.py` (or `make slides`)."""
+    import subprocess
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_slides.py"), "--check"],
                        capture_output=True, text=True, cwd=root)
     assert p.returncode == 0, (p.stdout + p.stderr)
 

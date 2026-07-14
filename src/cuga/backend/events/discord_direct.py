@@ -26,11 +26,25 @@ log = logging.getLogger("events.discord_direct")
 GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 API = "https://discord.com/api/v10"
 # Gateway intents bitmask: GUILDS (1<<0) | GUILD_MESSAGES (1<<9) | MESSAGE_CONTENT (1<<15).
+# GUILD_MEMBERS (1<<1) is PRIVILEGED: requesting it without enabling "Server Members Intent" in
+# the Discord dev portal closes the whole gateway with 4014 — so it is opt-in via
+# EVENTS_DISCORD_MEMBERS_INTENT=1 (set it only AFTER flipping the portal toggle).
 INTENTS = (1 << 0) | (1 << 9) | (1 << 15)
 
 
+def intents() -> int:
+    n = INTENTS
+    if os.environ.get("EVENTS_DISCORD_MEMBERS_INTENT", "") == "1":
+        n |= (1 << 1)                      # GUILD_MEMBERS → GUILD_MEMBER_ADD events
+    return n
+
+
 def bot_token() -> str:
-    return (os.environ.get("DISCORD_BOT_TOKEN", "") or "").split(" #", 1)[0].strip().strip('"').strip("'")
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load (tests put the events dir on sys.path)
+        from secret_seam import secret as _secret
+    return _secret("DISCORD_BOT_TOKEN")
 
 
 def should_process(msg: dict) -> bool:
@@ -58,12 +72,14 @@ async def send_message(channel_id: str, text: str) -> dict:
 
 
 async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
-                      ready: asyncio.Future | None = None) -> None:
+                      ready: asyncio.Future | None = None, on_event=None) -> None:
     """Hold a Gateway connection and call ``on_message(msg)`` for each human MESSAGE_CREATE.
 
-    Handles HELLO → IDENTIFY → heartbeat, and reconnects on drop (no session resume — a fresh
-    IDENTIFY is simple and robust enough for our use). ``stop`` (an Event) ends the loop cleanly;
-    ``ready`` (a Future) is resolved on the first READY (used by the live check / tests)."""
+    ``on_event(dispatch_type, data)`` (optional) additionally receives NON-message dispatches we
+    care about — today GUILD_MEMBER_ADD (only delivered when the members intent is opted in, see
+    :func:`intents`). Handles HELLO → IDENTIFY → heartbeat, and reconnects on drop (no session
+    resume — a fresh IDENTIFY is simple and robust enough for our use). ``stop`` (an Event) ends
+    the loop cleanly; ``ready`` (a Future) is resolved on the first READY."""
     import websockets  # local import so the module loads even if websockets is absent
     tok = bot_token()
     if not tok:
@@ -76,7 +92,7 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
                 hb_interval = float(hello["d"]["heartbeat_interval"]) / 1000.0
                 seq = {"s": None}
                 await ws.send(json.dumps({"op": 2, "d": {
-                    "token": tok, "intents": INTENTS,
+                    "token": tok, "intents": intents(),
                     "properties": {"os": "linux", "browser": "cuga", "device": "cuga"}}}))
 
                 async def _heartbeat():
@@ -106,6 +122,8 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
                                 msg = ev.get("d") or {}
                                 if should_process(msg):
                                     asyncio.create_task(on_message(msg))
+                            elif t == "GUILD_MEMBER_ADD" and on_event is not None:
+                                asyncio.create_task(on_event(t, ev.get("d") or {}))
                         elif op == 1:                                 # server requests a heartbeat now
                             await ws.send(json.dumps({"op": 1, "d": seq["s"]}))
                         elif op in (7, 9):                            # reconnect / invalid session
