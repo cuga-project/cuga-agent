@@ -21,6 +21,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import paths as _paths
 
+pytestmark = pytest.mark.unit
+
 
 def _fs(thread_id: str | None) -> WorkspaceFilesystem:
     return WorkspaceFilesystem(backend=HostWorkspaceBackend(thread_id), thread_id=thread_id)

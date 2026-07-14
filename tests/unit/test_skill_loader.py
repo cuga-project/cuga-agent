@@ -1,9 +1,13 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 from cuga.backend.skills.tools import create_skill_tools
+
+pytestmark = pytest.mark.unit
 
 
 def _write_skill(root: Path, name: str, description: str, body: str = "Body", requirements: str = "") -> None:
