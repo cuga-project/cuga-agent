@@ -508,6 +508,41 @@ test.describe("slash-command skill invocation", () => {
     await expect(pills).toHaveCount(1);
   });
 
+  test("ghost text previews the completion and Tab accepts it", async ({ page }) => {
+    // Cursor-style inline autocomplete: while the caret's token ends the
+    // composer content, the continuation of the highlighted match renders
+    // as ghost text after the token, and Tab accepts it.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+
+    await page.goto("/chat");
+
+    const ghost = page.locator(".cuga-slash-ghost");
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+
+    await ta.fill("/de");
+    await expect(ghost).toBeVisible({ timeout: 10_000 });
+    await expect(ghost).toHaveText("ck");
+
+    await page.keyboard.press("Tab");
+    await expect.poll(() => readComposerText(page), { timeout: 5_000 }).toBe(
+      "/deck ",
+    );
+    await expect(ghost).not.toBeVisible();
+
+    // The completed known token now carries the inline pill overlay (the
+    // translucent light-DOM rectangle drawn over the composer text).
+    await expect(page.locator(".cuga-slash-inline-pill").first()).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+
   test("skill invocation replays into the reasoning panel on history reload", async ({ page }) => {
     await stubBootEndpoints(page, HISTORY_PAYLOAD);
 

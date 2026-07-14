@@ -1,11 +1,12 @@
 /*
  *  Copyright IBM Corp. 2026
  *
- *  Slash-command autocomplete dropdown for the Carbon AI Chat composer.
+ *  Slash-command autocomplete for the Carbon AI Chat composer: dropdown,
+ *  inline pill highlights, and ghost-text completion.
  *
  *  The Carbon Chat input is rendered inside a shadow DOM, so this component
  *  reaches into the chat element's shadow tree to locate the composer,
- *  attaches input/keydown listeners, and renders a positioned overlay via a
+ *  attaches input/keydown listeners, and renders positioned overlays via a
  *  React portal in the light DOM.
  *
  *  Slash-command semantics are SOFT — a ``/skill`` mention anywhere in a
@@ -13,10 +14,19 @@
  *  autocomplete is caret-scoped rather than message-scoped: the dropdown
  *  engages whenever the caret sits inside a token that starts with ``/`` at
  *  position 0 or right after whitespace (``hi can I use /ec`` reopens it
- *  filtered to ``ec``), and accepting a suggestion replaces just that token
- *  (inserting the name + trailing space) at its position — not the whole
- *  composer content. Once a token is completed and a space typed, the caret
- *  leaves the token and the dropdown closes until a new ``/``-token starts.
+ *  filtered to ``ec``), and accepting a suggestion replaces just that token.
+ *  Once a token is completed and a space typed, the caret leaves the token
+ *  and the dropdown closes until a new ``/``-token is started.
+ *
+ *  Two further overlays render WITHOUT mutating Carbon's composer DOM (its
+ *  contenteditable is Lit-managed; foreign child nodes would be clobbered on
+ *  re-render and corrupt caret restoration):
+ *   - translucent pills drawn over known ``/command`` tokens, positioned via
+ *     ``Range.getClientRects()`` on the composer's text nodes;
+ *   - a ghost-text continuation of the highlighted match after the caret's
+ *     token, accepted with Tab. It renders only while the token ends the
+ *     composer content — mid-text the ghost would overlap Carbon-rendered
+ *     characters we cannot shift.
  */
 import React, {
   useCallback,
@@ -33,6 +43,7 @@ import {
   findComposerTextarea,
   getComposerCaretOffset,
   getComposerInputValue,
+  getComposerRangeRects,
   isComposerStale,
   replaceComposerRange,
   setComposerAriaAttributes,
@@ -81,12 +92,59 @@ export function findSlashTokenAtCaret(
   };
 }
 
+/** All complete ``/name`` tokens in ``value`` whose name is a known command. */
+function findKnownSlashTokens(
+  value: string,
+  known: Set<string>,
+): Array<{ start: number; end: number; name: string }> {
+  const out: Array<{ start: number; end: number; name: string }> = [];
+  const re = /(^|\s)\/(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(value))) {
+    const name = m[2];
+    if (!known.has(name)) continue;
+    const start = m.index + m[1].length;
+    out.push({ start, end: start + 1 + name.length, name });
+  }
+  return out;
+}
+
 interface DropdownPosition {
   left: number;
   top: number;
   /** Bottom edge of the composer — anchor when the dropdown flips below. */
   bottom: number;
   width: number;
+}
+
+interface OverlayRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface GhostState {
+  left: number;
+  top: number;
+  height: number;
+  text: string;
+  font: string;
+}
+
+function overlayRectsEqual(a: OverlayRect[], b: OverlayRect[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (
+      a[i].left !== b[i].left ||
+      a[i].top !== b[i].top ||
+      a[i].width !== b[i].width ||
+      a[i].height !== b[i].height
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface SlashCommandDropdownProps {
@@ -116,6 +174,9 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [highlightIndex, setHighlightIndex] = useState(0);
   const [position, setPosition] = useState<DropdownPosition | null>(null);
+  const [activeToken, setActiveToken] = useState<SlashToken | null>(null);
+  const [pillRects, setPillRects] = useState<OverlayRect[]>([]);
+  const [ghost, setGhost] = useState<GhostState | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const fetchTimerRef = useRef<number | null>(null);
   const openRef = useRef(open);
@@ -220,6 +281,13 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
   }, []);
 
+  // Eager fetch on mount: the inline pill overlay needs the known-command
+  // list before the dropdown has ever opened. Opening still schedules a
+  // fresh (debounced) fetch, so the dropdown list stays current.
+  useEffect(() => {
+    void fetchCommands();
+  }, [fetchCommands]);
+
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
     if (!q) return commands;
@@ -318,6 +386,45 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
   }, [open, updatePosition]);
 
+  const knownNames = useMemo(
+    () => new Set(commands.map((c) => c.name)),
+    [commands],
+  );
+
+  // Recompute the pill overlay geometry from the live composer text. Pure
+  // measurement (Range.getClientRects on the composer's text nodes) — never
+  // mutates the composer DOM.
+  const updateInlinePills = useCallback(() => {
+    if (!textarea || knownNames.size === 0) {
+      setPillRects((prev) => (prev.length > 0 ? [] : prev));
+      return;
+    }
+    const value = getComposerInputValue(textarea);
+    const rects: OverlayRect[] = [];
+    for (const token of findKnownSlashTokens(value, knownNames)) {
+      for (const r of getComposerRangeRects(textarea, token.start, token.end)) {
+        if (r.width > 0 && r.height > 0) {
+          rects.push({ left: r.left, top: r.top, width: r.width, height: r.height });
+        }
+      }
+    }
+    setPillRects((prev) => (overlayRectsEqual(prev, rects) ? prev : rects));
+  }, [knownNames, textarea]);
+
+  // Re-measure pills when the composer or the known-command list changes,
+  // and keep their geometry glued to the text across resize/scroll.
+  useEffect(() => {
+    updateInlinePills();
+    if (!textarea) return;
+    const handle = () => updateInlinePills();
+    window.addEventListener("resize", handle);
+    window.addEventListener("scroll", handle, true);
+    return () => {
+      window.removeEventListener("resize", handle);
+      window.removeEventListener("scroll", handle, true);
+    };
+  }, [textarea, updateInlinePills]);
+
   const acceptCommand = useCallback(
     (command: SlashCommandInfo) => {
       const value = getComposerInputValue(textarea);
@@ -355,10 +462,15 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       const value = getComposerInputValue(textarea);
       let caret = getComposerCaretOffset(textarea);
       if (caret === null) {
-        if (!assumeEndWhenUnresolved) return;
+        if (!assumeEndWhenUnresolved) {
+          updateInlinePills();
+          return;
+        }
         caret = value.length;
       }
       const token = findSlashTokenAtCaret(value, caret);
+      setActiveToken(token);
+      updateInlinePills();
       if (!token) {
         dismissedRef.current = null;
         if (openRef.current) closeDropdown();
@@ -381,7 +493,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
         scheduleFetch();
       }
     },
-    [closeDropdown, scheduleFetch, textarea],
+    [closeDropdown, scheduleFetch, textarea, updateInlinePills],
   );
 
   // Textarea input/keydown listeners: drive the dropdown from the caret.
@@ -490,6 +602,48 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     highlightIndexRef.current = highlightIndex;
   }, [highlightIndex]);
 
+  // Ghost-text geometry: anchor the continuation of the highlighted match
+  // at the right edge of the caret's token.
+  useLayoutEffect(() => {
+    if (!open || !textarea || !activeToken || filtered.length === 0) {
+      setGhost(null);
+      return;
+    }
+    const value = getComposerInputValue(textarea);
+    // Only when the caret sits at the token end AND the token ends the
+    // composer content — anywhere else the ghost would overlap text that
+    // Carbon renders and we cannot shift aside.
+    if (activeToken.caret !== activeToken.end || activeToken.end !== value.length) {
+      setGhost(null);
+      return;
+    }
+    const idx = Math.min(highlightIndex, filtered.length - 1);
+    const match = filtered[idx];
+    const typed = activeToken.name;
+    if (
+      !match ||
+      match.name.length <= typed.length ||
+      !match.name.toLowerCase().startsWith(typed.toLowerCase())
+    ) {
+      setGhost(null);
+      return;
+    }
+    const rects = getComposerRangeRects(textarea, activeToken.start, activeToken.end);
+    const rect = rects[rects.length - 1];
+    if (!rect || rect.height <= 0) {
+      setGhost(null);
+      return;
+    }
+    const cs = window.getComputedStyle(textarea);
+    setGhost({
+      left: rect.right,
+      top: rect.top,
+      height: rect.height,
+      text: match.name.slice(typed.length),
+      font: cs.font || `${cs.fontSize} ${cs.fontFamily}`,
+    });
+  }, [activeToken, filtered, highlightIndex, open, textarea]);
+
   // Click-outside dismissal.
   useEffect(() => {
     if (!open) return;
@@ -506,8 +660,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     return () => document.removeEventListener("mousedown", handleDocClick, true);
   }, [closeDropdown, open, textarea]);
 
-  // Don't render anything when closed or when we don't know where to anchor.
-  if (!open || !portalContainer || !position) {
+  if (!portalContainer) {
     return null;
   }
 
@@ -515,79 +668,115 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   // the textarea's top, unless the viewport is too short to fit the dropdown
   // there (e.g. embedded/short viewports), in which case it flips below.
   const dropdownHeight = dropdownRef.current?.offsetHeight ?? MAX_DROPDOWN_HEIGHT;
-  const fitsAbove = position.top - DROPDOWN_GAP - dropdownHeight >= 0;
-  const dropdownStyle: React.CSSProperties = {
-    position: "fixed",
-    left: position.left,
-    ...(fitsAbove
-      ? { bottom: window.innerHeight - position.top + DROPDOWN_GAP }
-      : { top: position.bottom + DROPDOWN_GAP }),
-    width: position.width,
-    zIndex: 9999,
-  };
+  const fitsAbove = position
+    ? position.top - DROPDOWN_GAP - dropdownHeight >= 0
+    : true;
+  const dropdownStyle: React.CSSProperties | null = position
+    ? {
+        position: "fixed",
+        left: position.left,
+        ...(fitsAbove
+          ? { bottom: window.innerHeight - position.top + DROPDOWN_GAP }
+          : { top: position.bottom + DROPDOWN_GAP }),
+        width: position.width,
+        zIndex: 9999,
+      }
+    : null;
 
   return createPortal(
-    <div
-      ref={dropdownRef}
-      className="cuga-slash-dropdown"
-      role="listbox"
-      id={optionsListId}
-      aria-label="Slash commands"
-      style={dropdownStyle}
-      onMouseDown={(e) => {
-        // Prevent the textarea blur from firing before our click handler.
-        e.preventDefault();
-      }}
-    >
-      {loading && (
-        <div className="cuga-slash-dropdown__status">Loading commands…</div>
+    <>
+      {pillRects.map((rect, index) => (
+        <div
+          key={`${rect.left}-${rect.top}-${index}`}
+          className="cuga-slash-inline-pill"
+          aria-hidden="true"
+          style={{
+            left: rect.left - 2,
+            top: rect.top - 1,
+            width: rect.width + 4,
+            height: rect.height + 2,
+          }}
+        />
+      ))}
+      {ghost && (
+        <span
+          className="cuga-slash-ghost"
+          aria-hidden="true"
+          style={{
+            left: ghost.left,
+            top: ghost.top,
+            font: ghost.font,
+            lineHeight: `${ghost.height}px`,
+            height: ghost.height,
+          }}
+        >
+          {ghost.text}
+        </span>
       )}
-      {!loading && error && (
-        <div className="cuga-slash-dropdown__status cuga-slash-dropdown__status--error">
-          {error}
+      {open && dropdownStyle && (
+        <div
+          ref={dropdownRef}
+          className="cuga-slash-dropdown"
+          role="listbox"
+          id={optionsListId}
+          aria-label="Slash commands"
+          style={dropdownStyle}
+          onMouseDown={(e) => {
+            // Prevent the textarea blur from firing before our click handler.
+            e.preventDefault();
+          }}
+        >
+          {loading && (
+            <div className="cuga-slash-dropdown__status">Loading commands…</div>
+          )}
+          {!loading && error && (
+            <div className="cuga-slash-dropdown__status cuga-slash-dropdown__status--error">
+              {error}
+            </div>
+          )}
+          {!loading && !error && filtered.length === 0 && (
+            <div className="cuga-slash-dropdown__status">No matching commands</div>
+          )}
+          {!loading && !error && filtered.length > 0 && (
+            <ul className="cuga-slash-dropdown__list" role="presentation">
+              {filtered.map((command, index) => {
+                const isActive = index === highlightIndex;
+                return (
+                  <li
+                    key={command.name}
+                    id={`cuga-slash-option-${command.name}`}
+                    role="option"
+                    aria-selected={isActive}
+                    className={`cuga-slash-option${isActive ? " cuga-slash-option--active" : ""}`}
+                    onMouseEnter={() => setHighlightIndex(index)}
+                    onClick={() => acceptCommand(command)}
+                  >
+                    <div className="cuga-slash-option__main">
+                      <span className="cuga-slash-option__name">/{command.name}</span>
+                      {command.argument_hint && (
+                        <span className="cuga-slash-option__hint">
+                          {command.argument_hint}
+                        </span>
+                      )}
+                      <span
+                        className={`cuga-slash-option__kind cuga-slash-option__kind--${command.kind}`}
+                      >
+                        skill
+                      </span>
+                    </div>
+                    {command.description && (
+                      <div className="cuga-slash-option__description">
+                        {command.description}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       )}
-      {!loading && !error && filtered.length === 0 && (
-        <div className="cuga-slash-dropdown__status">No matching commands</div>
-      )}
-      {!loading && !error && filtered.length > 0 && (
-        <ul className="cuga-slash-dropdown__list" role="presentation">
-          {filtered.map((command, index) => {
-            const isActive = index === highlightIndex;
-            return (
-              <li
-                key={command.name}
-                id={`cuga-slash-option-${command.name}`}
-                role="option"
-                aria-selected={isActive}
-                className={`cuga-slash-option${isActive ? " cuga-slash-option--active" : ""}`}
-                onMouseEnter={() => setHighlightIndex(index)}
-                onClick={() => acceptCommand(command)}
-              >
-                <div className="cuga-slash-option__main">
-                  <span className="cuga-slash-option__name">/{command.name}</span>
-                  {command.argument_hint && (
-                    <span className="cuga-slash-option__hint">
-                      {command.argument_hint}
-                    </span>
-                  )}
-                  <span
-                    className={`cuga-slash-option__kind cuga-slash-option__kind--${command.kind}`}
-                  >
-                    skill
-                  </span>
-                </div>
-                {command.description && (
-                  <div className="cuga-slash-option__description">
-                    {command.description}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>,
+    </>,
     portalContainer,
   );
 };

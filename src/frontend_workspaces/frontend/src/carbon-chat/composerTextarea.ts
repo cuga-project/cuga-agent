@@ -315,6 +315,55 @@ export function replaceComposerRange(
   return true;
 }
 
+/**
+ * Client rects covering the ``[start, end)`` character range of a
+ * contenteditable composer's text — the geometry source for the light-DOM
+ * pill/ghost overlays. Built on ``Range.getClientRects()``, which works on
+ * shadow-DOM text nodes without any selection API (we hold the node
+ * reference directly), so it cannot disturb composer state. Returns ``[]``
+ * for form-field composers (their text is not addressable as DOM nodes) and
+ * for out-of-bounds ranges.
+ */
+export function getComposerRangeRects(
+  el: ComposerInput | null,
+  start: number,
+  end: number,
+): DOMRect[] {
+  if (!el || isFormField(el)) return [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  let startPoint: { node: Node; offset: number } | null = null;
+  let endPoint: { node: Node; offset: number } | null = null;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const len = (node.textContent ?? "").length;
+    if (!startPoint && start <= total + len) {
+      startPoint = { node, offset: start - total };
+    }
+    if (end <= total + len) {
+      endPoint = { node, offset: end - total };
+      break;
+    }
+    total += len;
+  }
+  if (!startPoint || !endPoint) return [];
+  try {
+    const range = document.createRange();
+    range.setStart(startPoint.node, startPoint.offset);
+    range.setEnd(endPoint.node, endPoint.offset);
+    const rects = Array.from(range.getClientRects());
+    if (rects.length === 0) {
+      // Collapsed ranges (start === end) report no client rects; the
+      // bounding rect still carries the caret-position geometry.
+      const bounding = range.getBoundingClientRect();
+      return bounding ? [bounding] : [];
+    }
+    return rects;
+  } catch {
+    return [];
+  }
+}
+
 /** Attributes the WAI-ARIA combobox pattern requires on the focused input. */
 export interface ComposerAriaAttributes {
   /** ARIA role — typically ``"combobox"`` while the popup is open. */
