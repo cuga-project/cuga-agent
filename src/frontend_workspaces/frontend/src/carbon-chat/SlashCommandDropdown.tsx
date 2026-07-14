@@ -7,8 +7,10 @@
  *  The Carbon Chat input is rendered inside a shadow DOM, so this component
  *  reaches into the chat element's shadow tree to locate the textarea,
  *  attaches input/keydown listeners, and renders a positioned overlay via a
- *  React portal in the light DOM. The dropdown only opens when '/' is the
- *  first non-whitespace character of the input.
+ *  React portal in the light DOM. The dropdown is only visible while the
+ *  input is a slash command still being *named* — a leading '/' with no
+ *  whitespace after it yet. Once a space follows the command name the user
+ *  is typing arguments and the dropdown stays hidden.
  */
 import React, {
   useCallback,
@@ -29,10 +31,20 @@ import {
   setComposerTextareaValue,
 } from "./composerTextarea";
 
-/** Returns true when the slash is the first non-whitespace character. */
-function isSlashLeadingInput(value: string): boolean {
+/**
+ * Returns true while the composer content is a slash command still being
+ * *named*: a leading ``/`` followed by non-whitespace only (``/`` or
+ * ``/ech``). The moment whitespace follows the command name — whether typed
+ * manually (``/echo hello``) or inserted by accepting a suggestion (which
+ * populates ``/echo `` with a trailing space) — the user is composing
+ * arguments and the dropdown must hide. Deliberately stateless: derived from
+ * the current value on every input, so backspacing the args and the space
+ * back to ``/ech`` legitimately re-shows the dropdown, and clearing the
+ * composer re-arms it.
+ */
+function isNamingSlashCommand(value: string): boolean {
   const trimmed = value.replace(/^\s+/, "");
-  return trimmed.startsWith("/");
+  return /^\/\S*$/.test(trimmed);
 }
 
 /** Extracts the query portion after the leading slash (no whitespace before /). */
@@ -283,7 +295,11 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
 
     const handleInput = () => {
       const value = getComposerInputValue(textarea);
-      if (!isSlashLeadingInput(value)) {
+      // Visibility rule (stateless): the dropdown shows only while the
+      // content matches ``/<partial-name>`` with no whitespace after it.
+      // ``/echo hello`` (typed space) and ``/echo `` (suggestion accepted)
+      // both close it; backspacing to ``/ech`` re-opens it.
+      if (!isNamingSlashCommand(value)) {
         if (openRef.current) closeDropdown();
         return;
       }

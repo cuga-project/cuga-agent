@@ -231,10 +231,11 @@ test.describe("slash-command skill invocation", () => {
     // identity-tracking path in the dropdown's ARIA effect.
     //
     // The composer's ``role`` is back to ``textbox`` after Escape (step 3),
-    // so ``getByRole('textbox').first()`` resolves the live composer; once
-    // we fill it with ``/deck …`` the dropdown reopens and flips the role
-    // to ``combobox``, so we send the Enter via ``page.keyboard`` (which
-    // doesn't re-resolve a role-based locator) to dodge that race.
+    // so ``getByRole('textbox').first()`` resolves the live composer. The
+    // filled value carries arguments after the command name, so the dropdown
+    // stays closed (space-state rule) and the Enter below falls straight
+    // through to Carbon's submit. We still send it via ``page.keyboard`` so
+    // a role-based locator never has to re-resolve mid-keystroke.
     const ta2 = composer(page);
     await ta2.waitFor({ state: "visible", timeout: 30_000 });
     await ta2.fill("/deck make 3 slides");
@@ -261,6 +262,85 @@ test.describe("slash-command skill invocation", () => {
         expanded: "true",
         activedescendant: "cuga-slash-option-deck",
       });
+  });
+
+  test("dropdown hides once a space follows the command name and re-arms on backspace", async ({ page }) => {
+    // The space character changes state (stateless rule, derived from the
+    // live composer content): the dropdown is visible only while the input
+    // matches ``/<partial-name>`` with no whitespace after it. Regression
+    // for the review-reported bug where the popup kept re-appearing over
+    // the composer on every argument keystroke.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+
+    await page.goto("/chat");
+
+    const dropdown = page.locator(".cuga-slash-dropdown");
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+
+    // While the command is still being named the dropdown is up.
+    await ta.fill("/deck");
+    await expect(dropdown).toBeVisible({ timeout: 10_000 });
+
+    // The first space after the name hides it. Keystrokes go through
+    // ``page.keyboard`` from here on: the open dropdown flips the composer
+    // role to ``combobox``, so a ``getByRole('textbox')`` locator would no
+    // longer resolve.
+    await page.keyboard.type(" hello");
+    await expect(dropdown).not.toBeVisible();
+
+    // Further argument keystrokes must not resurrect it — this was the bug.
+    await page.keyboard.type(" world");
+    await expect(dropdown).not.toBeVisible();
+
+    // Stateless means reversible: backspacing the args and the space away
+    // ("/deck hello world" -> "/dec") legitimately re-shows the dropdown.
+    for (let i = 0; i < "k hello world".length; i += 1) {
+      await page.keyboard.press("Backspace");
+    }
+    await expect(dropdown).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("accepting a suggestion leaves the dropdown closed while typing args", async ({ page }) => {
+    // Accepting a suggestion writes ``/<name> `` — trailing space included —
+    // into the composer. That trailing space must flip the dropdown closed
+    // and keep it closed while arguments are typed.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+
+    await page.goto("/chat");
+
+    const dropdown = page.locator(".cuga-slash-dropdown");
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+
+    await ta.fill("/dec");
+    await expect(dropdown).toBeVisible({ timeout: 10_000 });
+    // Wait for the fetched+filtered option list — Enter on an empty list
+    // would fall through to Carbon's submit instead of accepting.
+    await expect(dropdown.locator('[role="option"]')).toHaveCount(1, {
+      timeout: 10_000,
+    });
+
+    // Enter accepts the highlighted "/deck" suggestion, inserting "/deck ".
+    await page.keyboard.press("Enter");
+    await expect(dropdown).not.toBeVisible();
+
+    // The reported bug: the popup re-appeared on every arg keystroke after
+    // acceptance. It must stay closed for the whole argument tail.
+    await page.keyboard.type("make 3 slides");
+    await expect(dropdown).not.toBeVisible();
   });
 
   test("skill invocation replays into the reasoning panel on history reload", async ({ page }) => {
