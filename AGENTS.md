@@ -14,3 +14,14 @@ Every new or changed test must be marked with a pytest marker that declares its 
 - `@pytest.mark.windows_smoke` — Windows CI smoke subset
 
 Do not leave tests unmarked when a type marker applies.
+
+## Creating issues and pull requests
+
+When creating a new GitHub issue or pull request, use the AI agent commands documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-commands) instead of inventing an ad-hoc flow. Prefer:
+
+- `/cuga-report-bug` — open a bug issue from the `bug_report.yml` template
+- `/cuga-new-feature` — open a feature request from the `feature_request.yml` template
+- `/cuga-create-pr` — validate local state, pick the right PR template, and open the PR via `gh`
+- `/cuga-commit` — stage and commit with Conventional Commits before opening a PR
+
+These commands live under `.cursor/commands/`, `.claude/commands/`, and `.bob/commands/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
