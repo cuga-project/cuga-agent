@@ -1,8 +1,10 @@
 """Unit tests for the SDK-side skills gate in CugaAgent._dispatch_slash.
 
 The SDK must mirror the server's gating (main.py _skills_effective_enabled):
-when skills are disabled, a slash message is not dispatched or synthesized —
-it reaches the planner unchanged.
+when skills are disabled, a slash message is not dispatched or translated —
+it reaches the planner unchanged. When skills are enabled, the slash
+invocation is translated into a planner suggestion (soft dispatch); no
+messages are injected.
 """
 
 import asyncio
@@ -41,10 +43,9 @@ def test_skills_disabled_slash_message_passes_through(tmp_path, monkeypatch):
 
     assert result is not None
     assert result.kind == "passthrough"
-    # No synthesis: invoke() only injects messages when kind == "skill" and
-    # injected_messages is non-empty, so the raw message reaches the planner
-    # unchanged.
-    assert result.injected_messages == []
+    # No translation: invoke() only swaps the planner input when
+    # kind == "skill", so the raw message reaches the planner unchanged.
+    assert result.planner_input is None
     assert result.raw_input == "/gateskill make 3 slides"
 
 
@@ -61,7 +62,7 @@ def test_skills_flag_none_falls_back_to_settings_disabled(tmp_path, monkeypatch)
 
     assert result is not None
     assert result.kind == "passthrough"
-    assert result.injected_messages == []
+    assert result.planner_input is None
 
 
 def test_skills_enabled_still_dispatches_skill(tmp_path, monkeypatch):
@@ -73,4 +74,7 @@ def test_skills_enabled_still_dispatches_skill(tmp_path, monkeypatch):
 
     assert result is not None
     assert result.kind == "skill"
-    assert result.injected_messages
+    # Gate on: the planner input is the translated suggestion; the original
+    # utterance stays available for history, and nothing is injected.
+    assert result.planner_input == "use the skill named 'gateskill' to: do it"
+    assert result.raw_input == "/gateskill do it"

@@ -2365,10 +2365,12 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            # If dispatch resolved a skill, inject the synthesized load_skill
-            # message quad so the planner sees the skill as already loaded.
-            if slash_result is not None and slash_result.kind == "skill" and slash_result.injected_messages:
-                new_messages = list(slash_result.injected_messages)
+            # If dispatch resolved a skill, soft-dispatch: the planner input
+            # becomes the translated suggestion ("use the skill named '<name>'
+            # to: <args>") and the planner decides to call ``load_skill``
+            # itself. No messages are injected.
+            if slash_result is not None and slash_result.kind == "skill" and slash_result.planner_input:
+                new_messages = [HumanMessage(content=slash_result.planner_input)]
             else:
                 new_messages = [HumanMessage(content=message)]
         else:
