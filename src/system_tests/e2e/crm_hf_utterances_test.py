@@ -2,6 +2,8 @@ import asyncio
 import unittest
 import uuid
 
+import pytest
+
 from system_tests.e2e.base_crm_test import BaseCRMTestServerStream
 from system_tests.e2e.digital_sales_test_helpers import DigitalSalesTestHelpers
 
@@ -25,6 +27,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
         self.thread_id = str(uuid.uuid4())
         print(f"\n=== Test thread ID: {self.thread_id} ===")
 
+    @pytest.mark.stability
     async def test_filter_contacts_and_calculate_revenue_percentile(self):
         """
         Test use case 1: Filter contacts from contacts.txt, retrieve account details,
@@ -47,6 +50,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
             ],
         )
 
+    @pytest.mark.stability
     async def test_get_top_n_accounts_revenue(self):
         """
         Test use case 2: Get top 5 accounts by revenue.
@@ -68,6 +72,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
             ],
         )
 
+    @pytest.mark.stability
     async def test_show_users_in_crm_system(self):
         """
         Test use case 2: Show which users from contacts.txt belong to the CRM system.
@@ -109,6 +114,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
         self._assert_answer_event(all_events, expected_keywords=["4,260", "4260"], keyword_match_mode="any")
         print("--- Sleep complete ---")
 
+    @pytest.mark.stability
     async def test_what_is_cuga(self):
         """
         Test use case 3: Knowledge retrieval about CUGA from workspace documentation.
@@ -125,6 +131,7 @@ class TestCRMHF_Examples(BaseCRMTestServerStream):
         )
         print("--- Sleep complete ---")
 
+    @pytest.mark.stability
     async def test_playbook_execution(self):
         """
         Test use case 4: Automated playbook execution from markdown instructions.

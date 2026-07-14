@@ -1,9 +1,12 @@
 import asyncio
+import pytest
 import unittest
 import uuid
 
 from system_tests.e2e.base_crm_test import BaseCRMTestServerStream
 from system_tests.e2e.digital_sales_test_helpers import DigitalSalesTestHelpers
+
+pytestmark = pytest.mark.e2e
 
 
 class TestCRMFollowup(BaseCRMTestServerStream):
