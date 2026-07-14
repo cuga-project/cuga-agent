@@ -3,6 +3,7 @@ import uuid
 import time
 import os
 import httpx
+import pytest
 from system_tests.e2e.base_test import BaseTestServerStream, SERVER_URL
 from system_tests.load.conftest import resolve_load_test_users
 from system_tests.load.isolation import (
@@ -18,6 +19,9 @@ from system_tests.load.metrics import (
 )
 
 STATE_ENDPOINT = f"{SERVER_URL}/api/agent/state"
+
+
+pytestmark = pytest.mark.load
 
 
 class LoadTestWithMockedLLM(BaseTestServerStream):

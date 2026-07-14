@@ -3,8 +3,12 @@ Test script for agent tools API.
 Run this after starting the server to verify the implementation.
 """
 
-import requests
 import json
+
+import pytest
+import requests
+
+pytestmark = pytest.mark.manual
 
 BASE_URL = "http://localhost:8000/api/manage"
 AGENT_ID = "test-agent"

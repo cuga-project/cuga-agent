@@ -167,12 +167,17 @@ export async function getManageConfigHistory(agentId?: string): Promise<Response
   return apiFetch(`/api/manage/config/history${q}`);
 }
 
-export async function postManageConfigDraft(config: unknown, agentId?: string): Promise<Response> {
+export async function postManageConfigDraft(
+  config: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+    signal,
   });
 }
 
@@ -237,12 +242,17 @@ export async function patchManageConfigDraftPolicies(
   });
 }
 
-export async function postManageConfig(config: unknown, agentId?: string): Promise<Response> {
+export async function postManageConfig(
+  config: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+    signal,
   });
 }
 

@@ -28,14 +28,27 @@ DIGITAL_SALES_MCP_COMMAND = ["uv", "run", "digital_sales_openapi"]  # Digital sa
 SERVER_URL = f"http://localhost:{settings.server_ports.demo}"
 STREAM_ENDPOINT = f"{SERVER_URL}/stream"
 STOP_ENDPOINT = f"{SERVER_URL}/stop"
-os.environ["MCP_SERVERS_FILE"] = os.path.join(os.path.dirname(__file__), "config", "mcp_servers.yaml")
-os.environ["CUGA_TEST_ENV"] = "true"
-os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
-os.environ["DYNACONF_POLICY__ENABLED"] = "false"
-os.environ.setdefault(
-    "DYNACONF_SERVER_PORTS__DIGITAL_SALES_API",
-    str(settings.server_ports.digital_sales_api),
-)
+MCP_SERVERS_FILE_PATH = os.path.join(os.path.dirname(__file__), "config", "mcp_servers.yaml")
+
+
+def _apply_base_test_env_defaults() -> None:
+    """Apply process env defaults this test base relies on.
+
+    Other test bases (e.g. ``BaseCRMTestServerStream``) mutate these same
+    process-wide env vars in their own ``asyncSetUp``. Since every e2e test
+    module is imported once into the same pytest session, module-level
+    assignment would only "win" for whichever base module happens to import
+    last. Apply only from ``asyncSetUp`` so this base's expectations hold
+    regardless of import order.
+    """
+    os.environ["MCP_SERVERS_FILE"] = MCP_SERVERS_FILE_PATH
+    os.environ["CUGA_TEST_ENV"] = "true"
+    os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
+    os.environ["DYNACONF_POLICY__ENABLED"] = "false"
+    os.environ.setdefault(
+        "DYNACONF_SERVER_PORTS__DIGITAL_SALES_API",
+        str(settings.server_ports.digital_sales_api),
+    )
 
 
 def get_preexec_fn():
@@ -377,6 +390,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
         Starts the demo server, registry, and digital sales MCP processes with configured environment.
         """
         print(f"\n--- Setting up test environment for {self.__class__.__name__} ---")
+        _apply_base_test_env_defaults()
         self.demo_process = None
         self.registry_process = None
         self.digital_sales_mcp_process = None
