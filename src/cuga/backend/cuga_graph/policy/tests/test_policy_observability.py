@@ -92,6 +92,26 @@ def test_append_preserves_order_and_deduplicates_identical_events():
     assert serialize_policy_decisions(state)[1]["outcome"] == "approved"
 
 
+def test_serialize_policy_decisions_accepts_checkpoint_dictionaries():
+    state = SimpleNamespace(
+        policy_decisions=[
+            {
+                "policy_id": "checkpoint-guard",
+                "policy_name": "Checkpoint guard",
+                "policy_type": "intent_guard",
+                "action_type": "block_intent",
+                "stage": "input",
+                "outcome": "blocked",
+            }
+        ]
+    )
+
+    serialized = serialize_policy_decisions(state)
+
+    assert serialized[0]["policy_id"] == "checkpoint-guard"
+    assert serialized[0]["outcome"] == "blocked"
+
+
 def test_decision_from_metadata_requires_policy_identity():
     assert decision_from_metadata({}, outcome=PolicyDecisionOutcome.DENIED) is None
 

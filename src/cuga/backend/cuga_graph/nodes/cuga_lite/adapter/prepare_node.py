@@ -41,6 +41,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
 )
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
+from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
 from cuga.backend.skills import (
     SkillRegistry,
     create_skill_tools,
@@ -645,9 +646,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             "prepared_prompt": dynamic_prompt,
             "step_count": 0,
             "cuga_lite_metadata": state.cuga_lite_metadata,
-            "policy_decisions": [
-                decision.model_dump(mode="json") for decision in (state.policy_decisions or [])
-            ],
+            "policy_decisions": serialize_policy_decisions(state),
             "reflection_apps": reflection_apps_snapshot,
             "reflection_enable_find_tools": enable_find_tools,
             "reflection_skills_enabled": skills_enabled,
