@@ -1,6 +1,8 @@
 /**
  * E2E coverage for slash-command skill invocation:
- *  - the ``SlashSkillInvoked`` reasoning-panel step (live + replay)
+ *  - a slash command round-trips to a streamed answer (soft dispatch: the
+ *    translated suggestion drives the planner, so there is no separate
+ *    invocation step)
  *  - the autocomplete dropdown's ARIA combobox semantics
  *  - the caret-scoped trigger rule (slash semantics are SOFT — a ``/skill``
  *    mention anywhere in the message is a suggestion to the agent — so the
@@ -24,37 +26,9 @@ const COMMANDS_PAYLOAD = [
 
 const SKILL_SSE = [
   'event: UserMessage\ndata: /deck make 3 slides',
-  'event: SlashSkillInvoked\ndata: {"resolved_name": "deck", "raw_input": "/deck make 3 slides", "raw_args": "make 3 slides"}',
   'event: Answer\ndata: Deck created.',
   'event: Complete\ndata: \n',
 ].join("\n\n") + "\n\n";
-
-const HISTORY_PAYLOAD = {
-  events: [
-    {
-      event_name: "UserMessage",
-      event_data: "/deck make 3 slides",
-      timestamp: "2026-05-14T12:00:00",
-      sequence: 0,
-    },
-    {
-      event_name: "SlashSkillInvoked",
-      event_data: JSON.stringify({
-        resolved_name: "deck",
-        raw_input: "/deck make 3 slides",
-        raw_args: "make 3 slides",
-      }),
-      timestamp: "2026-05-14T12:00:01",
-      sequence: 1,
-    },
-    {
-      event_name: "Answer",
-      event_data: "Deck created.",
-      timestamp: "2026-05-14T12:00:02",
-      sequence: 2,
-    },
-  ],
-};
 
 async function stubBootEndpoints(page: Page, historyEvents: object = { events: [] }) {
   // Playwright tries routes in REVERSE registration order — the most recent
@@ -146,27 +120,22 @@ function readComposerText(page: Page) {
 }
 
 test.describe("slash-command skill invocation", () => {
-  test("skill invocation surfaces in the reasoning panel", async ({ page }) => {
-    // The skill invocation lands as a "Skill invoked: /<name>" reasoning
-    // step on the assistant message. The assertion checks that the
-    // reasoning toggle is present and reveals the skill name.
+  test("sending a slash command round-trips to a streamed answer", async ({ page }) => {
+    // Soft dispatch: sending ``/deck ...`` translates to a planner suggestion
+    // and streams back a normal answer — there is no separate "Skill invoked"
+    // step or chip bubble. This case guards that the slash send flow
+    // round-trips: the message sends and the streamed answer renders. (Pill
+    // decoration of ``/command`` mentions is covered by its own test below.)
     await stubBootEndpoints(page);
     await stubStream(page, SKILL_SSE);
 
     await page.goto("/chat");
     await sendInComposer(page, "/deck make 3 slides");
 
-    // The reasoning toggle, relabelled "Show details", must be present
-    // and clickable. After clicking, the panel reveals the skill audit step.
-    const showDetails = page.getByRole("button", { name: /Show details/i }).first();
-    await expect(showDetails).toBeVisible({ timeout: 10_000 });
-    await showDetails.click();
-
-    // The audit step is titled "Skill invoked: /deck" and contains the raw
-    // input verbatim. The reasoning panel is rendered inside Carbon's shadow
-    // DOM; Playwright's auto-piercing locators reach in.
-    await expect(page.getByText(/Skill invoked:\s*\/deck/i).first()).toBeVisible();
-    await expect(page.getByText("/deck make 3 slides").first()).toBeVisible();
+    // The sent user message renders in a bubble…
+    await expect(page.getByText("/deck make 3 slides").first()).toBeVisible({ timeout: 10_000 });
+    // …and the streamed answer renders — no separate invocation step precedes it.
+    await expect(page.getByText("Deck created.").first()).toBeVisible({ timeout: 10_000 });
   });
 
   test("combobox ARIA attributes mirror dropdown state", async ({ page }) => {
@@ -541,18 +510,5 @@ test.describe("slash-command skill invocation", () => {
     await expect(page.locator(".cuga-slash-inline-pill").first()).toBeVisible({
       timeout: 10_000,
     });
-  });
-
-  test("skill invocation replays into the reasoning panel on history reload", async ({ page }) => {
-    await stubBootEndpoints(page, HISTORY_PAYLOAD);
-
-    await page.goto("/chat");
-
-    // The reasoning toggle ("Show details") must be present; expanding it
-    // reveals the audit step for /deck.
-    const showDetails = page.getByRole("button", { name: /Show details/i }).first();
-    await expect(showDetails).toBeVisible({ timeout: 10_000 });
-    await showDetails.click();
-    await expect(page.getByText(/Skill invoked:\s*\/deck/i).first()).toBeVisible();
   });
 });

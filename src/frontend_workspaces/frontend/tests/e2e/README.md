@@ -1,7 +1,7 @@
 # Playwright e2e tests
 
 Browser-driven verification for slash-command skill invocations
-(`SlashSkillInvoked` surfacing in the reasoning panel) and the
+(soft dispatch: a `/skill` send round-trips to a streamed answer) and the
 `ThreadIdChanged` round-trip triggered by `/clear`.
 
 `@playwright/test` is in `devDependencies`, so `pnpm install` brings it in.
@@ -19,14 +19,13 @@ pnpm run test:e2e                        # runs ./playwright.config.ts -> tests/
 
 - `slash-chips.spec.ts` boots the production build in headless Chromium, stubs
   every backend endpoint via `page.route` (no real backend needed), and asserts:
-  - **Skill invocation** — typing `/deck make 3 slides` no longer mounts a
-    separate chip bubble; the invocation surfaces as a `Skill invoked: /deck`
-    step inside the assistant message's reasoning panel (toggle labelled
-    "Show details").
+  - **Skill invocation** — typing `/deck make 3 slides` soft-dispatches: the
+    send round-trips to a streamed answer with no separate invocation step or
+    chip bubble, and the known `/deck` mention decorates the sent bubble with a
+    pill.
   - **Combobox ARIA attributes** — the composer's `aria-expanded` /
     `aria-controls` / `aria-activedescendant` mirror the dropdown state as it
     opens, the active option changes, and it closes.
-  - History reload: skill invocations replay into the same reasoning panel.
 
 ## Architecture notes
 
