@@ -322,6 +322,33 @@ If there is insufficient horizontal space between `UPSTREAM_ELEMENT` and `DOWNST
 shift `DOWNSTREAM_TASK` and all elements further right to accommodate the hook task (100 px
 wide) plus spacing (≥ 30 px gap on each side).
 
+### Text annotation
+
+Add a **"Hook"** label above the hook script task. In the `<process>` block:
+
+```xml
+<textAnnotation id="TextAnnotation_Hook_FLOW_ID">
+  <text>Hook</text>
+</textAnnotation>
+<association id="Association_Hook_FLOW_ID" sourceRef="Task_Hook_FLOW_ID"
+    targetRef="TextAnnotation_Hook_FLOW_ID" associationDirection="None"/>
+```
+
+In the `BPMNDiagram` block (annotation is ~45 px above the hook task, same width):
+
+```xml
+<bpmndi:BPMNShape bpmnElement="TextAnnotation_Hook_FLOW_ID" id="BPMNShape_TextAnnotation_Hook_FLOW_ID">
+  <omgdc:Bounds height="30.0" width="100.0" x="HOOK_X" y="HOOK_Y - 45"/>
+</bpmndi:BPMNShape>
+
+<bpmndi:BPMNEdge bpmnElement="Association_Hook_FLOW_ID" id="BPMNEdge_Association_Hook_FLOW_ID"
+    flowable:sourceDockerX="50.0" flowable:sourceDockerY="0.0"
+    flowable:targetDockerX="1.0" flowable:targetDockerY="15.0">
+  <omgdi:waypoint x="HOOK_X + 50" y="HOOK_Y"/>
+  <omgdi:waypoint x="HOOK_X + 10" y="HOOK_Y - 15"/>
+</bpmndi:BPMNEdge>
+```
+
 ---
 
 ## Transformation Algorithm

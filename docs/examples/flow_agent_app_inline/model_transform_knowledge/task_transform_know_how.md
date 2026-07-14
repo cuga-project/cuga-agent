@@ -143,6 +143,33 @@ Replace the original task's `<BPMNShape>` with a script task shape at the **same
 
 No edge changes — flow IDs and waypoints are identical to the original task.
 
+### Text annotation
+
+Add a **"Task Agent"** label above the script task. In the `<process>` block:
+
+```xml
+<textAnnotation id="TextAnnotation_TASK_ID">
+  <text>Task Agent</text>
+</textAnnotation>
+<association id="Association_TASK_ID" sourceRef="TextAnnotation_TASK_ID"
+    targetRef="TASK_ID" associationDirection="None"/>
+```
+
+In the `BPMNDiagram` block (annotation is ~45 px above the task, same width):
+
+```xml
+<bpmndi:BPMNShape bpmnElement="TextAnnotation_TASK_ID" id="BPMNShape_TextAnnotation_TASK_ID">
+  <omgdc:Bounds height="30.0" width="100.0" x="TASK_X" y="TASK_Y - 45"/>
+</bpmndi:BPMNShape>
+
+<bpmndi:BPMNEdge bpmnElement="Association_TASK_ID" id="BPMNEdge_Association_TASK_ID"
+    flowable:sourceDockerX="1.0" flowable:sourceDockerY="15.0"
+    flowable:targetDockerX="50.0" flowable:targetDockerY="0.0">
+  <omgdi:waypoint x="TASK_X + 10" y="TASK_Y - 15"/>
+  <omgdi:waypoint x="TASK_X + 50" y="TASK_Y"/>
+</bpmndi:BPMNEdge>
+```
+
 ### No subprocess diagram needed
 The single script task is a flat element; there is no second `BPMNDiagram` block.
 

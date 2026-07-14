@@ -193,6 +193,37 @@ Add edges for the two new/updated flows (`FLOW_IN` now targets routing task; `FL
 connects routing task to gateway). Update all downstream edge waypoints by adding the shift
 amount to their x-coordinates.
 
+### Text annotation
+
+Add a **"Decision Agent"** label above the routing script task. In the `<process>` block:
+
+```xml
+<textAnnotation id="TextAnnotation_RouteGATEWAY_ID">
+  <text>Decision Agent</text>
+</textAnnotation>
+<association id="Association_RouteGATEWAY_ID" sourceRef="Activity_RouteGATEWAY_ID"
+    targetRef="TextAnnotation_RouteGATEWAY_ID" associationDirection="None"/>
+```
+
+In the `BPMNDiagram` block (annotation is ~45 px above the routing script task, same width):
+
+```xml
+<bpmndi:BPMNShape bpmnElement="TextAnnotation_RouteGATEWAY_ID" id="BPMNShape_TextAnnotation_RouteGATEWAY_ID">
+  <omgdc:Bounds height="30.0" width="100.0" x="ORIG_GW_X" y="ORIG_GW_Y - 65"/>
+</bpmndi:BPMNShape>
+
+<bpmndi:BPMNEdge bpmnElement="Association_RouteGATEWAY_ID" id="BPMNEdge_Association_RouteGATEWAY_ID"
+    flowable:sourceDockerX="50.0" flowable:sourceDockerY="0.0"
+    flowable:targetDockerX="1.0" flowable:targetDockerY="15.0">
+  <omgdi:waypoint x="ORIG_GW_X + 50" y="ORIG_GW_Y - 20"/>
+  <omgdi:waypoint x="ORIG_GW_X + 10" y="ORIG_GW_Y - 35"/>
+</bpmndi:BPMNEdge>
+```
+
+Note: the annotation is placed above `Activity_RouteGATEWAY_ID` (the script task), not above
+the gateway diamond. The routing script task sits at `(ORIG_GW_X, ORIG_GW_Y - 20)` with 80 px
+height, so `ORIG_GW_Y - 65` puts the annotation ~15 px above the task top edge.
+
 ---
 
 ## Transformation Algorithm
