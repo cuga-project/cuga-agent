@@ -7,8 +7,8 @@ caller is responsible for interpreting the returned :class:`DispatchResult`:
 * ``passthrough`` — feed ``raw_input`` to the planner unchanged
 * ``unknown`` — ``/<name>`` did not resolve to any skill; the caller may
   fall back to the planner or surface an error.
-* ``skill`` — inject ``injected_messages`` into the graph state, then run the
-  planner
+* ``skill`` — feed ``planner_input`` (the translated suggestion) to the
+  planner while keeping ``raw_input`` for display/history
 
 Every recognized slash invocation emits a ``slash_command`` telemetry record
 (structured log + best-effort Langfuse span) with the raw input, resolved
@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from loguru import logger
 
-from cuga.backend.slash_commands.message_synthesis import synthesize_skill_invocation
 from cuga.backend.slash_commands.parser import ParsedSlash, parse
+from cuga.backend.slash_commands.translation import translate_skill_invocation
 from cuga.backend.slash_commands.registry import SlashRegistry
 from cuga.backend.slash_commands.types import DispatchContext, DispatchResult
 
@@ -80,28 +80,14 @@ async def _dispatch_parsed(
         extra=extra or {},
     )
 
+    # Kind-based dispatch: builtins (e.g. a future ``/clear``) hard-dispatch —
+    # the command runs here and never reaches the planner — while skills
+    # soft-suggest: the invocation is translated into a plain planner input
+    # and the planner decides to call ``load_skill`` itself.
     if slash_registry.has_skill(parsed.name):
-        assert skill_registry is not None  # has_skill is False without a registry
-        try:
-            wrapped_body = skill_registry.load_skill(parsed.name, parsed.raw_args)
-        except Exception:
-            logger.exception(f"Failed to load skill '/{parsed.name}'")
-            return DispatchResult(
-                kind="unknown",
-                text=f"Failed to load skill /{parsed.name}.",
-                resolved_name=parsed.name,
-                raw_input=parsed.raw_input,
-                raw_args=parsed.raw_args,
-            )
-        injected = synthesize_skill_invocation(
-            raw_input=parsed.raw_input,
-            raw_args=parsed.raw_args,
-            resolved_name=parsed.name,
-            wrapped_body=wrapped_body,
-        )
         return DispatchResult(
             kind="skill",
-            injected_messages=injected,
+            planner_input=translate_skill_invocation(parsed.name, parsed.raw_args),
             resolved_name=parsed.name,
             raw_input=parsed.raw_input,
             raw_args=parsed.raw_args,

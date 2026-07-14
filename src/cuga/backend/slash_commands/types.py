@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
-    List,
     Literal,
     Optional,
 )
@@ -46,11 +44,15 @@ class DispatchContext:
 
 @dataclass
 class DispatchResult:
-    """The outcome of ``parse_and_dispatch``."""
+    """The outcome of ``parse_and_dispatch``.
+
+    For ``kind == "skill"``, ``planner_input`` carries the translated
+    suggestion the caller feeds to the planner; ``raw_input`` keeps the
+    user's original utterance for display/history.
+    """
 
     kind: DispatchKind
-    text: Optional[str] = None
-    injected_messages: List[Any] = field(default_factory=list)
+    planner_input: Optional[str] = None
     resolved_name: Optional[str] = None
     raw_input: Optional[str] = None
     raw_args: Optional[str] = None
