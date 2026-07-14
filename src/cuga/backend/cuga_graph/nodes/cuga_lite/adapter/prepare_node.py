@@ -645,6 +645,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             "prepared_prompt": dynamic_prompt,
             "step_count": 0,
             "cuga_lite_metadata": state.cuga_lite_metadata,
+            "policy_decisions": [
+                decision.model_dump(mode="json") for decision in (state.policy_decisions or [])
+            ],
             "reflection_apps": reflection_apps_snapshot,
             "reflection_enable_find_tools": enable_find_tools,
             "reflection_skills_enabled": skills_enabled,

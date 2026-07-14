@@ -27,6 +27,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.policy.models import PolicyDecision
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
@@ -47,6 +48,7 @@ class CugaLiteState(BaseModel):
     - variable_counter_state: int (shared variable counter)
     - variable_creation_order: List[str] (shared variable order)
     - cuga_lite_metadata: Dict[str, Any] (metadata for tracking execution context)
+    - policy_decisions: List[PolicyDecision] (safe policy outcomes for the current invocation)
     - sub_task: str (current subtask being executed)
     - sub_task_app: str (app name for subtask)
     - api_intent_relevant_apps: List[Any] (relevant apps for the task)
@@ -81,6 +83,7 @@ class CugaLiteState(BaseModel):
     variable_counter_state: int = 0
     variable_creation_order: List[str] = Field(default_factory=list)
     cuga_lite_metadata: Optional[Dict[str, Any]] = None
+    policy_decisions: List[PolicyDecision] = Field(default_factory=list)
     sub_task: Optional[str] = None
     sub_task_app: Optional[str] = None
     api_intent_relevant_apps: Optional[List[Any]] = None

@@ -268,6 +268,9 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         }
         if adapter.get_metadata(state):
             update_payload[adapter.metadata_key] = adapter.get_metadata(state)
+        update_payload["policy_decisions"] = [
+            decision.model_dump(mode="json") for decision in (state.policy_decisions or [])
+        ]
         if is_fresh_conversation:
             update_payload["task_todos"] = None
 

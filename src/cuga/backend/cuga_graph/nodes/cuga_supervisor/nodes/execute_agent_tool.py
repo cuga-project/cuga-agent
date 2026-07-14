@@ -22,6 +22,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
     SupervisorExecutionContext,
 )
+from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
 from cuga.config import settings
 
 
@@ -31,6 +32,7 @@ def _delegation_state_update(state: CugaSupervisorState) -> dict:
         "agent_results": dict(state.agent_results),
         "agent_variables": dict(state.agent_variables),
         "agent_chat_messages": dict(state.agent_chat_messages),
+        "policy_decisions": serialize_policy_decisions(state),
         "metrics": dict(state.metrics or {}),
     }
 

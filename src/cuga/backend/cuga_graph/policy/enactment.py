@@ -14,9 +14,16 @@ from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.policy.models import (
     OutputFormatter,
     PolicyActionType,
+    PolicyDecisionOutcome,
+    PolicyDecisionStage,
     PolicyMatch,
     PolicyType,
     Playbook,
+)
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    decision_from_match,
+    serialize_policy_decisions,
 )
 from cuga.config import settings
 
@@ -59,13 +66,16 @@ class PolicyEnactment:
             # Infer target from policy_types
             if policy_types and PolicyType.OUTPUT_FORMATTER in policy_types:
                 target = "agent_response"
+                decision_stage = PolicyDecisionStage.OUTPUT
             elif policy_types and (
                 PolicyType.INTENT_GUARD in policy_types or PolicyType.PLAYBOOK in policy_types
             ):
                 target = "intent"
+                decision_stage = PolicyDecisionStage.INPUT
             else:
                 # Default case: intent matching
                 target = "intent"
+                decision_stage = PolicyDecisionStage.INPUT
                 if policy_types is None:
                     policy_types = [PolicyType.INTENT_GUARD, PolicyType.PLAYBOOK]
 
@@ -137,6 +147,33 @@ class PolicyEnactment:
                 # Even if no guides matched, ensure metadata structure is correct
                 metadata["guides"] = []
                 metadata["guide_policies"] = []
+
+            decisions = []
+            if policy_match.matched:
+                outcome = (
+                    None if command is not None or metadata is not None else PolicyDecisionOutcome.MATCHED
+                )
+                decisions.append(
+                    decision_from_match(
+                        policy_match,
+                        stage=decision_stage,
+                        outcome=outcome,
+                    )
+                )
+            decisions.extend(
+                decision_from_match(
+                    guide_match,
+                    stage=PolicyDecisionStage.INPUT,
+                    outcome=PolicyDecisionOutcome.APPLIED,
+                )
+                for guide_match in guide_matches
+            )
+            append_policy_decisions(state, decisions)
+
+            # Blocking policy actions return before the normal prepare-node
+            # update, so explicitly persist the decision list on the command.
+            if command is not None and isinstance(getattr(command, "update", None), dict):
+                command.update["policy_decisions"] = serialize_policy_decisions(state)
 
             # Return command (if any) and merged metadata
             return command, metadata

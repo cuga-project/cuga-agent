@@ -11,11 +11,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+
+pytestmark = pytest.mark.unit
 
 
 class LiteLikeAdapter(CoreGraphAdapter):
@@ -121,6 +124,7 @@ def test_handle_denial_lite_shape():
         "final_answer": "Execution cancelled by user.",
         "step_count": 5,
         "cuga_lite_metadata": {},
+        "policy_decisions": [],
     }
     assert ToolApprovalHandler.handle_denial(a, SimpleNamespace(cuga_lite_metadata={})) is None
 
@@ -129,7 +133,12 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
     a = LiteLikeAdapter()
     st = SimpleNamespace(
         chat_messages=[AIMessage(content="```python\nprint('go')\n```")],
-        cuga_lite_metadata={"user_approved": True, "policy_name": "P"},
+        cuga_lite_metadata={
+            "user_approved": True,
+            "policy_id": "approval-1",
+            "policy_name": "P",
+            "policy_type": "tool_approval",
+        },
         step_count=2,
     )
     cmd = ToolApprovalHandler.handle_approval_resumption(a, st)
@@ -139,6 +148,7 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
     # cleaned metadata written under the adapter's metadata_key
     assert "user_approved" not in cmd.update["cuga_lite_metadata"]
     assert cmd.update["cuga_lite_metadata"]["policy_name"] == "P"
+    assert cmd.update["policy_decisions"][0]["outcome"] == "approved"
 
 
 def test_real_supervisor_adapter_has_correct_approval_seams():

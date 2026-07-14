@@ -24,6 +24,7 @@ from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decompositio
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 
 class ToolCallRecord(BaseModel):
@@ -999,6 +1000,10 @@ class AgentState(BaseModel):
     cuga_lite_metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict
     )  # Metadata for CugaLite subgraph execution
+    policy_decisions: List[PolicyDecision] = Field(
+        default_factory=list,
+        description="Policy decisions made during the current invocation",
+    )
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)

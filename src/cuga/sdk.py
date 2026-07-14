@@ -119,6 +119,7 @@ from cuga.backend.cuga_graph.policy.models import (
     NaturalLanguageTrigger,
     IntentGuardResponse,
     AlwaysTrigger,
+    PolicyDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
@@ -139,6 +140,10 @@ class InvokeResult(BaseModel):
     variables: Dict[str, Any] = Field(
         default_factory=dict,
         description="Variables computed by the sub-agent, bridged to the Supervisor's namespace",
+    )
+    policy_decisions: List[PolicyDecision] = Field(
+        default_factory=list,
+        description="Ordered policy decisions made during this invocation",
     )
 
     def __str__(self) -> str:
@@ -2285,6 +2290,7 @@ class CugaAgent:
             - tool_calls: List of tool calls made (when track_tool_calls=True)
             - thread_id: Thread ID used for this invocation
             - error: Error message if execution failed
+            - policy_decisions: Ordered policy outcomes for this invocation
 
         Example:
             ```python
@@ -2292,6 +2298,10 @@ class CugaAgent:
             result = await agent.invoke("What's 2+2?", track_tool_calls=True)
             print(result.answer)  # Access the answer
             print(result.tool_calls)  # Access tool calls
+
+            # Inspect policies that affected this invocation
+            for decision in result.policy_decisions:
+                print(decision.policy_id, decision.stage, decision.outcome)
 
             # The result also converts to string for backward compatibility
             print(result)  # Prints the answer
@@ -2417,6 +2427,7 @@ class CugaAgent:
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
+                policy_decisions=result.get("policy_decisions", []) or [],
             )
 
         # Normal invocation case
@@ -2454,6 +2465,10 @@ class CugaAgent:
             initial_state_dict = existing_state.model_dump()
             initial_state_dict["chat_messages"] = updated_chat_messages
             initial_state_dict["input"] = new_messages[-1].content if new_messages else ""
+            # InvokeResult reports decisions for this request, not the entire
+            # checkpointed conversation. HITL resume bypasses this branch and
+            # therefore preserves the interrupted request's decision lifecycle.
+            initial_state_dict["policy_decisions"] = []
 
             # Update user_context (pi) if provided
             if user_context:
@@ -2600,6 +2615,7 @@ class CugaAgent:
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
+            policy_decisions=result.get("policy_decisions", []) or [],
         )
 
     async def stream(
@@ -3214,6 +3230,12 @@ class CugaSupervisor:
             tool_calls=tool_calls,
             thread_id=thread_id,
             error=error_msg,
+            policy_decisions=(
+                result.get("policy_decisions", [])
+                if isinstance(result, dict)
+                else getattr(result, "policy_decisions", [])
+            )
+            or [],
         )
 
     @property
