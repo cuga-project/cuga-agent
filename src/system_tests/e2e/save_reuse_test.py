@@ -1,9 +1,12 @@
 import datetime
+import pytest
 import unittest
 
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse, ActionType
 
 from system_tests.e2e.base_test import BaseTestServerStream
+
+pytestmark = pytest.mark.e2e
 
 
 class TestServerStreamFast(BaseTestServerStream):

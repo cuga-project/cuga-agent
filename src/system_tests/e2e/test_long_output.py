@@ -1,8 +1,11 @@
+import pytest
 import unittest
 import re
 from langchain_core.messages import HumanMessage
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
+
+pytestmark = pytest.mark.e2e
 
 
 class TestLongOutput(unittest.IsolatedAsyncioTestCase):
