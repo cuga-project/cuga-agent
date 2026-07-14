@@ -1,7 +1,10 @@
+import pytest
 import unittest
 
 from system_tests.e2e.base_test import BaseTestServerStream
 from system_tests.e2e.digital_sales_test_helpers import DigitalSalesTestHelpers
+
+pytestmark = pytest.mark.e2e
 
 
 class TestServerStreamBalanced(BaseTestServerStream):

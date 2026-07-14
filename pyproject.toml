@@ -215,6 +215,7 @@ dev = [
     "rapidfuzz",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.1.0",
+    "pytest-xdist>=3.6.1",
     "cugaviz",
     "pre-commit>=4.3.0",
     "questionary>=2.1.1",
@@ -228,8 +229,26 @@ sandbox = [
     "llm-sandbox>=0.1.3",
 ]
 
+
 [tool.pytest.ini_options]
-anyio_mode = "auto"
+testpaths = [
+    "tests",
+    "src/cuga/backend",
+    "src/cuga/sdk_core",
+    "src/system_tests",
+]
+python_files = ["test_*.py", "*_test.py", "*_test_*.py", "load_test*.py"]
+python_classes = ["Test*"]
+addopts = ["-ra", "--strict-markers", "-m", "not manual and not pgvector", "--import-mode=importlib"]
+asyncio_mode = "auto"
+norecursedirs = [".git", ".tox", "dist", "build", "docs", "frontend_workspaces"]
 markers = [
-    "e2e: end-to-end tests requiring live external services (registry, etc.)",
+    "e2e: live external services / full agent stack",
+    "slow: long-running integration tests",
+    "unit: fast isolated tests",
+    "pgvector: requires CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING",
+    "load: concurrent load tests (honors --load-test-users)",
+    "stability: LLM-backed e2e stability suite (src/system_tests/e2e)",
+    "windows_smoke: Windows CI smoke subset of stability tests",
+    "manual: requires manually started services; excluded from default collection",
 ]
