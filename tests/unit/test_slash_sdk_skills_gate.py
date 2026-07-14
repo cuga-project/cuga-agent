@@ -8,7 +8,11 @@ it reaches the planner unchanged.
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from cuga.sdk import CugaAgent
+
+pytestmark = pytest.mark.unit
 
 
 def _make_agent(enable_skills, cuga_folder: str) -> CugaAgent:

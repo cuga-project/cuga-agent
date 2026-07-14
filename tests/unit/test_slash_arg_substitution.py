@@ -9,6 +9,8 @@ from cuga.backend.slash_commands.arg_substitution import (
     validate_arg_names,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # --- split_args ---------------------------------------------------------
 

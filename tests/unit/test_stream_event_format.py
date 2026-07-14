@@ -9,7 +9,11 @@ next event.
 
 import json
 
+import pytest
+
 from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat, StreamEvent
+
+pytestmark = pytest.mark.unit
 
 
 def _assert_sse_block(formatted: str, name: str, data: str) -> None:

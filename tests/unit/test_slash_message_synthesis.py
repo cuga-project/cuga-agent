@@ -1,10 +1,13 @@
 import asyncio
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
 from cuga.backend.slash_commands.message_synthesis import synthesize_skill_invocation
+
+pytestmark = pytest.mark.unit
 
 
 def test_three_message_structure_with_args():

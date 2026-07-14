@@ -1,4 +1,8 @@
+import pytest
+
 from cuga.backend.slash_commands.parser import parse
+
+pytestmark = pytest.mark.unit
 
 
 def test_empty_input_passes_through():

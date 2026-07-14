@@ -9,6 +9,8 @@ import pytest
 from cuga.backend.server.conversation_history import ConversationHistoryDB
 from cuga.backend.storage.relational.local import LocalRelationalStore
 
+pytestmark = pytest.mark.unit
+
 
 def _make_db(tmp_path) -> ConversationHistoryDB:
     store = LocalRelationalStore(str(tmp_path / "conversation.db"))

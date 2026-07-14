@@ -12,7 +12,7 @@ from typing import AsyncIterator
 
 import pytest
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 def _task_text(result: dict) -> str:

@@ -17,8 +17,12 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
+
+pytestmark = pytest.mark.unit
 
 
 def _patch_settings(monkeypatch, *, langfuse_tracing: bool) -> None:
