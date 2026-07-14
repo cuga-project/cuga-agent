@@ -283,11 +283,32 @@ const CarbonChat = ({
   });
   const attachmentsEnabled = knowledgeEnabled !== false && attachmentScope !== "none" && scopeEnabled && attachmentsAvailable;
   const [assistantName, setAssistantName] = useState("CUGA Agent");
+  // Known slash-command names, used to decorate /command mentions in user
+  // bubbles with pills. Slash semantics are soft (a mention anywhere in the
+  // message is a suggestion to the agent), so every known token gets a pill,
+  // not just a leading one.
+  const [knownCommandNames, setKnownCommandNames] = useState<string[]>([]);
 
   useEffect(() => {
     initAgentProfile(useDraft);
     getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
   }, [useDraft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getCommands()
+      .then((commands) => {
+        if (!cancelled) setKnownCommandNames(commands.map((c) => c.name));
+      })
+      .catch(() => {
+        // Pills are purely decorative — an unavailable command list just
+        // means undecorated text.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Keep the transport thread ID aligned with the parent-owned draft thread
   // even before the chat instance finishes booting.
@@ -421,6 +442,111 @@ const CarbonChat = ({
       }
     };
 
+    // Wrap known ``/command`` mentions in user (request) bubbles with pill
+    // spans. Carbon owns the bubble DOM inside its shadow root, so — like
+    // the attachment chips below — decoration happens as a DOM pass driven
+    // by the MutationObserver, and the spans are styled inline (light-DOM
+    // stylesheets cannot pierce the shadow boundary; Carbon's injected
+    // theme defines the --cds-* variables the colors derive from, so both
+    // Carbon themes are covered). Idempotent by construction: text already
+    // inside a pill span is skipped, and the plain-text fragments left
+    // around a wrapped token can no longer match a known /command, so the
+    // decorate pass reaches a fixed point.
+    const wrapKnownSlashTokens = (root: Element | ShadowRoot, known: Set<string>) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const textNodes: Text[] = [];
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const parent = (node as Text).parentElement;
+        if (parent && parent.closest(".cuga-slash-command-pill")) continue;
+        textNodes.push(node as Text);
+      }
+      for (const textNode of textNodes) {
+        const text = textNode.textContent ?? "";
+        // A decorated token is a maximal non-whitespace run ``/name`` at
+        // the start of the text or right after whitespace whose full name
+        // is a known command ("/deck," is NOT decorated — strict match).
+        const re = /(^|\s)\/(\S+)/g;
+        let match: RegExpExecArray | null;
+        let last = 0;
+        let fragment: DocumentFragment | null = null;
+        while ((match = re.exec(text))) {
+          const name = match[2];
+          if (!known.has(name)) continue;
+          const start = match.index + match[1].length;
+          const end = start + 1 + name.length;
+          if (!fragment) fragment = document.createDocumentFragment();
+          if (start > last) {
+            fragment.appendChild(document.createTextNode(text.slice(last, start)));
+          }
+          const pill = document.createElement("span");
+          pill.className = "cuga-slash-command-pill";
+          pill.textContent = text.slice(start, end);
+          // Same color recipe as .cuga-slash-inline-pill in
+          // CarbonChat.css — keep the two in sync.
+          pill.style.background =
+            "color-mix(in srgb, var(--cds-support-warning, #f1c21b) 24%, transparent)";
+          pill.style.boxShadow =
+            "inset 0 0 0 1px color-mix(in srgb, var(--cds-support-warning, #f1c21b) 38%, transparent)";
+          pill.style.borderRadius = "4px";
+          pill.style.padding = "0 0.25em";
+          pill.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, monospace";
+          pill.style.fontSize = "0.92em";
+          pill.style.fontWeight = "500";
+          pill.style.color = "inherit";
+          fragment.appendChild(pill);
+          last = end;
+        }
+        if (fragment) {
+          if (last < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(last)));
+          }
+          textNode.replaceWith(fragment);
+        }
+      }
+    };
+
+    const applySlashCommandPills = (shadowRoot: ShadowRoot) => {
+      if (knownCommandNames.length === 0) return;
+      const known = new Set(knownCommandNames);
+      // Carbon registers its parts under either the ``cds-aichat--`` or the
+      // ``cds-custom-aichat--`` class prefix depending on the custom-element
+      // registration mode (cf. the dual tag list in the reasoning-toggle
+      // relabel above), so match both.
+      const containers = Array.from(
+        shadowRoot.querySelectorAll(
+          [
+            ".cds-aichat--message--request .cds-aichat--sent--text",
+            ".cds-aichat--message--request .cds-aichat--message--padding",
+            ".cds-custom-aichat--message--request .cds-custom-aichat--sent--text",
+            ".cds-custom-aichat--message--request .cds-custom-aichat--message--padding",
+          ].join(", "),
+        ),
+      ) as HTMLElement[];
+      for (const container of containers) {
+        // Carbon renders the bubble text through a ``cds-aichat-markdown``
+        // Lit element that reflects its source into ITS OWN shadow root; the
+        // light-DOM copy we'd otherwise decorate sits inside a ``<div
+        // hidden>`` slot host and never paints. So decorate the markdown
+        // element's rendered shadow tree. This is safe: a sent message's
+        // markdown source is static (Lit never re-renders it), and our outer
+        // MutationObserver does not observe nested shadow roots, so wrapping
+        // text there can't trigger a decorate loop. If a re-render ever did
+        // clear the pills, the next outer mutation re-runs this pass.
+        const markdowns = Array.from(
+          container.querySelectorAll("cds-aichat-markdown, cds-custom-aichat-markdown"),
+        ) as Array<HTMLElement & { shadowRoot: ShadowRoot | null }>;
+        if (markdowns.length > 0) {
+          for (const md of markdowns) {
+            if (md.shadowRoot) wrapKnownSlashTokens(md.shadowRoot, known);
+          }
+        } else {
+          // Builds that render the text directly (no markdown element).
+          wrapKnownSlashTokens(container, known);
+        }
+      }
+    };
+
     const applyMessageAttachmentDecorations = () => {
       roots.forEach((shadowRoot) => {
         // Keep the reasoning-toggle relabel inside the per-root pass so it
@@ -428,6 +554,7 @@ const CarbonChat = ({
         // invokes it directly (without debounce) — relabeling is cheap and
         // idempotent, and we don't want a queued rAF to delay the label fix.
         applyReasoningToggleLabels(shadowRoot);
+        applySlashCommandPills(shadowRoot);
         const requestNodes = Array.from(
           shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
         ) as HTMLElement[];
@@ -511,7 +638,7 @@ const CarbonChat = ({
       if (scheduled && rafHandle) window.cancelAnimationFrame(rafHandle);
       observers.forEach((observer) => observer.disconnect());
     };
-  }, [chatRenderTick, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
+  }, [chatRenderTick, knownCommandNames, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
   // Wrap the custom send message function to ensure it's properly bound
   const handleCustomSendMessage = useCallback(
