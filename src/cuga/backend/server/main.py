@@ -1442,15 +1442,12 @@ async def event_stream(
         slash_result = await _dispatch_slash_for_stream(query, thread_id)
 
     if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
-        # Prepend the synthesized load_skill message quad so the planner sees
-        # the skill as already loaded. ``input`` is the trailing arg block (or
-        # the bare slash invocation when there are no args) so the planner has
-        # a current-turn prompt to act on.
-        existing = list(local_state.chat_messages or [])
-        local_state.chat_messages = list(slash_result.injected_messages) + existing
-        local_state.input = (
-            slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
-        )
+        # Soft dispatch: the planner input becomes the translated suggestion
+        # ("use the skill named '<name>' to: <args>") and the planner decides
+        # to call ``load_skill`` itself. The UserMessage stream event above
+        # already carries the original raw utterance, so display/history keep
+        # what the user actually typed.
+        local_state.input = slash_result.planner_input or query
 
         # Emit SlashSkillInvoked so the frontend renders the invocation inline (live + on history reload); event is buffered into the saved stream.
         slash_chip_event_data = json.dumps(
@@ -1475,9 +1472,9 @@ async def event_stream(
         )
     elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
         # Silent degradation otherwise: the skill resolved but we have no
-        # local state to inject the synthesized load_skill quad into, so the
-        # planner won't see the skill body. Surface so operators can spot it.
-        logger.warning("Skill dispatched but local_state is None; skipping message injection")
+        # local state to carry the translated planner input, so the planner
+        # sees the raw slash text. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping planner-input translation")
 
     langfuse_handler = (
         CallbackHandler()
