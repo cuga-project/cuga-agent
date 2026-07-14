@@ -1448,28 +1448,6 @@ async def event_stream(
         # already carries the original raw utterance, so display/history keep
         # what the user actually typed.
         local_state.input = slash_result.planner_input or query
-
-        # Emit SlashSkillInvoked so the frontend renders the invocation inline (live + on history reload); event is buffered into the saved stream.
-        slash_chip_event_data = json.dumps(
-            {
-                "resolved_name": slash_result.resolved_name,
-                "raw_input": slash_result.raw_input,
-                "raw_args": slash_result.raw_args or "",
-            }
-        )
-        if thread_id:
-            stream_events_buffer.append(
-                {
-                    "event_name": "SlashSkillInvoked",
-                    "event_data": slash_chip_event_data,
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "sequence": event_sequence,
-                }
-            )
-            event_sequence += 1
-        yield StreamEvent(name="SlashSkillInvoked", data=slash_chip_event_data).format(
-            app_state.output_format, thread_id=thread_id
-        )
     elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
         # Silent degradation otherwise: the skill resolved but we have no
         # local state to carry the translated planner input, so the planner
