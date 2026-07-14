@@ -1,7 +1,7 @@
 """Regression tests for ``StreamEvent.format`` SSE formatting.
 
 These cover the bug where calling ``.format(OutputFormat.DEFAULT, ...)`` on
-non-``Answer`` events (such as ``SlashSkillInvoked``) short-circuited to
+non-``Answer`` events (such as any custom named event) short-circuited to
 bare ``self.data`` and skipped the ``event: <name>\\n`` prefix and the SSE
 terminator blank line, causing the client to see raw JSON glued to the
 next event.
@@ -31,11 +31,11 @@ def _assert_sse_block(formatted: str, name: str, data: str) -> None:
     assert round_tripped.data == data
 
 
-def test_default_format_wraps_slash_skill_invoked_event():
-    """Regression: ``SlashSkillInvoked`` under ``DEFAULT`` used to leak raw JSON."""
-    payload = json.dumps({"resolved_name": "echo", "raw_input": "/echo", "raw_args": ""})
-    out = StreamEvent(name="SlashSkillInvoked", data=payload).format(OutputFormat.DEFAULT, thread_id="t-1")
-    _assert_sse_block(out, "SlashSkillInvoked", payload)
+def test_default_format_wraps_custom_named_event():
+    """Regression: a custom named event under ``DEFAULT`` used to leak raw JSON."""
+    payload = json.dumps({"foo": "bar", "baz": "", "count": 1})
+    out = StreamEvent(name="CustomEvent", data=payload).format(OutputFormat.DEFAULT, thread_id="t-1")
+    _assert_sse_block(out, "CustomEvent", payload)
 
 
 def test_default_format_still_wraps_answer_event():

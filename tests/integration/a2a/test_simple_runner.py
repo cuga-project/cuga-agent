@@ -202,8 +202,8 @@ async def test_simple_runner_streaming_support(simple_runner_client):
     assert "completed" in states
 
 
-async def test_simple_runner_slash_skill_invoked_streams_as_progress(mock_app_state):
-    """A mid-stream SlashSkillInvoked frame surfaces as non-final working progress.
+async def test_simple_runner_named_intermediate_streams_as_progress(mock_app_state):
+    """A mid-stream named intermediate frame surfaces as non-final working progress.
 
     Pins the intended dispatch in run(): named intermediates that are neither
     answers nor errors are forwarded as final=False progress updates — not
@@ -213,11 +213,11 @@ async def test_simple_runner_slash_skill_invoked_streams_as_progress(mock_app_st
     from fastapi import FastAPI
     from cuga.backend.server.a2a.runner import build_a2a_router_for_settings
 
-    marker = "skill invoked: /deck"
+    marker = "reasoning about the request"
 
     async def slash_event_stream(*args, **kwargs) -> AsyncIterator[bytes]:
         yield b"event: AgentThinking\ndata: Processing request...\n\n"
-        yield f"event: SlashSkillInvoked\ndata: {marker}\n\n".encode()
+        yield f"event: CodeAgent\ndata: {marker}\n\n".encode()
         payload = json.dumps({"data": "All done", "variables": {}, "active_policies": []})
         yield f"event: Answer\ndata: {payload}\n\n".encode()
 
@@ -265,10 +265,10 @@ async def test_simple_runner_slash_skill_invoked_streams_as_progress(mock_app_st
     results = [c["result"] for c in chunks if "result" in c]
     states = [r.get("status", {}).get("state") for r in results]
 
-    # The SlashSkillInvoked frame was not dropped: it surfaces as a working
-    # (non-final) update carrying the skill-invocation text.
+    # The named intermediate frame was not dropped: it surfaces as a working
+    # (non-final) update carrying the intermediate text.
     slash_updates = [r for r in results if marker in _task_text(r)]
-    assert slash_updates, f"SlashSkillInvoked progress missing from stream (states={states})"
+    assert slash_updates, f"named intermediate progress missing from stream (states={states})"
     for update in slash_updates:
         assert update["status"]["state"] == "working"
         assert not update.get("final")
