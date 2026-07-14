@@ -1,16 +1,22 @@
 /*
  *  Copyright IBM Corp. 2026
  *
- *  Slash-command autocomplete dropdown that overlays the Carbon AI Chat
- *  composer.
+ *  Slash-command autocomplete dropdown for the Carbon AI Chat composer.
  *
  *  The Carbon Chat input is rendered inside a shadow DOM, so this component
- *  reaches into the chat element's shadow tree to locate the textarea,
+ *  reaches into the chat element's shadow tree to locate the composer,
  *  attaches input/keydown listeners, and renders a positioned overlay via a
- *  React portal in the light DOM. The dropdown is only visible while the
- *  input is a slash command still being *named* — a leading '/' with no
- *  whitespace after it yet. Once a space follows the command name the user
- *  is typing arguments and the dropdown stays hidden.
+ *  React portal in the light DOM.
+ *
+ *  Slash-command semantics are SOFT — a ``/skill`` mention anywhere in a
+ *  message is a suggestion to the agent, not a forced command — so
+ *  autocomplete is caret-scoped rather than message-scoped: the dropdown
+ *  engages whenever the caret sits inside a token that starts with ``/`` at
+ *  position 0 or right after whitespace (``hi can I use /ec`` reopens it
+ *  filtered to ``ec``), and accepting a suggestion replaces just that token
+ *  (inserting the name + trailing space) at its position — not the whole
+ *  composer content. Once a token is completed and a space typed, the caret
+ *  leaves the token and the dropdown closes until a new ``/``-token starts.
  */
 import React, {
   useCallback,
@@ -25,33 +31,54 @@ import { getCommands, type SlashCommandInfo } from "../api";
 import {
   clearComposerAriaAttributes,
   findComposerTextarea,
+  getComposerCaretOffset,
   getComposerInputValue,
   isComposerStale,
+  replaceComposerRange,
   setComposerAriaAttributes,
   setComposerTextareaValue,
 } from "./composerTextarea";
 
-/**
- * Returns true while the composer content is a slash command still being
- * *named*: a leading ``/`` followed by non-whitespace only (``/`` or
- * ``/ech``). The moment whitespace follows the command name — whether typed
- * manually (``/echo hello``) or inserted by accepting a suggestion (which
- * populates ``/echo `` with a trailing space) — the user is composing
- * arguments and the dropdown must hide. Deliberately stateless: derived from
- * the current value on every input, so backspacing the args and the space
- * back to ``/ech`` legitimately re-shows the dropdown, and clearing the
- * composer re-arms it.
- */
-function isNamingSlashCommand(value: string): boolean {
-  const trimmed = value.replace(/^\s+/, "");
-  return /^\/\S*$/.test(trimmed);
+/** The slash token under the caret, in composer-value character offsets. */
+export interface SlashToken {
+  /** Offset of the leading ``/``. */
+  start: number;
+  /** Offset just past the last non-whitespace character of the token. */
+  end: number;
+  /** Full token text after the ``/`` (may extend past the caret). */
+  name: string;
+  /** Text between the ``/`` and the caret — the autocomplete filter. */
+  queryToCaret: string;
+  /** The caret offset the token was derived from. */
+  caret: number;
 }
 
-/** Extracts the query portion after the leading slash (no whitespace before /). */
-function extractSlashQuery(value: string): string | null {
-  const match = /^\s*\/(\S*)/.exec(value);
-  if (!match) return null;
-  return match[1] ?? "";
+/**
+ * Finds the slash token the caret is inside of, if any. A slash token is a
+ * maximal non-whitespace run whose first character is ``/`` and which starts
+ * at position 0 or right after whitespace. The caret counts as "inside" from
+ * the leading ``/`` through the position just past the token's last
+ * character. Deliberately stateless: derived from (value, caret) on every
+ * event, so moving the caret out of the token closes the dropdown and moving
+ * it back in reopens it.
+ */
+export function findSlashTokenAtCaret(
+  value: string,
+  caret: number,
+): SlashToken | null {
+  const c = Math.max(0, Math.min(caret, value.length));
+  let start = c;
+  while (start > 0 && !/\s/.test(value[start - 1])) start -= 1;
+  if (value[start] !== "/") return null;
+  let end = c;
+  while (end < value.length && !/\s/.test(value[end])) end += 1;
+  return {
+    start,
+    end,
+    name: value.slice(start + 1, end),
+    queryToCaret: value.slice(start + 1, Math.max(c, start + 1)),
+    caret: c,
+  };
 }
 
 interface DropdownPosition {
@@ -92,6 +119,10 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const fetchTimerRef = useRef<number | null>(null);
   const openRef = useRef(open);
+  // Escape is an explicit dismissal: remember (value, token start) so a
+  // stray selectionchange can't immediately reopen the dropdown over the
+  // same token. Any edit or caret departure invalidates the dismissal.
+  const dismissedRef = useRef<{ value: string; tokenStart: number } | null>(null);
   const optionsListId = "cuga-slash-options";
 
   useEffect(() => {
@@ -170,11 +201,34 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     }
   }, []);
 
+  const scheduleFetch = useCallback(() => {
+    if (fetchTimerRef.current !== null) {
+      window.clearTimeout(fetchTimerRef.current);
+    }
+    fetchTimerRef.current = window.setTimeout(() => {
+      fetchTimerRef.current = null;
+      void fetchCommands();
+    }, FETCH_DEBOUNCE_MS);
+  }, [fetchCommands]);
+
+  useEffect(() => {
+    return () => {
+      if (fetchTimerRef.current !== null) {
+        window.clearTimeout(fetchTimerRef.current);
+        fetchTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
     if (!q) return commands;
     return commands.filter((c) => c.name.toLowerCase().startsWith(q));
   }, [commands, query]);
+
+  useEffect(() => {
+    setHighlightIndex(0);
+  }, [query]);
 
   useEffect(() => {
     if (highlightIndex >= filtered.length) {
@@ -264,54 +318,77 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
   }, [open, updatePosition]);
 
-  const setTextareaValue = useCallback(
-    (value: string) => {
-      setComposerTextareaValue(textarea, value);
-    },
-    [textarea],
-  );
-
   const acceptCommand = useCallback(
     (command: SlashCommandInfo) => {
-      setTextareaValue(`/${command.name} `);
+      const value = getComposerInputValue(textarea);
+      const caret = getComposerCaretOffset(textarea) ?? value.length;
+      const token = findSlashTokenAtCaret(value, caret);
+      if (token) {
+        // Replace just the caret's token. The insertion carries a trailing
+        // space (the caret lands after it, outside any token, so the
+        // dropdown closes); when the token is already followed by a plain
+        // space, consume it so mid-text acceptance doesn't double up
+        // whitespace.
+        const end = value[token.end] === " " ? token.end + 1 : token.end;
+        replaceComposerRange(textarea, token.start, end, `/${command.name} `);
+      } else {
+        // No resolvable token (e.g. click-accept after focus was lost and
+        // the selection with it): fall back to the whole-composer write.
+        setComposerTextareaValue(textarea, `/${command.name} `);
+      }
       closeDropdown();
     },
-    [closeDropdown, setTextareaValue],
+    [closeDropdown, textarea],
   );
 
-  // Textarea input listener: decides whether to open the dropdown.
-  useEffect(() => {
-    if (!textarea) return;
-
-    const scheduleFetch = () => {
-      if (fetchTimerRef.current !== null) {
-        window.clearTimeout(fetchTimerRef.current);
-      }
-      fetchTimerRef.current = window.setTimeout(() => {
-        fetchTimerRef.current = null;
-        void fetchCommands();
-      }, FETCH_DEBOUNCE_MS);
-    };
-
-    const handleInput = () => {
+  /**
+   * Re-derive the dropdown state from the live (value, caret) pair. Called
+   * on every composer input event (``assumeEndWhenUnresolved`` — typing
+   * happens at the caret, so an unresolvable selection can safely default
+   * to end-of-text) and on document selectionchange (no fallback: an
+   * unresolvable selection there just means the caret isn't in the
+   * composer, so we must not guess).
+   */
+  const evaluateComposer = useCallback(
+    (assumeEndWhenUnresolved: boolean) => {
+      if (!textarea) return;
       const value = getComposerInputValue(textarea);
-      // Visibility rule (stateless): the dropdown shows only while the
-      // content matches ``/<partial-name>`` with no whitespace after it.
-      // ``/echo hello`` (typed space) and ``/echo `` (suggestion accepted)
-      // both close it; backspacing to ``/ech`` re-opens it.
-      if (!isNamingSlashCommand(value)) {
+      let caret = getComposerCaretOffset(textarea);
+      if (caret === null) {
+        if (!assumeEndWhenUnresolved) return;
+        caret = value.length;
+      }
+      const token = findSlashTokenAtCaret(value, caret);
+      if (!token) {
+        dismissedRef.current = null;
         if (openRef.current) closeDropdown();
         return;
       }
-      const q = extractSlashQuery(value) ?? "";
-      const wasOpen = openRef.current;
-      setQuery(q);
-      setHighlightIndex(0);
-      if (!wasOpen) {
+      const dismissed = dismissedRef.current;
+      if (
+        dismissed &&
+        dismissed.value === value &&
+        dismissed.tokenStart === token.start
+      ) {
+        // Explicitly dismissed via Escape and nothing has changed since —
+        // stay closed until the user edits or moves the caret elsewhere.
+        return;
+      }
+      dismissedRef.current = null;
+      setQuery(token.queryToCaret);
+      if (!openRef.current) {
         setOpen(true);
         scheduleFetch();
       }
-    };
+    },
+    [closeDropdown, scheduleFetch, textarea],
+  );
+
+  // Textarea input/keydown listeners: drive the dropdown from the caret.
+  useEffect(() => {
+    if (!textarea) return;
+
+    const handleInput = () => evaluateComposer(true);
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!openRef.current) return;
@@ -331,22 +408,15 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
           if (len === 0) return 0;
           return (idx - 1 + len) % len;
         });
-      } else if (event.key === "Enter") {
+      } else if (event.key === "Enter" || event.key === "Tab") {
+        // The dropdown is only open while the caret sits inside a
+        // ``/``-token, so Enter/Tab there always mean "accept the
+        // highlighted suggestion" — message submission happens once the
+        // caret is outside any slash token (dropdown closed) and Enter
+        // falls through to Carbon. An empty option list also falls
+        // through: there is nothing to accept.
         const list = filteredRef.current;
         if (list.length === 0) return;
-        // If the user already typed arguments after the command name
-        // (``/echo hello world``), Enter must submit the message — not
-        // overwrite the composer with ``/<name> `` and drop the args. We
-        // detect "already has args" by looking for whitespace after the
-        // leading ``/word`` in the live composer value.
-        const liveValue = getComposerInputValue(textarea);
-        const trimmed = liveValue.replace(/^\s+/, "");
-        const hasArgs = /^\/\S+\s/.test(trimmed);
-        if (hasArgs) {
-          // Close the dropdown but let Enter bubble to Carbon's submit path.
-          closeDropdown();
-          return;
-        }
         const idx = Math.min(highlightIndexRef.current, list.length - 1);
         event.preventDefault();
         event.stopPropagation();
@@ -354,6 +424,12 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       } else if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
+        const value = getComposerInputValue(textarea);
+        const caret = getComposerCaretOffset(textarea) ?? value.length;
+        const token = findSlashTokenAtCaret(value, caret);
+        dismissedRef.current = token
+          ? { value, tokenStart: token.start }
+          : null;
         closeDropdown();
       }
     };
@@ -375,19 +451,35 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     textarea.addEventListener("keydown", handleKeyDown, true);
     textarea.addEventListener("blur", handleBlur);
 
-    // If the textarea already starts with '/', open immediately on mount.
+    // If the caret already sits in a slash token on mount, open immediately.
     handleInput();
 
     return () => {
       textarea.removeEventListener("input", handleInput);
       textarea.removeEventListener("keydown", handleKeyDown, true);
       textarea.removeEventListener("blur", handleBlur);
-      if (fetchTimerRef.current !== null) {
-        window.clearTimeout(fetchTimerRef.current);
-        fetchTimerRef.current = null;
-      }
     };
-  }, [acceptCommand, closeDropdown, fetchCommands, textarea]);
+  }, [acceptCommand, closeDropdown, evaluateComposer, textarea]);
+
+  // Caret moves without input events (arrow keys, clicks) must also engage /
+  // disengage the dropdown — that's what makes mid-text ``/``-tokens live
+  // targets. selectionchange only fires on document, so throttle with rAF.
+  useEffect(() => {
+    if (!textarea) return;
+    let raf = 0;
+    const handleSelectionChange = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        evaluateComposer(false);
+      });
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [evaluateComposer, textarea]);
 
   const filteredRef = useRef(filtered);
   const highlightIndexRef = useRef(highlightIndex);

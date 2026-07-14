@@ -2,6 +2,12 @@
  * E2E coverage for slash-command skill invocation:
  *  - the ``SlashSkillInvoked`` reasoning-panel step (live + replay)
  *  - the autocomplete dropdown's ARIA combobox semantics
+ *  - the caret-scoped trigger rule (slash semantics are SOFT — a ``/skill``
+ *    mention anywhere in the message is a suggestion to the agent — so the
+ *    dropdown engages whenever the caret sits inside a ``/``-token, mid-text
+ *    included, and accepting replaces just that token)
+ *  - pill decoration of known ``/command`` mentions in sent user bubbles
+ *  - ghost-text completion of the caret's token, accepted with Tab
  *
  * We boot the real frontend in a headless Chromium, stub every backend
  * endpoint the chat hits, and assert what gets rendered inside Carbon AI
@@ -100,6 +106,43 @@ async function sendInComposer(page: Page, text: string) {
   await ta.waitFor({ state: "visible", timeout: 30_000 });
   await ta.fill(text);
   await ta.press("Enter");
+}
+
+/**
+ * Read the live composer's text via the same shadow-DOM walk the production
+ * resolver uses. Role-agnostic (the open dropdown flips the composer role to
+ * ``combobox``, breaking ``getByRole('textbox')``), and reads ``value`` or
+ * ``textContent`` depending on the composer flavor.
+ */
+function readComposerText(page: Page) {
+  return page.evaluate(() => {
+    const SEL =
+      'textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="combobox"]';
+    const isVisible = (e: Element) => {
+      const r = (e as HTMLElement).getBoundingClientRect?.();
+      return !!r && r.width > 0 && r.height > 0;
+    };
+    function find(root: Document | ShadowRoot): Element | null {
+      let firstSeen: Element | null = null;
+      const stack: Array<Document | ShadowRoot> = [root];
+      while (stack.length) {
+        const r = stack.shift()!;
+        for (const c of Array.from(r.querySelectorAll(SEL))) {
+          if (!firstSeen) firstSeen = c;
+          if (isVisible(c)) return c;
+        }
+        for (const el of Array.from(r.querySelectorAll("*"))) {
+          const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
+          if (sr) stack.push(sr);
+        }
+      }
+      return firstSeen;
+    }
+    const el = find(document);
+    if (!el) return null;
+    const value = (el as HTMLTextAreaElement).value;
+    return typeof value === "string" ? value : el.textContent ?? "";
+  });
 }
 
 test.describe("slash-command skill invocation", () => {
@@ -265,11 +308,15 @@ test.describe("slash-command skill invocation", () => {
   });
 
   test("dropdown hides once a space follows the command name and re-arms on backspace", async ({ page }) => {
-    // The space character changes state (stateless rule, derived from the
-    // live composer content): the dropdown is visible only while the input
-    // matches ``/<partial-name>`` with no whitespace after it. Regression
-    // for the review-reported bug where the popup kept re-appearing over
-    // the composer on every argument keystroke.
+    // Caret-scoped rule (stateless, derived from live value + caret): the
+    // dropdown is visible only while the caret sits inside a ``/``-token.
+    // Typing a space after the command name moves the caret out of that
+    // token, closing the dropdown for the CURRENT token; argument
+    // keystrokes keep the caret inside plain-word tokens, so it stays
+    // closed (regression for the review-reported bug where the popup kept
+    // re-appearing over the composer on every argument keystroke). A NEW
+    // mid-text ``/``-token re-opens it — that case is covered by the
+    // mid-text re-trigger test below.
     await stubBootEndpoints(page);
     await page.route("**/api/commands", (r) =>
       r.fulfill({
@@ -309,8 +356,9 @@ test.describe("slash-command skill invocation", () => {
 
   test("accepting a suggestion leaves the dropdown closed while typing args", async ({ page }) => {
     // Accepting a suggestion writes ``/<name> `` — trailing space included —
-    // into the composer. That trailing space must flip the dropdown closed
-    // and keep it closed while arguments are typed.
+    // into the composer, parking the caret after the space (outside any
+    // ``/``-token). That must flip the dropdown closed and keep it closed
+    // while arguments are typed.
     await stubBootEndpoints(page);
     await page.route("**/api/commands", (r) =>
       r.fulfill({
@@ -341,6 +389,123 @@ test.describe("slash-command skill invocation", () => {
     // acceptance. It must stay closed for the whole argument tail.
     await page.keyboard.type("make 3 slides");
     await expect(dropdown).not.toBeVisible();
+  });
+
+  test("mid-text /-token re-triggers the dropdown and accept replaces only that token", async ({ page }) => {
+    // Slash semantics are soft: a ``/skill`` mention anywhere in the message
+    // is a suggestion to the agent, so autocomplete must engage for tokens
+    // typed mid-sentence, and acceptance must splice in just that token —
+    // not overwrite the whole composer.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+
+    await page.goto("/chat");
+
+    const dropdown = page.locator(".cuga-slash-dropdown");
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+
+    // Plain prose keeps the dropdown closed…
+    await ta.fill("hi can I use ");
+    await expect(dropdown).not.toBeVisible();
+
+    // …but starting a ``/``-token mid-text re-opens it, filtered to the
+    // token under the caret.
+    await page.keyboard.type("/dec");
+    await expect(dropdown).toBeVisible({ timeout: 10_000 });
+    await expect(dropdown.locator('[role="option"]')).toHaveCount(1, {
+      timeout: 10_000,
+    });
+
+    // Accepting replaces just the ``/dec`` token (name + trailing space) at
+    // its position — the prose before it survives.
+    await page.keyboard.press("Enter");
+    await expect(dropdown).not.toBeVisible();
+    await expect.poll(() => readComposerText(page), { timeout: 5_000 }).toBe(
+      "hi can I use /deck ",
+    );
+
+    // The completed token's dropdown stays closed while prose continues…
+    await page.keyboard.type("please");
+    await expect(dropdown).not.toBeVisible();
+
+    // …and a NEW mid-text ``/``-token re-opens it, filtered afresh
+    // (``summ`` matches summarize + summary-report).
+    await page.keyboard.type(" and /summ");
+    await expect(dropdown).toBeVisible({ timeout: 10_000 });
+    await expect(dropdown.locator('[role="option"]')).toHaveCount(2, {
+      timeout: 10_000,
+    });
+  });
+
+  test("the caret position, not the composer prefix, selects the active token", async ({ page }) => {
+    // Regression for true caret-awareness: a ``/``-token typed in the MIDDLE
+    // of existing text (caret nowhere near the end) must drive the dropdown,
+    // and acceptance must splice at the caret's token without disturbing the
+    // text after it.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+
+    await page.goto("/chat");
+
+    const dropdown = page.locator(".cuga-slash-dropdown");
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+
+    await ta.fill("hi world");
+    await expect(dropdown).not.toBeVisible();
+
+    // Walk the caret back to just after "hi", then type a slash token there:
+    // the composer reads "hi /de world" with the caret inside "/de".
+    for (let i = 0; i < " world".length; i += 1) {
+      await page.keyboard.press("ArrowLeft");
+    }
+    await page.keyboard.type(" /de");
+    await expect(dropdown).toBeVisible({ timeout: 10_000 });
+    await expect(dropdown.locator('[role="option"]')).toHaveCount(1, {
+      timeout: 10_000,
+    });
+
+    // Accepting splices "/deck " over the token; the single space already
+    // following the token is consumed so whitespace doesn't double up.
+    await page.keyboard.press("Enter");
+    await expect(dropdown).not.toBeVisible();
+    await expect.poll(() => readComposerText(page), { timeout: 5_000 }).toBe(
+      "hi /deck world",
+    );
+  });
+
+  test("known /command mentions in sent bubbles get pill decoration", async ({ page }) => {
+    // Rendered user messages decorate known ``/name`` mentions with a subtle
+    // pill span (inline-styled — the bubble lives in Carbon's shadow root).
+    // Unknown tokens stay plain text.
+    await stubBootEndpoints(page);
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+    await stubStream(page, SKILL_SSE);
+
+    await page.goto("/chat");
+    await sendInComposer(page, "use /deck and /nonexistent to make 3 slides");
+
+    const pills = page.locator(".cuga-slash-command-pill");
+    await expect(pills.first()).toBeVisible({ timeout: 10_000 });
+    await expect(pills.first()).toHaveText("/deck");
+    // "/nonexistent" is not a known command — exactly one pill.
+    await expect(pills).toHaveCount(1);
   });
 
   test("skill invocation replays into the reasoning panel on history reload", async ({ page }) => {
