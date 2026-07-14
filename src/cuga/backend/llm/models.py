@@ -244,6 +244,19 @@ class LLMManager:
         if hasattr(model, 'model_kwargs') and model.model_kwargs is not None:
             model.model_kwargs = model_kwargs
 
+        # ChatWatsonx sends nested params to the API, not the top-level pydantic fields.
+        try:
+            from langchain_ibm import ChatWatsonx
+
+            if isinstance(model, ChatWatsonx):
+                params = dict(model.params or {})
+                if not is_reasoning:
+                    params["temperature"] = temperature
+                params["max_completion_tokens"] = completion_tokens
+                model.params = params
+        except ImportError:
+            pass
+
         logger.debug(
             f"Updated model parameters: temperature={temperature}, max_tokens={max_tokens}, max_completion_tokens={completion_tokens}"
         )
@@ -726,7 +739,11 @@ class LLMManager:
 
             if not is_reasoning:
                 openai_params["temperature"] = temperature
-                openai_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly configured. Some Bedrock Claude
+                # models (e.g. opus-4-5/4-6, sonnet-4-5) reject requests that
+                # specify both temperature and top_p.
+                if 'top_p' in model_settings:
+                    openai_params["top_p"] = model_settings['top_p']
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 

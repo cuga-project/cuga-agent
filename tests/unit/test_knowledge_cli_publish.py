@@ -64,12 +64,13 @@ def _invoke_adaptation_set(tmp_path: Path, monkeypatch, captured_calls: list):
     """Invoke ``cuga knowledge adaptation-set --publish`` against the
     mocked HTTP layer. Returns the CliRunner result."""
     import cuga.cli.main as cli_module
+    import cuga.cli.knowledge_cmds as knowledge_cmds
 
     fake_get, fake_patch, fake_post = _make_mock_httpx(captured_calls)
-    monkeypatch.setattr(cli_module.httpx, "get", fake_get)
-    monkeypatch.setattr(cli_module.httpx, "patch", fake_patch)
-    monkeypatch.setattr(cli_module.httpx, "post", fake_post)
-    monkeypatch.setattr(cli_module, "_cuga_server_base_url", lambda: "http://test.local")
+    monkeypatch.setattr(knowledge_cmds.httpx, "get", fake_get)
+    monkeypatch.setattr(knowledge_cmds.httpx, "patch", fake_patch)
+    monkeypatch.setattr(knowledge_cmds.httpx, "post", fake_post)
+    monkeypatch.setattr(knowledge_cmds, "_cuga_server_base_url", lambda: "http://test.local")
 
     adapt_file = tmp_path / "adapt.md"
     adapt_file.write_text("# adaptation\nHello world.\n", encoding="utf-8")

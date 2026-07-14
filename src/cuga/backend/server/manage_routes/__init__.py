@@ -20,6 +20,7 @@ from cuga.backend.server.manage_routes.helpers import (
 from cuga.backend.server.manage_routes.knowledge_reindex import (
     deferred_reindex_complete_and_flip,
     migrate_and_reindex_for_agent,
+    persist_active_vector_config,
 )
 from cuga.backend.server.manage_routes.router import router
 
@@ -44,6 +45,7 @@ _apply_llm_to_draft_state = apply_llm_to_draft_state
 _AGENT_DRAFT_LOCKS = AGENT_DRAFT_LOCKS
 _deferred_reindex_complete_and_flip = deferred_reindex_complete_and_flip
 _migrate_and_reindex_for_agent = migrate_and_reindex_for_agent
+_persist_active_vector_config = persist_active_vector_config
 
 from cuga.backend.server.manage_routes.knowledge_routes import patch_draft_knowledge  # noqa: E402
 
@@ -64,4 +66,5 @@ __all__ = [
     "_AGENT_DRAFT_LOCKS",
     "_deferred_reindex_complete_and_flip",
     "_migrate_and_reindex_for_agent",
+    "_persist_active_vector_config",
 ]

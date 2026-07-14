@@ -15,6 +15,7 @@ import {
   NumberInput,
   Select,
   SelectItem,
+  ActionableNotification,
   InlineNotification,
   InlineLoading,
   Theme,
@@ -44,7 +45,7 @@ import "./ConfigModal.css";
 interface ReindexTask {
   task_id: string;
   filename?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   file_tasks?: Record<
     string,
     {
@@ -381,7 +382,16 @@ interface KnowledgePanelProps {
   knowledgeReindexNeeded?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
-  onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
+  // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
+  // the tile can render real filenames from millisecond 0 — no
+  // task_xxx flicker waiting for the first /tasks GET to complete.
+  // Backwards-compatible: missing/undefined falls back to placeholder
+  // rows that get enriched by polling, same as before.
+  onReindex?: () => Promise<{
+    count: number;
+    task_ids: string[];
+    tasks?: { task_id: string; filename: string }[];
+  } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
   // Auto-reindex bubbled down from ManagePage: when a draft PATCH
@@ -399,6 +409,18 @@ interface KnowledgePanelProps {
   // without this, the snapshot only updates on Publish, and the banner
   // persists indefinitely after a successful auto-reindex.
   onAutoReindexComplete?: () => void;
+  // Fired when polling reaches terminal state — regardless of success
+  // OR partial failure. Distinct from ``onAutoReindexComplete``:
+  //   - onAutoReindexComplete fires ONLY on full success (5/5 done, 0 failed)
+  //     → ManagePage refreshes snapshot
+  //   - onReindexFinished fires on ANY terminal state (done=true)
+  //     → ManagePage clears ``knowledgeReindexing`` so autosave can resume
+  // The split exists because the snapshot-refresh side-effect is unsafe
+  // on partial-failure (snapshot would claim success that didn't happen),
+  // but the autosave-unblock side-effect is safe either way (workers are
+  // demonstrably no longer running).
+  // Workflow w5i1mbchd / #398 follow-up v2.
+  onReindexFinished?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -458,6 +480,7 @@ export default function KnowledgePanel({
   autoReindexTrigger,
   onAutoReindexConsumed,
   onAutoReindexComplete,
+  onReindexFinished,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
@@ -973,26 +996,59 @@ export default function KnowledgePanel({
   // subscribe). Extracted from the POST flow so a profile-switch migration
   // gets identical progress UI without the user having to click Reindex
   // a second time.
-  const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
+  // #402: merge backend tasks by task_id over the placeholder list so a
+  // partial poll (some tasks not yet visible in metadata) doesn't drop
+  // placeholder rows — the tile keeps showing all N rows from the moment
+  // Re-index fires, enriched with filename + status as they arrive.
+  const mergeTasksById = useCallback(
+    (taskIds: string[], placeholders: ReindexTask[], backendTasks: ReindexTask[]): ReindexTask[] => {
+      const byId = new Map<string, ReindexTask>(placeholders.map((t) => [t.task_id, t]));
+      for (const t of backendTasks) {
+        const enriched = { ...t, filename: getReindexTaskFilename(t) };
+        const prev = byId.get(t.task_id);
+        byId.set(t.task_id, prev ? { ...prev, ...enriched } : enriched);
+      }
+      return taskIds.map(
+        (id) => byId.get(id) ?? { task_id: id, status: "pending" as const },
+      );
+    },
+    [],
+  );
+
+  const armReindexFromTaskIds = useCallback(
+    async (
+      taskIds: string[],
+      total: number,
+      seedTasks?: { task_id: string; filename: string }[],
+    ) => {
     if (!taskIds.length) return;
-    let initialTasks: ReindexTask[] = taskIds.map((id) => ({ task_id: id, status: "pending" as const }));
+    // Seed placeholders with filenames if the POST response carried
+    // them (#402 production sweep). The previous code rendered N rows
+    // of ``task_xxx`` for up to one full polling interval (~2s) before
+    // the first /tasks GET landed and supplied the filenames; with
+    // the seed, the tile shows real names from frame 0.
+    const seedById = new Map<string, string>(
+      (seedTasks ?? []).map((t) => [t.task_id, t.filename]),
+    );
+    const placeholders: ReindexTask[] = taskIds.map(
+      (id): ReindexTask => {
+        const seedFilename = seedById.get(id);
+        return seedFilename
+          ? { task_id: id, status: "pending" as const, filename: seedFilename }
+          : { task_id: id, status: "pending" as const };
+      },
+    );
+    let initialTasks: ReindexTask[] = placeholders;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
-        if (relevantTasks.length > 0) {
-          initialTasks = relevantTasks;
-        }
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
+        initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
-      // Fall back to task IDs until polling resolves filenames.
+      // Fall back to placeholders; polling will enrich as filenames load.
     }
     setReindexProgress({
       taskIds,
@@ -1012,29 +1068,39 @@ export default function KnowledgePanel({
         if (!res.ok) return;
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        // Filter to only our reindex tasks
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
         const completed = relevantTasks.filter((t: ReindexTask) => t.status === "completed").length;
-        const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
+        // Count "cancelled" as terminal/failed (#4). A superseded worker writes
+        // status="cancelled" (engine ReindexSupersededError); if the tile only
+        // counted "failed", completed+failed could never reach taskIds.length,
+        // the poll would never reach done, onReindexFinished would never fire,
+        // and the tile would spin forever with knowledgeReindexing stuck true.
+        // The backend deferred flip already treats cancelled as failed.
+        const failed = relevantTasks.filter(
+          (t: ReindexTask) => t.status === "failed" || t.status === "cancelled",
+        ).length;
         const done = completed + failed >= taskIds.length;
 
-        setReindexProgress((prev) => ({
-          taskIds,
-          total: taskIds.length,
-          completed,
-          failed,
-          tasks: relevantTasks,
-          done,
-          // Preserve the wall-clock start stamp set when the operation kicked
-          // off; ``_reindexStartedAt`` only exists in the outer scope of the
-          // ``handleReindex`` invocation and would be undefined here.
-          startedAt: prev?.startedAt ?? Date.now(),
-        }));
+        setReindexProgress((prev) => {
+          const mergedTasks = mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks);
+          // [#402] Per-poll proof of life. If ``rowsRendered`` ever drops
+          // below ``taskIds`` length, the merge regressed. If
+          // ``rowsWithFilename`` stays below taskIds.length past ~1s
+          // after tile-arm, the backend isn't populating ``file_tasks``
+          // — different bug.
+          return {
+            taskIds,
+            total: taskIds.length,
+            completed,
+            failed,
+            // Merge by id so transient polls that don't see every task
+            // (e.g. backend just created task N+1 between our HTTP call
+            // and its insert) don't shrink the tile to fewer rows.
+            tasks: mergedTasks,
+            done,
+            startedAt: prev?.startedAt ?? Date.now(),
+          };
+        });
 
         if (done) {
           if (reindexPollRef.current) clearInterval(reindexPollRef.current);
@@ -1042,6 +1108,11 @@ export default function KnowledgePanel({
           // Refresh document list after reindex completes
           loadDocuments();
           checkHealth();
+          // #398 follow-up v2 (workflow w5i1mbchd): fire onReindexFinished
+          // ALWAYS at terminal state — both success AND partial-failure
+          // mean "workers stopped, parent can resume autosave PATCHes".
+          // Distinct from onAutoReindexComplete which is success-only.
+          onReindexFinished?.();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);
             // Tell the parent to refresh its saved-config snapshot so the
@@ -1051,7 +1122,29 @@ export default function KnowledgePanel({
             // confusing because the engine HAS already re-embedded.
             onAutoReindexComplete?.();
           } else {
-            onToast?.("warning", "Re-index finished", `${completed} succeeded, ${failed} failed.`);
+            // Partial-failure toast: be loud about the data-integrity story.
+            // Production sweep (workflow w5i1mbchd): the deferred flip is
+            // now STRICT (refuses promotion unless ALL tasks succeeded), so
+            // partial failure means the user's previous embedder is STILL
+            // active. Search keeps working on the old vectors. The user
+            // must fix the failing files and Re-index again, or revert.
+            // Crucially: DO NOT call onAutoReindexComplete — that would
+            // refresh the saved-config snapshot to the NEW (unapplied)
+            // config and clear the "Re-index needed" banner, both of
+            // which would lie about the engine's actual state.
+            const failedNames = relevantTasks
+              .filter((t) => t.status === "failed" || t.status === "cancelled")
+              .map((t) => t.filename || t.task_id)
+              .slice(0, 3)
+              .join(", ");
+            const more = failed > 3 ? ` (+${failed - 3} more)` : "";
+            onToast?.(
+              "error",
+              "Re-index didn't complete",
+              `${completed}/${taskIds.length} succeeded; ${failed} failed: ${failedNames}${more}. ` +
+                `Your previous embedder configuration is still active. ` +
+                `Fix the failing file(s) and Re-index again, or revert your config.`,
+            );
           }
         }
       } catch {
@@ -1061,11 +1154,14 @@ export default function KnowledgePanel({
   }, [loadDocuments, checkHealth, onToast]);
 
   // Manual Reindex button path: POST first to get task IDs, then arm.
+  // Thread ``result.tasks`` (POST response carries [{task_id, filename}]
+  // pairs after the #402 production sweep) so the tile renders real
+  // filenames from frame 0 — no task_xxx placeholder window.
   const startReindexWithProgress = useCallback(async () => {
     if (!onReindex) return;
     const result = await onReindex();
     if (!result || !result.task_ids?.length) return;
-    await armReindexFromTaskIds(result.task_ids, result.count);
+    await armReindexFromTaskIds(result.task_ids, result.count, result.tasks);
   }, [onReindex, armReindexFromTaskIds]);
 
   // Server-side auto-reindex path: ManagePage extracts task IDs from a
@@ -2889,23 +2985,19 @@ export default function KnowledgePanel({
                                 </Stack>
                                 {knowledgeConfig.embedding_provider === "openrouter" && (
                                   <>
-                                    <InlineNotification
+                                    <ActionableNotification
                                       kind="info"
                                       lowContrast
                                       hideCloseButton
                                       title="OpenRouter"
-                                      subtitle={
-                                        <>
-                                          Paste any embeddings model id from{" "}
-                                          <a
-                                            href="https://openrouter.ai/models?output_modalities=embeddings"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                          >
-                                            openrouter.ai/models
-                                          </a>{" "}
-                                          (e.g. <code>openai/text-embedding-3-small</code>). Both Model and API Key are required.
-                                        </>
+                                      subtitle="Paste any embeddings model id (e.g. openai/text-embedding-3-small). Both Model and API Key are required."
+                                      actionButtonLabel="Browse models"
+                                      onActionButtonClick={() =>
+                                        window.open(
+                                          "https://openrouter.ai/models?output_modalities=embeddings",
+                                          "_blank",
+                                          "noopener,noreferrer",
+                                        )
                                       }
                                     />
                                     <TextInput
@@ -2936,23 +3028,19 @@ export default function KnowledgePanel({
                                         }
                                       />
                                     ) : (
-                                      <InlineNotification
+                                      <ActionableNotification
                                         kind="success"
                                         lowContrast
                                         hideCloseButton
                                         title="LiteLLM ready"
-                                        subtitle={
-                                          <>
-                                            <code>{knowledgeConfig.embedding_model}</code> will be routed via LiteLLM. See{" "}
-                                            <a
-                                              href="https://docs.litellm.ai/docs/embedding/supported_embedding"
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                            >
-                                              supported models
-                                            </a>
-                                            . API key falls back to env var if empty. Base URL is for self-hosted proxies.
-                                          </>
+                                        subtitle={`${knowledgeConfig.embedding_model} will be routed via LiteLLM. API key falls back to env var if empty. Base URL is for self-hosted proxies.`}
+                                        actionButtonLabel="Supported models"
+                                        onActionButtonClick={() =>
+                                          window.open(
+                                            "https://docs.litellm.ai/docs/embedding/supported_embedding",
+                                            "_blank",
+                                            "noopener,noreferrer",
+                                          )
                                         }
                                       />
                                     )}

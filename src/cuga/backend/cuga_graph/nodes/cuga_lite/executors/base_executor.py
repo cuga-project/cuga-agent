@@ -29,11 +29,20 @@ class BaseExecutor(ABC):
         pass
 
     @abstractmethod
-    def format_error(self, error: Exception) -> str:
+    def format_error(
+        self,
+        error: Exception,
+        available_tools: Optional[list[str]] = None,
+        code: Optional[str] = None,
+    ) -> str:
         """Format an error for display.
 
         Args:
             error: The exception to format
+            available_tools: Names of tools/functions present in the execution
+                namespace, used to correct fabricated tool-name NameErrors.
+            code: The code that raised the error; used to distinguish
+                fabricated tool calls from undefined-variable references.
 
         Returns:
             Formatted error string

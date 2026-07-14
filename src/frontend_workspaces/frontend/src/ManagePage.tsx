@@ -56,32 +56,16 @@ import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfi
 import { SecretsManager } from "./SecretsManager";
 import type { ToolEntry } from "./types/tools";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
+import { useLlmDraftSave } from "./manage/hooks/useLlmDraftSave";
+import { useAgentDraftSave } from "./manage/hooks/useAgentDraftSave";
+import { useSpecialInstructionsDraftSave } from "./manage/hooks/useSpecialInstructionsDraftSave";
+import { useToolsDraftSave } from "./manage/hooks/useToolsDraftSave";
+import { useKnowledgeDraftSave, type AdaptationServerErrorShape } from "./manage/hooks/useKnowledgeDraftSave";
+import { useFullDraftSave } from "./manage/hooks/useFullDraftSave";
+import { usePublishConfig } from "./manage/hooks/usePublishConfig";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
-
-// Mirror of ``AdaptationServerError`` from
-// ``agentic_chat/src/ClientAdaptationPanel.tsx``. Declared locally as a
-// type-only shape because the agentic_chat workspace's package exports
-// don't re-export it. The server's ``ClientAdaptationError.to_dict()``
-// shape is the source of truth (see ``config.py``); the union of
-// ``error`` values must stay in sync between server and these two
-// frontend declarations.
-interface AdaptationServerErrorShape {
-  error:
-    | "length_exceeded"
-    | "bidi_override"
-    | "control_char"
-    | "contract_override_phrase"
-    | "type_error"
-    | "null_byte";
-  message: string;
-  phrase?: string;
-  pattern?: string;
-  codepoint?: string;
-  length?: number;
-  max?: number;
-}
 
 export interface HomescreenConfig {
   isOn?: boolean;
@@ -286,17 +270,6 @@ const POLICY_TYPE_LABELS: Record<string, string> = {
   output_formatter: "Output formatters",
 };
 
-// AbortController + fetch rejects with a DOMException whose ``name`` is
-// "AbortError". The intentional-cancel path swallows this silently;
-// every other error type still surfaces normally. Centralised so the 5
-// autosave families can rely on the same predicate.
-function isAbortError(err: unknown): boolean {
-  if (err instanceof DOMException && err.name === "AbortError") return true;
-  // Node/jsdom polyfill paths can throw a plain Error with name set.
-  if (err instanceof Error && err.name === "AbortError") return true;
-  return false;
-}
-
 function policiesSummary(policies: unknown[]): { total: number; byType: Record<string, number> } {
   const byType: Record<string, number> = {};
   for (const p of policies) {
@@ -343,67 +316,6 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
-  // Knowledge draft autosave status — sourced from the PATCH lifecycle,
-  // NOT from a setTimeout. The prior implementation in KnowledgeConfig.tsx
-  // claimed "Saved" after 1500ms regardless of whether the network call
-  // had returned; the user couldn't distinguish a real save from a silent
-  // network failure. Lifted here so the same machine drives both the
-  // inline pill AND the Live-vs-Draft comparison the synthesis calls for.
-  // ``saved`` and ``failed`` carry the server-echoed vector_config_hash
-  // and apply_generation so the UI has authoritative proof-of-apply.
-  type DraftSaveStatus =
-    | { kind: "idle" }
-    | { kind: "saving" }
-    | { kind: "saving-slow" }
-    | { kind: "saved" }
-    | { kind: "failed"; error: string };
-  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
-  // Slow-network safety net. The PATCH should normally complete in
-  // 1-3s for fastembed and 2-5s for a network embedder preflight.
-  // Beyond ~25s the user starts to wonder if anything's happening;
-  // beyond ~90s it's almost certainly stuck. Two-stage approach
-  // (per the pre-client review — the prior single-flip at 60s lied
-  // to users on slow corporate VPNs where 30-45s saves are normal):
-  //
-  //   1. At 25s, soften copy: "Still saving — your network is slow."
-  //      Keeps the user informed without forcing a fail-state on a
-  //      perfectly-healthy slow save.
-  //   2. At 90s, abort the in-flight controller AND flip to failed.
-  //      Aborting prevents a stale-snapshot overwrite if the response
-  //      arrives later. Without the abort, a 100s-late PATCH could
-  //      land "Saved" state on top of whatever new edits the user
-  //      made in the meantime.
-  // Depend on the saving-family BOOLEAN, not the full status object —
-  // otherwise the 25s slow-state transition (saving → saving-slow) re-runs
-  // this effect, the cleanup CLEARS the 90s fail timer, the new run early-
-  // returns (state is now "saving-slow", not "saving"), and the abort+fail
-  // safety net never fires. Audit caught this — UI hangs forever on a hung
-  // PATCH that crosses the 25s mark.
-  const isSavingFamily =
-    draftSaveStatus.kind === "saving" || draftSaveStatus.kind === "saving-slow";
-  useEffect(() => {
-    if (!isSavingFamily) return;
-    const slow = setTimeout(() => {
-      setDraftSaveStatus((prev) =>
-        prev.kind === "saving" ? { kind: "saving-slow" } : prev,
-      );
-    }, 25_000);
-    const fail = setTimeout(() => {
-      knowledgeAbortRef.current?.abort();
-      setDraftSaveStatus((prev) =>
-        prev.kind === "saving" || prev.kind === "saving-slow"
-          ? {
-              kind: "failed",
-              error: "Save took too long — server may be busy. Try again.",
-            }
-          : prev,
-      );
-    }, 90_000);
-    return () => {
-      clearTimeout(slow);
-      clearTimeout(fail);
-    };
-  }, [isSavingFamily]);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -464,6 +376,17 @@ export function ManagePage() {
   const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
   const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
   const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  // Self-healing autosave retry for the reindex_in_progress 409. When a
+  // vector-affecting PATCH lands while a reindex the FE never armed is in
+  // flight (engine-triggered boot/config-drift reindex, or another client's),
+  // we can't rely on the child panel's onReindexFinished to release a
+  // suppression flag — that callback only fires for reindexes the FE armed,
+  // so a flag-based hold would wedge "saving" until a hard refresh. Instead
+  // we re-attempt the PATCH on a bounded timer; it succeeds the instant the
+  // reindex clears (Layer 2 stops raising). Nonce drives the effect re-run.
+  const knowledgeSaveRetryRef = useRef(0);
+  const knowledgeSaveRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [knowledgeSaveRetryNonce, setKnowledgeSaveRetryNonce] = useState(0);
   // When a knowledge draft PATCH triggers an auto-reindex on the server
   // (e.g. user picks a new profile and the embedding-dim changes), the
   // response carries task_ids in ``auto_reindex.collections[*].result``.
@@ -484,6 +407,10 @@ export function ManagePage() {
   // Cleared on the next successful save.
   const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerErrorShape | null>(null);
   const [knowledgeStale, setKnowledgeStale] = useState(false);
+  // Live availability of the active embedder (from /health). null = unknown
+  // (don't alarm); false = unreachable → the indexed docs can't be searched.
+  const [knowledgeEmbedderAvailable, setKnowledgeEmbedderAvailable] = useState<boolean | null>(null);
+  const [knowledgeEmbedderModel, setKnowledgeEmbedderModel] = useState<string>("");
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<{
@@ -503,44 +430,13 @@ export function ManagePage() {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmModelsList, setLlmModelsList] = useState<string[]>([]);
   const skipDraftSaveRef = useRef(true);
-  const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toolsSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const specialInstructionsSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Per-autosave-family AbortControllers. When a new config change
-  // arrives we ``.abort()`` the prior controller so the in-flight
-  // PATCH (which is sending a NOW-STALE payload) is cancelled
-  // client-side. Side-effects from a late-arriving response are
-  // gated on ``signal.aborted`` so they can't poison state we set
-  // for the newer config. See CLIENT_CANCELLATION_CONTRACT.md.
-  const knowledgeAbortRef = useRef<AbortController | null>(null);
   // Preset clicks (env-presets "Use" button) bypass the 800ms autosave
   // debounce — the debounce coalesces keystrokes, but a deliberate
   // button click should feel instant. Set true in onPresetApplied,
-  // consumed + reset in the autosave effect on next run.
+  // consumed + reset in the knowledge autosave hook on next run.
   const forceImmediateSaveRef = useRef<boolean>(false);
-  const toolsAbortRef = useRef<AbortController | null>(null);
-  const llmAbortRef = useRef<AbortController | null>(null);
-  const agentAbortRef = useRef<AbortController | null>(null);
-  const specialInstructionsAbortRef = useRef<AbortController | null>(null);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
-
-  // Abort all in-flight autosave PATCHes on unmount so the browser
-  // can release the connection slots immediately. Without this, a
-  // hung PATCH (server slow / network blip) would tie up a slot
-  // until the request naturally fails. The native fetch is aborted
-  // on page unload too, but explicit cleanup is the right pattern
-  // for SPAs that swap routes without a full document unload.
-  useEffect(() => {
-    return () => {
-      knowledgeAbortRef.current?.abort();
-      toolsAbortRef.current?.abort();
-      llmAbortRef.current?.abort();
-      agentAbortRef.current?.abort();
-      specialInstructionsAbortRef.current?.abort();
-    };
-  }, []);
 
   useEffect(() => {
     api.getAgentContext()
@@ -959,6 +855,10 @@ export function ManagePage() {
       setKnowledgeHealthStatus(data.status ?? (data.healthy ? "ready" : "unknown"));
       setKnowledgeStale(data.stale ?? false);
       setKnowledgeReindexDeferred(data.reindex_deferred ?? false);
+      setKnowledgeEmbedderAvailable(
+        typeof data.embedder_available === "boolean" ? data.embedder_available : null,
+      );
+      setKnowledgeEmbedderModel(data.embedder_model ?? "");
       return data;
     } catch {
       setKnowledgeHealthy(false);
@@ -1032,192 +932,86 @@ export function ManagePage() {
     [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
   );
 
-  const performDraftSave = useCallback(
-    async (partial?: Partial<AgentConfig>) => {
-      const toSave = partial ? { ...assembleConfig(), ...partial } : assembleConfig();
-      setDraftSaving(true);
-      try {
-        const res = await api.postManageConfigDraft(toSave, effectiveAgentId);
-        setDraftSaving(false);
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          setCurrentVersion("draft");
-          const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
-          if (hasPartialErrors) {
-            if (data.tool_errors) {
-              Object.entries(data.tool_errors as Record<string, { error?: string; message?: string; type?: string }>).forEach(
-                ([toolName, err]) => {
-                  const msg = err?.error || err?.message || "Unknown error";
-                  const type = err?.type ? ` (${err.type})` : "";
-                  addToast("warning", `Tool failed: ${toolName}`, `${msg}${type}`);
-                }
-              );
-            }
-            if (data.policy_errors) {
-              const errs = Array.isArray(data.policy_errors) ? data.policy_errors : [data.policy_errors];
-              errs.forEach((e: unknown) => addToast("warning", "Policy error", typeof e === "string" ? e : String(e)));
-            }
-            addToast("info", "Draft saved with warnings", data.message || "Some tools or policies failed to load");
-          } else {
-            addToast("success", "Draft saved", "Your changes have been saved to draft");
-          }
-        } else {
-          const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
-          addToast("error", "Draft Save Failed", errorMsg);
-        }
-      } catch (error) {
-        setDraftSaving(false);
-        const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
-        addToast("error", "Draft Save Failed", errorMsg);
-      }
-    },
-    [addToast, assembleConfig]
-  );
 
-  const saveLlmDraft = useCallback(async () => {
-    setDraftSaving(true);
-    // Cancel any prior in-flight LLM PATCH (the user might blur from
-    // one input straight into another while the first save is still
-    // on the wire). Side-effects below are guarded by signal.aborted.
-    llmAbortRef.current?.abort();
-    const ac = new AbortController();
-    llmAbortRef.current = ac;
-    try {
-      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId, ac.signal);
-      if (ac.signal.aborted) return;
-      setDraftSaving(false);
-      if (res.ok) {
-        setCurrentVersion("draft");
-        addToast("success", "Draft saved", "LLM settings saved to draft");
-      } else {
-        addToast("error", "Draft Save Failed", `Failed to save LLM (${res.status} ${res.statusText})`);
-      }
-    } catch (error) {
-      if (isAbortError(error)) return; // superseded by newer blur/save — silent
-      setDraftSaving(false);
-      addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
-    }
-  }, [addToast, effectiveAgentId]);
+  const { saveLlmDraft, scheduleLlmDraftSave } = useLlmDraftSave({
+    llmConfigRef,
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+  });
 
-  const scheduleLlmDraftSave = useCallback(() => {
-    if (llmBlurSaveRef.current) clearTimeout(llmBlurSaveRef.current);
-    llmBlurSaveRef.current = setTimeout(() => {
-      llmBlurSaveRef.current = null;
-      saveLlmDraft();
-    }, 100);
-  }, [saveLlmDraft]);
+  const { saveAgentDraft } = useAgentDraftSave({
+    agentName,
+    agentDescription,
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+  });
 
-  const saveSpecialInstructionsDraft = useCallback(
-    async (value: string, showToast = false) => {
-      if (showToast) setDraftSaving(true);
-      // Cancel any prior in-flight special-instructions PATCH (the
-      // user might keep typing — each keystroke schedules a save).
-      specialInstructionsAbortRef.current?.abort();
-      const ac = new AbortController();
-      specialInstructionsAbortRef.current = ac;
-      try {
-        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId, ac.signal);
-        if (ac.signal.aborted) return;
-        if (showToast) setDraftSaving(false);
-        if (res.ok) {
-          setCurrentVersion("draft");
-          if (showToast) addToast("success", "Draft saved", "Special instructions saved to draft");
-        } else if (showToast) {
-          addToast("error", "Draft Save Failed", `Failed to save (${res.status} ${res.statusText})`);
-        }
-      } catch (err) {
-        if (isAbortError(err)) return; // superseded — silent
-        if (showToast) {
-          setDraftSaving(false);
-          addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
-        }
-      }
-    },
-    [effectiveAgentId, addToast]
-  );
+  const { saveSpecialInstructionsDraft, scheduleSpecialInstructionsDraftSave } = useSpecialInstructionsDraftSave({
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+  });
 
-  const scheduleSpecialInstructionsDraftSave = useCallback(
-    (value: string) => {
-      if (specialInstructionsSaveRef.current) clearTimeout(specialInstructionsSaveRef.current);
-      specialInstructionsSaveRef.current = setTimeout(() => {
-        specialInstructionsSaveRef.current = null;
-        void saveSpecialInstructionsDraft(value);
-      }, 800);
-    },
-    [saveSpecialInstructionsDraft]
-  );
+  useToolsDraftSave({
+    tools,
+    effectiveAgentId,
+    addToast,
+    skipDraftSaveRef,
+    setDraftSaving,
+    setCurrentVersion,
+  });
 
-  const saveAgentDraft = useCallback(async () => {
-    setDraftSaving(true);
-    // Cancel any prior in-flight agent-meta PATCH.
-    agentAbortRef.current?.abort();
-    const ac = new AbortController();
-    agentAbortRef.current = ac;
-    try {
-      const res = await api.patchManageConfigDraftAgent(
-        { name: agentName.trim(), description: agentDescription.trim() || undefined },
-        effectiveAgentId,
-        ac.signal,
-      );
-      if (ac.signal.aborted) return;
-      setDraftSaving(false);
-      if (res.ok) {
-        setCurrentVersion("draft");
-        addToast("success", "Draft saved", "Agent settings saved to draft");
-      } else {
-        addToast("error", "Draft Save Failed", `Failed to save agent (${res.status} ${res.statusText})`);
-      }
-    } catch (error) {
-      if (isAbortError(error)) return; // superseded — silent
-      setDraftSaving(false);
-      addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
-    }
-  }, [agentName, agentDescription, addToast, effectiveAgentId]);
+  const { draftSaveStatus, setDraftSaveStatus } = useKnowledgeDraftSave({
+    knowledgeConfig,
+    effectiveAgentId,
+    addToast,
+    skipDraftSaveRef,
+    forceImmediateSaveRef,
+    knowledgeReindexing,
+    knowledgeSaveRetryRef,
+    knowledgeSaveRetryTimerRef,
+    knowledgeSaveRetryNonce,
+    setKnowledgeSaveRetryNonce,
+    setCurrentVersion,
+    setAdaptationServerError,
+    setAutoReindexTrigger,
+    setKnowledgeSavedSnapshot,
+    setKnowledgeDocCount,
+  });
 
-  useEffect(() => {
-    if (skipDraftSaveRef.current) return;
-    // Abort prior tools-autosave + arm a new controller. Mirrors the
-    // knowledge autosave pattern (see CLIENT_CANCELLATION_CONTRACT.md);
-    // the tools side-effects (toast, draftSaving spinner) are gated on
-    // ``ac.signal.aborted`` so a stale response can't double-toast.
-    toolsAbortRef.current?.abort();
-    const ac = new AbortController();
-    toolsAbortRef.current = ac;
-    const t = setTimeout(() => {
-      toolsSaveTimeoutRef.current = null;
-      if (toolsAbortRef.current !== ac) return;
-      (async () => {
-        setDraftSaving(true);
-        try {
-          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId, ac.signal);
-          if (ac.signal.aborted) return;
-          setDraftSaving(false);
-          if (res.ok) {
-            setCurrentVersion("draft");
-            const data = await res.json().catch(() => ({}));
-            if (ac.signal.aborted) return;
-            if (data.status === "partial" && data.tool_errors) {
-              Object.entries(data.tool_errors as Record<string, { error?: string; message?: string }>).forEach(
-                ([toolName, err]) => addToast("warning", `Tool: ${toolName}`, err?.error || err?.message || "Unknown error")
-              );
-            } else {
-              addToast("success", "Draft saved", "Tools saved to draft");
-            }
-          } else {
-            addToast("error", "Draft Save Failed", `Failed to save tools (${res.status} ${res.statusText})`);
-          }
-        } catch (error) {
-          if (isAbortError(error)) return; // superseded by newer autosave — silent
-          setDraftSaving(false);
-          addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
-        }
-      })();
-    }, 500);
-    toolsSaveTimeoutRef.current = t;
-    return () => {
-      if (toolsSaveTimeoutRef.current) clearTimeout(toolsSaveTimeoutRef.current);
-    };
-  }, [tools, effectiveAgentId, addToast]);
+  const { performDraftSave } = useFullDraftSave({
+    assembleConfig,
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+    importStatus,
+    refreshKnowledgeHealth,
+  });
+
+  const { showReindexConfirm, setShowReindexConfirm, handleSaveClick, saveConfig } = usePublishConfig({
+    assembleConfig,
+    agentName,
+    knowledgeConfig,
+    knowledgeReindexNeeded,
+    knowledgeDocCount,
+    effectiveAgentId,
+    addToast,
+    setSaveStatus,
+    setCurrentVersion,
+    setLiveKnowledge,
+    setKnowledgeSavedSnapshot,
+    setKnowledgeDocCount,
+    setDraftSaveStatus,
+    refreshKnowledgeHealth,
+    loadHistory,
+  });
+
 
   // Knowledge reindex detection — compare current config against the
   // last saved/published state. The principle: only flag "needs
@@ -1245,189 +1039,6 @@ export function ManagePage() {
     const changed = !isIndexConfigEquivalent(knowledgeConfig, saved);
     setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
   }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
-
-  // Debounced auto-save for knowledge config. On 422 the server returns a
-  // structured ClientAdaptationError.to_dict() body — push it into the
-  // KnowledgePanel via the controlled-state contract so the operator
-  // sees what's wrong instead of a silent no-save (Sami #60).
-  //
-  // Race fix (Slice A): when the user picks a new profile while a prior
-  // PATCH is still in flight, the prior controller is .abort()-ed and
-  // its response is dropped via the ``signal.aborted`` guards below.
-  // Server-side state still mutates for the aborted request (the
-  // server doesn't honor client disconnects today) — that's Slice B's
-  // job. Here we just stop the UI from rendering TWO reindex tiles for
-  // the same user action. See CLIENT_CANCELLATION_CONTRACT.md.
-  useEffect(() => {
-    if (skipDraftSaveRef.current) return;
-
-    // Cancel any prior in-flight PATCH for this family. We do this
-    // OUTSIDE the setTimeout so the abort fires immediately on the
-    // user's next pick — not after another 800 ms wait. Helps the
-    // server's request budget too.
-    knowledgeAbortRef.current?.abort();
-    const ac = new AbortController();
-    knowledgeAbortRef.current = ac;
-
-    // Preset clicks set forceImmediateSaveRef so the user sees "Saving…"
-    // on the next microtask instead of waiting for the keystroke-coalesce
-    // window. Read + consume here so the next plain field edit goes back
-    // to the 800ms debounce.
-    const debounceMs = forceImmediateSaveRef.current ? 0 : 800;
-    forceImmediateSaveRef.current = false;
-
-    const t = setTimeout(async () => {
-      // Defensive: if a NEWER effect run replaced the ref mid-debounce
-      // (clearTimeout in cleanup should have caught us, but the timer
-      // can race the cleanup in rare microtask interleavings), skip.
-      if (knowledgeAbortRef.current !== ac) return;
-      // Transition to "saving" the moment the network call goes out.
-      // Pill in the panel reads this — replaces the prior setTimeout-driven
-      // "saved after 1500ms" lie with a real network-event signal.
-      setDraftSaveStatus({ kind: "saving" });
-      try {
-        const res = await api.patchManageConfigDraftKnowledge(
-          knowledgeConfig,
-          effectiveAgentId,
-          ac.signal,
-        );
-        // Guard 1: between request and response, a newer autosave may
-        // have aborted us. Don't apply this response's side-effects.
-        if (ac.signal.aborted) return;
-        if (res.ok) {
-          setCurrentVersion("draft");
-          setAdaptationServerError(null);
-          // Forward any server-triggered auto-reindex into the panel so the
-          // reindex tile arms automatically. Without this the user only
-          // sees progress if they click the Reindex button explicitly —
-          // for a dim-changing profile switch (which fires migration on
-          // the server side) that's a confusing "documents vanished, no
-          // feedback" window. ``triggerKey`` is the joined task IDs so a
-          // re-render with the same payload doesn't re-arm.
-          try {
-            const body = await res.clone().json();
-            // Guard 2: body read is async too; recheck after the await.
-            if (ac.signal.aborted) return;
-            setDraftSaveStatus({ kind: "saved" });
-            const collections = body?.auto_reindex?.collections ?? [];
-            const taskIds: string[] = collections
-              .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
-              .filter((id: string) => typeof id === "string" && id.length > 0);
-            if (taskIds.length > 0) {
-              const total = collections.reduce(
-                (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
-                0,
-              );
-              const triggerKey = taskIds.slice().sort().join("|");
-              setAutoReindexTrigger((prev) =>
-                prev?.triggerKey === triggerKey
-                  ? prev
-                  : { taskIds, total: total || taskIds.length, triggerKey },
-              );
-            }
-          } catch {
-            // Body shape mismatch — auto-reindex either didn't fire or
-            // wasn't in the response; the manual Reindex path still works.
-            // Still flip to "saved" since the HTTP status was 2xx.
-            setDraftSaveStatus({ kind: "saved" });
-          }
-        } else if (res.status === 422) {
-          // Guard 3: 422 carries an adaptation-server-error blob.
-          // Don't surface the validation error for a config the user
-          // has already moved past.
-          if (ac.signal.aborted) return;
-          try {
-            const body = await res.json();
-            if (ac.signal.aborted) return;
-            const err = (body && (body.detail ?? body)) as Partial<AdaptationServerErrorShape> | null;
-            if (err && typeof err.error === "string" && typeof err.message === "string") {
-              setAdaptationServerError(err as AdaptationServerErrorShape);
-            }
-            // 422 is a save failure (server rejected). Pill flips to failed
-            // so the user has a non-silent signal alongside the field-level
-            // inline error rendered next to Provider Select.
-            setDraftSaveStatus({
-              kind: "failed",
-              error: (err && err.message) || "Couldn't apply — see provider error below",
-            });
-          } catch {
-            // 422 without a JSON body — leave the prior error in place.
-            setDraftSaveStatus({ kind: "failed", error: "Save rejected by server" });
-          }
-        } else if (res.status === 409) {
-          // Layer 1/2 (issue #396): server refuses vector-affecting PATCHes
-          // while a reindex is in flight. Without this branch the user sees
-          // a generic "Save failed (409)" pill and might assume their UI
-          // selection is now applied — it isn't. Surface specifically.
-          if (ac.signal.aborted) return;
-          let detail: { error?: string; message?: string } | null = null;
-          try {
-            const body = await res.json();
-            detail = (body && (body.detail ?? body)) as { error?: string; message?: string } | null;
-          } catch {
-            // 409 without a JSON body — fall through to the generic message.
-          }
-          if (ac.signal.aborted) return;
-          const msg =
-            detail?.error === "reindex_in_progress"
-              ? detail?.message ||
-                "Re-index is running. Wait for it to finish, then try again."
-              : "Save conflicts with current server state. Try again.";
-          setDraftSaveStatus({ kind: "failed", error: msg });
-          addToast(
-            "warning",
-            "Can't change settings yet",
-            "A Re-index is running. Wait for it to finish, then this change will save.",
-          );
-        } else {
-          // 4xx / 5xx without a 422 body. Surface as failed so the pill
-          // doesn't stay stuck on "Saving…". Log to console too — when
-          // a user reports "stuck on Saving" we need a breadcrumb in dev
-          // tools to confirm the server response did come back.
-          if (ac.signal.aborted) return;
-          let detail = "";
-          try {
-            const body = await res.clone().text();
-            detail = body ? body.slice(0, 200) : "";
-          } catch {
-            // ignore body read failures — fallback to status code only
-          }
-          console.error(`[ManagePage] knowledge PATCH failed: ${res.status}`, detail);
-          setDraftSaveStatus({
-            kind: "failed",
-            error: detail ? `Save failed (${res.status}): ${detail}` : `Save failed (${res.status})`,
-          });
-        }
-      } catch (err) {
-        // AbortError is expected when a newer autosave superseded us.
-        // Stay silent — the next effect run will issue a fresh PATCH.
-        if (isAbortError(err)) return;
-        // Network failure (real). Previously silent — the literal bug
-        // the user just hit. Now flips the pill to "failed" with a Retry
-        // button (consumed by KnowledgeConfig).
-        console.error("[ManagePage] knowledge PATCH threw:", err);
-        setDraftSaveStatus({
-          kind: "failed",
-          error: err instanceof Error ? err.message : "Couldn't save — check your connection",
-        });
-      }
-    }, debounceMs);
-    return () => {
-      clearTimeout(t);
-      // Do NOT .abort() in cleanup. The cleanup fires before EVERY
-      // effect re-run, and by the time it runs we've already moved to
-      // a new controller via the body's ``ref.current = ac`` line at
-      // the top. Aborting in cleanup would race with the new effect.
-      // The next effect run's ``knowledgeAbortRef.current?.abort()``
-      // at the top is the correct cancellation point.
-    };
-  }, [knowledgeConfig, effectiveAgentId]);
-
-  useEffect(() => {
-    if (importStatus === "ok") {
-      performDraftSave();
-    }
-  }, [importStatus, performDraftSave]);
 
   const loadVersion = async (version: number) => {
     try {
@@ -1460,160 +1071,6 @@ export function ManagePage() {
       const errorMsg = e instanceof Error ? e.message : `Failed to load version ${version}`;
       addToast("error", "Load Error", errorMsg);
       setSaveStatus("error");
-      setTimeout(() => setSaveStatus("idle"), 2000);
-    }
-  };
-
-  const [showReindexConfirm, setShowReindexConfirm] = useState(false);
-
-  const handleSaveClick = () => {
-    if (knowledgeReindexNeeded && knowledgeDocCount > 0) {
-      setShowReindexConfirm(true);
-    } else {
-      saveConfig();
-    }
-  };
-
-  const saveConfig = async () => {
-    setShowReindexConfirm(false);
-    if (!agentName.trim()) {
-      addToast("error", "Agent name required", "Please enter an agent name before publishing.");
-      return;
-    }
-    setSaveStatus("saving");
-    try {
-      let toSave = assembleConfig();
-      if (!toSave.policies) {
-        toSave = { ...toSave, policies: { enablePolicies: true, policies: [] } };
-      }
-      const res = await api.postManageConfig(toSave, effectiveAgentId);
-      if (res.ok) {
-        const data = await res.json();
-
-        // Check for partial status and tool errors
-        const hasPartialErrors = data.status === "partial" && data.tool_errors;
-
-        if (hasPartialErrors) {
-          // Show warning toast for each tool error
-          Object.entries(data.tool_errors as Record<string, any>).forEach(([toolName, errorInfo]: [string, any]) => {
-            const errorMsg = errorInfo.error || errorInfo.message || "Unknown error";
-            const errorType = errorInfo.type ? ` (${errorInfo.type})` : "";
-            addToast("warning", `Tool initialization failed: ${toolName}`, `${errorMsg}${errorType}`);
-          });
-
-          // Show summary message
-          const errorCount = Object.keys(data.tool_errors).length;
-          addToast("info", "Configuration partially saved", data.message || `${errorCount} tool(s) failed to initialize`);
-        }
-
-        // Also check for legacy partial_errors format
-        if (data.partial_errors && Array.isArray(data.partial_errors) && data.partial_errors.length > 0) {
-          data.partial_errors.forEach((error: any) => {
-            const errorMsg = typeof error === "string" ? error : (error.message || error.error || "Unknown error");
-            addToast("warning", "Partial save error", errorMsg);
-          });
-        }
-
-        // Handle reindex: keep the publish button in "saving" state until done.
-        if (data.reindex && data.reindex.status === "started") {
-          const taskIds: string[] = data.reindex.task_ids ?? [];
-          const total = data.reindex.count ?? taskIds.length;
-          setSaveStatus("saving"); // keep spinner
-          addToast("info", "Publishing", `Re-indexing ${total} document(s)...`);
-
-          if (taskIds.length > 0) {
-            // Poll until all tasks complete, then finish the publish.
-            await new Promise<void>((resolve) => {
-              let polling = false;
-              const cleanup = () => { clearInterval(pollInterval); clearTimeout(timeoutId); resolve(); };
-
-              const pollInterval = setInterval(async () => {
-                if (polling) return;
-                polling = true;
-                try {
-                  const statuses = await Promise.all(
-                    taskIds.map((tid: string) =>
-                      api.getKnowledgeTaskStatus(tid)
-                        .then((r) => r.ok ? r.json() : { status: "unknown" })
-                        .catch(() => ({ status: "unknown" }))
-                    )
-                  );
-                  const completed = statuses.filter((t: any) => t.status === "completed").length;
-                  const failed = statuses.filter((t: any) => t.status === "failed").length;
-
-                  if (completed + failed >= taskIds.length) {
-                    cleanup();
-                    if (failed === 0) {
-                      addToast("success", "Re-index complete", `All ${completed} document(s) re-indexed.`);
-                    } else {
-                      addToast("warning", "Re-index partial", `${completed} succeeded, ${failed} failed.`);
-                    }
-                    api.listKnowledgeDocuments()
-                      .then((r) => r.ok ? r.json() : null)
-                      .then((d) => { if (d) setKnowledgeDocCount(d.documents?.length ?? 0); })
-                      .catch(() => {});
-                  }
-                } catch {
-                  cleanup();
-                } finally {
-                  polling = false;
-                }
-              }, 2000);
-
-              const timeoutId = setTimeout(() => {
-                cleanup();
-                addToast("warning", "Re-index timeout", "Still running. Check knowledge health.");
-              }, 300000); // 5 min timeout
-            });
-          }
-        } else if (data.reindex && data.reindex.status === "busy") {
-          addToast("warning", "Re-index deferred", "Uploads in progress. Re-publish after uploads complete.");
-        }
-
-        setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
-        setSaveStatus("success");
-        // Refresh the Live truth anchor with what we just published. The
-        // header pill now reflects the new live state immediately — no
-        // re-fetch round-trip and no risk of the pill drifting from
-        // reality between Publish and the next page load.
-        setLiveKnowledge({
-          provider: typeof knowledgeConfig.embedding_provider === "string" ? knowledgeConfig.embedding_provider : "fastembed",
-          model: typeof knowledgeConfig.embedding_model === "string" && knowledgeConfig.embedding_model
-            ? knowledgeConfig.embedding_model
-            : "(default)",
-          version: typeof data.version === "number" ? data.version : null,
-          chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
-          chunk_overlap: typeof knowledgeConfig.chunk_overlap === "number" ? knowledgeConfig.chunk_overlap : undefined,
-          metric_type: typeof knowledgeConfig.metric_type === "string" ? knowledgeConfig.metric_type : undefined,
-        });
-        // Snapshot the knowledge config so reindex detection compares against
-        // the just-published state, not the initial load.
-        setKnowledgeSavedSnapshot({ ...knowledgeConfig });
-        // Refresh health/stale flags so warnings clear after publish + reindex.
-        refreshKnowledgeHealth();
-        if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
-          addToast("success", "Configuration saved", "Your configuration has been saved successfully");
-        }
-        loadHistory();
-        setTimeout(() => setSaveStatus("idle"), 2000);
-      } else {
-        // Handle HTTP error response
-        let errorMsg = `Failed to save configuration (${res.status} ${res.statusText})`;
-        try {
-          const errorData = await res.json();
-          errorMsg = errorData.detail || errorData.error || errorData.message || errorMsg;
-        } catch {
-          // If response is not JSON, use default error message
-        }
-        
-        setSaveStatus("error");
-        addToast("error", "Save Failed", errorMsg);
-        setTimeout(() => setSaveStatus("idle"), 2000);
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : "Network error occurred";
-      setSaveStatus("error");
-      addToast("error", "Network Error", errorMsg);
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
@@ -2331,6 +1788,26 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
+                    {/* Embedder-unavailable alert. Distinct from the removed
+                        "re-index recommended" NAG below: this is a real error —
+                        the documents exist but their embedder can't embed
+                        queries (missing/invalid key, provider down), so search
+                        returns nothing. Surfaced on the agent card (not just in
+                        the modal) because it makes knowledge silently useless. */}
+                    {knowledgeEmbedderAvailable === false && knowledgeDocCount > 0 && (
+                      <InlineNotification
+                        kind="error"
+                        lowContrast
+                        hideCloseButton
+                        title="Embedder unavailable"
+                        subtitle={
+                          `Your ${knowledgeDocCount} indexed document${knowledgeDocCount !== 1 ? "s" : ""} can't be searched — ` +
+                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't reachable. ` +
+                          `Open Configure knowledge base to check its API key / connection and run Test connection.`
+                        }
+                        style={{ maxInlineSize: "100%" }}
+                      />
+                    )}
                     {/* The "Re-index recommended" InlineNotification used to
                         live here as a call-to-action to open the modal. It's
                         gone now because (a) the Live pill above already
@@ -2610,6 +2087,9 @@ export function ManagePage() {
             // Retry: bump the same field with its current value to retrigger
             // the autosave useEffect. Cheap and reuses the existing PATCH
             // pipeline rather than maintaining a parallel retry path.
+            // Reset the reindex_in_progress retry budget too, so a manual
+            // Retry after the "still running" timeout re-arms the auto-retry.
+            knowledgeSaveRetryRef.current = 0;
             setKnowledgeConfig((prev) => ({ ...prev }));
           }}
           onDismissDraftSave={() => {
@@ -2654,45 +2134,111 @@ export function ManagePage() {
                 : await api.triggerKnowledgeReindex();
               if (res.ok) {
                 const data = await res.json();
-                setKnowledgeReindexing(false);
+                // #398 follow-up v2: do NOT clear ``knowledgeReindexing`` here.
+                // The POST returns in <100ms with task_ids, but the actual
+                // ingest workers run for 10-15s afterward — that's exactly
+                // when the autosave-debounce PATCH lands and hits Layer 1's
+                // 409. We clear ``knowledgeReindexing`` only when the child
+                // panel reports its polling reached terminal state (via
+                // ``onReindexFinished`` below). Failure branches clear it
+                // explicitly per case.
                 // triggered:false ⇒ structural failure (status 2xx, ``error`` field set).
                 if (data?.triggered === false) {
-                  const ERR: Record<string, string> = {
-                    active_snapshot_missing:
-                      "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
-                    copy_failed:
-                      "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
-                    reindex_failed:
-                      "Re-index ran but didn't embed anything. Check server logs and retry.",
+                  setKnowledgeReindexing(false);
+                  const ERR: Record<string, { title: string; kind: "warning" | "error"; msg: string }> = {
+                    active_snapshot_missing: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
+                    },
+                    copy_failed: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
+                    },
+                    reindex_failed: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Re-index ran but didn't embed anything. Check server logs and retry.",
+                    },
+                    // #398: distinguish "wait, uploads in progress" from
+                    // a generic failure. Warning (not error) because it's
+                    // recoverable just by retrying once uploads settle.
+                    reindex_busy: {
+                      title: "Re-index couldn't start",
+                      kind: "warning",
+                      msg: "Uploads or another re-index are still running. Wait a moment, then try again.",
+                    },
                   };
                   const code = typeof data.error === "string" ? data.error : "unknown";
-                  addToast("error", "Re-index didn't run", ERR[code] || `Re-index couldn't run (${code}).`);
+                  const spec = ERR[code];
+                  // [#398] Asserts the FE branched into the busy-toast path
+                  // (kind=warning) vs the failure path (kind=error). Pair
+                  // with the backend's "[#398] reindex_busy" log: the two
+                  // should fire together within one HTTP round-trip.
+                  if (spec) {
+                    addToast(spec.kind, spec.title, spec.msg);
+                  } else {
+                    addToast("error", "Re-index didn't run", `Re-index couldn't run (${code}).`);
+                  }
                   return null;
                 }
-                // Settings applied — clear the "reindex needed" warning.
-                setKnowledgeSavedSnapshot({ ...knowledgeConfig });
-                // /reindex_for_config returns {collections: [{result: {task_ids, count}}]};
-                // /reindex returns {task_ids, count} flat. Normalize.
+                // #3: do NOT advance the saved-config snapshot here. The POST
+                // only STARTS the reindex (returns task_ids in <100ms); workers
+                // run for 10-15s afterward and the strict deferred flip may
+                // REFUSE promotion on partial failure — in which case the OLD
+                // embedder stays active. Advancing the snapshot now would clear
+                // the "Re-index needed" banner permanently and present the new
+                // config as active even after a strict-refuse. The snapshot is
+                // advanced ONLY on full success, via onAutoReindexComplete
+                // (fired from the child poll when failed===0).
+                // /reindex_for_config returns {collections: [{result: {task_ids, count, tasks}}]};
+                // /reindex returns {task_ids, count, tasks} flat. Normalize.
+                // ``tasks`` is a new field (#402 production sweep) carrying
+                // [{task_id, filename}] so the FE can render the tile with
+                // real filenames from the first render — no ``task_xxx``
+                // flicker waiting for the first /tasks GET to complete.
                 if (Array.isArray(data?.collections)) {
                   const allTaskIds: string[] = data.collections
                     .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? []);
+                  const allTasks: { task_id: string; filename: string }[] = data.collections
+                    .flatMap((c: { result?: { tasks?: { task_id: string; filename: string }[] } }) => c?.result?.tasks ?? []);
                   const total = data.collections.reduce(
                     (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
                     0,
                   );
-                  return { count: total || allTaskIds.length, task_ids: allTaskIds };
+                  return {
+                    count: total || allTaskIds.length,
+                    task_ids: allTaskIds,
+                    tasks: allTasks,
+                  };
                 }
-                return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
+                return {
+                  count: data.count ?? 0,
+                  task_ids: data.task_ids ?? [],
+                  tasks: data.tasks ?? [],
+                };
               } else if (res.status === 409) {
                 addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");
+                setKnowledgeReindexing(false);
               } else {
                 addToast("error", "Re-index failed", `Error ${res.status}`);
+                setKnowledgeReindexing(false);
               }
             } catch {
               addToast("error", "Re-index failed", "Network error");
+              setKnowledgeReindexing(false);
             }
-            setKnowledgeReindexing(false);
             return null;
+          }}
+          onReindexFinished={() => {
+            // #398 follow-up v2: child panel reports its task polling
+            // reached terminal state (success OR partial failure — both
+            // signal "workers stopped, autosave PATCHes are safe again").
+            // Pair with the early-return in the autosave effect that
+            // checks ``knowledgeReindexing`` — the suppression window now
+            // covers the full ingest duration, not just the POST RTT.
+            setKnowledgeReindexing(false);
           }}
         />
       )}

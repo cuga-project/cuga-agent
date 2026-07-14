@@ -122,9 +122,11 @@ class SecurityValidator:
 
     @staticmethod
     def validate_syntax(code: str, *, filename: str = "<code>") -> None:
-        """Reject invalid Python before sandbox exec so the model can retry cleanly."""
-        if is_relaxed_execution():
-            return
+        """Reject invalid Python before sandbox exec so the model can retry cleanly.
+
+        Runs unconditionally, including under relaxed/skills/benchmark execution:
+        this checks whether `exec()` will even parse the code, not a security policy.
+        """
         try:
             compile(code, filename, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         except SyntaxError as exc:
@@ -141,10 +143,11 @@ class SecurityValidator:
             ImportError: If dangerous or disallowed imports are found
             CodeSyntaxError: If code is not valid Python (via validate_syntax)
         """
+        SecurityValidator.validate_syntax(code)
+
         if is_relaxed_execution():
             return
 
-        SecurityValidator.validate_syntax(code)
         tree = ast.parse(code)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
