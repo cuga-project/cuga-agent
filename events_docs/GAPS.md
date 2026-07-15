@@ -45,11 +45,13 @@ Fixed in the same pass, each of which silently corrupted behaviour:
 
 ## Known gaps (deferred, with the plan)
 
-- **NL→flow rigor** — there is now a **validation gate** (the registry checks the trigger exists and
-  its slots are filled *before* anything is built) and a **31-utterance labelled eval set** covering
-  every trigger (`test_classifier_eval_set_routes_every_trigger`). Still missing: a typed FlowSpec and
-  the eval running in CI against the *LLM* router (it currently gates the deterministic classifier).
-  Branching/ROUTER flows are designed, not built.
+- **NL→flow rigor** — largely closed: a typed **FlowSpec** (`events/flowspec.py`) with a
+  deterministic **pre-router** (a high-confidence utterance arms without the LLM; a missing
+  required slot becomes a question the next message answers — *ask-till-legit*), the registry
+  **validation gate** before anything is built, and a **47-case labelled benchmark** in CI gated
+  on zero-wrong-at-high (see [nl_to_flow.html](nl_to_flow.html) + TESTING.md). Still missing: the
+  same benchmark scored against the *LLM* seam (structured FlowSpec output) + a concierge model
+  bake-off. Branching/ROUTER flows are designed, not built.
 - **Webhook-OUT and email delivery sink** — remaining P3 sinks.
 - **Gmail's triggers cannot be fired by machine — by design.** They are POLLING triggers, and
   Activepieces will not run a polling trigger out of band. `POST /subscriptions/{id}/run` fires

@@ -164,6 +164,30 @@ SCENARIOS = {
         ("con", "you", "reply + (?flow=1) the built flow: trigger + steps", "dashed"),
     ]),
 
+# ── CREATE 3 — NL→Flow resolution (the pre-router in front of the LLM) ────────
+"create-3-nl-to-flow": dict(
+    title="CREATE ②a — NL→Flow: fill the blanks, or ask till legit",
+    subtitle="A deterministic FlowSpec resolver fronts the LLM. Both doors arm through the SAME "
+             "tool + registry gate — a sentence becomes the right flow or a question, never the wrong flow.",
+    actors=[act("you", "You", "you"), act("pre", "Pre-router\n(flowspec.py)", "cuga"),
+            act("llm", "Concierge LLM\n(ReAct)", "cuga"),
+            act("gate", "Registry gate\n(triggers.py)", "cuga"), act("ap", "Activepieces", "ap")],
+    messages=[
+        ("you", "pre", '"when a PR is opened, review it"', "solid"),
+        ("pre", "pre", "classify kind=PUSH · match trigger phrases · extract slots", "self"),
+        (*N, "HIGH confidence needs: a standing-flow marker + ONE distinct app + no foreign vocabulary", "note"),
+        ("pre", "gate", "validate(github, new_pr, {})", "solid"),
+        ("gate", "pre", "missing required slot: repo", "dashed"),
+        ("pre", "you", '"Which repository (owner/repo) should I watch?"  — spec PARKED on this thread', "dashed"),
+        ("you", "pre", '"acme/api"   (the next message fills the blank)', "solid"),
+        ("pre", "gate", "validate(github, new_pr, {repo: acme/api}) → armable", "solid"),
+        ("pre", "ap", "find_or_create_flow — the SAME tool the LLM calls (connect gate · dedup · build)", "solid"),
+        (*N, "AMBIGUOUS (several apps hit / no marker / NOW question) → falls to the LLM, which sees", "note"),
+        (*N, "the full trigger vocabulary and calls the same tool; the gate disposes of every proposal", "note"),
+        (*N, "a topic-change reply is never crammed into the slot — the parked spec is dropped", "note"),
+        (*N, "benchmarked: 47 labelled cases in CI, gated on ZERO wrong-at-high (test_flowspec_bench.py)", "note"),
+    ]),
+
 # ── FIRE 1 — NOW ──────────────────────────────────────────────────────────────
 "fire-1-now": dict(
     title="FIRE ① — NOW (no flow, no AP)",

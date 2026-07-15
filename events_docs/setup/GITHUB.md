@@ -48,8 +48,15 @@ exactly like an under-scoped token. `POST /api/events/connect/github/token` now 
 
 3. **Consent in the browser** — each user connects their own GitHub:
    open `<EVENTS_PUBLIC_URL>/api/events/connect/github` and approve. Requested scopes: `repo` +
-   `admin:repo_hook` (the second is what lets the PR trigger create the repo webhook).
+   `admin:repo_hook` (the second is what lets a trigger create the repo webhook).
    *(Or Studio → Integrations → GitHub → Connect — the button opens this same consent page.)*
+
+   **Those two scopes cover ALL 14 GitHub triggers** — `new_pr` · `new_issue` · `new_star` ·
+   `new_push` · `new_commit` · `new_release` · `new_branch` · `new_milestone` · `new_repo_label` ·
+   `new_collaborator` · `new_discussion` · `new_discussion_comment` · `new_review_request` ·
+   `new_gh_mention`. One repo webhook carries every subscribed event type (the piece disambiguates
+   on `X-GitHub-Event`), so there is nothing extra to grant per trigger. Every one is
+   machine-fireable end to end: `tests/events/live_github_triggers.py`.
 
 4. **Arm a watcher** — ask the concierge, **naming the repo**:
    *"watch the repo owner/name for new pull requests and summarize each one."* → it arms an AP push

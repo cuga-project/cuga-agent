@@ -869,16 +869,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     async def events_docs_page(page: str):
         """Serve the API reference pages so the Studio's API tab can embed them:
         ``api`` = human-readable, ``spec`` = full OpenAPI, ``examples`` = the examples board,
-        ``slides`` = the event-driven-agents deck (lives one level up, in events_docs/).
+        ``slides`` = the event-driven-agents deck, ``nlflow`` = the NL→Flow explainer (the last
+        two live one level up, in events_docs/).
         Guarded to those files; path resolved from the repo (override with EVENTS_DOCS_DIR)."""
         import pathlib
         fname = {"api": "api.html", "spec": "api_spec.html", "examples": "examples.html",
-                 "slides": "slides.html"}.get(page)
+                 "slides": "slides.html", "nlflow": "nl_to_flow.html"}.get(page)
         if not fname:
             return JSONResponse({"ok": False, "error": "unknown page"}, 404)
         base = pathlib.Path(os.environ.get("EVENTS_DOCS_DIR") or str(
             pathlib.Path(__file__).resolve().parents[4] / "events_docs" / "api"))
-        fp = (base.parent if page == "slides" else base) / fname
+        fp = (base.parent if page in ("slides", "nlflow") else base) / fname
         if not fp.is_file():
             return JSONResponse({"ok": False, "error": f"{fname} not found (set EVENTS_DOCS_DIR)"}, 404)
         return HTMLResponse(fp.read_text(encoding="utf-8"))
@@ -1243,16 +1244,24 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         tr("hook", name=name, agent=agent, routed=routed, deliver=deliver_to)
         body_txt = _json.dumps(payload, indent=2)[:4000] if payload else "(empty body)"
         if routed:
-            # Phrase it as a one-shot so the concierge answers NOW instead of arming a standing flow.
-            text = (f"An external system sent this event via webhook '{name}'. Route it to the most "
-                    f"relevant agent and handle it now — do NOT set up a recurring flow:\n\n{body_txt}")
+            # Phrase it as a one-shot AND force delegation: without the explicit "call an agent
+            # tool" instruction the concierge sometimes handles an interesting payload (a code
+            # diff) itself — then /invoke's meta carries no picked agent and the caller sees
+            # agent='concierge', which defeats the point of routed mode.
+            text = (f"An external system sent this event via webhook '{name}'. Route it: CALL the "
+                    f"one best-suited pre-built agent tool on this payload and return its answer — "
+                    f"do NOT answer it yourself and do NOT set up a recurring flow:\n\n{body_txt}")
         else:
             text = (f"An external system POSTed to webhook '{name}'. Triage this payload:\n\n{body_txt}")
         port = os.environ.get("EVENTS_CUGA_PORT", "8100")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         deliver = bool(deliver_to and target)
+        # ROUTED events are independent one-shots — give each a FRESH thread. On a shared
+        # `hook:{name}` thread the router's memory of past events biases it toward answering
+        # itself (it has seen the answer shape before), and the picked-agent meta degrades.
+        hook_thread = f"hook:{name}:{tr.id}" if routed else f"hook:{name}"
         src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{target}"}
-               if deliver else {"type": "integration", "name": "webhook", "thread_id": f"hook:{name}"})
+               if deliver else {"type": "integration", "name": "webhook", "thread_id": hook_thread})
         inv = {"agent": agent, "text": text, "deliver": deliver, "source": src,
                "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}}}
         try:

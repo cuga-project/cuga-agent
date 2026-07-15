@@ -7,6 +7,10 @@ arrive instantly, calls CUGA's `/invoke`, and sends the reply via the Telegram p
 Telegram DM ─▶ AP telegram webhook ─▶ /invoke (concierge) ─▶ AP telegram send ─▶ reply
 ```
 
+The bot token is the only credential — it covers chat **and** the one Telegram watcher trigger,
+`new_channel_message` (*"when someone sends the bot a link, summarize it"*, optional **pattern**
+slot). Nothing extra to grant per trigger.
+
 Telegram is the **most battle-tested** channel (first one wired live). Its send fields are verified
 against `telegram-bot@0.6.4` (`send_text_message`, `chat_id`, `message`).
 

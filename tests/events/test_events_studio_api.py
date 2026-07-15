@@ -469,7 +469,10 @@ def test_inbound_webhook_routed_uses_the_concierge():
         inv = posted[0]
         assert inv["agent"] == "concierge"                   # routed through the chat brain
         assert inv["deliver"] is True and inv["source"]["name"] == "slack"
-        assert "route it to the most relevant agent" in inv["text"].lower()
+        # the routed directive must FORCE delegation (self-answering leaves meta agent-less and
+        # the caller sees agent='concierge' — the live flake this wording fixed)
+        assert "call the one best-suited pre-built agent tool" in inv["text"].lower()
+        assert "do not answer it yourself" in inv["text"].lower()
         assert inv["event"]["payload"]["reason"] == "fraudulent"
     finally:
         _httpx.AsyncClient = _orig

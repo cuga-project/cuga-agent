@@ -96,7 +96,7 @@ make test-live     # 9. live smoke — 4 channels + 4 flow modes (green even bef
 ```
 
 10. **Then test exhaustively** — two complementary tools:
-    - **[checklist.html](checklist.html)** — an interactive, hand-off-ready **manual** checklist: 66 items
+    - **[checklist.html](checklist.html)** — an interactive, hand-off-ready **manual** checklist: 80+ items
       spanning every agent (web/Telegram/Discord/Slack chat, CRON/POLL/PUSH arming, Gmail/Box/GitHub,
       webhooks), each with a pass/fail/skip status saved in the browser and a *Copy report* button. An
       editable "environment" panel templates your URL/channel/repo into every command. Open it directly,

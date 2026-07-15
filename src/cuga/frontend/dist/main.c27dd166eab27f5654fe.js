@@ -15035,6 +15035,12 @@ function ApiTab() {
   }, {
     key: "examples",
     label: "Examples board"
+  }, {
+    key: "nlflow",
+    label: "NL→Flow"
+  }, {
+    key: "slides",
+    label: "Slides"
   }];
   const [page, setPage] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)("api");
   const url = `${base}/api/events/docs/${page}`;
@@ -19217,4 +19223,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.ea47d7bc716bd87ee680.js.map
+//# sourceMappingURL=main.c27dd166eab27f5654fe.js.map

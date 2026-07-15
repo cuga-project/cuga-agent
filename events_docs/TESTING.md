@@ -19,6 +19,23 @@ status codes + isolation, with AP faked), the Box download shaping, credential r
 - `test_examples_board_matches_the_catalog` — `examples.html` must match `events/catalog.py`.
 - `test_slides_deck_matches_the_registry` — `events_docs/slides.html` (the deck) must match
   `triggers.py` + `catalog.py` (`make slides` regenerates).
+
+### The NL→Flow benchmark — `test_flowspec_bench.py`
+
+47 hand-labelled cases (`utterance → expected FlowSpec`): a strict + a paraphrase case per push
+trigger, cron/poll/now negatives, and genuine-ambiguity cases. Scores the deterministic resolver
+(`events/flowspec.py`) that fronts the concierge. The gates, strongest first:
+
+- **Zero wrong-at-high** — a high-confidence resolution that disagrees with the label is a user
+  silently arming the WRONG watcher: zero tolerance. Falling back to the LLM path is always fine.
+- **Every push trigger has a proven happy path**, **asks fire when a required slot is missing**
+  (never a guess), **slot values extract verbatim**, and the bench must cover every registry row.
+- The scorecard prints on every run (`pytest -s`): currently **fast-path 35/37 push cases (94%),
+  correct-at-high 35/35**.
+
+The ask-till-legit loop (park a question → the next message fills the slot → armed; a topic-change
+reply is never crammed into the slot) is unit-tested in the same file and proven live in
+`results/` runs.
 - `test_integrations_auth_matches_the_oauth_provider_registry` — `connectors`, `oauth`, and
   `setup_guides` must agree on how each app connects.
 

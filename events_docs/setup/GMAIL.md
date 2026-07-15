@@ -2,12 +2,28 @@
 
 Gmail is an **integration**, so it runs on **Activepieces** — and it's the one where AP genuinely
 earns its keep: AP does the **OAuth consent + token refresh**, so you never touch a refresh token.
-Gmail is both a **PUSH source** (`new_email`) and an **email delivery sink** (`send_email`).
+Gmail is both a **PUSH source** and an **email delivery sink** (`send_email`).
 
 ```
 new email  ─▶ AP gmail trigger (OAuth) ─▶ /invoke (mailbot) ─▶ deliver
 brief/verdict ─▶ /invoke ─▶ AP gmail send_email ─▶ your inbox     (email as a sink)
 ```
+
+## Triggers & permissions
+
+**One connection covers all four triggers** — the connect flow requests the single scope
+`https://www.googleapis.com/auth/gmail.modify` (read + labels + send), so there is nothing extra to
+grant per trigger:
+
+| Trigger (what you say) | Watches |
+|---|---|
+| `new_email` — *"when a new email arrives, summarize it"* | the inbox |
+| `new_labeled_email` — *"when I label an email 'Read-later'…"* (needs the **label** name) | one label |
+| `new_attachment` — *"when an email arrives with a resume attached…"* | attachments |
+| `new_gmail_label` — *"when a new gmail label is created…"* | the label list |
+
+All four are **polling** triggers: Activepieces checks on its own schedule and cannot be fired by
+machine — arming is verifiable automatically; a real fire needs a real email (see TESTING.md).
 
 Seeded agents: **`mailbot`** (summarize/triage your Gmail) and **`resume_judge`** (Box → judge →
 email). Both are **per-user** — each employee logs into *their own* Gmail.

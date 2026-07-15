@@ -64,11 +64,15 @@ The server log shows `discord gateway READY as <bot>` on startup.
   `author.id` as `source.user`, so a user who `/link`s their Discord id gets per-user creds/permissions.
 - **Want the old polling behavior?** Set `EVENTS_DISCORD_BACKEND=ap` (watches one channel, ~5 min).
 
-## Discord WATCHERS — member joins (optional)
+## Discord WATCHERS — the two triggers (optional)
 
-Beyond the chat bot, CUGA can arm a **watcher** on new members — *"when a new member joins the server,
-greet them and point to the resources"*. It arms as a CUGA-owned direct subscription on the Gateway
-CUGA already holds (no Activepieces).
+Beyond the chat bot, CUGA can arm two **watchers**, both as CUGA-owned direct subscriptions on the
+Gateway CUGA already holds (no Activepieces):
+
+| Trigger (what you say) | Gateway event | Needs |
+|---|---|---|
+| `new_member` — *"when a new member joins the server, greet them"* | `GUILD_MEMBER_ADD` | **SERVER MEMBERS intent** (privileged — see below) |
+| `new_channel_message` — *"when someone posts in #help on discord…"* | `MESSAGE_CREATE` | MESSAGE CONTENT intent (you already enabled it for chat) |
 
 `GUILD_MEMBER_ADD` is a **privileged** Gateway intent, so it is **opt-in in two places** and requesting
 it unapproved **closes the entire gateway with error 4014** (your chat bot stops working too):

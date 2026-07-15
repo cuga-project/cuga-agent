@@ -74,7 +74,7 @@
     <div><b>7</b><span>integrations</span></div>
     <div><b>33</b><span>triggers</span></div>
     <div><b>4</b><span>channels</span></div>
-    <div><b>99</b><span>examples</span></div>
+    <div><b>101</b><span>examples</span></div>
   </div>
 </section>
 <section class="slide "><h2>Why — the human shouldn't be the trigger</h2>
@@ -254,7 +254,7 @@
 <section class="slide integration"><h2>github — 14 triggers</h2>
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
-  <tr><td class='k'><code>new_pr</code> ★</td><td>New Pull Request</td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_branch</code></td><td>New Branch<div class='ex'>“when a new branch is created, note it and check it against our naming convention”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_collaborator</code></td><td>New Collaborator<div class='ex'>“when a collaborator is added to the repo, log it and note their access level”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_commit</code></td><td>New Commit<div class='ex'>“when a commit lands on any branch, audit it for obvious bugs”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_discussion</code></td><td>New Discussion<div class='ex'>“when a new discussion opens, summarize it and surface related prior work”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_discussion_comment</code></td><td>New Comment Posted<div class='ex'>“when a comment is posted on an issue, flag if it names a blocker”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_gh_mention</code></td><td>New Mention<div class='ex'>“when my repo @mentions me anywhere, summarize the surrounding context”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_issue</code></td><td>New Issue<div class='ex'>“when a new issue is filed, triage its severity and suggest a label”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_milestone</code></td><td>New Milestone<div class='ex'>“when a milestone is created, draft a plan and a checklist for it”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_push</code></td><td>Push<div class='ex'>“when code is pushed to main, audit the diff for obvious risks”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_release</code></td><td>New Release<div class='ex'>“when a new release is published, summarize the changelog for the team”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_repo_label</code></td><td>New Label<div class='ex'>“when a new label is created in the repo, announce it to the team”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_review_request</code></td><td>New Review Request<div class='ex'>“when I&#x27;m requested to review a PR, summarize the diff and flag the risks”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_star</code></td><td>New Star<div class='ex'>“when my repo gets a new star, post a thank-you and who starred it”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr>
+  <tr><td class='k'><code>new_pr</code> ★</td><td>New Pull Request</td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_branch</code></td><td>New Branch<div class='ex'>“when a new branch is created on my repo, announce it and check the naming convention”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_collaborator</code></td><td>New Collaborator<div class='ex'>“when a collaborator is added to the repo, log it and note their access level”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_commit</code></td><td>New Commit<div class='ex'>“when a commit lands on any branch, audit it for obvious bugs”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_discussion</code></td><td>New Discussion<div class='ex'>“when a new discussion opens, summarize it and surface related prior work”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_discussion_comment</code></td><td>New Comment Posted<div class='ex'>“when a comment is posted on an issue, flag if it names a blocker”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_gh_mention</code></td><td>New Mention<div class='ex'>“when my repo @mentions me anywhere, summarize the surrounding context”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_issue</code></td><td>New Issue<div class='ex'>“when a new issue is filed, triage its severity and suggest a label”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_milestone</code></td><td>New Milestone<div class='ex'>“when a milestone is created, draft a plan and a checklist for it”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_push</code></td><td>Push<div class='ex'>“when code is pushed to main, audit the diff for obvious risks”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_release</code></td><td>New Release<div class='ex'>“when a new release is published, summarize the changelog for the team”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_repo_label</code></td><td>New Label<div class='ex'>“when a new label is created in the repo, announce it to the team”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_review_request</code></td><td>New Review Request<div class='ex'>“when I&#x27;m requested to review a PR, summarize the diff and flag the risks”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr><tr><td class='k'><code>new_star</code></td><td>New Star<div class='ex'>“when my repo gets a new star, post a thank-you and who starred it”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'>needs <code>repo</code></td></tr>
 </table></section>
 <section class="slide integration"><h2>gmail — 4 triggers</h2>
 <table class="tbl triggers">
@@ -294,6 +294,50 @@
        mode picks the agent by capability, like chat does.</p>
   </div>
 </div></section>
+<section class="slide "><h2>NL→Flow — engineered, not vibes</h2>
+<p><b>The contract: a sentence becomes exactly the right flow, or a question — never silently the
+wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
+<div class="cols">
+  <div class="col accent">
+    <h3>1 · A deterministic pre-router first</h3>
+    <p>Registry-generated phrases classify the trigger; slots (repo, label, folder…) are extracted
+       from the sentence. <b>HIGH confidence</b> demands a standing-flow marker, ONE distinct app,
+       and no foreign vocabulary — then it arms <em>without an LLM call</em>, instantly.</p>
+    <p><b>Ask-till-legit:</b> a missing required slot becomes ONE question; the next message fills
+       the blank (<span class="ex">“acme/api”</span> → armed). A topic-change reply is never
+       crammed into the slot.</p>
+  </div>
+  <div class="col">
+    <h3>2 · The LLM for genuine ambiguity</h3>
+    <p>Anything the pre-router won't claim goes to the concierge LLM, whose prompt carries the
+       registry's full trigger vocabulary. <b>Its proposal still passes the same validation gate</b>
+       — an unknown trigger or missing slot comes back as a question, never a broken flow.
+       Both doors arm through one code path: connect gate → dedup (DB unique index) → build.</p>
+  </div>
+</div>
+<p><b>Benchmarked in CI:</b> 47 hand-labelled cases (utterance → expected FlowSpec) —
+   fast-path 35/37 push cases (94%),
+   correct-at-high 35/35, gated on <b>zero wrong-at-high</b>. It caught two real
+   bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p></section>
+<section class="slide "><h2>The receipts — why you can trust this</h2>
+<ul class="tight">
+  <li><b>One registry, zero drift.</b> All 33 triggers live in one table; flows,
+      classifier, validation, docs, this deck and the tests <em>derive</em> from it — and five
+      golden gates fail the build if any generated page goes stale.</li>
+  <li><b>Live-fired, not just armed.</b> All 14 GitHub triggers arm as real AP flows with real repo
+      webhooks and fire with real agent answers (91s harness). A real human's 🐛 reaction in Slack
+      fired the incident agent end to end. The harnesses distinguish ARMED from FIRED — and say so.</li>
+  <li><b>We read the vendor's compiled source.</b> Two bugs in Activepieces' own GitHub piece
+      (sample data its own filters would discard) — found by reading the bundled JS, pinned by
+      tests so an upgrade can't silently regress us.</li>
+  <li><b>Security by construction.</b> OAuth tokens live only in AP's encrypted store; CUGA passes
+      connection <em>names</em>. OAuth state is HMAC-signed and expiring. Every CUGA-held secret
+      resolves through <code>vault:// aws:// db://</code> URIs.</li>
+  <li><b>Races are refereed by the database.</b> Flow identity is a canonical dedup key under a
+      unique index — two simultaneous asks produce one flow, deterministically.</li>
+  <li><b>Honest verdicts everywhere.</b> The test vocabulary separates PASS / XFAIL / ARMED /
+      NOFIRE / SKIP — a green that means “exists” is never sold as “works”.</li>
+</ul></section>
 <section class="slide "><h2>Credentials — the agent never holds a token</h2>
 <ul class="tight">
   <li><b>Activepieces is the vault</b>: OAuth tokens live encrypted in AP's own store; flows resolve
@@ -323,8 +367,10 @@
   <div class="col accent">
     <h3>Finish the MVP (P3, ~75%)</h3>
     <ul class="tight">
-      <li><b>NL→flow rigor</b> — a typed FlowSpec, a validation gate, a labelled benchmark scored
-          in CI, a concierge model bake-off. Make “English → the right flow” <em>measurable</em>.</li>
+      <li><b>NL→flow rigor</b> — shipped: a typed FlowSpec + deterministic pre-router (arm
+          without the LLM when unambiguous, <em>ask till legit</em> when a slot is missing) and a
+          47-case CI benchmark gated on zero-wrong-at-high. Next: the LLM seam scored the same
+          way + a concierge model bake-off.</li>
       <li><b>Webhook-OUT</b> — deliver an answer to any HTTP endpoint → flow-to-flow chaining.</li>
       <li><b>Email as a sink</b> — “…email me the brief”.</li>
     </ul>
@@ -343,7 +389,7 @@
 <p class="dim">Full sequenced list: events_docs/ROADMAP.md · phase definitions: PHASES.md</p></section>
 <section class="slide "><h2>Try it — the examples board</h2>
 <ul class="tight examples"><li>“POST any event to /api/events/hook/&lt;name&gt;?route=1 — CUGA routes it like a chat message”<span class='dim'> — (auto-routed)</span></li><li>“/automate summarize new emails and message me”<span class='dim'> — mailbot</span></li><li>“/automate when a resume lands in Box, judge it and message me”<span class='dim'> — resume_judge</span></li><li>“/automate new pull requests on psf/requests and summarize them”<span class='dim'> — pr_reviewer</span></li><li>“/automate the market brief every weekday at 8am”<span class='dim'> — market_briefer</span></li><li>“/automate check bitcoin every 5 minutes and ping me on a move”<span class='dim'> — pricebot</span></li></ul>
-<p class="dim">All 99 examples (with feasibility notes) live on the examples
+<p class="dim">All 101 examples (with feasibility notes) live on the examples
    board — <code>events_docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
    and that board are both generated from the code, so neither can drift.</p></section>
 <div id="bar"></div><div id="hud"></div>

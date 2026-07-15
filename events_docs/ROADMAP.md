@@ -7,11 +7,15 @@ the sequenced "what's next." We are in **P3 (Run) = MVP, ~75%**.
 
 1. **NL→flow rigor** *(the strategic priority)*. Make an English sentence → the right flow
    *measurable*, not just demoable:
-   - a typed **FlowSpec** intermediate the concierge emits;
-   - a **validation gate** that checks a FlowSpec before arming (right agent, right trigger, right sink);
-   - a **labeled benchmark** (utterance → expected FlowSpec) scored in CI;
-   - a **model bake-off** for the concierge (accuracy / latency / cost).
-   - Then **branching/ROUTER flows** (the builder is linear today).
+   - ✅ a typed **FlowSpec** (`events/flowspec.py`) + a deterministic **pre-router** in front of
+     the concierge: a high-confidence utterance arms without the LLM, a missing required slot
+     becomes a question, and the next message fills it (**ask-till-legit**); the registry
+     validation gate disposes of every proposal before anything is built;
+   - ✅ a **labeled benchmark** (47 cases, utterance → expected FlowSpec) scored in CI, gated on
+     **zero wrong-at-high** (TESTING.md);
+   - ⬜ the LLM seam scored the same way — structured FlowSpec output with the schema generated
+     from the registry — plus a **model bake-off** for the concierge (accuracy / latency / cost);
+   - ⬜ then **branching/ROUTER flows** (the builder is linear today).
 2. **Webhook — OUT** — deliver an answer to any HTTP endpoint (optional HMAC). Unlocks flow→flow
    chaining — a capability, not just another connector.
 3. **Email delivery sink** — "…email me the brief" delivers to an inbox, not a chat.

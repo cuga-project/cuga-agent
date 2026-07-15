@@ -4,6 +4,10 @@ Any external system (monitoring, CI, a form, a payment provider) can POST a JSON
 have an agent triage it — optionally delivering the result to a channel. It's a plain HTTP endpoint
 that reuses the `/invoke` seam; **no Activepieces**, no OAuth.
 
+In the trigger registry this is the `inbound` trigger — always live, **pinned** (`?agent=`) or
+**routed** (`?route=1`, the concierge picks the agent by capability). The only permission is the
+optional shared key (`EVENTS_WEBHOOK_KEY`; unset = open).
+
 ```
 external system ─▶ POST /api/events/hook/<name> ─▶ /invoke(agent) ─▶ (deliver to a channel)
                                                          │

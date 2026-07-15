@@ -980,6 +980,8 @@ function ApiTab() {
     { key: "api", label: "API guide" },
     { key: "spec", label: "OpenAPI spec" },
     { key: "examples", label: "Examples board" },
+    { key: "nlflow", label: "NL→Flow" },
+    { key: "slides", label: "Slides" },
   ];
   const [page, setPage] = useState("api");
   const url = `${base}/api/events/docs/${page}`;

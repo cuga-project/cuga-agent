@@ -38,6 +38,21 @@ def _sources():
     return triggers, catalog
 
 
+def _bench_stats():
+    """The NL→Flow benchmark scorecard, computed from the REAL bench — the deck can't overstate."""
+    sys.path.insert(0, str(ROOT / "tests" / "events"))
+    from src.cuga.backend.events import flowspec  # noqa: E402
+    from test_flowspec_bench import BENCH  # noqa: E402
+    push = [(u, w) for u, w in BENCH if w["kind"] == "push" and w["source"]]
+    high = right = 0
+    for u, w in push:
+        s = flowspec.resolve(u)
+        if s.confidence == "high":
+            high += 1
+            right += (s.source, s.event) == (w["source"], w["event"])
+    return {"cases": len(BENCH), "push": len(push), "high": high, "right": right}
+
+
 def _esc(s) -> str:
     return html.escape(str(s or ""))
 
@@ -251,6 +266,55 @@ def build() -> str:
   </div>
 </div>"""))
 
+    # NL→Flow — how it's engineered
+    b = _bench_stats()
+    slides.append(_slide("NL→Flow — engineered, not vibes", f"""
+<p><b>The contract: a sentence becomes exactly the right flow, or a question — never silently the
+wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
+<div class="cols">
+  <div class="col accent">
+    <h3>1 · A deterministic pre-router first</h3>
+    <p>Registry-generated phrases classify the trigger; slots (repo, label, folder…) are extracted
+       from the sentence. <b>HIGH confidence</b> demands a standing-flow marker, ONE distinct app,
+       and no foreign vocabulary — then it arms <em>without an LLM call</em>, instantly.</p>
+    <p><b>Ask-till-legit:</b> a missing required slot becomes ONE question; the next message fills
+       the blank (<span class="ex">“acme/api”</span> → armed). A topic-change reply is never
+       crammed into the slot.</p>
+  </div>
+  <div class="col">
+    <h3>2 · The LLM for genuine ambiguity</h3>
+    <p>Anything the pre-router won't claim goes to the concierge LLM, whose prompt carries the
+       registry's full trigger vocabulary. <b>Its proposal still passes the same validation gate</b>
+       — an unknown trigger or missing slot comes back as a question, never a broken flow.
+       Both doors arm through one code path: connect gate → dedup (DB unique index) → build.</p>
+  </div>
+</div>
+<p><b>Benchmarked in CI:</b> {b['cases']} hand-labelled cases (utterance → expected FlowSpec) —
+   fast-path {b['high']}/{b['push']} push cases ({100 * b['high'] // max(b['push'], 1)}%),
+   correct-at-high {b['right']}/{b['high']}, gated on <b>zero wrong-at-high</b>. It caught two real
+   bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p>"""))
+
+    # the receipts — concrete, verifiable engineering wins
+    slides.append(_slide("The receipts — why you can trust this", f"""
+<ul class="tight">
+  <li><b>One registry, zero drift.</b> All {len(rows)} triggers live in one table; flows,
+      classifier, validation, docs, this deck and the tests <em>derive</em> from it — and five
+      golden gates fail the build if any generated page goes stale.</li>
+  <li><b>Live-fired, not just armed.</b> All 14 GitHub triggers arm as real AP flows with real repo
+      webhooks and fire with real agent answers (91s harness). A real human's 🐛 reaction in Slack
+      fired the incident agent end to end. The harnesses distinguish ARMED from FIRED — and say so.</li>
+  <li><b>We read the vendor's compiled source.</b> Two bugs in Activepieces' own GitHub piece
+      (sample data its own filters would discard) — found by reading the bundled JS, pinned by
+      tests so an upgrade can't silently regress us.</li>
+  <li><b>Security by construction.</b> OAuth tokens live only in AP's encrypted store; CUGA passes
+      connection <em>names</em>. OAuth state is HMAC-signed and expiring. Every CUGA-held secret
+      resolves through <code>vault:// aws:// db://</code> URIs.</li>
+  <li><b>Races are refereed by the database.</b> Flow identity is a canonical dedup key under a
+      unique index — two simultaneous asks produce one flow, deterministically.</li>
+  <li><b>Honest verdicts everywhere.</b> The test vocabulary separates PASS / XFAIL / ARMED /
+      NOFIRE / SKIP — a green that means “exists” is never sold as “works”.</li>
+</ul>"""))
+
     # credentials
     slides.append(_slide("Credentials — the agent never holds a token", """
 <ul class="tight">
@@ -285,8 +349,10 @@ def build() -> str:
   <div class="col accent">
     <h3>Finish the MVP (P3, ~75%)</h3>
     <ul class="tight">
-      <li><b>NL→flow rigor</b> — a typed FlowSpec, a validation gate, a labelled benchmark scored
-          in CI, a concierge model bake-off. Make “English → the right flow” <em>measurable</em>.</li>
+      <li><b>NL→flow rigor</b> — shipped: a typed FlowSpec + deterministic pre-router (arm
+          without the LLM when unambiguous, <em>ask till legit</em> when a slot is missing) and a
+          47-case CI benchmark gated on zero-wrong-at-high. Next: the LLM seam scored the same
+          way + a concierge model bake-off.</li>
       <li><b>Webhook-OUT</b> — deliver an answer to any HTTP endpoint → flow-to-flow chaining.</li>
       <li><b>Email as a sink</b> — “…email me the brief”.</li>
     </ul>

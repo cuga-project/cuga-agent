@@ -8,6 +8,12 @@ arms when you say *"when a resume lands in my Box…"* (`create_push_flow`).
 new file in Box ─▶ AP new_file trigger (OAuth) ─▶ /invoke (resume_judge) ─▶ deliver
 ```
 
+**One credential covers all three Box triggers** — nothing extra to grant per trigger:
+`new_file` (*"when a resume lands in my Box folder…"*), `new_folder` (*"when a new folder
+appears…"*), `new_box_comment` (*"when someone comments on a box file…"*). The optional **folder**
+slot narrows a watcher to one folder id. On the direct backend the dev token expires **~60 min**
+after generation — `make doctor` checks its liveness (the Studio's "connected" only checks presence).
+
 > **Opt-in direct poll** (`EVENTS_BOX_BACKEND=direct` + `BOX_DEV_TOKEN`): CUGA lists the folder via
 > `POST /api/events/box/poll` — no OAuth app, but you drive/schedule the poll yourself. Handy for a
 > quick, AP-free test; see the bottom of this guide. (We keep both, symmetric with Slack's parked AP

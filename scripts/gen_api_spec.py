@@ -622,11 +622,12 @@ ENDPOINTS = [
     E("GET", "/api/events/docs/{page}", "studio",
       "Serve an API reference page so the Studio's API tab can embed it.",
       tier="ui", callers=["studio"],
-      path_params=[("page", "api | spec | examples | slides", "spec")],
+      path_params=[("page", "api | spec | examples | slides | nlflow", "spec")],
       responses=[(200, "&lt;html&gt;…&lt;/html&gt;",
                   "The requested page: <code>api</code>=api.html, <code>spec</code>=api_spec.html, "
                   "<code>examples</code>=examples.html, <code>slides</code>=the event-driven-agents "
-                  "deck (from <code>events_docs/</code>, one level up). Files resolve from "
+                  "deck, <code>nlflow</code>=the NL→Flow explainer (the last two from "
+                  "<code>events_docs/</code>, one level up). Files resolve from "
                   "<code>events_docs/api/</code> (override with <code>EVENTS_DOCS_DIR</code>)."),
                  (404, {"ok": False, "error": "unknown page"},
                   "Only those page names are served."),

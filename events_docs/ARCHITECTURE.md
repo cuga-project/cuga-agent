@@ -52,7 +52,7 @@ Two other facts that trip everyone up:
 | Component | Role |
 |---|---|
 | **`/invoke`** | the seam. Envelope in → agent runs → answer out. `X-Gateway-Token` auth. `meta.mcp` = the tools that actually ran. |
-| **Concierge** | the NL→flow router (`POST /api/concierge`). Classifies an utterance, picks a pre-built agent, **validates the trigger against the registry**, reuses-or-creates the flow. It **never creates agents** — it routes among the fleet. |
+| **Concierge** | the NL→flow router (`POST /api/concierge`). A deterministic **pre-router** (`events/flowspec.py`) tries first: a high-confidence utterance arms without the LLM, a missing required slot becomes a question the next message answers (*ask-till-legit*); anything ambiguous falls to the LLM. Both doors **validate the trigger against the registry** and reuse-or-create through the same tool. It **never creates agents** — it routes among the fleet. Full walkthrough: [nl_to_flow.html](nl_to_flow.html). |
 | **Trigger registry** | **`events/triggers.py` — one row per `(app, event)`**: its AP piece trigger *or* direct transport kind, the payload map, required slots, classifier phrases, a synthetic fire payload, and the provider's delivery header. The single source of truth (below). |
 | **Worker fleet** | 27 pre-built agents (`seed.py`), each = prompt + MCP tools + access rules + the **integration triggers it handles**. On the `cuga` backend, each materialises its own `DynamicAgentGraph`. |
 | **MCP tool servers** | the agents' hands: `cuga-finance · geo · web · knowledge · code · text`. Attached per agent by name (see [MCP notes](#mcp-tools)). |
@@ -136,6 +136,12 @@ Grouped by the two pieces. Credentials (🔑) are called out in every one.
 **② Arm a flow** — the concierge turns a sentence into a flow and bakes in the *connection reference*.
 
 ![arm](architecture/create-2-arm-flow.png)
+
+**②a NL→Flow resolution** — how the sentence itself is decided: the deterministic pre-router
+(fast path · ask-till-legit) in front of the LLM, with the registry gate disposing of every
+proposal. Prose walkthrough: [nl_to_flow.html](nl_to_flow.html).
+
+![nl-to-flow](architecture/create-3-nl-to-flow.png)
 
 ### FIRE — run-time
 

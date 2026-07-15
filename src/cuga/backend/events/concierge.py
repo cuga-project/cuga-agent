@@ -608,6 +608,12 @@ class Concierge:
         parsed = _slash_parse(text)
         if parsed is not None:
             return await self._arm_slash(thread_id, p, parsed)
+        # NL pre-router: fill-the-blanks / ask-till-legit. Arms ONLY a HIGH-confidence, registry-
+        # validated PUSH spec (or asks its one missing question). Anything less confident falls
+        # through to the LLM path below, exactly as before — the pre-router never guesses.
+        pre = await self._pre_route(thread_id, p, text)
+        if pre is not None:
+            return pre
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:
@@ -618,6 +624,61 @@ class Concierge:
             _origin.reset(t_origin)
             _principal.reset(t_princ)
         return res["messages"][-1].content or ""
+
+    async def _pre_route(self, thread_id: str, p, text: str) -> str | None:
+        """The deterministic NL→Flow path. None = not ours, run the LLM (today's behavior).
+
+        Two jobs:
+          1. **Ask-till-legit** — if this thread has a parked question, try the reply as its
+             answer; a reply that isn't one drops the parked spec and routes normally.
+          2. **Fast path** — a HIGH-confidence resolved PUSH spec arms deterministically (same
+             tool, same gates as the LLM path) or returns its ONE missing-slot question.
+        """
+        from . import flowspec
+        tkey = p.thread(thread_id)
+        parked = flowspec.pending_for(tkey)
+        if parked is not None:
+            spec0, utter0 = parked
+            filled = flowspec.fill(spec0, text)
+            if filled is not None:
+                if filled.ask:                       # still one short (multi-slot triggers)
+                    flowspec.park(tkey, filled, utter0)
+                    return filled.ask
+                return await self._arm_spec(thread_id, p, filled, utter0)
+            # not an answer → fall through and let the LLM handle the new message
+        spec = flowspec.resolve(text)
+        if spec.kind != "push" or spec.confidence != "high":
+            return None
+        # fast-path only the sources proven through find_or_create_flow; webhook arms via
+        # /api/events/hook and telegram is a channel first — the LLM path handles both as before
+        if spec.source in ("webhook", "telegram"):
+            return None
+        if spec.ask:
+            flowspec.park(tkey, spec, text)
+            return spec.ask
+        return await self._arm_spec(thread_id, p, spec, text)
+
+    async def _arm_spec(self, thread_id: str, p, spec, utterance: str) -> str | None:
+        """Arm a resolved FlowSpec through the SAME find_or_create_flow tool the LLM calls — one
+        arming path, two front doors. None (→ LLM path) if no agent handles the trigger or the
+        tool isn't available; the pre-router must never produce a worse answer than the LLM."""
+        agents = [a for a in self._runtime.list_agents(scope=p.agent_scope) if a.name != "concierge"]
+        agent = _resolve_agent(agents, "push", spec.source, utterance, event=spec.event)
+        tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
+        if agent is None or tool is None:
+            return None
+        args = {"agent": agent, "kind": "push", "prompt": utterance,
+                "source": spec.source, "event": spec.event,
+                **{k: v for k, v in spec.config.items() if k != "channel"},
+                **({"watch_channel": spec.config["channel"]} if "channel" in spec.config else {})}
+        t_origin = _origin.set(thread_id)
+        t_princ = _principal.set(p)
+        try:
+            reply = await tool.ainvoke(args)
+        finally:
+            _origin.reset(t_origin)
+            _principal.reset(t_princ)
+        return reply
 
     async def _arm_slash(self, thread_id: str, p, parsed: dict) -> str:
         """Arm a slash flow. The MODE is always deterministic (the router). The AGENT is resolved by

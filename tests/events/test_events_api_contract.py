@@ -830,6 +830,23 @@ def test_slides_deck_matches_the_registry():
     assert p.returncode == 0, (p.stdout + p.stderr)
 
 
+def test_every_trigger_appears_in_its_setup_guide():
+    """Every registry trigger must be named (as `event`) in its app's events_docs/setup/<APP>.md —
+    the setup guides are where a tester learns which scope/intent/subscription each trigger needs
+    (Slack scopes, Discord privileged intents, the one-credential-covers-all note for gmail/github/
+    box). A trigger added without its permissions documented is a support ticket waiting."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "events_docs" / "setup"
+    from events import triggers as tr
+    missing = []
+    for t in tr.rows():
+        doc = root / f"{t.app.upper()}.md"
+        if not doc.exists() or f"`{t.event}`" not in doc.read_text():
+            missing.append(f"{t.app}/{t.event} → setup/{doc.name}")
+    assert not missing, "triggers not documented in their setup guide:\n  " + "\n  ".join(missing)
+
+
 def test_every_route_appears_in_the_api_reference():
     """`events_docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
     outside this repo can discover. Matching is on the path with `{param}`/`<param>` normalised away,

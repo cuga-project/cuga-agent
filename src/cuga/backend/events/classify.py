@@ -69,12 +69,24 @@ def source_of(text: str) -> tuple[str, str] | None:
     DISCORD" matched slack's channel-message phrase and discord's by one character. So when the
     utterance NAMES a platform explicitly, a trigger of that platform wins over any other app's
     match — an unambiguous signal beats a longer regex."""
+    ranked = source_candidates(text)
+    return ranked[0] if ranked else None
+
+
+def source_candidates(text: str) -> list[tuple[str, str]]:
+    """ALL (app, event) candidates for a PUSH utterance, best first, deduped.
+
+    ``source_of`` is this list's head. The full list is what the FlowSpec resolver needs: ONE
+    distinct app among the hits means the trigger is unambiguous (armable without an LLM); several
+    apps mean a genuine ambiguity the resolver must not guess through."""
     t = text or ""
     hits = [se for rx, se in _SOURCES if rx.search(t)]
-    if not hits:
-        return None
     named = [se for se in hits if re.search(rf"\b{re.escape(se[0])}\b", t, re.I)]
-    return (named or hits)[0]
+    out: list[tuple[str, str]] = []
+    for se in (named + hits):
+        if se not in out:
+            out.append(se)
+    return out
 
 
 def cadence_of(text: str) -> dict:
