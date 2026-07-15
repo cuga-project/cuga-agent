@@ -467,3 +467,124 @@ async def test_reasoning_mentioning_other_special_tokens_is_still_surfaced(mock_
 
     assert result.goto == END
     assert result.update["final_answer"] == reasoning
+
+
+# ── 9. Mode-aware finalize disposition (#445: deferral + ask_user) ────────
+
+
+def _mock_settings_disposition(
+    *,
+    force_autonomous_mode=False,
+    cuga_lite_nl_auto_continue=True,
+    policy_enabled=False,
+):
+    adv = SimpleNamespace(
+        cuga_lite_max_steps=50,
+        force_autonomous_mode=force_autonomous_mode,
+        cuga_lite_nl_auto_continue=cuga_lite_nl_auto_continue,
+    )
+    policy = SimpleNamespace(enabled=policy_enabled)
+    return SimpleNamespace(advanced_features=adv, policy=policy)
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_autonomous_deferral_continues(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_clarifying_question_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Which account" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_deferral_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Would you like" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_give_up_finalizes_without_bounce(mock_summarize):
+    """Pattern B deferred — ungrounded give-ups end the turn (no soft bounce)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model(
+        "We have exhausted all discovered tools and none provide game-level event data. "
+        "The number cannot be determined from this API."
+    )
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_greeting_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("Hello!")
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "Hello!"
