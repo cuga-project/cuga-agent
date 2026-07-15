@@ -29,3 +29,4 @@ __pycache__/
 # Startup-profiling outputs (issue #486)
 startup/results/*.json
 !startup/results/.gitkeep
+startup/findings.md
