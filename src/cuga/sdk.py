@@ -82,13 +82,13 @@ from cuga.config import settings
 if TYPE_CHECKING:
     pass
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
     DirectLangChainToolsProvider,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     configure_toolguard_provider,
     ensure_toolguard_provider,
@@ -96,14 +96,6 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     unwrap_tool_provider,
 )
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
-    FinalAnswerAppworldOutput,
-    appworld_plain_post_llm_runnable,
-    load_appworld_final_answer_prompt,
-    load_appworld_plain_final_answer_prompt,
-    parse_appworld_plain_completion,
-)
-from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -119,8 +111,7 @@ from cuga.backend.cuga_graph.policy.models import (
     IntentGuardResponse,
     AlwaysTrigger,
 )
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
-from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+from langchain_core.messages import HumanMessage, BaseMessage
 
 _llm_manager_instance = None
 
@@ -2577,6 +2568,17 @@ class CugaAgent:
         _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
         if settings.advanced_features.benchmark == "appworld":
+            from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
+                FinalAnswerAppworldOutput,
+                appworld_plain_post_llm_runnable,
+                load_appworld_final_answer_prompt,
+                load_appworld_plain_final_answer_prompt,
+                parse_appworld_plain_completion,
+            )
+            from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
+            from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+            from langchain_core.messages import AIMessage
+
             llm_model = _get_llm_manager().get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
             if appworld_plain:
