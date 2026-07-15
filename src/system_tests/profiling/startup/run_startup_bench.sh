@@ -54,14 +54,24 @@ SERVER_RUNS=()
 for ((i = 1; i <= RUNS; i++)); do
     echo "" >&2
     echo "--- Run ${i}/${RUNS}: SDK startup ---" >&2
-    sdk_json=$(uv run python measure_sdk_startup.py 2>/dev/null | tail -n 1)
+    # Capture only stdout; stderr flows through to the terminal so failures are visible.
+    sdk_json=$(uv run python measure_sdk_startup.py | tail -n 1)
     echo "  SDK result: ${sdk_json}" >&2
+    if [[ -z "${sdk_json}" ]]; then
+        echo "Warning: SDK run ${i} produced no output — skipping" >&2
+        continue
+    fi
     SDK_RUNS+=("${sdk_json}")
 
     echo "" >&2
     echo "--- Run ${i}/${RUNS}: Server startup ---" >&2
-    server_json=$(uv run python measure_server_startup.py 2>/dev/null | tail -n 1)
+    # Capture only stdout; stderr flows through to the terminal so failures are visible.
+    server_json=$(uv run python measure_server_startup.py | tail -n 1)
     echo "  Server result: ${server_json}" >&2
+    if [[ -z "${server_json}" ]]; then
+        echo "Warning: Server run ${i} produced no output — skipping" >&2
+        continue
+    fi
     SERVER_RUNS+=("${server_json}")
 done
 

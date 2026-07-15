@@ -125,7 +125,8 @@ def main() -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     output = {
         "timestamp": timestamp,
-        "runs": len(sdk_runs),
+        "sdk_runs": len(sdk_runs),
+        "server_runs": len(server_runs),
         "sdk": sdk_stats,
         "server": server_stats,
         "raw": {
