@@ -423,86 +423,87 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to load policies: {e}")
 
-    # Initialize policy system (only if enabled)
-    if settings.policy.enabled:
-        try:
-            from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-            from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-            from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
+    async def _init_policy() -> None:
+        # Initialize policy system (only if enabled)
+        if settings.policy.enabled:
+            try:
+                from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+                from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
+                from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
 
-            app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
-            app_state.policy_system = PolicyConfigurable.get_instance()
-            await app_state.policy_system.initialize()
-            logger.info("✅ Policy system initialized")
+                app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
+                app_state.policy_system = PolicyConfigurable.get_instance()
+                await app_state.policy_system.initialize()
+                logger.info("✅ Policy system initialized")
 
-            # Get .cuga folder path from environment or settings
-            cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+                # Get .cuga folder path from environment or settings
+                cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
 
-            # Check if filesystem sync is enabled (can be disabled globally in settings)
-            filesystem_sync_enabled = settings.policy.filesystem_sync
-            auto_load_enabled = settings.policy.auto_load_policies
+                # Check if filesystem sync is enabled (can be disabled globally in settings)
+                filesystem_sync_enabled = settings.policy.filesystem_sync
+                auto_load_enabled = settings.policy.auto_load_policies
 
-            if not filesystem_sync_enabled:
-                logger.info("Filesystem sync disabled in settings")
-                app_state.policy_filesystem_sync = None
-            elif not auto_load_enabled:
-                logger.info("Auto-load policies disabled in settings")
-                # Initialize sync but don't load
-                app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-            # Load policies from filesystem if folder exists and auto-load is enabled
-            elif os.path.exists(cuga_folder):
-                logger.info(f"Loading policies from {cuga_folder}...")
-                try:
-                    result = await load_policies_from_folder(
-                        folder_path=cuga_folder,
-                        storage=app_state.policy_system.storage,
-                        clear_existing=False,
-                    )
-                    await app_state.policy_system.initialize()  # Reinitialize after loading
-                    logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                    # Initialize filesystem sync for automatic saving
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                    # Validate and sync: ensure filesystem and storage are in sync
-                    try:
-                        sync_result = await validate_and_sync_policies(
-                            app_state.policy_system.storage, app_state.policy_filesystem_sync
-                        )
-                        if sync_result['removed'] or sync_result['added_to_filesystem']:
-                            logger.info(
-                                f"📊 Sync validation: "
-                                f"removed from storage={sync_result['removed']}, "
-                                f"added to filesystem={sync_result['added_to_filesystem']}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to validate and sync policies: {e}")
-                except Exception as e:
-                    logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                if not filesystem_sync_enabled:
+                    logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-            else:
-                logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                elif not auto_load_enabled:
+                    logger.info("Auto-load policies disabled in settings")
+                    # Initialize sync but don't load
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
+                # Load policies from filesystem if folder exists and auto-load is enabled
+                elif os.path.exists(cuga_folder):
+                    logger.info(f"Loading policies from {cuga_folder}...")
+                    try:
+                        result = await load_policies_from_folder(
+                            folder_path=cuga_folder,
+                            storage=app_state.policy_system.storage,
+                            clear_existing=False,
+                        )
+                        await app_state.policy_system.initialize()  # Reinitialize after loading
+                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                        # Initialize filesystem sync for automatic saving
+                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                        # Validate and sync: ensure filesystem and storage are in sync
+                        try:
+                            sync_result = await validate_and_sync_policies(
+                                app_state.policy_system.storage, app_state.policy_filesystem_sync
+                            )
+                            if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                logger.info(
+                                    f"📊 Sync validation: "
+                                    f"removed from storage={sync_result['removed']}, "
+                                    f"added to filesystem={sync_result['added_to_filesystem']}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to validate and sync policies: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                        app_state.policy_filesystem_sync = None
+                else:
+                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                    app_state.policy_filesystem_sync = None
+
+                app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
+
+            except Exception as e:
+                logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.policy_system = None
                 app_state.policy_filesystem_sync = None
-
-            app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.set_subsystem_status(
+                    "policy",
+                    "failed",
+                    "Policy subsystem failed to initialize",
+                    {"error": str(e)},
+                )
+        else:
+            logger.info("Policy system disabled in settings")
             app_state.policy_system = None
             app_state.policy_filesystem_sync = None
-            app_state.set_subsystem_status(
-                "policy",
-                "failed",
-                "Policy subsystem failed to initialize",
-                {"error": str(e)},
-            )
-    else:
-        logger.info("Policy system disabled in settings")
-        app_state.policy_system = None
-        app_state.policy_filesystem_sync = None
-        app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
+            app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
 
     # -------------------------------------------------------------------
     # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
@@ -619,12 +620,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         kb_config = KnowledgeConfig()
 
-    if kb_config.enabled:
-        await initialize_knowledge_engine(app_state, kb_config)
-    else:
-        app_state.knowledge_engine = None
-        logger.info("Knowledge features disabled (knowledge.enabled=false)")
-        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+    async def _init_knowledge() -> None:
+        if kb_config.enabled:
+            await initialize_knowledge_engine(app_state, kb_config)
+        else:
+            app_state.knowledge_engine = None
+            logger.info("Knowledge features disabled (knowledge.enabled=false)")
+            app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+
+    await asyncio.gather(_init_policy(), _init_knowledge())
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
