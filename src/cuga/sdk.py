@@ -82,7 +82,6 @@ from cuga.config import settings
 if TYPE_CHECKING:
     pass
 
-from cuga.backend.llm.models import LLMManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
@@ -123,7 +122,21 @@ from cuga.backend.cuga_graph.policy.models import (
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
-llm_manager = LLMManager()
+_llm_manager_instance = None
+
+
+def _get_llm_manager():
+    global _llm_manager_instance
+    if _llm_manager_instance is None:
+        from cuga.backend.llm.models import LLMManager
+        _llm_manager_instance = LLMManager()
+    return _llm_manager_instance
+
+
+def __getattr__(name: str):
+    if name == "llm_manager":
+        return _get_llm_manager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class InvokeResult(BaseModel):
@@ -1814,6 +1827,7 @@ class CugaAgent:
         if not self._model:
             from cuga.config import settings
 
+            from cuga.backend.llm.models import LLMManager
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
             logger.info(f"Using default model: {self._model.__class__.__name__}")
@@ -2563,7 +2577,7 @@ class CugaAgent:
         _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
         if settings.advanced_features.benchmark == "appworld":
-            llm_model = llm_manager.get_model(settings.agent.final_answer.model)
+            llm_model = _get_llm_manager().get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
             if appworld_plain:
                 pmt = load_appworld_plain_final_answer_prompt(model_config=settings.agent.final_answer.model)
@@ -2925,6 +2939,7 @@ class CugaSupervisor:
         if not self._model:
             from cuga.config import settings
 
+            from cuga.backend.llm.models import LLMManager
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
             logger.info(f"Using default model: {self._model.__class__.__name__}")
