@@ -244,7 +244,8 @@ Results are written to `results/startup-<YYYY-MM-DDTHH-MM-SSZ>.json` and are
 ```jsonc
 {
   "timestamp": "2026-07-14T12-00-00Z",
-  "runs": 3,
+  "sdk_runs": 3,
+  "server_runs": 3,
   "sdk": {
     "import_s":    {"median": 1.05, "min": 1.00, "max": 1.12},
     "construct_s": {"median": 0.04, "min": 0.04, "max": 0.05},
