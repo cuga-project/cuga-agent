@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import time
 
 import httpx
@@ -72,6 +73,100 @@ def should_process(event: dict) -> bool:
     return True
 
 
+def chat_mode() -> str:
+    """EVENTS_SLACK_CHAT: 'all' (default — every channel message reaches the concierge) or
+    'mention' (a channel message reaches CHAT only when it @mentions the bot; DMs always do)."""
+    return (os.environ.get("EVENTS_SLACK_CHAT", "all").split(" #", 1)[0].strip().lower()) or "all"
+
+
+_BOT_UID = {"id": ""}
+
+
+async def bot_user_id() -> str:
+    """The bot's own user id, for `<@U…>` mention detection. SLACK_BOT_USER_ID in .env wins;
+    otherwise resolved once via auth.test and cached for the process (it never changes)."""
+    env = (os.environ.get("SLACK_BOT_USER_ID", "") or "").split(" #", 1)[0].strip()
+    if env:
+        return env
+    if _BOT_UID["id"]:
+        return _BOT_UID["id"]
+    tok = bot_token()
+    if not tok:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post("https://slack.com/api/auth.test",
+                             headers={"Authorization": f"Bearer {tok}"})
+            _BOT_UID["id"] = (r.json() or {}).get("user_id", "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    return _BOT_UID["id"]
+
+
+async def mention_gate(event: dict) -> tuple[bool, str]:
+    """(reaches CHAT?, text with the bot's mention stripped).
+
+    'mention' mode: a CHANNEL message reaches the concierge only when it @mentions the bot; a DM
+    is inherently addressed to the bot and always passes. This gates CHAT only — channel-message
+    WATCHERS must still see the gated traffic (the caller dispatches them separately), else arming
+    'watch #incidents' and enabling mention mode would silently kill the watcher."""
+    text = event.get("text") or ""
+    if chat_mode() != "mention" or event.get("channel_type") == "im":
+        return True, text                     # a Slack `im` is strictly 1:1 with the bot
+    uid = await bot_user_id()
+    tok = f"<@{uid}>"
+    if uid and tok in text:
+        return True, text.replace(tok, " ").strip()
+    # a reply in a thread the BOT rooted (e.g. it posted a trigger's answer and a human answers
+    # back) is addressed to the bot even without a mention — Telegram's privacy mode delivers
+    # replies-to-bot for the same reason. `parent_user_id` is the thread root's author.
+    if uid and event.get("thread_ts") and event.get("parent_user_id") == uid:
+        return True, text
+    # a follow-up in a thread the bot has ANSWERED IN ("@bot weather in NY?" → answer →
+    # "what about NYC?") — the mention rooted the thread at the USER's message, so
+    # parent_user_id is the user; what makes it a conversation is that the bot replied.
+    # send_message records those threads; the API fallback survives a reload.
+    if uid and event.get("thread_ts") and await _bot_in_thread(
+            str(event.get("channel") or ""), str(event.get("thread_ts")), uid):
+        return True, text
+    return False, text
+
+
+# threads the bot has replied in — (channel, thread_ts) → expiry. In-process cache in front of a
+# conversations.replies fallback, so follow-ups keep working across a `make reload`.
+_THREADS: dict = {}
+_THREAD_TTL_SECS = 24 * 3600
+
+
+def remember_thread(channel: str, thread_ts: str) -> None:
+    if len(_THREADS) > 4000:                              # bounded: drop expired, then oldest
+        now = time.time()
+        for k in [k for k, exp in _THREADS.items() if exp < now][:2000] or list(_THREADS)[:2000]:
+            _THREADS.pop(k, None)
+    _THREADS[(channel, thread_ts)] = time.time() + _THREAD_TTL_SECS
+
+
+async def _bot_in_thread(channel: str, thread_ts: str, uid: str) -> bool:
+    exp = _THREADS.get((channel, thread_ts))
+    if exp and exp > time.time():
+        return True
+    tok = bot_token()
+    if not (tok and channel and thread_ts):
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get("https://slack.com/api/conversations.replies",
+                            params={"channel": channel, "ts": thread_ts, "limit": 30},
+                            headers={"Authorization": f"Bearer {tok}"})
+            msgs = (r.json() or {}).get("messages") or []
+    except Exception:  # noqa: BLE001
+        return False
+    if any(m.get("user") == uid for m in msgs):
+        remember_thread(channel, thread_ts)
+        return True
+    return False
+
+
 async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:
     """Post a reply via chat.postMessage (bot token) — no AP connection needed. When ``thread_ts``
     is given the reply lands IN THAT THREAD (Slack roots a thread at that ts), so a threaded
@@ -82,6 +177,7 @@ async def send_message(channel: str, text: str, thread_ts: str | None = None) ->
     body = {"channel": channel, "text": text}
     if thread_ts:
         body["thread_ts"] = thread_ts
+        remember_thread(channel, thread_ts)   # follow-ups in this thread reach chat sans mention
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post("https://slack.com/api/chat.postMessage",
                          headers={"Authorization": f"Bearer {tok}",

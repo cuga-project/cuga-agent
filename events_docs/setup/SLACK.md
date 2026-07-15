@@ -77,6 +77,26 @@ OAuth scope under **OAuth & Permissions → Bot Token Scopes**:
 | `saved_message` — *"when I save a message…"* | `star_added` | `stars:read` |
 | `new_channel_message` — *"when a message is posted in #incidents…"* | `message.channels` | *(already have it)* |
 
+## Only answer when @mentioned (optional)
+
+By default **every** channel message the bot can see reaches the concierge. To make the bot answer
+**only when @mentioned** (like Telegram's group privacy mode), set:
+
+```bash
+EVENTS_SLACK_CHAT=mention     # then: make reload
+```
+
+- **1:1 DMs (`im`) always reach the bot** — a Slack `im` is strictly you and the bot, so every
+  message there is addressed to it. Multi-person conversations (channels, private groups, group
+  DMs) are all mention-gated.
+- **Replies to the bot pass without a mention** — when the bot posts (e.g. a trigger's answer) and
+  a human replies in that thread, the reply reaches the concierge (same rule as Telegram's privacy
+  mode, detected via the thread root's author).
+- The bot's `<@U…>` mention is stripped before the text reaches the concierge.
+- **Armed channel-message watchers are NOT gated** — *"watch #incidents"* still sees every message;
+  the mode only controls chat. (The watcher and chat are two consumers of the same event stream.)
+- The bot's user id is resolved automatically (auth.test); set `SLACK_BOT_USER_ID` to skip that call.
+
 **You only need the rows you actually want.** An event you never subscribe to simply never arrives —
 the watcher arms, sits idle, and nothing breaks. CUGA reports the requirement when you arm one:
 

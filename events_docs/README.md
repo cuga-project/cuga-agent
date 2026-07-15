@@ -20,6 +20,7 @@ event into one envelope and POSTs it there. Learn that endpoint and the rest fol
 | 7 | **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) |
 | 8 | **[slides.html](slides.html)** | the event-driven-agents deck — triggers, channels, integrations, all 33 triggers per app, with examples. Generated (`make slides`); good for a walkthrough or handoff |
 | 9 | **[nl_to_flow.html](nl_to_flow.html)** | the NL→Flow explainer — how a sentence becomes a flow: the pre-router, the confidence ladder, ask-till-legit, the benchmark gates, with the sequence diagram |
+| 9a | **[agent_hosting.html](agent_hosting.html)** | how agents are hosted, from the agent's perspective — the classic one-agent server (+ supervisor mode) vs the events fleet, side by side |
 | 10 | **[checklist.html](checklist.html)** | the exhaustive manual-test checklist (markable status, per integration) |
 
 ## New here? Read in this order

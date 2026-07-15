@@ -631,6 +631,44 @@ def test_agent_create_rejects_an_unknown_trigger():
     assert "new_prr" in r.json()["error"] and "new_pr" in r.json()["error"]
 
 
+def test_slack_mention_gate():
+    """EVENTS_SLACK_CHAT=mention: a channel message reaches CHAT only when it @mentions the bot
+    (mention stripped from the text); DMs always pass; default mode passes everything unchanged."""
+    import asyncio
+
+    from events import slack_direct as sd
+    ch = {"type": "message", "text": "hello world", "channel": "C1", "user": "U1"}
+    at = {"type": "message", "text": "<@UBOT> what's our policy?", "channel": "C1", "user": "U1"}
+    dm = {"type": "message", "text": "hi", "channel": "D1", "channel_type": "im", "user": "U1"}
+    os.environ["SLACK_BOT_USER_ID"] = "UBOT"
+    try:
+        os.environ["EVENTS_SLACK_CHAT"] = "mention"
+        assert asyncio.run(sd.mention_gate(ch)) == (False, "hello world")
+        ok, cleaned = asyncio.run(sd.mention_gate(at))
+        assert ok and cleaned == "what's our policy?"
+        assert asyncio.run(sd.mention_gate(dm))[0] is True          # 1:1 im always through
+        # a reply in a thread the BOT rooted (a trigger's delivery) passes without a mention…
+        reply = {"type": "message", "text": "yes, escalate it", "channel": "C1", "user": "U1",
+                 "thread_ts": "1700.1", "parent_user_id": "UBOT"}
+        assert asyncio.run(sd.mention_gate(reply)) == (True, "yes, escalate it")
+        # …but a reply in a HUMAN-rooted thread the bot never joined stays gated
+        # (SLACK_BOT_TOKEN may exist in .env-loaded envs; kill it so the API fallback is inert)
+        os.environ["SLACK_BOT_TOKEN"] = ""
+        assert asyncio.run(sd.mention_gate(dict(reply, parent_user_id="U9")))[0] is False
+        # …and a follow-up in a thread the bot has ANSWERED IN passes without a mention:
+        # "@bot weather in NY?" → bot replies in-thread → "what about NYC?" must reach chat
+        sd.remember_thread("C1", "1700.1")
+        ok, t2 = asyncio.run(sd.mention_gate(dict(reply, parent_user_id="U9",
+                                                  text="what about NYC?")))
+        assert ok and t2 == "what about NYC?"
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+        os.environ["EVENTS_SLACK_CHAT"] = "all"
+        assert asyncio.run(sd.mention_gate(ch)) == (True, "hello world")   # default: unchanged
+    finally:
+        os.environ.pop("EVENTS_SLACK_CHAT", None)
+        os.environ.pop("SLACK_BOT_USER_ID", None)
+
+
 def test_triggers_endpoint_serves_the_registry():
     """GET /api/events/triggers is the registry, verbatim — the Studio's trigger picker and the
     slides deck both render it, so it must agree with triggers.py exactly."""

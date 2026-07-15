@@ -971,11 +971,27 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         #     so nothing extra happens here for messages.
         ev = body.get("event") or {}
         if slack_direct.should_process(ev):
-            # thread identity: a threaded reply carries thread_ts; a root message uses its own ts so
-            # the bot's reply STARTS a thread. Either way the whole conversation lives in that thread.
-            thread_ts = ev.get("thread_ts") or ev.get("ts")
-            asyncio.create_task(_slack_answer(ev.get("text", ""), ev.get("channel", ""),
-                                              ev.get("user", ""), thread_ts))
+            # EVENTS_SLACK_CHAT=mention: only messages that @mention the bot reach CHAT (DMs always
+            # do). A gated message still feeds channel-message WATCHERS below — they normally ride
+            # the chat path's /invoke, so skipping chat must not skip them.
+            to_chat, text = await slack_direct.mention_gate(ev)
+            if to_chat:
+                # thread identity: a threaded reply carries thread_ts; a root message uses its own
+                # ts so the bot's reply STARTS a thread; the conversation stays in that thread.
+                thread_ts = ev.get("thread_ts") or ev.get("ts")
+                asyncio.create_task(_slack_answer(text, ev.get("channel", ""),
+                                                  ev.get("user", ""), thread_ts))
+            elif store is not None:
+                from . import direct_events
+                subs = direct_events.match(store, "slack", "new_channel_message",
+                                           channel=str(ev.get("channel") or ""),
+                                           text=str(ev.get("text") or ""))
+                if subs:
+                    Trace(new_trace_id())("slack.direct", event="new_channel_message",
+                                          matched=len(subs), gated="mention")
+                    asyncio.create_task(direct_events.dispatch_all(
+                        subs, app="slack", event="new_channel_message",
+                        payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""}))
             return {"ok": True}
         # 3b) every OTHER event type (reaction_added, app_mention, channel_created, team_join,
         #     emoji_changed, star_added, …) → the DIRECT watcher dispatcher. These used to be
