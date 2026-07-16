@@ -109,12 +109,16 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             # Get model config if specified
             model = _get_model_from_config(agent_config.get("model"))
 
-            # Create agent
+            # Create agent. Supervisor delegates run HEADLESS (flows, webhooks, channel events) —
+            # nobody is present to click an approval, so interactive policy auto-load defaults OFF
+            # (an approval interrupt in a headless run hangs it until the caller times out).
+            # A YAML entry can opt back in with `auto_load_policies: true`.
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
+                auto_load_policies=agent_config.get("auto_load_policies", False),
             )
 
             agents[agent_name] = agent
@@ -182,22 +186,21 @@ async def _create_tool_provider(
         elif isinstance(app_config, str):
             app_names.append(app_config)
 
-    # Create CombinedToolProvider which loads tools from registry
-    # CombinedToolProvider can filter by app names if provided
+    # mcp_servers entries contribute their names to the same registry-app filter
+    for m in mcp_servers or []:
+        n = m.get("name") if isinstance(m, dict) else str(m)
+        if n:
+            app_names.append(n)
+
+    # Create CombinedToolProvider SCOPED to the named apps/servers. Registry keys are
+    # underscore names ('cuga_finance'); hyphenated names would compose invalid Python
+    # identifiers downstream ('cuga-finance_get_price' parses as subtraction), so map them.
+    # An agent that names NOTHING gets all tools (unchanged behavior).
     if app_names or mcp_servers:
-        logger.info(
-            f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
-        )
-        tool_provider = CombinedToolProvider()
+        scoped = [n.replace("-", "_") for n in app_names] or None
+        logger.info(f"Creating CombinedToolProvider scoped to: {scoped or 'ALL apps'}")
+        tool_provider = CombinedToolProvider(app_names=scoped)
         await tool_provider.initialize()
-
-        # If specific app names are provided, filter the apps
-        if app_names:
-            # CombinedToolProvider loads all apps by default, but we can filter
-            # The tools will be loaded from registry based on app names when get_tools() is called
-            # For now, we'll let it load all and filter at tool retrieval time
-            logger.info(f"Tools will be loaded from registry for apps: {app_names}")
-
         return tool_provider
 
     return None

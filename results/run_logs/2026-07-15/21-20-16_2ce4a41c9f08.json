@@ -1,0 +1,22 @@
+{
+ "kind": "chat",
+ "scope": "default/default/admin",
+ "agent": "cuga",
+ "channel": "slack",
+ "thread_id": "gw:slack:C0BEYJ9NATB#1784164781.233459",
+ "subscription_id": "",
+ "event_kind": "message",
+ "text_in": "```FROM python:3.12-slim-trixie\n\n# The installer requires curl (and certificates) to download the release archive\nRUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends curl ca-certificates &amp;&amp; \\\n    rm -rf /var/lib/apt/lists/*\n\n# Download the latest installer\nADD <https://astral.sh/uv/install.sh> /uv-installer.sh\n\n# Run the installer then remove it\nRUN sh /uv-installer.sh &amp;&amp; rm /uv-installer.sh\n\n# Ensure the installed binary is on the `PATH`\nENV PATH=\"/root/.local/bin/:$PATH\"\n\n# Set working directory\nWORKDIR /app\n\n# Copy dependency files\nCOPY pyproject.toml uv.lock ./\n\n# Copy source code\nCOPY src/ ./src/\nCOPY docs/ ./docs/\n\n# Install dependencies\nRUN uv sync\n\n# Create cuga_workspace directory\nRUN mkdir -p /app/cuga_workspace\n\n# Copy example files from bundled demo_tools samples\nCOPY src/cuga/demo_tools/huggingface/contacts.txt /app/cuga_workspace/contacts.txt\nCOPY src/cuga/demo_tools/huggingface/cuga_knowledge.md /app/cuga_workspace/cuga_knowledge.md\nCOPY src/cuga/demo_tools/huggingface/cuga_playbook.md /app/cuga_workspace/cuga_playbook.md\nCOPY src/cuga/demo_tools/huggingface/email_template.md /app/cuga_workspace/email_template.md\n\n# Expose port 7860 (Hugging Face Spaces default)\nEXPOSE 7860\n\n# Set host to 0.0.0.0 to allow external connections\nENV CUGA_HOST=0.0.0.0\n\n# Override the demo port to match HF Spaces\nENV DYNACONF_SERVER_PORTS__DEMO=7860\n\n# Start the demo_crm service with read-only filesystem and no email services\nCMD [\"uv\", \"run\", \"cuga\", \"start\", \"demo_crm\", \"--cuga-workspace\", \"/app/cuga_workspace\"]```",
+ "answer_out": "I’m ready to review the Dockerfile—please paste its contents here.",
+ "status": "ok",
+ "ms": 2337,
+ "trace_id": "c431b2436a77",
+ "meta": {
+  "agent": "cuga",
+  "backend": "supervisor",
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "2ce4a41c9f08",
+ "when": "2026-07-15 21:20:16"
+}

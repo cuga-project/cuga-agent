@@ -12,8 +12,8 @@
 <text x="297" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">/invoke</text>
 <line x1="475" y1="142" x2="475" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
 <rect x="394" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
-<text x="475" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">pricebot</text>
-<text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(worker)</text>
+<text x="475" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga → pricebot</text>
+<text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(supervisor picks)</text>
 <line x1="653" y1="142" x2="653" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
 <rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
 <text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">MCP tool</text>

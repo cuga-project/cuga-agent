@@ -20,8 +20,10 @@ event into one envelope and POSTs it there. Learn that endpoint and the rest fol
 | 7 | **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) |
 | 8 | **[slides.html](slides.html)** | the event-driven-agents deck — triggers, channels, integrations, all 33 triggers per app, with examples. Generated (`make slides`); good for a walkthrough or handoff |
 | 9 | **[nl_to_flow.html](nl_to_flow.html)** | the NL→Flow explainer — how a sentence becomes a flow: the pre-router, the confidence ladder, ask-till-legit, the benchmark gates, with the sequence diagram |
-| 9a | **[agent_hosting.html](agent_hosting.html)** | how agents are hosted, from the agent's perspective — the classic one-agent server (+ supervisor mode) vs the events fleet, side by side |
+| 9a | **[agent_hosting.html](agent_hosting.html)** | how agents are hosted, from the agent's perspective — the classic server, the (historical) fleet, and the shipped **single-agent world**: one `cuga` supervisor, sub-agents from `supervisor_agents.yaml` |
+| 9b | **[plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)** | the single-agent refactor: decision, constraints, phases, live proof, and the progress log |
 | 10 | **[checklist.html](checklist.html)** | the exhaustive manual-test checklist (markable status, per integration) |
+| 11 | **[verification.html](verification.html)** | the evidence ledger — per integration × kind: ARMED / FIRED-synthetic / FIRED-real-event, dated, with the re-verify command per row |
 
 ## New here? Read in this order
 

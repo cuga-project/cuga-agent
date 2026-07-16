@@ -161,6 +161,16 @@ def main() -> int:
           f"{len(hooks) if hooks else 0}")
     npass = sum(1 for _, s, _ in results if s == "PASS")
     print(f"\nRESULT: {npass}/{len(rows)} triggers armed+fired  ({time.time()-t0:.0f}s)")
+    if npass == len(rows):
+        try:
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.dirname(__file__))
+            from _ledger import record as _lrec
+            _lrec("github", "arm", "ok", f"all {len(rows)} arm as real AP flows + repo webhooks")
+            _lrec("github", "fire_synth", "ok",
+                  f"{npass}/{len(rows)} piece-exact payloads fired real AP runs")
+        except Exception:  # noqa: BLE001
+            pass
     for ev, s, detail in results:
         if s != "PASS":
             print(f"  {s}: {ev} — {detail}")

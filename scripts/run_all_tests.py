@@ -50,7 +50,26 @@ HARNESSES = [
     # The only harness that waits for a trigger to actually fire. Everything above stops at "armed".
     ("fire", "test-fire", {"E2E_STEPS_FILE": "", "FIRE_BUDGET_SECS": "900"},
      "Does an armed flow FIRE and answer? (arms a 1-min schedule, waits for a real tick)", 9),
+    ("delegation", "test-delegation", {},
+     "Does the supervisor pick the right sub-agent? (labelled payloads, >=90% gate)", 10),
 ]
+
+# Fleet-era harnesses: they assert per-agent invocation BY NAME, which the single-agent world
+# (EVENTS_SUPERVISOR=1, plans/SUPERVISOR_REFACTOR.md) retired. Skipped LOUDLY there — a report
+# that ran them would fail for architectural reasons, not defects. `delegation` is the
+# supervisor-mode replacement and only runs when the flag is set.
+_FLEET_ERA = {"now", "matrix", "fire"}
+_SUPERVISOR_ONLY = {"delegation"}
+
+
+def _supervisor_mode() -> bool:
+    v = os.environ.get("EVENTS_SUPERVISOR", "")
+    if not v and os.path.exists(".env"):
+        for line in open(".env"):
+            if line.strip().startswith("EVENTS_SUPERVISOR="):
+                v = line.split("=", 1)[1]
+                break
+    return v.split(" #", 1)[0].strip() in ("1", "true", "yes")
 
 
 def sh(cmd: list[str], **kw) -> str:
@@ -202,10 +221,22 @@ def main() -> int:
     print(f"  logs → {outdir}\n")
 
     results = []
+    sup = _supervisor_mode()
     for key, target, extra, question, mins in HARNESSES:
         if key in a.skip:
             print(f"  \033[90m– {key:8} skipped by request\033[0m")
             results.append({"key": key, "target": target, "skipped_by_request": True})
+            continue
+        if sup and key in _FLEET_ERA:
+            print(f"  \033[90m– {key:8} skipped — fleet-era harness; the single-agent world "
+                  f"(EVENTS_SUPERVISOR=1) replaces it with `delegation` (ROADMAP §not-yet-vetted)\033[0m")
+            results.append({"key": key, "target": target, "skipped_by_request": True,
+                            "note": "fleet-era; superseded in supervisor mode"})
+            continue
+        if not sup and key in _SUPERVISOR_ONLY:
+            print(f"  \033[90m– {key:8} skipped — needs EVENTS_SUPERVISOR=1\033[0m")
+            results.append({"key": key, "target": target, "skipped_by_request": True,
+                            "note": "supervisor mode only"})
             continue
         print(f"  \033[1m▶ {key}\033[0m  ({target}, ~{mins} min)  {question}", flush=True)
         # `make test-report ARGS="--skip now"` exports ARGS through MAKEFLAGS into the child
@@ -231,6 +262,20 @@ def main() -> int:
             v["crashed"] = True
             v["note"] = f"harness did not run to completion (exit {p.returncode}): {tail[0][:160]}"
         results.append(v)
+        # refresh the VERIFICATION LEDGER cell this harness proves (events_docs/verification.html)
+        try:
+            sys.path.insert(0, os.path.join(REPO, "tests", "events"))
+            from _ledger import record as _lrec
+            _map = {"offline": ("offline", "fire_real"), "live": ("channels", "fire_real"),
+                    "flows": ("nlflow", "fire_real"), "delegation": ("delegation", "fire_real")}
+            if key in _map:
+                s, c = _map[key]
+                good = p.returncode == 0 and not v.get("crashed")
+                _lrec(s, c, "ok" if good else "blocked",
+                      f"{v['passed']} passed · {v['failed']} failed ({target})",
+                      source="make test-report")
+        except Exception:  # noqa: BLE001
+            pass
         bits = (f"{v['passed']}P" + (f" {v['failed']}F" if v["failed"] else "")
                 + (f" {v['xfail']}x" if v["xfail"] else "")
                 + (f" {v['xpass']}★" if v["xpass"] else "")

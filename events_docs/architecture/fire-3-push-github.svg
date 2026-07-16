@@ -15,16 +15,17 @@
 <text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">/invoke</text>
 <line x1="653" y1="142" x2="653" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
 <rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
-<text x="653" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">pr_reviewer</text>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga (supervisor)</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">→ specialist</text>
 <text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">PR opened → webhook POST (to AP's public tunnel)</text>
 <line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <rect x="30" y="196" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
 <text x="386" y="216" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 AP resolves {{connections['ea::…::github']}} → the token, in its sandbox</text>
-<text x="386.0" y="248" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /invoke {source:github, payload: title/body/diff}</text>
+<text x="386.0" y="248" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /invoke {agent: cuga, source:github, payload: title/body/diff}</text>
 <line x1="297" y1="256" x2="468" y2="256" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <rect x="30" y="292" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
 <text x="386" y="312" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 the agent receives PR CONTENT — never the credential</text>
-<text x="564.0" y="344" font-size="12" fill="#1c1b1a" text-anchor="middle">worker_input = PR title + body + stats</text>
+<text x="564.0" y="344" font-size="12" fill="#1c1b1a" text-anchor="middle">the supervisor picks the specialist (per wake-up) · sub-agent runs</text>
 <line x1="475" y1="352" x2="646" y2="352" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <text x="564.0" y="396" font-size="12" fill="#1c1b1a" text-anchor="middle">summary</text>
 <line x1="653" y1="404" x2="482" y2="404" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>

@@ -153,16 +153,19 @@ calls the very <code>find_or_create_flow</code> the LLM would call — so the <b
 sink ⇒ <code>REUSING</code>, refereed by a DB unique index), and the <b>flow build</b> are one code
 path, not two.</div></div>
 
-<div class="step"><b class="n">7</b><div><b>The flow is real.</b> An Activepieces flow named
-<code>push-github-new-pr-pr_reviewer</code>: the piece trigger bound to your connection (AP holds
-the token — the agent never sees it), one HTTP step POSTing the envelope
-<code>{agent, source, event}</code> back to CUGA's <code>/invoke</code>. Publishing registers a real
-repo webhook.</div></div>
+<div class="step"><b class="n">7</b><div><b>The flow is real — and it targets THE one agent.</b> An
+Activepieces flow named <code>push-github-new-pr-cuga</code>: the piece trigger bound to your
+connection (AP holds the token — the agent never sees it), one HTTP step POSTing the envelope
+<code>{agent: "cuga", source, event}</code> back to CUGA's <code>/invoke</code>. No specialist is
+named at arm time — the concierge compiles the <em>trigger</em>, never picks an agent. Publishing
+registers a real repo webhook.</div></div>
 
 <div class="step"><b class="n">8</b><div><b>Forever after</b>: PR opens → webhook → AP resolves the
 curated payload map (<code>{{trigger.pull_request.title}}</code>…, with <code>_raw</code> as the
-safety net) → <code>/invoke</code> → <code>pr_reviewer</code> runs → the answer lands in the channel
-you armed it from.</div></div>
+safety net) → <code>/invoke {agent: "cuga"}</code> → <b>the supervisor picks the right
+specialist</b> from its roster (<code>supervisor_agents.yaml</code>) per wake-up, the sub-agent
+runs, and the answer bubbles up to the channel you armed it from. (With
+<code>EVENTS_SUPERVISOR</code> unset, the plain classic CUGA agent answers directly.)</div></div>
 
 <h2>The confidence ladder</h2>
 <table>

@@ -1,0 +1,22 @@
+{
+ "kind": "chat",
+ "scope": "default/default/local",
+ "agent": "concierge",
+ "channel": "web",
+ "thread_id": "web:local",
+ "subscription_id": "",
+ "event_kind": "",
+ "text_in": "what is bitcoin worth?",
+ "answer_out": "Bitcoin is about $63,964 USD.",
+ "status": "ok",
+ "ms": 0,
+ "trace_id": "6fb20e29fa4e",
+ "meta": {
+  "agent": null,
+  "backend": null,
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "c092e885cbdf",
+ "when": "2026-07-15 21:20:50"
+}

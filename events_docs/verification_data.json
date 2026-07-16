@@ -1,0 +1,220 @@
+{
+ "records": {
+  "github::arm": {
+   "surface": "github",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "all 14 arm as real AP flows + real repo webhooks",
+   "source": "live_github_triggers.py",
+   "date": "2026-07-15 21:11"
+  },
+  "github::fire_synth": {
+   "surface": "github",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "14/14 piece-exact payloads (X-GitHub-Event) → real AP runs → answers",
+   "source": "live_github_triggers.py",
+   "date": "2026-07-15 21:11"
+  },
+  "github::fire_real": {
+   "surface": "github",
+   "capability": "fire_real",
+   "verdict": "partial",
+   "note": "branch+commit+webhook proven; PR create 403 — grant PAT 'Pull requests: R/W' then run live_github_real_pr.py",
+   "source": "live_github_real_pr.py",
+   "date": "2026-07-15 21:11"
+  },
+  "box::arm": {
+   "surface": "box",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "AP OAuth flow arm + direct poller",
+   "source": "suite-flows",
+   "date": "2026-07-15 21:11"
+  },
+  "box::fire_real": {
+   "surface": "box",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "REAL upload → poller detected → resume_judge fired → cleaned",
+   "source": "live_box_e2e.py",
+   "date": "2026-07-15 21:11"
+  },
+  "gmail::arm": {
+   "surface": "gmail",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "all 4 triggers arm with correct AP trigger + label slot",
+   "source": "live_gmail_e2e.py",
+   "date": "2026-07-15 21:11"
+  },
+  "gmail::fire_synth": {
+   "surface": "gmail",
+   "capability": "fire_synth",
+   "verdict": "blocked",
+   "note": "impossible by design — AP polling triggers can't fire out of band",
+   "source": "TESTING.md",
+   "date": "2026-07-15 21:11"
+  },
+  "gmail::fire_real": {
+   "surface": "gmail",
+   "capability": "fire_real",
+   "verdict": "partial",
+   "note": "needs ONE human email to the connected inbox",
+   "source": "live_gmail_e2e.py",
+   "date": "2026-07-15 21:11"
+  },
+  "slack::arm": {
+   "surface": "slack",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "direct subscriptions (no AP)",
+   "source": "live_direct_watchers.py",
+   "date": "2026-07-15 21:11"
+  },
+  "slack::fire_synth": {
+   "surface": "slack",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "4/4 HMAC-signed Events-API callbacks (byte-identical to Slack)",
+   "source": "live_direct_watchers.py",
+   "date": "2026-07-15 21:11"
+  },
+  "slack::fire_real": {
+   "surface": "slack",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "human 🐛 reaction fired incident_triage (2026-07-13); mention-gated chat live",
+   "source": "manual",
+   "date": "2026-07-15 21:11"
+  },
+  "discord::arm": {
+   "surface": "discord",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "direct Gateway subscriptions",
+   "source": "test_events_triggers",
+   "date": "2026-07-15 21:11"
+  },
+  "discord::fire_synth": {
+   "surface": "discord",
+   "capability": "fire_synth",
+   "verdict": "partial",
+   "note": "dispatcher matching verified offline; no Gateway injector",
+   "source": "test_events_triggers",
+   "date": "2026-07-15 21:11"
+  },
+  "discord::fire_real": {
+   "surface": "discord",
+   "capability": "fire_real",
+   "verdict": "partial",
+   "note": "needs a real member-join / watched #channel post (chat itself proven real)",
+   "source": "manual",
+   "date": "2026-07-15 21:11"
+  },
+  "telegram::arm": {
+   "surface": "telegram",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "arms with pattern slot",
+   "source": "suite-flows",
+   "date": "2026-07-15 21:11"
+  },
+  "telegram::fire_real": {
+   "surface": "telegram",
+   "capability": "fire_real",
+   "verdict": "partial",
+   "note": "needs a real link sent to the bot (chat itself proven real)",
+   "source": "manual",
+   "date": "2026-07-15 21:11"
+  },
+  "webhook::arm": {
+   "surface": "webhook",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "always live — no arming needed",
+   "source": "test-live",
+   "date": "2026-07-15 21:11"
+  },
+  "webhook::fire_real": {
+   "surface": "webhook",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "real POSTs: pinned triage + routed → cuga (supervisor picked specialist)",
+   "source": "test-live",
+   "date": "2026-07-15 21:11"
+  },
+  "cron::arm": {
+   "surface": "cron",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "armed via /cron through the concierge",
+   "source": "manual+concierge",
+   "date": "2026-07-15 21:11"
+  },
+  "cron::fire_real": {
+   "surface": "cron",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "2 genuine AP schedule ticks SUCCEEDED, then deleted",
+   "source": "manual run",
+   "date": "2026-07-15 21:11"
+  },
+  "poll::arm": {
+   "surface": "poll",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "1-minute price watcher armed via NL",
+   "source": "manual+concierge",
+   "date": "2026-07-15 21:11"
+  },
+  "poll::fire_real": {
+   "surface": "poll",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "3 genuine ticks SUCCEEDED (live BTC price answers)",
+   "source": "manual run",
+   "date": "2026-07-15 21:11"
+  },
+  "channels::fire_real": {
+   "surface": "channels",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "test-live 38/0/0 — real messages, real replies, mention gate, threads",
+   "source": "make test-live",
+   "date": "2026-07-15 21:11"
+  },
+  "nlflow::arm": {
+   "surface": "nlflow",
+   "capability": "arm",
+   "verdict": "ok",
+   "note": "47-case CI benchmark, zero-wrong-at-high; ask-till-legit live",
+   "source": "test_flowspec_bench",
+   "date": "2026-07-15 21:11"
+  },
+  "nlflow::fire_real": {
+   "surface": "nlflow",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "suite-flows 11/0/0 — every kind builds the right AP flow",
+   "source": "make test-suite-flows",
+   "date": "2026-07-15 21:11"
+  },
+  "delegation::fire_real": {
+   "surface": "delegation",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "14/14 (100%), 0 self-answers over the real 27-agent roster",
+   "source": "make test-delegation",
+   "date": "2026-07-15 21:11"
+  },
+  "offline::fire_real": {
+   "surface": "offline",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "199 passed — invariants + all drift gates",
+   "source": "make test",
+   "date": "2026-07-15 21:11"
+  }
+ }
+}

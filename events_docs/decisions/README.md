@@ -14,6 +14,7 @@ is Context → Decision → Consequences. Verified live (2026-07-02) unless note
 | [0006](0006-auth-connection-model.md) | **Auth: capability vs connection vs identity** | CUGA hosts the OAuth connect; AP holds/refreshes the token. Three distinct concerns kept separate. |
 | [0007](0007-identity-profiles-permissions.md) | **Identity, profiles & permissions** | `(tenant,channel,native_id)→user` map + a link-token handshake; per-agent `access` list; the message author is the per-user key. |
 | [0008](0008-direct-backends-for-channels.md) | **Direct backends for chat channels** (amends 0001) | Channels (Slack/Discord) run DIRECT — AP's OAuth wall + poll latency make it wrong for chat; integrations stay on AP. |
+| [0009](0009-single-agent-supervisor.md) | **ONE agent: `cuga` supervisor over YAML sub-agents** (partially supersedes 0005) | The fleet is retired; routing happens INSIDE the one supervisor per wake-up; sub-agents = `supervisor_agents.yaml`; concierge compiles NL→Flow, routes nothing. |
 
 **Companion docs:** [../ARCHITECTURE.md](../ARCHITECTURE.md) ·
 [../TESTING.md](../TESTING.md) · [../GAPS.md](../GAPS.md).

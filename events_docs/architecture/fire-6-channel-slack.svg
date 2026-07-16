@@ -14,7 +14,8 @@
 <text x="475" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">CUGA</text>
 <line x1="653" y1="142" x2="653" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
 <rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
-<text x="653" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">worker</text>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(the one agent)</text>
 <text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">type a message in the channel</text>
 <line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <text x="386.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /api/events/slack/events  (signed)</text>

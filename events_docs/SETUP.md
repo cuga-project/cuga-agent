@@ -67,6 +67,48 @@ make test        # the offline suite green          make tunnels  # both tunnels
 ```
 Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. For a
 full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
+
+## The agent model (one switch)
+
+There is exactly **one addressable agent — `cuga`** ([plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)):
+
+- **`EVENTS_SUPERVISOR=1`** (recommended): `cuga` is a **supervisor** whose sub-agents load from
+  [`supervisor_agents.yaml`](../supervisor_agents.yaml) at the repo root — CUGA-main's canonical
+  schema. It picks the right specialist per wake-up; answers bubble up. **Add/edit a sub-agent =
+  edit the YAML + `make reload`.** Routing quality gate: `make test-delegation`.
+- **Unset**: `cuga` is the plain classic CUGA agent, exactly as main ships it (one generalist,
+  no roster). Everything else (channels, triggers, flows) works identically — flows just wake a
+  generalist instead of a supervised specialist.
+
+### Adding a sub-agent (builder guide)
+
+A sub-agent is **a skill, not a deployment**: a name, a prompt, tools, and routing hints. Append a
+block to `supervisor_agents.yaml`:
+
+```yaml
+  - name: invoice_checker
+    special_instructions: |
+      You verify invoices: amounts, due dates, duplicate detection. Be terse and factual.
+      HANDLES TRIGGERS: gmail/new_attachment (An email with an attachment)
+    mcp_servers:
+      - name: cuga-text
+```
+
+then `make reload`. Three rules:
+
+1. **The HANDLES line is how the supervisor routes to it** — name the `app/event` pairs from the
+   trigger registry verbatim. The offline gates fail the build if a registry trigger is claimed by
+   nobody, or a HANDLES hint points at a trigger that doesn't exist.
+2. **Channels are NOT per-sub-agent.** Channels (web/Slack/Discord/Telegram) belong to the
+   platform: they all converse with the one `cuga` agent. A sub-agent never "joins" a channel;
+   answers are delivered by the platform to wherever the conversation or flow originated.
+3. **Credentials are NOT per-sub-agent.** Integration connections live in Activepieces at the
+   platform level; the connect gate runs at ARM time keyed to the trigger's source app. A
+   sub-agent gets event *content*, never a token. Its `mcp_servers` list scopes which TOOLS it
+   reasons with — that's the only per-sub-agent capability boundary.
+
+After editing, run `make test-delegation` — the routing gate over the real roster.
+
 interactive [checklist.html](checklist.html); the automated report + live harnesses are in [TESTING.md](TESTING.md).
 
 ## Clean run from zero (the hand-off rehearsal)
@@ -134,10 +176,11 @@ Six targets because "does it work?" is six different questions at six different 
 |---|---|---|---|
 | `make test` | Is the code internally correct? (no stack, no creds) | 30 s | **after every change** |
 | `make test-live` | Is the running stack plumbed? one probe per channel + flow mode | 2 min | after touching the stack / `.env` / a reload |
-| `make test-suite-now` | Can each agent actually do its job? | 14 min | after changing agents or their tools |
+| `make test-suite-now` | Can each agent actually do its job? | 14 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` (asserts per-agent names; ROADMAP §not-yet-vetted) |
 | `make test-suite-flows` | Does an English sentence become the *right* AP flow? | 6 min | after touching the concierge / classifier / registry |
-| `make test-matrix` | Is every trigger × sink combination wired? | 6 min | after touching flow building or delivery |
-| `make test-fire` | Does an armed flow genuinely FIRE on a real tick? | 9 min | before claiming "it works end to end" |
+| `make test-matrix` | Is every trigger × sink combination wired? | 6 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` |
+| `make test-fire` | Does an armed flow genuinely FIRE on a real tick? | 9 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` (the GitHub triggers harness covers real fires there) |
+| `make test-delegation` | Does the supervisor pick the right sub-agent? (≥90% gate) | 10 min | supervisor mode only; after editing `supervisor_agents.yaml` |
 
 Day to day you need the first two. **`make test-report`** runs all six in order and writes the
 timestamped HTML report (`results/index.html`) — the one command for a handoff or a citable result.

@@ -91,9 +91,13 @@ class SecurityValidator:
         (r'marshal\.', 'serialization vulnerability'),
         (r'shelve\.', 'serialization vulnerability'),
         (r'ctypes', 'foreign function interface (memory access)'),
-        (r'socket', 'network access'),
-        (r'urllib', 'network access'),
-        (r'requests', 'network access'),
+        # Network modules: match IMPORTS or MODULE USE, never the bare word — a bare-substring
+        # pattern fired on natural language inside string literals (an incident payload reading
+        # "all requests failing" blocked every supervisor delegation that quoted it).
+        (r'\bimport\s+socket\b|\bsocket\.\w', 'network access'),
+        (r'\bimport\s+urllib\b|\burllib\.\w', 'network access'),
+        (r'\bimport\s+requests\b|\brequests\.(get|post|put|delete|patch|head|options|request|Session)\b',
+         'network access'),
         (r'http\.client', 'network access'),
         (r'\\x[0-9a-fA-F]{2}', 'hex encoded string (potential obfuscation)'),
         (r'\\u[0-9a-fA-F]{4}', 'unicode encoded string (potential obfuscation)'),

@@ -155,7 +155,7 @@ SCENARIOS = {
             act("ap", "Activepieces", "ap"), act("ext", "GitHub", "ext")],
     messages=[
         ("you", "con", 'POST /api/concierge  "watch repo X for new PRs, summarize"', "solid"),
-        ("con", "con", "classify → PUSH · pick pr_reviewer · resolve connection id", "self"),
+        ("con", "con", "classify → PUSH · target = 'cuga' (the ONE agent) · resolve connection id", "self"),
         ("con", "ap", "build flow: trigger.auth = {{connections['ea::…::github']}}", "solid"),
         (*N, "the flow stores a REFERENCE to the connection — never the secret", "cred"),
         ("ap", "ext", "register repo webhook (AP resolves the token to do this)", "solid"),
@@ -193,7 +193,7 @@ SCENARIOS = {
     title="FIRE ① — NOW (no flow, no AP)",
     subtitle="A one-shot question. The answer IS the HTTP response. No integration credential involved.",
     actors=[act("you", "You", "you"), act("cuga", "CUGA\n/invoke", "cuga"),
-            act("ag", "pricebot\n(worker)", "agent"), act("mcp", "MCP tool\nserver", "agent")],
+            act("ag", "cuga → pricebot\n(supervisor picks)", "agent"), act("mcp", "MCP tool\nserver", "agent")],
     messages=[
         ("you", "cuga", "POST /invoke {agent, text, source:time/runonce}", "solid"),
         ("cuga", "ag", "runtime.run(agent, worker_input)", "solid"),
@@ -209,7 +209,7 @@ SCENARIOS = {
     title="FIRE ② — CRON / POLL (a scheduled flow)",
     subtitle="AP owns the trigger. The callback is podman-internal (HOST_CALLBACK_URL), not the tunnel.",
     actors=[act("ap", "Activepieces", "ap"), act("cuga", "CUGA\n/invoke", "cuga"),
-            act("ag", "worker", "agent"), act("sink", "Sink\n(channel)", "ext")],
+            act("ag", "cuga\n(the one agent)", "agent"), act("sink", "Sink\n(channel)", "ext")],
     messages=[
         ("ap", "ap", "schedule tick (every N min / cron)", "self"),
         ("ap", "cuga", "POST /invoke {agent, source:time/tick}  (HOST_CALLBACK_URL)", "solid"),
@@ -225,13 +225,13 @@ SCENARIOS = {
     title="FIRE ③ — PUSH · GitHub (webhook trigger)",
     subtitle="A repo event arrives via AP's tunnel. AP resolves the OAuth token in its sandbox; the agent gets content.",
     actors=[act("gh", "GitHub", "ext"), act("ap", "Activepieces", "ap"),
-            act("cuga", "CUGA\n/invoke", "cuga"), act("ag", "pr_reviewer", "agent")],
+            act("cuga", "CUGA\n/invoke", "cuga"), act("ag", "cuga (supervisor)\n→ specialist", "agent")],
     messages=[
         ("gh", "ap", "PR opened → webhook POST (to AP's public tunnel)", "solid"),
         (*N, "AP resolves {{connections['ea::…::github']}} → the token, in its sandbox", "cred"),
-        ("ap", "cuga", "POST /invoke {source:github, payload: title/body/diff}", "solid"),
+        ("ap", "cuga", "POST /invoke {agent: cuga, source:github, payload: title/body/diff}", "solid"),
         (*N, "the agent receives PR CONTENT — never the credential", "cred"),
-        ("cuga", "ag", "worker_input = PR title + body + stats", "solid"),
+        ("cuga", "ag", "the supervisor picks the specialist (per wake-up) · sub-agent runs", "solid"),
         ("ag", "cuga", "summary", "dashed"),
         ("cuga", "ap", "200 → AP send-step delivers", "dashed"),
     ]),
@@ -241,7 +241,7 @@ SCENARIOS = {
     title="FIRE ④ — PUSH · Gmail (polling trigger)",
     subtitle="AP polls on its own clock, using the stored OAuth token. Same credential model as GitHub.",
     actors=[act("gm", "Gmail", "ext"), act("ap", "Activepieces", "ap"),
-            act("cuga", "CUGA\n/invoke", "cuga"), act("ag", "mailbot", "agent")],
+            act("cuga", "CUGA\n/invoke", "cuga"), act("ag", "cuga → mailbot\n(supervisor picks)", "agent")],
     messages=[
         (*N, "AP resolves {{connections['ea::…::gmail']}} → the token, in its sandbox", "cred"),
         ("ap", "gm", "poll: any new mail? (every ~1–2 min)", "solid"),
@@ -257,7 +257,7 @@ SCENARIOS = {
     title="FIRE ⑤ — PUSH · Box (direct poll + download)",
     subtitle="EVENTS_BOX_BACKEND=direct: no AP. CUGA holds the token in .env and fetches file CONTENT.",
     actors=[act("box", "Box", "ext"), act("cuga", "CUGA\n/invoke", "cuga"),
-            act("ag", "resume_judge", "agent"), act("slack", "Slack", "ext")],
+            act("ag", "cuga → resume_judge\n(supervisor picks)", "agent"), act("slack", "Slack", "ext")],
     messages=[
         (*N, "CUGA uses BOX_DEV_TOKEN from .env — the direct credential model, no AP", "cred"),
         ("cuga", "cuga", "POST /api/events/box/poll (scheduled/manual)", "self"),
@@ -273,7 +273,7 @@ SCENARIOS = {
     title="FIRE ⑥ — Channel · Slack (direct backend)",
     subtitle="No AP. Slack's Events API → CUGA, signature-verified → concierge → reply in-thread.",
     actors=[act("you", "You", "you"), act("sl", "Slack", "ext"),
-            act("cuga", "CUGA", "cuga"), act("ag", "worker", "agent")],
+            act("cuga", "CUGA", "cuga"), act("ag", "cuga\n(the one agent)", "agent")],
     messages=[
         ("you", "sl", "type a message in the channel", "solid"),
         ("sl", "cuga", "POST /api/events/slack/events  (signed)", "solid"),
@@ -303,7 +303,7 @@ SCENARIOS = {
     title="FIRE ⑧ — Generic webhook (any system → agent)",
     subtitle="POST /api/events/hook/<name>. No AP, no piece. ?key= guards it (unset = open).",
     actors=[act("src", "Monitoring\n/ CI / form", "ext"), act("cuga", "CUGA\n/invoke", "cuga"),
-            act("ag", "incident_triage", "agent"), act("slack", "Slack", "ext")],
+            act("ag", "cuga → incident_triage\n(supervisor picks)", "agent"), act("slack", "Slack", "ext")],
     messages=[
         ("src", "cuga", "POST /api/events/hook/alert?agent=…&key=…", "solid"),
         (*N, "CUGA checks ?key against EVENTS_WEBHOOK_KEY (unset ⇒ open to anyone)", "cred"),

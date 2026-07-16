@@ -276,7 +276,15 @@ def ch_slack(r: Report):
          got=f"message posted, ts={ts}", ok=None)
 
     # 2) Forge the Events API callback Slack itself would send, signed with the real secret.
-    ev = {"type": "event_callback", "event": {"type": "message", "text": PROBE,
+    # In mention mode (EVENTS_SLACK_CHAT=mention) an unmentioned channel message is correctly
+    # gated away from chat — so the probe @mentions the bot, exactly as a real user must.
+    probe_text = PROBE
+    if env("EVENTS_SLACK_CHAT", "").lower() == "mention":
+        _, who = http("POST", "https://slack.com/api/auth.test", headers=sh, timeout=15)
+        uid = (who or {}).get("user_id", "")
+        if uid:
+            probe_text = f"<@{uid}> {PROBE}"
+    ev = {"type": "event_callback", "event": {"type": "message", "text": probe_text,
                                               "channel": chan, "user": "U0E2ETEST", "ts": ts}}
     raw = json.dumps(ev)
     stamp = str(int(time.time()))
@@ -308,7 +316,9 @@ def ch_slack(r: Report):
                "SLACK_SIGNING_SECRET unset — endpoint is intentionally open; set it to enable this check")
 
     # 3) The answer is posted asynchronously into the thread rooted at `ts`. Poll for it.
-    deadline = time.monotonic() + min(180, max(30, budget_left() - 60))
+    # Floor 120s: in supervisor mode the chain is concierge → supervisor → specialist → post,
+    # legitimately slower than the old direct path (SUPERVISOR_REFACTOR latency cost).
+    deadline = time.monotonic() + min(240, max(120, budget_left() - 60))
     reply = ""
     while time.monotonic() < deadline:
         time.sleep(4)
@@ -684,20 +694,18 @@ def flow_webhook(r: Report):
                                         "additions": 40, "deletions": 12}, "repo": "acme/api"},
                       timeout=240)
     chosen = str(rep3.get("agent", ""))
-    print(f"     → routed={rep3.get('routed')}  agent chosen={chosen!r}")
-    routed_ok = code3 == 200 and rep3.get("routed") is True and chosen not in ("", "concierge")
-    r.ok("WEBHOOK", "routed mode returns a concierge-picked agent", routed_ok,
+    ans3 = str(rep3.get("answer") or "")
+    print(f"     → routed={rep3.get('routed')}  agent={chosen!r}")
+    # SINGLE-AGENT WORLD: routed mode = the ONE agent ('cuga') handles it; its supervisor picks a
+    # specialist internally. The check: routed worked, the executor is 'cuga', an answer came back.
+    routed_ok = (code3 == 200 and rep3.get("routed") is True
+                 and chosen == "cuga" and bool(ans3))
+    r.ok("WEBHOOK", "routed mode executes via the one agent ('cuga')", routed_ok,
          fail_detail=f"HTTP {code3}: routed={rep3.get('routed')} agent={chosen!r}")
     step(phase="flows", surface="webhook", actor="an external system (no agent named)",
          action='POSTs a PR-shaped payload to /api/events/hook/ci?route=1',
-         expect="the concierge routes by capability (like chat) — a code payload → pr_reviewer, not incident_triage",
-         got=f"chose {chosen}", ok=routed_ok and chosen != "incident_triage")
-    # Don't FAIL the run on the model's exact pick (it can vary) — PASS when it nails pr_reviewer,
-    # else SKIP with the pick surfaced. The hard assertion above already proved routing happened.
-    if chosen == "pr_reviewer":
-        r.ok("WEBHOOK", "routed a code payload to the code agent (pr_reviewer)", True)
-    else:
-        r.skip("WEBHOOK", "routed-agent pick", f"chose {chosen!r} (usually pr_reviewer; model pick varies)")
+         expect="the ONE agent (cuga) handles it — its supervisor picks the specialist internally",
+         got=f"agent={chosen}, answered={bool(ans3)}", ok=routed_ok)
 
 
 def cleanup(r: Report, created: list):

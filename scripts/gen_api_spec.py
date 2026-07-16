@@ -70,7 +70,8 @@ GROUPS = [
     ("runs", "Runs — the execution log", "What actually fired, what it answered, what broke."),
     ("studio", "Studio reads — the UI's data contract", "All GET, all scope-isolated, all return "
      "200 even when Activepieces is down (status becomes <code>unknown</code>, never a 500)."),
-    ("agents", "Agents — the worker fleet", "Read by everyone; written by builders and admins."),
+    ("agents", "Agents — the sub-agent roster", "Read-only view of supervisor_agents.yaml (the "
+     "canonical source of truth); registration via the API is retired (410)."),
     ("inbound", "Inbound surfaces — events arriving from the outside", "These are the front doors. "
      "Each one normalises its payload into an envelope and calls <code>/invoke</code>."),
     ("connect", "Connect &amp; credentials", "Activepieces holds every token, encrypted. The agent "
@@ -545,7 +546,8 @@ ENDPOINTS = [
 
     # ── agents ────────────────────────────────────────────────────────────────
     E("GET", "/api/events/agents", "agents",
-      "The pre-built worker fleet visible to this principal.", tier="ui", callers=["studio", "tests"],
+      "READ-ONLY roster view: the sub-agents of the ONE agent ('cuga'), from supervisor_agents.yaml.",
+      tier="ui", callers=["studio", "tests"],
       query=[("scope", "override the principal", "")],
       responses=[(200, {"scope": "default/default", "agents": [
           {"name": "pricebot", "prompt": "You answer questions about asset prices…",
@@ -591,7 +593,12 @@ ENDPOINTS = [
       ],
       responses=[(200, {"ok": True, "name": "webpage_summarizer", "scope": "default/default"}, ""),
                  (400, {"ok": False, "error": "unknown mcp_servers: ['cuga-magic'] (known: […])"}, ""),
-                 (403, {"ok": False, "error": "builder or admin only"}, "")]),
+                 (403, {"ok": False, "error": "builder or admin only"}, ""),
+                 (410, {"ok": False, "error": "supervisor mode: sub-agents are defined in "
+                                              "supervisor_agents.yaml — edit + make reload"},
+                  "SINGLE-AGENT WORLD: registration through the API is retired; the roster YAML "
+                  "(canonical CUGA-main schema) is the source of truth. "
+                  "<code>GET /api/events/agents</code> stays as the read-only roster view.")]),
 
     E("PUT", "/api/events/agents/{name}", "agents",
       "Replace an existing agent. Must already exist.", tier="ui", callers=["studio"], auth="builder",
@@ -734,9 +741,9 @@ ENDPOINTS = [
       "Generic inbound webhook: any system POSTs JSON, an agent triages it.",
       tier="edge", callers=["external"], auth="hookkey",
       path_params=[("name", "a label for this hook; free-form", "monitoring")],
-      query=[("agent", "PINNED mode: which agent triages the payload", "incident_triage"),
-             ("route", "ROUTED mode: 1/true/llm → the concierge picks the agent by capability, like "
-                       "chat (the caller need not know the agent catalog). Overrides ?agent", "1"),
+      query=[("agent", "PINNED mode: legacy explicit target (single-agent world: use 'cuga')", "cuga"),
+             ("route", "ROUTED mode: 1/true/llm → the payload lands on THE one agent ('cuga'); "
+                       "its supervisor picks the specialist internally. Overrides ?agent", "1"),
              ("deliver_to", "channel to post the result into", "slack"),
              ("target", "that channel's native id", "C0BEYJ9NATB"),
              ("key", "required iff EVENTS_WEBHOOK_KEY is set", "")],
@@ -763,10 +770,11 @@ ENDPOINTS = [
              "With <code>?agent=support_digest</code> this becomes a triaged lead in your channel."),
             ("ROUTED — no agent named (<code>?route=1</code>)", {
                 "type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"},
-             "With <code>?route=1</code> the caller names NO agent — the concierge routes the payload "
-             "to the best-fit pre-built agent exactly the way it routes a Slack/web chat message. The "
-             "response's <code>agent</code> field reports which one it chose. Decouples the external "
-             "system from your agent catalog; add or rename agents and the URL never changes."),
+             "With <code>?route=1</code> the caller names NO agent — the payload lands on THE one "
+             "agent (<code>cuga</code>), whose supervisor picks the right specialist internally, "
+             "per event. The response's <code>agent</code> field reports <code>cuga</code>. "
+             "Decouples the external system from the roster; add or rename sub-agents in "
+             "supervisor_agents.yaml and the URL never changes."),
             ("An empty body", {}, "Accepted. The agent is told <code>(empty body)</code> rather than "
              "the request being rejected — a health-check ping still exercises the whole path."),
             ("A non-object body", [1, 2, 3],

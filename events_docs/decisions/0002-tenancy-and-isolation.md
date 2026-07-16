@@ -28,10 +28,12 @@ layer must add its own scoping without fighting CUGA's model.
   agent land in the same namespace. (This bug — dual defaults `"default"` vs `"default/default/local"`
   — was caught and fixed.)
 
-## Statefulness (the fleet model)
+## Statefulness (the replica model)
 For **one shared AP + many stateless CUGA replicas**, an AP callback can land on any replica, so:
-- **Agents → shared store** — `AgentStore` (sqlite/Postgres, `EVENTS_DB`) for the `react` backend;
-  CUGA `config_store` for the `cuga` backend. Any replica rebuilds any `(scope, agent)` on demand.
+- **Agents → shared definition** — *(amended by [0009](0009-single-agent-supervisor.md))*: sub-agents
+  live in `supervisor_agents.yaml` (shipped with the code, identical on every replica); the
+  `AgentStore` remains only for the `react` dev runtime. Any replica rebuilds the supervisor on
+  demand from the same file.
 - **Memory → persistent checkpointer** — `runtime.make_sqlite_checkpointer` (AsyncSqliteSaver;
   Postgres in prod) instead of in-process `MemorySaver`.
 - Verified: a fresh runtime on the same stores sees the agent **and** continues the memory, while a

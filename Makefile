@@ -138,6 +138,9 @@ slides: ## Regenerate events_docs/slides.html (the event-driven-agents deck) and
 	@$(PY) scripts/gen_slides.py
 	@open events_docs/slides.html 2>/dev/null || echo "→ events_docs/slides.html"
 
+test-delegation: ## LIVE: the supervisor's routing accuracy over the real 27-agent roster (~10 min)
+	$(PY) tests/events/live_delegation_bench.py
+
 
 doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py

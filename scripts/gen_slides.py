@@ -184,6 +184,37 @@ def build() -> str:
       is just a subscription row. No AP flow at all.</li>
 </ul>"""))
 
+    # 4b — the single-agent model (roster size read from the canonical YAML — can't overstate)
+    try:
+        import yaml as _yaml
+        n_roster = len((_yaml.safe_load(open(ROOT / "supervisor_agents.yaml")) or {}).get("agents") or [])
+    except Exception:  # noqa: BLE001
+        n_roster = 0
+    slides.append(_slide("One agent — the supervisor model", f"""
+<p class="big">Users and events address exactly <b>one agent: <code>cuga</code></b>. Specialists
+   exist, but they are <em>its</em> sub-agents — never addressed, never exposed.</p>
+<pre style="background: var(--card); border: 1px solid #262b38; border-radius: 10px;
+            padding: 1rem 1.2rem; font-size: .85rem; line-height: 1.5; overflow-x: auto;">
+channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}}
+                                        │
+                              cuga (SUPERVISOR, EVENTS_SUPERVISOR=1)
+                              reads its roster: supervisor_agents.yaml
+                                        │  picks ONE specialist per wake-up
+                                        ▼
+                     {n_roster} sub-agents — a skill each: prompt · tools · HANDLES-trigger hints
+                                        │  answer bubbles up
+                                        ▼
+                     delivered to wherever the conversation/flow originated</pre>
+<ul class="tight">
+  <li><b>Adding a sub-agent = editing a YAML</b> (CUGA-main's canonical supervisor schema) +
+      <code>make reload</code>. No API, no deployment.</li>
+  <li><b>Channels and credentials are platform-level</b> — a sub-agent gets event content and its
+      own tools, never a token, never a channel identity.</li>
+  <li><b>Routing is a measured gate</b>, not a vibe: <code>make test-delegation</code> scores the
+      supervisor's picks on labelled payloads (first full run: 14/14, zero self-answers).</li>
+  <li>Flag unset → the same one agent, as plain classic CUGA — the whole events layer still works.</li>
+</ul>"""))
+
     # 5 — the registry
     slides.append(_slide("The trigger registry — one table rules everything", f"""
 <p><code>triggers.py</code> holds <b>{len(rows)} triggers</b> — one row per
@@ -261,8 +292,9 @@ def build() -> str:
     <p><code>/automate &lt;what&gt;</code> — the router picks cron / poll / push for you.<br>
        <code>/cron</code> · <code>/poll</code> · <code>/push</code> · <code>/watch</code> — force a
        specific kind.</p>
-    <p><code>POST /api/events/hook/{name}</code> — external systems fire a webhook; <b>routed</b>
-       mode picks the agent by capability, like chat does.</p>
+    <p><code>POST /api/events/hook/{name}</code> — external systems fire a webhook; either way it
+       lands on <b>the one agent (cuga)</b>, whose supervisor picks the right specialist
+       internally.</p>
   </div>
 </div>"""))
 
@@ -294,6 +326,38 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
    correct-at-high {b['right']}/{b['high']}, gated on <b>zero wrong-at-high</b>. It caught two real
    bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p>"""))
 
+    # under the hood — the API + division of labor
+    slides.append(_slide("Under the hood — the technical highlights", f"""
+<table class="tbl">
+  <tr><th>Layer</th><th>What it does</th><th>Fuzzy or deterministic?</th></tr>
+  <tr><td class="k">The envelope API</td>
+      <td><code>POST /invoke {{agent, source, event}}</code> + gateway token — ONE contract for
+          every wake source: 4 chat channels, {n_ap} AP piece triggers, {n_direct} direct watchers,
+          webhooks, cron/poll. New wake source = new caller, zero new agent code.</td>
+      <td>deterministic</td></tr>
+  <tr><td class="k">NL→Flow (arm time)</td>
+      <td>the concierge COMPILES a sentence: kind (cron/poll/push) → trigger (registry phrases) →
+          slots extracted → validated → deduped (DB unique index) → AP flow built. Missing slot =
+          ONE question; the next message fills it (<em>ask-till-legit</em>).</td>
+      <td>deterministic fast path; LLM only for genuine ambiguity — gated on
+          <b>zero-wrong-at-high</b> ({b['cases']} labelled cases in CI)</td></tr>
+  <tr><td class="k">Routing (fire time)</td>
+      <td>the supervisor reads the event payload + its roster's HANDLES hints and picks one
+          specialist; the answer bubbles up. Hints are generated FROM the trigger registry — they
+          cannot drift.</td>
+      <td>one LLM inference per wake-up — measured by <code>make test-delegation</code></td></tr>
+  <tr><td class="k">Execution</td>
+      <td>each sub-agent = a full CUGA agent (canonical SDK), tools scoped to its declared MCP
+          servers; AP resolves credentials in its sandbox and delivers CONTENT, never tokens.</td>
+      <td>deterministic wiring</td></tr>
+  <tr><td class="k">Delivery</td>
+      <td>the sink follows the origin — answers land in the channel (thread) the request or flow
+          came from; direct channels are sent by CUGA itself, no AP send step.</td>
+      <td>deterministic</td></tr>
+</table>
+<p class="dim">The division of labor in one line: <b>language is compiled at arm time, judgment is
+   spent at fire time, and everything either side of the LLM is a function you can test.</b></p>"""))
+
     # the receipts — concrete, verifiable engineering wins
     slides.append(_slide("The receipts — why you can trust this", f"""
 <ul class="tight">
@@ -313,6 +377,10 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
       unique index — two simultaneous asks produce one flow, deterministically.</li>
   <li><b>Honest verdicts everywhere.</b> The test vocabulary separates PASS / XFAIL / ARMED /
       NOFIRE / SKIP — a green that means “exists” is never sold as “works”.</li>
+  <li><b>One agent, measured routing.</b> Users and events address ONE agent — <code>cuga</code>,
+      a supervisor whose specialists load from a canonical YAML roster. Its per-event routing is a
+      gated benchmark (<code>make test-delegation</code>): first full run 14/14, zero
+      self-answers.</li>
 </ul>"""))
 
     # credentials

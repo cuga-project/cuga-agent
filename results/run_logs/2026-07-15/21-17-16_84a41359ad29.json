@@ -1,0 +1,22 @@
+{
+ "kind": "chat",
+ "scope": "default/default/local",
+ "agent": "concierge",
+ "channel": "web",
+ "thread_id": "",
+ "subscription_id": "",
+ "event_kind": "",
+ "text_in": "every day at 9am send me bitcoin",
+ "answer_out": "Cron flow set up.",
+ "status": "ok",
+ "ms": 0,
+ "trace_id": "3b9ee3683027",
+ "meta": {
+  "agent": null,
+  "backend": null,
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "84a41359ad29",
+ "when": "2026-07-15 21:17:16"
+}

@@ -15,7 +15,8 @@
 <text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">/invoke</text>
 <line x1="653" y1="142" x2="653" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
 <rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
-<text x="653" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">mailbot</text>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga → mailbot</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(supervisor picks)</text>
 <rect x="30" y="144" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
 <text x="386" y="164" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 AP resolves {{connections['ea::…::gmail']}} → the token, in its sandbox</text>
 <text x="208.0" y="196" font-size="12" fill="#1c1b1a" text-anchor="middle">poll: any new mail? (every ~1–2 min)</text>

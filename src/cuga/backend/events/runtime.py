@@ -240,6 +240,120 @@ def logging_warn(msg: str) -> None:
     logging.getLogger("cuga.events").warning(msg)
 
 
+# ---- SupervisorRuntime (EVENTS_SUPERVISOR=1) — ONE agent, canonical roster ----
+class SupervisorRuntime(AgentRuntime):
+    """The single-agent world (events_docs/plans/SUPERVISOR_REFACTOR.md).
+
+    There is exactly ONE addressable agent: **"cuga"**. With ``EVENTS_SUPERVISOR=1`` it is a
+    ``CugaSupervisor`` whose sub-agents come from the CANONICAL roster file
+    (``supervisor_agents.yaml``, CUGA-main's ``load_supervisor_config`` schema) — the SUPERVISOR
+    does all routing, per wake-up, and the answer bubbles up. ``run()``'s ``agent_id`` is kept
+    only as a caller hint recorded in runmeta; execution always goes to the one agent.
+
+    Sub-agent management is CANONICAL: edit the YAML + ``make reload``. There is no store, no
+    upsert — ``upsert_agent`` refuses loudly so the old fleet APIs can't silently half-work.
+    ``list_agents`` serves the ROSTER as read-only AgentSpecs (name + prompt) for the Studio's
+    view; nothing routes on it."""
+
+    ROSTER_FILE = "supervisor_agents.yaml"
+
+    def __init__(self, roster_path: str | None = None) -> None:
+        self._roster_path = roster_path or os.path.join(os.getcwd(), self.ROSTER_FILE)
+        self._sup = None                       # lazy CugaSupervisor (needs the model config)
+        self._specs: list[AgentSpec] = []      # read-only roster view
+
+    # ---- roster (read-only; the YAML is the truth) --------------------------
+    def _load_specs(self) -> list[AgentSpec]:
+        if self._specs:
+            return self._specs
+        try:
+            import yaml
+            cfg = yaml.safe_load(open(self._roster_path)) or {}
+            self._specs = [
+                AgentSpec(name=a.get("name", ""), backend="cuga",
+                          prompt=(a.get("special_instructions") or "").strip(),
+                          mcp_servers=[m.get("name") if isinstance(m, dict) else str(m)
+                                       for m in (a.get("mcp_servers") or [])])
+                for a in (cfg.get("agents") or []) if a.get("name")
+            ]
+        except FileNotFoundError:
+            self._specs = []
+        return self._specs
+
+    def upsert_agent(self, spec: AgentSpec, *, scope: str = DEFAULT_SCOPE) -> str:
+        raise RuntimeError(
+            "supervisor mode: sub-agents are defined in supervisor_agents.yaml (canonical "
+            "CUGA-main schema) — edit the file and `make reload`. The fleet upsert API is retired.")
+
+    def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
+        if agent_id == "cuga":
+            return AgentSpec(name="cuga", backend="cuga", prompt="the CUGA supervisor")
+        return next((s for s in self._load_specs() if s.name == agent_id), None)
+
+    def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
+        return self._load_specs()
+
+    # ---- execution — everything goes to THE agent ---------------------------
+    async def _supervisor(self):
+        if self._sup is None:
+            from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+            from cuga.sdk import CugaSupervisor
+            cfg = await load_supervisor_config(self._roster_path)
+            self._sup = CugaSupervisor(
+                agents=cfg.agents,
+                special_instructions=(cfg.supervisor or {}).get("special_instructions"))
+            logging_warn(f"supervisor 'cuga' up with {len(cfg.agents)} sub-agents "
+                         f"(roster: {self._roster_path})")
+        return self._sup
+
+    async def run(self, agent_id: str, thread_id: str, text: str,
+                  *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
+        from . import runmeta
+        runmeta.add(agent="cuga", backend="supervisor",
+                    mcp=[f"hint:{agent_id}"] if agent_id not in ("", "cuga") else [])
+        sup = await self._supervisor()
+        # thread identity: per-conversation, NOT the delegation module's fixed per-agent thread —
+        # scope+thread keeps users' contexts apart at the supervisor level.
+        res = await sup.invoke(text, thread_id=f"{scope}:{thread_id}")
+        return res.answer if hasattr(res, "answer") else str(res)
+
+
+# ---- ClassicRuntime (EVENTS_SUPERVISOR unset) — the good old single cuga agent ----
+class ClassicRuntime(CugaRuntime):
+    """One plain CUGA agent, as main ships it — no fleet, no supervisor, no roster.
+
+    Every ``run()`` executes the SAME generalist graph regardless of the requested agent id
+    (kept only as a runmeta hint). ``upsert_agent`` refuses: in the single-agent world there is
+    nothing to register. This is the EVENTS_SUPERVISOR-unset half of the supervisor refactor
+    (events_docs/plans/SUPERVISOR_REFACTOR.md): unset = classic cuga, set = supervisor."""
+
+    _CUGA = AgentSpec(name="cuga", backend="cuga",
+                      prompt="",                       # no special instructions — the plain agent
+                      channels=["web", "slack", "discord", "telegram"])
+
+    def __init__(self, *, app_context=None, cache_size: int = 2) -> None:
+        super().__init__(agent_store=None, app_context=app_context, cache_size=cache_size)
+
+    def upsert_agent(self, spec: AgentSpec, *, scope: str = DEFAULT_SCOPE) -> str:
+        raise RuntimeError("classic mode (EVENTS_SUPERVISOR unset): one plain cuga agent, "
+                           "no registrations. Set EVENTS_SUPERVISOR=1 and edit "
+                           "supervisor_agents.yaml for sub-agents.")
+
+    def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
+        return self._CUGA
+
+    def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
+        return [self._CUGA]
+
+    async def run(self, agent_id: str, thread_id: str, text: str,
+                  *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
+        if agent_id not in ("", "cuga"):
+            from . import runmeta
+            runmeta.add(agent="cuga", backend="cuga", mcp=[f"hint:{agent_id}"])
+        return await super().run("cuga", thread_id, text, scope=DEFAULT_SCOPE,
+                                 deliver_to=deliver_to)
+
+
 # ---- selection -----------------------------------------------------------
 def make_runtime(backend: str, **kw) -> AgentRuntime:
     """Build the WORKER runtime. ``cuga`` (default) executes on CUGA — no silent react fallback
@@ -249,17 +363,16 @@ def make_runtime(backend: str, **kw) -> AgentRuntime:
     b = (backend or "cuga").lower()
     if b == "stub":
         return StubRuntime()
-    if b == "react":
+    if b == "react":     # dev/test-only lightweight loop (unchanged)
         return ReactRuntime(**{k: v for k, v in kw.items()
                                if k in ("model_factory", "agent_store", "checkpointer")})
-    # cuga (default): storage via AgentStore; react fallback ONLY if explicitly opted in.
-    react_fb = None
-    if os.environ.get("EVENTS_CUGA_FALLBACK_REACT"):
-        react_fb = ReactRuntime(**{k: v for k, v in kw.items()
-                                   if k in ("model_factory", "agent_store", "checkpointer")})
-    return CugaRuntime(agent_store=kw.get("agent_store"), app_context=kw.get("app_context"),
-                       react_fallback=react_fb,
-                       **{k: v for k, v in kw.items() if k in ("cache_size",)})
+    # THE SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md). One addressable agent,
+    # "cuga", in both modes — the fleet-routing runtime is retired:
+    #   EVENTS_SUPERVISOR=1 → the canonical supervisor, sub-agents from supervisor_agents.yaml
+    #   unset               → the plain classic cuga agent, as main ships it
+    if os.environ.get("EVENTS_SUPERVISOR", "").split(" #", 1)[0].strip() in ("1", "true", "yes"):
+        return SupervisorRuntime(roster_path=kw.get("roster_path"))
+    return ClassicRuntime(app_context=kw.get("app_context"))
 
 
 async def make_sqlite_checkpointer(path: str):

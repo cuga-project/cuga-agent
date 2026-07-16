@@ -39,11 +39,13 @@ live Telegram path (inbound + scheduled delivery).
 
 **The remaining P3 work — and the strategic one is NL→flow rigor:**
 
-1. **NL→flow rigor** *(the strategic gap)* — today the concierge classifies with an LLM + a
-   deterministic planner, but there is **no typed FlowSpec intermediate, no validation gate before
-   arming, and no labeled benchmark scored in CI** with a model bake-off. This is the difference
-   between "works in our demos" and "trust an English sentence to arm the right flow." The flow
-   builder is still linear (trigger → invoke → publish); branching/ROUTER flows are designed, not built.
+1. **NL→flow rigor** *(largely CLOSED, 2026-07-15)* — shipped: a typed **FlowSpec**
+   (`events/flowspec.py`) + deterministic pre-router (ask-till-legit), the registry **validation
+   gate** before arming, and a **47-case labeled benchmark in CI** gated on zero-wrong-at-high.
+   With the single-agent world ([decisions/0009](decisions/0009-single-agent-supervisor.md)) the
+   supervisor's routing is benchmarked too (`make test-delegation`). Remaining: the LLM seam
+   scored the same way + a model bake-off. The flow builder is still linear
+   (trigger → invoke → publish); branching/ROUTER flows are designed, not built.
 2. **Webhook — OUT** — deliver an answer to any HTTP endpoint (optional HMAC); enables flow→flow.
 3. **Email delivery sink** — "…email me the brief" delivers to an inbox, not a chat.
 

@@ -181,9 +181,9 @@ EXAMPLES = [
         "POST any event to /api/events/hook/<name>?route=1 — CUGA routes it like a chat message",
         agent="(auto-routed)", channel="slack", integration="webhook", phase="run", live=True,
         star=True,
-        note="ROUTED webhook-IN: the caller names NO agent; the concierge picks the best-fit pre-built "
-             "agent by capability, exactly like a Slack/web chat message (a PR payload → pr_reviewer, a "
-             "payment dispute → incident_triage). Decouples the external system from the agent catalog"),
+        note="ROUTED webhook-IN: the caller names NO agent; the payload lands on THE one agent "
+             "(cuga), whose supervisor picks the specialist per event (a PR payload → pr_reviewer, a "
+             "payment dispute → incident_triage). Decouples the external system from the roster"),
     _ex("cron-trending", "GitHub trending → Slack (hourly)", "cron",
         "every hour post the top trending GitHub repos in this channel",
         agent="github_trending", channel="slack", phase="run", live=True,
@@ -499,12 +499,12 @@ EXAMPLES = [
         agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,
         ap_trigger="inbound (pinned)",
         note="generic inbound webhook, PINNED: you name the agent in the URL (deterministic)"),
-    _ex("adv-webhook-routed", "Webhook · routed agent", "push",
-        "POST any JSON to /api/events/hook/<name>?route=1 — the concierge picks the agent, like chat",
-        agent="(auto-routed)", channel="slack", integration="webhook", phase="run", live=True,
-        ap_trigger="inbound (routed)",
-        note="generic inbound webhook, ROUTED: the concierge routes by capability (a PR payload → "
-             "pr_reviewer, a dispute → incident_triage). No agent catalog knowledge needed"),
+    _ex("adv-webhook-routed", "Webhook · routed", "push",
+        "POST any JSON to /api/events/hook/<name>?route=1 — it lands on the one agent (cuga)",
+        agent="cuga (supervisor picks)", channel="slack", integration="webhook", phase="run",
+        live=True, ap_trigger="inbound (routed)",
+        note="generic inbound webhook, ROUTED: cuga's supervisor picks the specialist per event "
+             "(a PR payload → pr_reviewer, a dispute → incident_triage). No roster knowledge needed"),
 ]
 
 

@@ -1,0 +1,22 @@
+{
+ "kind": "chat",
+ "scope": "default/default/admin",
+ "agent": "cuga",
+ "channel": "web",
+ "thread_id": "",
+ "subscription_id": "",
+ "event_kind": "",
+ "text_in": "what is the capital of Japan?",
+ "answer_out": "Tokyo.",
+ "status": "ok",
+ "ms": 23305,
+ "trace_id": "d6a3881c7da5",
+ "meta": {
+  "agent": "cuga",
+  "backend": "supervisor",
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "aadea4515118",
+ "when": "2026-07-15 21:19:02"
+}

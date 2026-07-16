@@ -19,7 +19,7 @@
 <text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /api/concierge  "watch repo X for new PRs, summarize"</text>
 <line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <path d="M297,206 h34 v20 h-34" fill="none" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
-<text x="337" y="212" font-size="12" fill="#1c1b1a">classify → PUSH · pick pr_reviewer · resolve connection id</text>
+<text x="337" y="212" font-size="12" fill="#1c1b1a">classify → PUSH · target = 'cuga' (the ONE agent) · resolve connection id</text>
 <text x="386.0" y="256" font-size="12" fill="#1c1b1a" text-anchor="middle">build flow: trigger.auth = {{connections['ea::…::github']}}</text>
 <line x1="297" y1="264" x2="468" y2="264" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
 <rect x="30" y="300" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>

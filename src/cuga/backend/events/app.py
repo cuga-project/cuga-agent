@@ -97,15 +97,29 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     from .now_runs import NowRunStore
     now_runs = NowRunStore(os.environ.get("EVENTS_DB", ":memory:"))
 
-    def _log_now(*, scope, agent, channel, prompt, answer, status, ms=0, meta=None, trace_id=""):
-        """Record one NOW answer. Never let logging break the response it describes."""
+    def _log_now(*, scope, agent, channel, prompt, answer, status, ms=0, meta=None, trace_id="",
+                 thread_id="", kind="chat", subscription_id="", event_kind="", db=True):
+        """Record one execution: the in-DB log (Runs tab; ``db=False`` for AP-backed fires whose
+        run history AP already keeps) + a DETAILED per-run file on disk for EVERY execution
+        (results/run_logs/<date>/…, see run_logger). Never let logging break the response."""
+        if db:
+            try:
+                now_runs.add(scope=scope, agent=agent or "", channel=channel or "",
+                             prompt=prompt or "",
+                             answer=answer if isinstance(answer, str) else str(answer),
+                             status=status, ms=ms or 0,
+                             mcp=(meta or {}).get("mcp") or [],
+                             tools=(meta or {}).get("tools") or [],
+                             trace_id=trace_id or "")
+            except Exception:  # noqa: BLE001
+                pass
         try:
-            now_runs.add(scope=scope, agent=agent or "", channel=channel or "",
-                         prompt=prompt or "",
-                         answer=answer if isinstance(answer, str) else str(answer),
-                         status=status, ms=ms or 0,
-                         mcp=(meta or {}).get("mcp") or [], tools=(meta or {}).get("tools") or [],
-                         trace_id=trace_id or "")
+            from . import run_logger
+            run_logger.dump(kind=kind, scope=scope, agent=agent or "", channel=channel or "",
+                            thread_id=thread_id, subscription_id=subscription_id,
+                            event_kind=event_kind,
+                            text_in=prompt or "", answer_out=answer, status=status, ms=ms or 0,
+                            trace_id=trace_id or "", meta=meta or {})
         except Exception:  # noqa: BLE001
             pass
 
@@ -265,11 +279,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     tr("deliver", via="capture", ok=True)
                 except Exception as e:  # noqa: BLE001
                     tr.error("deliver", via="capture", err=str(e))
-        if is_now:
-            _log_now(scope=scope,
-                     agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
-                     channel=env.source.name, prompt=env.text, answer=base_answer,
-                     status="ok", ms=ms, meta=meta, trace_id=tr.id)
+        # EVERY execution gets a detailed disk log (chat AND fires); the in-DB Runs row only for
+        # NOW answers (AP keeps its own run history for AP-backed fires).
+        _log_now(scope=scope,
+                 agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
+                 channel=env.source.name, prompt=env.text, answer=base_answer,
+                 status="ok", ms=ms, meta=meta, trace_id=tr.id,
+                 thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
+                 event_kind=str(getattr(env.event, "kind", "") or ""), db=is_now)
         return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
                 "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
                          "backend": meta.get("backend"), "mcp": meta.get("mcp") or [],
@@ -320,7 +337,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         _meta = runmeta.get() or {}
         _log_now(scope=principal.scope, agent=_meta.get("agent") or "concierge", channel="web",
                  prompt=text, answer=reply if isinstance(reply, str) else str(reply),
-                 status="ok", ms=_ms, meta=_meta, trace_id=tr.id)
+                 status="ok", ms=_ms, meta=_meta, trace_id=tr.id,
+                 thread_id=thread_id or "", kind="chat")
         out = {"ok": True, "reply": reply, "scope": principal.scope, "trace_id": tr.id}
         if want_flow:
             out["flows"] = await _armed_flows(before, principal.scope, full=full_flow)
@@ -813,6 +831,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         agent_scope = "/".join(p.scope.split("/")[:2]) or p.scope
         try:
             runtime.upsert_agent(spec, scope=agent_scope)
+        except RuntimeError as e:
+            # single-agent world: sub-agents are defined in supervisor_agents.yaml (canonical
+            # CUGA-main schema) — the fleet registration API is retired, and says so.
+            return JSONResponse({"ok": False, "error": str(e)}, 410)
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": str(e)}, 500)
         Trace(new_trace_id())("agent.upsert", name=spec.name, scope=agent_scope, backend=spec.backend)
@@ -836,6 +858,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": err}, 400)
         try:
             runtime.upsert_agent(spec, scope=agent_scope)
+        except RuntimeError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, 410)   # single-agent world
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": str(e)}, 500)
         Trace(new_trace_id())("agent.update", name=spec.name, scope=agent_scope)
@@ -1288,9 +1312,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         except Exception as e:  # noqa: BLE001
             tr.error("hook", err=str(e))
             return JSONResponse({"ok": False, "webhook": name, "error": str(e)}, 502)
-        # For a routed call, surface WHICH agent the concierge chose (from /invoke's meta) so the
-        # caller can see the decision; for a pinned call it's just the agent they named.
+        # SINGLE-AGENT WORLD: the executor is always 'cuga' (the supervisor picks a specialist
+        # internally, per wake-up). Surface 'cuga' for routed calls — the old "which agent did
+        # the concierge choose" question is retired with fleet routing.
         resolved = (j.get("meta") or {}).get("agent") or agent
+        if routed and resolved in ("", "concierge"):
+            resolved = "cuga"
         return {"ok": r.status_code == 200, "webhook": name, "routed": routed,
                 "agent": resolved, "answer": j.get("answer"), "delivered": deliver, "trace_id": tr.id}
 

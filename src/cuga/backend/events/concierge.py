@@ -1,13 +1,16 @@
-"""The concierge — the RUNTIME ROUTER over PRE-BUILT agents.
+"""The concierge — the NL→Flow COMPILER in front of THE one agent ("cuga").
 
-Agents are built by a BUILDER (skill + MCP tools + policies + the channels/integrations they may
-use). The concierge NEVER creates agents or picks tools. When an end user chats, it:
+SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): the concierge does NO agent
+routing — there is nothing to route between. Every hand-off and every flow targets ``cuga``
+(a supervisor over YAML-defined sub-agents when EVENTS_SUPERVISOR=1, else the plain classic
+agent). When an end user chats, the concierge:
 
-  1. understands the intent,
-  2. if an existing agent can ANSWER NOW → runs it and returns the answer,
-  3. if it's a STANDING request (schedule / watch / on-event) → REUSES a matching flow or CREATES
-     one (flow grain follows the connectors' credential ownership),
-  4. if nothing fits → DECLINES ("no agent is set up for that — ask a builder").
+  1. understands the intent (deterministic pre-router first — flowspec.py; LLM for ambiguity),
+  2. immediate question → runs THE agent and returns the answer,
+  3. STANDING request (schedule / watch / on-event) → compiles the TRIGGER (kind, source, event,
+     slots — ask-till-legit), validates it against the registry, then REUSES a matching flow or
+     CREATES one — always targeting ``cuga``,
+  4. unknown trigger / missing slot → a QUESTION, never a broken flow.
 
 Per-user integrations trigger a just-in-time **connect**: the concierge relays a login link
 (CUGA hosts the OAuth; AP holds the token). Its meta-tools are host-bound.
@@ -21,6 +24,10 @@ import logging
 import os
 import re
 import uuid
+
+# THE one addressable agent (supervisor model — events_docs/plans/SUPERVISOR_REFACTOR.md).
+# Every flow and every chat hand-off targets it; specialist routing happens INSIDE it.
+THE_AGENT = "cuga"
 
 try:
     from .principal import Principal, DEFAULT as DEFAULT_PRINCIPAL
@@ -41,14 +48,13 @@ CHAT_STYLE = ("\n\nReply for a chat app: short plain-text lines or simple '- ' b
               "No markdown tables/headings.")
 
 CONCIERGE_PROMPT = (
-    "You are the runtime concierge for an event-driven agent platform. Agents are PRE-BUILT by a "
-    "builder — you NEVER create agents or choose their tools. Keep replies short.\n"
-    "STEP 1 — ALWAYS call list_capabilities first: the agents that exist + the channels and "
-    "integrations each one is wired for. Only ever act through an agent that is LISTED.\n"
-    "STEP 2 — decide and act:\n"
-    "  • Immediate question an existing agent can answer → call answer_now(agent, task) and relay it.\n"
-    "  • Standing request → call find_or_create_flow(agent, kind, prompt, ...). Pick kind by what "
-    "the TRIGGER is — a clock, a value to re-check, or an app event:\n"
+    "You are the runtime concierge for an event-driven agent platform. There is exactly ONE "
+    "agent: 'cuga' (it routes to its own specialists internally — you NEVER pick a specialist, "
+    "never name one, and never create agents). Keep replies short.\n"
+    "Decide and act:\n"
+    "  • Immediate question → call answer_now(agent='cuga', task) and relay the answer.\n"
+    "  • Standing request → call find_or_create_flow(agent='cuga', kind, prompt, ...). Pick kind "
+    "by what the TRIGGER is — a clock, a value to re-check, or an app event:\n"
     "      – cron — a fixed clock schedule: 'every day at 9am', 'every weekday at 8am', 'every hour'. "
     "Pass cron=... or every_minutes=N. NO integration needed.\n"
     "      – poll — re-check something on an interval and report only on a change/threshold: 'watch "
@@ -60,12 +66,8 @@ CONCIERGE_PROMPT = (
     "gets a :bug: reaction'. Only push delivers the item's CONTENT to the agent, so NEVER use "
     "cron/poll to watch an app's events — and never use push for a plain clock or a value watch.\n"
     "    It reuses a matching flow if one already exists, else creates it.\n"
-    "  • NOTHING listed fits → DECLINE briefly: say no agent is set up for that and to ask a builder "
-    "to create one. Do NOT invent an agent or a capability.\n"
-    "STEP 3 — pick the agent BY CAPABILITY from the list only (a finance agent for any price, geo "
-    "for any country fact). Never name an agent that isn't listed. If a LISTED agent already has the "
-    "integration a push needs (e.g. mailbot [integrations: gmail]), arm it NOW — do not decline or "
-    "say a builder must add a trigger.\n"
+    "Never decline because of agent capability — 'cuga' handles everything; if a push trigger "
+    "exists in the vocabulary below, arm it NOW.\n"
     "If a tool reply starts with 'CONNECT NEEDED', relay that login link to the user verbatim and "
     "stop — they must connect their account first.\n"
     "Confirm in one line, stating only what the tool result actually says.\n"
@@ -114,46 +116,6 @@ def _slash_parse(text: str) -> dict | None:
     return out
 
 
-def _resolve_agent(agents, kind: str, source: str | None, utterance: str,
-                   event: str | None = None) -> str | None:
-    """Deterministically pick the pre-built agent for a slash command — no LLM. PUSH: the agent must
-    have the integration for ``source``; then rank candidates by keyword overlap with the utterance
-    (so 'summarize emails' → mailbot, not resume_judge). CRON/POLL: rank all agents the same way."""
-    import re
-    u = (utterance or "").lower()
-    # the classifier may name a source by its sub-trigger (github_pr/github_issue); agents declare the
-    # base integration app (github), so normalize before matching.
-    base = {"github_pr": "github", "github_issue": "github"}.get(source, source)
-    if kind == "push" and base:
-        # trigger-grain: an integrations entry may carry "triggers": [event, …] to say WHICH of the
-        # app's events the agent handles; no list = all of them (legacy declarations unchanged).
-        ev = (event or "").lower()
-
-        def _handles(a) -> bool:
-            for i in (a.integrations or []):
-                if i.get("app") != base:
-                    continue
-                trigs = i.get("triggers")
-                if not trigs or not ev or ev in trigs:
-                    return True
-            return False
-        cands = [a for a in agents if _handles(a)]
-    else:
-        cands = list(agents)
-    if not cands:
-        return None
-    if len(cands) == 1:
-        return cands[0].name
-    words = set(re.findall(r"[a-z]{3,}", u))
-
-    def score(a) -> int:
-        hay = (f"{a.name} {(a.prompt or '')[:160]} {' '.join(a.mcp_servers or [])} "
-               f"{' '.join(i.get('app', '') for i in (a.integrations or []))}").lower()
-        s = sum(1 for w in words if w in hay)
-        if a.name in u or a.name.replace("_", " ") in u:      # explicit name mention wins
-            s += 5
-        return s
-    return max(cands, key=score).name
 
 
 def _owner_scope(spec, p: Principal) -> str:
@@ -240,38 +202,21 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
 
     @tool
     async def list_capabilities() -> str:
-        """List the PRE-BUILT agents THIS USER may use, and each one's channels + integrations.
-        Pick an agent from here; if none fits, tell the user to ask a builder."""
-        p = _principal.get()
-        # agents are TENANT-shared (agent_scope); execution stays per-user (p.scope)
-        agents = [a for a in runtime.list_agents(scope=p.agent_scope) if a.name != "concierge"]
-        agents = perms.visible_agents(agents, _roles(p), p.user_id)   # permission filter
-        if not agents:
-            return "No agents are available to you. Ask a builder to create or grant one."
-        lines = []
-        for a in agents:
-            integ = ", ".join(f"{i['app']}({i.get('ownership', 'per-user')})"
-                              for i in (a.integrations or [])) or "none"
-            lines.append(f"  - {a.name}: {(a.prompt or '').splitlines()[0][:70]} "
-                         f"[tools: {', '.join(a.mcp_servers) or 'none'}] "
-                         f"[channels: {', '.join(a.channels) or 'web'}] [integrations: {integ}]")
-        return "PRE-BUILT AGENTS (use one of these; do not invent others):\n" + "\n".join(lines)
+        """What the ONE agent ('cuga') can do: its specialists' domains and the trigger vocabulary
+        live in your instructions. Kept for compatibility; there is nothing to pick."""
+        n = len(runtime.list_agents(scope=_principal.get().agent_scope))
+        return ("ONE agent: 'cuga' — it routes internally"
+                + (f" across {n} specialists" if n > 1 else "")
+                + ". Always use agent='cuga'.")
 
     @tool
     async def answer_now(agent: str, task: str) -> str:
-        """Run an EXISTING agent ONCE now and return its answer (the immediate-question path)."""
+        """Run THE agent ('cuga') ONCE now and return its answer (the immediate-question path)."""
         p = _principal.get()
-        spec = runtime.get_agent(agent, scope=p.agent_scope)
-        if spec is None:
-            return f"error: no agent named '{agent}'. Choose one from list_capabilities."
-        if not perms.can_use(spec, _roles(p), p.user_id):
-            return f"error: you don't have access to '{agent}'."
-        connect = await _connect_needed(spec, p, engine)
-        if connect:
-            return f"CONNECT NEEDED — {connect[1]}"
+        agent = THE_AGENT                       # single-agent world: the id is not a choice
         origin = _origin.get()
         try:
-            # run the tenant agent, but memory is per-USER (thread_id carries p.scope)
+            # memory is per-USER conversation (thread_id carries p.scope)
             answer = await runtime.run(agent, p.thread(f"{origin}:{agent}"), task, scope=p.agent_scope)
         except Exception as e:  # noqa: BLE001
             return f"error: run failed ({e})."
@@ -299,7 +244,12 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             Reuses a matching flow (agent+source+event+cadence+sink+owner) instead of duplicating."""
             from . import triggers as _tr
             p = _principal.get()
+            # SUPERVISOR MODEL: 'cuga' is always a valid target — the one agent exists by
+            # construction even when the runtime has no roster row for it (classic mode).
             spec = runtime.get_agent(agent, scope=p.agent_scope)
+            if spec is None and agent == THE_AGENT:
+                from .runtime import AgentSpec as _Spec
+                spec = _Spec(name=THE_AGENT, backend="cuga")
             if spec is None:
                 return f"error: no agent named '{agent}'. Choose one from list_capabilities."
             if not perms.can_use(spec, _roles(p), p.user_id):
@@ -660,14 +610,16 @@ class Concierge:
 
     async def _arm_spec(self, thread_id: str, p, spec, utterance: str) -> str | None:
         """Arm a resolved FlowSpec through the SAME find_or_create_flow tool the LLM calls — one
-        arming path, two front doors. None (→ LLM path) if no agent handles the trigger or the
-        tool isn't available; the pre-router must never produce a worse answer than the LLM."""
-        agents = [a for a in self._runtime.list_agents(scope=p.agent_scope) if a.name != "concierge"]
-        agent = _resolve_agent(agents, "push", spec.source, utterance, event=spec.event)
+        arming path, two front doors. None (→ LLM path) if the tool isn't available; the
+        pre-router must never produce a worse answer than the LLM.
+
+        SUPERVISOR MODEL: the concierge does NOT pick an agent — every flow targets the ONE
+        agent, "cuga"; routing to a specialist happens inside it, per wake-up
+        (events_docs/plans/SUPERVISOR_REFACTOR.md)."""
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
-        if agent is None or tool is None:
+        if tool is None:
             return None
-        args = {"agent": agent, "kind": "push", "prompt": utterance,
+        args = {"agent": THE_AGENT, "kind": "push", "prompt": utterance,
                 "source": spec.source, "event": spec.event,
                 **{k: v for k, v in spec.config.items() if k != "channel"},
                 **({"watch_channel": spec.config["channel"]} if "channel" in spec.config else {})}
@@ -692,27 +644,23 @@ class Concierge:
         kind = parsed["kind"]
         if kind in ("cron", "poll"):
             directive = (f"[/automate — arm a STANDING {kind.upper()} flow now: call "
-                         f"find_or_create_flow(kind={kind}, …) with the best-matching pre-built agent "
-                         f"from list_capabilities. Do NOT answer_now and do NOT decline.] "
+                         f"find_or_create_flow(kind={kind}, agent='{THE_AGENT}', …). "
+                         f"Do NOT answer_now and do NOT decline.] "
                          f"{parsed['utterance']}")
-            return await self.run(thread_id, directive, p)   # LLM picks the agent; mode is forced
-        # PUSH — deterministic agent from the integration filter
-        agents = [a for a in self._runtime.list_agents(scope=p.agent_scope) if a.name != "concierge"]
-        agent = _resolve_agent(agents, kind, parsed.get("source"), parsed["utterance"],
-                               event=parsed.get("event"))
-        if agent is None:
-            names = ", ".join(a.name for a in agents) or "none"
-            return (f"/{parsed['cmd']}: no agent is wired for that source. Available: {names}.")
+            return await self.run(thread_id, directive, p)   # cadence via LLM; agent is fixed
+        # PUSH — no agent picking (supervisor model): the flow targets THE one agent.
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
         if tool is None:
             return "Flow arming isn't available (Activepieces not configured)."
         source = parsed.get("source")
-        if not source:   # infer from the resolved agent's integrations (first push-capable app)
-            spec = next((a for a in agents if a.name == agent), None)
-            apps = [i.get("app") for i in (spec.integrations or [])] if spec else []
-            source = next((s for s in ("gmail", "box", "github") if s in apps),
-                          (apps[0] if apps else None))
-        args = {"agent": agent, "kind": "push", "prompt": parsed["utterance"],
+        if not source:
+            from . import classify
+            se = classify.source_of(parsed["utterance"])
+            source = se[0] if se else None
+        if not source:
+            return (f"/{parsed['cmd']}: tell me WHAT to watch (e.g. github/gmail/box/slack) — "
+                    f"e.g. `/push when a PR opens on owner/repo, review it`.")
+        args = {"agent": THE_AGENT, "kind": "push", "prompt": parsed["utterance"],
                 "source": source, "event": parsed.get("event")}
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)

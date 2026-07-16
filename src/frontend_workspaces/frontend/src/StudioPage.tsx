@@ -291,9 +291,10 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p className="studio-muted" style={{ margin: 0 }}>
-          A builder defines agents (skill + tools + connectors); the concierge routes among them.
+          <b>One agent — CUGA.</b> These are its sub-agents (the roster), defined in{" "}
+          <code>supervisor_agents.yaml</code> — edit the file and <code>make reload</code> to change
+          them. CUGA routes to the right specialist internally; nothing here is addressed directly.
         </p>
-        <Button size="sm" renderIcon={Add} onClick={openAdd}>Add agent</Button>
       </div>
       {/* pointer to the MCP tool explorer — where the tools these agents use come from */}
       <div className="studio-muted" style={{
@@ -350,12 +351,11 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
                 ))}
               </div>
             )}
-            <div className="studio-card-foot">
-              <Button kind="ghost" size="sm" renderIcon={Edit} onClick={() => openEdit(a)}>Edit</Button>
-            </div>
           </Tile>
         ))}
       </div>
+      {/* the editor is retired in the single-agent world — the roster lives in
+          supervisor_agents.yaml (edit + make reload); kept mounted for type stability */}
       <AgentEditor open={editorOpen} editing={editing} onClose={onClose} />
     </div>
   );

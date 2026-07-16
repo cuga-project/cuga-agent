@@ -1810,13 +1810,12 @@ try:
         _ev_users = UserStore(_ev_db)
         _ev_identity = IdentityMap(_ev_db)
         _ev_oauth_store = OAuthAppStore(_ev_db)
-        # Seed the demo fleet of PRE-BUILT agents (builder's job; the concierge never creates
-        # agents) + demo users. Opt-in via EVENTS_SEED_AGENTS=1. Agents are seeded at the TENANT
-        # agent_scope ("default/default") so all the tenant's users share them (access-gated).
+        # SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): sub-agents live in
+        # supervisor_agents.yaml (canonical schema; EVENTS_SUPERVISOR=1) — the fleet seeding is
+        # retired. Demo USERS are still seeded (identity/permissions need them).
         if _os.environ.get("EVENTS_SEED_AGENTS"):
             try:
-                from cuga.backend.events.seed import seed_default_agents, seed_default_users
-                seed_default_agents(_ev_runtime, scope="default/default")
+                from cuga.backend.events.seed import seed_default_users
                 seed_default_users(_ev_users, tenant="default")
             except Exception as _seed_err:  # noqa: BLE001
                 _logging.getLogger("cuga.events").warning("seed failed: %s", _seed_err)

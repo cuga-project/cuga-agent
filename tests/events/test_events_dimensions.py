@@ -122,25 +122,31 @@ def test_flow_builders_per_mode():
 
 
 # ---- runtime selection: cuga default + fallback GATING -------------------
-def test_runtime_selection_and_fallback_gating():
-    from agent_store import AgentStore
-    store = AgentStore(":memory:")
-    # default → cuga (no react fallback unless env)
-    os.environ.pop("EVENTS_CUGA_FALLBACK_REACT", None)
-    rt = runtime.make_runtime("cuga", agent_store=store, app_context=lambda: None)
-    assert isinstance(rt, runtime.CugaRuntime)
-    assert rt._react is None                             # NO silent fallback by default
-    # explicit react
-    assert isinstance(runtime.make_runtime("react", agent_store=store,
-                                           model_factory=lambda s: None), runtime.ReactRuntime)
-    # opt-in fallback
-    os.environ["EVENTS_CUGA_FALLBACK_REACT"] = "1"
+def test_runtime_selection_single_agent_world():
+    """The single-agent world (events_docs/plans/SUPERVISOR_REFACTOR.md): one addressable agent,
+    'cuga', in both modes. unset → ClassicRuntime (the plain agent, as main ships it);
+    EVENTS_SUPERVISOR=1 → SupervisorRuntime (sub-agents from the canonical YAML roster).
+    Neither accepts registrations — the fleet-routing runtime is retired."""
+    import pytest
+    os.environ.pop("EVENTS_SUPERVISOR", None)
+    rt = runtime.make_runtime("cuga", app_context=lambda: None)
+    assert isinstance(rt, runtime.ClassicRuntime)
+    assert [a.name for a in rt.list_agents()] == ["cuga"]
+    assert rt.get_agent("anything").name == "cuga"       # every id resolves to THE agent
+    with pytest.raises(RuntimeError):                    # no registrations in classic mode
+        rt.upsert_agent(runtime.AgentSpec(name="x"))
+    # explicit react (dev/test) unchanged
+    assert isinstance(runtime.make_runtime("react", model_factory=lambda s: None),
+                      runtime.ReactRuntime)
+    os.environ["EVENTS_SUPERVISOR"] = "1"
     try:
-        rt2 = runtime.make_runtime("cuga", agent_store=store,
-                                   model_factory=lambda s: None, app_context=lambda: None)
-        assert rt2._react is not None                    # fallback present only when opted in
+        rt2 = runtime.make_runtime("cuga")
+        assert isinstance(rt2, runtime.SupervisorRuntime)
+        assert rt2.get_agent("cuga") is not None
+        with pytest.raises(RuntimeError):                # sub-agents come from the YAML only
+            rt2.upsert_agent(runtime.AgentSpec(name="x"))
     finally:
-        os.environ.pop("EVENTS_CUGA_FALLBACK_REACT", None)
+        os.environ.pop("EVENTS_SUPERVISOR", None)
 
 
 def test_cuga_storage_isolation_via_agentstore():

@@ -102,6 +102,14 @@ def main() -> int:
                 print(f"  cleanup: delete file {file_id} → HTTP {d.status_code}")
 
     print(f"\nRESULT: {'PASS — Box integration e2e green (real file uploaded → detected → judged)' if ok else 'FAIL'}")
+    if ok:
+        try:
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.dirname(__file__))
+            from _ledger import record as _lrec
+            _lrec("box", "fire_real", "ok", "REAL upload → poller detected → judged → cleaned")
+        except Exception:  # noqa: BLE001
+            pass
     return 0 if ok else 1
 
 

@@ -3,6 +3,33 @@
 Where the work is headed. Phase definitions and current status are in [PHASES.md](PHASES.md); this is
 the sequenced "what's next." We are in **P3 (Run) = MVP, ~75%**.
 
+## Not yet fully vetted — the honest TODO (2026-07-15)
+
+The single-agent/supervisor refactor shipped and is live-proven, but these carry known caveats:
+
+1. **Polling triggers never machine-fired.** Gmail's 4 triggers (and Box on the AP backend) are
+   Activepieces POLLING triggers — arm-verified only; a genuine fire needs a real email/upload.
+   Structural to AP, but the *proof* remains manual (checklist §Gmail/Box).
+2. **Credentials — the weak link is `AP_PASSWORD`.** Tokens live encrypted in AP; CUGA-held
+   secrets can resolve via `vault://…` (the secret seam) — but in practice `.env` is plaintext and
+   AP_PASSWORD guards a publicly-tunneled AP console. Vault it before any real deployment
+   (see GAPS.md §security). Box's direct dev-token expires ~60 min — a rotation story is needed.
+3. **Per-user identity through supervisor delegates.** The supervisor keys its own memory per
+   conversation, but `delegation.py` (upstream) invokes each sub-agent on a FIXED thread
+   (`supervisor_conversational_<name>`) — sub-agent memory is shared across users. Fine for
+   stateless specialists; wrong for per-user credentialed work. Needs upstream thread plumbing.
+4. **Delegation latency + cost.** Every wake-up now includes a supervisor inference (measured:
+   ~3–10s overhead; 14/14 accuracy). Watch `make test-delegation` when the roster grows; consider
+   domain supervisors if accuracy degrades past ~40 sub-agents.
+5. **`test-suite-now` / `test-matrix` / `test-fire` are fleet-era.** They assert per-agent
+   invocation by name; in the single-agent world they need rework to assert through `cuga`
+   (test-live, suite-flows, delegation bench, and the GitHub triggers harness are already
+   supervisor-native and green).
+6. **Per-delegate tool scoping is name-based.** The canonical loader now scopes tools via
+   registry app names; per-tool includes (get_include_by_app) don't apply to delegates yet.
+7. **Webhook/Telegram excluded from the NL fast path** (deliberate) — they arm via the LLM path;
+   revisit once armed-webhook use cases firm up.
+
 ## Finish P3 (MVP) — the near work
 
 1. **NL→flow rigor** *(the strategic priority)*. Make an English sentence → the right flow

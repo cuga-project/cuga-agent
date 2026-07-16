@@ -13969,11 +13969,7 @@ function AgentsTab({
     style: {
       margin: 0
     }
-  }, "A builder defines agents (skill + tools + connectors); the concierge routes among them."), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
-    size: "sm",
-    renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Add,
-    onClick: openAdd
-  }, "Add agent")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "One agent \u2014 CUGA."), " These are its sub-agents (the roster), defined in", " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, "supervisor_agents.yaml"), " \u2014 edit the file and ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, "make reload"), " to change them. CUGA routes to the right specialist internally; nothing here is addressed directly.")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-muted",
     style: {
       display: "flex",
@@ -14056,14 +14052,7 @@ function AgentsTab({
     className: "studio-example-chip",
     title: "Load into Concierge",
     onClick: () => onTry(u)
-  }, "\"", u, "\""))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-    className: "studio-card-foot"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
-    kind: "ghost",
-    size: "sm",
-    renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Edit,
-    onClick: () => openEdit(a)
-  }, "Edit"))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(AgentEditor, {
+  }, "\"", u, "\"")))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(AgentEditor, {
     open: editorOpen,
     editing: editing,
     onClose: onClose
@@ -19223,4 +19212,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.c27dd166eab27f5654fe.js.map
+//# sourceMappingURL=main.0c1e09621315968ed33f.js.map

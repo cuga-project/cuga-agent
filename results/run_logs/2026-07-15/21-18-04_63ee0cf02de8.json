@@ -1,0 +1,22 @@
+{
+ "kind": "fire",
+ "scope": "default/default/local",
+ "agent": "mailbot",
+ "channel": "gmail",
+ "thread_id": "default/default/admin::gw:slack:C0BEYJ9NATB#1699.9",
+ "subscription_id": "",
+ "event_kind": "new_email",
+ "text_in": "summarize",
+ "answer_out": "email summary",
+ "status": "ok",
+ "ms": 0,
+ "trace_id": "e9890ae2ec1f",
+ "meta": {
+  "agent": null,
+  "backend": null,
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "63ee0cf02de8",
+ "when": "2026-07-15 21:18:04"
+}

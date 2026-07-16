@@ -1,0 +1,22 @@
+{
+ "kind": "chat",
+ "scope": "default/default/local",
+ "agent": "concierge",
+ "channel": "web",
+ "thread_id": "web:local",
+ "subscription_id": "",
+ "event_kind": "",
+ "text_in": "arm it",
+ "answer_out": "Armed a cron flow.",
+ "status": "ok",
+ "ms": 0,
+ "trace_id": "7d4854114139",
+ "meta": {
+  "agent": null,
+  "backend": null,
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "2170622f6b0e",
+ "when": "2026-07-15 21:20:49"
+}

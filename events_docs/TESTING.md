@@ -20,6 +20,19 @@ status codes + isolation, with AP faked), the Box download shaping, credential r
 - `test_slides_deck_matches_the_registry` — `events_docs/slides.html` (the deck) must match
   `triggers.py` + `catalog.py` (`make slides` regenerates).
 
+### The supervisor gates — `test_supervisor_roster.py` + `live_delegation_bench.py`
+
+The single-agent world (plans/SUPERVISOR_REFACTOR.md) moved routing from compiled arm-time
+bindings to per-wake-up supervisor picks, so routing quality is now a measured gate:
+
+- **Offline** (`test_supervisor_roster.py`): `supervisor_agents.yaml` parses; **every registry
+  trigger is claimed** by some sub-agent's HANDLES line (an unclaimed trigger = the supervisor
+  routes blind); no stale HANDLES hints after a trigger rename.
+- **Live** (`make test-delegation`): the real supervisor over the full roster, labelled
+  payloads across trigger families + chat + ambiguity traps. Gate: **≥90% pick accuracy, with
+  self-answers counted as failures** (a hard zero proved brittle on a 14-case sample — consecutive
+  runs measured 14/14 · 12/14 · 13/14; self-answer counts stay printed so drift is visible).
+
 ### The NL→Flow benchmark — `test_flowspec_bench.py`
 
 47 hand-labelled cases (`utterance → expected FlowSpec`): a strict + a paraphrase case per push

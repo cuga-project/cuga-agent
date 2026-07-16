@@ -5,7 +5,8 @@ have an agent triage it — optionally delivering the result to a channel. It's 
 that reuses the `/invoke` seam; **no Activepieces**, no OAuth.
 
 In the trigger registry this is the `inbound` trigger — always live, **pinned** (`?agent=`) or
-**routed** (`?route=1`, the concierge picks the agent by capability). The only permission is the
+**routed** (`?route=1` — it lands on the ONE agent, `cuga`, whose supervisor picks the specialist
+internally). The only permission is the
 optional shared key (`EVENTS_WEBHOOK_KEY`; unset = open).
 
 ```

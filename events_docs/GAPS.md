@@ -45,6 +45,12 @@ Fixed in the same pass, each of which silently corrupted behaviour:
 
 ## Known gaps (deferred, with the plan)
 
+- **Single-agent world caveats** (shipped 2026-07-15, [plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)):
+  supervisor delegates run on a FIXED upstream thread per sub-agent (shared memory across users —
+  wrong for per-user credentialed work); every wake-up costs one supervisor inference (~3–10s,
+  14/14 accuracy on the gated bench); `test-suite-now`/`test-matrix`/`test-fire` still assert
+  fleet-era per-agent semantics and need rework. Full honest list: ROADMAP.md §"Not yet fully vetted".
+
 - **NL→flow rigor** — largely closed: a typed **FlowSpec** (`events/flowspec.py`) with a
   deterministic **pre-router** (a high-confidence utterance arms without the LLM; a missing
   required slot becomes a question the next message answers — *ask-till-legit*), the registry

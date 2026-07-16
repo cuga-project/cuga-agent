@@ -1,0 +1,22 @@
+{
+ "kind": "fire",
+ "scope": "default/default/local",
+ "agent": "pricebot",
+ "channel": "cron",
+ "thread_id": "web:local",
+ "subscription_id": "",
+ "event_kind": "runonce",
+ "text_in": "price of btc",
+ "answer_out": "42",
+ "status": "ok",
+ "ms": 0,
+ "trace_id": "971455a617f3",
+ "meta": {
+  "agent": null,
+  "backend": null,
+  "mcp": [],
+  "tools": []
+ },
+ "run_log_id": "50216514d496",
+ "when": "2026-07-15 21:17:16"
+}

@@ -1,5 +1,10 @@
 # 0005 — Runtime concierge = a ROUTER over pre-built agents (not an agent factory)
 
+> **PARTIALLY SUPERSEDED by [0009](0009-single-agent-supervisor.md) (2026-07-15).** What survives:
+> the concierge never creates agents, and design-time/run-time stay split by persona. What changed:
+> the concierge no longer ROUTES either — routing moved into the one `cuga` supervisor
+> (per wake-up), and sub-agents are defined in `supervisor_agents.yaml`, not via the builder API.
+
 ## Context
 The earlier design had the concierge **reuse-or-create a worker** at runtime — inventing agents
 and choosing their MCP tools on the fly. On review that conflates two personas and two phases.
