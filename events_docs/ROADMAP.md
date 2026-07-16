@@ -66,3 +66,20 @@ Twilio SMS · Stripe · Salesforce/HubSpot · PagerDuty/Datadog · Dropbox/S3 ·
 All 4 channels live · Gmail/GitHub/Box PUSH proven end-to-end · generic webhook-IN · the Box download
 step · GitHub OAuth (replacing the broken PAT path) · debug fire (`/subscriptions/{id}/run`) ·
 `?flow=1` returns the armed flow · credential rotation · the `test-fire` harness + consolidated report.
+
+## Cron/poll — status (2026-07-15)
+- FIXED: fired prompt is now single-shot. The cadence stripper is an **LLM rewrite at ARM time**
+  (`_single_shot_task` — one call per flow, never per tick), with the `_strip_cadence` regex as a
+  guarded fallback (LLM disabled via `EVENTS_CADENCE_LLM=0`, unreachable, timed out, or its answer
+  still leaks cadence words). Either way the "ONE run, do NOT loop" framing wraps the result.
+  Proven: 16/17 corpus utterances get clean LLM rewrites; on 5 adversarial paraphrases the regex
+  leaks 5/5 and the LLM strips 5/5 ("keep tabs on TSLA through the day" → "Check TSLA and buzz me
+  if it drops 2%"). Before the fix, "every 5 minutes"/"monitor" in the prompt made the agent try
+  to loop+sleep and hit the execution timeout. Verified live (poll tick answers in ~8s, no loop).
+- OPEN (bug 2): "notify ONLY when it changes" needs cross-tick STATE. `__mode:"poll"` marker is
+  SET in flows.py but NEVER CONSUMED — no state store, no prior-value passed to the agent. So each
+  poll tick is stateless: the agent has no baseline and can't reliably suppress unchanged reports.
+  FIX NEEDED: a per-subscription state store; on each tick pass the last stored value into the
+  prompt, have the agent return the current value, store it. Design Q: how the agent returns the
+  value for storage (structured field vs parse). Until built, "watch X and tell me when it
+  changes" reports every tick (or says "no prior data"), not only-on-change.

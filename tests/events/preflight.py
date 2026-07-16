@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -96,10 +97,21 @@ def check_telegram():
     if not tok:
         return None, "skip — no TELEGRAM_BOT_TOKEN"
     code, body = _http(f"https://api.telegram.org/bot{tok}/getMe", timeout=15)
-    if code == 200 and isinstance(body, dict) and body.get("ok"):
-        u = body["result"]
-        return True, f"bot @{u.get('username')} (id {u.get('id')})"
-    return False, f"getMe HTTP {code}: {str(body)[:120]}"
+    if not (code == 200 and isinstance(body, dict) and body.get("ok")):
+        return False, f"getMe HTTP {code}: {str(body)[:120]}"
+    u = body["result"]
+    # THE INBOUND EDGE — the check the 2026-07-15 outage taught us. The AP quick-tunnel mints a
+    # NEW hostname on every stack restart; Telegram keeps delivering to the OLD one (530s,
+    # updates pile up) while every localhost probe stays green. Telegram itself tells on it.
+    code, info = _http(f"https://api.telegram.org/bot{tok}/getWebhookInfo", timeout=15)
+    w = (info.get("result") or {}) if isinstance(info, dict) else {}
+    err, pending = w.get("last_error_message"), int(w.get("pending_update_count") or 0)
+    recent = time.time() - int(w.get("last_error_date") or 0) < 1800
+    if err and (recent or pending):
+        return False, (f"bot @{u.get('username')} OK but INBOUND BROKEN — webhook "
+                       f"{str(w.get('url'))[:48]}… → “{err}” ({pending} update(s) stuck). "
+                       f"The tunnel URL changed: run `make channels`")
+    return True, f"bot @{u.get('username')} (id {u.get('id')}) · webhook healthy ({pending} pending)"
 
 
 def check_discord():

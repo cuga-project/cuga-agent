@@ -118,6 +118,75 @@ def _slash_parse(text: str) -> dict | None:
 
 
 
+def _strip_cadence(prompt: str) -> str:
+    """Remove recurrence phrasing from a cron/poll prompt so the per-tick agent run doesn't try to
+    implement the schedule itself (loop/sleep → execution timeout). The AP schedule owns cadence."""
+    t = prompt or ""
+    # "every 5 minutes", "every 2 min", "every hour", "every day at 9am", "hourly", "each morning"
+    t = re.sub(r"\bevery\s+\d+\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b", "", t, flags=re.I)
+    t = re.sub(r"\bevery\s+(second|minute|hour|day|morning|weekday|week|friday|monday)\b", "", t, flags=re.I)
+    t = re.sub(r"\b(hourly|daily|weekly|continuously|periodically|repeatedly)\b", "", t, flags=re.I)
+    t = re.sub(r"\bat\s+\d{1,2}(:\d\d)?\s*(am|pm)?\b", "", t, flags=re.I)
+    # imperative recurrence verbs → single-check phrasing
+    t = re.sub(r"\b(keep (an eye on|watching|monitoring|checking)|continuously (watch|monitor|check))\b",
+               "check", t, flags=re.I)
+    t = re.sub(r"\bmonitor(ing)?\b", "check", t, flags=re.I)
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,.;:")
+    return t or prompt
+
+
+# Words whose presence in a rewrite means cadence LEAKED through — the leaked prompt would make
+# the per-tick agent implement the schedule itself, so a leaking LLM answer is discarded in favor
+# of the (corpus-proven) regex.
+_CADENCE_LEAK = re.compile(
+    r"\b(every\s+(\d+|second|minute|hour|day|morning|weekday|week|month|monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday)|hourly|daily|weekly|monthly|continuously|periodically|"
+    r"repeatedly|keep\s+(watching|checking|monitoring|an\s+eye)|monitor(ing)?)\b", re.I)
+
+_REWRITE_SYSTEM = (
+    "You rewrite a user's recurring-task request into the instruction for ONE run of that task. "
+    "The schedule already exists elsewhere — your rewrite must contain NO recurrence or cadence "
+    "phrasing (no 'every X minutes', 'daily', 'at 9am', 'keep watching', 'monitor', 'track'). "
+    "Rephrase continuous verbs (watch/monitor/track) as a single check done once, right now. "
+    "PRESERVE everything else exactly: the subject, any condition ('only if ...', 'when it "
+    "changes'), and any delivery instruction (where/how to send the result). Do NOT answer the "
+    "request or add commentary. Reply with ONLY the rewritten instruction, no quotes."
+)
+
+_cadence_model = None  # cached chat model; tests inject a fake here
+
+
+async def _single_shot_task(prompt: str) -> str:
+    """The cadence stripper: LLM rewrite of a cron/poll utterance into its one-run task.
+
+    Runs once at ARM time (never per tick), so the cost is one LLM call per flow. The regex
+    ``_strip_cadence`` is the fallback — used when the LLM is disabled (EVENTS_CADENCE_LLM=0),
+    unavailable, times out, or its answer still leaks cadence words / balloons in size. Either
+    way the "ONE run, do NOT loop" framing wraps the result, so a miss degrades gracefully."""
+    if os.environ.get("EVENTS_CADENCE_LLM", "1") != "1":
+        return _strip_cadence(prompt)
+    global _cadence_model
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        if _cadence_model is None:
+            try:
+                from .llm import default_model_factory
+            except ImportError:  # flat load (offline tests)
+                from llm import default_model_factory
+            _cadence_model = default_model_factory(None)
+        res = await asyncio.wait_for(
+            _cadence_model.ainvoke(
+                [SystemMessage(content=_REWRITE_SYSTEM), HumanMessage(content=prompt)]),
+            timeout=float(os.environ.get("EVENTS_CADENCE_LLM_TIMEOUT", "20")))
+        out = (res.content or "").strip().strip('"').strip()
+        if out and len(out) <= 4 * max(len(prompt), 40) and not _CADENCE_LEAK.search(out):
+            return out
+        log.warning("cadence LLM rewrite rejected (leak/size) — regex fallback: %r", out[:120])
+    except Exception as e:  # noqa: BLE001
+        log.warning("cadence LLM rewrite failed (%s) — regex fallback", str(e)[:120])
+    return _strip_cadence(prompt)
+
+
 def _owner_scope(spec, p: Principal) -> str:
     """Grain follows credentials: tenant-wide if all connectors are shared, else the full user
     scope when any integration is per-user (that flow is necessarily per-user)."""
@@ -496,8 +565,17 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         f"{sink}. Flow name: \"{flow_name}\" (subscription {sub.id}).")
             if kind not in ("cron", "poll"):
                 return "error: kind must be cron, poll, or push."
-            run_prompt = prompt + ("" if kind == "cron" else
-                                   " Only report if it changed since last time; else say nothing changed.")
+            # THE FIRED PROMPT IS SINGLE-SHOT. The SCHEDULE owns the recurrence — the agent runs
+            # once per tick. Leaving "every 5 minutes"/"monitor"/"keep watching" in the prompt made
+            # the agent try to implement the loop ITSELF (sleep + re-check) and hit the execution
+            # timeout. LLM rewrite (regex fallback) + explicit one-run framing.
+            task = await _single_shot_task(prompt)
+            run_prompt = (
+                "This is ONE run of a scheduled task (the schedule handles recurrence — do NOT "
+                "loop, sleep, or wait). Do the check ONCE, right now, and report:\n" + task
+                + ("" if kind == "cron" else
+                   "\nThis is a POLL: report ONLY if the value changed since the last run; "
+                   "otherwise say nothing changed."))
             origin = _origin.get()
             interval = (every_minutes * 60) if every_minutes else None
             cadence_tag = cron.replace(" ", "_") if cron else (f"{every_minutes}m" if every_minutes else kind)

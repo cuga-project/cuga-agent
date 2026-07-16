@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""CUGA server launcher for the event-driven platform.
+"""CUGA server launcher for the event-driven platform — the SAME server `cuga start … --events`
+boots, wrapped for the `make up` dev stack.
 
-This is the **regular CUGA server** (`cuga.backend.server.main:app`) started with the events layer
-switched on. It does three things and then hands off to uvicorn:
+Unification (events_docs/SETUP.md · plans/SUPERVISOR_REFACTOR.md): there is ONE entry point,
+`cuga start demo --events`. `make up` exists only to PROVISION infra the CLI can't (the MCP
+registry, the Activepieces container, the tunnels) and then boot this identical app. This launcher
+sets the same `EVENTS_ENABLED=1` the `--events` flag sets, plus dev-stack defaults (ports, DB path,
+seeded demo users), and hands off to uvicorn. Editing the events env in ONE place keeps the CLI and
+`make up` from drifting.
 
-  1. load `.env` into the environment,
-  2. set `EVENTS_ENABLED=1` + the events config (worker backend, seeded agents, DB path, …),
-  3. run `cuga.backend.server.main:app`.
-
-`scripts/events_up.sh` runs this after it has started the MCP registry and the CUGA tunnel. It used to
-`cat` an identical file into `/tmp/events_up/` at boot; keeping it here in the repo means it is
-version-controlled, reviewable, and shows up in `ps` as a recognisable path instead of a temp file.
-
-Everything is overridable from the environment, so the shell wrapper (or you) can set ports:
-  EVENTS_CUGA_PORT (8100) · EVENTS_REGISTRY_URL (http://localhost:8001) · CUGA_REPO (repo root)
+Overridable from the environment:
+  EVENTS_CUGA_PORT (8100) · EVENTS_REGISTRY_URL (http://localhost:8001) · CUGA_REPO (repo root) ·
+  EVENTS_SUPERVISOR (0/1) · EVENTS_SUPERVISOR_ROSTER (./supervisor_agents.yaml)
 """
 import os
 import pathlib
@@ -37,7 +35,9 @@ os.environ["EVENTS_ENABLED"] = "1"
 os.environ.setdefault("EVENTS_WORKER_BACKEND", "cuga")
 os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
 os.environ.setdefault("EVENTS_USER_ID", "admin")           # the web Studio browses as admin
-os.environ.setdefault("EVENTS_DB", str(pathlib.Path(REPO) / ".events.db"))   # persist subs/identity
+# same default as `cuga start --events` (events.db, as .env.events.example documents) — the two
+# entry points must never write different databases. .env's explicit EVENTS_DB wins over both.
+os.environ.setdefault("EVENTS_DB", str(pathlib.Path(REPO) / "events.db"))
 # arXiv/Semantic Scholar are ~5.5s/call from here; the papers agent does several calls + retries,
 # which blows the 30s default sandbox timeout. 120s gives slow external APIs room to complete.
 os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")

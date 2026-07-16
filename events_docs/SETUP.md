@@ -68,6 +68,38 @@ make test        # the offline suite green          make tunnels  # both tunnels
 Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. For a
 full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
 
+## Starting the server — one entry point
+
+There is ONE command; `make up` is just the infra-provisioning wrapper around it:
+
+```bash
+cuga start demo --events          # THE server with the event-driven layer on (bare — no AP/tunnels)
+make up                           # provisions Activepieces + MCP registry + tunnels, then runs the
+                                  #   SAME `cuga start … --events` server (the full dev stack)
+```
+
+`--events` sets `EVENTS_ENABLED=1` and mounts channels, webhooks, standing flows, the concierge and
+the Studio events tabs onto the normal CUGA server. **Both entry points bind the same port, 8100**
+(the port all events infra targets — tunnels, channels, tests); plain `cuga start demo` without
+`--events` is unchanged on 7860. Override with `EVENTS_CUGA_PORT`. At startup it prints a **capability report** —
+also at `GET /api/events/status` (`capability` field) — telling you exactly what's live and what
+still needs infra, each with its one-line fix:
+
+```
+events layer ENABLED — capability report:
+  ✓ web chat · webhooks · direct watchers (Slack/Discord/Box-direct) — no extra infra
+  ✓ supervisor: ON — 27 sub-agent(s) from supervisor_agents.yaml
+  ✗ Activepieces not reachable → cron/poll + AP-backed triggers unavailable (`make ap`)
+  ✗ no EVENTS_PUBLIC_URL → Slack events / OAuth / Telegram unreachable (`make tunnels`)
+```
+
+The tiers are real: `--events` **alone** gives web chat, webhooks, and direct watchers with zero
+extra infrastructure. AP-backed triggers (cron/poll, Gmail/GitHub/Box) need Activepieces; Slack
+events / OAuth / Telegram need a public URL. `make up` provisions both.
+
+> **`make` commands are for INFRA and TESTS only** — `ap`, `tunnels`, `channels`, `test-*`,
+> `doctor`, `report`. Server startup is the CLI. There is no second server entry point to maintain.
+
 ## The agent model (one switch)
 
 There is exactly **one addressable agent — `cuga`** ([plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)):
@@ -80,10 +112,23 @@ There is exactly **one addressable agent — `cuga`** ([plans/SUPERVISOR_REFACTO
   no roster). Everything else (channels, triggers, flows) works identically — flows just wake a
   generalist instead of a supervised specialist.
 
+### Bring your own agents
+
+The `supervisor_agents.yaml` in this repo is an **example roster** (27 demo specialists) — the
+platform assumes nothing about it. Point `EVENTS_SUPERVISOR_ROSTER` at *your* roster file (canonical
+CUGA-main supervisor schema) and the same event-driven layer serves *your* agents:
+
+```bash
+EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=/path/to/my_agents.yaml  cuga start demo --events
+```
+
+Nothing in the channels, triggers, flows, or NL→Flow compiler is tied to the demo agents — they
+route to whatever your roster's HANDLES lines declare.
+
 ### Adding a sub-agent (builder guide)
 
 A sub-agent is **a skill, not a deployment**: a name, a prompt, tools, and routing hints. Append a
-block to `supervisor_agents.yaml`:
+block to your roster YAML (`supervisor_agents.yaml` by default):
 
 ```yaml
   - name: invoice_checker

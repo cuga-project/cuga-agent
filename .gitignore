@@ -109,3 +109,4 @@ demo_knowledge_docs/
 .ap.env
 .events.db
 .box_since.json
+results/run_logs*

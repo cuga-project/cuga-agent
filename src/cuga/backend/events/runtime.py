@@ -258,7 +258,12 @@ class SupervisorRuntime(AgentRuntime):
     ROSTER_FILE = "supervisor_agents.yaml"
 
     def __init__(self, roster_path: str | None = None) -> None:
-        self._roster_path = roster_path or os.path.join(os.getcwd(), self.ROSTER_FILE)
+        # BYO agents: EVENTS_SUPERVISOR_ROSTER points at YOUR roster YAML (canonical CUGA-main
+        # supervisor schema). Default = ./supervisor_agents.yaml (this repo ships a 27-agent
+        # example; the infra carries no assumptions about it — see events_docs/SETUP.md).
+        env_roster = os.environ.get("EVENTS_SUPERVISOR_ROSTER", "").split(" #", 1)[0].strip()
+        self._roster_path = (roster_path or env_roster
+                             or os.path.join(os.getcwd(), self.ROSTER_FILE))
         self._sup = None                       # lazy CugaSupervisor (needs the model config)
         self._specs: list[AgentSpec] = []      # read-only roster view
 

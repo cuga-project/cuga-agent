@@ -32,12 +32,12 @@ ap: ## Start Activepieces (app + postgres + redis + tunnel)
 ap-pieces: ## Ensure AP has the integration pieces installed (fixes fresh-DB "piece_metadata_not_found")
 	@$(PY) scripts/ap_pieces.py
 
-cuga: ## Start CUGA server + MCP registry + tunnels
+cuga: ## Provision infra (MCP registry + tunnels) then boot `cuga start … --events`
 	scripts/events_up.sh
 
-up: ap cuga ## Start both (AP first, then CUGA)
+up: ap cuga ## Full dev stack: Activepieces + infra + `cuga start … --events` (one server)
 
-start: up ## Alias for `up`
+start: up ## Alias for `up`. Bare server (no AP/tunnels): `cuga start demo --events`
 
 stop: ## Stop everything (AP + CUGA + tunnels), keep data
 	-scripts/ap_up.sh --stop

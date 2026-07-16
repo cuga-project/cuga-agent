@@ -1829,6 +1829,11 @@ try:
             "event-driven concierge layer mounted: /invoke, /api/concierge, "
             "/api/events/{subscriptions,status,channels,integrations,examples} "
             "(concierge=react, worker_backend=%s, ap=%s)", WORKER_BACKEND, bool(_ev_engine))
+        try:                                    # honest tiered capability report at startup
+            from cuga.backend.events import capability as _cap
+            _cap.log_report(_logging.getLogger("cuga.events"))
+        except Exception:  # noqa: BLE001
+            pass
 except Exception as _ev_err:  # noqa: BLE001 - never block CUGA startup
     import logging as _logging
     _logging.getLogger("cuga.events").warning("events layer not mounted: %s", _ev_err)

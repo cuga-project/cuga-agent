@@ -159,3 +159,34 @@ results/run_logs/<date>/<time>_<id>.json + index.jsonl (kind, agent, channel, th
 event_kind, text_in/answer_out, trace_id, ms). _log_now threaded with thread_id/kind/db.
 REMAINING (UI): Studio RunsTab — show subscription_id / thread_id chip per row; click a chip →
 filter all runs for that id (grouping); NOW rows group by thread. Then frontend rebuild + reload.
+
+## WORK ITEM (2026-07-15 evening) — ENTRY-POINT UNIFICATION (user directive)
+Goal: `cuga start demo --events` = THE entry point; `make up` provisions infra (AP container,
+tunnels) then runs THE SAME command — no duplicated server-start logic. Requirements:
+ (1) BYO agents: roster path configurable (EVENTS_SUPERVISOR_ROSTER, default ./supervisor_agents.yaml)
+     — do NOT overfit to our 27; docs show "bring your own YAML".
+ (2) Startup capability report (doctor-style): what's live (webhooks/direct watchers/chat) vs
+     what needs AP/tunnels, each with its one-line fix. Reuse tests/events/preflight.py checks.
+ (3) make commands POLICY: make stays for INFRA + TESTS only (ap, tunnels, channels, test-*);
+     server start = the CLI. events_up.sh's server-launch block calls the CLI path.
+DONE so far: telegram outage root-caused (stale quick-tunnel webhook) + fixed (make channels) +
+doctor now checks the inbound edge (getWebhookInfo last_error/pending → "run make channels").
+UNIFICATION PROGRESS: `cuga start <svc> --events` flag SHIPPED in src/cuga/cli/main.py
+(sets EVENTS_ENABLED=1 + EVENTS_DB default; help verified; 199 green). BYO roster SHIPPED:
+EVENTS_SUPERVISOR_ROSTER env → SupervisorRuntime roster_path (default ./supervisor_agents.yaml).
+REMAINING: (
+## ENTRY-POINT UNIFICATION — DONE (2026-07-15 evening)
+- `cuga start demo --events` = THE entry point (cli/main.py: --events flag → EVENTS_ENABLED=1,
+  logs guidance). BYO agents: EVENTS_SUPERVISOR_ROSTER (default ./supervisor_agents.yaml) —
+  runtime.SupervisorRuntime honors it; docs "Bring your own agents".
+- Capability report (events/capability.py): tiered honest report at startup (WARNING level, so it
+  shows past uvicorn's warning filter) AND queryable at GET /api/events/status `capability` field.
+- make up unchanged behaviorally but re-documented: infra provisioner that boots the SAME app;
+  events_server.py doc'd as the make-up wrapper equivalent to --events. Makefile help updated.
+  POLICY: make = infra+tests only; server start = the CLI.
+- Telegram outage fixed (stale AP quick-tunnel webhook → make channels); doctor now checks the
+  inbound edge (getWebhookInfo last_error/pending).
+- 199 offline green throughout; capability queried live (4/4 ✓).
+REMAINING (small): Studio banner could surface status.capability; folding events_up.sh's server
+launch to literally shell out to `cuga start` (currently runs the same app via events_server.py —
+same code path, so cosmetic).

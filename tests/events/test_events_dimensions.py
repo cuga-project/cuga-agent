@@ -266,6 +266,83 @@ def test_owner_scope_grain_follows_credentials():
     assert concierge._owner_scope(peruser, p) == p.scope      # any per-user → per-user flow
 
 
+# ---- cron/poll prompts are SINGLE-SHOT (the schedule owns recurrence) -----
+def test_cron_poll_prompt_strips_cadence():
+    """A scheduled agent runs ONCE per tick; a prompt still saying 'every 5 minutes'/'monitor'
+    made the agent try to loop+sleep and hit the execution timeout. _strip_cadence removes the
+    recurrence phrasing so each fire is a clean single check."""
+    import concierge
+    s = concierge._strip_cadence
+    assert "every" not in s("monitor bitcoin every 5 minutes and notify me when it changes").lower()
+    assert "monitor" not in s("monitor the bitcoin price every 5 minutes").lower()  # → "check"
+    assert s("send me the weather every day at 9am").lower().strip() == "send me the weather"
+    assert "hourly" not in s("check the feed hourly and summarize new items").lower()
+    # a prompt with no cadence phrasing is unchanged in substance
+    assert "review the PR" in s("review the PR")
+
+
+def test_strip_cadence_covers_the_whole_example_corpus():
+    """Every cron/poll utterance in the catalog must strip clean — the corpus is the regression
+    net for the regex. A new example that leaks recurrence phrasing into the fired prompt fails
+    HERE, not in a user's timed-out agent run."""
+    import re
+    import concierge
+    import catalog                      # flat import (events dir on sys.path, suite convention)
+    cad = re.compile(r"\bevery\b|\bhourly\b|\bdaily\b|\bmonitor|\bkeep (an eye|watching|checking)",
+                     re.I)
+    leaks = [e["utterance"] for e in catalog.EXAMPLES
+             if e.get("trigger") in ("cron", "poll") and e.get("utterance")
+             and cad.search(concierge._strip_cadence(e["utterance"]))]
+    assert not leaks, f"cadence survives stripping in: {leaks}"
+
+
+def test_single_shot_task_llm_rewrite_with_regex_fallback():
+    """The cadence stripper is an LLM rewrite at ARM time (one call per flow, never per tick);
+    _strip_cadence is the guarded fallback. Four contracts: a clean LLM answer is used verbatim;
+    a leaking answer is rejected (the leak regex) in favor of the regex; an LLM error falls back;
+    EVENTS_CADENCE_LLM=0 never touches the LLM at all."""
+    import asyncio
+    import concierge
+
+    class _Fake:
+        def __init__(self, reply=None, err=None):
+            self.reply, self.err, self.calls = reply, err, 0
+        async def ainvoke(self, _msgs):
+            self.calls += 1
+            if self.err:
+                raise self.err
+            class R:  # noqa: D401 - minimal AIMessage stand-in
+                content = self.reply
+            return R()
+
+    utt = "watch bitcoin every 5 minutes and ping me on any move"
+    old = concierge._cadence_model
+    try:
+        # 1. clean rewrite → used verbatim
+        concierge._cadence_model = _Fake("Check the current bitcoin price once and ping me if it moved.")
+        out = asyncio.run(concierge._single_shot_task(utt))
+        assert out.startswith("Check the current bitcoin price")
+        # 2. cadence leaks through the LLM → rejected, regex fallback
+        concierge._cadence_model = _Fake("keep watching bitcoin every 5 minutes")
+        out = asyncio.run(concierge._single_shot_task(utt))
+        assert out == concierge._strip_cadence(utt)
+        # 3. LLM raises → regex fallback
+        concierge._cadence_model = _Fake(err=RuntimeError("no api key"))
+        out = asyncio.run(concierge._single_shot_task(utt))
+        assert out == concierge._strip_cadence(utt)
+        # 4. kill switch → LLM never invoked
+        gate = _Fake("should never be called")
+        concierge._cadence_model = gate
+        os.environ["EVENTS_CADENCE_LLM"] = "0"
+        try:
+            out = asyncio.run(concierge._single_shot_task(utt))
+        finally:
+            os.environ.pop("EVENTS_CADENCE_LLM", None)
+        assert out == concierge._strip_cadence(utt) and gate.calls == 0
+    finally:
+        concierge._cadence_model = old
+
+
 # ---- oauth connect registry (CUGA hosts connect) -------------------------
 def test_oauth_registry_and_authorize_url():
     import oauth

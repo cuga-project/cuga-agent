@@ -657,6 +657,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return out
 
     # --- Studio read endpoints (dumb UI reads these; all real state) -------------
+    def _capability_lines():
+        try:
+            from . import capability
+            return capability.report()
+        except Exception:  # noqa: BLE001
+            return []
+
     @app.get("/api/events/status")
     async def events_status(request: Request):
         """What the events layer can do right now — the UI uses this to decide what to show."""
@@ -673,7 +680,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 # step). Telegram/Discord (AP) + Slack (direct) are round-trip-verified live.
                 "features": {"now": True, "cron": engine is not None,
                              "poll": engine is not None, "push": engine is not None,
-                             "channels_inbound": engine is not None}}
+                             "channels_inbound": engine is not None},
+                # the same tiered capability report printed at startup — queryable, so the Studio
+                # (or a smoke test) can show exactly what's live vs what needs infra.
+                "capability": _capability_lines()}
 
     @app.get("/api/events/channels")
     async def events_channels(request: Request):

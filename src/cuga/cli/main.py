@@ -865,6 +865,15 @@ def start(
         "--host",
         help="Host to bind to (default: 127.0.0.1). Use 0.0.0.0 to allow external connections.",
     ),
+    events: bool = typer.Option(
+        False,
+        "--events",
+        help="Enable the EVENT-DRIVEN layer on this server: channels (Slack/Discord/Telegram), "
+             "webhooks, standing flows (cron/poll/push), the concierge and the Studio events tabs. "
+             "Sets EVENTS_ENABLED=1. Pair with EVENTS_SUPERVISOR=1 + a supervisor_agents.yaml "
+             "roster (yours — see events_docs/SETUP.md) for the one-supervisor agent model. "
+             "AP-backed triggers additionally need Activepieces + tunnels (make ap / make tunnels).",
+    ),
     sandbox: bool = typer.Option(
         False,
         "--sandbox",
@@ -1136,6 +1145,25 @@ def start(
       cuga start appworld                 # AppWorld servers
     """
     validate_service(service)
+
+    if events:
+        # THE unified entry point for the event-driven layer (events_docs/SETUP.md).
+        # Same server, events routes mounted; the startup capability report says what's live
+        # vs what needs infra (Activepieces/tunnels). `make up` provisions that infra and boots
+        # this SAME app — one code path, two levels of ceremony.
+        os.environ["EVENTS_ENABLED"] = "1"
+        os.environ.setdefault("EVENTS_DB", os.path.join(os.getcwd(), "events.db"))
+        # ONE port for the events world: 8100, the port ALL events infra targets (tunnels,
+        # channels, tests, docs). So `cuga start … --events` and `make up` land on the SAME
+        # port — no divergence. Overridable via EVENTS_CUGA_PORT / DYNACONF_SERVER_PORTS__DEMO.
+        _ev_port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        os.environ.setdefault("DYNACONF_SERVER_PORTS__DEMO", _ev_port)
+        logger.info(
+            "EVENTS layer ON — channels/webhooks/standing flows mount on this server. "
+            "Supervisor agent model: EVENTS_SUPERVISOR=1 + a supervisor_agents.yaml roster "
+            "(bring your own — events_docs/SETUP.md). AP-backed triggers need Activepieces "
+            "(`make ap`) + a public URL (`make tunnels`); the startup report says what's missing."
+        )
 
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
