@@ -808,9 +808,10 @@ ENDPOINTS = [
       responses=[(302, "Location: https://accounts.google.com/o/oauth2/auth?…",
                   "OAuth apps. The <code>state</code> carries your scope, so the callback knows who "
                   "you are."),
-                 (200, {"ok": True, "app": "github", "kind": "token",
-                        "message": "POST your github token to /api/events/connect/github/token"},
-                  "Token apps: nothing to redirect to."),
+                 (200, {"ok": True, "app": "telegram", "kind": "token",
+                        "message": "POST your telegram token to /api/events/connect/telegram/token"},
+                  "Token apps (telegram · discord): nothing to redirect to. "
+                  "OAuth apps (gmail · box · github · slack) 302 instead."),
                  (404, {"ok": False, "error": "unknown app 'myspace'"}, ""),
                  (501, {"ok": False, "app": "gmail", "kind": "oauth",
                         "error": "OAuth not configured — set EVENTS_OAUTH_GMAIL_CLIENT_ID / _CLIENT_SECRET"},

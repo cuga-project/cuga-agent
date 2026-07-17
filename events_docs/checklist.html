@@ -71,8 +71,9 @@
 <body>
 <header>
   <h1>CUGA Events — Acceptance Checklist</h1>
-  <div class="sub">Nuke → set up → verify one integration at a time, 3–4 examples each, across every agent.
-    Mark each item; your status is saved in this browser. Built for hand-off.</div>
+  <div class="sub">Nuke → set up → verify one integration at a time, 3–4 examples each. There is ONE
+    addressable agent, <b>cuga</b>; the “agent” column names the specialist its supervisor is expected
+    to pick per wake-up (see q10). Mark each item; your status is saved in this browser. Built for hand-off.</div>
 </header>
 
 <div class="bar"><div class="barin">
@@ -118,22 +119,22 @@ const DATA = [
   {id:"b1", who:"you", t:"Nuke everything", do:"Wipe AP volumes + events.db.", cmd:"make nuke", exp:"clean — AP volumes + .events.db gone"},
   {id:"b2", who:"you", t:"Bring the stack up", do:"AP (container + tunnel) then CUGA (registry + tunnel + server).", cmd:"make up", exp:"both up; AP + CUGA tunnel URLs printed"},
   {id:"b3", who:"you", t:"Pieces installed", do:"Ensure the AP piece catalog has gmail/github/box/telegram/schedule.", cmd:"make ap-pieces", exp:"all needed pieces present"},
-  {id:"b4", who:"you", t:"Channels armed", do:"Register inbound webhooks for every bot token in .env.", cmd:"make channels", exp:"web/telegram/discord/slack armed"},
+  {id:"b4", who:"you", t:"Channels armed", do:"Register inbound webhooks for every bot token in .env. Per-channel setup (bot creation, Slack event subscriptions, mention-gating, Discord intents): events_docs/setup/{SLACK,DISCORD,TELEGRAM}.md.", cmd:"make channels", exp:"web/telegram/discord/slack armed"},
   {id:"b5", who:"you", t:"Status green", do:"Everything running + tunnels reachable.", cmd:"make status", exp:"registry+cuga 200; 3 containers up; both tunnel URLs"},
-  {id:"b6", who:"you", t:"Doctor green", do:"Ping each service with its real .env cred.", cmd:"make doctor", exp:"all green: watsonx, AP, telegram, discord, slack, box, github, 7/7 MCP"},
-  {id:"b7", who:"you", t:"Offline suite", do:"Pure-python invariants + consistency gates.", cmd:"make test", exp:"156 passed"},
+  {id:"b6", who:"you", t:"Doctor green", do:"Ping each service with its real .env cred.", cmd:"make doctor", exp:"green: watsonx, AP, telegram, discord, slack, github, 7/7 MCP — box may be RED here until you paste a fresh token in c3 (BOX_DEV_TOKEN expires ~60 min)"},
+  {id:"b7", who:"you", t:"Offline suite", do:"Pure-python invariants + consistency gates.", cmd:"make test", exp:"209 passed · 0 failed"},
 ]},
-{s:"C · Connect the OAuth integrations (browser · once per nuke)", d:"Nuke wipes AP connections — only a human can re-consent.", items:[
-  {id:"c1", who:"you", t:"Connect Gmail", do:"Open the connect URL in a browser and approve.", cmd:"open {{PUBLIC}}/api/events/connect/gmail", exp:"redirects back; gmail = connected"},
-  {id:"c2", who:"you", t:"Connect GitHub", do:"Open the connect URL and approve (scopes repo + admin:repo_hook).", cmd:"open {{PUBLIC}}/api/events/connect/github", exp:"redirects back; github = connected"},
-  {id:"c3", who:"you", t:"Fresh Box token", do:"Paste a fresh BOX_DEV_TOKEN into .env (expires ~60 min), then reload CUGA.", cmd:"# edit .env: BOX_DEV_TOKEN=...\nmake reload", exp:"doctor shows box green"},
+{s:"C · Connect the OAuth integrations (browser · once per nuke)", d:"Nuke wipes AP connections — only a human can re-consent. Setup detail per connector: events_docs/setup/{GMAIL,GITHUB,BOX}.md + pre-req.html; run scripts/check_*.py to smoke-test a cred before connecting.", items:[
+  {id:"c1", who:"you", t:"Connect Gmail", do:"Open the connect URL in a browser and approve. Testing-mode apps show an 'unverified app' screen — click Advanced → Go to → Allow. Guide: events_docs/setup/GMAIL.md.", cmd:"open {{PUBLIC}}/api/events/connect/gmail", exp:"redirects back; gmail = connected"},
+  {id:"c2", who:"you", t:"Connect GitHub", do:"Open the connect URL and approve (OAuth scopes repo + admin:repo_hook). NOTE: the AP watch is OAuth-only; GITHUB_TOKEN in .env is for the test harnesses and does NOT connect the watcher. Guide: events_docs/setup/GITHUB.md.", cmd:"open {{PUBLIC}}/api/events/connect/github", exp:"redirects back; github = connected"},
+  {id:"c3", who:"you", t:"Fresh Box token", do:"Paste a fresh BOX_DEV_TOKEN into .env (expires ~60 min), then reload CUGA. Guide: events_docs/setup/BOX.md.", cmd:"# edit .env: BOX_DEV_TOKEN=...\nmake reload", exp:"doctor shows box green"},
   {id:"c4", who:"you", t:"Verify all three connected", do:"Confirm the integration status.", cmd:"curl -s http://localhost:7860/api/events/integrations", exp:"gmail / box / github all show connected"},
 ]},
 {s:"D · Smoke — the plumbing is alive", d:"One automated probe of every surface before manual testing.", items:[
-  {id:"d1", who:"you", t:"Live e2e suite", do:"4 channels + 4 flow modes, one probe each.", cmd:"make test-live", exp:"34 passed · 0 failed"},
+  {id:"d1", who:"you", t:"Live e2e suite", do:"4 channels + 4 flow modes, one probe each.", cmd:"make test-live", exp:"all pass · 0 failed"},
   {id:"d2", who:"test", t:"Studio loads", do:"Open the web Studio.", cmd:"open http://localhost:7860/studio", exp:"loads; shows Agents / Examples / Integrations tabs"},
 ]},
-{s:"E · Web chat · NOW — exercise the agents", d:"In the Studio web chat, type each utterance (click to copy). Each routes to a different agent and answers immediately.", items:[
+{s:"E · Web chat · NOW — exercise the agents", d:"In the Studio web chat, type each utterance (click to copy). You always address the ONE agent, cuga; its supervisor picks the specialist named in the “agent” column and answers immediately.", items:[
   {id:"e1", who:"test", t:"Price now", agent:"pricebot", utt:"what is the current price of bitcoin in usd?", exp:"a live USD number"},
   {id:"e2", who:"test", t:"Geo + memory", agent:"geobot", utt:"what is the capital of Japan?", do:"Then follow up: “and its population?” — memory must hold.", exp:"Tokyo, then a population figure for Japan"},
   {id:"e3", who:"test", t:"Weather now", agent:"weatherbot", utt:"what's the weather in Tokyo right now?", exp:"temperature + conditions"},
@@ -161,13 +162,13 @@ const DATA = [
   {id:"f2", who:"test", t:"Weather via Telegram", agent:"weatherbot", utt:"weather in Mumbai?", exp:"weather reply"},
   {id:"f3", who:"test", t:"Geo via Telegram", agent:"geobot", utt:"capital of Brazil?", exp:"Brasília"},
 ]},
-{s:"G · Discord · NOW", d:"Post in the Discord channel the bot is in.", items:[
-  {id:"g1", who:"test", t:"Price via Discord", agent:"pricebot", utt:"what's the price of bitcoin?", exp:"bot replies in channel"},
-  {id:"g2", who:"test", t:"Papers via Discord", agent:"papers", utt:"3 latest papers on transformers", exp:"papers reply"},
+{s:"G · Discord · NOW", d:"Discord chat is MENTION-GATED (EVENTS_DISCORD_CHAT=mention): @mention the bot in-channel, DM it, or reply to it — a plain channel post is deliberately ignored (watchers still see it). Prefix each utterance with @your-bot.", items:[
+  {id:"g1", who:"test", t:"Price via Discord", agent:"pricebot", utt:"@bot what's the price of bitcoin?", exp:"bot replies in the same thread"},
+  {id:"g2", who:"test", t:"Papers via Discord", agent:"papers", utt:"@bot 3 latest papers on transformers", exp:"papers reply"},
 ]},
-{s:"H · Slack · NOW (round-trip)", d:"Post in #eda-test ({{SLACK}}). The bot replies in-thread via a real Events API round-trip.", items:[
-  {id:"h1", who:"test", t:"Price via Slack", agent:"pricebot", utt:"what is the price of bitcoin? just the number", exp:"a threaded reply with a price"},
-  {id:"h2", who:"test", t:"Geo via Slack", agent:"geobot", utt:"capital of France?", exp:"Paris, in-thread"},
+{s:"H · Slack · NOW (round-trip)", d:"Slack chat is MENTION-GATED (EVENTS_SLACK_CHAT=mention): @mention the bot in #eda-test ({{SLACK}}) (or DM it) — a plain post is ignored. The bot replies in-thread via a real Events API round-trip.", items:[
+  {id:"h1", who:"test", t:"Price via Slack", agent:"pricebot", utt:"@bot what is the price of bitcoin? just the number", exp:"a threaded reply with a price"},
+  {id:"h2", who:"test", t:"Geo via Slack", agent:"geobot", utt:"@bot capital of France?", exp:"Paris, in-thread"},
 ]},
 {s:"I · CRON flows — arm (and optionally fire)", d:"Say each in the web chat. It arms a real Activepieces schedule flow.", items:[
   {id:"i1", who:"test", t:"Daily arXiv digest", agent:"papers", utt:"every day at 9am send me new arXiv papers on mixture-of-experts", exp:"“Flow created” + a CRON subscription"},
@@ -207,7 +208,7 @@ const DATA = [
   {id:"n5", who:"you", t:"Routed · dispute → incident_triage", agent:"(auto-routed)",
    cmd:"curl -s -X POST \"{{PUBLIC}}/api/events/hook/stripe?route=1\" -H 'content-type: application/json' \\\n -d '{\"type\":\"charge.dispute.created\",\"amount\":48000,\"reason\":\"fraudulent\"}'", exp:"response shows agent = incident_triage"},
 ]},
-{s:"P · Trigger registry — every integration, every trigger", d:"33 triggers across 7 integrations. The router selects the SPECIFIC trigger (not just the app default) and the registry validates its slots before anything is built. Source: src/cuga/backend/events/triggers.py", items:[
+{s:"P · Trigger registry — the specific-trigger path", d:"33 triggers across 7 integrations. The router selects the SPECIFIC trigger (not just the app default) and the registry validates its slots before anything is built. Live-fired here: GitHub (all 14), Gmail, Slack, Box. Discord's 2 + Telegram's 1 triggers are covered by the offline suite (q1) — a real Discord member-join / Telegram channel post is needed to fire them live. Source: src/cuga/backend/events/triggers.py", items:[
   {id:"p1", who:"you", t:"GitHub — all 14 triggers, armed + fired", agent:"pr_reviewer / repo_watcher / incident_triage",
    do:"Arms each of the 14 GitHub triggers as a real Activepieces flow (creating a real repo webhook), fires it synthetically with the piece's real payload + X-GitHub-Event header, asserts a real agent answer, then deletes the subscriptions AND strips the repo webhooks. Only touches {{REPO}} — never creates an issue, PR, comment or any content.",
    cmd:".venv/bin/python tests/events/live_github_triggers.py", exp:"14/14 triggers armed+fired; 0 webhooks left on {{REPO}}"},
@@ -239,7 +240,7 @@ const DATA = [
 ]},
 {s:"Q · Regressions the registry fixed — verify they stay fixed", d:"Each of these was a real, silent bug. They are pinned by offline tests; these are the manual confirmations.", items:[
   {id:"q1", who:"you", t:"Offline suite (includes 22 trigger checks)", do:"Includes the classifier eval set (31 labelled utterances, one per NL-classified trigger — the 33 registry rows minus webhook + Telegram), the per-trigger flow-builder tests, the two Activepieces piece-bug pins, and the signed-OAuth-state tests.",
-   cmd:"make test", exp:"179 passed"},
+   cmd:"make test", exp:"209 passed · 0 failed"},
   {id:"q2", who:"you", t:"No false 'CONNECT NEEDED' under load", agent:"—",
    do:"The engine used to re-authenticate on EVERY Activepieces call, so a burst of arms produced hundreds of sign-ins; AP slowed, the connection check threw, and an already-connected account was reported as 'connect your credentials'. p1 arms 14 flows in a burst — that is the test.",
    cmd:".venv/bin/python tests/events/live_github_triggers.py", exp:"zero CONNECT NEEDED lines (GitHub is connected)"},
@@ -252,7 +253,7 @@ const DATA = [
    utt:"watch bitcoin every 2 minutes and ping me on any move",
    exp:"POLL armed (pricebot). Then: 'every day at 9am send me new arXiv papers' → CRON (papers); 'when a new email arrives, summarize it' → PUSH (mailbot/new_email)"},
   {id:"q5", who:"you", t:"Nothing existing broke", do:"The canonical live suites.",
-   cmd:"make test-live\nmake test-suite-flows", exp:"test-live: 38 passed · 0 failed  ·  test-suite-flows: 10 passed · 0 FAILED"},
+   cmd:"make test-live\nmake test-suite-flows", exp:"test-live: all pass · 0 failed  ·  test-suite-flows: 10 passed · 0 FAILED"},
   {id:"q10", who:"you", t:"Supervisor routing is green (single-agent world)",
    do:"There is ONE agent, cuga; its supervisor picks the specialist per wake-up. The 'agent' column on items here names the specialist the supervisor is EXPECTED to pick — you address only cuga.",
    cmd:".venv/bin/python tests/events/live_delegation_bench.py",

@@ -360,7 +360,7 @@ def system_svg() -> str:
                  ["1. Connect an integration", "   (OAuth consent, or paste a token)",
                   "2. Say what to automate", '   "watch my repo for PRs…"']))
     p.append(box(430, 120, 250, 108, C["cuga"], "Concierge (NL→flow)",
-                 ["POST /api/concierge", "classify → pick agent → build flow",
+                 ["POST /api/concierge", "classify → build flow (targets cuga)",
                   "bakes in {{connections[…]}} —", "a reference, never the token"]))
     p.append(box(804, 120, 300, 108, C["ap"], "Activepieces — the credential vault",
                  ["OAuth: exchange code → store OAUTH2", "token: store SECRET_TEXT",
@@ -384,11 +384,11 @@ def system_svg() -> str:
                  ["resolves {{connections[…]}} → token", "polls / receives the webhook",
                   "the token stays inside AP's sandbox"]))
     # worker fleet + mcp
-    p.append(box(430, 500, 250, 92, C["agent"], "Worker fleet (18 agents)",
-                 ["pricebot · mailbot · resume_judge …", "each = prompt + MCP tools + access",
-                  "its own DynamicAgentGraph"]))
+    p.append(box(430, 500, 250, 92, C["agent"], "The one agent: cuga",
+                 ["EVENTS_SUPERVISOR=1 → 27 sub-agents", "(supervisor_agents.yaml); picks one",
+                  "per wake-up · one DynamicAgentGraph"]))
     p.append(box(430, 624, 250, 80, C["agent"], "MCP tool servers",
-                 ["finance · geo · web · knowledge", "code · text (the agents' hands)"]))
+                 ["finance · geo · web · knowledge", "code · local · text (the agents' hands)"]))
     # delivery
     p.append(box(804, 500, 300, 108, C["cuga"], "Delivery",
                  ["direct adapter (Slack/Discord/Box):", "  CUGA-held .env token",

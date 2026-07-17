@@ -10,8 +10,10 @@ rationale lives in the [ADRs](decisions/); this is the honest "what's not done /
   [ADR-0006](decisions/0006-auth-connection-model.md))
 - **The concierge routes; it never creates agents.** New agents are a builder action, not something an
   utterance can conjure. ([ADR-0005](decisions/0005-runtime-router-over-prebuilt-agents.md))
-- **Slack/Discord/Box are direct backends** (no AP) by choice — instant, no public URL needed for
-  Discord, and sidestepping AP's OAuth wall for Box. ([ADR-0008](decisions/0008-direct-backends-for-channels.md))
+- **Slack/Discord are direct channel backends** (no AP) by choice — instant, and no public URL needed
+  for Discord (outbound Gateway WS). **Box defaults to AP**; a direct poller is an opt-in
+  (`EVENTS_BOX_BACKEND=direct`) that sidesteps AP's OAuth wall and downloads file content server-side.
+  ([ADR-0008](decisions/0008-direct-backends-for-channels.md))
 
 ## Closed (2026-07-13) — the trigger registry
 
@@ -92,6 +94,12 @@ vault first** — it guards an internet-tunnelled AP admin console. The integrat
 never need vaulting: AP holds and encrypts them, and the agent never sees one.
 
 Still open:
+- **`POST /api/concierge` has no auth dependency at the events layer.** The handler
+  ([`app.py`](../src/cuga/backend/events/app.py) `api_concierge`) resolves a `Principal` from
+  headers but applies no `require_chat_access` gate, and the events routes are attached to the main
+  app (not a sub-app mount), so CUGA's native chat gate does not carry over. The endpoint arms flows
+  and runs the agent, so on a public URL it must be fronted (gateway/network) or given the dependency.
+  ([ADR-0004](decisions/0004-events-endpoints.md) carries the same note.)
 - **`GATEWAY_TOKEN`, `SLACK_SIGNING_SECRET`, `EVENTS_WEBHOOK_KEY` each protect nothing when unset** —
   `/invoke`, the Slack receiver, and the generic webhook accept *anything* (a wrong key too). The code
   warns loudly at boot but still serves. Fine on localhost; **set them before exposing the server on a

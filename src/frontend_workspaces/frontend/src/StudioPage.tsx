@@ -312,8 +312,8 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       <Loader loading={loading} error={error} />
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
-          title="No agents yet"
-          subtitle="Click “Add agent” to define one — a skill (prompt) plus the tools and connectors it may use." />
+          title="No sub-agents loaded"
+          subtitle="The roster lives in supervisor_agents.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
       )}
       <div className="studio-grid">
         {data?.map((a) => (

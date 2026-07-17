@@ -32,7 +32,10 @@ A per-user connection is `ea::<tenant>::<user>::<app>` (agent-agnostic), so a us
 
 ### Permissions (two kinds)
 1. **May you talk to this agent?** → a per-agent access rule (`AgentSpec.access = roles/users`),
-   checked in the router (`list_capabilities` filters; `answer_now`/`find_or_create_flow` deny).
+   `perms.can_use`. *(Amended by [0009](0009-single-agent-supervisor.md): in the single-agent world
+   only `find_or_create_flow` still calls `perms.can_use` — arming a standing flow is the gated op.
+   `list_capabilities` no longer filters and `answer_now` no longer denies, because there is exactly
+   one addressable agent (`cuga`) and "which agent?" is no longer a choice.)*
 2. **May you act on this data?** → enforced automatically by connection ownership (per-user = only
    your data). No extra check needed.
 

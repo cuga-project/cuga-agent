@@ -4,7 +4,9 @@ The event-driven layer turns CUGA from a request/response agent into one that re
 a message in Slack, a new email, a cron tick, a repo webhook, a file in Box. It is **additive**:
 everything lives behind `EVENTS_ENABLED`, and vanilla CUGA is byte-for-byte unchanged when it is off.
 The whole layer is self-contained under `src/cuga/backend/events/` (one flat package; the only core
-touch points are two guarded hooks in the server startup).
+touch points are three `EVENTS_ENABLED`-guarded hooks: two at server startup — the events-routes
+mount and the background-watcher launch — plus one in the `/stream` request handler that reroutes an
+events slash-command to the concierge).
 
 ## The two pieces
 
@@ -56,7 +58,7 @@ Two other facts that trip everyone up:
 | **The one agent — `cuga`** | the only addressable agent (**single-agent world**, [plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)). `EVENTS_SUPERVISOR=1` → a **supervisor** whose sub-agents come from [`supervisor_agents.yaml`](../supervisor_agents.yaml) (CUGA-main's canonical schema): it picks the right specialist **per wake-up** and the answer bubbles up; sub-agents are not user-visible or addressable. Unset → the plain classic CUGA agent, as main ships it. Add a sub-agent = edit the YAML + `make reload`. |
 | **Trigger registry** | **`events/triggers.py` — one row per `(app, event)`**: its AP piece trigger *or* direct transport kind, the payload map, required slots, classifier phrases, a synthetic fire payload, and the provider's delivery header. The single source of truth (below). |
 | **The sub-agents (roster)** | 27 specialists in [`supervisor_agents.yaml`](../supervisor_agents.yaml), each = prompt + MCP tools + the **HANDLES trigger hints the supervisor routes on**. They are skills of the one `cuga` agent — not addressable, no channels, no credentials of their own. (`seed.py`'s fleet is retired; `scripts/gen_supervisor_roster.py` did the one-time conversion.) |
-| **MCP tool servers** | the agents' hands: `cuga-finance · geo · web · knowledge · code · text`. Attached per agent by name (see [MCP notes](#mcp-tools)). |
+| **MCP tool servers** | the agents' hands: `cuga-finance · geo · web · knowledge · code · local · text`. Attached per agent by name (see [MCP notes](#mcp-tools)). |
 | **Activepieces (AP)** | owns AP-backed triggers **and all credentials** (the agent holds none). Connections are OAUTH2 or SECRET_TEXT. |
 | **Direct watchers** | Slack/Discord/Telegram/Box triggers CUGA receives *itself* (`events/direct_events.py`). No AP flow, no AP connection — the subscription row has `ap_flow_id = NULL`. |
 | **Delivery** | direct adapter or AP send-step; sink from the `thread_id` origin. |
@@ -169,7 +171,9 @@ SVG sources + the generator live in [architecture/](architecture/); regenerate w
 - **CUGA-graph machinery preserved.** The one `cuga` worker *is* a full CUGA graph (its supervisor
   fans out to the roster internally); `thread_id` keys per-thread memory. One addressable agent, not a fleet.
 - **AP owns credentials.** The agent never sees a token. This is the security boundary.
-- **Reuse before create.** The concierge de-dupes on `dedup_key = agent·source·cadence·sink·owner`.
+- **Reuse before create.** The concierge de-dupes on
+  `dedup_key = agent·source·cadence·cfg_tag·sink·owner` (`cfg_tag` = the per-watch config, e.g.
+  `repo=…,label=…`).
 - **The UI is dumb.** It renders backend state; all logic is server-side.
 
 ## MCP tools

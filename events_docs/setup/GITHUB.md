@@ -23,9 +23,10 @@ curl -s "$AP_BASE_URL/api/v1/pieces/@activepieces/piece-github" | jq '.auth[].ty
 
 A PAT pasted as a `SECRET_TEXT` connection is *accepted by AP's connection store* and then **unusable
 by the piece**: the flow arms fine and later fails at publish with `401 Bad credentials`, which looks
-exactly like an under-scoped token. `POST /api/events/connect/github/token` still **stores** such a PAT
-but returns `usable_by_piece:false` with a warning for exactly this reason — the connection row exists,
-the piece can't use it. Connect via OAuth.
+exactly like an under-scoped token. `POST /api/events/connect/github/token` **rejects** a pasted PAT
+with a `400` for exactly this reason — GitHub is registered as an OAuth connector
+(`oauth.py`: `kind:"oauth"`), so the endpoint refuses to build a SECRET_TEXT connection AP's piece
+could never use. Connect via OAuth.
 
 ## Two DIFFERENT GitHub credentials — don't conflate them
 

@@ -30,8 +30,8 @@ Three layers:
   (`EVENTS_OAUTH_<APP>_CLIENT_ID/_CLIENT_SECRET`, redirect `…/connect/<app>/callback`).
 - **Token apps** (telegram / discord bot tokens): `POST /api/events/connect/<app>/token` → AP
   `SECRET_TEXT` connection. No redirect. **GitHub is NOT here** — its AP piece accepts only OAUTH2, so
-  it goes through the OAuth flow above; `connect/github/token` still *stores* a pasted PAT but
-  returns `usable_by_piece:false` with a warning (the piece can't use it).
+  it goes through the OAuth flow above; `connect/github/token` **rejects** a pasted PAT with a `400`
+  (github is registered `kind:"oauth"`, so the endpoint won't build a SECRET_TEXT connection).
 - Connect UX by channel: **web** → popup; **telegram/discord** → a tappable link.
 
 **Flow grain follows credentials.** A flow using only shared connectors is **per-tenant** (one

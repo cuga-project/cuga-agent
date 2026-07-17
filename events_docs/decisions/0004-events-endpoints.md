@@ -13,8 +13,16 @@ secrets, and runtime where possible.
 | Method · path | Purpose | Auth | Isolation |
 |---|---|---|---|
 | `POST /invoke` | the **seam** every AP trigger calls back through; runs the target agent, optionally delivers | `X-Gateway-Token` (machine) | `scope` from the body (set when the flow was armed) |
-| `POST /api/concierge` | **NL → decide** (reuse/create a flow targeting `cuga` + arm trigger); `?dry_run=1` = reason→build, no side effects | `require_chat_access` (in CUGA) | `Principal` from `X-Tenant-Id`/`X-User-Id` headers (→ `current_user.sub` in CUGA) |
+| `POST /api/concierge` | **NL → decide** (reuse/create a flow targeting `cuga` + arm trigger); `?dry_run=1` = reason→build, no side effects | **⚠ none at this layer** — see note | `Principal` from `X-Tenant-Id`/`X-User-Id` headers |
 | `GET /api/events/subscriptions` | list armed triggers for the caller | read | filtered by the caller's scope |
+
+> **⚠ Auth gap (as shipped).** The events-layer `POST /api/concierge` handler
+> ([`app.py`](../../src/cuga/backend/events/app.py) `api_concierge`) has **no** `require_chat_access`
+> dependency — it only resolves a `Principal` from headers. Routes are attached to the main app via
+> `register_events_routes(app, …)`, not a sub-app mount, so CUGA's native gate does not carry over.
+> Since this endpoint arms flows and runs the agent, that is a **security decision to make**, not just
+> a doc note: either front it (gateway/network) or add the dependency. Tracked in
+> [GAPS.md](../GAPS.md).
 
 ## The normalized `/invoke` envelope
 ```json

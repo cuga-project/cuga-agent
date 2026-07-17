@@ -145,7 +145,7 @@
 <rect x="430" y="120" width="250" height="108" rx="12" fill="#2b5fd9"/>
 <text x="444" y="145" font-size="14.5" font-weight="700" fill="#fff">Concierge (NL→flow)</text>
 <text x="444" y="164" font-size="11.5" fill="#fff" fill-opacity="0.92">POST /api/concierge</text>
-<text x="444" y="181" font-size="11.5" fill="#fff" fill-opacity="0.92">classify → pick agent → build flow</text>
+<text x="444" y="181" font-size="11.5" fill="#fff" fill-opacity="0.92">classify → build flow (targets cuga)</text>
 <text x="444" y="198" font-size="11.5" fill="#fff" fill-opacity="0.92">bakes in {{connections[…]}} —</text>
 <text x="444" y="215" font-size="11.5" fill="#fff" fill-opacity="0.92">a reference, never the token</text>
 <rect x="804" y="120" width="300" height="108" rx="12" fill="#b06f10"/>
@@ -179,14 +179,14 @@
 <text x="818" y="361" font-size="11.5" fill="#fff" fill-opacity="0.92">polls / receives the webhook</text>
 <text x="818" y="378" font-size="11.5" fill="#fff" fill-opacity="0.92">the token stays inside AP's sandbox</text>
 <rect x="430" y="500" width="250" height="92" rx="12" fill="#1a7f4b"/>
-<text x="444" y="525" font-size="14.5" font-weight="700" fill="#fff">Worker fleet (18 agents)</text>
-<text x="444" y="544" font-size="11.5" fill="#fff" fill-opacity="0.92">pricebot · mailbot · resume_judge …</text>
-<text x="444" y="561" font-size="11.5" fill="#fff" fill-opacity="0.92">each = prompt + MCP tools + access</text>
-<text x="444" y="578" font-size="11.5" fill="#fff" fill-opacity="0.92">its own DynamicAgentGraph</text>
+<text x="444" y="525" font-size="14.5" font-weight="700" fill="#fff">The one agent: cuga</text>
+<text x="444" y="544" font-size="11.5" fill="#fff" fill-opacity="0.92">EVENTS_SUPERVISOR=1 → 27 sub-agents</text>
+<text x="444" y="561" font-size="11.5" fill="#fff" fill-opacity="0.92">(supervisor_agents.yaml); picks one</text>
+<text x="444" y="578" font-size="11.5" fill="#fff" fill-opacity="0.92">per wake-up · one DynamicAgentGraph</text>
 <rect x="430" y="624" width="250" height="80" rx="12" fill="#1a7f4b"/>
 <text x="444" y="649" font-size="14.5" font-weight="700" fill="#fff">MCP tool servers</text>
 <text x="444" y="668" font-size="11.5" fill="#fff" fill-opacity="0.92">finance · geo · web · knowledge</text>
-<text x="444" y="685" font-size="11.5" fill="#fff" fill-opacity="0.92">code · text (the agents' hands)</text>
+<text x="444" y="685" font-size="11.5" fill="#fff" fill-opacity="0.92">code · local · text (the agents' hands)</text>
 <rect x="804" y="500" width="300" height="108" rx="12" fill="#2b5fd9"/>
 <text x="818" y="525" font-size="14.5" font-weight="700" fill="#fff">Delivery</text>
 <text x="818" y="544" font-size="11.5" fill="#fff" fill-opacity="0.92">direct adapter (Slack/Discord/Box):</text>

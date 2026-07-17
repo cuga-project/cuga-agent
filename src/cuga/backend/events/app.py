@@ -767,7 +767,6 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     r["backend"] = "direct"
                     r["note"] = ("DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
                                  "Fires via POST /api/events/box/poll; test with live_box_direct_check.py.")
-        # .env-TOKEN integrations (github) AUTO-CONNECT on startup — so a token in .env == connected.
         # No INTEGRATION auto-connects from an env token any more: github is OAuth (piece-github takes
         # OAUTH2 only — GITHUB_TOKEN does NOT connect it), gmail/box are OAuth, box-direct uses its own
         # token path. So an unconnected integration means "connect it" (OAuth consent), never "wait for

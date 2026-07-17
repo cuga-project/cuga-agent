@@ -468,7 +468,8 @@ export async function getEventsRunDetail(id: string): Promise<Response> {
   return apiFetch(`/api/events/runs/${encodeURIComponent(id)}`);
 }
 
-// The pre-built worker fleet (geobot, pricebot, …) the concierge routes among.
+// The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
+// them internally. Source: supervisor_agents.yaml.
 export async function getEventsAgents(): Promise<Response> {
   return apiFetch("/api/events/agents");
 }

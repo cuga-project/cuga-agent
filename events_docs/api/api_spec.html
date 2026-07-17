@@ -1819,10 +1819,10 @@ button.curl{background:none;color:var(--muted);border:1px solid var(--line);font
       <div class="chips"><span class="lbl">called by</span><span class="chip who" title="OAuth consent redirects land here">A person&#x27;s browser</span><span class="chip who" title="The web console; it renders whatever these return, no client logic">Studio UI</span></div>
       <h4>Parameters</h4><table class="params"><tbody><tr><td><code>app</code></td><td class="k">path</td><td>box · gmail · github · slack · telegram · discord</td></tr><tr><td><code>ownership</code></td><td class="k">query</td><td><code>per-user</code> (default) or <code>tenant</code></td></tr><tr><td><code>return</code></td><td class="k">query</td><td>URL to bounce back to after consent</td></tr></tbody></table><h4>Responses</h4><div class="resp"><span class="code c3">302</span><div class="rbody"><pre class="blk">Location: https://accounts.google.com/o/oauth2/auth?…</pre><p class=note>OAuth apps. The <code>state</code> carries your scope, so the callback knows who you are.</p></div></div><div class="resp"><span class="code c2">200</span><div class="rbody"><pre class="blk">{
   &quot;ok&quot;: true,
-  &quot;app&quot;: &quot;github&quot;,
+  &quot;app&quot;: &quot;telegram&quot;,
   &quot;kind&quot;: &quot;token&quot;,
-  &quot;message&quot;: &quot;POST your github token to /api/events/connect/github/token&quot;
-}</pre><p class=note>Token apps: nothing to redirect to.</p></div></div><div class="resp"><span class="code c4">404</span><div class="rbody"><pre class="blk">{
+  &quot;message&quot;: &quot;POST your telegram token to /api/events/connect/telegram/token&quot;
+}</pre><p class=note>Token apps (telegram · discord): nothing to redirect to. OAuth apps (gmail · box · github · slack) 302 instead.</p></div></div><div class="resp"><span class="code c4">404</span><div class="rbody"><pre class="blk">{
   &quot;ok&quot;: false,
   &quot;error&quot;: &quot;unknown app &#x27;myspace&#x27;&quot;
 }</pre></div></div><div class="resp"><span class="code c5">501</span><div class="rbody"><pre class="blk">{

@@ -50,8 +50,9 @@ trigger, cron/poll/now negatives, and genuine-ambiguity cases. Scores the determ
 The ask-till-legit loop (park a question → the next message fills the slot → armed; a topic-change
 reply is never crammed into the slot) is unit-tested in the same file and proven live in
 `results/` runs.
-- `test_integrations_auth_matches_the_oauth_provider_registry` — `connectors`, `oauth`, and
-  `setup_guides` must agree on how each app connects.
+- `test_integrations_auth_matches_the_oauth_provider_registry` — `connectors` and `oauth` must agree
+  on how each app connects (a sibling test, `test_github_is_not_a_token_app_anywhere`, extends the same
+  invariant to `setup_guides`).
 
 ### The trigger suite — `test_events_triggers.py` (22 checks)
 
@@ -72,8 +73,8 @@ moment it is added, and cannot be added half-wired:
   `action: "created"` while its own sample data ships `"published"`, and its `new_commit` trigger keeps
   only commits with `distinct: true`, which its sample omits. **A payload copied faithfully from either
   sample is silently discarded** — AP accepts the trigger and no run is ever created.
-- `test_every_github_trigger_declares_its_delivery_header` + `test_debug_run_sends_the_github_delivery_header`
-  — one repo webhook carries *every* subscribed event type, so the piece disambiguates on
+- `test_every_github_trigger_declares_its_delivery_header` (+ `test_debug_run_sends_the_github_delivery_header`,
+  in `test_events_api_contract.py`) — one repo webhook carries *every* subscribed event type, so the piece disambiguates on
   `X-GitHub-Event`. A synthetic fire without it makes the piece emit **nothing**.
 - `test_validate_gate_asks_for_missing_slots_and_rejects_unknowns` — the arm-time gate.
 - `test_oauth_state_signature_roundtrip_tamper_and_expiry` — a forged/unsigned/expired `state` is a

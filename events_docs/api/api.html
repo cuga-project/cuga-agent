@@ -317,7 +317,7 @@ curl -X POST "$PUBLIC/api/events/hook/stripe?route=1&amp;deliver_to=slack&amp;ta
     <tbody>
       <tr><td><code>GET /api/events/connect/{app}</code></td><td>Begin connecting the caller's own account. <b>OAuth</b> app → 302 redirect to consent; <b>token</b> app → tells the UI to POST a token. <code>?ownership=tenant|per-user</code>, <code>?agent=</code>, <code>?return=</code>.</td></tr>
       <tr><td><code>GET /api/events/connect/{app}/callback</code></td><td>OAuth redirect target — passes the <b>code</b> to AP (<code>ensure_oauth_connection</code>; AP does the exchange) and creates the connection. Honors <code>ownership</code> from state.</td></tr>
-      <tr><td><code>POST /api/events/connect/{app}/token</code></td><td>Paste a raw token → a SECRET_TEXT AP connection. <b>Token pieces only</b> (GitHub PAT, bot tokens). OAuth pieces get a clear <code>400</code> pointing to the OAuth login. Body <code>{token, ownership?}</code>.</td></tr>
+      <tr><td><code>POST /api/events/connect/{app}/token</code></td><td>Paste a raw token → a SECRET_TEXT AP connection. <b>Token pieces only</b> (Telegram / Discord bot tokens). OAuth pieces (gmail · box · <b>github</b> · slack) get a clear <code>400</code> pointing to the OAuth login. Body <code>{token, ownership?}</code>.</td></tr>
       <tr><td><code>GET /api/events/connections</code></td><td>The caller's own AP connections (which integrations they've logged into).</td></tr>
     </tbody>
   </table>
