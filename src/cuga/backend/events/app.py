@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time as time_module
 
 from fastapi import Request
@@ -209,8 +210,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # channel message INSTEAD of the converse path: the first match becomes the worker (its
         # reply returns exactly like a concierge answer — same thread, same delivery); additional
         # matches fire in the background. No watchers armed (the default) → zero behavior change.
+        # Slash COMMANDS outrank watchers: "/cron …" typed in a watched Telegram chat must reach
+        # the concierge, not be consumed as "a link to summarize" (caught live by the exhaustive
+        # matrix, 2026-07-17 — an armed link-watcher swallowed the arm command).
+        _is_slash = bool(re.match(r"\s*/(automate|watch|schedule|cron|poll|push|start|link)\b",
+                                  env.text or "", re.I))
         if (agent == "concierge" and store is not None and env.source.type == "channel"
-                and env.event.kind == "message"):
+                and env.event.kind == "message" and not _is_slash):
             from . import direct_events
             from .principal import channel_origin as _chorigin
             _org = _chorigin(env.thread_id) or (env.source.name, "")

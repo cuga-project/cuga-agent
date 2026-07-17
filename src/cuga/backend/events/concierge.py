@@ -91,7 +91,10 @@ def _slash_parse(text: str) -> dict | None:
     FORCE a mode. DETERMINISTIC either way — the arm bypasses the LLM entirely (no flaky mode pick, no
     decline). Returns None when it isn't a slash command (normal NL routing then applies)."""
     import re
-    from . import classify
+    try:
+        from . import classify
+    except ImportError:  # flat load (offline tests put the events dir on sys.path)
+        import classify
     m = re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S)
     if not m:
         return None
@@ -651,8 +654,6 @@ class Concierge:
 
     async def run(self, thread_id: str, text: str, principal: Principal | None = None) -> str:
         from langchain_core.messages import HumanMessage
-        if self._graph is None:
-            self._build()
         p = principal or DEFAULT_PRINCIPAL
         _utterance.set(text)    # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # /watch|/schedule|/cron|/poll|/push → deterministic arm (bypasses the LLM entirely)
@@ -665,6 +666,27 @@ class Concierge:
         pre = await self._pre_route(thread_id, p, text)
         if pre is not None:
             return pre
+        # NOW FAST-PATH (the routing rule, everywhere): a regular conversational message goes
+        # STRAIGHT to the worker — no concierge react-agent LLM hop. The concierge's LLM runs only
+        # for standing intent (CRON/POLL/PUSH per the benchmarked classifier). Slash and parked
+        # ask-till-legit questions were already handled above, so nothing armable is lost.
+        # EVENTS_NOW_FASTPATH=0 restores the old always-through-the-LLM behavior.
+        try:
+            from . import classify
+        except ImportError:  # flat load (offline tests)
+            import classify
+        if (os.environ.get("EVENTS_NOW_FASTPATH", "1") == "1"
+                and classify.classify(text) == "NOW"):
+            try:
+                # same memory key answer_now uses (origin == thread_id inside run())
+                answer = await self._runtime.run(
+                    THE_AGENT, p.thread(f"{thread_id}:{THE_AGENT}"), text, scope=p.agent_scope)
+                log.info("concierge NOW fast-path scope=%s", p.scope)
+                return answer
+            except Exception as e:  # noqa: BLE001
+                log.warning("NOW fast-path failed (%s) — falling back to the LLM path", e)
+        if self._graph is None:      # built LAZILY: a NOW fast-path message never needs the LLM
+            self._build()
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:
@@ -685,7 +707,10 @@ class Concierge:
           2. **Fast path** — a HIGH-confidence resolved PUSH spec arms deterministically (same
              tool, same gates as the LLM path) or returns its ONE missing-slot question.
         """
-        from . import flowspec
+        try:
+            from . import flowspec
+        except ImportError:  # flat load (offline tests)
+            import flowspec
         tkey = p.thread(thread_id)
         parked = flowspec.pending_for(tkey)
         if parked is not None:

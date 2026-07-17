@@ -296,6 +296,49 @@ def test_strip_cadence_covers_the_whole_example_corpus():
     assert not leaks, f"cadence survives stripping in: {leaks}"
 
 
+def test_concierge_now_fastpath_skips_the_llm():
+    """THE ROUTING RULE: a regular conversational message goes STRAIGHT to the worker — the
+    concierge react agent (an extra LLM hop) must not even be BUILT. Standing intent (cron
+    phrasing) still takes the LLM path; the kill switch restores the old behavior."""
+    import asyncio
+    import concierge as cz
+    import runtime as rt_mod
+
+    rt = rt_mod.StubRuntime()
+    # register under the DEFAULT principal's agent scope (what the fast-path runs with)
+    rt.upsert_agent(rt_mod.AgentSpec(name="cuga", prompt="the one agent"),
+                    scope=principal.DEFAULT.agent_scope)
+    poisoned = {"called": False}
+
+    def factory(_):
+        poisoned["called"] = True
+        raise RuntimeError("LLM must not be constructed for a NOW message")
+
+    con = cz.Concierge(rt, model_factory=factory)
+    # NOW → worker answer, no LLM build
+    ans = asyncio.run(con.run("t1", "what is the capital of Japan?"))
+    assert ans and "error" not in ans.lower() and poisoned["called"] is False
+    # standing intent → the LLM path IS attempted (factory raises = proof of routing)
+    try:
+        asyncio.run(con.run("t1", "every day at 9am send me a market brief"))
+        routed_to_llm = poisoned["called"]
+    except RuntimeError:
+        routed_to_llm = True
+    assert routed_to_llm
+    # kill switch: NOW goes back through the LLM path
+    poisoned["called"] = False
+    con2 = cz.Concierge(rt, model_factory=factory)
+    os.environ["EVENTS_NOW_FASTPATH"] = "0"
+    try:
+        try:
+            asyncio.run(con2.run("t2", "what is the capital of Japan?"))
+        except RuntimeError:
+            pass
+        assert poisoned["called"] is True
+    finally:
+        os.environ.pop("EVENTS_NOW_FASTPATH", None)
+
+
 def test_single_shot_task_llm_rewrite_with_regex_fallback():
     """The cadence stripper is an LLM rewrite at ARM time (one call per flow, never per tick);
     _strip_cadence is the guarded fallback. Four contracts: a clean LLM answer is used verbatim;

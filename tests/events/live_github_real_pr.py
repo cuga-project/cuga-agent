@@ -90,13 +90,17 @@ def main() -> int:
         default = repo.get("default_branch", "master")
         _, ref = http("GET", f"{API}/repos/{ALLOWED_REPO}/git/ref/heads/{default}", headers=GH)
         base_sha = ref["object"]["sha"]
-        http("POST", f"{API}/repos/{ALLOWED_REPO}/git/refs", headers=GH,
-             body={"ref": f"refs/heads/{branch}", "sha": base_sha})
+        c, ref_resp = http("POST", f"{API}/repos/{ALLOWED_REPO}/git/refs", headers=GH,
+                           body={"ref": f"refs/heads/{branch}", "sha": base_sha})
+        assert c in (200, 201), (f"branch create failed HTTP {c}: {ref_resp} — the fine-grained "
+                                 f"PAT needs 'Contents: Read and write'")
         content = base64.b64encode(
             (f"# e2e real-fire probe {stamp}\n\nThis file exists only to open a real PR that "
              f"fires the armed watcher. It is deleted with the branch.\n").encode()).decode()
-        http("PUT", f"{API}/repos/{ALLOWED_REPO}/contents/e2e/real-fire-{stamp}.md", headers=GH,
-             body={"message": f"e2e: real-fire probe {stamp}", "content": content, "branch": branch})
+        c, put_resp = http("PUT", f"{API}/repos/{ALLOWED_REPO}/contents/e2e/real-fire-{stamp}.md",
+                           headers=GH, body={"message": f"e2e: real-fire probe {stamp}",
+                                             "content": content, "branch": branch})
+        assert c in (200, 201), f"commit failed HTTP {c}: {put_resp}"
         c, pr = http("POST", f"{API}/repos/{ALLOWED_REPO}/pulls", headers=GH,
                      body={"title": f"e2e: add retry/backoff notes (real-fire probe {stamp})",
                            "head": branch, "base": default,

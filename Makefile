@@ -162,3 +162,6 @@ env-check: ## Check .env has the required keys (offline, no network)
 	  if [ -z "$$v" ]; then echo "  · $$k — not set"; else echo "  ✓ $$k"; fi; done; \
 	if [ $$miss -eq 0 ]; then echo ".env looks good ✅"; \
 	  else echo ".env is missing required keys ✗ (see above)"; exit 1; fi
+
+test-exhaustive: ## EXHAUSTIVE live matrix — every agent/trigger/channel, arm+FIRE+answer-verified (~45-75 min)
+	$(PY) tests/events/live_exhaustive.py $(ARGS)

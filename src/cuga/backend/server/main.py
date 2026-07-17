@@ -2212,12 +2212,25 @@ async def stream(
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
 
-    # Events slash commands (/automate /watch /schedule /cron /poll /push) are CONCIERGE verbs —
-    # handed to the plain agent it tries to IMPLEMENT the schedule itself (observed: generated
-    # loop+sleep code for "/automate … every 5 minutes"). Short-circuit them to the concierge and
-    # stream its ARMED/question reply back as a normal Answer event.
+    # THE ROUTING RULE (same rule as the channels — concierge.run applies it on /invoke):
+    #   slash verb                          → concierge (deterministic arm)
+    #   classifier says CRON/POLL/PUSH      → concierge (NL arming; benchmarked classifier)
+    #   this thread has a parked question   → concierge (ask-till-legit continuation)
+    #   otherwise (NOW = conversation)      → the plain agent below, untouched.
+    # Without this the plain agent tried to IMPLEMENT "/automate … every 5 minutes" (loop+sleep).
+    def _events_routes_to_concierge(q: str, tid: str) -> bool:
+        if re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b", q, re.I):
+            return True
+        try:
+            from cuga.backend.events import classify as _evc
+            from cuga.backend.events import flowspec as _evf
+            from cuga.backend.events.principal import DEFAULT as _evp
+            return _evc.classify(q) != "NOW" or _evf.pending_for(_evp.thread(tid)) is not None
+        except Exception:  # noqa: BLE001 — routing must never take the chat down
+            return False
+
     if (isinstance(query, str) and os.environ.get("EVENTS_ENABLED") == "1"
-            and re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b", query, re.I)):
+            and _events_routes_to_concierge(query, thread_id)):
         _conc = getattr(request.app.state, "ev_concierge", None)
         if _conc is not None:
             _q, _tid = query, thread_id

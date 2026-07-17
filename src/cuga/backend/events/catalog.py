@@ -221,6 +221,36 @@ EXAMPLES = [
     _ex("now-trending", "Trending repos now", "now", "show me the top trending GitHub repos right now",
         agent="github_trending", channel="web", phase="run", live=True,
         note="github_trending answering NOW (vs its hourly CRON → Slack)"),
+    # NOW cases for the trigger-oriented specialists — every roster agent must be reachable in
+    # plain chat too (the exhaustive matrix gates on this; live_exhaustive.py leg_agents_now).
+    _ex("now-triage", "Triage an incident now", "now",
+        "triage this: checkout-api 500s spiking, error rate 12%, started 10 minutes ago",
+        agent="incident_triage", channel="web", phase="run", live=True,
+        note="incident_triage answering NOW (vs its github/slack push triggers)"),
+    _ex("now-mail-summary", "Summarize pasted email now", "now",
+        "summarize this email: 'Subject: contract renewal. Hi, the vendor contract lapses Friday; "
+        "approve the $12k renewal or service stops.'",
+        agent="mailbot", channel="web", phase="run", live=True,
+        note="mailbot answering NOW on pasted content (vs its gmail push triggers)"),
+    _ex("now-review-diff", "Review a pasted diff now", "now",
+        "review this change: `def div(a,b): return a/b` — any edge cases to flag?",
+        agent="pr_reviewer", channel="web", phase="run", live=True,
+        note="pr_reviewer answering NOW (vs its github PR push triggers)"),
+    _ex("now-repo-activity", "Describe repo activity now", "now",
+        "what kinds of repo activity should I announce to the team, and how would you phrase a "
+        "new-star shout-out for repo acme/api?",
+        agent="repo_watcher", channel="web", phase="run", live=True,
+        note="repo_watcher answering NOW (vs its github star/push triggers)"),
+    _ex("now-judge-resume", "Judge a pasted resume now", "now",
+        "judge this resume against a senior ML engineer JD: 'Jane Doe — 8 years production ML, "
+        "led fraud-detection team, Python/PyTorch.' Start with MATCH or SKIP.",
+        agent="resume_judge", channel="web", phase="run", live=True,
+        note="resume_judge answering NOW on pasted content (vs its box push trigger)"),
+    _ex("now-support-digest", "Digest support messages now", "now",
+        "digest these support notes: 'login fails on SSO', 'invoice PDF blank', 'API 429s since "
+        "noon' — group by severity",
+        agent="support_digest", channel="web", phase="run", live=True,
+        note="support_digest answering NOW (vs its slack channel triggers)"),
 
     # ─────── ⭐ RECOMMENDED starter flows — one per integration/mode, via the /automate command ───────
     # (star=True → featured & sorted first in the Studio Examples tab. The canonical "try this first"

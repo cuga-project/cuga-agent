@@ -142,6 +142,29 @@ def test_invoke_accepts_correct_gateway_token():
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
+def test_invoke_slash_outranks_channel_watchers():
+    """A slash command typed in a WATCHED chat must reach the concierge — caught live: an armed
+    telegram link-watcher (pattern-less) consumed "/cron …" and asked for a URL to summarize."""
+    watcher = Subscription(id="w-tg", mode="PUSH", target_agent="cuga", source_connector="telegram",
+                           ap_flow_id=None, event="new_channel_message", config={},
+                           thread_id="gw:telegram:123", prompt="summarize the page", dedup_key="w-tg")
+
+    class _Concierge:
+        async def run(self, thread_id, text, principal=None):
+            return "ARMED cron for cuga → web."
+
+    c, _ = _client([watcher], concierge=_Concierge(), gateway_token="")
+    body = {"agent": "concierge", "thread_id": "gw:telegram:123",
+            "text": "/cron every 2 minutes post the bitcoin price",
+            "source": {"type": "channel", "name": "telegram", "thread_id": "gw:telegram:123"},
+            "event": {"kind": "message", "payload": {}}}
+    r = c.post("/invoke", json=body)
+    assert r.status_code == 200 and "ARMED" in r.json()["answer"]      # concierge, not the watcher
+    # a NON-slash message in the same chat IS consumed by the watcher (unchanged behavior)
+    r2 = c.post("/invoke", json={**body, "text": "https://example.com/paper"})
+    assert r2.status_code == 200 and "ARMED" not in str(r2.json().get("answer"))
+
+
 def test_invoke_expiry_gate_ends_a_bounded_flow():
     """A "… for one hour" flow bakes expires_at + subscription_id into its /invoke body; AP
     schedules can't end themselves, so the FIRST tick past the deadline must delete the

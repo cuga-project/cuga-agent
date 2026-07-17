@@ -321,3 +321,37 @@ same code path, so cosmetic).
   bitcoin poll with INTERNAL_ERRORs. New doctor check caught it verbatim on first outing;
   make ap + make channels recovered. REAL fix needed: stable AP URL (2nd reserved domain) or
   split internal/external URL so worker progress-uploads don't ride the public tunnel.
+
+## UNIFIED ROUTING RULE + EXHAUSTIVE HARNESS (2026-07-17, user directive)
+- THE ROUTING RULE, one brain two doors (user's design, refined):
+  slash → concierge (deterministic) · classifier CRON/POLL/PUSH → concierge NL-arm ·
+  parked ask-till-legit question → concierge · otherwise NOW → cuga DIRECTLY (no concierge LLM
+  hop). Implemented in concierge.run (NOW fast-path, lazy graph build, EVENTS_NOW_FASTPATH=0
+  kill switch, graceful LLM fallback on worker error) + the same gate in /stream. Channels get
+  it via /invoke→concierge.run automatically. Mention gates (slack+discord) sit BEFORE routing.
+  Live: NOW answer in 8.8s (used to carry an extra concierge react-agent trip).
+- tests/events/live_exhaustive.py + make test-exhaustive: every agent (catalog NOW case,
+  coverage-gated) · every registry trigger arm + fire (SYNTH at the exact seam with planted
+  markers; webhook REAL; github via the proven 14/14 subprocess; box BLOCKED without token) ·
+  slash probe per door (TTL-bounded, self-cleaning) · QUALITY gate on every answer (FORBID list:
+  scaffolding/deliberation/refusals/loop-attempts) · REAL/SYNTH/BLOCKED honest marking ·
+  per-trigger ledger stamping · leak-free cleanup gate. Plan: plans/EXHAUSTIVE_MATRIX.md.
+- Also this session: web /stream slash short-circuit + Discord mention-gate
+  (EVENTS_DISCORD_CHAT=mention; watchers preserved on gated traffic; fail-open pre-READY).
+  make test 207 green.
+
+## EXHAUSTIVE MATRIX — RUN 2 CLEAN (2026-07-17)
+- 74 cases: REAL 53/55 · SYNTH 15/16 · BLOCKED 3 (box token only) · channels+flows e2e 36P/0F ·
+  github 14/14 (new_discussion transient NOFIRE re-fired 1/1 solo) · zero leaked subscriptions.
+- REAL BUG the matrix caught: an armed telegram link-WATCHER consumed "/cron …" (watchers ran
+  before slash parsing in /invoke) — the arm command got "please provide the URL". FIX: slash
+  commands outrank channel watchers in /invoke (+ /start /link); offline test
+  test_invoke_slash_outranks_channel_watchers; live-verified (slash arms in a watched chat,
+  TTL-bounded). 208 offline green.
+- Run-1 lessons folded in: live_suite.py is FLEET-ERA (asserts per-agent meta.mcp → false-fails
+  vs supervisor hint: reporting) — the orchestrator now runs supervisor-native live_e2e.py;
+  REUSING/already-active accepted as arm success (dedup working); webhook arm = "nothing to arm"
+  is the correct reply; 6 catalog NOW examples added (mailbot, pr_reviewer, resume_judge,
+  incident_triage, repo_watcher, support_digest) + examples/slides regenerated.
+- STILL OPEN: box legs (fresh BOX_DEV_TOKEN), github real-PR (PAT R/W click), discord real
+  member-join + gateway injector, stateful poll, runtime deliberation-leak guard.

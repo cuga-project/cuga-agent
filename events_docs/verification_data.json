@@ -4,25 +4,25 @@
    "surface": "github",
    "capability": "arm",
    "verdict": "ok",
-   "note": "all 14 arm as real AP flows + real repo webhooks",
+   "note": "all 1 arm as real AP flows + repo webhooks",
    "source": "live_github_triggers.py",
-   "date": "2026-07-15 21:11"
+   "date": "2026-07-17 10:39"
   },
   "github::fire_synth": {
    "surface": "github",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "14/14 piece-exact payloads (X-GitHub-Event) → real AP runs → answers",
+   "note": "1/1 piece-exact payloads fired real AP runs",
    "source": "live_github_triggers.py",
-   "date": "2026-07-15 21:11"
+   "date": "2026-07-17 10:39"
   },
   "github::fire_real": {
    "surface": "github",
    "capability": "fire_real",
-   "verdict": "partial",
-   "note": "branch+commit+webhook proven; PR create 403 — grant PAT 'Pull requests: R/W' then run live_github_real_pr.py",
+   "verdict": "ok",
+   "note": "REAL PR opened on the pinned repo → genuine webhook fired the flow → cleaned",
    "source": "live_github_real_pr.py",
-   "date": "2026-07-15 21:11"
+   "date": "2026-07-17 11:15"
   },
   "box::arm": {
    "surface": "box",
@@ -215,6 +215,158 @@
    "note": "203 passed · 0 failed (test)",
    "source": "make test-report",
    "date": "2026-07-16 12:47"
+  },
+  "box/new_box_comment::fire_real": {
+   "surface": "box/new_box_comment",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "BOX_DEV_TOKEN missing/expired — send a fresh one",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "box/new_file::fire_real": {
+   "surface": "box/new_file",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "BOX_DEV_TOKEN missing/expired — send a fresh one",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "box/new_folder::fire_real": {
+   "surface": "box/new_folder",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "BOX_DEV_TOKEN missing/expired — send a fresh one",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "discord/new_channel_message::fire_synth": {
+   "surface": "discord/new_channel_message",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Deploy pipeline PLUM‑9 turned red in Slack channel C1 – **Severity P2*",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "discord/new_member::fire_synth": {
+   "surface": "discord/new_member",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Welcome to **Guild G1**, **zeta_tester_77**! 🎉    We’re excited to hav",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "gmail/new_attachment::fire_synth": {
+   "surface": "gmail/new_attachment",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Email received: - **From:** jane@example.com   - **Subject:** resume a",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "gmail/new_email::fire_synth": {
+   "surface": "gmail/new_email",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "The finance team is forwarding a request to approve a $42,000 vendor b",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "gmail/new_gmail_label::fire_synth": {
+   "surface": "gmail/new_gmail_label",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "New Gmail label created: Q3-Receipts  — cuga · 2.7s",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "gmail/new_labeled_email::fire_synth": {
+   "surface": "gmail/new_labeled_email",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "**Email summary (concise):**    The attached survey reviews Mixture‑of",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/channel_created::fire_synth": {
+   "surface": "slack/channel_created",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Channel **proj-orchid** has been created.  — cuga · 1.1s",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/new_channel_message::fire_synth": {
+   "surface": "slack/new_channel_message",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "**Severity:** P1 – a queue depth of 9,000 in production indicates a se",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/new_emoji::fire_synth": {
+   "surface": "slack/new_emoji",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "🎉 New custom emoji added: `:partyblob77:` 🎉  — cuga · 3.3s",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/new_reaction::fire_synth": {
+   "surface": "slack/new_reaction",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Checkout 500 s spikes on GRB‑12 – **Severity P2**; component: checkout",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/new_slack_mention::fire_synth": {
+   "surface": "slack/new_slack_mention",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "I’m unable to see any open issues, milestones, or release notes for **",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/new_slack_user::fire_synth": {
+   "surface": "slack/new_slack_user",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "**Onboarding Checklist – Essential Steps & Resources**  | # | Action |",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/reaction_removed::fire_synth": {
+   "surface": "slack/reaction_removed",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "Incident GRB-12 resolved.  — cuga · 12.8s",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "slack/saved_message::fire_synth": {
+   "surface": "slack/saved_message",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "decision: ship flag FLG-31 next sprint  — cuga · 1.9s",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "telegram/new_channel_message::fire_synth": {
+   "surface": "telegram/new_channel_message",
+   "capability": "fire_synth",
+   "verdict": "ok",
+   "note": "The URL `https://example.com/moe-paper` returns a **404 Not Found** er",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
+  },
+  "webhook/inbound::fire_real": {
+   "surface": "webhook/inbound",
+   "capability": "fire_real",
+   "verdict": "ok",
+   "note": "The alert has been triaged as follows:  **Severity:** P1 – CPU usage a",
+   "source": "live_exhaustive.py",
+   "date": "2026-07-17 10:20"
   }
  }
 }
