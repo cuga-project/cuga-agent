@@ -122,6 +122,18 @@ def channel_origin(thread_id: str) -> tuple[str, str] | None:
     return None
 
 
+def channel_locus(thread_id: str) -> str:
+    """The ``#<locus>`` suffix of a gw thread — the IN-CHANNEL anchor a delivery attaches to
+    (Slack: the thread_ts; Discord: a message id to reply to). Empty when absent.
+    channel_origin() deliberately strips it; DELIVERIES deliberately keep it — a flow armed in a
+    thread replies INTO that thread, not to the channel root."""
+    tid = thread_id or ""
+    i = tid.find("gw:")
+    if i < 0 or "#" not in tid[i:]:
+        return ""
+    return tid[i:].split("#", 1)[1]
+
+
 def channel_user_id(source) -> str | None:
     """The channel-native id of the message AUTHOR — for per-user identity (whose creds/perms/memory).
     Prefer an explicit ``source.user`` (Slack ``ev.user`` / Discord author id, forwarded by the

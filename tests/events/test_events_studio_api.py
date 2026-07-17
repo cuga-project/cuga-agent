@@ -82,8 +82,8 @@ def test_invoke_direct_channel_delivery():
 
     sent = []
 
-    async def _fake_send_direct(channel, target, text):
-        sent.append((channel, target, text))
+    async def _fake_send_direct(channel, target, text, locus=""):
+        sent.append((channel, target, text, locus))
         return True, "ok"
 
     class _Runtime:
@@ -105,7 +105,10 @@ def test_invoke_direct_channel_delivery():
                                                "thread_id": "gw:slack:C1"},
                                     "event": {"kind": "tick", "payload": {}}})
         assert r.status_code == 200 and r.json()["ok"] is True
-        assert sent == [("slack", "C1", "the market brief")], sent
+        # a FIRE (kind=tick) is labeled with the flow-fired header; no locus in this thread id
+        assert len(sent) == 1 and sent[0][:2] == ("slack", "C1"), sent
+        assert sent[0][2].startswith("⚡ flow fired · cron tick") and "the market brief" in sent[0][2]
+        assert sent[0][3] == ""
     finally:
         delivery.send_direct = _orig
         os.environ.pop("EVENTS_REPLY_METADATA", None)
@@ -121,8 +124,8 @@ def test_invoke_push_flow_delivers_to_direct_channel():
 
     sent = []
 
-    async def _fake_send_direct(channel, target, text):
-        sent.append((channel, target, text))
+    async def _fake_send_direct(channel, target, text, locus=""):
+        sent.append((channel, target, text, locus))
         return True, "ok"
 
     class _Runtime:
@@ -145,8 +148,11 @@ def test_invoke_push_flow_delivers_to_direct_channel():
                        "thread_id": "default/default/admin::gw:slack:C0BEYJ9NATB#1699.9"},
             "event": {"kind": "new_email", "payload": {"subject": "Hi"}}})
         assert r.status_code == 200 and r.json()["ok"] is True
-        # delivered to the SLACK sink parsed from the scope-prefixed thread_id — not 'gmail', not dropped
-        assert sent == [("slack", "C0BEYJ9NATB", "email summary")], sent
+        # delivered to the SLACK sink parsed from the scope-prefixed thread_id — not 'gmail', not
+        # dropped — labeled as a fire, and INTO the #locus thread (the arming thread's ts)
+        assert len(sent) == 1 and sent[0][:2] == ("slack", "C0BEYJ9NATB"), sent
+        assert sent[0][2].startswith("⚡ flow fired · gmail/new_email") and "email summary" in sent[0][2]
+        assert sent[0][3] == "1699.9"
     finally:
         delivery.send_direct = _orig
         os.environ.pop("EVENTS_REPLY_METADATA", None)

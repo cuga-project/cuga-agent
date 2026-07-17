@@ -288,11 +288,26 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         #   2. capture sink: POST to EA_CAPTURE_URL when set (assertable real-HTTP target for e2e/web).
         if env.deliver:
             from . import delivery
-            from .principal import channel_origin
+            from .principal import channel_origin, channel_locus
             direct_done = False
             origin = channel_origin(env.thread_id)     # (channel, native) from the thread_id
             if origin and delivery.is_direct(origin[0]) and origin[1] and isinstance(answer, str):
-                ok, why = await delivery.send_direct(origin[0], origin[1], answer)
+                # a FIRE (not a chat message) is labeled so the reader knows WHY the bot spoke:
+                # which flow/trigger produced this, at a glance. Chat replies stay unlabeled.
+                out_text = answer
+                if env.event.kind != "message":
+                    _flow = ""
+                    _sid = str(body.get("subscription_id") or "")
+                    if _sid and store is not None:
+                        _s = store.get(_sid)
+                        _flow = f" · {_s.flow_name}" if _s is not None and _s.flow_name else ""
+                    _what = ("cron tick" if env.event.kind == "tick"
+                             else f"{env.source.name}/{env.event.kind}")
+                    out_text = f"⚡ flow fired · {_what}{_flow}\n{answer}"
+                # locus = the in-channel anchor (Slack thread_ts / Discord message id): deliver
+                # INTO the thread the flow was armed from, not to the channel root
+                ok, why = await delivery.send_direct(origin[0], origin[1], out_text,
+                                                     locus=channel_locus(env.thread_id))
                 tr("deliver", via="direct", channel=origin[0], ok=ok, reason=why)
                 direct_done = ok
             cap = os.environ.get("EA_CAPTURE_URL")
@@ -1396,7 +1411,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                  headers={"X-Gateway-Token": gw}, json=payload)
                 answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
             if answer:
-                res = await discord_direct.send_message(channel_id, answer)
+                # reply-to the asking message: the answer visibly attaches to its question
+                res = await discord_direct.send_message(channel_id, answer,
+                                                        reply_to=str(msg.get("id") or ""))
                 tr("discord.reply", channel=channel_id, ok=res.get("ok"))
             else:
                 tr.error("discord", reason="no answer", status=r.status_code)

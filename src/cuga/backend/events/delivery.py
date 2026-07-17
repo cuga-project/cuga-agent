@@ -41,20 +41,21 @@ def is_direct(channel: str) -> bool:
     return channel_backend(channel) == "direct"
 
 
-async def send_direct(channel: str, target: str, text: str) -> tuple[bool, str]:
+async def send_direct(channel: str, target: str, text: str, locus: str = "") -> tuple[bool, str]:
     """CUGA-side outbound send for a direct channel. Returns (ok, reason).
 
-    Dispatches to the channel's own adapter. Today only Slack has one; others return (False, ...)
-    so the caller can fall back (e.g. to the capture sink) and we log the gap loudly."""
+    ``locus`` is the thread anchor from the gw thread id (principal.channel_locus): Slack posts
+    into that thread (thread_ts), Discord replies to that message id — a flow armed in a thread
+    delivers INTO the thread instead of the channel root."""
     ch = (channel or "").lower()
     if ch == "slack":
         from . import slack_direct
-        res = await slack_direct.send_message(target, text)
+        res = await slack_direct.send_message(target, text, thread_ts=locus or None)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"slack: {res.get('error') or res}")
     if ch == "discord":
         from . import discord_direct
-        res = await discord_direct.send_message(target, text)
+        res = await discord_direct.send_message(target, text, reply_to=locus)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"discord: {res.get('error') or res}")
     log.warning("no direct sender for channel %s (target=%s) — dropping", channel, target)

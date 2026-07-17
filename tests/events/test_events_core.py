@@ -23,6 +23,7 @@ import concierge_plan    # noqa: E402
 import envelope          # noqa: E402
 import flows             # noqa: E402
 import mcp_catalog       # noqa: E402
+import principal        # noqa: E402
 import subscriptions     # noqa: E402
 import trace             # noqa: E402
 import runtime           # noqa: E402
@@ -46,6 +47,17 @@ def test_envelope_worker_input():
         {"source": {"type": "integration", "name": "box"},
          "event": {"kind": "new_file", "payload": {"name": "cv.pdf"}}})
     assert "cv.pdf" in ig.worker_input()
+
+
+def test_channel_locus_extraction():
+    """Deliveries keep the #locus (Slack thread_ts / Discord message id) that channel_origin
+    strips — a flow armed in a thread must deliver INTO the thread, not the channel root."""
+    assert principal.channel_locus("scope::gw:slack:C123#1784.9") == "1784.9"
+    assert principal.channel_locus("gw:discord:555#8888") == "8888"
+    assert principal.channel_locus("gw:slack:C123") == ""          # no locus → channel root
+    assert principal.channel_locus("web:local") == ""              # not a gw thread
+    # origin still strips it (unchanged contract)
+    assert principal.channel_origin("scope::gw:slack:C123#1784.9") == ("slack", "C123")
 
 
 def test_envelope_push_fire_is_framed_one_shot():

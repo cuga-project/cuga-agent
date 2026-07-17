@@ -88,16 +88,22 @@ def mention_gate(msg: dict) -> tuple[bool, str]:
     return False, text
 
 
-async def send_message(channel_id: str, text: str) -> dict:
-    """Post a reply to the channel via the REST API (bot token). Discord caps content at 2000 chars."""
+async def send_message(channel_id: str, text: str, reply_to: str = "") -> dict:
+    """Post to the channel via the REST API (bot token). Discord caps content at 2000 chars.
+    ``reply_to`` (a message id) makes it a REPLY to that message — chat answers reference the
+    question they answer instead of floating loose in the channel."""
     tok = bot_token()
     if not tok:
         return {"ok": False, "error": "no DISCORD_BOT_TOKEN"}
+    body: dict = {"content": (text or "")[:2000]}
+    if reply_to:
+        # fail_if_not_exists=False: if the original was deleted, post normally instead of 400ing
+        body["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post(f"{API}/channels/{channel_id}/messages",
                          headers={"Authorization": f"Bot {tok}",
                                   "content-type": "application/json"},
-                         json={"content": (text or "")[:2000]})
+                         json=body)
         if r.status_code < 300:
             return {"ok": True}
         return {"ok": False, "error": f"HTTP {r.status_code}", "detail": r.text[:200]}
