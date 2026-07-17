@@ -32,11 +32,15 @@ restart. Without it you get an ephemeral cloudflared tunnel that changes each ru
 - **LLM:** `WATSONX_APIKEY` / `WATSONX_URL` / `WATSONX_PROJECT_ID` (or `OPENAI_API_KEY`) + `LLM_PROVIDER`/`LLM_MODEL`.
 - **AP:** `AP_BASE_URL`, `AP_EMAIL` + `AP_PASSWORD` (**you invent** these; the admin created on AP's
   first boot and your AP-UI login), `EVENTS_AP_PROJECT_GRAIN=shared`.
-- **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SEED_AGENTS=1`,
-  `EVENTS_DB=<abs path>.db`, `GATEWAY_TOKEN`,
+- **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SUPERVISOR=1` (the agent
+  model — one `cuga` supervising `supervisor_agents.yaml`; see below), `EVENTS_SEED_AGENTS=1` (seeds
+  the demo **users** for identity/permissions — despite the name, the agent fleet it once seeded is
+  retired), `EVENTS_DB=<abs path>.db`, `GATEWAY_TOKEN`,
   `HOST_CALLBACK_URL=http://host.containers.internal:7860/invoke` (podman host alias).
 - **Public URL:** `EVENTS_NGROK_DOMAIN` (recommended, above).
 - **Channels:** `TELEGRAM_BOT_TOKEN` (+ `EVENTS_TELEGRAM_BOT_USERNAME`), `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`.
+- **Mention gates:** `EVENTS_SLACK_CHAT=mention` / `EVENTS_DISCORD_CHAT=mention` — only @bot
+  messages, DMs, and replies-to-the-bot reach chat; armed channel watchers still see everything.
 - **Integrations:** `EVENTS_OAUTH_{GMAIL,GITHUB,BOX}_CLIENT_ID`/`_SECRET` (OAuth apps), or `BOX_DEV_TOKEN` for Box direct-poll.
 - **Security (set before exposing publicly):** `SLACK_SIGNING_SECRET`, `EVENTS_WEBHOOK_KEY` — unset, those endpoints accept anything.
 
@@ -65,8 +69,9 @@ make public-url         # prints the public URL + the exact strings to paste int
 make status      # everything up + tunnel URLs      make doctor   # live creds ok
 make test        # the offline suite green          make tunnels  # both tunnels reachable
 ```
-Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:7860/studio`. For a
-full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
+Then smoke-test: DM the Telegram bot · @mention the bot in Slack/Discord (mention gates: a plain
+channel message is deliberately ignored) · open `localhost:7860/studio`. For a full from-zero
+rehearsal, follow **Clean run from zero** below; for exhaustive testing see **Which test do I run**.
 
 ## Starting the server — one entry point
 
@@ -154,45 +159,53 @@ then `make reload`. Three rules:
 
 After editing, run `make test-delegation` — the routing gate over the real roster.
 
-interactive [checklist.html](checklist.html); the automated report + live harnesses are in [TESTING.md](TESTING.md).
+### How a message routes (the one rule, every surface)
+
+Web chat, Slack, Discord and Telegram all apply the same rule, in order: a **slash command**
+(`/automate` + the mode-forcing `/watch /schedule /cron /poll /push`) goes to the concierge
+deterministically — it outranks even armed channel watchers; an utterance the classifier reads as
+**standing intent** (cron/poll/push phrasing) takes the concierge's NL→Flow path; a thread with an
+**open concierge question** stays with the concierge (slot filling); everything else — plain
+conversation — goes **straight to the `cuga` agent** with no concierge LLM hop. Mention gates
+(`EVENTS_SLACK_CHAT` / `EVENTS_DISCORD_CHAT` = `mention`) run before any of this; Telegram DMs
+need no mention — a private chat is inherently addressed to the bot.
 
 ## Clean run from zero (the hand-off rehearsal)
 
 The exact sequence to take a machine from wiped to fully tested — hand this to a new tester and they
-follow it top to bottom, no guidance needed. A fresh AP boot needs `ap-pieces` (step 3) and the two
-browser consents (step 8) that a nuke wipes; everything else is the commands above, in order.
+follow it top to bottom, no guidance needed. Last rehearsed end-to-end 2026-07-17 (this exact list).
 
 ```bash
-make nuke          # 1. wipe AP volumes + .events.db (keeps .env, so your tokens/keys survive)
-make up            # 2. AP (container + tunnel) then CUGA (registry + tunnel + server)
-make ap-pieces     # 3. a fresh AP boots WITHOUT the schedule piece — install the catalog (run once;
-                   #    if 'schedule' still shows missing, run it a second time — a cold-boot race)
-make channels      # 4. arm inbound channels from .env bot tokens
-make status        # 5. registry + cuga both 200, 3 containers Up, both tunnel URLs printed
-make doctor        # 6. every live cred green — incl. a FRESH BOX_DEV_TOKEN (starts a ~60-min clock)
-make test          # 7. the full offline suite (no stack or creds needed — must be all green)
+make fresh         # 1. = nuke (AP volumes + events.db; .env survives) → up → channels.
+                   #    ap_up.sh installs the piece catalog itself; if a Connect later 404s with
+                   #    piece_metadata_not_found, run `make ap-pieces` once (cold-boot race).
+make status        # 2. registry + cuga both 200, 3 containers Up, both tunnel URLs printed
+make doctor        # 3. every live cred green — incl. a FRESH BOX_DEV_TOKEN (starts a ~60-min clock)
+make test          # 4. the full offline suite (no stack or creds needed — must be all green)
 ```
 
-8. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
+5. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
    consent. Open `https://<domain>/api/events/connect/gmail` and `…/connect/github`, approve each,
    then `curl -s localhost:7860/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
+   ⚠ Google shows an **"unverified app"** warning (testing-mode OAuth app): click *Advanced → Go to …
+   → Allow* and continue to the success page. Abandoning mid-consent leaves NO connection — the
+   server log shows the 302 out to Google but no `/connect/gmail/callback` ever arrives.
 
 ```bash
-make test-live     # 9. live smoke — 4 channels + 4 flow modes (green even before step 8,
-                   #    since an unconnected integration correctly reports 'connect-needed')
+make test-live        # 6. live smoke — 4 channels + 4 flow modes (green even before step 5,
+                      #    since an unconnected integration correctly reports 'connect-needed')
+make test-exhaustive  # 7. THE full matrix: every agent · every registry trigger armed AND fired ·
+                      #    answer QUALITY gates · REAL/SYNTH/BLOCKED marking · zero-leak cleanup
+                      #    gate (~45-75 min; run right after step 5 while the Box token is fresh)
 ```
 
-10. **Then test exhaustively** — two complementary tools:
-    - **[checklist.html](checklist.html)** — an interactive, hand-off-ready **manual** checklist: 80+ items
-      spanning every agent (web/Telegram/Discord/Slack chat, CRON/POLL/PUSH arming, Gmail/Box/GitHub,
-      webhooks), each with a pass/fail/skip status saved in the browser and a *Copy report* button. An
-      editable "environment" panel templates your URL/channel/repo into every command. Open it directly,
-      or serve it: `cd events_docs && python3 -m http.server 8899` → `localhost:8899/checklist.html`.
-    - **`make test-report`** — the **automated** counterpart: runs every harness (offline · live · now ·
-      flows · matrix · fire) and writes a timestamped HTML report to `results/index.html` (~40 min; needs
-      Gmail/GitHub connected and a fresh Box token, so start it right after step 8).
+8. **Other testing tools** — [checklist.html](checklist.html) is the interactive **manual**
+   checklist (80+ items, browser-saved statuses, *Copy report*); **`make test-report`** runs the
+   harness ladder (offline · live · flows · delegation — the fleet-era now/matrix/fire rungs
+   auto-skip under `EVENTS_SUPERVISOR=1`) and writes the timestamped HTML report to
+   `results/index.html`.
 
-### Scheduled flows are single-shot (cadence stripping)
+### Scheduled flows are single-shot (cadence stripping) — and can be bounded
 
 The AP schedule owns recurrence; the agent runs **once per tick**. At arm time the concierge
 rewrites the utterance into its one-run task with an **LLM** (one call per flow, never per tick) —
@@ -202,6 +215,11 @@ guarded fallback (used when the LLM is off, unreachable, or its answer still lea
 Knobs: `EVENTS_CADENCE_LLM=0` disables the LLM (regex only); `EVENTS_CADENCE_LLM_TIMEOUT` (s,
 default 20). Without this, the agent tries to implement the schedule itself (loop + sleep) and hits
 the execution timeout.
+
+**Bounded runs**: add "… for one hour" / "for the next 2 days" / "for 30 minutes" and the flow
+**ends itself** — the ARMED reply names the stop time, and the first tick past the deadline deletes
+the flow and its subscription instead of running (lazy enforcement at `/invoke`: survives server
+downtime, overshoots by at most one tick). Word-number cadences ("every five minutes") work too.
 
 ## Day-to-day
 
@@ -237,8 +255,9 @@ Six targets because "does it work?" is six different questions at six different 
 | `make test-matrix` | Is every trigger × sink combination wired? | 6 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` |
 | `make test-fire` | Does an armed flow genuinely FIRE on a real tick? | 9 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` (the GitHub triggers harness covers real fires there) |
 | `make test-delegation` | Does the supervisor pick the right sub-agent? (≥90% gate) | 10 min | supervisor mode only; after editing `supervisor_agents.yaml` |
+| `make test-exhaustive` | EVERYTHING: every agent + every trigger armed AND fired, answer-quality gated, REAL/SYNTH/BLOCKED marked, zero-leak cleanup | 45–75 min | before a demo/handoff; after big refactors (plans/EXHAUSTIVE_MATRIX.md) |
 
-Day to day you need the first two. **`make test-report`** runs all six in order and writes the
+Day to day you need the first two. **`make test-report`** runs the ladder in order and writes the
 timestamped HTML report (`results/index.html`) — the one command for a handoff or a citable result.
 `make doctor` isn't a test — it pings each service with its real `.env` cred and never fails, only
 reports. Full reference (verdict vocabulary, what each harness can and cannot prove, the live
@@ -261,8 +280,10 @@ GitHub/Slack harnesses): [TESTING.md](TESTING.md).
 
 - **`BOX_DEV_TOKEN`** expires **~60 min** — refresh it in the Box console before Box tests, then `make reload`.
 - **Gmail** (Testing-mode OAuth) refresh token expires after **7 days** — re-Connect in the Studio if stale.
-- **The AP cloudflared tunnel is ephemeral** — when it dies, every flow fails with `INTERNAL_ERROR`;
-  fix with `make ap`. This is the #1 "everything stopped firing" cause ([GAPS.md](GAPS.md)).
+- **The AP cloudflared tunnel is ephemeral** — when it dies, every flow RUN fails with
+  `INTERNAL_ERROR` while arming still "works". `make doctor` now detects this exactly (it resolves
+  the baked `AP_FRONTEND_URL` and prints the fix); recover with `make ap` then `make channels`.
+  This is the #1 "everything stopped firing" cause ([GAPS.md](GAPS.md)).
 
 ## What can't be scripted (external, human)
 

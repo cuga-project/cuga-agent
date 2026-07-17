@@ -48,6 +48,10 @@ email). Both are **per-user** — each employee logs into *their own* Gmail.
    ```
    open  GET /api/events/connect/gmail        # → Google consent → callback → AP connection
    ```
+   ⚠ A Testing-mode OAuth app shows Google's **"unverified app"** warning — click *Advanced →
+   Go to … → Allow* and continue to the success page. **Abandoning mid-consent creates NO
+   connection**: the server log shows the 302 out to Google but no `/connect/gmail/callback`
+   ever arrives. Just re-open the connect URL and finish.
 
 4. **Arm a watcher / use email delivery** — ask the concierge:
    *"when an email from my boss arrives, summarize it and message me"* (PUSH), or

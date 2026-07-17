@@ -355,3 +355,17 @@ same code path, so cosmetic).
   incident_triage, repo_watcher, support_digest) + examples/slides regenerated.
 - STILL OPEN: box legs (fresh BOX_DEV_TOKEN), github real-PR (PAT R/W click), discord real
   member-join + gateway injector, stateful poll, runtime deliberation-leak guard.
+
+## FROM-ZERO REBUILD + FIRST FULLY-UNBLOCKED MATRIX (2026-07-17 afternoon, user directive)
+- make fresh: nuked AP volumes + events.db → fresh AP (admin signup, pieces, tunnel baked),
+  channels armed. Post-nuke state verified: 0 subscriptions, 1 infra flow (inbound-telegram),
+  capability 4/4, doctor 8/8 (doctor now shows box token expiry countdown).
+- Reconnects: telegram auto from .env · github OAuth click ✓ · gmail OAuth click ✓ (first
+  attempt stalled at Google's unverified-app screen — logs showed 302-out with no callback).
+- Box REAL fire on the fresh token: upload → direct poll → resume_judge → cleaned (6.9s).
+- Fresh-stack battery: offline 209 · test-live 37/0 · delegation 13/14 (92%, gate PASS).
+- EXHAUSTIVE (first fully-unblocked run): 74 cases · REAL 55/55 · SYNTH 18/19 · BLOCKED 0 ·
+  github 14/14 (463s) · channels+flows e2e 36/0 · subscriptions 0→0 (17 cleaned mid-run).
+  The 1 "failure" was a GATE bug: correct answer used U+2011 in "Q3‑candidates" so the ASCII
+  marker check missed — quality() now normalizes typographic dashes/quotes.
+- Threaded delivery + ⚡ fire-labels + discord reply-to shipped earlier today are all in this run.

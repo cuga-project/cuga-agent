@@ -293,7 +293,7 @@ _GMAIL = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-# Box — the direct poller (EVENTS_BOX_BACKEND=direct, the default operating mode). `new_file` is the
+# Box — the direct poller (EVENTS_BOX_BACKEND=direct, an opt-in; AP is the default backend). `new_file` is the
 # proven resume path; folder/comment are handled by the same poller. AP-piece rows exist for the
 # non-direct mode and reuse the same events.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

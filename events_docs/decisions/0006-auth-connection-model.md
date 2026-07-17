@@ -21,13 +21,17 @@ Three layers:
    **Integrations** act *as* the user → that's where per-user login matters.
 
 **Deployment: self-host CE. Mechanism: CUGA hosts connect; AP holds the token.**
-- **OAuth apps** (gmail/box/slack/outlook): CUGA hosts `/api/events/connect/<app>` (redirect to
+- **OAuth apps** (gmail/box/github): CUGA hosts `/api/events/connect/<app>` (redirect to
   consent) + `/callback` (exchange the code, create an AP OAUTH2 connection — AP refreshes it).
+  *(Amended by [0008](0008-direct-backends-for-channels.md): **Slack** is NOT an AP OAuth
+  connection — its bot token runs a direct backend, because AP's OAuth2 rejects a Slack bot token.
+  "outlook" was speculative and is not a shipped integration.)*
   The platform registers an OAuth app per provider once
   (`EVENTS_OAUTH_<APP>_CLIENT_ID/_CLIENT_SECRET`, redirect `…/connect/<app>/callback`).
 - **Token apps** (telegram / discord bot tokens): `POST /api/events/connect/<app>/token` → AP
   `SECRET_TEXT` connection. No redirect. **GitHub is NOT here** — its AP piece accepts only OAUTH2, so
-  it goes through the OAuth flow above; `connect/github/token` refuses a pasted PAT with a 400.
+  it goes through the OAuth flow above; `connect/github/token` still *stores* a pasted PAT but
+  returns `usable_by_piece:false` with a warning (the piece can't use it).
 - Connect UX by channel: **web** → popup; **telegram/discord** → a tappable link.
 
 **Flow grain follows credentials.** A flow using only shared connectors is **per-tenant** (one

@@ -21,7 +21,7 @@ command to **verify** it works. Pick your integration:
 | Guide | Auth | Trigger | What it's for |
 |---|---|---|---|
 | **[BOX.md](BOX.md)** | AP OAuth (default) · direct token behind a flag | `new_file` | file/résumé watcher (PUSH) |
-| **[GITHUB.md](GITHUB.md)** | AP **OAuth** (client id+secret; *not* a PAT) | `new_pull_request` / `new_issue` | PR/issue watcher (PUSH) |
+| **[GITHUB.md](GITHUB.md)** | AP **OAuth** (client id+secret; *not* a PAT) | `new_pr` / `new_issue` (+12 more — the full registry) | PR/issue watcher (PUSH) |
 | **[GMAIL.md](GMAIL.md)** | AP OAuth (consent + refresh) | `new_email` | inbox watcher (PUSH) + email delivery sink |
 | **[WEBHOOK.md](WEBHOOK.md)** | none (direct) | HTTP POST | generic inbound webhook → triage → deliver |
 
@@ -58,4 +58,4 @@ Prints ✅/❌ per integration (watsonx · Activepieces · Telegram · Discord �
 from your `.env`. Run it first — it catches a bad token before you chase a round-trip.
 
 > Secrets live in `.env` (gitignored). Never paste token values into chat or commits. When you add a
-> secret, **restart the server** so it picks up the new value (the launcher loads `.env` at startup).
+> secret, run **`make reload`** so the server picks up the new value (`.env` is read at startup).

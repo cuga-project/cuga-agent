@@ -141,14 +141,14 @@ const DATA = [
   {
     id:"github", name:"GitHub", tag:"integration",
     sub:"A PR / issue watcher. Verified with a Personal Access Token — which proves the same capability headlessly, no browser OAuth grant needed.",
-    need:["A GitHub Personal Access Token with <code>repo</code> + <code>admin:repo_hook</code> scopes."],
+    need:["A GitHub Personal Access Token. Fine-grained (canonical, matches <code>events_docs/setup/GITHUB.md</code>): <code>Contents</code> + <code>Pull requests</code> + <code>Webhooks</code>, all Read&amp;write on the test repo. A classic token with <code>repo</code> + <code>admin:repo_hook</code> also proves the capability."],
     steps:[
-      "<a href='https://github.com/settings/tokens'>github.com/settings/tokens</a> → generate a token with <code>repo</code> and <code>admin:repo_hook</code> (the latter lets a watcher create the repo webhook).",
+      "<a href='https://github.com/settings/tokens'>github.com/settings/tokens</a> → a fine-grained token scoped to the test repo with <code>Contents</code>, <code>Pull requests</code>, and <code>Webhooks</code> set to Read&amp;write (a classic token with <code>repo</code> + <code>admin:repo_hook</code> works too — the check accepts either).",
       "Put it in <code>.env</code>. Optionally name a repo to test read + webhook access against."
     ],
     env:"GITHUB_TOKEN=ghp_…\n# GITHUB_TEST_REPO=owner/name              # optional: verify repo + webhook access",
     check:"check_github.py",
-    checkNote:"Verifies the token (/user) and that it carries repo + admin:repo_hook. With GITHUB_TEST_REPO it also reads the repo and lists its webhooks.",
+    checkNote:"Verifies the token (/user); for a classic PAT it checks repo + admin:repo_hook, for a fine-grained one it reminds you to grant Webhooks R/W. With GITHUB_TEST_REPO it also reads the repo and lists its webhooks.",
     note:"CUGA/AP uses an OAuth App for the live path; the PAT here verifies the identical capability without the browser consent."
   },
   {

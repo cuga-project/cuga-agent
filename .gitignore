@@ -110,3 +110,5 @@ demo_knowledge_docs/
 .events.db
 .box_since.json
 results/run_logs*
+results/
+src/cuga/frontend/dist/*.map

@@ -28,7 +28,9 @@ Each integration on an agent declares a **`credential_ownership`**:
   capability-envelope pattern as "tell me what to connect.")
 - **OAuth vs token:** OAuth apps (Gmail/Box) are authorized in AP's connect UI (can't be minted
   headlessly). Token apps (Telegram, Discord bot tokens) paste a token via the API. GitHub is **OAuth**,
-  NOT a pasted PAT — AP's piece-github accepts only OAUTH2 (see ADR-0006).
+  NOT a pasted PAT — AP's piece-github accepts only OAUTH2 (see ADR-0006). *(Amended by
+  [ADR-0008](0008-direct-backends-for-channels.md): **Discord** and **Slack** default to **direct**
+  CUGA backends holding a `.env` bot token, not an AP connection; the AP token path stays as an opt-in.)*
 
 ## Verified live
 `live_credentials_check.py`: `shared` → alice & bob resolve to the **same** connection

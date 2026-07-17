@@ -66,9 +66,9 @@
     <code style="color:#9cf">EVENTS_ENABLED</code>): the <code style="color:#9cf">/invoke</code> seam, the concierge,
     the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.</div>
   <div class="meta">Source of truth: <code>src/cuga/backend/events/app.py</code> ·
-    <a class="link" style="color:#9cf" href="board.html">◀ Workstream board</a> ·
-    <a class="link" style="color:#9cf" href="setup.html">⚙ Setup</a> ·
-    <a class="link" style="color:#9cf" href="unlock.html">✦ What you can unlock</a> ·
+    <a class="link" style="color:#9cf" href="../README.md">◀ Events docs</a> ·
+    <a class="link" style="color:#9cf" href="../SETUP.md">⚙ Setup</a> ·
+    <a class="link" style="color:#9cf" href="../slides.html">✦ Deck</a> ·
     <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
 </header>
 
@@ -119,13 +119,15 @@
     <div class="hd"><span class="verb v-post">POST</span><span class="path">/invoke</span>
       <span class="desc">the callback seam · gateway-token only</span></div>
     <div class="body">
-      <p class="lead">Every trigger (AP flow, schedule, channel webhook) calls back here. <code>agent:"concierge"</code>
-      routes to the NL→flow router; a concrete agent id runs directly on the worker runtime. The reply carries a
+      <p class="lead">Every trigger (AP flow, schedule, channel webhook) calls back here. <code>agent:"cuga"</code>
+      runs the <b>one agent</b> directly on the worker runtime — its supervisor picks the specialist internally
+      per wake-up; <code>agent:"concierge"</code> routes to the NL→flow router instead. (<code>cuga</code> is the
+      only addressable worker; a sub-agent name is not — it 404s as "unknown agent".) The reply carries a
       <b>metadata footer</b> and structured <code>meta</code> (who answered + tools). This is also where
       <b>direct-channel delivery</b> happens (see the callout below).</p>
       <div class="lbl">Request body</div>
 <pre class="blk"><span class="k">{</span>
-  <span class="k">"agent"</span>: <span class="s">"concierge"</span>,          <span class="c">// or a concrete agent id (e.g. "pricebot")</span>
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>,               <span class="c">// the one agent · or "concierge" for the NL→flow router</span>
   <span class="k">"text"</span>:  <span class="s">"what moved in crypto today?"</span>,
   <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123"</span>,   <span class="c">// conversation key; gw:&lt;channel&gt;:&lt;native&gt; for channels</span>
   <span class="k">"deliver"</span>: <span class="k">false</span>,             <span class="c">// true → CUGA owns delivery (direct channel or EA_CAPTURE_URL)</span>
@@ -136,10 +138,10 @@
       <div class="lbl">Response</div>
 <pre class="blk"><span class="k">{</span>
   <span class="k">"ok"</span>: <span class="k">true</span>,
-  <span class="k">"agent"</span>: <span class="s">"pricebot"</span>,
-  <span class="k">"answer"</span>: <span class="s">"Bitcoin +3.1% …\n\n— pricebot · via cuga-finance · 4.2s"</span>,
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>,
+  <span class="k">"answer"</span>: <span class="s">"Bitcoin +3.1% …\n\n— cuga · via cuga-finance · 4.2s"</span>,
   <span class="k">"trace_id"</span>: <span class="s">"tr_…"</span>,
-  <span class="k">"meta"</span>: <span class="k">{</span> <span class="k">"agent"</span>: <span class="s">"pricebot"</span>, <span class="k">"backend"</span>: <span class="s">"cuga"</span>,
+  <span class="k">"meta"</span>: <span class="k">{</span> <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"backend"</span>: <span class="s">"cuga"</span>, <span class="k">"hint"</span>: <span class="s">"pricebot"</span>, <span class="c">// supervisor's internal pick</span>
             <span class="k">"mcp"</span>: [<span class="s">"cuga-finance"</span>], <span class="k">"tools"</span>: [<span class="s">"…"</span>], <span class="k">"ms"</span>: <span class="s">4200</span> <span class="k">}</span>
 <span class="k">}</span></pre>
       <p class="lead"><b>Also handles:</b> account-linking (<code>/start &lt;token&gt;</code> / <code>/link &lt;token&gt;</code> from a channel
@@ -173,7 +175,7 @@
       <code>flows/console</code>).</p>
       <div class="lbl">Request</div>
 <pre class="blk"><span class="k">{</span> <span class="k">"text"</span>: <span class="s">"every weekday 8am post a market brief to slack"</span>,
-  <span class="k">"agent"</span>: <span class="s">"worker"</span>, <span class="k">"thread_id"</span>: <span class="s">"web:local"</span> <span class="k">}</span></pre>
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"thread_id"</span>: <span class="s">"web:local"</span> <span class="k">}</span></pre>
       <div class="lbl">Response (live)</div>
 <pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"reply"</span>: <span class="s">"ARMED cron for market_briefer → slack (AP flow …)"</span>,
   <span class="k">"scope"</span>: <span class="s">"acme/inst/alice"</span>, <span class="k">"trace_id"</span>: <span class="s">"tr_…"</span> <span class="k">}</span></pre>
@@ -238,8 +240,9 @@
   <span class="k">"event"</span>: <span class="k">{</span> <span class="k">"type"</span>: <span class="s">"message"</span>, <span class="k">"text"</span>: <span class="s">"hi"</span>, <span class="k">"channel"</span>: <span class="s">"C123"</span>, <span class="k">"user"</span>: <span class="s">"U1"</span> <span class="k">}</span> <span class="k">}</span>
 <span class="c">// → {"ok":true} immediately; the answer is posted back asynchronously.</span></pre>
       <p class="lead"><b>Env:</b> <code>SLACK_BOT_TOKEN</code> (required) · <code>SLACK_SIGNING_SECRET</code> (recommended).
-      Set <code>EVENTS_SLACK_BACKEND=ap</code> to use the parked AP path instead. See the
-      <a class="link" href="board.html#channels">Channels §7</a> callout for the two-backend story.</p>
+      Set <code>EVENTS_SLACK_BACKEND=ap</code> to use the parked AP path instead. See
+      <a class="link" href="../decisions/0008-direct-backends-for-channels.md">ADR-0008</a> for the
+      two-backend story.</p>
     </div>
   </div>
 

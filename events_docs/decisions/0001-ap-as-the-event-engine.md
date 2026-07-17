@@ -11,6 +11,9 @@ Which CUGA dimension should an AP project represent?
 
 ## Decision
 - **AP is the single event engine.** Every automation is an AP flow: `trigger → POST /invoke → deliver`.
+  *(Amended by [0008](0008-direct-backends-for-channels.md): the Slack/Discord/Box channel + Box-poll
+  paths run **direct** in CUGA, not as AP flows. AP remains the one engine for integration triggers
+  and the clock.)*
 - **AP project = tenant** — the trust boundary. Different tenants are mutually untrusted; the
   project is what AP *enforces*. The concierge's cross-cutting ops (**reuse-before-create**,
   list) run **inside the tenant's project**, so they can never see or reuse another tenant's flows.

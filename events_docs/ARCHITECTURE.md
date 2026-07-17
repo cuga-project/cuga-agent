@@ -166,7 +166,8 @@ SVG sources + the generator live in [architecture/](architecture/); regenerate w
 ## Invariants (the non-negotiables)
 
 - **Additive.** Behind `EVENTS_ENABLED`; vanilla CUGA unaffected when off.
-- **Multi-agent preserved.** A worker agent *is* a CUGA graph; `thread_id` keys per-thread memory.
+- **CUGA-graph machinery preserved.** The one `cuga` worker *is* a full CUGA graph (its supervisor
+  fans out to the roster internally); `thread_id` keys per-thread memory. One addressable agent, not a fleet.
 - **AP owns credentials.** The agent never sees a token. This is the security boundary.
 - **Reuse before create.** The concierge de-dupes on `dedup_key = agent·source·cadence·sink·owner`.
 - **The UI is dumb.** It renders backend state; all logic is server-side.

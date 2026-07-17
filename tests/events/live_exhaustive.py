@@ -72,7 +72,13 @@ FORBID = [
 
 
 def quality(answer: str, expect_any: list[str]) -> tuple[bool, str]:
-    a = answer or ""
+    # models emit typographic dashes/quotes (e.g. U+2011 in "Q3‑candidates") — normalize before
+    # substring checks or a CORRECT answer fails the marker gate (happened live 2026-07-17)
+    a = (answer or "")
+    for uni, ascii_ in (("\u2010", "-"), ("\u2011", "-"), ("\u2012", "-"), ("\u2013", "-"),
+                        ("\u2014", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                        ("\u201c", '"'), ("\u201d", '"')):
+        a = a.replace(uni.encode().decode("unicode_escape"), ascii_)
     for bad in FORBID:
         if bad.lower() in a.lower():
             return False, f"forbidden marker {bad!r}"

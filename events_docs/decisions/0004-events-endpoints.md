@@ -1,5 +1,9 @@
 # 0004 — The new endpoints & how scope flows
 
+> **Amended by [0009](0009-single-agent-supervisor.md) (2026-07-15).** The concierge no longer
+> *creates a worker* — it compiles NL → a **flow** that targets the single `cuga` agent. Read
+> "worker" below as "flow (targeting `cuga`)"; the scope mechanics are unchanged.
+
 ## Context
 The events layer adds a small, additive HTTP surface to CUGA's FastAPI server, mounted only when
 `EVENTS_ENABLED` is set (off → CUGA byte-for-byte unchanged). Everything reuses CUGA's agent CRUD,
@@ -9,7 +13,7 @@ secrets, and runtime where possible.
 | Method · path | Purpose | Auth | Isolation |
 |---|---|---|---|
 | `POST /invoke` | the **seam** every AP trigger calls back through; runs the target agent, optionally delivers | `X-Gateway-Token` (machine) | `scope` from the body (set when the flow was armed) |
-| `POST /api/concierge` | **NL → decide** (reuse/create worker + arm trigger); `?dry_run=1` = reason→build, no side effects | `require_chat_access` (in CUGA) | `Principal` from `X-Tenant-Id`/`X-User-Id` headers (→ `current_user.sub` in CUGA) |
+| `POST /api/concierge` | **NL → decide** (reuse/create a flow targeting `cuga` + arm trigger); `?dry_run=1` = reason→build, no side effects | `require_chat_access` (in CUGA) | `Principal` from `X-Tenant-Id`/`X-User-Id` headers (→ `current_user.sub` in CUGA) |
 | `GET /api/events/subscriptions` | list armed triggers for the caller | read | filtered by the caller's scope |
 
 ## The normalized `/invoke` envelope

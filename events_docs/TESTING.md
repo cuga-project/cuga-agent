@@ -63,7 +63,8 @@ moment it is added, and cannot be added half-wired:
   `(app, event)` must select *that event's* piece trigger and *that event's* payload map. The old code
   ignored `event` and armed the app default for everything.
 - `test_classifier_eval_set_routes_every_trigger` — a **31-utterance labelled eval set**, one per
-  trigger. A misroute here is a user arming the *wrong* watcher, silently.
+  NL-classified trigger (the 33 registry rows minus `webhook` and Telegram, which never take the NL
+  path). A misroute here is a user arming the *wrong* watcher, silently.
   `test_classifier_eval_covers_every_ap_and_channel_trigger` stops the eval falling behind the
   registry.
 - `test_github_synths_satisfy_the_pieces_real_run_filters` — pins **two Activepieces bugs** found by
@@ -106,38 +107,43 @@ Need `make up` + creds. Each is broader than the last.
 | Command | Answers | ~Time |
 |---|---|---|
 | `make test-live` | Is the plumbing alive? 4 channels + 4 flow modes, one probe each | 2 min |
-| `make test-suite-now` | Can each of the 18 agents do its job? (asserts on `meta.mcp`, so it can't pass from memory) | 14 min |
 | `make test-suite-flows` | Does an English sentence become the right AP flow? | 6 min |
-| `make test-matrix` | Is every trigger × sink combination wired? | 6 min |
-| `make test-fire` | **Does an armed flow actually FIRE and answer?** | 9 min |
-| `make doctor` | Live credential doctor — hit each service with its `.env` cred (never fails; reports) | 30 s |
+| `make test-delegation` | Does the supervisor route to the right sub-agent? (≥90% gate over the real roster) | 10 min |
+| `make test-exhaustive` | **Everything**: every agent + every registry trigger armed AND fired, answer-QUALITY gated (planted markers + a forbid-list), REAL/SYNTH/BLOCKED marked honestly, zero-leak cleanup gate | 45–75 min |
+| `make doctor` | Live credential doctor — hit each service with its `.env` cred (never fails; reports). Detects the dead-AP-tunnel failure (baked `AP_FRONTEND_URL` unresolvable → every flow run dies) by name | 30 s |
+| `make test-suite-now` / `test-matrix` / `test-fire` | **fleet-era** — they assert per-agent invocation by name and auto-skip under `EVENTS_SUPERVISOR=1`; `test-exhaustive` + `test-delegation` are their supervisor-world replacements | — |
 
-### `test-fire` — the one that proves flows *run*
+### `test-exhaustive` — the one that proves the whole matrix *runs*
 
-Every other harness stops at *armed* (a flow exists in AP). `test-fire` arms a real 1-minute schedule,
-waits for a genuine tick, and reads the agent's answer out of the run log. It fires **cron/poll**
-(real schedules) and **GitHub push** (a webhook trigger, fed a synthetic PR). It **cannot** fire a
-Gmail or Box watcher, because those are app-*polling* triggers Activepieces will not run out of band —
-for those, only a real inbound event proves the loop (see below).
-
-Verdicts: `FIRED · ARMED · NOFIRE · FAIL · SKIP`. **ARMED and NOFIRE are not passes** — the flow
-exists but no answer was observed (the schedule never came round, or firing would mutate a real
-repo/inbox). Only `FIRED` proves the loop closes.
+Arming is never enough: `make test-exhaustive` (tests/events/live_exhaustive.py, design in
+plans/EXHAUSTIVE_MATRIX.md) applies THREE gates per case — **ARMED** (the flow really exists),
+**FIRED** (an event traverses the real path), **QUALITY** (the answer contains the case's planted
+markers and none of the forbid-list: executor scaffolding, deliberation leaks, refusals,
+loop-attempts). Every registry trigger and every roster agent is covered — the case table is
+GENERATED from `triggers.rows()` + `supervisor_agents.yaml` + `catalog.py`, so a new trigger or
+agent without a case fails the run. Legs print **REAL / SYNTH / BLOCKED(reason)** honestly; the
+final gate asserts zero leaked subscriptions. Gmail/Box app-polling triggers fire at the /invoke
+seam (SYNTH); real inbound events close those (see below).
 
 ### Firing a real event through one integration
 
 The polling watchers need a genuine event:
 
 ```bash
-.venv/bin/python tests/events/live_github_e2e.py   # real open PR → pr_reviewer
-.venv/bin/python tests/events/live_box_e2e.py      # real upload  → resume_judge  (needs a fresh BOX_DEV_TOKEN)
-.venv/bin/python tests/events/live_gmail_e2e.py    # Gmail OAuth connection + arm the inbox watcher
+.venv/bin/python tests/events/live_github_real_pr.py  # REAL branch+PR on the pinned repo → genuine
+                                                      #   webhook fire → review → auto-cleanup
+.venv/bin/python tests/events/live_box_e2e.py         # real upload → resume_judge (fresh BOX_DEV_TOKEN)
+.venv/bin/python tests/events/live_gmail_e2e.py       # connection + arm + a synthetic-fire QUALITY
+                                                      #   gate (40KB email, deliberation-leak check);
+                                                      #   the REAL leg = send an email to the account
 ```
 
 ## The consolidated report
 
 ```bash
-GITHUB_TEST_REPO=owner/repo make test-report      # runs all 6 harnesses in order (~40 min)
+GITHUB_TEST_REPO=owner/repo make test-report      # the harness ladder in order (~15 min in
+                                                  # supervisor mode: offline · live · flows ·
+                                                  # delegation; fleet-era rungs auto-skip)
 ```
 
 Writes a timestamped, commit-stamped run to `results/runs/<UTC>/` and emits **two renderings of the
@@ -151,9 +157,10 @@ commit id does not describe the code that ran, so commit first if you want a cit
 
 ## What none of the arming harnesses prove
 
-`test`, `test-live`, `test-suite-*`, `test-matrix` arm a flow and verify it exists in Activepieces —
-they never wait for a real event. `test-fire` closes that gap for schedule/webhook triggers; the three
-`live_*_e2e.py` close it for polling triggers. A green "armed" row is not a green "it works" row, and
+`test`, `test-live`, `test-suite-flows` arm a flow and verify it exists in Activepieces — they never
+wait for a real event. `test-exhaustive` closes that gap for every synthetic-fireable trigger (and
+labels the rest BLOCKED with the unblock); the `live_*_e2e.py` harnesses close it with genuine
+events (real PR, real upload, real email). A green "armed" row is not a green "it works" row, and
 the harnesses are careful to distinguish the two.
 
 ## Verdict vocabulary (across all harnesses)
@@ -167,6 +174,7 @@ the harnesses are careful to distinguish the two.
 
 ## When flows mysteriously stop firing
 
-Check AP's tunnel first (`make tunnels`). The cloudflared quick tunnel is ephemeral; when it dies,
-every flow fails with `INTERNAL_ERROR` on AP's payload callback and it looks like a code regression.
-Fix: `make ap`. This is the single most common false alarm — see [GAPS.md](GAPS.md).
+Run `make doctor` first — it now detects this failure BY NAME (it resolves the container's baked
+`AP_FRONTEND_URL`; a dead quick-tunnel hostname means every flow run dies at AP's payload callback
+with `INTERNAL_ERROR` while arming still "works"). Fix: `make ap` then `make channels`. This is the
+single most common false alarm — see [GAPS.md](GAPS.md).

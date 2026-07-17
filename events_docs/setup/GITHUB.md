@@ -1,6 +1,6 @@
 # GitHub setup (Activepieces backend)
 
-GitHub is an **integration**, so it runs on **Activepieces**: AP watches your repo (a `new_pull_request`
+GitHub is an **integration**, so it runs on **Activepieces**: AP watches your repo (a `new_pr`
 or `new_issue` trigger) and fires `/invoke`. The concierge arms this when you say *"when a PR opens on
 my repo…"* (`create_push_flow`). AP creates a real webhook on the repo, so it needs a public URL
 (`EVENTS_PUBLIC_URL`).
@@ -23,8 +23,20 @@ curl -s "$AP_BASE_URL/api/v1/pieces/@activepieces/piece-github" | jq '.auth[].ty
 
 A PAT pasted as a `SECRET_TEXT` connection is *accepted by AP's connection store* and then **unusable
 by the piece**: the flow arms fine and later fails at publish with `401 Bad credentials`, which looks
-exactly like an under-scoped token. `POST /api/events/connect/github/token` now refuses a PAT with a
-`400` for this reason. Connect via OAuth.
+exactly like an under-scoped token. `POST /api/events/connect/github/token` still **stores** such a PAT
+but returns `usable_by_piece:false` with a warning for exactly this reason — the connection row exists,
+the piece can't use it. Connect via OAuth.
+
+## Two DIFFERENT GitHub credentials — don't conflate them
+
+1. **The OAuth App connection** (this page) — what Activepieces uses to watch the repo. Human
+   browser consent; lives encrypted in AP.
+2. **`GITHUB_TOKEN` in `.env`** — a **fine-grained PAT** the TEST HARNESSES use to act on the
+   pinned test repo (create the probe branch/PR, strip webhooks). It needs, on that repo:
+   **Contents: Read and write** · **Pull requests: Read and write** · **Webhooks: Read and write**.
+   ⚠ When editing a fine-grained token's permissions, re-check ALL three before saving — an edit
+   that adds one can silently drop another (bit us live: adding Pull requests dropped Contents →
+   branch creation 403'd). Editing permissions keeps the same token string; no `.env` change needed.
 
 ## What you'll need
 - A GitHub **OAuth App** (client id + secret). *An OAuth App, not a GitHub App — adjacent pages.*
@@ -81,50 +93,37 @@ curl -s -X POST "localhost:7860/api/events/subscriptions/<sub_id>/run?timeout=18
 ```
 Deleting the subscription removes the webhook from the repo.
 
-## Rotating the PAT
+## Rotating credentials
 
-A GitHub PAT expires, or gets revoked, and the failure is nastier than it looks: the flow **arms
-cleanly** and then fails at run time with `401 Bad credentials`, nowhere near the paste that caused it.
-Look for it in the run log — `GET /api/events/runs/<id>` surfaces the failing step's error — not in the
-response to the connect call.
+Remember the [two different credentials](#two-different-github-credentials--dont-conflate-them): they
+rotate differently.
 
-To rotate, POST the new token. This **overwrites** the stored connection (and, if Activepieces refuses
-the overwrite, deletes and recreates it):
+**The AP watch connection (OAuth).** To rotate what Activepieces watches the repo with, just
+**re-consent**: open `<EVENTS_PUBLIC_URL>/api/events/connect/github` again (or Studio → Integrations →
+GitHub → Connect). The fresh `OAUTH2` connection overwrites the old one and AP owns the refresh
+lifecycle from there — there is no token to paste. If a flow was already armed against a dead
+connection it fails at run time with `401 Bad credentials`; the failing step's error shows in the run
+log (`GET /api/events/runs/<id>`), not in the response to the connect call.
 
-```bash
-curl -X POST localhost:7860/api/events/connect/github/token \
-  -H 'content-type: application/json' -d '{"token":"ghp_NEW"}'
-```
-
-> Fixed 2026-07-09. Before that, `ensure_secret_connection` returned early whenever a connection with
-> the same `externalId` existed, so pasting a fresh PAT — from the API *or* the Studio's Connect
-> button — silently did nothing and AP kept using the dead token.
-
-**Editing `GITHUB_TOKEN` in `.env` and restarting does not rotate it.** Boot-time auto-connect only
-creates what is *missing*, deliberately: it must never clobber a connection you authorized by hand with
-whatever stale value is sitting in the environment. Rotate through the endpoint above.
-
-The PAT needs `admin:repo_hook` to arm a PUSH watcher — Activepieces creates a repository webhook, and
-GitHub rejects that scope-less.
+**The `.env` `GITHUB_TOKEN` (test harnesses only).** This fine-grained PAT is used **only** by the live
+test harnesses — nothing arms AP from it. When it expires or is revoked, edit it in `.env` and
+`make reload`. Its permissions (**Contents · Pull requests · Webhooks**, all R/W on the pinned repo)
+are what the branch/PR/webhook probes need; a scope drop surfaces as `403 Resource not accessible` from
+the harness, never as a `CONNECT NEEDED` in the app.
 
 ## Troubleshooting
-- **`CONNECT NEEDED — connect your github`** — this message has **three different causes**, and only
-  the first is the one it names. Check them in order:
-  1. **No PAT connected yet** — run step 2.
+- **`CONNECT NEEDED — connect your github`** — GitHub is an OAuth connection, so this message has
+  **two** real causes (the `.env` PAT is not one of them — it never lands in AP):
+  1. **You haven't consented yet** — run step 3 (open `/api/events/connect/github` and approve).
   2. **Activepieces is down or unreachable.** The gate calls AP to ask whether the connection exists,
      and on *any* exception it assumes "not connected". A stopped AP container therefore produces an
      identical "connect your credentials" message. Check first:
      `podman ps` and `curl -s localhost:8081/api/v1/flags`.
-  3. **`GITHUB_TOKEN` is in `.env` but auto-connect never landed it in AP.** On a fresh AP database
-     the `@activepieces/piece-github` piece isn't installed, so the connection can't be created. Run
-     `make ap-pieces`, then restart. Confirm with
-     `curl -s localhost:7860/api/events/integrations` — github showing `auto_connect_pending` means
-     exactly this.
-- **Slack asks you to connect even though the Studio says connected** — GitHub credentials are keyed
+- **Slack asks you to connect even though the Studio says connected** — GitHub connections are keyed
   per `(tenant, user)` as `ea::<tenant>::<user>::github`. A Slack sender whose Slack id has never been
   account-linked falls back to the operator principal (`local`), so it looks up a *different* key than
-  the one the Studio's web session created. Link the account first (`/link <token>`), or set the PAT
-  in `.env` as `GITHUB_TOKEN` so auto-connect creates it under the operator principal.
+  the one the Studio's web session consented under. Link the account first (`/link <token>`), then
+  consent as that user.
 - **Webhook never fires** — AP needs a public URL (`EVENTS_PUBLIC_URL`) reachable by GitHub; confirm
   the repo's *Settings → Webhooks* shows AP's endpoint with recent green deliveries.
 - **Why not direct?** GitHub *could* go direct (its webhooks are simple), but it still needs a public
