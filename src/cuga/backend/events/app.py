@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time as time_module
 
 from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -34,7 +35,7 @@ def _iso(ts: float) -> str:
 
 
 def _events_env_path():
-    """The .env the launcher loads (scripts/events_server.py reads $CUGA_REPO/.env)."""
+    """The repo .env (config.py load_dotenv finds it from cwd; $CUGA_REPO overrides)."""
     import pathlib
     repo = os.environ.get("CUGA_REPO") or str(pathlib.Path(__file__).resolve().parents[4])
     return pathlib.Path(repo) / ".env"
@@ -159,6 +160,25 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             scope = resolve_principal(headers=request.headers).scope
         tr("inbound", source=f"{env.source.type}/{env.source.name}", thread=env.thread_id,
            kind=env.event.kind, scope=scope, text=env.text[:80])
+        # BOUNDED-RUN EXPIRY GATE ("… for one hour"): AP schedules cannot end themselves, so the
+        # deadline baked into the flow's body is enforced HERE — the first tick past expires_at
+        # deletes the flow + subscription instead of running the agent. Lazy on purpose: it works
+        # even if the server was down at the deadline, and a flow never outlives it by more than
+        # one tick.
+        _exp = body.get("expires_at")
+        if _exp and time_module.time() > float(_exp):
+            _sub_id = str(body.get("subscription_id") or "")
+            _sub = store.get(_sub_id) if (store is not None and _sub_id) else None
+            if _sub is not None and _sub.ap_flow_id and engine is not None:
+                try:
+                    await engine.delete_flow(_sub.ap_flow_id)
+                except Exception as e:  # noqa: BLE001
+                    tr("expire.flow_delete_failed", err=str(e)[:120])
+            if _sub is not None:
+                store.delete(_sub_id)
+            tr("expired", subscription=_sub_id, expires_at=_exp)
+            return {"ok": True, "expired": True, "trace_id": tr.id,
+                    "answer": "This bounded flow reached its end time and has been removed."}
         # account-linking handshake: a channel message "/start <token>" / "/link <token>" binds
         # the sender's native id → the profile that issued the token (decision 0007).
         if env.source.type == "channel" and identity is not None:
@@ -283,7 +303,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # NOW answers (AP keeps its own run history for AP-backed fires).
         _log_now(scope=scope,
                  agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
-                 channel=env.source.name, prompt=env.text, answer=base_answer,
+                 # log what the worker actually RAN ON (framing + [event] payload for a fire; the
+                 # bare utterance for chat) — env.text alone hid the payload from the disk log
+                 channel=env.source.name, prompt=env.worker_input(), answer=base_answer,
                  status="ok", ms=ms, meta=meta, trace_id=tr.id,
                  thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
                  event_kind=str(getattr(env.event, "kind", "") or ""), db=is_now)
@@ -1057,7 +1079,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import httpx
         tr = Trace(new_trace_id())
         try:
-            port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
             gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
             # gw:slack:<channel>#<thread_ts> → per-thread memory; native id = channel (suffix stripped).
             # source.user = the Slack author id → per-user identity (whose creds/perms) once linked.
@@ -1142,7 +1164,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import httpx as _httpx
         from . import delivery
         tr = Trace(new_trace_id())
-        port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
         if kind == "new_folder":
@@ -1198,7 +1220,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import httpx
         from . import box_direct, delivery
         tr = Trace(new_trace_id())
-        port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
         src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target or ''}"}
@@ -1303,7 +1325,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     f"do NOT answer it yourself and do NOT set up a recurring flow:\n\n{body_txt}")
         else:
             text = (f"An external system POSTed to webhook '{name}'. Triage this payload:\n\n{body_txt}")
-        port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         deliver = bool(deliver_to and target)
         # ROUTED events are independent one-shots — give each a FRESH thread. On a shared
@@ -1334,15 +1356,30 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # --- DIRECT Discord (default backend; a Gateway WebSocket bot — no AP, no public URL) ----------
     async def _discord_answer(msg: dict) -> None:
         """A Discord Gateway MESSAGE_CREATE → /invoke(concierge) → reply back to the channel.
-        thread_id keys memory per channel/thread; source.user = the author (per-user identity)."""
+        thread_id keys memory per channel/thread; source.user = the author (per-user identity).
+
+        EVENTS_DISCORD_CHAT=mention: only @bot messages / DMs / replies-to-the-bot reach CHAT —
+        a gated-out message still feeds the channel-message WATCHERS (mirrors the Slack gate)."""
         from . import discord_direct
         import httpx
         tr = Trace(new_trace_id())
         channel_id = str(msg.get("channel_id") or "")
         author = str((msg.get("author") or {}).get("id") or "")
-        text = msg.get("content") or ""
+        to_chat, text = discord_direct.mention_gate(msg)
+        if not to_chat:
+            if store is not None:
+                from . import direct_events
+                subs = direct_events.match(store, "discord", "new_channel_message",
+                                           channel=channel_id, text=msg.get("content") or "")
+                if subs:
+                    tr("discord.direct", event="new_channel_message", matched=len(subs),
+                       gated="mention")
+                    await direct_events.dispatch_all(
+                        subs, app="discord", event="new_channel_message",
+                        payload={"text": msg.get("content") or "", "channel": channel_id})
+            return
         try:
-            port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
             gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
             payload = {"text": text, "agent": "concierge", "deliver": False,
                        "source": {"type": "channel", "name": "discord",

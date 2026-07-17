@@ -48,6 +48,40 @@ def test_envelope_worker_input():
     assert "cv.pdf" in ig.worker_input()
 
 
+def test_envelope_push_fire_is_framed_one_shot():
+    """An integration fire carries one-shot framing: trust the [event] payload (live probe: the
+    agent summarized the WRONG PR by re-fetching), don't wait for future events, and reply with
+    the deliverable content itself (live probe: "I've sent you the message" would have been what
+    the sink delivered). Channel messages stay bare — no framing on chat."""
+    fire = envelope.Envelope.from_dict(
+        {"source": {"type": "integration", "name": "github"},
+         "text": "whenever a PR is opened, summarize it and message me",
+         "event": {"kind": "new_pr", "payload": {"number": "7", "title": "fix flaky test"}}})
+    w = fire.worker_input()
+    assert "watched event just occurred" in w and "[event]" in w
+    assert "title=fix flaky test" in w
+    assert w.index("watched event") < w.index("whenever a PR")   # framing comes FIRST
+    ch = envelope.Envelope.from_dict({"source": {"type": "channel"}, "text": "hi"})
+    assert "watched event" not in ch.worker_input()
+    # a payload-less integration fire stays unframed (nothing authoritative to point at)
+    bare = envelope.Envelope.from_dict(
+        {"source": {"type": "integration", "name": "github"}, "text": "do the thing",
+         "event": {"kind": "new_pr", "payload": {}}})
+    assert "watched event" not in bare.worker_input()
+    # webhook fires stay unframed too — the hook endpoint composes its own instruction text
+    hook = envelope.Envelope.from_dict(
+        {"source": {"type": "integration", "name": "webhook"}, "text": "Triage this payload: …",
+         "event": {"kind": "message", "payload": {"alert": "HighCPU"}}})
+    assert "watched event" not in hook.worker_input()
+    # each payload field is capped — a full forwarded-email body blew up the delegate exchange
+    # and the supervisor's raw deliberation got delivered as the answer (Slack, 2026-07-16)
+    big = envelope.Envelope.from_dict(
+        {"source": {"type": "integration", "name": "gmail"}, "text": "summarize it",
+         "event": {"kind": "new_email", "payload": {"subject": "hi", "body": "x" * 50_000}}})
+    w = big.worker_input()
+    assert len(w) < 5_000 and "subject=hi" in w
+
+
 def test_envelope_validate():
     assert envelope.validate({"source": {"type": "bogus"}})  # non-empty problems
     assert envelope.validate({"source": {"type": "channel"}, "text": ""})  # empty channel text
@@ -163,6 +197,22 @@ def test_classify_cadence_and_source():
     assert classify.cadence_of("every 30 minutes")["interval_seconds"] == 1800
     assert classify.cadence_of("daily at 9am")["cron"] == "0 9 * * *"
     assert classify.cadence_of("every weekday at 9am")["cron"] == "0 9 * * 1-5"
+    # word-numbers (dictated/voice input) + unit-only intervals
+    assert classify.cadence_of("every five minutes post about IBM stock")["interval_seconds"] == 300
+    assert classify.cadence_of("every hour check the feed")["interval_seconds"] == 3600
+    # the unit-only 'every day' must NOT eat an anchored time
+    assert classify.cadence_of("every day at 9am send the brief")["cron"] == "0 9 * * *"
+
+
+def test_classify_ttl_bounded_runs():
+    """"… for one hour" is a BOUNDED run: ttl_of feeds expires_at at arm time and /invoke's
+    expiry gate ends the flow. A cadence's own phrase ("every hour") must not read as a TTL."""
+    assert classify.ttl_of("every five minutes post about IBM stock for one hour") == 3600
+    assert classify.ttl_of("every 5 minutes check bitcoin for the next 2 hours") == 7200
+    assert classify.ttl_of("every minute ping me for 30 minutes") == 1800
+    assert classify.ttl_of("check the feed every hour") is None
+    assert classify.ttl_of("watch bitcoin every 2 minutes and ping me on any move") is None
+    assert classify.ttl_of("summarize new PRs") is None
     assert classify.source_of("when a file lands in Box") == ("box", "new_file")
     # canonical registry names now: (app, event) — the old ("github_pr", "new_pull_request")
     # sub-trigger labels resolve through triggers.SOURCE_ALIASES for legacy callers.

@@ -1153,11 +1153,19 @@ def start(
         # this SAME app — one code path, two levels of ceremony.
         os.environ["EVENTS_ENABLED"] = "1"
         os.environ.setdefault("EVENTS_DB", os.path.join(os.getcwd(), "events.db"))
-        # ONE port for the events world: 8100, the port ALL events infra targets (tunnels,
-        # channels, tests, docs). So `cuga start … --events` and `make up` land on the SAME
-        # port — no divergence. Overridable via EVENTS_CUGA_PORT / DYNACONF_SERVER_PORTS__DEMO.
-        _ev_port = os.environ.get("EVENTS_CUGA_PORT", "8100")
-        os.environ.setdefault("DYNACONF_SERVER_PORTS__DEMO", _ev_port)
+        # events defaults shared by BOTH invocations (`make up` execs THIS command — one execution
+        # path; the wrapper only provisions infra first). .env wins: config.py load_dotenv ran at
+        # import, so setdefault only fills what .env left unset.
+        os.environ.setdefault("EVENTS_WORKER_BACKEND", "cuga")
+        os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
+        os.environ.setdefault("EVENTS_USER_ID", "admin")   # the web Studio browses as admin
+        # slow external APIs (arXiv ~5.5s/call + retries) blow the 30s sandbox default
+        os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
+        # ONE port everywhere: CUGA's native 7860, with or without --events — all events infra
+        # (tunnels, channels, tests, docs, AP callbacks) targets it too. EVENTS_CUGA_PORT moves
+        # everything at once for the rare case that 7860 is taken.
+        if os.environ.get("EVENTS_CUGA_PORT"):
+            os.environ.setdefault("DYNACONF_SERVER_PORTS__DEMO", os.environ["EVENTS_CUGA_PORT"])
         logger.info(
             "EVENTS layer ON — channels/webhooks/standing flows mount on this server. "
             "Supervisor agent model: EVENTS_SUPERVISOR=1 + a supervisor_agents.yaml roster "
@@ -1371,7 +1379,14 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        os.environ["MCP_SERVERS_FILE"] = "none"
+        if events:
+            # EVENTS world: the registry runs in FILE mode serving the MCP config the supervisor
+            # roster references (cuga-finance/geo/web/…), not the managed-config db ("none").
+            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins.
+            os.environ.setdefault("MCP_SERVERS_FILE", os.path.join(
+                PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"))
+        else:
+            os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:

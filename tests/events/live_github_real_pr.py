@@ -25,7 +25,7 @@ import time
 import urllib.request
 
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 ALLOWED_REPO = "anupamamurthi/pachyderm"
 API = "https://api.github.com"
 

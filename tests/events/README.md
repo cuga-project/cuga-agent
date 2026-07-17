@@ -16,7 +16,7 @@ APIs). Full recipe + the coverage matrix: [../../events_docs/TESTING.md](../../e
 `preflight.py` is the **credential doctor** — reports which live creds are present in `.env`; never fails.
 
 ## Live — start here
-Prereqs: `make up` (CUGA on `:8100`, AP on `:8081`) + `make doctor` (creds). Then:
+Prereqs: `make up` (CUGA on `:7860`, AP on `:8081`) + `make doctor` (creds). Then:
 
 ```bash
 make test-live                 # 4 channels + 4 flow modes, ~1-2 min, self-cleaning

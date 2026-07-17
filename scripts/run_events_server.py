@@ -1,6 +1,6 @@
 """Debug/run entrypoint for the event-driven CUGA server (behind EVENTS_ENABLED).
 
-Use this as the VS Code launch target ("Events: CUGA server :8100 (debug)") to set breakpoints in
+Use this as the VS Code launch target ("Events: CUGA server :7860 (debug)") to set breakpoints in
 src/cuga/backend/events/*.py, or run it directly:
 
     .venv/bin/python scripts/run_events_server.py
@@ -31,7 +31,7 @@ os.environ.setdefault("EVENTS_DB", os.path.join(REPO, ".events.db"))  # persist 
 os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")  # slow external APIs
 os.environ.setdefault("DYNACONF_SERVER_PORTS__REGISTRY_HOST", "http://localhost:8001")  # tool registry
 
-PORT = int(os.environ.get("EVENTS_CUGA_PORT", "8100"))
+PORT = int(os.environ.get("EVENTS_CUGA_PORT", "7860"))
 
 if __name__ == "__main__":
     import uvicorn

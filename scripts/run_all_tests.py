@@ -104,7 +104,7 @@ def stack_state() -> dict:
         except Exception:  # noqa: BLE001
             return None
 
-    base = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+    base = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
     ap = os.environ.get("AP_BASE_URL", "http://localhost:8081").rstrip("/")
     # AP_BASE_URL may carry a trailing ` # comment` when read straight from .env
     ap = ap.split(" #", 1)[0].strip()
@@ -159,6 +159,18 @@ def parse(key: str, out: str) -> dict:
         if v["xpass"]:
             v["note"] = ("XPASS = a known gap started passing. Re-sample before believing it — "
                          "support_digest fabricates on ~5 of 7 runs, so one XPASS is luck.")
+        return v
+
+    if key == "delegation":
+        # "RESULT: 13/14 correct (92%) · self-answered: 1" — self-answers already count as wrong
+        # in correct/total, so passed+failed reconstructs the bench's own arithmetic.
+        m = re.search(r"RESULT: (\d+)/(\d+) correct \((\d+)%\)(?: · self-answered: (\d+))?", t)
+        if m:
+            good, total, selfies = int(m.group(1)), int(m.group(2)), int(m.group(4) or 0)
+            v.update(passed=good, failed=total - good)
+            if selfies:
+                v["note"] = (f"{selfies} self-answer(s) counted as routing failures "
+                             f"(accuracy {m.group(3)}%, gate ≥90%)")
         return v
 
     if key == "fire":
@@ -261,6 +273,12 @@ def main() -> int:
             tail = [ln for ln in ANSI.sub("", out).splitlines() if ln.strip()][-1:] or ["(no output)"]
             v["crashed"] = True
             v["note"] = f"harness did not run to completion (exit {p.returncode}): {tail[0][:160]}"
+        elif counted == 0:
+            # exit 0 with nothing parsed = the summary format changed or never printed. An all-zero
+            # row reads as "nothing failed" — flag it so it can't pass silently (bit us 2026-07-16:
+            # delegation ran 13/14 fine but parse() had no branch for it → silent zeros).
+            v["crashed"] = True
+            v["note"] = "exit 0 but NO summary parsed — harness output format changed? (all-zero row)"
         results.append(v)
         # refresh the VERIFICATION LEDGER cell this harness proves (events_docs/verification.html)
         try:

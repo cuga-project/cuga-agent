@@ -8,6 +8,7 @@ version; here is the reference.
 
 ```bash
 make test          # pytest tests/events -q   (~30s, no stack, no network)
+make test-all      # events + tests/unit (offline superset; some unit tests are pre-existing product failures)
 ```
 
 Pure-Python invariants: envelope validation, flow builders, dedup, the API contract (every endpoint's

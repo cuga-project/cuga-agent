@@ -39,7 +39,7 @@ against `telegram-bot@0.6.4` (`send_text_message`, `chat_id`, `message`).
    **Easy path:** `make channels` connects + arms every channel you have a token for (idempotent —
    re-run it after any tunnel-URL change). Or do it by hand:
    ```bash
-   curl -s -X POST localhost:8100/api/events/admin/channels/telegram/arm \
+   curl -s -X POST localhost:7860/api/events/admin/channels/telegram/arm \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    # → {"ok":true,"ap_flow_id":"…"}
    ```
@@ -48,7 +48,7 @@ against `telegram-bot@0.6.4` (`send_text_message`, `chat_id`, `message`).
    GitHub). If you added the token *after* the server booted, restart it first — otherwise the arm
    fails with `ConnectionNotFound` (see Troubleshooting). To create it without a restart:
    ```bash
-   curl -s -X POST localhost:8100/api/events/connect/telegram/token \
+   curl -s -X POST localhost:7860/api/events/connect/telegram/token \
         -H "content-type: application/json" -H "x-user-id: admin" \
         -d "{\"token\":\"$TELEGRAM_BOT_TOKEN\"}"
    # → {"ok":true,"connection":"ea::…::telegram"}   then re-run the arm above
@@ -56,7 +56,7 @@ against `telegram-bot@0.6.4` (`send_text_message`, `chat_id`, `message`).
 
 5. **(Optional) link your account** — so the agent knows *who* you are (per-user creds, memory):
    ```bash
-   curl -s -X POST localhost:8100/api/events/link/telegram \
+   curl -s -X POST localhost:7860/api/events/link/telegram \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    # → {"token":"…","how":"open https://t.me/<bot>?start=<token>"}
    ```
@@ -73,7 +73,7 @@ CUGA + AP logs to watch the whole round-trip.
 - **`setWebhook` fails "HTTPS URL must be provided"** — AP's `AP_FRONTEND_URL` is `http://…` or
   `localhost`. Use the tunnel URL (`ap_up.sh` sets it). Webhooks require public HTTPS.
 - **No reply** — flow not armed, or AP can't reach CUGA's `/invoke`. `HOST_CALLBACK_URL` must resolve
-  from inside the AP container (podman: `http://host.containers.internal:8100/invoke`).
+  from inside the AP container (podman: `http://host.containers.internal:7860/invoke`).
 - **Wrong "who am I"** — link your account (step 5); unlinked messages fall back to header identity.
 - **Arm fails `ConnectionNotFound: connection (ea::…::telegram) not found`** — the bot connection
   doesn't exist in AP yet. It auto-creates on startup from `TELEGRAM_BOT_TOKEN`, so the usual cause

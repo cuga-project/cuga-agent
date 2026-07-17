@@ -72,7 +72,7 @@ curl -s "$AP_BASE_URL/api/v1/app-connections?projectId=<pid>" | jq '.data[] | se
 curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/<owner>/<name>/hooks | jq length
 
 # fire it WITHOUT opening a real PR (a push flow's body becomes the trigger output):
-curl -s -X POST "localhost:8100/api/events/subscriptions/<sub_id>/run?timeout=180" \
+curl -s -X POST "localhost:7860/api/events/subscriptions/<sub_id>/run?timeout=180" \
   -H "X-Gateway-Token: $GATEWAY_TOKEN" -H 'content-type: application/json' -d '{
     "title":"Fix race in shutdown","html_url":"https://github.com/owner/name/pull/1",
     "body":"Adds a WaitGroup and a drain timeout.",
@@ -92,7 +92,7 @@ To rotate, POST the new token. This **overwrites** the stored connection (and, i
 the overwrite, deletes and recreates it):
 
 ```bash
-curl -X POST localhost:8100/api/events/connect/github/token \
+curl -X POST localhost:7860/api/events/connect/github/token \
   -H 'content-type: application/json' -d '{"token":"ghp_NEW"}'
 ```
 
@@ -118,7 +118,7 @@ GitHub rejects that scope-less.
   3. **`GITHUB_TOKEN` is in `.env` but auto-connect never landed it in AP.** On a fresh AP database
      the `@activepieces/piece-github` piece isn't installed, so the connection can't be created. Run
      `make ap-pieces`, then restart. Confirm with
-     `curl -s localhost:8100/api/events/integrations` — github showing `auto_connect_pending` means
+     `curl -s localhost:7860/api/events/integrations` — github showing `auto_connect_pending` means
      exactly this.
 - **Slack asks you to connect even though the Studio says connected** — GitHub credentials are keyed
   per `(tenant, user)` as `ea::<tenant>::<user>::github`. A Slack sender whose Slack id has never been

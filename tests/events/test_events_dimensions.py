@@ -612,6 +612,34 @@ def test_discord_direct_module():
     assert discord_direct.INTENTS & (1 << 15)
 
 
+def test_discord_mention_gate():
+    """EVENTS_DISCORD_CHAT=mention: only @bot messages, DMs, and replies-to-the-bot reach CHAT
+    (mirrors the Slack gate; watchers are dispatched by the caller on gated traffic)."""
+    import discord_direct as dd
+    old_id, old_env = dd._BOT_ID["id"], os.environ.get("EVENTS_DISCORD_CHAT")
+    try:
+        dd._BOT_ID["id"] = "BOT1"
+        os.environ["EVENTS_DISCORD_CHAT"] = "mention"
+        guild = {"guild_id": "G", "content": "hello there", "channel_id": "C"}
+        assert dd.mention_gate(guild) == (False, "hello there")           # plain channel msg → gated
+        ok, txt = dd.mention_gate({**guild, "content": "<@BOT1> price of btc",
+                                   "mentions": [{"id": "BOT1"}]})
+        assert ok and txt == "price of btc"                                # mention → chat, stripped
+        assert dd.mention_gate({**guild, "content": "<@!BOT1> hi"})[0]     # nickname-mention form
+        assert dd.mention_gate({"content": "dm text", "channel_id": "D"})[0]   # DM (no guild_id)
+        assert dd.mention_gate({**guild, "referenced_message":
+                                {"author": {"id": "BOT1"}}})[0]            # reply to the bot
+        os.environ["EVENTS_DISCORD_CHAT"] = "all"
+        assert dd.mention_gate(guild)[0]                                   # default mode: everything
+        dd._BOT_ID["id"] = ""
+        os.environ["EVENTS_DISCORD_CHAT"] = "mention"
+        assert dd.mention_gate(guild)[0]                                   # no READY yet → fail open
+    finally:
+        dd._BOT_ID["id"] = old_id
+        (os.environ.__setitem__ if old_env is not None else
+         lambda *a: os.environ.pop("EVENTS_DISCORD_CHAT", None))("EVENTS_DISCORD_CHAT", old_env)
+
+
 # ---- runner --------------------------------------------------------------
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

@@ -100,7 +100,7 @@ async def dispatch_all(subs: list, *, app: str, event: str, payload: dict) -> in
         from .secret_seam import secret as _secret
     except ImportError:
         from secret_seam import secret as _secret
-    port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+    port = os.environ.get("EVENTS_CUGA_PORT", "7860")
     gw = _secret("GATEWAY_TOKEN")
     n = 0
     for sub in subs:

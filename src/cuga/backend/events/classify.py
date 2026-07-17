@@ -44,9 +44,26 @@ _SOURCES += [
     (re.compile(r"\bwebhook\b", re.I), ("webhook", "catch_webhook")),
 ]
 
-_INTERVAL = re.compile(r"every\s+(\d+)\s*(second|sec|minute|min|hour|hr|day)s?", re.I)
+# word-numbers: dictated/voice input says "every five minutes", not "every 5 minutes"
+_NUM_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+              "seven": 7, "eight": 8, "nine": 9, "ten": 10, "fifteen": 15, "twenty": 20,
+              "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60}
+_NUM_RX = r"(\d+|" + "|".join(_NUM_WORDS) + r")"
+_UNIT_SECS = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "hr": 3600,
+              "day": 86400, "week": 604800}
+_INTERVAL = re.compile(rf"every\s+{_NUM_RX}?\s*(second|sec|minute|min|hour|hr|day)s?\b", re.I)
 _AT_TIME = re.compile(r"\bat\s+(\d{1,2})(?::(\d\d))?\s*(am|pm)?", re.I)
 _WEEKDAY = re.compile(r"\bweekday|mon(day)?[- ]?(to|through|-)?[- ]?fri(day)?\b", re.I)
+# a bounded run: "for one hour", "for 45 minutes", "for the next 2 days", "for an hour"
+_TTL = re.compile(rf"\bfor\s+(?:the\s+next\s+)?{_NUM_RX}\s*"
+                  r"(second|sec|minute|min|hour|hr|day|week)s?\b", re.I)
+
+
+def _num(tok: str | None) -> int:
+    if not tok:
+        return 1                     # "every minute" / "every hour"
+    tok = tok.lower()
+    return int(tok) if tok.isdigit() else _NUM_WORDS.get(tok, 1)
 
 
 def classify(text: str) -> str:
@@ -89,14 +106,31 @@ def source_candidates(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def ttl_of(text: str) -> int | None:
+    """Bounded-run TTL in seconds ("… for one hour" → 3600), else None.
+
+    The AP schedule piece has no end-date, so a TTL can only be honored on OUR side: the arm
+    path stores expires_at and /invoke deletes the flow on its first tick past the deadline.
+    Guard: the TTL phrase must not BE the cadence phrase ("check every hour" has no TTL)."""
+    m = _TTL.search(text or "")
+    if not m:
+        return None
+    iv = _INTERVAL.search(text or "")
+    if iv and iv.start() <= m.start() < iv.end():
+        return None                  # "for" overlapped the cadence match — not a bound
+    n, unit = _num(m.group(1)), m.group(2).lower()
+    return n * _UNIT_SECS.get(unit, 60)
+
+
 def cadence_of(text: str) -> dict:
-    """Best-effort {'interval_seconds': n} or {'cron': '...'} for CRON/POLL, else {}."""
+    """Best-effort {'interval_seconds': n} or {'cron': '...'} for CRON/POLL, else {}.
+
+    Precedence: a NUMBERED interval ("every 5 minutes", "every five minutes") wins; then an
+    anchored time ("every day at 9am" → cron — the unit-only 'every day' must NOT eat the 9am);
+    then a unit-only interval ("every hour" → 3600)."""
     m = _INTERVAL.search(text or "")
-    if m:
-        n, unit = int(m.group(1)), m.group(2).lower()
-        mult = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "hr": 3600,
-                "day": 86400}.get(unit, 60)
-        return {"interval_seconds": n * mult}
+    if m and m.group(1):
+        return {"interval_seconds": _num(m.group(1)) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     at = _AT_TIME.search(text or "")
     if at:
         hour = int(at.group(1)) % 12
@@ -105,6 +139,8 @@ def cadence_of(text: str) -> dict:
         minute = int(at.group(2) or 0)
         dow = "1-5" if _WEEKDAY.search(text or "") else "*"
         return {"cron": f"{minute} {hour} * * {dow}"}
+    if m:
+        return {"interval_seconds": _num(None) * _UNIT_SECS.get(m.group(2).lower(), 60)}
     return {}
 
 

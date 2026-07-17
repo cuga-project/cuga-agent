@@ -87,9 +87,30 @@ def check_activepieces():
     code, body = _http(f"{base}/api/v1/authentication/sign-in", method="POST",
                        headers={"Content-Type": "application/json"},
                        data={"email": email, "password": pw})
-    if code < 300 and isinstance(body, dict) and body.get("token"):
-        return True, f"reachable + authenticated (project {body.get('projectId', '?')[:12]})"
-    return False, f"sign-in HTTP {code}: {str(body)[:120]}"
+    if not (code < 300 and isinstance(body, dict) and body.get("token")):
+        return False, f"sign-in HTTP {code}: {str(body)[:120]}"
+    # The container's baked AP_FRONTEND_URL must RESOLVE: the worker uploads every flow run's
+    # payload to it, so a dead quick-tunnel hostname (killed by `make stop`, never rebaked by
+    # `make up`) makes EVERY flow execution die as INTERNAL_ERROR while arming still "works".
+    # Proven 2026-07-16 — the fix is `make ap` (rebake) + `make channels`.
+    host = ""
+    try:
+        import json as _j
+        import socket
+        import subprocess
+        insp = subprocess.run(["podman", "inspect", "activepieces"],
+                              capture_output=True, text=True, timeout=10)
+        envs = _j.loads(insp.stdout)[0]["Config"]["Env"] if insp.returncode == 0 else []
+        front = next((e.split("=", 1)[1] for e in envs if e.startswith("AP_FRONTEND_URL=")), "")
+        host = front.split("://", 1)[-1].split("/", 1)[0]
+        if host:
+            socket.getaddrinfo(host, 443)
+    except socket.gaierror:
+        return False, (f"baked AP_FRONTEND_URL is DEAD ({host}) — every flow RUN fails "
+                       f"(INTERNAL_ERROR) though arming works. Fix: `make ap` then `make channels`")
+    except Exception:  # noqa: BLE001 — no podman / inspect failed: don't fail the check on tooling
+        pass
+    return True, f"reachable + authenticated (project {body.get('projectId', '?')[:12]})"
 
 
 def check_telegram():

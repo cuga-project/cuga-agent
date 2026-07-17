@@ -2392,7 +2392,7 @@ document.querySelector('.toggle').onclick=()=>{
 
 const BK='cuga-api-base', TK='cuga-api-token';
 const base=document.getElementById('base'), tok=document.getElementById('token');
-base.value=localStorage.getItem(BK)||'http://localhost:8100';
+base.value=localStorage.getItem(BK)||'http://localhost:7860';
 tok.value=localStorage.getItem(TK)||'';
 base.oninput=()=>localStorage.setItem(BK,base.value.trim());
 tok.oninput=()=>localStorage.setItem(TK,tok.value.trim());

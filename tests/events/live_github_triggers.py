@@ -31,7 +31,7 @@ REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "cuga", "backend", "events"))
 import triggers  # noqa: E402
 
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 TEST_REPO = os.environ.get("GITHUB_TEST_REPO", "anupamamurthi/pachyderm")
 ALLOWED_REPOS = {"anupamamurthi/pachyderm"}          # the ONLY repo this harness may touch
 

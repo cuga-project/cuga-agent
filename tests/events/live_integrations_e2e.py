@@ -19,9 +19,9 @@ Prereqs:
   For a FULL PUSH e2e, connect the integration first (per events_docs/setup/{BOX,GITHUB,GMAIL}.md):
     • Box/Gmail: GET /api/events/connect/{app}  (OAuth consent)
     • GitHub:    POST /api/events/connect/github/token  {token: <PAT>}
-Env: EVENTS_SERVER_URL (default http://localhost:8100), GATEWAY_TOKEN (from .env).
+Env: EVENTS_SERVER_URL (default http://localhost:7860), GATEWAY_TOKEN (from .env).
 
-Run:  EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_integrations_e2e.py
+Run:  EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_integrations_e2e.py
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+BASE = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 

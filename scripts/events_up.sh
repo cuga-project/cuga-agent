@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# events_up.sh — bring up the runtime services for the event-driven platform, one command.
-# Starts: MCP registry (cuga-apps config) + the CUGA cloudflared tunnel + CUGA server.
+# events_up.sh — INFRA PROVISIONER for the event-driven platform, one command.
+# Starts the CUGA tunnel, then execs the ONE entry point — `cuga start demo --events` — which
+# itself boots the MCP registry + the CUGA server. There is no second server launcher: `make up`
+# and typing the CLI by hand run the SAME command, the SAME execution path.
 # (The AP tunnel is owned by ap_up.sh, which bakes it into AP as AP_FRONTEND_URL.)
 # Does NOT start Activepieces (your long-lived container) or create external accounts.
 #   scripts/events_up.sh          # start
@@ -10,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$(pwd)"
 REGISTRY_PORT="${EVENTS_REGISTRY_PORT:-8001}"
-CUGA_PORT="${EVENTS_CUGA_PORT:-8100}"
+CUGA_PORT="${EVENTS_CUGA_PORT:-7860}"
 AP_PORT="$(grep -E '^AP_BASE_URL=' .env 2>/dev/null | sed -E 's|.*:([0-9]+).*|\1|' || echo 8081)"
 CFG="src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"
 RUN=/tmp/events_up
@@ -18,7 +20,7 @@ RUN=/tmp/events_up
 # --- public-URL helpers ----------------------------------------------------
 # EVENTS_PUBLIC_URL is the CUGA public base (Slack Request URL + OAuth callbacks). Two modes:
 #   • EVENTS_NGROK_DOMAIN set → a STABLE ngrok reserved domain (never changes). This is the fix for
-#     the flapping quick-tunnel. We start ngrok (not cloudflared) for :8100 and pin the URL.
+#     the flapping quick-tunnel. We start ngrok (not cloudflared) for :7860 and pin the URL.
 #   • unset → a cloudflared quick-tunnel (random per run); we auto-detect + feed the live one in.
 env_val() { grep -E "^$1=" "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- \
   | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
@@ -61,8 +63,10 @@ print_public_url() {
 stop() {
   echo "stopping events services…"
   for p in "$RUN"/*.pid; do [ -f "$p" ] && kill "$(cat "$p")" 2>/dev/null && rm -f "$p" || true; done
+  # the CLI spawns the registry + server as children; killing its pid can orphan them
+  pkill -f "cuga start demo" 2>/dev/null || true
   pkill -f "uvicorn cuga.backend.tools_env.registry" 2>/dev/null || true
-  pkill -f "scripts/events_server.py" 2>/dev/null || true
+  pkill -f "uvicorn cuga.backend.server.main" 2>/dev/null || true
   pkill -f "cloudflared tunnel" 2>/dev/null || true    # kills BOTH tunnel agents (AP + CUGA)
   pkill -f "ngrok http" 2>/dev/null || true            # ngrok agent (when EVENTS_NGROK_DOMAIN is set)
   echo "stopped."
@@ -80,19 +84,21 @@ fi
 # --public-url: print the current public URL + the exact strings to paste into Slack/Gmail.
 if [ "${1:-}" = "--public-url" ]; then export_public_url; print_public_url; exit 0; fi
 
-# --reload: bounce ONLY the CUGA server to pick up .env/code changes, KEEPING the registry and the
-# two cloudflared tunnels alive — so the tunnel URLs (hence EVENTS_PUBLIC_URL and every external
-# webhook/redirect wired to them) do NOT change. This is the cheap inner loop; use it instead of a
-# full restart whenever you didn't touch AP or the tunnels.
+# --reload: bounce the CUGA server (registry + demo, both children of the CLI) to pick up
+# .env/code changes, KEEPING the tunnels alive — so the tunnel URLs (hence EVENTS_PUBLIC_URL and
+# every external webhook/redirect wired to them) do NOT change. This is the cheap inner loop; use
+# it instead of a full restart whenever you didn't touch AP or the tunnels.
 if [ "${1:-}" = "--reload" ]; then
   [ -f "$RUN/cuga.pid" ] || { echo "no prior run to reload — start it first: scripts/events_up.sh"; exit 1; }
-  echo "reloading CUGA server (keeping registry + tunnels)…"
+  echo "reloading CUGA server (keeping tunnels)…"
   [ -f "$RUN/cuga.pid" ] && kill "$(cat "$RUN/cuga.pid")" 2>/dev/null || true
-  pkill -f "scripts/events_server.py" 2>/dev/null || true
+  pkill -f "cuga start demo" 2>/dev/null || true
+  pkill -f "uvicorn cuga.backend.tools_env.registry" 2>/dev/null || true
+  pkill -f "uvicorn cuga.backend.server.main" 2>/dev/null || true
   sleep 2
   export_public_url   # keep the server's EVENTS_PUBLIC_URL matched to the (unchanged) live tunnel
-  export CUGA_REPO="$REPO" EVENTS_CUGA_PORT="$CUGA_PORT" EVENTS_REGISTRY_URL="http://localhost:$REGISTRY_PORT"
-  .venv/bin/python scripts/events_server.py > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
+  export MCP_SERVERS_FILE="$REPO/$CFG" EVENTS_CUGA_PORT="$CUGA_PORT"
+  nohup .venv/bin/cuga start demo --events > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
   for i in $(seq 1 30); do
     curl -s --max-time 3 "http://localhost:$CUGA_PORT/api/events/status" >/dev/null 2>&1 && break
     kill -0 "$(cat "$RUN/cuga.pid")" 2>/dev/null || { echo "CUGA died — see $RUN/cuga.log"; tail -15 "$RUN/cuga.log"; exit 1; }
@@ -110,12 +116,10 @@ for c in uv cloudflared; do command -v $c >/dev/null || { echo "MISSING: $c (see
 curl -s -o /dev/null --max-time 4 "http://localhost:$AP_PORT/api/v1/flags" || \
   echo "WARN: Activepieces not reachable on :$AP_PORT — start your AP container (SETUP.md §2)."
 
-echo "== MCP registry :$REGISTRY_PORT =="
-MCP_SERVERS_FILE="$CFG" .venv/bin/python -m uvicorn \
-  cuga.backend.tools_env.registry.registry.api_registry_server:app --host 127.0.0.1 --port "$REGISTRY_PORT" \
-  > "$RUN/registry.log" 2>&1 & echo $! > "$RUN/registry.pid"
+# (No separate registry launch — `cuga start demo --events` boots the registry itself; the
+#  exported MCP_SERVERS_FILE below makes it serve the cuga-apps MCP config.)
 
-# ONLY the CUGA (:8100) tunnel here. The AP (:8081) tunnel is owned by ap_up.sh, which bakes its URL
+# ONLY the CUGA (:7860) tunnel here. The AP (:8081) tunnel is owned by ap_up.sh, which bakes its URL
 # into the AP container as AP_FRONTEND_URL — starting a second one here just clobbers ap_tunnel.log
 # and leaves AP pointing at a different (often dead) URL, breaking Telegram/Slack-AP setWebhook.
 if [ -n "$NGROK_DOMAIN" ]; then
@@ -144,11 +148,11 @@ for i in $(seq 1 20); do [ -n "$(cuga_tunnel_url)" ] && break; sleep 2; done
 export_public_url
 echo "   EVENTS_PUBLIC_URL = ${EVENTS_PUBLIC_URL:-<none — tunnel not up yet>}"
 
-echo "== CUGA server :$CUGA_PORT =="
-# The launcher is a version-controlled file (scripts/events_server.py), not a temp file — so it shows
-# up in `ps` as a recognisable path and is reviewable. Ports/registry/repo come from the env.
-export CUGA_REPO="$REPO" EVENTS_CUGA_PORT="$CUGA_PORT" EVENTS_REGISTRY_URL="http://localhost:$REGISTRY_PORT"
-.venv/bin/python scripts/events_server.py > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
+echo "== CUGA server :$CUGA_PORT  (registry :$REGISTRY_PORT boots inside it) =="
+# THE one entry point — the literal same command a user types. The CLI starts the registry and
+# the server as children; everything events-specific rides on --events + the env below.
+export MCP_SERVERS_FILE="$REPO/$CFG" EVENTS_CUGA_PORT="$CUGA_PORT"
+nohup .venv/bin/cuga start demo --events > "$RUN/cuga.log" 2>&1 & echo $! > "$RUN/cuga.pid"
 
 echo "== waiting for CUGA (first boot is slow) =="
 for i in $(seq 1 90); do

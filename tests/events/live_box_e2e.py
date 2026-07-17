@@ -6,7 +6,7 @@ the `resume_judge` agent produces a verdict — then deletes the file to clean u
 
 Box dev tokens expire ~60 min; if it's stale you'll see a clear "regenerate" message.
 
-Run:  BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:8100 GATEWAY_TOKEN=<..> \
+Run:  BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:7860 GATEWAY_TOKEN=<..> \
         .venv/bin/python tests/events/live_box_e2e.py
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import urllib.request
 import httpx
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 API = "https://api.box.com/2.0"
 UPLOAD = "https://upload.box.com/api/2.0/files/content"
 

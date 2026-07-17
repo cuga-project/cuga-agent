@@ -7,7 +7,7 @@ Slack and OAuth. ngrok fixes that: a **free reserved domain** that never changes
 Slack/Gmail **once, forever**.
 
 ```
-internet ─▶ https://<you>.ngrok-free.app ─▶ ngrok agent ─▶ localhost:8100 (CUGA)
+internet ─▶ https://<you>.ngrok-free.app ─▶ ngrok agent ─▶ localhost:7860 (CUGA)
 ```
 
 > **This is a one-time setup and it is strongly recommended.** Skip it only for a throwaway local demo
@@ -46,7 +46,7 @@ internet ─▶ https://<you>.ngrok-free.app ─▶ ngrok agent ─▶ localhost
    EVENTS_NGROK_DOMAIN=your-name.ngrok-free.app
    ```
    That single line is all the wiring: `events_up.sh` now starts **ngrok** (not cloudflared) on
-   `:8100`, serves it on that domain, and pins `EVENTS_PUBLIC_URL=https://your-name.ngrok-free.app`.
+   `:7860`, serves it on that domain, and pins `EVENTS_PUBLIC_URL=https://your-name.ngrok-free.app`.
    Bring the server up (`make up`) — or `make restart` if it was already running (the tunnel domain is
    read only when the tunnel starts, so `make reload` won't pick it up).
 

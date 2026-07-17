@@ -5,7 +5,7 @@
 #   • AP tunnel   (cloudflared → :8081) — its URL is baked into the AP container as AP_FRONTEND_URL at
 #     AP start, so it CANNOT be hot-swapped: a URL change needs `make ap` (recreates AP). Used by
 #     Telegram/GitHub/Gmail webhooks.
-#   • CUGA tunnel (ngrok or cloudflared → :8100) — feeds EVENTS_PUBLIC_URL (Slack Request URL + OAuth).
+#   • CUGA tunnel (ngrok or cloudflared → :7860) — feeds EVENTS_PUBLIC_URL (Slack Request URL + OAuth).
 #     ngrok (EVENTS_NGROK_DOMAIN set) = a STABLE domain you can restart freely; cloudflared = random.
 #
 #   scripts/tunnels.sh            # status of both
@@ -15,7 +15,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 RUN=/tmp/events_up; mkdir -p "$RUN"
-AP_PORT=8081; CUGA_PORT=8100
+AP_PORT=8081; CUGA_PORT=7860
 DOCKER="$(command -v podman || command -v docker || true)"
 env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- \
   | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }

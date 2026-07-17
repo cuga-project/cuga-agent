@@ -4,7 +4,7 @@ Unlike the AP path, this needs NO OAuth app, NO redirect URI, NO Gmail: just a B
 folder id. Grab a fresh **Box developer token** (Box dev console → your app → "Generate Developer
 Token"; ~60 min, no app config) and export it — then this does a REAL end-to-end read + poll:
 
-    BOX_DEV_TOKEN=<fresh> BOX_FOLDER_ID=<folder> EVENTS_SERVER_URL=http://localhost:8100 \
+    BOX_DEV_TOKEN=<fresh> BOX_FOLDER_ID=<folder> EVENTS_SERVER_URL=http://localhost:7860 \
         .venv/bin/python tests/events/live_box_direct_check.py
 
 What it proves (all against the REAL Box API + the running CUGA server):
@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860")
 sys.path.insert(0, os.path.join(REPO, "src"))
 
 

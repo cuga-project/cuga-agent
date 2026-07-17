@@ -127,11 +127,11 @@ const DATA = [
   {id:"c1", who:"you", t:"Connect Gmail", do:"Open the connect URL in a browser and approve.", cmd:"open {{PUBLIC}}/api/events/connect/gmail", exp:"redirects back; gmail = connected"},
   {id:"c2", who:"you", t:"Connect GitHub", do:"Open the connect URL and approve (scopes repo + admin:repo_hook).", cmd:"open {{PUBLIC}}/api/events/connect/github", exp:"redirects back; github = connected"},
   {id:"c3", who:"you", t:"Fresh Box token", do:"Paste a fresh BOX_DEV_TOKEN into .env (expires ~60 min), then reload CUGA.", cmd:"# edit .env: BOX_DEV_TOKEN=...\nmake reload", exp:"doctor shows box green"},
-  {id:"c4", who:"you", t:"Verify all three connected", do:"Confirm the integration status.", cmd:"curl -s http://localhost:8100/api/events/integrations", exp:"gmail / box / github all show connected"},
+  {id:"c4", who:"you", t:"Verify all three connected", do:"Confirm the integration status.", cmd:"curl -s http://localhost:7860/api/events/integrations", exp:"gmail / box / github all show connected"},
 ]},
 {s:"D · Smoke — the plumbing is alive", d:"One automated probe of every surface before manual testing.", items:[
   {id:"d1", who:"you", t:"Live e2e suite", do:"4 channels + 4 flow modes, one probe each.", cmd:"make test-live", exp:"34 passed · 0 failed"},
-  {id:"d2", who:"test", t:"Studio loads", do:"Open the web Studio.", cmd:"open http://localhost:8100/studio", exp:"loads; shows Agents / Examples / Integrations tabs"},
+  {id:"d2", who:"test", t:"Studio loads", do:"Open the web Studio.", cmd:"open http://localhost:7860/studio", exp:"loads; shows Agents / Examples / Integrations tabs"},
 ]},
 {s:"E · Web chat · NOW — exercise the agents", d:"In the Studio web chat, type each utterance (click to copy). Each routes to a different agent and answers immediately.", items:[
   {id:"e1", who:"test", t:"Price now", agent:"pricebot", utt:"what is the current price of bitcoin in usd?", exp:"a live USD number"},
@@ -174,7 +174,7 @@ const DATA = [
   {id:"i2", who:"test", t:"Weekday market brief", agent:"market_briefer", utt:"every weekday at 8am send me a market brief", exp:"armed CRON flow"},
   {id:"i3", who:"test", t:"Hourly trending → Slack", agent:"github_trending", utt:"every hour post the top trending GitHub repos in this channel", do:"Say this from Slack so the sink is the channel.", exp:"armed CRON flow, sink = slack"},
   {id:"i4", who:"test", t:"Overnight support digest", agent:"support_digest", utt:"every morning at 7am post an overnight support digest to our Slack channel", exp:"armed CRON flow (support_digest)"},
-  {id:"i5", who:"you", t:"Verify + fire one", do:"List the armed flows, then fire one immediately (replace ID).", cmd:"make flows\ncurl -s -X POST http://localhost:8100/api/events/subscriptions/<ID>/run -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2-)", exp:"flow list shows all 4; the fired one returns a real answer"},
+  {id:"i5", who:"you", t:"Verify + fire one", do:"List the armed flows, then fire one immediately (replace ID).", cmd:"make flows\ncurl -s -X POST http://localhost:7860/api/events/subscriptions/<ID>/run -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2-)", exp:"flow list shows all 4; the fired one returns a real answer"},
 ]},
 {s:"J · POLL flows — arm", d:"Interval + emit-on-change. Say each in the web chat.", items:[
   {id:"j1", who:"test", t:"Bitcoin move watcher", agent:"pricebot", utt:"watch bitcoin every 2 minutes and ping me on any move", exp:"armed POLL flow"},
@@ -192,8 +192,8 @@ const DATA = [
 {s:"M · GitHub · PUSH (arm + synthetic fire)", d:"Webhook trigger — armable AND synth-fireable, no real PR needed. Uses {{REPO}}.", items:[
   {id:"m1", who:"test", t:"Arm PR watcher", agent:"pr_reviewer", utt:"when a new pull request opens on {{REPO}}, summarize it and message me", exp:"“Flow created” + a real repo webhook on {{REPO}}"},
   {id:"m2", who:"you", t:"Fire a synthetic PR", agent:"pr_reviewer", do:"Fire the armed flow with a PR-shaped payload (replace <ID> from the arm reply / make flows).",
-   cmd:"curl -s -X POST http://localhost:8100/api/events/subscriptions/<ID>/run \\\n -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env|cut -d= -f2-) -H 'content-type: application/json' \\\n -d '{\"title\":\"Add retry to Box client\",\"base\":{\"repo\":{\"full_name\":\"{{REPO}}\"}},\"html_url\":\"https://github.com/{{REPO}}/pull/999\",\"body\":\"adds backoff retry\",\"user\":{\"login\":\"tester\"},\"changed_files\":3,\"additions\":84,\"deletions\":12}'", exp:"a PR summary comes back (cuga → pr_reviewer picked by the supervisor)"},
-  {id:"m3", who:"you", t:"Clean up", do:"Delete the subscription AND the repo webhook it created.", cmd:"curl -s -X DELETE http://localhost:8100/api/events/subscriptions/<ID>\n# then remove the webhook in {{REPO}} → Settings → Webhooks", exp:"0 subscriptions; 0 webhooks on {{REPO}}"},
+   cmd:"curl -s -X POST http://localhost:7860/api/events/subscriptions/<ID>/run \\\n -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env|cut -d= -f2-) -H 'content-type: application/json' \\\n -d '{\"title\":\"Add retry to Box client\",\"base\":{\"repo\":{\"full_name\":\"{{REPO}}\"}},\"html_url\":\"https://github.com/{{REPO}}/pull/999\",\"body\":\"adds backoff retry\",\"user\":{\"login\":\"tester\"},\"changed_files\":3,\"additions\":84,\"deletions\":12}'", exp:"a PR summary comes back (cuga → pr_reviewer picked by the supervisor)"},
+  {id:"m3", who:"you", t:"Clean up", do:"Delete the subscription AND the repo webhook it created.", cmd:"curl -s -X DELETE http://localhost:7860/api/events/subscriptions/<ID>\n# then remove the webhook in {{REPO}} → Settings → Webhooks", exp:"0 subscriptions; 0 webhooks on {{REPO}}"},
 ]},
 {s:"N · Webhook — pinned + routed", d:"The generic inbound endpoint. Pinned = you name the agent; routed = the concierge picks it.", items:[
   {id:"n1", who:"you", t:"Pinned · monitoring alert", agent:"incident_triage",
@@ -234,7 +234,7 @@ const DATA = [
    exp:"ARMED direct watcher (slack/new_reaction [emoji=bug]) + a note to subscribe the Slack app"},
   {id:"p8", who:"you", t:"Box — folders and comments (not just files)", agent:"support_digest",
    do:"The direct poller used to list FILES only (it explicitly skipped folders and had no comments API). Needs a fresh BOX_DEV_TOKEN.",
-   cmd:"GW=$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2- | cut -d' ' -f1)\ncurl -s -X POST localhost:8100/api/events/box/poll -H 'content-type: application/json' -H \"X-Gateway-Token: $GW\" \\\n -d '{\"folder_id\":\"{{BOXFOLDER}}\",\"since\":\"1970-01-01T00:00:00Z\",\"kind\":\"new_folder\",\"agent\":\"support_digest\"}'",
+   cmd:"GW=$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2- | cut -d' ' -f1)\ncurl -s -X POST localhost:7860/api/events/box/poll -H 'content-type: application/json' -H \"X-Gateway-Token: $GW\" \\\n -d '{\"folder_id\":\"{{BOXFOLDER}}\",\"since\":\"1970-01-01T00:00:00Z\",\"kind\":\"new_folder\",\"agent\":\"support_digest\"}'",
    exp:"ok:true, kind:new_folder (swap kind to new_box_comment for comments)"},
 ]},
 {s:"Q · Regressions the registry fixed — verify they stay fixed", d:"Each of these was a real, silent bug. They are pinned by offline tests; these are the manual confirmations.", items:[

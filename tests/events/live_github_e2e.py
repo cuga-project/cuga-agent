@@ -9,7 +9,7 @@ on your account. What it proves: the GitHub credential reads real GitHub data, a
 real PR content end to end (which is exactly `pr_reviewer`'s job).
 
 Requires: GITHUB_TOKEN in .env, a running server. Optional: E2E_PR="owner/repo#123" to pin a PR.
-Run:  EVENTS_SERVER_URL=http://localhost:8100 GATEWAY_TOKEN=<..> .venv/bin/python tests/events/live_github_e2e.py
+Run:  EVENTS_SERVER_URL=http://localhost:7860 GATEWAY_TOKEN=<..> .venv/bin/python tests/events/live_github_e2e.py
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 GH = "https://api.github.com"
 # stable, active public repos — we take the first with an open PR
 CANDIDATES = ["psf/requests", "pallets/flask", "tiangolo/fastapi", "activepieces/activepieces"]

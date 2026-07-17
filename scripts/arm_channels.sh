@@ -12,7 +12,7 @@
 #   scripts/arm_channels.sh --status   # show inbound-channel state without changing anything
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CUGA="${EVENTS_CUGA_URL:-http://localhost:8100}"
+CUGA="${EVENTS_CUGA_URL:-http://localhost:7860}"
 SCOPE="${EVENTS_SCOPE:-default/default/admin}"
 
 val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/ *#.*//' | tr -d ' '; }

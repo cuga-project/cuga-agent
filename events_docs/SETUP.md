@@ -34,7 +34,7 @@ restart. Without it you get an ephemeral cloudflared tunnel that changes each ru
   first boot and your AP-UI login), `EVENTS_AP_PROJECT_GRAIN=shared`.
 - **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SEED_AGENTS=1`,
   `EVENTS_DB=<abs path>.db`, `GATEWAY_TOKEN`,
-  `HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke` (podman host alias).
+  `HOST_CALLBACK_URL=http://host.containers.internal:7860/invoke` (podman host alias).
 - **Public URL:** `EVENTS_NGROK_DOMAIN` (recommended, above).
 - **Channels:** `TELEGRAM_BOT_TOKEN` (+ `EVENTS_TELEGRAM_BOT_USERNAME`), `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`.
 - **Integrations:** `EVENTS_OAUTH_{GMAIL,GITHUB,BOX}_CLIENT_ID`/`_SECRET` (OAuth apps), or `BOX_DEV_TOKEN` for Box direct-poll.
@@ -65,7 +65,7 @@ make public-url         # prints the public URL + the exact strings to paste int
 make status      # everything up + tunnel URLs      make doctor   # live creds ok
 make test        # the offline suite green          make tunnels  # both tunnels reachable
 ```
-Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:8100/studio`. For a
+Then smoke-test: DM the Telegram bot · post in Slack/Discord · open `localhost:7860/studio`. For a
 full from-zero rehearsal, follow **Clean run from zero** below; for exhaustive manual testing use the
 
 ## Starting the server — one entry point
@@ -79,9 +79,9 @@ make up                           # provisions Activepieces + MCP registry + tun
 ```
 
 `--events` sets `EVENTS_ENABLED=1` and mounts channels, webhooks, standing flows, the concierge and
-the Studio events tabs onto the normal CUGA server. **Both entry points bind the same port, 8100**
-(the port all events infra targets — tunnels, channels, tests); plain `cuga start demo` without
-`--events` is unchanged on 7860. Override with `EVENTS_CUGA_PORT`. At startup it prints a **capability report** —
+the Studio events tabs onto the normal CUGA server. **One port everywhere: CUGA's native 7860** —
+with or without `--events`, and all events infra (tunnels, channels, AP callbacks, tests) targets
+it. Override with `EVENTS_CUGA_PORT` if 7860 is taken. At startup it prints a **capability report** —
 also at `GET /api/events/status` (`capability` field) — telling you exactly what's live and what
 still needs infra, each with its one-line fix:
 
@@ -175,7 +175,7 @@ make test          # 7. the full offline suite (no stack or creds needed — mus
 
 8. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
    consent. Open `https://<domain>/api/events/connect/gmail` and `…/connect/github`, approve each,
-   then `curl -s localhost:8100/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
+   then `curl -s localhost:7860/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
 
 ```bash
 make test-live     # 9. live smoke — 4 channels + 4 flow modes (green even before step 8,
@@ -191,6 +191,17 @@ make test-live     # 9. live smoke — 4 channels + 4 flow modes (green even bef
     - **`make test-report`** — the **automated** counterpart: runs every harness (offline · live · now ·
       flows · matrix · fire) and writes a timestamped HTML report to `results/index.html` (~40 min; needs
       Gmail/GitHub connected and a fresh Box token, so start it right after step 8).
+
+### Scheduled flows are single-shot (cadence stripping)
+
+The AP schedule owns recurrence; the agent runs **once per tick**. At arm time the concierge
+rewrites the utterance into its one-run task with an **LLM** (one call per flow, never per tick) —
+"watch bitcoin every 5 minutes and ping me on any move" is stored as "Check Bitcoin now and ping me
+on any move", wrapped in explicit "this is ONE run — do NOT loop" framing. A regex stripper is the
+guarded fallback (used when the LLM is off, unreachable, or its answer still leaks cadence words).
+Knobs: `EVENTS_CADENCE_LLM=0` disables the LLM (regex only); `EVENTS_CADENCE_LLM_TIMEOUT` (s,
+default 20). Without this, the agent tries to implement the schedule itself (loop + sleep) and hits
+the execution timeout.
 
 ## Day-to-day
 

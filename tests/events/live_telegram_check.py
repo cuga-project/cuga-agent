@@ -6,7 +6,7 @@ proves every leg we CAN without a human: the bot token is valid (getMe), the del
 step no code can do is a human sending the bot a message for the full inbound round-trip.
 
 Run:
-    EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_telegram_check.py
+    EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_telegram_check.py
     # optional, to prove the delivery leg end-to-end:
     TELEGRAM_TEST_CHAT_ID=<your chat id> .venv/bin/python tests/events/live_telegram_check.py
 Reads .env for TELEGRAM_BOT_TOKEN + EVENTS_TELEGRAM_BOT_USERNAME.
@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860")
 
 
 def _env(key, default=""):

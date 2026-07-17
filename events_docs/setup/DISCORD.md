@@ -39,7 +39,7 @@ memory is per channel/thread, and the message's **author** id gives per-user ide
 5. **Nothing to arm (direct backend).** The bot connects to the Gateway on server start. You can
    confirm the backend:
    ```bash
-   curl -s -X POST localhost:8100/api/events/admin/channels/discord/arm \
+   curl -s -X POST localhost:7860/api/events/admin/channels/discord/arm \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    # → {"ok":true,"channel":"discord","backend":"direct", ...}
    ```

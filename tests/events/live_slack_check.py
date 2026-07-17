@@ -15,7 +15,7 @@ is correct — then tells you the two Slack-app setup steps. Once the OAuth conn
 works via ``/api/events/admin/channels/slack/arm`` exactly like Telegram/Discord.
 
 Run:
-    EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_slack_check.py
+    EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_slack_check.py
 Reads .env for SLACK_BOT_TOKEN.
 """
 import json
@@ -25,7 +25,7 @@ import urllib.request
 import urllib.error
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860")
 SLACK = "https://slack.com/api"
 
 

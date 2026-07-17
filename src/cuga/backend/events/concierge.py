@@ -43,6 +43,9 @@ log = logging.getLogger("cuga.events.concierge")
 
 _origin: contextvars.ContextVar[str] = contextvars.ContextVar("origin", default="web:local")
 _principal: contextvars.ContextVar = contextvars.ContextVar("principal", default=DEFAULT_PRINCIPAL)
+# the RAW inbound utterance — tools must read arm-time qualifiers ("… for one hour") from it, not
+# from their `prompt` argument, which the LLM routinely rewrites (and drops qualifiers from)
+_utterance: contextvars.ContextVar[str] = contextvars.ContextVar("utterance", default="")
 
 CHAT_STYLE = ("\n\nReply for a chat app: short plain-text lines or simple '- ' bullets. "
               "No markdown tables/headings.")
@@ -580,6 +583,19 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             interval = (every_minutes * 60) if every_minutes else None
             cadence_tag = cron.replace(" ", "_") if cron else (f"{every_minutes}m" if every_minutes else kind)
             flow_name = f"ea:{kind}-{agent}-{cadence_tag}-{uuid.uuid4().hex[:4]}"
+            # BOUNDED RUN ("… for one hour"): AP schedules can't end themselves, so the deadline
+            # is enforced on OUR side — expires_at is baked into the flow's /invoke body and the
+            # first tick past it deletes the flow + subscription (app.py expiry gate).
+            import time as _time
+            try:
+                from . import classify as _classify
+            except ImportError:  # flat load (offline tests)
+                import classify as _classify
+            # read the TTL from the RAW utterance: the LLM's rewritten `prompt` drops qualifiers
+            # (live: "…for 4 minutes" vanished from the tool call and the flow armed unbounded)
+            ttl = _classify.ttl_of(_utterance.get("") or prompt)
+            expires_at = (_time.time() + ttl) if ttl else None
+            sub_id = f"{agent}-{uuid.uuid4().hex[:6]}"
             try:
                 grain = getattr(engine, "project_grain", "tenant")
                 ap_flow_id = await engine.create_schedule_flow(
@@ -590,18 +606,24 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     deliver_channel=deliver_channel, deliver_target=deliver_target,
                     deliver_connection=deliver_connection,
                     deliver_direct_channel=deliver_direct_channel,
-                    deliver_direct_target=deliver_direct_target)
+                    deliver_direct_target=deliver_direct_target,
+                    subscription_id=sub_id, expires_at=expires_at)
             except Exception as e:  # noqa: BLE001
                 return f"error: couldn't arm flow ({e})."
-            sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode=kind.upper(),
+            cfg = {"expires_at": expires_at} if expires_at else {}
+            sub = Subscription(id=sub_id, mode=kind.upper(),
                                target_agent=agent, tenant=p.scope, backend=spec.backend,
                                source_type="time", source_connector="cron", ap_flow_id=ap_flow_id,
                                deliver_to=[sink], thread_id=p.thread(origin), prompt=run_prompt,
-                               dedup_key=dedup_key, flow_name=flow_name)
+                               dedup_key=dedup_key, flow_name=flow_name, config=cfg)
             store.upsert(sub)
-            log.info("concierge armed %s agent=%s flow=%s tenant=%s", kind, agent, ap_flow_id, p.scope)
+            log.info("concierge armed %s agent=%s flow=%s tenant=%s expires=%s",
+                     kind, agent, ap_flow_id, p.scope, expires_at or "-")
+            until = (f" It stops itself after {ttl // 3600}h" if ttl and ttl % 3600 == 0 else
+                     f" It stops itself after {ttl // 60} min" if ttl else "")
+            until = until and until + f" (~{_time.strftime('%H:%M', _time.localtime(expires_at))})."
             return (f"ARMED {kind} for {agent} → {sink}. "
-                    f"Flow name: \"{flow_name}\" (subscription {sub.id}).")
+                    f"Flow name: \"{flow_name}\" (subscription {sub.id}).{until}")
 
         tools.append(find_or_create_flow)
 
@@ -632,6 +654,7 @@ class Concierge:
         if self._graph is None:
             self._build()
         p = principal or DEFAULT_PRINCIPAL
+        _utterance.set(text)    # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # /watch|/schedule|/cron|/poll|/push → deterministic arm (bypasses the LLM entirely)
         parsed = _slash_parse(text)
         if parsed is not None:

@@ -39,8 +39,8 @@ itself) and, for Slack, its app-event trigger silently dropped events. See
 
 ## Before any integration — the two shared prerequisites
 
-1. **A running events server** on `:8100` (behind `EVENTS_ENABLED=1`) with the tool registry up.
-   See [../SETUP.md](../SETUP.md). Quick check: `curl -s localhost:8100/api/events/status`.
+1. **A running events server** on `:7860` (behind `EVENTS_ENABLED=1`) with the tool registry up.
+   See [../SETUP.md](../SETUP.md). Quick check: `curl -s localhost:7860/api/events/status`.
 2. **A public HTTPS URL** (`EVENTS_PUBLIC_URL`) for the connectors that receive webhooks over the
    internet (Telegram, Slack-direct) or do OAuth callbacks (Gmail, GitHub). `events_up.sh` provides it
    **automatically** — a **stable ngrok** domain when `EVENTS_NGROK_DOMAIN` is set (**strongly
@@ -52,7 +52,7 @@ itself) and, for Slack, its app-event trigger silently dropped events. See
 ## Verify them all at once
 
 ```bash
-EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/preflight.py
+EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/preflight.py
 ```
 Prints ✅/❌ per integration (watsonx · Activepieces · Telegram · Discord · Slack · Box · MCP) straight
 from your `.env`. Run it first — it catches a bad token before you chase a round-trip.

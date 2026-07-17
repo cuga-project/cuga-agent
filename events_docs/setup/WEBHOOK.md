@@ -48,6 +48,6 @@ contact form posts a lead → qualify + post to a sales channel.
 ## Verify
 ```bash
 # part of the integration e2e:
-GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:8100 \
+GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:7860 \
   .venv/bin/python tests/events/live_integrations_e2e.py     # includes the WEBHOOK check
 ```

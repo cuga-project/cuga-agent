@@ -51,18 +51,18 @@
   "gmail::fire_synth": {
    "surface": "gmail",
    "capability": "fire_synth",
-   "verdict": "blocked",
-   "note": "impossible by design — AP polling triggers can't fire out of band",
-   "source": "TESTING.md",
-   "date": "2026-07-15 21:11"
+   "verdict": "ok",
+   "note": "synthetic new_email fire at /invoke — 40KB forwarded email → clean summary (deliberation-leak + size regression gate)",
+   "source": "live_gmail_e2e.py",
+   "date": "2026-07-16 15:52"
   },
   "gmail::fire_real": {
    "surface": "gmail",
    "capability": "fire_real",
-   "verdict": "partial",
-   "note": "needs ONE human email to the connected inbox",
-   "source": "live_gmail_e2e.py",
-   "date": "2026-07-15 21:11"
+   "verdict": "ok",
+   "note": "GENUINE external email (newsletter) → armed watcher poll trigger → AP → /invoke:7860 → real summary in 23.9s (run 6ecd3744bc92, 2026-07-16 14:15; push framing active)",
+   "source": "live watcher fire, run_logs/2026-07-16",
+   "date": "2026-07-16 14:22"
   },
   "slack::arm": {
    "surface": "slack",
@@ -180,9 +180,9 @@
    "surface": "channels",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "test-live 38/0/0 — real messages, real replies, mention gate, threads",
-   "source": "make test-live",
-   "date": "2026-07-15 21:11"
+   "note": "38 passed · 0 failed (test-live)",
+   "source": "make test-report",
+   "date": "2026-07-16 12:50"
   },
   "nlflow::arm": {
    "surface": "nlflow",
@@ -196,25 +196,25 @@
    "surface": "nlflow",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "suite-flows 11/0/0 — every kind builds the right AP flow",
-   "source": "make test-suite-flows",
-   "date": "2026-07-15 21:11"
+   "note": "10 passed · 0 failed (test-suite-flows)",
+   "source": "make test-report",
+   "date": "2026-07-16 12:50"
   },
   "delegation::fire_real": {
    "surface": "delegation",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "14/14 (100%), 0 self-answers over the real 27-agent roster",
-   "source": "make test-delegation",
-   "date": "2026-07-15 21:11"
+   "note": "14 passed · 0 failed (test-delegation)",
+   "source": "make test-report",
+   "date": "2026-07-16 13:01"
   },
   "offline::fire_real": {
    "surface": "offline",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "199 passed — invariants + all drift gates",
-   "source": "make test",
-   "date": "2026-07-15 21:11"
+   "note": "203 passed · 0 failed (test)",
+   "source": "make test-report",
+   "date": "2026-07-16 12:47"
   }
  }
 }

@@ -76,6 +76,12 @@ step · GitHub OAuth (replacing the broken PAT path) · debug fire (`/subscripti
   leaks 5/5 and the LLM strips 5/5 ("keep tabs on TSLA through the day" → "Check TSLA and buzz me
   if it drops 2%"). Before the fix, "every 5 minutes"/"monitor" in the prompt made the agent try
   to loop+sleep and hit the execution timeout. Verified live (poll tick answers in ~8s, no loop).
+- PUSH gets the counterpart fix (2026-07-16): no loop bug there, but live probes showed the agent
+  re-fetching/confabulating the event (wrong PR summarized) and meta-answers ("I've sent you the
+  message") that would be delivered verbatim. `envelope.worker_input()` now prepends deterministic
+  one-shot framing to every integration fire: the [event] payload is authoritative, handle THIS
+  event once, the reply IS the deliverable. Fire-time seam → covers already-armed flows. Both
+  probes verified fixed live; disk run-logs now record the full worker input (framing + payload).
 - OPEN (bug 2): "notify ONLY when it changes" needs cross-tick STATE. `__mode:"poll"` marker is
   SET in flows.py but NEVER CONSUMED — no state store, no prior-value passed to the agent. So each
   poll tick is stateless: the agent has no baseline and can't reliably suppress unchanged reports.

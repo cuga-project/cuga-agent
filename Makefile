@@ -8,7 +8,7 @@ PY        := .venv/bin/python
 DOCKER    := $(shell command -v podman || command -v docker)
 DB        := events.db .events.db
 VOLS      := ap_pgdata ap_redis
-CUGA_PORT := 8100
+CUGA_PORT := 7860
 
 # env-check: required must be present+non-empty; optional just reported.
 REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \

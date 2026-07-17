@@ -298,7 +298,9 @@ class APEngine:
                                    deliver_target: str | None = None,
                                    deliver_connection: str | None = None,
                                    deliver_direct_channel: str | None = None,
-                                   deliver_direct_target: str | None = None) -> str:
+                                   deliver_direct_target: str | None = None,
+                                   subscription_id: str | None = None,
+                                   expires_at: float | None = None) -> str:
         """Create + ENABLE a schedule→/invoke flow. Returns the AP flow id.
 
         ``project_name`` (a Principal.ap_project_name()) isolates the flow into that principal's
@@ -337,11 +339,14 @@ class APEngine:
                 direct_source = {"type": "channel", "name": deliver_direct_channel,
                                  "thread_id": f"gw:{deliver_direct_channel}:{deliver_direct_target}"}
             await self._post_op(c, flow_id, self._trigger_op(cron, interval_seconds, sched_ver), hdrs)
-            await self._post_op(c, flow_id,
-                                self._http_action(self._invoke_body(agent, thread_id, prompt,
-                                                                    deliver and not has_send,
-                                                                    scope, source=direct_source),
-                                                  http_ver), hdrs)
+            body = self._invoke_body(agent, thread_id, prompt, deliver and not has_send,
+                                     scope, source=direct_source)
+            if subscription_id:
+                body["subscription_id"] = subscription_id
+            if expires_at:
+                # bounded run: /invoke's expiry gate deletes the flow on its first tick past this
+                body["expires_at"] = expires_at
+            await self._post_op(c, flow_id, self._http_action(body, http_ver), hdrs)
             if has_send:
                 piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
                 sver = await self._piece_version(c, piece)

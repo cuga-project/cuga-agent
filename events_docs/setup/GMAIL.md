@@ -56,7 +56,7 @@ email). Both are **per-user** — each employee logs into *their own* Gmail.
 ## Verify
 ```bash
 # full integration e2e (NOW/CRON/POLL + PUSH box/github/gmail):
-GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:8100 \
+GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:7860 \
   .venv/bin/python tests/events/live_integrations_e2e.py
 ```
 With Gmail connected, the `PUSH · gmail` leg **arms a real AP flow** (an `ap_flow_id` appears). Then

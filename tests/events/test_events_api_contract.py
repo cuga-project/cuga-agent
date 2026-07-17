@@ -142,6 +142,30 @@ def test_invoke_accepts_correct_gateway_token():
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
+def test_invoke_expiry_gate_ends_a_bounded_flow():
+    """A "… for one hour" flow bakes expires_at + subscription_id into its /invoke body; AP
+    schedules can't end themselves, so the FIRST tick past the deadline must delete the
+    subscription and skip the agent — and a tick BEFORE the deadline must run normally."""
+    import time
+    sub = Subscription(id="pricebot-ttl001", mode="CRON", target_agent="pricebot",
+                       ap_flow_id=None, thread_id="t", prompt="p")
+    c, st = _client([sub], gateway_token="")
+    tick = {"agent": "pricebot", "text": "price of btc",
+            "source": {"type": "time", "name": "cron"},
+            "event": {"kind": "runonce", "payload": {}},
+            "subscription_id": "pricebot-ttl001"}
+    # before the deadline → normal run
+    r = c.post("/invoke", json={**tick, "expires_at": time.time() + 3600})
+    assert r.status_code == 200 and r.json()["answer"] == "42"
+    assert st.get("pricebot-ttl001") is not None
+    # past the deadline → no agent run, subscription gone
+    r = c.post("/invoke", json={**tick, "expires_at": time.time() - 5})
+    b = r.json()
+    assert r.status_code == 200 and b["ok"] is True and b.get("expired") is True
+    assert "42" not in str(b.get("answer"))
+    assert st.get("pricebot-ttl001") is None
+
+
 def test_invoke_direct_agent_call_shape():
     """The channel-less direct call: source.type=time + event.kind=runonce. The response must carry
     meta.mcp — that is what the NOW suite asserts on to prove the agent reached a real tool."""

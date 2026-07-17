@@ -17,7 +17,7 @@ What this harness automates (fast, deterministic):
 Then it prints the one manual step (post a message, wait for the poll).
 
 Run:
-    EVENTS_SERVER_URL=http://localhost:8100 DISCORD_CHANNEL_ID=<channel id> \
+    EVENTS_SERVER_URL=http://localhost:7860 DISCORD_CHANNEL_ID=<channel id> \
       .venv/bin/python tests/events/live_discord_check.py
 
 Reads .env for DISCORD_BOT_TOKEN, AP_EMAIL/AP_PASSWORD, AP_BASE_URL. DISCORD_CHANNEL_ID may also be
@@ -30,7 +30,7 @@ import urllib.request
 import urllib.error
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100")
+SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860")
 APBASE = os.environ.get("AP_BASE_URL", "http://localhost:8081")
 DISCORD_API = "https://discord.com/api/v10"
 

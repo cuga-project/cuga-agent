@@ -56,6 +56,38 @@ def should_process(msg: dict) -> bool:
     return True
 
 
+_BOT_ID: dict = {"id": ""}          # the bot's own user id, learned from the Gateway READY
+
+
+def chat_mode() -> str:
+    """EVENTS_DISCORD_CHAT: 'all' (default — every channel message reaches the concierge) or
+    'mention' (a channel message reaches CHAT only when it @mentions the bot; DMs and replies to
+    the bot's own messages always do). Mirrors slack_direct.chat_mode."""
+    return (os.environ.get("EVENTS_DISCORD_CHAT", "all").split(" #", 1)[0].strip().lower()) or "all"
+
+
+def mention_gate(msg: dict) -> tuple[bool, str]:
+    """(reaches CHAT?, text with the bot's mention stripped). Gates CHAT only — the caller must
+    still dispatch channel-message WATCHERS on gated traffic (mirrors slack_direct.mention_gate).
+
+    Passes: mode != 'mention' · a DM (no guild_id — inherently addressed to the bot) · an
+    @mention of the bot (mentions[] or a raw <@id>/<@!id> token) · a REPLY to one of the bot's
+    own messages (referenced_message.author.id == bot)."""
+    text = msg.get("content") or ""
+    if chat_mode() != "mention" or not msg.get("guild_id"):
+        return True, text
+    bid = _BOT_ID["id"]
+    if not bid:
+        return True, text                    # READY not seen yet — fail open, never drop silently
+    if any(str(m.get("id")) == bid for m in (msg.get("mentions") or [])) \
+            or f"<@{bid}>" in text or f"<@!{bid}>" in text:
+        return True, text.replace(f"<@!{bid}>", " ").replace(f"<@{bid}>", " ").strip()
+    ref_author = ((msg.get("referenced_message") or {}).get("author") or {}).get("id")
+    if str(ref_author or "") == bid:
+        return True, text                    # replying to the bot IS addressing it
+    return False, text
+
+
 async def send_message(channel_id: str, text: str) -> dict:
     """Post a reply to the channel via the REST API (bot token). Discord caps content at 2000 chars."""
     tok = bot_token()
@@ -114,6 +146,7 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
                             t = ev.get("t")
                             if t == "READY":
                                 u = (ev.get("d") or {}).get("user") or {}
+                                _BOT_ID["id"] = str(u.get("id") or "")   # for mention_gate
                                 log.info("discord gateway READY as %s#%s",
                                          u.get("username"), u.get("discriminator"))
                                 if ready is not None and not ready.done():

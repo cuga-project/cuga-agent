@@ -101,13 +101,21 @@ class Envelope:
         curated, non-empty fields (clean context); but if the curated map produced nothing — a new/
         unmapped piece, or a wrong hand-written path — we fall back to ``_raw`` so the worker is
         NEVER handed a blank payload. This retires the whole class of "flow ran green but the agent
-        got nothing" bugs regardless of whether the per-piece field map is right."""
+        got nothing" bugs regardless of whether the per-piece field map is right.
+
+        PUSH FRAMING: an integration fire prepends one-shot framing. Without it, live probes showed
+        two failure modes — the agent re-fetching (or confabulating) the event instead of trusting
+        the [event] payload (wrong PR summarized), and meta-answers ("I've sent you the message")
+        that would be DELIVERED verbatim to the sink instead of the actual content."""
         if self.source.type == "channel" and self.text:
             return self.text
         pl = self.event.payload or {}
         if pl:
-            # curated fields (non-_) that actually resolved to a value
-            parts = [f"{k}={v}" for k, v in pl.items()
+            # curated fields (non-_) that actually resolved to a value. Each field is CAPPED:
+            # a full forwarded email body (tens of KB) blew up the supervisor→delegate exchange —
+            # the delegate lost the variable, floundered ~7 min, and its raw deliberation was
+            # delivered as the answer (Slack, 2026-07-16). 1500 chars keeps the substance.
+            parts = [f"{k}={str(v)[:1500]}" for k, v in pl.items()
                      if not str(k).startswith("_") and str(v).strip()]
             ctx = ", ".join(parts)
             if not ctx and pl.get("_raw"):
@@ -117,8 +125,18 @@ class Envelope:
                 except Exception:  # noqa: BLE001
                     raw = str(pl["_raw"])[:4000]
                 ctx = f"raw={raw}"
-            return (self.text + ("\n\n[event] " + ctx if ctx else "")).strip() or ctx \
+            base = (self.text + ("\n\n[event] " + ctx if ctx else "")).strip() or ctx \
                 or (self.text or "(no input)")
+            # (webhook excluded: the hook endpoint composes its OWN one-shot instruction text —
+            # stacking this generic frame on top gave the agent two competing frames)
+            if self.source.type == "integration" and self.source.name != "webhook" and ctx:
+                base = ("A watched event just occurred — the [event] line below is its "
+                        "authoritative data; work from it (fetching MORE detail on it is fine, "
+                        "second-guessing it is not). Handle THIS event now, once: the subscription "
+                        "keeps watching, so do not wait for or ask about future events. Your reply "
+                        "is delivered to the user as the result — reply with the content itself, "
+                        "not a description of what you did.\n" + base)
+            return base
         return self.text or "(no input)"
 
 

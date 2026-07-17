@@ -38,7 +38,7 @@ NOTE ON POLL: there is no state primitive today — no poll_state.py, no /api/ev
 cron-scheduled flow plus a prompt line ("only report if changed"). We assert exactly that and no more.
 
 Prereqs:  make up   (AP + server)   ·   make doctor   (creds)
-Env:      EVENTS_SERVER_URL (default http://localhost:8100), GATEWAY_TOKEN, plus channel creds in .env
+Env:      EVENTS_SERVER_URL (default http://localhost:7860), GATEWAY_TOKEN, plus channel creds in .env
 Optional: SLACK_TEST_CHANNEL, DISCORD_TEST_CHANNEL_ID, TELEGRAM_CHAT_ID (else auto-discovered/skipped)
 
 Run:      make test-live
@@ -61,7 +61,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from steps import step  # noqa: E402  — no-op unless E2E_STEPS_FILE is set
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-BASE = os.environ.get("EVENTS_SERVER_URL", "http://localhost:8100").rstrip("/")
+BASE = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 
 # A probe whose answer is machine-checkable: any correct reply contains a digit. Reused on every
 # channel so a channel regression is distinguishable from an agent regression.
