@@ -73,7 +73,10 @@
   <h1>CUGA Events — Acceptance Checklist</h1>
   <div class="sub">Nuke → set up → verify one integration at a time, 3–4 examples each. There is ONE
     addressable agent, <b>cuga</b>; the “agent” column names the specialist its supervisor is expected
-    to pick per wake-up (see q10). Mark each item; your status is saved in this browser. Built for hand-off.</div>
+    to pick per wake-up (see q10). Mark each item; your status is saved in this browser. Built for hand-off.
+    <br><b>Talking to the bot per channel:</b> on <b>Slack/Discord</b> you must @mention it — NOW:
+    <code>@bot &lt;question&gt;</code>, ARM a flow: <code>@bot /automate &lt;what&gt;</code>. On
+    <b>Telegram/web</b> no mention — NOW: plain message, ARM: <code>/automate &lt;what&gt;</code>.</div>
 </header>
 
 <div class="bar"><div class="barin">
@@ -117,7 +120,7 @@ const DATA = [
 ]},
 {s:"B · Nuke & fresh boot", d:"A true from-zero rebuild — the state a new tester starts from.", items:[
   {id:"b1", who:"you", t:"Nuke everything", do:"Wipe AP volumes + events.db.", cmd:"make nuke", exp:"clean — AP volumes + .events.db gone"},
-  {id:"b2", who:"you", t:"Bring the stack up", do:"AP (container + tunnel) then CUGA (registry + tunnel + server).", cmd:"make up", exp:"both up; AP + CUGA tunnel URLs printed"},
+  {id:"b2", who:"you", t:"Bring the stack up", do:"The one server command is cuga start demo --events (same style as cuga start demo); make up wraps it — provisioning AP (container + tunnel) + the MCP registry + tunnels, then running that command. Use make up here because the acceptance test needs the full stack; the bare cuga start demo --events (no AP/tunnels) is fine only if AP is already up.", cmd:"make up", exp:"both up; AP + CUGA tunnel URLs printed"},
   {id:"b3", who:"you", t:"Pieces installed", do:"Ensure the AP piece catalog has gmail/github/box/telegram/schedule.", cmd:"make ap-pieces", exp:"all needed pieces present"},
   {id:"b4", who:"you", t:"Channels armed", do:"Register inbound webhooks for every bot token in .env. Per-channel setup (bot creation, Slack event subscriptions, mention-gating, Discord intents): events_docs/setup/{SLACK,DISCORD,TELEGRAM}.md.", cmd:"make channels", exp:"web/telegram/discord/slack armed"},
   {id:"b5", who:"you", t:"Status green", do:"Everything running + tunnels reachable.", cmd:"make status", exp:"registry+cuga 200; 3 containers up; both tunnel URLs"},
@@ -157,23 +160,23 @@ const DATA = [
   {id:"e20", who:"test", t:"Market brief now", agent:"market_briefer", utt:"give me a market brief right now", exp:"a market summary"},
   {id:"e21", who:"test", t:"Trending repos now", agent:"github_trending", utt:"show me the top trending GitHub repos right now", exp:"a list of trending repos"},
 ]},
-{s:"F · Telegram · NOW", d:"DM the bot @{{BOT}}. Real send verified back from Telegram.", items:[
+{s:"F · Telegram · NOW", d:"DM the bot @{{BOT}}. No mention needed on Telegram: for NOW just send a plain message; to ARM a flow from Telegram, prefix /automate <what> (e.g. /automate every 5 min post IBM stock). Real send verified back from Telegram.", items:[
   {id:"f1", who:"test", t:"Price via Telegram", agent:"pricebot", utt:"price of ethereum?", exp:"the bot replies with a number"},
   {id:"f2", who:"test", t:"Weather via Telegram", agent:"weatherbot", utt:"weather in Mumbai?", exp:"weather reply"},
   {id:"f3", who:"test", t:"Geo via Telegram", agent:"geobot", utt:"capital of Brazil?", exp:"Brasília"},
 ]},
-{s:"G · Discord · NOW", d:"Discord chat is MENTION-GATED (EVENTS_DISCORD_CHAT=mention): @mention the bot in-channel, DM it, or reply to it — a plain channel post is deliberately ignored (watchers still see it). Prefix each utterance with @your-bot.", items:[
+{s:"G · Discord · NOW", d:"Discord chat is MENTION-GATED (EVENTS_DISCORD_CHAT=mention): @mention the bot in-channel, DM it, or reply to it — a plain channel post is deliberately ignored (watchers still see it). NOW = @bot <question>. To ARM a flow from Discord add the slash: @bot /automate <what> (e.g. @bot /automate every 5 min post IBM stock).", items:[
   {id:"g1", who:"test", t:"Price via Discord", agent:"pricebot", utt:"@bot what's the price of bitcoin?", exp:"bot replies in the same thread"},
   {id:"g2", who:"test", t:"Papers via Discord", agent:"papers", utt:"@bot 3 latest papers on transformers", exp:"papers reply"},
 ]},
-{s:"H · Slack · NOW (round-trip)", d:"Slack chat is MENTION-GATED (EVENTS_SLACK_CHAT=mention): @mention the bot in #eda-test ({{SLACK}}) (or DM it) — a plain post is ignored. The bot replies in-thread via a real Events API round-trip.", items:[
+{s:"H · Slack · NOW (round-trip)", d:"Slack chat is MENTION-GATED (EVENTS_SLACK_CHAT=mention): @mention the bot in #eda-test ({{SLACK}}) (or DM it) — a plain post is ignored. NOW = @bot <question>; to ARM a flow from Slack add the slash: @bot /automate <what>. The bot replies in-thread via a real Events API round-trip.", items:[
   {id:"h1", who:"test", t:"Price via Slack", agent:"pricebot", utt:"@bot what is the price of bitcoin? just the number", exp:"a threaded reply with a price"},
   {id:"h2", who:"test", t:"Geo via Slack", agent:"geobot", utt:"@bot capital of France?", exp:"Paris, in-thread"},
 ]},
 {s:"I · CRON flows — arm (and optionally fire)", d:"Say each in the web chat. It arms a real Activepieces schedule flow.", items:[
   {id:"i1", who:"test", t:"Daily arXiv digest", agent:"papers", utt:"every day at 9am send me new arXiv papers on mixture-of-experts", exp:"“Flow created” + a CRON subscription"},
   {id:"i2", who:"test", t:"Weekday market brief", agent:"market_briefer", utt:"every weekday at 8am send me a market brief", exp:"armed CRON flow"},
-  {id:"i3", who:"test", t:"Hourly trending → Slack", agent:"github_trending", utt:"every hour post the top trending GitHub repos in this channel", do:"Say this from Slack so the sink is the channel.", exp:"armed CRON flow, sink = slack"},
+  {id:"i3", who:"test", t:"Hourly trending → Slack", agent:"github_trending", utt:"@bot /automate every hour post the top trending GitHub repos in this channel", do:"Say this from Slack so the sink is the channel — @mention the bot AND use /automate to arm from a channel (a plain sentence is ignored by the mention gate).", exp:"armed CRON flow, sink = slack"},
   {id:"i4", who:"test", t:"Overnight support digest", agent:"support_digest", utt:"every morning at 7am post an overnight support digest to our Slack channel", exp:"armed CRON flow (support_digest)"},
   {id:"i5", who:"you", t:"Verify + fire one", do:"List the armed flows, then fire one immediately (replace ID).", cmd:"make flows\ncurl -s -X POST http://localhost:7860/api/events/subscriptions/<ID>/run -H 'X-Gateway-Token: '$(grep -E '^GATEWAY_TOKEN=' .env | cut -d= -f2-)", exp:"flow list shows all 4; the fired one returns a real answer"},
 ]},

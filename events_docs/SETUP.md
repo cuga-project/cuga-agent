@@ -53,8 +53,12 @@ Two AP gotchas that bite hard:
 
 ## Bring it up
 
+The one server command is **`cuga start demo --events`** — same style as `cuga start demo`. `make up`
+is just the wrapper that provisions the infra that command needs (Activepieces + tunnels) and then runs
+it (see [Starting the server](#starting-the-server--one-entry-point)).
+
 ```bash
-make up                 # AP (container + tunnel) then CUGA (registry + tunnel + server). AP before CUGA.
+make up                 # provisions AP (container + tunnel) + registry, then runs `cuga start demo --events`. AP before CUGA.
 make channels           # arm inbound channels for every bot token in .env (idempotent)
 make public-url         # prints the public URL + the exact strings to paste into Slack/Gmail consoles
 ```

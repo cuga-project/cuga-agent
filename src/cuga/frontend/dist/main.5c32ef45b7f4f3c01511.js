@@ -14001,8 +14001,8 @@ function AgentsTab({
     kind: "info",
     lowContrast: true,
     hideCloseButton: true,
-    title: "No agents yet",
-    subtitle: "Click \u201CAdd agent\u201D to define one \u2014 a skill (prompt) plus the tools and connectors it may use."
+    title: "No sub-agents loaded",
+    subtitle: "The roster lives in supervisor_agents.yaml \u2014 edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)"
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-grid"
   }, data?.map(a => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tile, {
@@ -16290,7 +16290,8 @@ async function getEventsRunDetail(id) {
   return apiFetch(`/api/events/runs/${encodeURIComponent(id)}`);
 }
 
-// The pre-built worker fleet (geobot, pricebot, …) the concierge routes among.
+// The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
+// them internally. Source: supervisor_agents.yaml.
 async function getEventsAgents() {
   return apiFetch("/api/events/agents");
 }
@@ -19212,4 +19213,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.0c1e09621315968ed33f.js.map
+//# sourceMappingURL=main.5c32ef45b7f4f3c01511.js.map
