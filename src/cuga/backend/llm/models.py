@@ -573,6 +573,14 @@ class LLMManager:
                 logger.info(f"Using MINIMAX_BASE_URL from environment: {env_base_url}")
                 return env_base_url
 
+            # MiniMax exposes separate OpenAI-compatible endpoints for the
+            # global English and China Chinese regions.  Keep the global
+            # endpoint as the default while allowing deployments to select
+            # the China endpoint explicitly.
+            region = os.environ.get("MINIMAX_REGION", "global_en").lower()
+            if region in {"cn", "cn_zh", "china"}:
+                return "https://api.minimaxi.com/v1"
+
             # Check TOML settings
             toml_url = model_settings.get('url')
             if toml_url:
