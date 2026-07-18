@@ -9932,6 +9932,12 @@ function ConfigHeader({
   onToggleWorkspace
 }) {
   const [agentContext, setAgentContext] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(null);
+  // Show the Events Studio entry only when the events layer is mounted (EVENTS_ENABLED).
+  // Vanilla CUGA (flag off) → getEventsStatus() returns null → link stays hidden.
+  const [studioOn, setStudioOn] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    _api__WEBPACK_IMPORTED_MODULE_1__.getEventsStatus().then(s => setStudioOn(!!s)).catch(() => {});
+  }, []);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     _api__WEBPACK_IMPORTED_MODULE_1__.getAgentContext().then(res => res.ok ? res.json() : null).then(data => {
       if (data) {
@@ -9957,7 +9963,10 @@ function ConfigHeader({
     }, {
       label: "Manage",
       href: "/manage"
-    }]
+    }, ...(studioOn ? [{
+      label: "Events Studio ⚗",
+      href: "/studio"
+    }] : [])]
   });
 }
 
@@ -19213,4 +19222,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.5c32ef45b7f4f3c01511.js.map
+//# sourceMappingURL=main.bde1c8a486bb77271382.js.map

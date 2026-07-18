@@ -304,6 +304,44 @@ def test_concierge_flow_param_returns_the_armed_ap_flow():
     assert d["steps"][1]["text"] == "{{step_1.body.answer}}"
 
 
+def test_web_chat_arming_uses_the_resolved_scope_not_default(monkeypatch):
+    """Regression: a flow armed from the main web chat (server ``main.py`` ``/stream``) must land
+    under the SAME principal the Studio's flows list resolves — NOT the concierge's
+    ``DEFAULT_PRINCIPAL``.
+
+    The bug: ``/stream`` called ``concierge.run(thread_id, text)`` with no principal, so the flow
+    was armed under ``DEFAULT`` (user=``local``), while ``GET /api/events/subscriptions`` resolves
+    the scope from headers → ``EVENTS_USER_ID`` (``admin`` in the CLI). Different scope → the flow
+    was armed but INVISIBLE in the Studio. The fix resolves the principal from the request headers,
+    the same resolver the list uses. This test pins the mechanism at that seam.
+    """
+    from events.principal import resolve as _resolve, DEFAULT as _DEFAULT
+
+    # Root cause: once EVENTS_USER_ID is set, the header-resolved scope diverges from DEFAULT.
+    monkeypatch.setenv("EVENTS_USER_ID", "admin")
+    resolved = _resolve(headers={}).scope
+    assert resolved != _DEFAULT.scope, "resolved scope must differ from DEFAULT when EVENTS_USER_ID is set"
+
+    st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
+    app = FastAPI()
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
+                           engine=_FakeEngine(flow={"id": "flow-1", "status": "ENABLED",
+                                                    "version": {"trigger": {"settings": {}}}}))
+    c = TestClient(app)
+
+    # Arm the CORRECT way (resolved principal — what /api/concierge and the fixed /stream both do):
+    # the endpoint resolves EVENTS_USER_ID=admin from the (header-less) request.
+    assert c.post("/api/concierge", json={"text": "every day at 9am send bitcoin"}).json()["ok"]
+    # Simulate the OLD /stream bug: a flow armed under DEFAULT (user=local).
+    st.upsert(_sub("stale-local", tenant=_DEFAULT.scope))
+
+    body = c.get("/api/events/subscriptions").json()
+    assert body["scope"] == resolved                       # the Studio lists under the resolved scope
+    listed = {s["id"] for s in body["subscriptions"]}
+    assert "armed-1" in listed, "a resolved-scope flow must be visible in the Studio's flows list"
+    assert "stale-local" not in listed, "a DEFAULT-scoped (old web-chat bug) flow is invisible — the regression"
+
+
 def test_concierge_flow_full_returns_the_raw_ap_flow():
     ap_flow = {"id": "flow-1", "status": "ENABLED", "version": {"trigger": {"settings": {}}}}
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))

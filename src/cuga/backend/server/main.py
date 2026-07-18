@@ -2234,10 +2234,16 @@ async def stream(
         _conc = getattr(request.app.state, "ev_concierge", None)
         if _conc is not None:
             _q, _tid = query, thread_id
+            # Arm under the SAME principal the Studio + /api/concierge resolve (headers → EVENTS_USER_ID),
+            # NOT the concierge's DEFAULT_PRINCIPAL (user=local). Otherwise a flow armed here from the main
+            # web chat lands under scope default/default/local, while the Studio's flows page queries
+            # default/default/admin — so the flow is armed but invisible in the Studio.
+            from cuga.backend.events.principal import resolve as _resolve_principal
+            _princ = _resolve_principal(headers=request.headers)
 
             async def _slash_stream():
                 try:
-                    reply = await _conc.run(_tid, _q)
+                    reply = await _conc.run(_tid, _q, _princ)
                 except Exception as e:  # noqa: BLE001
                     reply = f"error: couldn't arm the flow ({e})"
                 yield StreamEvent(name="Answer", data=reply).format(
