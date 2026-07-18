@@ -343,6 +343,9 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  // Events Studio entry — shown only when the events layer is mounted (EVENTS_ENABLED).
+  const [studioOn, setStudioOn] = useState(false);
+  useEffect(() => { api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {}); }, []);
   // Knowledge draft autosave status — sourced from the PATCH lifecycle,
   // NOT from a setTimeout. The prior implementation in KnowledgeConfig.tsx
   // claimed "Saved" after 1500ms regardless of whether the network call
@@ -1755,6 +1758,7 @@ export function ManagePage() {
         navItems={[
           { label: "Agents", to: `/manage${search}` },
           { label: "Chat", to: search ? `/${search}` : "/chat" },
+          ...(studioOn ? [{ label: "Events Studio ⚗", to: "/studio" }] : []),
         ]}
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}

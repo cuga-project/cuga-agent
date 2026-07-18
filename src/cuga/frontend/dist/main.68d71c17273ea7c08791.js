@@ -8493,6 +8493,65 @@ function ChatLanding() {
   const removeToast = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(id => {
     setToastNotifications(prev => prev.filter(t => t.id !== id));
   }, []);
+
+  // ── Surface async flow fires in the web UI ──────────────────────────────────
+  // A standing flow armed from the web chat fires later (cron/poll/push) with sink "web", which has
+  // no channel to deliver to — so its answer would otherwise appear only in Studio → Runs. Poll the
+  // runs feed and toast NEW web-sink fires (channel "web"/empty) with their output, so they surface
+  // here too. Channel-armed flows already delivered to their channel, so they're skipped (no dupes).
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    let cancelled = false;
+    let timer = null;
+    const seen = new Set();
+    let primed = false;
+    const RECENT_MS = 120000; // on first load, still surface a fire from the last 2 min
+
+    const isWebFire = r => r?.kind === "flow" && String(r?.status || "").toUpperCase() === "SUCCEEDED" && (!r?.channel || /(^|,|\s)web(\s|,|$)/i.test(String(r.channel)));
+    const toastRun = async r => {
+      let snippet = "";
+      try {
+        const d = await _api__WEBPACK_IMPORTED_MODULE_1__.getEventsRunDetail(r.id);
+        if (d.ok) snippet = String((await d.json())?.answer || "").slice(0, 140);
+      } catch {/* detail is best-effort */}
+      if (cancelled) return;
+      addToast("info", `⚡ Flow fired · ${r.flow_name || r.agent || "flow"}`, snippet ? `${snippet}${snippet.length >= 140 ? "…" : ""}  ·  full output in Studio → Runs` : `${r.agent || "flow"} ran — see Studio → Runs for the output`);
+    };
+    const poll = async () => {
+      try {
+        const res = await _api__WEBPACK_IMPORTED_MODULE_1__.getEventsRuns();
+        if (!res.ok) return;
+        const runs = (await res.json())?.runs ?? [];
+        const fires = runs.filter(isWebFire);
+        if (!primed) {
+          // first pass: mark history seen, but still toast a very
+          primed = true; // recent fire (so opening the chat right after one shows it)
+          const now = Date.now();
+          for (const r of fires) {
+            seen.add(r.id);
+            const t = Date.parse(r.finished_at || r.started_at || "");
+            if (!Number.isNaN(t) && now - t < RECENT_MS) await toastRun(r);
+          }
+          return;
+        }
+        for (const r of fires) {
+          if (seen.has(r.id)) continue;
+          seen.add(r.id);
+          await toastRun(r);
+        }
+      } catch {/* never let polling break the chat */}
+    };
+
+    // Only poll when the events layer is mounted; vanilla CUGA → getEventsStatus() is null.
+    _api__WEBPACK_IMPORTED_MODULE_1__.getEventsStatus().then(s => {
+      if (cancelled || !s) return;
+      poll();
+      timer = setInterval(poll, 25000);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [addToast]);
   const currentChatThreadId = activeThreadId;
   /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
   const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
@@ -10773,6 +10832,11 @@ function ManagePage() {
   });
   const [history, setHistory] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]);
   const [saveStatus, setSaveStatus] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)("idle");
+  // Events Studio entry — shown only when the events layer is mounted (EVENTS_ENABLED).
+  const [studioOn, setStudioOn] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    _api__WEBPACK_IMPORTED_MODULE_2__.getEventsStatus().then(s => setStudioOn(!!s)).catch(() => {});
+  }, []);
   // Knowledge draft autosave status — sourced from the PATCH lifecycle,
   // NOT from a setTimeout. The prior implementation in KnowledgeConfig.tsx
   // claimed "Saved" after 1500ms regardless of whether the network call
@@ -12108,7 +12172,10 @@ function ManagePage() {
     }, {
       label: "Chat",
       to: search ? `/${search}` : "/chat"
-    }],
+    }, ...(studioOn ? [{
+      label: "Events Studio ⚗",
+      to: "/studio"
+    }] : [])],
     linkComponent: react_router_dom__WEBPACK_IMPORTED_MODULE_1__.Link,
     onOpenSecrets: () => setSecretsModalOpen(true)
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -19222,4 +19289,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.bde1c8a486bb77271382.js.map
+//# sourceMappingURL=main.68d71c17273ea7c08791.js.map
