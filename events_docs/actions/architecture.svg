@@ -25,6 +25,8 @@
 <text x="524.0" y="135.0" font-size="11" fill="#1c1b1a" text-anchor="middle">validate</text>
 <line x1="798" y1="141" x2="846" y2="141" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
 <text x="822.0" y="135.0" font-size="11" fill="#1c1b1a" text-anchor="middle">arm</text>
+<text x="580" y="196" font-size="11" font-weight="700" fill="#5a3fa8">3 gates (no silent failure):</text>
+<text x="580" y="211" font-size="10.5" fill="#8a8785">deterministic build · AP validity gate · LLM intent-verify → all agree, or ASK</text>
 <text x="30" y="250" font-size="12" font-weight="700" fill="#b06f10">FIRE-TIME  (the trigger fires → the action runs)</text>
 <rect x="30" y="262" width="170" height="78" rx="11" fill="#fff" stroke="#8a8785" stroke-width="1.5"/>
 <text x="115.0" y="284" font-size="14" font-weight="700" fill="#1c1b1a" text-anchor="middle">Trigger</text>

@@ -6,6 +6,8 @@ surfaced in the confirmation — without a live AP or LLM.
 """
 
 import asyncio
+import os as _os
+_os.environ["EVENTS_VERIFY_ACTIONS"] = "0"  # deterministic tests: LLM verifier off
 import os
 import sys
 
@@ -155,6 +157,38 @@ def test_cross_piece_reply_rejected_needs_same_app():
     assert not engine.calls
 
 
+def test_multi_action_arms_two_native_steps():
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when an email arrives, email me a summary at me@x.com and reply to the sender",
+                             "source": "gmail", "event": "new_email"}))
+    assert "ARMED" in msg
+    acts = engine.calls[0]["actions"]
+    assert [a["ap_action"] for a in acts] == ["send_email", "reply_to_email"]
+
+
+def test_custom_api_call_actions_are_gated():
+    # archive/mark_read/delete are custom_api_call-backed → deferred (not armed), honest message
+    for utt in ("when I get an email, archive it",
+                "when I get an email, mark it as read",
+                "when I get an email, delete it"):
+        focf, store, engine = _mk()
+        msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push", "prompt": utt,
+                                 "source": "gmail", "event": "new_email"}))
+        assert "raw Gmail API call" in msg and "reply" in msg
+        assert not engine.calls                          # nothing armed
+
+
+def test_subject_and_cc_from_nl():
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when a PR opens, email me at me@x.com with subject 'PR alert' cc boss@x.com",
+                             "source": "github", "event": "new_pr", "repo": "o/r"}))
+    assert "ARMED" in msg
+    params = engine.calls[0]["actions"][0]["params"]
+    assert params["subject"] == "PR alert" and params["cc"] == ["boss@x.com"]
+
+
 def test_send_email_without_recipient_asks():
     focf, store, engine = _mk()
     # github source (no sender field the same way) + send_email + no action_to → must ask
@@ -164,3 +198,7 @@ def test_send_email_without_recipient_asks():
                              "action_to": "me", "repo": "psf/requests"}))
     assert "address" in msg.lower() or "who should i" in msg.lower()
     assert not engine.calls
+    # recipient ask-till-legit: the original utterance is PARKED for this thread so the next
+    # message (an address) completes it (completion itself runs in Concierge.run, tested live)
+    key = _principal_mod.DEFAULT.thread("web:local")
+    assert concierge._pending_recipient.get(key) == "when a PR opens email me"

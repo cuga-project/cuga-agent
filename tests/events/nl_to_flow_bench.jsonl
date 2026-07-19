@@ -1,0 +1,16 @@
+{"utterance": "when I get an email, reply to the sender", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["gmail/reply_to_email"], "outcome": "arm"}
+{"utterance": "when I get a new email, draft a reply summarizing my response", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["gmail/create_draft_reply"], "outcome": "arm"}
+{"utterance": "when I get an email, email me a summary at me@example.com", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["gmail/send_email"], "outcome": "arm"}
+{"utterance": "when I get an email, email me a summary at me@example.com and reply to the sender", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["gmail/send_email", "gmail/reply_to_email"], "outcome": "arm"}
+{"utterance": "when an email arrives, reply to the sender acknowledging it", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["gmail/reply_to_email"], "outcome": "arm"}
+{"utterance": "when I label an email 'Invoices', reply confirming receipt", "kind": "push", "source": "gmail", "event": "new_labeled_email", "actions": ["gmail/reply_to_email"], "outcome": "arm"}
+{"utterance": "when a new email arrives, summarize it and message me", "kind": "push", "source": "gmail", "event": "new_email", "actions": [], "outcome": "arm"}
+{"utterance": "when I get an email, email me about it", "kind": "push", "source": "gmail", "event": "new_email", "outcome": "ask", "why": "no recipient"}
+{"utterance": "when I get an email, archive it", "kind": "push", "source": "gmail", "event": "new_email", "outcome": "decline", "why": "custom_api_call gated"}
+{"utterance": "when I get an email, delete it", "kind": "push", "source": "gmail", "event": "new_email", "outcome": "decline", "why": "custom_api_call gated + destructive"}
+{"utterance": "when I get an email, label it read-later", "kind": "push", "source": "gmail", "event": "new_email", "outcome": "decline", "why": "no native label action"}
+{"utterance": "when a file lands in Box, reply to the sender", "kind": "push", "source": "box", "event": "new_file", "outcome": "decline", "why": "reply needs same-app trigger"}
+{"utterance": "when a PR opens on psf/requests, email me a risk summary at me@example.com", "kind": "push", "source": "github", "event": "new_pr", "actions": ["gmail/send_email"], "outcome": "arm", "slots": {"repo": "psf/requests"}}
+{"utterance": "watch bitcoin every 2 minutes and ping me on any move", "kind": "poll", "outcome": "arm"}
+{"utterance": "every day at 9am send me new arXiv papers on mixture-of-experts", "kind": "cron", "outcome": "arm"}
+{"utterance": "what is the current price of bitcoin?", "kind": "now", "outcome": "answer"}

@@ -203,7 +203,14 @@ class APEngine:
         inp = dict(inp)
         if connection:
             inp["auth"] = f"{{{{connections['{connection}']}}}}"
-        settings = {"propertySettings": self._prop_settings(inp), "pieceName": piece,
+        # PLAIN prop settings — NOT _prop_settings, which forces a `body` field to a JSON schema
+        # (correct for the HTTP piece, wrong for a gmail action whose `body` is text). custom_api_call
+        # needs its `body` as JSON, so honor an explicit body_type=json.
+        ps = {k: {"type": "MANUAL"} for k in inp}
+        if ap_action == "custom_api_call" and inp.get("body_type") == "json" and "body" in ps:
+            ps["body"] = {"type": "MANUAL", "schema": {
+                "data": {"type": "JSON", "required": True, "displayName": "JSON Body"}}}
+        settings = {"propertySettings": ps, "pieceName": piece,
                     "pieceVersion": ver, "actionName": ap_action, "input": inp}
         return {"type": "ADD_ACTION",
                 "request": {"parentStep": parent,
@@ -237,6 +244,26 @@ class APEngine:
         log.info("created AP box-poll flow=%s name=%s folder=%s every=%ss", flow_id, name,
                  folder_id, interval_seconds)
         return flow_id
+
+    async def _assert_steps_valid(self, c: httpx.AsyncClient, flow_id: str, hdrs: dict) -> None:
+        """Fetch the flow and RAISE if any step is invalid — deleting the throwaway flow first. This
+        is the arm-time validity gate: AP marks a step ``valid: false`` when its input doesn't satisfy
+        the piece (a missing prop, a bad dropdown value). Such a flow publishes but never fires, so we
+        must never report it as ARMED. Reusable — the generator's --check mode calls the same idea."""
+        d = (await c.get(f"{self.base}/api/v1/flows/{flow_id}", headers=hdrs)).json()
+        bad, s = [], (d.get("version") or {}).get("trigger")
+        while s:
+            if s.get("valid") is False:
+                st = s.get("settings", {})
+                bad.append(st.get("actionName") or st.get("triggerName") or s.get("name"))
+            s = s.get("nextAction")
+        if bad:
+            try:
+                await c.delete(f"{self.base}/api/v1/flows/{flow_id}", headers=hdrs)
+            except Exception:  # noqa: BLE001
+                pass
+            raise APError("Activepieces marked these step(s) invalid — the flow would never fire: "
+                          + ", ".join(bad) + ". Not arming.")
 
     async def _post_op(self, c: httpx.AsyncClient, flow_id: str, op: dict, hdrs: dict) -> dict:
         r = await c.post(f"{self.base}/api/v1/flows/{flow_id}", json=op, headers=hdrs)
@@ -465,7 +492,9 @@ class APEngine:
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
                                prompt: str, project_name: str | None = None, scope: str = "",
                                connection: str = "", source_input: dict | None = None,
-                               name: str | None = None, actions: list | None = None) -> str:
+                               name: str | None = None, actions: list | None = None,
+                               deliver_channel: str | None = None, deliver_target: str | None = None,
+                               deliver_connection: str | None = None) -> str:
         """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent) ▸ [actions…]. Powers the
         Box resume watcher and now the post-agent ACTION path. ``connection`` = the trigger app's AP
         connection externalId (wired as auth on the trigger — REQUIRED to publish). ``source_input``
@@ -511,13 +540,16 @@ class APEngine:
             # gets the whole payload — envelope.worker_input falls back to `_raw` when the curated
             # fields come back empty. Retires the "flow ran green but the agent got nothing" class.
             payload = {**flows.push_payload(source, event), "_raw": "{{trigger}}"}
-            # RETURN-TO-CALLER: deliver=True even WITH an action. The two sinks are different — the
-            # action runs in the acting app (gmail draft/reply), while deliver sends the agent's answer
-            # back to the ORIGIN channel encoded in thread_id (gw:<channel>:<native>) via /invoke's
-            # direct adapter (Slack/Discord). No double-send: gmail ≠ the chat channel. Armed from web
-            # (thread_id not gw:*) → channel_origin is None → no channel send, exactly as before. (AP-
-            # backed channels like Telegram need an AP send step — tracked in ACTIONS_TODO.)
-            body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
+            # RETURN-TO-CALLER — report the agent's answer back to the ORIGIN channel (where the flow
+            # was armed), alongside the action running in the acting app.
+            #   • DIRECT channels (Slack/Discord): deliver=True → /invoke sends via the direct adapter
+            #     to the gw:<channel>:<native> origin in thread_id. No AP send step.
+            #   • AP-backed channels (Telegram): deliver=False + an AP send step appended AFTER the
+            #     action steps (AP owns the send). Set via deliver_channel/deliver_target.
+            # gmail ≠ the chat channel, so action + report is never a double-send. Armed from web →
+            # neither fires (thread_id not gw:*, no deliver_channel).
+            has_send = bool(deliver_channel in flows.CHANNELS and deliver_target)
+            body = {"agent": agent, "text": prompt, "deliver": not has_send, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": payload}}
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
@@ -531,6 +563,17 @@ class APEngine:
                     ver=a_ver, parent=parent, name=f"step_{idx}",
                     connection=act.get("connection", ""), display=act.get("display", "")), hdrs)
                 parent, idx = f"step_{idx}", idx + 1
+            if has_send:                              # AP-channel report, AFTER the action(s)
+                piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
+                sver = await self._piece_version(c, piece)
+                await self._post_op(c, flow_id, self._channel_send_op(
+                    deliver_channel, deliver_target, deliver_connection or "", sver,
+                    parent=parent, name=f"step_{idx}"), hdrs)
+            # ANTI-SILENT-FAILURE GATE: before publishing, ask AP whether every step is valid. An
+            # invalid ACTION step publishes ENABLED and then NEVER fires — the worst kind of silent
+            # failure (the user is told "ARMED" for a flow that can't run). Refuse: delete + raise so
+            # the concierge reports the real problem instead of a false success.
+            await self._assert_steps_valid(c, flow_id, hdrs)
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
         log.info("armed push flow source=%s/%s agent=%s flow=%s", source, event, agent, flow_id)

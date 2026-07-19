@@ -4,6 +4,55 @@ Living checklist for the action half. Companion to `TRIGGERS_ACTIONS_DESIGN.md` 
 status). Status as of 2026-07-18: Gmail actions work live via chat from any channel; the items below
 are what's left. `[ ]` open · `[~]` partial · `[x]` done-recently (kept for context).
 
+## Hardening pass — DONE (2026-07-19) — a, b, c, + LLM verifier
+
+- [x] **LLM verifier (dual-path assurance).** Deterministic code BUILDS the action plan; an
+      independent LLM verifies it matches the request (`_verify_action_plan`). A confident MISMATCH →
+      ask, don't arm; MATCH / model-unavailable → proceed (FAIL-OPEN). Divergences logged
+      (`EVENTS_VERIFY_LOG`) to feed the benchmark. Off with `EVENTS_VERIFY_ACTIONS=0` (offline tests
+      set this). Three independent gates now guard an arm: deterministic build · AP validity gate ·
+      LLM intent-match. Live-verified: a correct plan MATCHes + arms.
+
+## Hardening pass — DONE (2026-07-19) — a, b, c
+
+- [x] **(a) Arm-time validity gate (no silent failures).** `ap_engine._assert_steps_valid` fetches the
+      flow before publish; if AP marks ANY step invalid, it deletes + raises — the concierge reports the
+      real problem instead of a false "ARMED". Retro-catches the whole "arms but never fires" class.
+- [x] **(b) Validity-probe folded into the generator.** `gen_actions.py <piece> --check` arms a
+      throwaway flow per action and prints VALID/INVALID (emitting all props, templating the message
+      id). Adding a piece is now "run --check, it tells you what's armable" — no manual archaeology.
+      (gmail: send/reply/draft/get/search VALID, custom_api_call INVALID.)
+- [x] **(c) NL→Flow benchmark.** `tests/events/nl_to_flow_bench.jsonl` (labeled) +
+      `test_nl_to_flow_bench.py` scores router_mode / push_trigger / gate_outcome / action accuracy and
+      **CORRECT_AT_ARM** (armed flows that were right — the anti-silent-failure metric). Currently
+      100% across the board; asserts CORRECT_AT_ARM==100%. It **caught a real silent failure** ("label
+      it" silently armed a plain watcher) → now declined via `actions.unsupported_action`.
+- [x] **Unsupported-verb decline.** "label/forward/star/… it" with no registry action → honest
+      decline, never a silent plain watcher.
+
+## Gmail golden pass — DONE (2026-07-19)
+
+- [x] **send_email valid live** (AP needs every prop present — `render_params` emits typed empties).
+- [x] **Multi-action** ("email me AND reply to the sender") — valid 2-action chain, span-deduped.
+- [x] **subject / cc from NL** on send_email.
+- [x] **Return-to-caller** — direct channels (Slack, proven) + AP-channel send step (Telegram).
+- [x] **Recipient handling** — explicit address / "the sender" / asks when it can't infer.
+- [x] **NL on-ramp** — every path (fast/slash/LLM) reaches the gate; multi-action aware.
+
+Still open for Gmail:
+
+- [ ] **archive / mark-read / delete (custom_api_call).** The raw Gmail-API step does NOT validate as
+      an armable AP step (tried every prop/propSetting shape). Currently GATED with an honest message.
+      Needs: figure out AP's custom_api_call validity (or a piece that exposes native modify/trash),
+      then wire archive/mark-read (non-destructive) + delete (destructive → run-time approval).
+- [ ] **Run-time approval pause** — needed before delete can ship (design §3.4b (b)).
+- [x] **Recipient ask-till-legit parking** — DONE. "email me" asks who; the original utterance is
+      parked (`_pending_recipient`) and the next message (an address) completes it. Live-verified +
+      offline park assertion.
+- [ ] **Nicer confirmation text** — channel gets the raw answer prefixed "⚡ flow fired"; a
+      "✅ replied to X" line needs the agent to emit a channel note vs the draft body.
+- [ ] **Attachments / reply-all / bcc from NL** — params exist, not wired to NL.
+
 ## P0 — close the gaps we hit live
 
 - [x] **★ Report back to the originating caller after an action fires (DIRECT channels).** DONE:
@@ -29,12 +78,20 @@ are what's left. `[ ]` open · `[~]` partial · `[x]` done-recently (kept for co
 - [ ] **Real-fire leg (Gmail).** Send an email to the connected inbox, confirm a DRAFT reply actually
       appears (the one leg needing a human-sent email). Add the result to the checklist.
 
-## P1 — branching (the biggest v2 piece)
+## P1 — branching (the biggest v2 piece) — UNBLOCKED 2026-07-19
 
-- [ ] **LLM branch vocabulary.** Teach the concierge to emit `branches` (if/else) — a new tool arg +
-      prompt section, mirroring the ACTION VOCABULARY.
-- [ ] **`ap_engine` ROUTER ops.** Arm branched flows live (AP ROUTER node + children), not just
-      sequential `ADD_ACTION`. Offline builder (`router_step`, Option-B predicates) already done.
+**AP ROUTER validity confirmed:** an `ADD_ACTION` with `type=ROUTER` validates (HTTP 200) IFF
+`settings.executionType = "EXECUTE_FIRST_MATCH"` is present (without it → 400). So live branching is
+armable; remaining work below.
+
+- [ ] **`ap_engine` ROUTER ops.** Emit the ROUTER step (with `executionType`) + add each branch's
+      action as a child via `ADD_ACTION` with `stepLocationRelativeToParent=INSIDE_BRANCH` +
+      `branchIndex` (verify that child-op shape next — same probe method). Offline builder
+      (`router_step`, Option-B predicates) already done + tested.
+- [ ] **NL condition parsing.** Deterministic patterns for "if it mentions X / if from Y / if >N
+      lines … else …" → `branches` predicates; the concierge emits them.
+- [ ] **Verify + benchmark.** Arm-probe the full branched flow for validity; add branched cases to
+      `nl_to_flow_bench.jsonl`.
 - [ ] **Step-0 probe.** Arm a 2-level nested-router flow in live AP; confirm the runtime executes it.
       Result decides: nested-in-one-flow vs auto-chained flows.
 - [ ] **Answer-token contract injection.** When a branch tests the answer, inject "begin your reply

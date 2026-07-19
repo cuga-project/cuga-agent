@@ -112,6 +112,17 @@ inbox; the harness prints how to finish it. As with Gmail triggers, the poll fir
 
 ---
 
+## Gmail action coverage (what works today)
+
+| Ask | Action | Status |
+|---|---|---|
+| "reply to the sender" | `gmail/reply_to_email` | ✅ live |
+| "draft a reply" | `gmail/create_draft_reply` | ✅ live |
+| "email me / email X a summary" | `gmail/send_email` (subject + cc from NL) | ✅ live |
+| "email me AND reply" (multi-action) | send + reply chained | ✅ live |
+| result reported back to the arming channel | Slack/Discord (direct) + Telegram (AP send step) | ✅ live |
+| "archive it" / "mark it read" / "delete it" | custom_api_call (Gmail REST) | ⛔ **gated** — the raw-call step doesn't validate as an armable AP step yet; the concierge declines honestly and steers to reply/draft/send. Delete also needs run-time approval. |
+
 ## Gotchas
 
 - **"email me" asks for an address.** The concierge can't infer *your* address from "me" — it asks.

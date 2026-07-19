@@ -34,6 +34,7 @@ LLM-free deterministic half of NL→Flow.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -61,6 +62,10 @@ class Action:
     destructive: bool = False
     phrases: tuple = ()               # verb regex fragments (verb-alignment)
     default: bool = False             # the app's default action
+    # raw_input: for custom_api_call-backed actions (capabilities the piece has no native action for,
+    # e.g. gmail archive/trash/mark-read via the Gmail REST API). When set, `action_step` uses it
+    # verbatim as the AP `input` (native {{templates}} resolved by AP), bypassing param rendering.
+    raw_input: dict | None = None
     # same_app_trigger: this action keys off the FIRING event (e.g. reply/draft need the trigger's
     # message id), so it is only valid downstream of a trigger from the SAME app. The gate rejects a
     # cross-app pairing (a Box trigger can't drive gmail/reply_to_email — there's no message to reply
@@ -89,11 +94,21 @@ _GM = dict(app="gmail", backend="ap", piece="gmail")
 _GMAIL = [
     _a(name="send_email", title="Send Email", ap_action="send_email", default=True,
        params=(
+           # ALL props declared — AP's send_email validator requires every prop present (optionals as
+           # typed empties, filled by render_params). receiver/cc/subject can be supplied; the rest
+           # default to empty/false.
            Param("receiver", "ARRAY", required=True, source="user", array=True,
                  question="Who should I email? Give an address (or say 'the sender' to reply to them)."),
+           Param("cc", "ARRAY", required=False, source="user", array=True),
+           Param("bcc", "ARRAY", required=False, source="user", array=True),
            Param("subject", "SHORT_TEXT", required=True, source="static", default="Update"),
-           Param("body", "SHORT_TEXT", required=True, source="answer"),
            Param("body_type", "STATIC_DROPDOWN", required=True, source="static", default="plain_text"),
+           Param("body", "SHORT_TEXT", required=True, source="answer"),
+           Param("reply_to", "ARRAY", required=False, source="user", array=True),
+           Param("sender_name", "SHORT_TEXT", required=False, source="user"),
+           Param("from", "SHORT_TEXT", required=False, source="user"),
+           Param("attachments", "ARRAY", required=False, source="user", array=True),
+           Param("in_reply_to", "SHORT_TEXT", required=False, source="user"),
            Param("draft", "CHECKBOX", required=True, source="static", default=False),
        ),
        phrases=(r"\bsend\b.{0,15}\be-?mail\b", r"\be-?mail (me|us|him|her|them|to)\b",
@@ -135,7 +150,44 @@ _GMAIL = [
 ]
 
 
-ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in _GMAIL}
+# ── Gmail capabilities the piece has NO native action for → custom_api_call over the Gmail REST API.
+# message id comes from the firing trigger (same_app_trigger). System labels (INBOX/UNREAD) need no
+# lookup, so archive/mark-read/trash work without resolving a label id. Add-label needs a label-id
+# lookup (a user slot) — deliberately left out of the golden set (documented). Base URL is the Gmail
+# API; AP attaches the gmail OAuth token as the step's connection auth (see ap_engine._action_op).
+_GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+
+# custom_api_call needs EVERY prop present (like send_email). These bases carry them all.
+def _capi(url: str, body=None) -> dict:
+    d = {"url": url, "method": "POST", "headers": {}, "queryParams": {},
+         "response_is_binary": False, "failsafe": False, "timeout": "", "followRedirects": False}
+    if body is not None:
+        d["body_type"] = "json"
+        d["body"] = body
+    else:
+        d["body_type"] = "none"
+    return d
+
+
+_MID = "{{trigger.message.id}}"
+_GMAIL_RAW = [
+    _a(name="archive_email", title="Archive Email (remove from inbox)", ap_action="custom_api_call",
+       same_app_trigger=True,
+       raw_input=_capi(f"{_GMAIL_API}/{_MID}/modify", {"removeLabelIds": ["INBOX"]}),
+       phrases=(r"\barchive\b",),
+       notes="reversible (email kept, just out of inbox) — not flagged destructive.", **_GM),
+    _a(name="mark_read", title="Mark as Read", ap_action="custom_api_call", same_app_trigger=True,
+       raw_input=_capi(f"{_GMAIL_API}/{_MID}/modify", {"removeLabelIds": ["UNREAD"]}),
+       phrases=(r"\bmark(ed)?\b.{0,10}\bread\b",), **_GM),
+    _a(name="trash_email", title="Delete (move to Trash)", ap_action="custom_api_call",
+       destructive=True, same_app_trigger=True,
+       raw_input=_capi(f"{_GMAIL_API}/{_MID}/trash"),
+       phrases=(r"\b(delete|trash|bin)\b.{0,15}\b(e-?mail|it|message|them)\b",
+                r"\btrash it\b", r"\bmove.{0,10}trash\b"),
+       notes="DESTRUCTIVE — approval-gated at run time.", **_GM),
+]
+
+ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in (_GMAIL + _GMAIL_RAW)}
 
 # Canonical-name aliases the LLM/classifier may emit for an action.
 ACTION_ALIASES = {
@@ -144,6 +196,11 @@ ACTION_ALIASES = {
     ("gmail", "reply"): "reply_to_email",
     ("gmail", "draft"): "create_draft_reply",
     ("gmail", "draft_reply"): "create_draft_reply",
+    ("gmail", "archive"): "archive_email",
+    ("gmail", "delete"): "trash_email",
+    ("gmail", "trash"): "trash_email",
+    ("gmail", "delete_email"): "trash_email",
+    ("gmail", "mark_as_read"): "mark_read",
 }
 
 
@@ -212,8 +269,9 @@ def render_params(action: "Action", supplied: dict | None = None) -> dict:
             val = p.default
         elif p.source == "answer":
             val = ANSWER
-        else:  # user slot with no supplied value — leave a marker the caller must have filled
-            val = supplied.get(p.name)
+        else:  # user slot with no supplied value → a TYPED EMPTY (AP's send_email validator wants
+               # EVERY declared prop present, even optional ones; omitting them made the step invalid).
+            val = [] if p.array else (False if p.type == "CHECKBOX" else "")
         if p.array and not isinstance(val, list) and val is not None:
             val = [val]
         out[p.name] = val
@@ -265,16 +323,68 @@ def extract_action(utterance: str) -> tuple:
     if hit is None:
         return None, None
     app, name = hit
-    action_to = None
-    if name == "send_email":
-        m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)          # an explicit address wins
-        if m:
-            action_to = m.group(0)
-        elif re.search(r"\b(the\s+)?(sender|them|him|her)\b", text, re.I):
-            action_to = "sender"
-        elif re.search(r"\b(me|us)\b", text, re.I):
-            action_to = "me"                                       # gate will ask for the address
-    return f"{app}/{name}", action_to
+    return f"{app}/{name}", _send_recipient(text) if name == "send_email" else None
+
+
+def _send_recipient(text: str):
+    m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)              # an explicit address wins
+    if m:
+        return m.group(0)
+    if re.search(r"\b(the\s+)?(sender|them|him|her)\b", text, re.IGNORECASE):
+        return "sender"
+    if re.search(r"\b(me|us)\b", text, re.IGNORECASE):
+        return "me"                                              # gate will ask for the address
+    return None
+
+
+# Action VERBS we recognize the user is asking for but have NO registry action for (label/forward/
+# star/…). Matching the ACTION form ("label it") — NOT the trigger form ("when I label an email").
+# Used to DECLINE honestly instead of silently arming a plain watcher (the benchmark's silent-failure
+# catch). Kept narrow so plain delivery ("message me", "tell me") never trips it.
+_UNSUPPORTED = re.compile(
+    r"\b(label|star|flag|snooze|pin|mark)\s+(it|them|this|the\s+(e-?mail|message))\b"
+    r"|\bforward\s+(it|this|the\s+(e-?mail|message))\b"
+    r"|\bmove\s+(it|the\s+(e-?mail|message))\s+to\b", re.IGNORECASE)
+
+
+def unsupported_action(utterance: str) -> str:
+    """If the utterance asks for an action VERB we don't support (and no registry action matched),
+    return that verb so the concierge can decline honestly. '' when nothing unsupported is asked."""
+    m = _UNSUPPORTED.search(utterance or "")
+    if not m:
+        return ""
+    return m.group(0).split()[0].lower()
+
+
+def extract_actions(utterance: str) -> list:
+    """Multi-action: detect ALL distinct actions an utterance asks for, in order (e.g. "summarize,
+    email me AND archive it" → [send_email, archive_email]). Returns a list of
+    ``{"action": "<app>/<name>", "action_to": <hint|None>}``; empty when none. Each registry action
+    matches at most once. Order follows first appearance in the text so the flow chains them
+    sensibly. Powers the concierge's sequential multi-action arming."""
+    import re
+    text = utterance or ""
+    seen, hits, consumed = set(), [], []
+    # classifier_actions is most-specific-first (longer phrases). Consume each match's span so a
+    # shorter overlapping phrase can't double-count — "draft a reply" is ONE action (draft), not
+    # draft + reply; two NON-overlapping verbs ("email me AND archive it") stay two actions.
+    for ph, (app, name) in classifier_actions():
+        if (app, name) in seen:
+            continue
+        m = re.search(ph, text, re.IGNORECASE)
+        if not m:
+            continue
+        if any(not (m.end() <= s or m.start() >= e) for s, e in consumed):
+            continue
+        seen.add((app, name))
+        hits.append((m.start(), app, name))
+        consumed.append((m.start(), m.end()))
+    hits.sort()                                                   # first-appearance order
+    out = []
+    for _pos, app, name in hits:
+        out.append({"action": f"{app}/{name}",
+                    "action_to": _send_recipient(text) if name == "send_email" else None})
+    return out
 
 
 # ── resolve_action: tool-first, AP-fallback (design §3.3) ───────────────────────────────────────

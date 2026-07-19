@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -105,6 +105,9 @@ test: ## Offline events suite — the fast green gate (~60, no stack/creds)
 
 test-all: ## All OFFLINE tests (events + unit; no live stack). NB: some tests/unit are pre-existing product failures.
 	$(PY) -m pytest tests/events tests/unit -q
+
+bench: ## NL→Flow benchmark scorecard (offline, deterministic; gates CORRECT_AT_ARM==100%)
+	$(PY) -m pytest tests/events/test_nl_to_flow_bench.py tests/events/test_flowspec_bench.py -q -s
 
 test-live: ## Live e2e — 4 channels + 4 flow modes. Needs the stack up (make up) + creds (make doctor)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_e2e.py $(ARGS)

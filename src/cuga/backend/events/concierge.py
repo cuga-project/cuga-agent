@@ -44,6 +44,29 @@ except ImportError:  # flat load (offline tests put the events dir on sys.path)
 def _action_vocabulary() -> str:
     return action_registry.prompt_vocabulary()
 
+
+# recipient ask-till-legit: thread → the ORIGINAL utterance that's waiting for an email address.
+# In-process (like flowspec's slot parking); when the next message on that thread IS an address, the
+# concierge completes the original utterance instead of making the user restate it.
+_pending_recipient: dict = {}
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def _send_extras(text: str) -> tuple:
+    """Optional send_email extras from an utterance: subject (quoted after 'subject') + cc addresses
+    (after 'cc'). Returns (subject|None, [cc]|None). Everything else on send_email is defaulted."""
+    t = text or ""
+    subj = None
+    m = re.search(r"subject[:\s]+['\"‘’“”]([^'\"‘’“”]{1,120})",
+                  t, re.I)
+    if m:
+        subj = m.group(1).strip()
+    cc = None
+    m = re.search(r"\bcc[:\s]+([\w.+-]+@[\w-]+\.[\w.-]+(?:\s*,\s*[\w.+-]+@[\w-]+\.[\w.-]+)*)", t, re.I)
+    if m:
+        cc = [a.strip() for a in m.group(1).split(",") if a.strip()]
+    return subj, cc
+
 log = logging.getLogger("cuga.events.concierge")
 
 _origin: contextvars.ContextVar[str] = contextvars.ContextVar("origin", default="web:local")
@@ -207,6 +230,66 @@ async def _single_shot_task(prompt: str) -> str:
     except Exception as e:  # noqa: BLE001
         log.warning("cadence LLM rewrite failed (%s) — regex fallback", str(e)[:120])
     return _strip_cadence(prompt)
+
+
+_verify_model = None  # cached chat model for the action verifier; tests disable via env
+_VERIFY_SYSTEM = (
+    "You are a STRICT verifier for an automation builder. You are given a user's request and the "
+    "automation we are ABOUT to arm (a trigger, then post-agent actions). Decide whether the "
+    "automation FAITHFULLY matches the request. Reply with ONE line only:\n"
+    "  MATCH                     — if it does what the user asked\n"
+    "  MISMATCH: <short reason>  — if it drops, adds, or misdirects anything (wrong/ missing action, "
+    "wrong recipient, wrong trigger, an 'if/only-if' condition it ignores)\n"
+    "Be conservative: only say MISMATCH on a REAL discrepancy, never on wording or a sensible default "
+    "(e.g. a default subject). The agent writes the email/reply CONTENT at run time — do not flag "
+    "missing content.")
+
+
+async def _verify_action_plan(utterance: str, plan_desc: str) -> tuple:
+    """The LLM VERIFIER (design: dual-path assurance). Deterministic code BUILDS the flow; this asks
+    an independent LLM 'does this plan match the request?'. Returns (ok, reason). ok=False ⇒ a real
+    mismatch → the concierge asks instead of silently arming. FAIL-OPEN: disabled/unavailable/error/
+    timeout → (True, '') so a model outage never blocks arming (the deterministic build + AP validity
+    gate still guard). Off with EVENTS_VERIFY_ACTIONS=0 (tests set this)."""
+    if os.environ.get("EVENTS_VERIFY_ACTIONS", "1") != "1":
+        return True, ""
+    global _verify_model
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        if _verify_model is None:
+            try:
+                from .llm import default_model_factory
+            except ImportError:
+                from llm import default_model_factory
+            _verify_model = default_model_factory(None)
+        msg = f"USER REQUEST:\n{utterance}\n\nAUTOMATION TO ARM:\n{plan_desc}"
+        res = await asyncio.wait_for(
+            _verify_model.ainvoke([SystemMessage(content=_VERIFY_SYSTEM), HumanMessage(content=msg)]),
+            timeout=float(os.environ.get("EVENTS_VERIFY_TIMEOUT", "20")))
+        out = (res.content or "").strip()
+        if out.upper().startswith("MISMATCH"):
+            reason = out.split(":", 1)[1].strip() if ":" in out else "the plan may not match your request"
+            _log_divergence(utterance, plan_desc, reason)
+            return False, reason
+        return True, ""
+    except Exception as e:  # noqa: BLE001 — verifier must never hard-fail an arm
+        log.warning("action verify failed (%s) — proceeding (fail-open)", str(e)[:120])
+        return True, ""
+
+
+def _log_divergence(utterance: str, plan_desc: str, reason: str) -> None:
+    """Best-effort: append a verifier disagreement to EVENTS_VERIFY_LOG (JSONL) so divergences can be
+    triaged and folded into the NL→Flow benchmark dataset. Silent if the path is unset/unwritable."""
+    path = os.environ.get("EVENTS_VERIFY_LOG")
+    if not path:
+        log.warning("verify.divergence utterance=%r reason=%r", utterance[:120], reason[:120])
+        return
+    try:
+        import json as _json
+        with open(path, "a") as f:
+            f.write(_json.dumps({"utterance": utterance, "plan": plan_desc, "reason": reason}) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _owner_scope(spec, p: Principal) -> str:
@@ -414,82 +497,122 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             engine_actions: list = []
             action_tag = ""
             action_preview = ""
-            if kind == "push" and not action:
-                # DETERMINISTIC ACTION ON-RAMP — the fast-path (_arm_spec), slash (_arm_slash) and an
-                # LLM that omitted `action` ALL reach here. Extract an action from the RAW utterance
-                # so the action gate runs regardless of entry path (this is the wire that made chat
-                # utterances actually act instead of arming a plain watcher). A bare trigger extracts
-                # nothing → plain watcher, exactly as before. Registry-driven → new pieces need no
-                # concierge change.
-                try:
-                    from . import actions as _acts
-                except ImportError:
-                    import actions as _acts
-                _auto_action, _auto_to = _acts.extract_action(_utterance.get("") or prompt)
-                if _auto_action:
-                    action = _auto_action
-                    if action_to is None:
-                        action_to = _auto_to
-            if kind == "push" and action:
+            if kind == "push":
                 try:
                     from . import actions as _acts, flows
                 except ImportError:
                     import actions as _acts
                     import flows
-                a_app, _, a_name = action.partition("/")
-                if not a_name:                       # bare name → the trigger app owns it
-                    a_app, a_name = (source or a_app), a_app
-                act_row, a_problem = _acts.validate(a_app, a_name, {})
-                if act_row is None:
-                    return f"error: {a_problem}"
-                # reply/draft key off the FIRING message → only valid downstream of the SAME app's
-                # trigger. A Box/GitHub trigger can't drive gmail/reply_to_email (no message to reply
-                # to); steer to send_email, which sends a fresh email cross-app.
-                if act_row.same_app_trigger and source and source != act_row.app:
-                    return (f"'{act_row.app}/{act_row.name}' needs a {act_row.app} trigger (it replies "
-                            f"to the incoming {act_row.app} message), but this watches '{source}'. "
-                            f"Use '{act_row.app}/send_email' to send a fresh email instead.")
-                # verb-alignment: the utterance must actually ask for THIS action's verb — else we may
-                # be about to arm the wrong (possibly destructive) action. Ask instead of guessing.
-                _verb_ok = any(re.search(ph, prompt or "", re.I)
-                               for ph, (pa, pn) in _acts.classifier_actions()
-                               if pa == act_row.app and pn == act_row.name)
-                if act_row.destructive and not _verb_ok:
-                    return (f"You asked me to '{prompt}', but that maps to the destructive action "
-                            f"'{act_row.app}/{act_row.name}'. Confirm explicitly (reply 'yes, "
-                            f"{act_row.name}') or tell me the action you meant.")
-                # fill the receiver for send_email: an explicit address, or the trigger's sender
-                supplied: dict = {}
-                if act_row.name == "send_email":
-                    _to = (action_to or "").strip()
-                    # A real EMAIL field only (gmail's `from`) can be a recipient. github's `author`
-                    # is a login, not an address — never route mail to it. Registry-driven: a new app
-                    # with a genuine email `from` field works; login/username fields are ignored.
-                    _sender_tpl = flows.push_payload(source, event).get("from", "") \
-                        if source == "gmail" else ""
-                    if "@" in _to:                                   # an explicit address
-                        supplied["receiver"] = [_to]
-                    elif _to.lower() in ("sender", "them", "him", "her", "reply") and _sender_tpl:
-                        supplied["receiver"] = [_sender_tpl]         # reply to the firing sender
-                    else:
-                        # 'me'/empty/unknown, or a source with no email sender → we can't infer an
-                        # address here; ask (never silently mail the wrong place).
-                        return ("Who should I send the email to? Give an address"
-                                + (" (or say 'the sender' to reply to them)." if _sender_tpl else "."))
-                a_params = _acts.render_params(act_row, supplied)
-                # the acting app needs ITS OWN connection (a github trigger → gmail action needs the
-                # gmail connection, not github's). Same-app reuses the trigger connection.
-                _act_own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
-                                 if i.get("app") == act_row.app), "per-user")
-                a_conn = credentials.connection_external_id(act_row.app, _act_own, p)
-                _act_step = {"app": act_row.app, "ap_action": act_row.ap_action, "params": a_params,
-                             "connection": a_conn, "display": f"{act_row.app.title()} · {act_row.title}"}
-                if act_row.destructive:              # run-time approval gate (design §3.4b (b))
-                    _act_step["_approve"] = True
-                engine_actions = [_act_step]
-                action_tag = f"{act_row.app}/{act_row.name}"
-                action_preview = (f" then **{act_row.app}/{act_row.name}**"
-                                  + (" (approval-gated)" if act_row.destructive else ""))
+                _raw = _utterance.get("") or prompt
+                # Build the ordered list of (action, recipient-hint) specs. An explicit `action` arg
+                # (LLM/slash) wins; otherwise extract MULTIPLE actions from the raw utterance — the
+                # deterministic on-ramp (fast-path/slash/LLM-that-omitted-one all reach here). A bare
+                # trigger extracts nothing → plain watcher, as before. Registry-driven: new pieces
+                # (and new actions) need no concierge change.
+                if action:
+                    _specs = [{"action": action, "action_to": action_to}]
+                else:
+                    _specs = _acts.extract_actions(_raw)
+                _subj, _cc = _send_extras(_raw)              # "with subject 'X'" + "cc a@b"
+                _tags = []
+                for _spec in _specs:
+                    a_app, _, a_name = (_spec["action"] or "").partition("/")
+                    if not a_name:                           # bare name → the trigger app owns it
+                        a_app, a_name = (source or a_app), a_app
+                    act_row, a_problem = _acts.validate(a_app, a_name, {})
+                    if act_row is None:
+                        return f"error: {a_problem}"
+                    # reply/draft/archive/trash key off the FIRING message → only valid downstream of
+                    # the SAME app's trigger. A Box/GitHub trigger can't drive gmail/reply_to_email.
+                    if act_row.same_app_trigger and source and source != act_row.app:
+                        return (f"'{act_row.app}/{act_row.name}' needs a {act_row.app} trigger (it acts "
+                                f"on the incoming {act_row.app} message), but this watches '{source}'. "
+                                f"Use '{act_row.app}/send_email' to send a fresh email instead.")
+                    # verb-alignment: the utterance must actually ask for THIS action's verb — else we
+                    # may be about to arm the wrong (possibly destructive) action.
+                    _verb_ok = any(re.search(ph, _raw or "", re.I)
+                                   for ph, (pa, pn) in _acts.classifier_actions()
+                                   if pa == act_row.app and pn == act_row.name)
+                    if act_row.destructive and not _verb_ok:
+                        return (f"You asked me to '{prompt}', but that maps to the destructive action "
+                                f"'{act_row.app}/{act_row.name}'. Confirm explicitly or name the action.")
+                    # custom_api_call-backed actions (gmail archive/label/delete/mark-read — the piece
+                    # has NO native action for them) don't yet validate as an armable AP step. Rather
+                    # than arm a broken flow, decline honestly and steer to the native actions. The
+                    # destructive ones (delete) additionally need a run-time approval pause (§3.4b).
+                    if act_row.raw_input:
+                        _extra = (" It's also destructive (fires on every match), so it needs a "
+                                  "run-time approval step." if act_row.destructive else "")
+                        return (f"'{act_row.app}/{act_row.name}' needs a raw Gmail API call (no native "
+                                f"piece action) that isn't arming as a valid AP step yet — I've "
+                                f"deferred it.{_extra} The native actions — **reply**, **draft**, and "
+                                f"**send/email me** — work today.")
+                    supplied: dict = {}
+                    if act_row.name == "send_email":
+                        _to = (_spec.get("action_to") or "").strip()
+                        # a real EMAIL field only (gmail's `from`) can be a recipient — github's
+                        # `author` is a login, never route mail to it.
+                        _sender_tpl = flows.push_payload(source, event).get("from", "") \
+                            if source == "gmail" else ""
+                        if "@" in _to:
+                            supplied["receiver"] = [_to]
+                        elif _to.lower() in ("sender", "them", "him", "her", "reply") and _sender_tpl:
+                            supplied["receiver"] = [_sender_tpl]
+                        else:
+                            # park the original utterance so the NEXT message (an address) completes
+                            # it — recipient ask-till-legit (no restating).
+                            try:
+                                _pending_recipient[p.thread(_origin.get() or "")] = _raw
+                            except Exception:  # noqa: BLE001
+                                pass
+                            return ("Who should I send the email to? Give an address"
+                                    + (" (or say 'the sender' to reply to them)." if _sender_tpl else "."))
+                        if _subj:
+                            supplied["subject"] = _subj
+                        if _cc:
+                            supplied["cc"] = _cc
+                    # custom_api_call-backed actions carry a fixed raw_input; native actions render
+                    # their params from the (trigger/answer/static/user) sources.
+                    a_params = (dict(act_row.raw_input) if act_row.raw_input
+                                else _acts.render_params(act_row, supplied))
+                    _act_own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
+                                     if i.get("app") == act_row.app), "per-user")
+                    a_conn = credentials.connection_external_id(act_row.app, _act_own, p)
+                    _act_step = {"app": act_row.app, "ap_action": act_row.ap_action, "params": a_params,
+                                 "connection": a_conn,
+                                 "display": f"{act_row.app.title()} · {act_row.title}"}
+                    if act_row.destructive:                  # run-time approval gate (design §3.4b)
+                        _act_step["_approve"] = True
+                    engine_actions.append(_act_step)
+                    _tags.append(f"{act_row.app}/{act_row.name}"
+                                 + ("!" if act_row.destructive else ""))
+                # NO action matched, but the user CLEARLY asked for one we don't support (label/
+                # forward/star/…) → decline honestly instead of silently arming a plain watcher that
+                # drops the intent (the benchmark's silent-failure catch).
+                if not engine_actions:
+                    _unsup = _acts.unsupported_action(_raw)
+                    if _unsup:
+                        return (f"I can't **{_unsup}** emails yet — there's no native Gmail action for "
+                                f"it, and I've only wired reply, draft, and send/email-me. I won't arm "
+                                f"a watcher that silently drops that. Try reply/draft/send, or ask me "
+                                f"to add '{_unsup}'.")
+                if engine_actions:
+                    action_tag = "+".join(t.rstrip("!") for t in _tags)
+                    action_preview = " then " + " + ".join(f"**{t}**" for t in _tags)
+                    # DUAL-PATH ASSURANCE: deterministic code built the plan; an independent LLM now
+                    # verifies it matches the request. A confident MISMATCH → ask, don't arm (the
+                    # anti-silent-failure backstop). MATCH / unavailable → proceed (fail-open).
+                    _plan = (f"When {source}/{event} fires, run the agent, then: "
+                             + "; ".join(f"{a['app']}/{a['ap_action']}"
+                                         + (f" to {a['params'].get('receiver')}"
+                                            if a.get("params", {}).get("receiver") else "")
+                                         for a in engine_actions))
+                    _ok, _why = await _verify_action_plan(_raw, _plan)
+                    if not _ok:
+                        return (f"⚠️ Before arming, my verifier flags a possible mismatch: {_why}\n"
+                                f"I was about to set up:{action_preview} on {source}/{event}. "
+                                f"Rephrase, or say exactly what you want — I won't arm a flow I'm "
+                                f"unsure about.")
             # where does the reply go? explicit deliver_to, else the CHANNEL the caller asked from
             # ('send me' → origin thread 'gw:<channel>:<native>' delivers back there), else the
             # agent's first configured channel.
@@ -657,7 +780,11 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         thread_id=p.thread(origin), prompt=prompt,
                         project_name=p.ap_project_name(grain), scope=p.scope,
                         connection=push_conn, source_input=src_input, name=flow_name,
-                        actions=engine_actions or None)
+                        actions=engine_actions or None,
+                        # return-to-caller for an AP-backed origin channel (Telegram); direct
+                        # channels (Slack/Discord) are handled by /invoke's deliver=True path.
+                        deliver_channel=deliver_channel, deliver_target=deliver_target,
+                        deliver_connection=deliver_connection)
                 except Exception as e:  # noqa: BLE001
                     msg = str(e)
                     # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
@@ -798,6 +925,17 @@ class Concierge:
         from langchain_core.messages import HumanMessage
         p = principal or DEFAULT_PRINCIPAL
         _utterance.set(text)    # tools read arm-time qualifiers from the RAW text (see ttl_of)
+        # RECIPIENT ASK-TILL-LEGIT: if we parked "who should I email?" on this thread and the reply is
+        # just an address, complete the ORIGINAL utterance with it (no restating). A non-address reply
+        # drops the pending question and routes normally.
+        _pend_key = p.thread(thread_id)
+        if _pend_key in _pending_recipient:
+            _m = _EMAIL_RE.search(text)
+            if _m:
+                text = f"{_pending_recipient.pop(_pend_key)} at {_m.group(0)}"
+                _utterance.set(text)
+            else:
+                _pending_recipient.pop(_pend_key, None)
         # /watch|/schedule|/cron|/poll|/push → deterministic arm (bypasses the LLM entirely)
         parsed = _slash_parse(text)
         if parsed is not None:

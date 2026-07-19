@@ -154,15 +154,14 @@ const DATA = [
    exp:"ARMED then gmail/create_draft_reply — a DRAFT appears in the inbox on fire"},
 ]},
 
-{s:"C · Sequential — multi-action", d:"One trigger → SEVERAL actions in a row. The offline builder chains them (build_action_tail, tested); the concierge currently arms a SINGLE action per flow, so live multi-action is the next increment.", items:[
-  {id:"c1", who:"you", t:"Email → summarize + email me + post to Slack", agent:"mailbot", tag:"v2",
-   utt:"when an email arrives from a customer, summarize it, email me, and post it to Slack #support",
-   do:"Offline builder chains [gmail/send_email, slack/send] after /invoke. Live concierge = single action today.",
-   exp:"builder: 3-step chain (test_build_action_tail_sequential_chains_and_renumbers). Live: arms the first action + notes the rest"},
-  {id:"c2", who:"you", t:"PR → email summary + reply 'reviewing shortly'", agent:"pr_reviewer", tag:"v2",
-   utt:"when a PR opens, email me a summary and reply on the PR with 'reviewing shortly'",
-   do:"Two actions (gmail/send_email + github comment). Cross-piece multi-action — offline builder path.",
-   exp:"builder chains both; live multi-action is v2"},
+{s:"C · Sequential — multi-action (NATIVE Gmail, live)", d:"One trigger → SEVERAL Gmail actions in a row, chained after the agent. Native actions (send/reply/draft) arm as a VALID multi-step AP flow today.", items:[
+  {id:"c1", who:"test", t:"Email → email me a summary AND reply to the sender", agent:"mailbot", tag:"live",
+   utt:"when I get an email, email me a summary at {{EMAIL}} and reply to the sender",
+   exp:"ARMED … then gmail/send_email + gmail/reply_to_email (a valid 2-action AP flow)"},
+  {id:"c2", who:"test", t:"Email → draft a reply AND mark read (mixed — draft live, mark-read gated)", agent:"mailbot", tag:"v2",
+   utt:"when I get an email, draft a reply and mark it read",
+   do:"draft is native (live); mark_read is custom_api_call (gated) — the gate declines the raw one honestly.",
+   exp:"gate steers: 'mark_read needs a raw Gmail API call … reply/draft/send work today'"},
 ]},
 
 {s:"D · Branched — answer-based (agent leads with a token)", d:"A router after the agent picks a path from the ANSWER text. Offline builder + unit tests support it (test_router_*); live branched arming is v2. See checklist section for the pytest proof.", items:[
@@ -204,6 +203,21 @@ const DATA = [
   {id:"f4", who:"test", t:"'email me' with no address → asks", agent:"mailbot", tag:"ask",
    utt:"when I get an email, email me about it",
    exp:"'Who should I send the email to? Give an address.' — nothing armed (can't infer your own)"},
+]},
+
+{s:"F2 · No silent failures — the three gates", d:"An action flow only arms silently if THREE independent checks agree: deterministic build · AP validity · LLM intent-match. Any disagreement → ask, never a wrong/dead flow.", items:[
+  {id:"fx1", who:"test", t:"Unsupported verb → honest decline (not a silent plain watcher)", agent:"mailbot", tag:"live",
+   utt:"when I get an email, archive it",
+   exp:"declines: 'needs a raw Gmail API call that isn't armable yet — reply/draft/send work today' (also: label/forward/star/delete)"},
+  {id:"fx2", who:"you", t:"Arm-time AP validity gate", tag:"live",
+   do:"Every real arm fetches the flow and refuses to publish if AP marks any step invalid — so 'ARMED' never lies about a flow that can't fire. This retro-caught the send_email-invalid class.",
+   exp:"a would-be-invalid flow returns an error naming the bad step, not a false ARMED"},
+  {id:"fx3", who:"you", t:"LLM verifier (dual-path assurance)", tag:"live",
+   do:"Deterministic code BUILDS the plan; an independent LLM verifies it matches the request. Confident MISMATCH → ask; MATCH/unavailable → proceed (fail-open). Divergences logged to EVENTS_VERIFY_LOG. Toggle EVENTS_VERIFY_ACTIONS=0.",
+   exp:"a correct plan MATCHes + arms; a plan that drops/misdirects an action is flagged before arming"},
+  {id:"fx4", who:"you", t:"Benchmark gate (CORRECT_AT_ARM = 100%)", tag:"live",
+   do:"make bench — the labeled NL→Flow scorecard fails CI if any armed flow is the WRONG one.",
+   cmd:"make bench", exp:"CORRECT_AT_ARM 100% · gate_outcome 100%"},
 ]},
 
 {s:"G · Per-channel + approval (arm & deliver where you asked)", d:"The request originates in a channel; the arm confirmation + delivery go back THERE. Items 15–16 are trigger/delivery (the pre-existing half) — shown for contrast; the action tag marks what's new.", items:[

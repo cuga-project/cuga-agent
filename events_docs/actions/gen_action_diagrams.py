@@ -151,6 +151,11 @@ def architecture_svg() -> str:
     p.append(arrow(206, 141, 250, 141))
     p.append(arrow(500, 141, 548, 141, "validate"))
     p.append(arrow(798, 141, 846, 141, "arm"))
+    # the three independent gates that must all agree before a silent arm
+    p.append(f'<text x="580" y="196" font-size="11" font-weight="700" fill="{C["reg"]}">'
+             '3 gates (no silent failure):</text>')
+    p.append(f'<text x="580" y="211" font-size="10.5" fill="{C["ext"]}">'
+             'deterministic build · AP validity gate · LLM intent-verify → all agree, or ASK</text>')
 
     # fire-time band (bottom)
     p.append(f'<text x="30" y="250" font-size="12" font-weight="700" fill="{C["ap"]}">'

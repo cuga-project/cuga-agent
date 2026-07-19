@@ -180,8 +180,10 @@ def action_step(app: str, action: str, params: dict, name: str = "step_2",
         known = ", ".join(x.name for x in _actions.actions_for(app)) or "none"
         raise ValueError(f"unknown action {app!r}/{action!r} — known for {app}: {known}")
     piece = PIECE.get(a.piece or app, f"@activepieces/piece-{a.piece or app}")
+    # custom_api_call-backed actions (gmail archive/trash/mark-read) carry a fixed raw_input.
+    inp = dict(a.raw_input) if a.raw_input else dict(params)
     return {"name": name, "displayName": display or f"{app.title()} · {a.title}", "type": "PIECE",
-            "settings": {"pieceName": piece, "actionName": a.ap_action, "input": dict(params)},
+            "settings": {"pieceName": piece, "actionName": a.ap_action, "input": inp},
             "nextAction": None}
 
 

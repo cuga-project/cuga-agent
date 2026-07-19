@@ -30,6 +30,21 @@
 | 5 | **Nested** branches | medium | gated on the step-0 AP nested-router probe. |
 | 6 | Non-Gmail **action rows** | trivial | run `gen_actions.py` for github/box/slack/discord/telegram → verify → commit (DATA only). |
 
+### Gmail "golden" pass (2026-07-19)
+
+Native Gmail actions are complete and live-verified:
+- **send_email / reply_to_email / create_draft_reply** — all arm as VALID + ENABLED AP steps
+  (found the AP gotcha: `send_email` requires EVERY declared prop present, optionals as typed
+  empties — `render_params` now emits them all).
+- **Multi-action** — "email me a summary AND reply to the sender" arms a valid 2-action chain
+  (`extract_actions` + span-dedup so "draft a reply" stays ONE action).
+- **subject / cc from NL** — "…with subject 'X' cc a@b.com".
+- **Return-to-caller** — armed from Slack → the answer posts back to Slack (direct adapter, proven)
+  AND for AP channels (Telegram) an AP send step is appended.
+- **archive / mark-read / delete** (custom_api_call, the piece has no native action) — the raw-call
+  step does NOT validate as an armable AP step, so they're **gated with an honest message** rather
+  than arming broken flows. Deferred (see ACTIONS_TODO). Delete additionally needs run-time approval.
+
 ### Live-test status (2026-07-18, Gmail connected + on-ramp wired)
 
 - ✅ **`live_gmail_action_e2e.py` PASS** — a chat utterance ("draft a reply…") arms a REAL AP flow

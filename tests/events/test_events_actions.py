@@ -23,14 +23,21 @@ def test_get_by_name_and_alias_and_default():
     assert actions.get("gmail", "reply").name == "reply_to_email"        # alias
     assert actions.get("gmail", "draft").name == "create_draft_reply"    # alias
     assert actions.get("gmail", "").name == "send_email"                 # app default
-    assert actions.get("gmail", "delete_email") is None                  # not in native pilot
+    assert actions.get("gmail", "delete_email").name == "trash_email"    # alias
+    assert actions.get("gmail", "nonsense_action") is None               # genuinely unknown
 
 
-def test_gmail_pilot_is_native_only():
+def test_gmail_action_set():
     names = {a.name for a in actions.actions_for("gmail")}
-    assert names == {"send_email", "reply_to_email", "create_draft_reply"}
-    # D1: no destructive gmail actions ship in the pilot
-    assert all(not a.destructive for a in actions.actions_for("gmail"))
+    # native (send/reply/draft) + custom_api_call-backed (archive/mark_read/trash)
+    assert {"send_email", "reply_to_email", "create_draft_reply"} <= names
+    assert {"archive_email", "mark_read", "trash_email"} <= names
+    # only trash (delete) is destructive → approval-gated
+    assert actions.get("gmail", "trash_email").destructive is True
+    assert actions.get("gmail", "archive_email").destructive is False
+    # the raw ones are custom_api_call over the Gmail REST API
+    assert actions.get("gmail", "archive_email").ap_action == "custom_api_call"
+    assert actions.get("gmail", "archive_email").raw_input["body"] == {"removeLabelIds": ["INBOX"]}
 
 
 # ── validate: unknown / missing user slot / armable ─────────────────────────────────────────────
@@ -115,6 +122,46 @@ def test_extract_action_no_false_positives():
 def test_extract_action_send_to_sender():
     a, to = actions.extract_action("when an email arrives, email the sender back")
     assert a == "gmail/send_email" and to == "sender"
+
+
+def test_extract_action_custom_api_actions():
+    assert actions.extract_action("when I get an email, archive it")[0] == "gmail/archive_email"
+    assert actions.extract_action("when I get an email, mark it as read")[0] == "gmail/mark_read"
+    assert actions.extract_action("when I get an email, delete it")[0] == "gmail/trash_email"
+
+
+# ── extract_actions: MULTI-action ───────────────────────────────────────────────────────────────
+def test_extract_actions_multi():
+    got = [s["action"] for s in actions.extract_actions(
+        "when an email arrives, email me a summary and archive it")]
+    assert got == ["gmail/send_email", "gmail/archive_email"]
+
+
+def test_extract_actions_draft_is_single():
+    # "draft a reply" is ONE action (draft), not draft + reply (span dedup)
+    got = [s["action"] for s in actions.extract_actions("draft a reply summarizing it")]
+    assert got == ["gmail/create_draft_reply"]
+
+
+def test_extract_actions_none_for_plain():
+    assert actions.extract_actions("summarize it and message me") == []
+
+
+# ── custom_api_call rendering ───────────────────────────────────────────────────────────────────
+def test_action_step_custom_api_call_raw_input():
+    step = flows.action_step("gmail", "archive_email", {})
+    assert step["settings"]["actionName"] == "custom_api_call"
+    assert step["settings"]["input"]["body"] == {"removeLabelIds": ["INBOX"]}
+    assert "{{trigger.message.id}}" in step["settings"]["input"]["url"]
+
+
+def test_render_params_includes_all_props_as_typed_empties():
+    # AP's send_email validator needs EVERY declared prop present; optionals become typed empties
+    p = actions.render_params(actions.get("gmail", "send_email"), {"receiver": ["a@b.com"]})
+    assert p["cc"] == [] and p["bcc"] == [] and p["draft"] is False and p["sender_name"] == ""
+    p2 = actions.render_params(actions.get("gmail", "send_email"),
+                               {"receiver": ["a@b.com"], "cc": ["c@d.com"], "subject": "Hi"})
+    assert p2["cc"] == ["c@d.com"] and p2["subject"] == "Hi"
 
 
 # ── action_step renderer ────────────────────────────────────────────────────────────────────────

@@ -68,9 +68,81 @@ def _guess_source(pname: str) -> str:
     return "user"
 
 
+def _typed_empty(t: str):
+    return [] if t == "ARRAY" else (False if t == "CHECKBOX" else "")
+
+
+def check(piece: str) -> None:
+    """--check: arm a throwaway AP flow for EACH action and report VALID/INVALID — folding the
+    validity-probe into the generator so you never discover an unfireable action by hand again.
+    Emits ALL props (optionals as typed empties — the rule that made send_email valid), templating a
+    message-id field from the trigger when present. Requires a connected credential for the piece."""
+    import asyncio
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src"))
+    from cuga.backend.events.ap_engine import APEngine  # noqa: E402
+    data = _fetch(piece)
+    app = piece.split("piece-")[-1].split("-")[0]
+    acts = data.get("actions", {}) or {}
+    trigs = list((data.get("triggers", {}) or {}).keys())
+    trig = next((t for t in trigs if "new" in t.lower()), trigs[0] if trigs else None)
+
+    async def run():
+        import httpx
+        eng = APEngine()
+        ok, why = await eng.available()
+        if not ok:
+            sys.exit(f"AP not reachable: {why}")
+        async with httpx.AsyncClient(timeout=40) as c:
+            hdrs = await eng._auth(c)
+            conn = next((x.get("externalId") for x in await eng._connections(c, hdrs, eng.project_id)
+                         if str(x.get("externalId", "")).endswith(f"::{app}")), None)
+            if not conn:
+                sys.exit(f"no connected {app} credential in AP — connect it first, then re-run --check")
+            gver = await eng._piece_version(c, piece)
+            print(f"# validity probe: {piece} ({len(acts)} actions)  conn={conn}\n")
+            for name, a in acts.items():
+                inp = {}
+                for pn, pv in (a.get("props", {}) or {}).items():
+                    t = pv.get("type", "SHORT_TEXT")
+                    if pn in ("message_id", "messageId", "id"):
+                        inp[pn] = "{{trigger.message.id}}"        # templated from the trigger
+                    elif not pv.get("required"):
+                        inp[pn] = _typed_empty(t)                 # optionals → typed empties
+                    elif t == "ARRAY":
+                        inp[pn] = ["sample@example.com"]
+                    elif t in ("STATIC_DROPDOWN", "DROPDOWN"):
+                        opts = ((pv.get("options") or {}).get("options")) or []
+                        inp[pn] = opts[0]["value"] if opts else "sample"
+                    elif t == "CHECKBOX":
+                        inp[pn] = False
+                    elif t == "NUMBER":
+                        inp[pn] = 1
+                    else:
+                        inp[pn] = "sample"
+                fid = (await c.post(f"{eng.base}/api/v1/flows", headers=hdrs,
+                                    json={"displayName": f"probe-{name}", "projectId": eng.project_id})
+                       ).json()["id"]
+                try:
+                    if trig:
+                        await eng._post_op(c, fid, eng._piece_trigger_op(
+                            piece, trig, {"auth": f"{{{{connections['{conn}']}}}}"}, gver), hdrs)
+                    op = eng._action_op(piece=piece, ap_action=name, inp=inp, ver=gver,
+                                        parent="trigger", name="step_1", connection=conn)
+                    await eng._post_op(c, fid, op, hdrs)
+                    d = (await c.get(f"{eng.base}/api/v1/flows/{fid}", headers=hdrs)).json()
+                    v = (d.get("version") or {}).get("trigger", {}).get("nextAction", {}).get("valid")
+                    print(f"  [{'VALID  ' if v else 'INVALID'}] {name}")
+                finally:
+                    await c.delete(f"{eng.base}/api/v1/flows/{fid}", headers=hdrs)
+    asyncio.run(run())
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         sys.exit(__doc__)
+    if "--check" in sys.argv:
+        check(_piece_key(next(a for a in sys.argv[1:] if not a.startswith("-"))))
+        return
     piece = _piece_key(sys.argv[1])
     app = piece.split("piece-")[-1].split("-")[0]           # gmail, github, box…
     data = _fetch(piece)
