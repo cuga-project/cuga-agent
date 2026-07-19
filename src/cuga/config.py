@@ -32,6 +32,23 @@ DBS_DIR = os.environ.get("CUGA_DBS_DIR", os.path.join(PACKAGE_ROOT, "./dbs"))
 # Define all path variables at the top (with environment variable overrides)
 ENV_FILE_PATH = os.getenv("ENV_FILE_PATH") or os.path.join(PACKAGE_ROOT, "..", "..", ".env")
 
+# Embedding-model cache. Without this, fastembed falls back to
+# ``tempfile.gettempdir()/fastembed_cache`` — on macOS that is /var/folders/...,
+# which the OS periodically purges, silently deleting hundreds of MB of ONNX
+# models. The next start then re-downloads them, and if that download is
+# interrupted it leaves a dangling snapshot symlink that hard-fails with
+# NoSuchFile on EVERY subsequent start (see _FastEmbedEmbeddings' self-heal).
+# Container images already pin this via Dockerfile.ubi; this gives local
+# installs the same durability.
+#
+# Deliberately NOT under PACKAGE_ROOT (where dbs/ and logging/ live): for a
+# pip-installed CUGA that is site-packages, which is the wrong home for large
+# model blobs and may be read-only.
+FASTEMBED_CACHE_DIR = os.environ.get(
+    "FASTEMBED_CACHE_PATH", os.path.join(os.path.expanduser("~"), ".cache", "cuga", "fastembed")
+)
+os.environ.setdefault("FASTEMBED_CACHE_PATH", FASTEMBED_CACHE_DIR)
+
 
 # Helper function to find config files with existence check
 def _find_config_file(filename: str, env_var_name: str) -> str:
