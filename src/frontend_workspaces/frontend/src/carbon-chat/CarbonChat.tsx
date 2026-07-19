@@ -22,6 +22,7 @@ import {
   CITE_CLICK_EVENT,
   MessageSources,
   SourcesPanel,
+  pageFragment,
   type MessageSource,
 } from 'agentic_chat/Citations';
 import * as api from '../api';
@@ -880,7 +881,12 @@ const CarbonChat = ({
                   return false;
                 }
                 const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
+                // Land on the cited page instead of page 1. The blob detour is
+                // unavoidable — the endpoint needs X-Agent-ID/X-Thread-ID
+                // headers that window.open can't set — so the page has to ride
+                // in as a fragment. Empty for non-PDFs, where `page` is a chunk
+                // ordinal rather than a real page.
+                const url = URL.createObjectURL(blob) + pageFragment(source);
                 window.open(url, "_blank", "noopener");
                 // Leave the blob URL alive long enough for the new tab to load.
                 setTimeout(() => URL.revokeObjectURL(url), 60_000);
