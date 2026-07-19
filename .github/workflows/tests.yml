@@ -46,9 +46,66 @@ jobs:
 
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
-      
+
+      - name: Lint
+        run: uv run ruff check && uv run ruff format --check
+
+      # Each group below is run as its own `pytest` invocation (its own process)
+      # rather than one big collection. Several suites here rely on
+      # module-level singletons (FastAPI app, policy/config DB, variables
+      # manager) that were never designed to share a process with hundreds of
+      # unrelated tests — collecting everything into a single session
+      # resurfaces cross-test state leaks that don't reflect real bugs.
+      # `uv run pytest` (no args) remains the single, full-discovery entry
+      # point for local development.
       - name: Run unit tests
-        run: bash src/scripts/run_tests.sh --skip-stability
+        run: |
+          uv run pytest ./src/cuga/backend/tools_env/registry/tests/
+          uv run pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
+          uv run pytest \
+            tests/unit/test_knowledge_engine.py \
+            tests/unit/test_session_knowledge.py \
+            tests/unit/test_knowledge_routes.py \
+            tests/unit/test_cuga_lite_knowledge_scopes.py \
+            tests/unit/test_chat_knowledge_mode.py \
+            tests/unit/test_chat_agent_knowledge_toggle.py \
+            tests/integration/test_knowledge_integration.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py
+          uv run pytest \
+            tests/unit/test_toolguard_provider.py \
+            tests/unit/test_policy_tool_guide_loading.py \
+            tests/unit/test_async_tool_provider_construction.py \
+            tests/unit/test_tool_guard_generation.py \
+            tests/unit/test_tool_guard_generation_route.py \
+            tests/unit/test_tool_guard_generation_route_sync.py \
+            tests/unit/test_policy_frontend_dict_guards_enabled.py \
+            tests/unit/test_toolguard_reuse_roundtrip.py
+          uv run pytest tests/integration/a2a/ tests/unit/test_a2a_simple_runner_hitl.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run policy and SDK integration tests
+        run: |
+          uv run pytest ./src/cuga/backend/cuga_graph/policy/tests
+          uv run pytest ./src/cuga/sdk_core/tests/
+          uv run pytest ./tests/system/test_manager_api_integration.py
+          uv run pytest ./src/system_tests/load/tests/
+          uv run pytest tests/unit/test_load_test_mock_llm.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run mocked concurrent load test
+        run: uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
 
   pgvector-integration:
     name: pgvector Integration
@@ -116,7 +173,8 @@ jobs:
 
       - name: Run pgvector integration tests (MVT)
         run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
-              -v -m pgvector --maxfail=3 --durations=10
+              -v -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
+              --maxfail=3 --durations=10
         env:
           PYTHONUNBUFFERED: "1"
 
