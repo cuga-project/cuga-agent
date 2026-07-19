@@ -20,7 +20,7 @@ from __future__ import annotations
 
 
 def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integration="none",
-        phase="run", live=False, note="", star=False, ap_trigger=""):
+        phase="run", live=False, note="", star=False, ap_trigger="", action=""):
     outcome = {"now": "answer-now", "cron": "flow-cron", "poll": "flow-poll",
                "push": "flow-push", "connect": "connect", "decline": "decline"}[trigger]
     return {"id": id, "title": title, "trigger": trigger, "outcome": outcome,
@@ -30,7 +30,11 @@ def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integratio
             # ap_trigger = the SPECIFIC Activepieces piece trigger this example maps to
             # (e.g. "new_labeled_email"). Set → this is an ADVANCED, trigger-tied example: it is
             # rendered in the collapsible "Advanced" section grouped by integration, NOT the main list.
-            "ap_trigger": ap_trigger}
+            "ap_trigger": ap_trigger,
+            # action = the post-agent ACTION this example arms (e.g. "gmail/reply_to_email"). ANY
+            # example that touches an ACTION must set this — the Studio + board render an "ACTIONS"
+            # label from it (the action half: trigger ▸ agent ▸ ACTION). "" = a plain trigger/answer.
+            "action": action}
 
 
 EXAMPLES = [
@@ -163,6 +167,22 @@ EXAMPLES = [
         "when an email from my boss arrives, summarize it and text me",
         agent="mailbot", channel="telegram", integration="gmail", phase="run", live=False,
         note="Gmail PUSH (per-user OAuth)"),
+    # ── trigger + ACTION examples (the post-agent action path — design TRIGGERS_ACTIONS_DESIGN.md)
+    _ex("act-gmail-reply", "Email → auto-reply", "push",
+        "when I get an email, draft a reply summarizing my response",
+        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
+        ap_trigger="gmail_new_email_received", action="gmail/create_draft_reply",
+        note="ACTION: gmail/create_draft_reply — the agent writes, AP drafts the reply (no send)"),
+    _ex("act-gmail-reply-sender", "Email → reply to sender", "push",
+        "when an email arrives, reply to the sender with a short acknowledgement",
+        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
+        ap_trigger="gmail_new_email_received", action="gmail/reply_to_email",
+        note="ACTION: gmail/reply_to_email — keys off the firing message id"),
+    _ex("act-github-email", "PR opens → email me", "push",
+        "when a PR opens on my repo, email me a one-line risk summary",
+        agent="pr_reviewer", channel="web", integration="github", phase="run", live=False,
+        action="gmail/send_email",
+        note="ACTION: gmail/send_email (cross-app: github trigger → gmail action; needs a recipient)"),
     _ex("push-webhook-in", "Generic inbound webhook", "push",
         "when my system POSTs to my webhook, run the triage agent and reply",
         agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,

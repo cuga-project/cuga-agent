@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1010" height="824" viewBox="0 0 1010 824" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="1010" height="824" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">Arm-time — an utterance becomes a flow that ACTS</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">find_or_create_flow: trigger gate, then the symmetric ACTION gate, then the engine arms it</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="125" y1="142" x2="125" y2="800" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="174" height="46" rx="9" fill="#6b6866"/>
+<text x="125" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<text x="125" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(chat)</text>
+<line x1="315" y1="142" x2="315" y2="800" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="228" y="96" width="174" height="46" rx="9" fill="#2b5fd9"/>
+<text x="315" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Concierge</text>
+<line x1="505" y1="142" x2="505" y2="800" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="418" y="96" width="174" height="46" rx="9" fill="#5a3fa8"/>
+<text x="505" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Registries</text>
+<text x="505" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">triggers/actions</text>
+<line x1="695" y1="142" x2="695" y2="800" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="608" y="96" width="174" height="46" rx="9" fill="#b06f10"/>
+<text x="695" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">AP engine</text>
+<line x1="885" y1="142" x2="885" y2="800" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="798" y="96" width="174" height="46" rx="9" fill="#b06f10"/>
+<text x="885" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Activepieces</text>
+<text x="220.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">“when I get an email, reply to the sender”</text>
+<line x1="125" y1="160" x2="308" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="410.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">validate trigger (gmail/new_email)</text>
+<line x1="315" y1="212" x2="498" y2="212" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="410.0" y="256" font-size="12" fill="#1c1b1a" text-anchor="middle">ok — armable</text>
+<line x1="505" y1="264" x2="322" y2="264" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="410.0" y="308" font-size="12" fill="#1c1b1a" text-anchor="middle">validate action (gmail/reply_to_email)</text>
+<line x1="315" y1="316" x2="498" y2="316" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="352" width="950" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="505" y="372" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">verb-alignment: “reply” matches reply_to_email ✓ (a mismatch → ask, never guess)</text>
+<text x="410.0" y="404" font-size="12" fill="#1c1b1a" text-anchor="middle">ok — message_id from trigger, body from answer</text>
+<line x1="505" y1="412" x2="322" y2="412" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<path d="M315,458 h34 v20 h-34" fill="none" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="355" y="464" font-size="12" fill="#1c1b1a">render_params + resolve_action → AP step</text>
+<text x="505.0" y="508" font-size="12" fill="#1c1b1a" text-anchor="middle">create_push_flow(actions=[reply_to_email])</text>
+<line x1="315" y1="516" x2="688" y2="516" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="790.0" y="560" font-size="12" fill="#1c1b1a" text-anchor="middle">trigger ▸ /invoke ▸ ACTION step; publish</text>
+<line x1="695" y1="568" x2="878" y2="568" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="604" width="950" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
+<text x="505" y="624" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 action carries the gmail connection auth ({{connections[…]}})</text>
+<text x="505.0" y="656" font-size="12" fill="#1c1b1a" text-anchor="middle">flow id</text>
+<line x1="695" y1="664" x2="322" y2="664" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="220.0" y="708" font-size="12" fill="#1c1b1a" text-anchor="middle">“ARMED … then gmail/reply_to_email” (names the action)</text>
+<line x1="315" y1="716" x2="132" y2="716" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+</svg>

@@ -14849,7 +14849,7 @@ function ExamplesTab({
   const [starOnly, setStarOnly] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
   const [q, setQ] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)("");
   const query = q.trim().toLowerCase();
-  const items = (data ?? []).filter(e => (!starOnly || e.star) && (!query || `${e.title} ${e.utterance} ${e.agent} ${e.note}`.toLowerCase().includes(query)));
+  const items = (data ?? []).filter(e => (!starOnly || e.star) && (!query || `${e.title} ${e.utterance} ${e.agent} ${e.note} ${e.action || ""}`.toLowerCase().includes(query)));
 
   // group by agent → a long, copy-pasteable list per agent
   const groups = new Map();
@@ -14943,7 +14943,11 @@ function ExamplesTab({
       margin: "2px 0 0",
       fontSize: 11
     }
-  }, e.note)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+  }, e.note)), e.action && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "purple",
+    size: "sm",
+    title: `post-agent action: ${e.action}`
+  }, "ACTIONS"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: OUTCOME_TAG[e.outcome] ?? "gray",
     size: "sm"
   }, e.trigger || e.outcome), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.CopyButton, {
@@ -19289,4 +19293,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.68d71c17273ea7c08791.js.map
+//# sourceMappingURL=main.b23111aaddf7d80c17a2.js.map

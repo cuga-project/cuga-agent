@@ -194,6 +194,22 @@ class APEngine:
                                        "valid": True, "displayName": display,
                                        "settings": settings}}}
 
+    def _action_op(self, *, piece: str, ap_action: str, inp: dict, ver: str, parent: str,
+                   name: str, connection: str = "", display: str = "") -> dict:
+        """A post-agent ACTION step (design §3.2), added after the /invoke step. ``connection`` wires
+        the acting app's AP connection as ``auth`` (a gmail send needs the user's gmail connection,
+        exactly like a trigger). ``inp`` is the resolved native-template input from
+        ``actions.render_params``."""
+        inp = dict(inp)
+        if connection:
+            inp["auth"] = f"{{{{connections['{connection}']}}}}"
+        settings = {"propertySettings": self._prop_settings(inp), "pieceName": piece,
+                    "pieceVersion": ver, "actionName": ap_action, "input": inp}
+        return {"type": "ADD_ACTION",
+                "request": {"parentStep": parent,
+                            "action": {"name": name, "skip": False, "type": "PIECE", "valid": True,
+                                       "displayName": display or ap_action, "settings": settings}}}
+
     async def create_box_poll_flow(self, *, name: str, agent: str, folder_id: str,
                                    deliver_to: str | None, deliver_target: str | None = None,
                                    interval_seconds: int, scope: str = "",
@@ -449,11 +465,17 @@ class APEngine:
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
                                prompt: str, project_name: str | None = None, scope: str = "",
                                connection: str = "", source_input: dict | None = None,
-                               name: str | None = None) -> str:
-        """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent). Powers the Box resume
-        watcher (source='box', event='new_file'). ``connection`` = the integration's AP connection
-        externalId (wired as auth on the trigger — REQUIRED for the flow to publish). ``source_input``
-        supplies trigger-specific inputs (e.g. github needs a ``repository``, box a ``folder``)."""
+                               name: str | None = None, actions: list | None = None) -> str:
+        """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent) ▸ [actions…]. Powers the
+        Box resume watcher and now the post-agent ACTION path. ``connection`` = the trigger app's AP
+        connection externalId (wired as auth on the trigger — REQUIRED to publish). ``source_input``
+        supplies trigger-specific inputs (github ``repository``, box a ``folder``).
+
+        ``actions`` is a SEQUENTIAL list of resolved action steps to run after the agent answers:
+        each ``{app, ap_action, params, connection, display}`` (build with ``actions.render_params``).
+        When actions are present the /invoke step does NOT deliver (deliver=False) — the action step
+        IS the delivery. Branched action flows are built offline (flows.build_push_flow) and armed
+        via the same op mechanism in a follow-up; the concierge only passes sequential actions here."""
         from . import flows
         # Registry-resolved: (source, event) selects the SPECIFIC piece trigger. The old lookup
         # keyed on source alone and IGNORED `event` for known apps — gmail/new_attachment armed the
@@ -489,10 +511,26 @@ class APEngine:
             # gets the whole payload — envelope.worker_input falls back to `_raw` when the curated
             # fields come back empty. Retires the "flow ran green but the agent got nothing" class.
             payload = {**flows.push_payload(source, event), "_raw": "{{trigger}}"}
+            # RETURN-TO-CALLER: deliver=True even WITH an action. The two sinks are different — the
+            # action runs in the acting app (gmail draft/reply), while deliver sends the agent's answer
+            # back to the ORIGIN channel encoded in thread_id (gw:<channel>:<native>) via /invoke's
+            # direct adapter (Slack/Discord). No double-send: gmail ≠ the chat channel. Armed from web
+            # (thread_id not gw:*) → channel_origin is None → no channel send, exactly as before. (AP-
+            # backed channels like Telegram need an AP send step — tracked in ACTIONS_TODO.)
             body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": payload}}
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
+            # post-agent ACTION steps — sequential chain after step_1 (the /invoke)
+            parent, idx = "step_1", 2
+            for act in (actions or []):
+                a_piece = flows.PIECE.get(act["app"], f"@activepieces/piece-{act['app']}")
+                a_ver = await self._piece_version(c, a_piece)
+                await self._post_op(c, flow_id, self._action_op(
+                    piece=a_piece, ap_action=act["ap_action"], inp=act.get("params", {}),
+                    ver=a_ver, parent=parent, name=f"step_{idx}",
+                    connection=act.get("connection", ""), display=act.get("display", "")), hdrs)
+                parent, idx = f"step_{idx}", idx + 1
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
         log.info("armed push flow source=%s/%s agent=%s flow=%s", source, event, agent, flow_id)

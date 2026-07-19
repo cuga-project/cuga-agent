@@ -22,6 +22,7 @@ PIECE = {
     "github": "@activepieces/piece-github",
     "webhook": "@activepieces/piece-webhook",
     "rss": "@activepieces/piece-rss",
+    "approval": "@activepieces/piece-approval",
 }
 
 # ── trigger resolution — the registry (triggers.py) is the single source of truth ──────────────
@@ -32,8 +33,10 @@ PIECE = {
 # nonexistent ``new_item`` trigger that could never publish.
 try:
     from . import triggers as _registry
+    from . import actions as _actions
 except ImportError:  # bare import path (tests put the events dir itself on sys.path)
     import triggers as _registry  # type: ignore
+    import actions as _actions     # type: ignore
 
 
 def resolve_trigger(source: str, event: str = ""):
@@ -165,14 +168,34 @@ def invoke_step(agent: str, thread_id: str, prompt: str, *, source_type: str,
     }
 
 
+def action_step(app: str, action: str, params: dict, name: str = "step_2",
+                display: str | None = None) -> dict:
+    """Render ANY registry action (actions.py) as an AP PIECE step. The generic renderer behind
+    every post-agent action — a new piece's actions work here with ZERO code change (they are just
+    new registry rows). ``params`` is the resolved AP ``input`` (native {{templates}}/literals);
+    use ``actions.render_params`` to build it. Raises on an unknown (app, action) — loud at build
+    time, never a silent wrong action."""
+    a = _actions.get(app, action)
+    if a is None:
+        known = ", ".join(x.name for x in _actions.actions_for(app)) or "none"
+        raise ValueError(f"unknown action {app!r}/{action!r} — known for {app}: {known}")
+    piece = PIECE.get(a.piece or app, f"@activepieces/piece-{a.piece or app}")
+    return {"name": name, "displayName": display or f"{app.title()} · {a.title}", "type": "PIECE",
+            "settings": {"pieceName": piece, "actionName": a.ap_action, "input": dict(params)},
+            "nextAction": None}
+
+
 def send_step(channel: str, target: str, text: str, name: str = "step_2") -> dict:
     """A connector send-step (delivery). Channels (telegram/discord/slack) come from the CHANNELS
-    descriptor; gmail is an integration email. Adding a channel = a CHANNELS row, no code here."""
+    descriptor; gmail is an integration email. Adding a channel = a CHANNELS row, no code here.
+
+    Gmail now folds into :func:`action_step` (the send_email registry row) so there is ONE renderer
+    for the Gmail send path — the offline builder and the action registry can never drift."""
     if channel == "gmail":
-        settings = {"pieceName": PIECE["gmail"], "actionName": "send_email",
-                    "input": {"receiver": [target], "subject": "Update", "body_type": "plain_text",
-                              "body": text}}
-    elif channel in CHANNELS:
+        params = _actions.render_params(_actions.get("gmail", "send_email"),
+                                        {"receiver": [target], "body": text})
+        return action_step("gmail", "send_email", params, name=name, display="Gmail · Send")
+    if channel in CHANNELS:
         d = CHANNELS[channel]
         settings = {"pieceName": PIECE[d["piece"]], "actionName": d["send_action"],
                     "input": {d["target_arg"]: target, d["text_arg"]: text, **d.get("const", {})}}
@@ -183,26 +206,116 @@ def send_step(channel: str, target: str, text: str, name: str = "step_2") -> dic
             "settings": settings, "nextAction": None}
 
 
-def router_step(branches: list[dict], name: str = "step_2") -> dict:
-    """A ROUTER with condition branches + a FALLBACK. Each branch: {name, match, action|None}.
+# Predicate operators (design D2 "Option B") → Activepieces condition operators. Text ops run on the
+# agent's answer or a trigger field; number ops on numeric trigger fields (PR size, etc.).
+_OP_MAP = {
+    "STARTS_WITH": ("TEXT_STARTS_WITH", "text"),
+    "CONTAINS": ("TEXT_CONTAINS", "text"),
+    "EQUALS": ("TEXT_EXACTLY_MATCHES", "text"),
+    "GT": ("NUMBER_IS_GREATER_THAN", "number"),
+    "LT": ("NUMBER_IS_LESS_THAN", "number"),
+}
 
-    ``match`` is a string the worker's answer must start with (case-insensitive); the last
-    branch with match=None is the fallback."""
+
+def _field_ref(field: str) -> str:
+    """A predicate field → an AP template. 'answer' → the worker's reply; 'trigger.<path>' → the
+    firing event's field; anything already wrapped in {{…}} passes through."""
+    f = (field or "answer").strip()
+    if f.startswith("{{"):
+        return f
+    if f == "answer":
+        return "{{step_1.body.answer}}"
+    if f.startswith("trigger."):
+        return "{{" + f + "}}"
+    return "{{step_1.body.answer}}"
+
+
+def _ap_condition(field: str, op: str, value) -> dict:
+    ap_op, kind = _OP_MAP.get((op or "STARTS_WITH").upper(), _OP_MAP["STARTS_WITH"])
+    cond = {"firstValue": _field_ref(field), "operator": ap_op, "secondValue": value}
+    if kind == "text":
+        cond["caseSensitive"] = False
+    return cond
+
+
+def router_step(branches: list[dict], name: str = "step_2") -> dict:
+    """A ROUTER with condition branches + a FALLBACK. Two accepted branch shapes:
+
+      * LEGACY:   {name, match, action|None}         — answer STARTS_WITH ``match`` (match=None ⇒
+                                                        fallback). Preserved so existing callers
+                                                        (resume watcher) are unchanged.
+      * PREDICATE:{name, when|conditions, action}     — ``when`` = {field, op, value} (design D2
+                                                        Option B: field ∈ answer|trigger.<path>;
+                                                        op ∈ STARTS_WITH/CONTAINS/EQUALS/GT/LT).
+                                                        ``conditions`` (list of ``when`` dicts) ⇒ AND.
+                                                        A branch with no when/conditions/match is the
+                                                        fallback.
+    """
     ap_branches, children = [], []
     for b in branches:
-        if b.get("match") is None:
+        whens = b.get("conditions")
+        if whens is None and b.get("when") is not None:
+            whens = [b["when"]]
+        if whens is None and b.get("match") is not None:              # legacy shorthand
+            whens = [{"field": "answer", "op": "STARTS_WITH", "value": b["match"]}]
+        if not whens:                                                 # fallback branch
             ap_branches.append({"branchName": b.get("name", "else"), "branchType": "FALLBACK"})
         else:
+            conds = [_ap_condition(w.get("field", "answer"), w.get("op", "STARTS_WITH"),
+                                   w.get("value")) for w in whens]
             ap_branches.append({
-                "branchName": b.get("name", b["match"]),
+                "branchName": b.get("name") or str(whens[0].get("value", "match")),
                 "branchType": "CONDITION",
-                "conditions": [[{"firstValue": "{{step_1.body.answer}}",
-                                 "operator": "TEXT_STARTS_WITH",
-                                 "secondValue": b["match"], "caseSensitive": False}]],
+                "conditions": [conds],       # inner list = AND-ed conditions for this branch
             })
         children.append(b.get("action"))
     return {"name": name, "displayName": "Router", "type": "ROUTER",
             "settings": {"branches": ap_branches}, "children": children, "nextAction": None}
+
+
+def approval_step(name: str = "approval", display: str = "Wait for approval") -> dict:
+    """A RUN-TIME human-in-the-loop gate (design §3.4b (b)). Compiled in BEFORE a destructive or
+    opt-in action: the flow pauses until the user approves. Uses AP's approval piece (a pause step);
+    delivery of the approve/reject link rides the same origin-channel path as everything else. Only
+    inserted for destructive/opt-in actions — the Gmail pilot (send/reply/draft) never triggers it."""
+    return {"name": name, "displayName": display, "type": "PIECE",
+            "settings": {"pieceName": PIECE["approval"], "actionName": "wait_for_approval",
+                         "input": {}}, "nextAction": None}
+
+
+def _renumber(step: dict | None, start: int = 2) -> dict | None:
+    """Walk a linear nextAction chain and give steps stable names step_<n> (the /invoke is step_1).
+    Router children keep their own names. Idempotent for a None tail."""
+    n = start
+    head = step
+    while step is not None:
+        step["name"] = f"step_{n}"
+        n += 1
+        step = step.get("nextAction") if step.get("type") != "ROUTER" else None
+    return head
+
+
+def build_action_tail(actions: list[dict] | None = None, branches: list[dict] | None = None,
+                      sink: dict | None = None) -> dict | None:
+    """Assemble what runs AFTER the /invoke step: an optional sequential run of action steps, then
+    either a Router (branches) or a plain sink. Each entry in ``actions`` is a pre-rendered step
+    (from :func:`action_step`) optionally flagged ``{"_approve": True}`` to insert an approval gate
+    before it. Returns the HEAD step to attach as ``step_1['nextAction']`` (or None).
+
+    This is the v1 compiler: one sequential prefix + one decision level. The recursive/nested case
+    (design §3.8) chains a follow-on flow instead — not needed for the current matrix."""
+    seq: list[dict] = []
+    for a in (actions or []):
+        if a.get("_approve"):
+            seq.append(approval_step())
+        seq.append({k: v for k, v in a.items() if k != "_approve"})
+    tail = router_step(branches) if branches else sink
+    if not seq:
+        return tail
+    for i in range(len(seq) - 1):
+        seq[i]["nextAction"] = seq[i + 1]
+    seq[-1]["nextAction"] = tail
+    return _renumber(seq[0])
 
 
 # ---- triggers ------------------------------------------------------------
@@ -281,20 +394,23 @@ def build_runonce_flow(*, agent: str, thread_id: str, prompt: str, sink: dict | 
 
 def build_push_flow(*, agent: str, thread_id: str, prompt: str, source: str,
                     source_input: dict | None = None, branches: list[dict] | None = None,
-                    sink: dict | None = None, event_kind: str = "",
-                    display: str = "push flow") -> dict:
-    """PUSH: <source>·<event> ▸ /invoke ▸ Router(branches) or send. Powers the resume
+                    actions: list[dict] | None = None, sink: dict | None = None,
+                    event_kind: str = "", display: str = "push flow") -> dict:
+    """PUSH: <source>·<event> ▸ /invoke ▸ [actions…] ▸ Router(branches) or send. Powers the resume
     watcher (source='box', branches MATCH→gmail / SKIP→stop) and the PR reviewer.
 
+    ``actions`` is a sequential run of pre-rendered action steps (from :func:`action_step`) that
+    execute after the agent answers and before any Router/sink — the post-agent ACTION path. Each
+    may carry ``{"_approve": True}`` to gate it with a run-time approval step.
+
     ``event_kind`` selects the SPECIFIC trigger via the registry; empty → the app's default
-    trigger (the old signature hardcoded ``new_file``, which every non-box source ignored).
-    The /invoke payload carries the trigger's curated fields plus the ``_raw`` net."""
+    trigger. The /invoke payload carries the trigger's curated fields plus the ``_raw`` net."""
     row = _registry.get(source, event_kind)
     kind = event_kind or (row.event if row is not None else "new_file")
     step1 = invoke_step(agent, thread_id, prompt, source_type="integration", source_name=source,
                         event_kind=kind,
                         payload={**push_payload(source, kind), "_raw": "{{trigger}}"})
-    step1["nextAction"] = router_step(branches) if branches else sink
+    step1["nextAction"] = build_action_tail(actions=actions, branches=branches, sink=sink)
     return {"displayName": display, "valid": True,
             "trigger": _piece_trigger(source, step1, source_input, event=kind)}
 

@@ -74,7 +74,7 @@
     <div><b>7</b><span>integrations</span></div>
     <div><b>33</b><span>triggers</span></div>
     <div><b>4</b><span>channels</span></div>
-    <div><b>107</b><span>examples</span></div>
+    <div><b>110</b><span>examples</span></div>
   </div>
 </section>
 <section class="slide "><h2>Why — the human shouldn't be the trigger</h2>
@@ -283,7 +283,7 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
 <section class="slide integration"><h2>gmail — 4 triggers</h2>
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
-  <tr><td class='k'><code>new_email</code> ★</td><td>New Email</td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_attachment</code></td><td>New Attachment<div class='ex'>“when an email arrives with a resume attached, judge it against the JD and message me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_gmail_label</code></td><td>New Label created<div class='ex'>“when a new Gmail label is created, announce it in our Slack”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_labeled_email</code></td><td>New Labeled Email<div class='ex'>“when I label an email &#x27;Read-later&#x27;, summarize it and send me the digest”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>label</code></td></tr>
+  <tr><td class='k'><code>new_email</code> ★</td><td>New Email<div class='ex'>“when I get an email, draft a reply summarizing my response”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_attachment</code></td><td>New Attachment<div class='ex'>“when an email arrives with a resume attached, judge it against the JD and message me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_gmail_label</code></td><td>New Label created<div class='ex'>“when a new Gmail label is created, announce it in our Slack”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_labeled_email</code></td><td>New Labeled Email<div class='ex'>“when I label an email &#x27;Read-later&#x27;, summarize it and send me the digest”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>label</code></td></tr>
 </table></section>
 <section class="slide integration"><h2>slack — 8 triggers</h2>
 <table class="tbl triggers">
@@ -448,7 +448,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 <p class="dim">Full sequenced list: events_docs/ROADMAP.md · phase definitions: PHASES.md</p></section>
 <section class="slide "><h2>Try it — the examples board</h2>
 <ul class="tight examples"><li>“POST any event to /api/events/hook/&lt;name&gt;?route=1 — CUGA routes it like a chat message”<span class='dim'> — (auto-routed)</span></li><li>“/automate summarize new emails and message me”<span class='dim'> — mailbot</span></li><li>“/automate when a resume lands in Box, judge it and message me”<span class='dim'> — resume_judge</span></li><li>“/automate new pull requests on psf/requests and summarize them”<span class='dim'> — pr_reviewer</span></li><li>“/automate the market brief every weekday at 8am”<span class='dim'> — market_briefer</span></li><li>“/automate check bitcoin every 5 minutes and ping me on a move”<span class='dim'> — pricebot</span></li></ul>
-<p class="dim">All 107 examples (with feasibility notes) live on the examples
+<p class="dim">All 110 examples (with feasibility notes) live on the examples
    board — <code>events_docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
    and that board are both generated from the code, so neither can drift.</p></section>
 <div id="bar"></div><div id="hud"></div>

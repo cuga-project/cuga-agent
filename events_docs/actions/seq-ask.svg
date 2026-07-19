@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="630" height="512" viewBox="0 0 630 512" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="630" height="512" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">The safety path — ambiguous request returns ONE question</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">never silently the wrong action: unknown / missing-slot / can't-infer all become a question</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="125" y1="142" x2="125" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="174" height="46" rx="9" fill="#6b6866"/>
+<text x="125" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<text x="125" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(chat)</text>
+<line x1="315" y1="142" x2="315" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="228" y="96" width="174" height="46" rx="9" fill="#2b5fd9"/>
+<text x="315" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Concierge</text>
+<line x1="505" y1="142" x2="505" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="418" y="96" width="174" height="46" rx="9" fill="#5a3fa8"/>
+<text x="505" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">actions.py</text>
+<text x="505" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">validate/gate</text>
+<text x="220.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">“when I get an email, email me about it”</text>
+<line x1="125" y1="160" x2="308" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="410.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">action gmail/send_email — receiver?</text>
+<line x1="315" y1="212" x2="498" y2="212" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="248" width="570" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="315" y="268" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">‘me’ has no address here; the trigger sender is only usable for gmail 'from'</text>
+<text x="410.0" y="300" font-size="12" fill="#1c1b1a" text-anchor="middle">required slot unfilled</text>
+<line x1="505" y1="308" x2="322" y2="308" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="220.0" y="352" font-size="12" fill="#1c1b1a" text-anchor="middle">“Who should I send the email to? Give an address.”</text>
+<line x1="315" y1="360" x2="132" y2="360" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<rect x="30" y="396" width="570" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="315" y="416" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">nothing armed — build stops until the answer arrives (ask-till-legit)</text>
+</svg>

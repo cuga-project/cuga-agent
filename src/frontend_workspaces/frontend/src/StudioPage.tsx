@@ -832,7 +832,7 @@ function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: s
   const query = q.trim().toLowerCase();
   const items = (data ?? []).filter((e) =>
     (!starOnly || e.star) &&
-    (!query || `${e.title} ${e.utterance} ${e.agent} ${e.note}`.toLowerCase().includes(query)));
+    (!query || `${e.title} ${e.utterance} ${e.agent} ${e.note} ${e.action || ""}`.toLowerCase().includes(query)));
 
   // group by agent → a long, copy-pasteable list per agent
   const groups = new Map<string, any[]>();
@@ -880,6 +880,7 @@ function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: s
                     {e.star && <span title="recommended">⭐ </span>}"{e.utterance}"</span>
                   {e.note && <p className="studio-muted" style={{ margin: "2px 0 0", fontSize: 11 }}>{e.note}</p>}
                 </div>
+                {e.action && <Tag type="purple" size="sm" title={`post-agent action: ${e.action}`}>ACTIONS</Tag>}
                 <Tag type={(OUTCOME_TAG[e.outcome] as any) ?? "gray"} size="sm">{e.trigger || e.outcome}</Tag>
                 <CopyButton iconDescription="Copy prompt" feedback="Copied!"
                   onClick={() => { try { navigator.clipboard.writeText(e.utterance); } catch { /* noop */ } }} />

@@ -31,13 +31,18 @@ THE_AGENT = "cuga"
 
 try:
     from .principal import Principal, DEFAULT as DEFAULT_PRINCIPAL
-    from . import credentials, oauth, perms, triggers as trigger_registry
+    from . import credentials, oauth, perms, triggers as trigger_registry, actions as action_registry
 except ImportError:  # flat load (offline tests put the events dir on sys.path)
     from principal import Principal, DEFAULT as DEFAULT_PRINCIPAL
     import credentials
     import oauth
     import perms
     import triggers as trigger_registry
+    import actions as action_registry
+
+
+def _action_vocabulary() -> str:
+    return action_registry.prompt_vocabulary()
 
 log = logging.getLogger("cuga.events.concierge")
 
@@ -79,7 +84,18 @@ CONCIERGE_PROMPT = (
     "  Format: app: event(needs <slot>) … ; * = that app's default event.\n"
     "  " + trigger_registry.prompt_vocabulary() + "\n"
     "  Slots: repo='owner/repo' (every github event) · label=<gmail label> (new_labeled_email) · "
-    "emoji / pattern / watch_channel (slack + discord filters) · folder (box)."
+    "emoji / pattern / watch_channel (slack + discord filters) · folder (box).\n"
+    "\n"
+    "ACTION VOCABULARY — **only for kind=push**, optional. After the agent answers, run a connector "
+    "action instead of just delivering the text. Pass action='<app>/<name>' (+ action_to for a send "
+    "recipient). Use ONLY when the user asks to DO something to the source (reply/draft/email), not "
+    "for plain 'tell me / notify me' (that's deliver_to). '!' marks a destructive action (needs "
+    "confirmation).\n"
+    "  " + _action_vocabulary() + "\n"
+    "  e.g. 'when I get an email, draft a reply' → source=gmail event=new_email "
+    "action=gmail/create_draft_reply · 'when an email arrives, reply to the sender' → "
+    "action=gmail/reply_to_email · 'email me a summary when a PR opens' → source=github event=new_pr "
+    "action=gmail/send_email action_to=<your address>."
     + CHAT_STYLE)
 
 
@@ -301,7 +317,10 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
     tools: list[BaseTool] = [list_capabilities, answer_now]
 
     if engine is not None and store is not None:
-        from .subscriptions import Subscription, DuplicateSubscription
+        try:
+            from .subscriptions import Subscription, DuplicateSubscription
+        except ImportError:                       # flat load (offline tests put events dir on path)
+            from subscriptions import Subscription, DuplicateSubscription
 
         @tool
         async def find_or_create_flow(agent: str, kind: str, prompt: str,
@@ -310,20 +329,33 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                                       deliver_to: str | None = None, repo: str | None = None,
                                       label: str | None = None, folder: str | None = None,
                                       emoji: str | None = None, pattern: str | None = None,
-                                      watch_channel: str | None = None) -> str:
+                                      watch_channel: str | None = None,
+                                      action: str | None = None,
+                                      action_to: str | None = None) -> str:
             """Reuse-or-create a STANDING flow for an EXISTING agent. kind='cron'|'poll'|'push'.
             cron/poll: every_minutes OR cron (UTC). push: source (the app) + event (WHICH of the
             app's triggers — see the trigger vocabulary in your instructions; omit for the app's
             default). Slots when the trigger needs them: repo='owner/repo' (github), label (gmail),
             folder (box id), emoji / pattern / watch_channel (slack/discord filters).
-            Reuses a matching flow (agent+source+event+cadence+sink+owner) instead of duplicating."""
-            from . import triggers as _tr
+
+            ACTION (push only, optional): after the agent answers, run a connector action. Pass
+            action='<app>/<name>' from the ACTION VOCABULARY (e.g. 'gmail/reply_to_email',
+            'gmail/send_email'). action_to = the send_email recipient — an address, or 'sender' to
+            reply to whoever triggered it. Omit action to just deliver the answer to deliver_to.
+            Reuses a matching flow (agent+source+event+cadence+sink+action+owner) instead of duplicating."""
+            try:
+                from . import triggers as _tr
+            except ImportError:
+                import triggers as _tr
             p = _principal.get()
             # SUPERVISOR MODEL: 'cuga' is always a valid target — the one agent exists by
             # construction even when the runtime has no roster row for it (classic mode).
             spec = runtime.get_agent(agent, scope=p.agent_scope)
             if spec is None and agent == THE_AGENT:
-                from .runtime import AgentSpec as _Spec
+                try:
+                    from .runtime import AgentSpec as _Spec
+                except ImportError:
+                    from runtime import AgentSpec as _Spec
                 spec = _Spec(name=THE_AGENT, backend="cuga")
             if spec is None:
                 return f"error: no agent named '{agent}'. Choose one from list_capabilities."
@@ -332,7 +364,10 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # canonicalize the event kind (LLM may pass 'new-email'; the envelope only accepts
             # 'new_email') so the AP flow body + dedup_key are built with the valid form.
             if event:
-                from .envelope import normalize_kind
+                try:
+                    from .envelope import normalize_kind
+                except ImportError:
+                    from envelope import normalize_kind
                 event = normalize_kind(event)
             # ── the registry validation gate (PUSH only) ─────────────────────────────────
             # The LLM proposes (source, event, slots); the REGISTRY disposes. An unknown trigger or
@@ -371,17 +406,104 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     return problem
                 # normalize to the registry's canonical names for everything downstream
                 source, event = trig_row.app, trig_row.event
+            # ── the ACTION gate (PUSH only) — symmetric to the trigger gate above ────────────
+            # The LLM proposes action='<app>/<name>'; the ACTION REGISTRY disposes. Unknown action or
+            # a missing REQUIRED user slot comes back as a message BEFORE anything is built. A
+            # destructive action can never arm on an unclear verb (design §3.4b). Returns the resolved
+            # steps for the engine, an identity tag for dedup, and a human preview line.
+            engine_actions: list = []
+            action_tag = ""
+            action_preview = ""
+            if kind == "push" and not action:
+                # DETERMINISTIC ACTION ON-RAMP — the fast-path (_arm_spec), slash (_arm_slash) and an
+                # LLM that omitted `action` ALL reach here. Extract an action from the RAW utterance
+                # so the action gate runs regardless of entry path (this is the wire that made chat
+                # utterances actually act instead of arming a plain watcher). A bare trigger extracts
+                # nothing → plain watcher, exactly as before. Registry-driven → new pieces need no
+                # concierge change.
+                try:
+                    from . import actions as _acts
+                except ImportError:
+                    import actions as _acts
+                _auto_action, _auto_to = _acts.extract_action(_utterance.get("") or prompt)
+                if _auto_action:
+                    action = _auto_action
+                    if action_to is None:
+                        action_to = _auto_to
+            if kind == "push" and action:
+                try:
+                    from . import actions as _acts, flows
+                except ImportError:
+                    import actions as _acts
+                    import flows
+                a_app, _, a_name = action.partition("/")
+                if not a_name:                       # bare name → the trigger app owns it
+                    a_app, a_name = (source or a_app), a_app
+                act_row, a_problem = _acts.validate(a_app, a_name, {})
+                if act_row is None:
+                    return f"error: {a_problem}"
+                # reply/draft key off the FIRING message → only valid downstream of the SAME app's
+                # trigger. A Box/GitHub trigger can't drive gmail/reply_to_email (no message to reply
+                # to); steer to send_email, which sends a fresh email cross-app.
+                if act_row.same_app_trigger and source and source != act_row.app:
+                    return (f"'{act_row.app}/{act_row.name}' needs a {act_row.app} trigger (it replies "
+                            f"to the incoming {act_row.app} message), but this watches '{source}'. "
+                            f"Use '{act_row.app}/send_email' to send a fresh email instead.")
+                # verb-alignment: the utterance must actually ask for THIS action's verb — else we may
+                # be about to arm the wrong (possibly destructive) action. Ask instead of guessing.
+                _verb_ok = any(re.search(ph, prompt or "", re.I)
+                               for ph, (pa, pn) in _acts.classifier_actions()
+                               if pa == act_row.app and pn == act_row.name)
+                if act_row.destructive and not _verb_ok:
+                    return (f"You asked me to '{prompt}', but that maps to the destructive action "
+                            f"'{act_row.app}/{act_row.name}'. Confirm explicitly (reply 'yes, "
+                            f"{act_row.name}') or tell me the action you meant.")
+                # fill the receiver for send_email: an explicit address, or the trigger's sender
+                supplied: dict = {}
+                if act_row.name == "send_email":
+                    _to = (action_to or "").strip()
+                    # A real EMAIL field only (gmail's `from`) can be a recipient. github's `author`
+                    # is a login, not an address — never route mail to it. Registry-driven: a new app
+                    # with a genuine email `from` field works; login/username fields are ignored.
+                    _sender_tpl = flows.push_payload(source, event).get("from", "") \
+                        if source == "gmail" else ""
+                    if "@" in _to:                                   # an explicit address
+                        supplied["receiver"] = [_to]
+                    elif _to.lower() in ("sender", "them", "him", "her", "reply") and _sender_tpl:
+                        supplied["receiver"] = [_sender_tpl]         # reply to the firing sender
+                    else:
+                        # 'me'/empty/unknown, or a source with no email sender → we can't infer an
+                        # address here; ask (never silently mail the wrong place).
+                        return ("Who should I send the email to? Give an address"
+                                + (" (or say 'the sender' to reply to them)." if _sender_tpl else "."))
+                a_params = _acts.render_params(act_row, supplied)
+                # the acting app needs ITS OWN connection (a github trigger → gmail action needs the
+                # gmail connection, not github's). Same-app reuses the trigger connection.
+                _act_own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
+                                 if i.get("app") == act_row.app), "per-user")
+                a_conn = credentials.connection_external_id(act_row.app, _act_own, p)
+                _act_step = {"app": act_row.app, "ap_action": act_row.ap_action, "params": a_params,
+                             "connection": a_conn, "display": f"{act_row.app.title()} · {act_row.title}"}
+                if act_row.destructive:              # run-time approval gate (design §3.4b (b))
+                    _act_step["_approve"] = True
+                engine_actions = [_act_step]
+                action_tag = f"{act_row.app}/{act_row.name}"
+                action_preview = (f" then **{act_row.app}/{act_row.name}**"
+                                  + (" (approval-gated)" if act_row.destructive else ""))
             # where does the reply go? explicit deliver_to, else the CHANNEL the caller asked from
             # ('send me' → origin thread 'gw:<channel>:<native>' delivers back there), else the
             # agent's first configured channel.
-            from . import flows
+            try:
+                from . import flows, delivery
+            except ImportError:
+                import flows
+                import delivery
             origin = _origin.get() or ""
             o_channel, o_native = "", ""
             if origin.startswith("gw:"):
                 _parts = origin.split(":", 2)
                 if len(_parts) == 3:
                     o_channel, o_native = _parts[1], _parts[2]
-            from . import delivery
             sink = deliver_to or o_channel or (spec.channels[0] if spec.channels else "web")
             # Deliver to the origin channel only when we have the caller's native id and it's a
             # known channel connector. Then split by BACKEND: an AP-backed channel gets an AP send
@@ -410,7 +532,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # per-watch config (repo/label/…) is part of the identity: watching two repos with the
             # same trigger must be two flows, not a dedup collision.
             _cfg_tag = ",".join(f"{k}={config[k]}" for k in sorted(config)) if config else ""
-            dedup_key = (f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{sink}|"
+            # the ACTION is part of the identity: "when a PR opens, reply on it" and "…, email me"
+            # are DIFFERENT flows and must not dedup-collide (design §6 test F). An action flow ALSO
+            # REPORTS its answer back to the ORIGIN channel (return-to-caller), so that origin is part
+            # of the identity too — the same action armed from Slack vs Telegram vs web reports to
+            # DIFFERENT places and must be distinct flows.
+            _sink_tag = (f"{o_channel}:{o_native}" if (action_tag and o_channel) else sink)
+            dedup_key = (f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|{action_tag}|"
                          f"{_owner_scope(spec, p)}")
             existing = store.find_by_dedup_key(dedup_key)
             if existing:
@@ -429,6 +557,16 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # polls Box with BOX_DEV_TOKEN and fires the agent per NEW file (matches
                 # EVENTS_BOX_BACKEND=direct — the path the operator actually set up).
                 if base_app == "box" and os.environ.get("EVENTS_BOX_BACKEND") == "direct":
+                    # box-direct is a NON-AP schedule→poll optimization; it delivers to a channel and
+                    # can't (yet) carry a post-agent AP action step. Rather than silently drop the
+                    # action, say so — cross-piece box→gmail-action needs box in AP mode (unset
+                    # EVENTS_BOX_BACKEND) so it arms as a normal push flow through the action gate.
+                    if engine_actions:
+                        return (f"I can watch Box and run '{action_tag}', but Box is in DIRECT mode "
+                                f"(token poll), which delivers to a channel and can't attach a "
+                                f"{action_tag.split('/')[0]} action step. Switch Box to AP mode "
+                                f"(unset EVENTS_BOX_BACKEND, connect Box OAuth) and I'll arm "
+                                f"box·new_file ▸ agent ▸ {action_tag} as one flow.")
                     folder = (os.environ.get("BOX_FOLDER_ID", "") or "0").split(" #", 1)[0].strip() or "0"
                     every = every_minutes or 5
                     # baseline the watermark so ONLY files added AFTER arming fire (not the backlog)
@@ -509,14 +647,17 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     src_input = {"label": config["label"]}
                 # the EVENT is part of the name: AP flow creation deletes any same-named flow, so a
                 # name without the event meant a 2nd trigger on the same app destroyed the 1st.
-                flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}"
+                _act_suffix = f"-{action_tag.replace('/', '_')}" if action_tag else ""
+                flow_name = (f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}"
+                             f"{_act_suffix}")
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     ap_flow_id = await engine.create_push_flow(
                         source=source, event=event or "new_file", agent=agent,
                         thread_id=p.thread(origin), prompt=prompt,
                         project_name=p.ap_project_name(grain), scope=p.scope,
-                        connection=push_conn, source_input=src_input, name=flow_name)
+                        connection=push_conn, source_input=src_input, name=flow_name,
+                        actions=engine_actions or None)
                 except Exception as e:  # noqa: BLE001
                     msg = str(e)
                     # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
@@ -567,8 +708,9 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 log.info("concierge armed push agent=%s src=%s/%s flow=%s",
                          agent, source, event, ap_flow_id)
                 _cfg_note = f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else ""
-                return (f"ARMED push ({source}/{event or 'new_file'}{_cfg_note}) for {agent} → "
-                        f"{sink}. Flow name: \"{flow_name}\" (subscription {sub.id}).")
+                _dest = (action_preview or f" → {sink}")
+                return (f"ARMED push ({source}/{event or 'new_file'}{_cfg_note}) for {agent}"
+                        f"{_dest}. Flow name: \"{flow_name}\" (subscription {sub.id}).")
             if kind not in ("cron", "poll"):
                 return "error: kind must be cron, poll, or push."
             # THE FIRED PROMPT IS SINGLE-SHOT. The SCHEDULE owns the recurrence — the agent runs
