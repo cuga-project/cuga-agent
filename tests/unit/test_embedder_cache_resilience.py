@@ -211,19 +211,20 @@ def test_cache_dir_defaults_outside_tmpdir():
     )
 
 
-def test_explicit_cache_path_env_wins(monkeypatch):
+def test_explicit_cache_path_env_wins(monkeypatch, request):
     """Containers pin FASTEMBED_CACHE_PATH; our default must not override it."""
     import importlib
 
-    monkeypatch.setenv("FASTEMBED_CACHE_PATH", "/opt/preloaded/fastembed")
     import cuga.config as cfg
 
+    # Re-reload AFTER monkeypatch restores the real environment, so the module
+    # attribute doesn't stay out of sync with os.environ for the rest of the
+    # session (reload's own setdefault writes the recomputed default otherwise).
+    request.addfinalizer(lambda: importlib.reload(cfg))
+
+    monkeypatch.setenv("FASTEMBED_CACHE_PATH", "/opt/preloaded/fastembed")
     importlib.reload(cfg)
-    try:
-        assert cfg.FASTEMBED_CACHE_DIR == "/opt/preloaded/fastembed"
-    finally:
-        monkeypatch.delenv("FASTEMBED_CACHE_PATH", raising=False)
-        importlib.reload(cfg)
+    assert cfg.FASTEMBED_CACHE_DIR == "/opt/preloaded/fastembed"
 
 
 # --- #4 "preparing" is not "broken" --------------------------------------

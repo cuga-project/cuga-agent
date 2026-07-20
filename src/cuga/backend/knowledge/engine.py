@@ -1770,6 +1770,12 @@ class KnowledgeEngine:
         # "unavailable" makes a first run look broken — health reports
         # "preparing" instead so the UI can show progress, not an error.
         self._embedder_initializing = False
+        # Serializes _ensure_embeddings across its callers (probe, per-collection
+        # resolve, ingest tokenizer — several run in to_thread workers). Without
+        # it two callers can both pass the `is None` check and load the model
+        # twice (duplicate ONNX session + download). HF file-locking protects the
+        # blob, not a double load.
+        self._embedder_init_lock = threading.Lock()
 
         # Vector store LRU cache (bounded)
         self._vector_stores: collections.OrderedDict[str, VectorStoreAdapter] = collections.OrderedDict()
@@ -2004,7 +2010,15 @@ class KnowledgeEngine:
 
     def _ensure_embeddings(self) -> None:
         """Initialize embeddings on first use (not at engine startup)."""
-        if self._default_embeddings is None:
+        # Double-checked lock: the fast path stays lock-free once loaded, and the
+        # check-and-set is serialized so concurrent callers can't both construct
+        # the model. (Several callers reach here from different to_thread workers:
+        # probe, per-collection resolve, ingest tokenizer.)
+        if self._default_embeddings is not None:
+            return
+        with self._embedder_init_lock:
+            if self._default_embeddings is not None:
+                return
             # Flagged for the health probe: on a cold cache this call downloads
             # the model, and that wait must read as "preparing", not "broken".
             self._embedder_initializing = True
