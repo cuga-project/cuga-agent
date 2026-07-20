@@ -83,6 +83,13 @@ export interface AgentConfig {
     base_url?: string;
     model?: string;
     temperature?: number;
+    max_tokens?: number;
+    top_p?: number;
+    top_k?: number;
+    frequency_penalty?: number;
+    presence_penalty?: number;
+    stop?: string[];
+    extra_params?: Record<string, string | number | boolean>;
     disable_ssl?: boolean;
   };
   tools?: ToolEntry[];
@@ -310,6 +317,8 @@ export function ManagePage() {
   const location = useLocation();
   const search = location.search || "";
   const [llmConfig, setLlmConfig] = useState<NonNullable<AgentConfig["llm"]>>(DEFAULT_CONFIG.llm!);
+  const [llmExtraParamsDraft, setLlmExtraParamsDraft] = useState<string | null>(null);
+  const [llmExtraParamsError, setLlmExtraParamsError] = useState<string | null>(null);
   const [tools, setToolsState] = useState<ToolEntry[]>(DEFAULT_CONFIG.tools ?? []);
   const [featureFlags, setFeatureFlags] = useState(DEFAULT_CONFIG.feature_flags!);
   const [homescreen, setHomescreen] = useState<HomescreenConfig>(DEFAULT_CONFIG.homescreen ?? DEFAULT_HOMESCREEN);
@@ -728,7 +737,7 @@ export function ManagePage() {
         setConnectedApps([]);
         setConnectedTools([]);
       }
-      setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+      replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
       setToolsState(Array.isArray(out.tools) ? out.tools : []);
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
@@ -1052,7 +1061,7 @@ export function ManagePage() {
         const ag = next.agent;
         setAgentName(ag?.name ?? "");
         setAgentDescription(ag?.description ?? "");
-        setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+        replaceLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
         setToolsState(Array.isArray(next.tools) ? next.tools : []);
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
         setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
@@ -1075,11 +1084,35 @@ export function ManagePage() {
     }
   };
 
-  const updateLlm = (field: keyof NonNullable<AgentConfig["llm"]>, value: string | number | boolean) => {
-    setLlmConfig((c) => ({ ...(c ?? {}), [field]: value }));
+  const replaceLlmConfig = (next: NonNullable<AgentConfig["llm"]>) => {
+    setLlmConfig(next);
+    setLlmExtraParamsDraft(null);
+    setLlmExtraParamsError(null);
+  };
+
+  const updateLlm = (
+    field: keyof NonNullable<AgentConfig["llm"]>,
+    value: string | number | boolean | string[] | Record<string, string | number | boolean> | undefined
+  ) => {
+    setLlmConfig((c) => {
+      const next = { ...(c ?? {}) };
+      if (value === undefined) {
+        delete next[field];
+      } else {
+        (next as Record<string, unknown>)[field] = value;
+      }
+      return next;
+    });
   };
   const updateLlmTemperature = (value: number) => {
     setLlmConfig((c) => ({ ...(c ?? {}), temperature: value }));
+  };
+  const clearLlmNumber = (field: "max_tokens" | "top_p" | "top_k" | "frequency_penalty" | "presence_penalty") => {
+    setLlmConfig((c) => {
+      const next = { ...(c ?? {}) };
+      delete next[field];
+      return next;
+    });
   };
 
   const updateFeatureFlag = (field: "enable_todos" | "reflection" | "enable_filesystem_tools", value: boolean) => {
@@ -1163,7 +1196,7 @@ export function ManagePage() {
             if (a.name) setAgentName(a.name);
             if (a.description !== undefined) setAgentDescription(a.description);
           }
-          setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+          replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
           setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
@@ -1522,7 +1555,7 @@ export function ManagePage() {
                         </Select>
                       )}
                     </FormGroup>
-                    <FormGroup legendText="">
+                    <FormGroup legendText="Sampling">
                       <NumberInput
                         id="llm-temperature"
                         label="Temperature"
@@ -1535,7 +1568,169 @@ export function ManagePage() {
                         }
                         onBlur={scheduleLlmDraftSave}
                       />
+                      <NumberInput
+                        id="llm-max-tokens"
+                        label="Max tokens"
+                        helperText="Leave empty to keep the model/TOML default"
+                        min={1}
+                        step={256}
+                        allowEmpty
+                        value={llm.max_tokens ?? ""}
+                        onChange={(_e: unknown, { value }: { value: number | string }) => {
+                          if (value === "" || value === undefined || value === null) {
+                            clearLlmNumber("max_tokens");
+                            return;
+                          }
+                          const n = Number(value);
+                          if (Number.isFinite(n) && n > 0) updateLlm("max_tokens", Math.floor(n));
+                        }}
+                        onBlur={scheduleLlmDraftSave}
+                        style={{ marginTop: "0.75rem" }}
+                      />
                     </FormGroup>
+                    <Accordion align="start" size="sm">
+                      <AccordionItem title="Advanced LLM params">
+                        <VStack gap={5}>
+                          <NumberInput
+                            id="llm-top-p"
+                            label="Top P"
+                            helperText="Only sent when set (safer for Bedrock/Claude via OpenAI-compatible endpoints)"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            allowEmpty
+                            value={llm.top_p ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("top_p");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("top_p", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-top-k"
+                            label="Top K"
+                            helperText="Used by Watsonx / LiteLLM when supported"
+                            min={1}
+                            step={1}
+                            allowEmpty
+                            value={llm.top_k ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("top_k");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n) && n > 0) updateLlm("top_k", Math.floor(n));
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-frequency-penalty"
+                            label="Frequency penalty"
+                            helperText="OpenAI-compatible providers (ignored by Groq/Watsonx)"
+                            min={-2}
+                            max={2}
+                            step={0.1}
+                            allowEmpty
+                            value={llm.frequency_penalty ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("frequency_penalty");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("frequency_penalty", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-presence-penalty"
+                            label="Presence penalty"
+                            helperText="OpenAI-compatible providers (ignored by Groq/Watsonx)"
+                            min={-2}
+                            max={2}
+                            step={0.1}
+                            allowEmpty
+                            value={llm.presence_penalty ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("presence_penalty");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("presence_penalty", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <TextInput
+                            id="llm-stop"
+                            labelText="Stop sequences"
+                            helperText="Comma-separated stop strings"
+                            value={(llm.stop ?? []).join(", ")}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const parts = raw
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean);
+                              updateLlm("stop", parts.length ? parts : undefined);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <TextArea
+                            id="llm-extra-params"
+                            labelText="Extra params (JSON)"
+                            helperText="Provider-agnostic map for LiteLLM / OpenAI-compatible backends. Auth keys are stripped server-side."
+                            rows={4}
+                            invalid={Boolean(llmExtraParamsError)}
+                            invalidText={llmExtraParamsError ?? undefined}
+                            value={
+                              llmExtraParamsDraft ??
+                              (llm.extra_params && Object.keys(llm.extra_params).length > 0
+                                ? JSON.stringify(llm.extra_params, null, 2)
+                                : "")
+                            }
+                            onChange={(e) => {
+                              setLlmExtraParamsDraft(e.target.value);
+                              setLlmExtraParamsError(null);
+                            }}
+                            onBlur={() => {
+                              const raw = (llmExtraParamsDraft ?? "").trim();
+                              if (!raw) {
+                                updateLlm("extra_params", undefined);
+                                setLlmExtraParamsDraft(null);
+                                setLlmExtraParamsError(null);
+                                scheduleLlmDraftSave();
+                                return;
+                              }
+                              try {
+                                const parsed = JSON.parse(raw) as unknown;
+                                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                                  setLlmExtraParamsError("Extra params must be a JSON object");
+                                  return;
+                                }
+                                const cleaned: Record<string, string | number | boolean> = {};
+                                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+                                  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+                                    cleaned[k] = v;
+                                  }
+                                }
+                                updateLlm("extra_params", Object.keys(cleaned).length ? cleaned : undefined);
+                                setLlmExtraParamsDraft(null);
+                                setLlmExtraParamsError(null);
+                                scheduleLlmDraftSave();
+                              } catch {
+                                setLlmExtraParamsError("Invalid JSON");
+                              }
+                            }}
+                          />
+                        </VStack>
+                      </AccordionItem>
+                    </Accordion>
                   </VStack>
                   )}
               </AccordionItem>
@@ -2365,7 +2560,7 @@ export function ManagePage() {
                 if (Array.isArray(next.tools)) {
                   next.tools = normalizeTools(next.tools);
                 }
-                setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+                replaceLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
                 setToolsState(Array.isArray(next.tools) ? next.tools : []);
                 setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
                 setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);

@@ -108,6 +108,91 @@ def _normalize_secret(val: Optional[str]) -> Optional[str]:
     return s
 
 
+# Keys that must never be injected via Manage ``extra_params`` (auth / transport).
+_BLOCKED_EXTRA_PARAM_KEYS = frozenset(
+    {
+        "api_key",
+        "openai_api_key",
+        "groq_api_key",
+        "api_base",
+        "openai_api_base",
+        "base_url",
+        "url",
+        "default_headers",
+        "http_client",
+        "http_async_client",
+        "client",
+        "async_client",
+        "headers",
+        "authorization",
+        "auth_type",
+        "auth_header_name",
+        "platform",
+        "model",
+        "model_name",
+        "apikey_name",
+    }
+)
+
+_OPTIONAL_SAMPLING_KEYS = (
+    "top_p",
+    "top_k",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+)
+
+
+def _safe_extra_params(extra: Any) -> Dict[str, Any]:
+    if not isinstance(extra, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, value in extra.items():
+        if not isinstance(key, str):
+            continue
+        if key in _BLOCKED_EXTRA_PARAM_KEYS or key.lower() in _BLOCKED_EXTRA_PARAM_KEYS:
+            continue
+        out[key] = value
+    return out
+
+
+def _merge_optional_sampling(
+    target: Dict[str, Any],
+    model_settings: Mapping[str, Any],
+    *,
+    keys: tuple[str, ...] = ("top_p", "frequency_penalty", "presence_penalty", "stop"),
+    include_extra: bool = True,
+) -> None:
+    """Copy explicitly set sampling knobs into client kwargs. Unset keys are skipped."""
+    for key in keys:
+        if key in model_settings and model_settings[key] is not None:
+            target[key] = model_settings[key]
+    if include_extra and model_settings.get("extra_params") is not None:
+        target.update(_safe_extra_params(model_settings.get("extra_params")))
+
+
+def _coerce_settings_dict(model_settings: Any) -> Dict[str, Any]:
+    if isinstance(model_settings, dict):
+        return model_settings
+    to_dict = getattr(model_settings, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return dict(model_settings)
+
+
+def _resolve_max_tokens_from_llm_cfg(llm_cfg: Mapping[str, Any], toml_default: int) -> int:
+    """Prefer Manage ``max_tokens`` when set; otherwise keep TOML/provider default."""
+    if "max_tokens" not in llm_cfg or llm_cfg.get("max_tokens") is None:
+        return toml_default
+    try:
+        value = int(llm_cfg["max_tokens"])
+    except (TypeError, ValueError):
+        return toml_default
+    if value <= 0:
+        return toml_default
+    return value
+
+
 _current_llm_override: Optional[Dict[str, Any]] = None
 
 
@@ -129,6 +214,9 @@ class _ModelSettingsWrap:
 
     def to_dict(self) -> dict:
         return self._d.copy()
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._d
 
 
 try:
@@ -683,6 +771,7 @@ class LLMManager:
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
         """Create LLM instance based on platform and settings"""
+        model_settings = _coerce_settings_dict(model_settings)
         platform = model_settings.get('platform')
         temperature = model_settings.get('temperature', 0.7)
         max_tokens = model_settings.get('max_tokens')
@@ -742,10 +831,19 @@ class LLMManager:
                 # Only send top_p when explicitly configured. Some Bedrock Claude
                 # models (e.g. opus-4-5/4-6, sonnet-4-5) reject requests that
                 # specify both temperature and top_p.
-                if 'top_p' in model_settings:
-                    openai_params["top_p"] = model_settings['top_p']
+                _merge_optional_sampling(
+                    openai_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    openai_params,
+                    model_settings,
+                    keys=("stop",),
+                    include_extra=True,
+                )
 
             auth_headers = self._get_auth_headers(model_settings, platform)
             if auth_headers:
@@ -781,19 +879,35 @@ class LLMManager:
             if not api_key:
                 api_key = _normalize_secret(resolve_secret("GROQ_API_KEY")) or os.environ.get("GROQ_API_KEY")
             logger.debug(f"Creating Groq model: {model_name}")
-            llm = ChatGroq(
-                groq_api_key=api_key,
-                max_tokens=max_tokens,
-                model=model_name,
-                temperature=temperature,
-            )
-        elif platform == "watsonx":
-            watsonx_params: Dict[str, Any] = {
-                "params": {
-                    "temperature": temperature,
-                    "max_completion_tokens": max_tokens,
-                },
+            if ChatGroq is None:
+                raise ValueError("Groq provider requested but langchain_groq is not installed")
+            groq_params: Dict[str, Any] = {
+                "groq_api_key": api_key,
+                "max_tokens": max_tokens,
+                "model": model_name,
+                "temperature": temperature,
             }
+            # Groq supports top_p; skip OpenAI-style penalties that it rejects.
+            _merge_optional_sampling(
+                groq_params,
+                model_settings,
+                keys=("top_p", "stop"),
+                include_extra=True,
+            )
+            llm = ChatGroq(**groq_params)
+        elif platform == "watsonx":
+            wx_gen_params: Dict[str, Any] = {
+                "temperature": temperature,
+                "max_completion_tokens": max_tokens,
+            }
+            # Watsonx generation params (not OpenAI penalty fields).
+            _merge_optional_sampling(
+                wx_gen_params,
+                model_settings,
+                keys=("top_p", "top_k", "stop"),
+                include_extra=True,
+            )
+            watsonx_params: Dict[str, Any] = {"params": wx_gen_params}
 
             watsonx_url = model_settings.get("url")
             if watsonx_url:
@@ -891,8 +1005,18 @@ class LLMManager:
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
                 openrouter_params["top_p"] = model_settings.get('top_p', 1.0)
+                _merge_optional_sampling(
+                    openrouter_params,
+                    model_settings,
+                    keys=("frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    openrouter_params,
+                    model_settings,
+                    keys=("stop",),
+                )
 
             default_headers = {}
             site_url = model_settings.get("site_url") or os.environ.get("OPENROUTER_SITE_URL")
@@ -926,8 +1050,18 @@ class LLMManager:
             if not is_reasoning:
                 minimax_params["temperature"] = temperature
                 minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+                _merge_optional_sampling(
+                    minimax_params,
+                    model_settings,
+                    keys=("frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    minimax_params,
+                    model_settings,
+                    keys=("stop",),
+                )
 
             llm = ReasoningChatOpenAI(**minimax_params)
         elif platform == "litellm" and ReasoningChatLiteLLM is not None:
@@ -948,9 +1082,20 @@ class LLMManager:
             }
             if not is_reasoning:
                 litellm_params["temperature"] = temperature
+                # Prefer explicit Manage/TOML top_p; default 1.0 for existing TOML paths.
                 litellm_params["top_p"] = model_settings.get('top_p', 1.0)
+                _merge_optional_sampling(
+                    litellm_params,
+                    model_settings,
+                    keys=("frequency_penalty", "presence_penalty", "stop", "top_k"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
+                _merge_optional_sampling(
+                    litellm_params,
+                    model_settings,
+                    keys=("stop",),
+                )
             # Tell litellm to use the OpenAI-compatible code path without parsing
             # a provider from the model name (e.g. "ibm-granite/granite-4.0-1b"
             # would otherwise be misread as provider=ibm-granite).
@@ -1072,11 +1217,12 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         llm_cfg = {}
     mgr = LLMManager()
     try:
-        max_tokens = settings.agent.code.model.get("max_tokens", 16000)
+        toml_max_tokens = settings.agent.code.model.get("max_tokens", 16000)
     except Exception:
-        max_tokens = 16000
-    if not isinstance(max_tokens, int):
-        max_tokens = 16000
+        toml_max_tokens = 16000
+    if not isinstance(toml_max_tokens, int):
+        toml_max_tokens = 16000
+    max_tokens = _resolve_max_tokens_from_llm_cfg(llm_cfg, toml_max_tokens)
 
     if is_mock_llm_enabled():
         mock = clone_load_test_mock_chat_model()
@@ -1151,6 +1297,12 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "max_tokens": max_tokens,
         "streaming": False,
     }
+    for key in _OPTIONAL_SAMPLING_KEYS:
+        if key in llm_cfg and llm_cfg[key] is not None:
+            settings_dict[key] = llm_cfg[key]
+    extra = llm_cfg.get("extra_params")
+    if isinstance(extra, dict) and extra:
+        settings_dict["extra_params"] = extra
     wrap = _ModelSettingsWrap(settings_dict)
     model = mgr._create_llm_instance(wrap)
     return mgr._update_model_parameters(
