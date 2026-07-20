@@ -130,7 +130,9 @@ def test_effective_flag_lookup_error_defaults_true():
 def test_citations_contract_content():
     assert "[s3]" in CITATIONS_CONTRACT
     assert "cite_id" in CITATIONS_CONTRACT
-    assert "earlier turns" in CITATIONS_CONTRACT.lower()
+    # Citations are scoped to the current turn: the contract must tell the model
+    # to use THIS turn's ids, not promise that earlier-turn ids remain citable.
+    assert "this turn" in CITATIONS_CONTRACT.lower()
     assert "never write bare numeric" in CITATIONS_CONTRACT.lower()
 
 

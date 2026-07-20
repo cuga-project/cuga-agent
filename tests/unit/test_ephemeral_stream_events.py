@@ -145,3 +145,44 @@ def test_disable_history_saves_events_not_conversation():
     assert save_conv_calls == [], "save_conversation_to_db must NOT be called in events_only mode"
     assert len(save_events_calls) == 1, "save_stream_events must be called once"
     assert save_events_calls[0] == ("agent", "t-tryitout", 4)
+
+
+# ---------------------------------------------------------------------------
+# Test 3 - durability: stream events ACCUMULATE across turns (no clobber)
+# ---------------------------------------------------------------------------
+
+
+def test_seed_makes_stream_events_cumulative_across_turns():
+    """Regression: the per-turn save does UPDATE ... SET events=?, so a turn
+    that started with an empty buffer clobbered the row down to just that turn.
+    _seed_stream_events_buffer reloads prior events so each turn APPENDS, with a
+    continuous sequence. Fixes both conversation-reload truncation and
+    cross-turn citation rehydration."""
+    from cuga.backend.server.main import _seed_stream_events_buffer
+
+    db, tmpfile, orig, facade = _setup_in_memory_db()
+    try:
+
+        async def _run():
+            with patch("cuga.backend.server.main.get_conversation_db", return_value=db):
+                # Turn 1: fresh buffer, save two events.
+                buf, seq = await _seed_stream_events_buffer("agent", "thread_X", "user")
+                assert (buf, seq) == ([], 0), "no prior events -> empty seed"
+                turn1 = _make_events(2)  # sequences 0,1
+                await db.save_stream_events("agent", "thread_X", "user", turn1)
+
+                # Turn 2: seed from persisted, continue the sequence, append, save.
+                buf, seq = await _seed_stream_events_buffer("agent", "thread_X", "user")
+                assert len(buf) == 2, "turn 2 must see turn 1's events"
+                assert seq == 2, "sequence continues past loaded events (no collision)"
+                buf.append({"event_name": "Answer", "event_data": "turn2", "timestamp": "t", "sequence": seq})
+                await db.save_stream_events("agent", "thread_X", "user", buf)
+
+                # Persisted row now holds BOTH turns, not just the last.
+                final = await db.get_stream_events("agent", "thread_X", "user")
+                assert len(final.events) == 3, "both turns retained (was 1 before the fix)"
+                assert [e.sequence for e in final.events] == [0, 1, 2]
+
+        asyncio.run(_run())
+    finally:
+        _teardown_db(orig, tmpfile, facade)

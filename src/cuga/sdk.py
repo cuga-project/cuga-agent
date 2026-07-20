@@ -2455,6 +2455,16 @@ class CugaAgent:
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
 
+        # New user turn (not a HITL resume — that path returns above): scope
+        # citations to this turn's retrieval so an id from an earlier turn can't
+        # resolve in this answer. Mirrors the server's event_stream hook.
+        try:
+            from cuga.backend.knowledge.sources import begin_ledger_turn
+
+            begin_ledger_turn(thread_id)
+        except Exception:
+            pass
+
         # Try to get existing state for this thread_id
         existing_state = None
         try:

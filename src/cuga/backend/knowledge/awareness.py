@@ -40,10 +40,10 @@ Rules:
   [sN] markers INSTEAD of `(source: <filename>)` or naming filename/page
   in your sentences. Mention filenames in prose only when the user asks
   about the documents themselves.
-- Use ONLY cite_ids that appeared in this conversation's search results.
-  Results from earlier turns of this conversation remain citable by their
-  original ids. Never invent an id; never write bare numeric citations
-  like [1] — the UI assigns display numbers automatically.
+- Use ONLY cite_ids from THIS turn's search results. An id from an earlier
+  turn no longer resolves — if you need to cite a source again, it must appear
+  in a search you ran this turn. Never invent an id; never write bare numeric
+  citations like [1] — the UI assigns display numbers automatically.
 - Multiple supporting chunks: [s1][s4] (or [s1, s4]).
 - Do NOT add a "Sources" section or list — the UI renders sources from
   your markers.

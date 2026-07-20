@@ -211,19 +211,46 @@ def _format_sources_footer(sources: list[dict]) -> str:
     return "\n\nSources:\n" + "\n".join(lines)
 
 
-async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user_id: str) -> None:
-    """Rebuild cited ledger entries from persisted Answer events at turn start.
+async def _seed_stream_events_buffer(agent_id: str, thread_id: str, user_id: str) -> tuple[list, int]:
+    """Load already-persisted stream events so a turn appends instead of clobbers.
 
-    In-memory ledgers die with the process. This restores cite_ids from the
-    on-disk conversation so they stay collision-free and re-citable after a
-    server restart. Called once per turn when the ledger is absent.
+    Returns ``(buffer, next_sequence)``. Any read failure yields ``([], 0)`` —
+    a fresh buffer must never block or fail the turn.
+    """
+    try:
+        prior = await get_conversation_db().get_stream_events(agent_id, thread_id, user_id)
+        if prior and prior.events:
+            buf = [e.model_dump() if hasattr(e, "model_dump") else dict(e) for e in prior.events]
+            return buf, len(buf)
+    except Exception:
+        pass
+    return [], 0
+
+
+async def _rehydrate_citation_ledger(
+    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+) -> None:
+    """Prepare the citation ledger at the start of a NEW user turn.
+
+    Two jobs:
+    1. Rehydrate: after a restart the in-memory ledger is gone, so restore
+       cite_ids from the on-disk conversation to keep them collision-free.
+       Only runs when the ledger is absent.
+    2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
+       earlier turn cannot resolve in this turn's answer.
+
+    A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
+    but is a CONTINUATION of the same logical turn — the pre-interrupt search
+    node does not re-run, so its cite_ids must stay in scope. On resume we do
+    nothing: the ledger already exists and begin_turn() would wrongly wipe this
+    turn's retrieval scope and strip legitimate citations from the answer.
 
     WXO-mode Answer events are raw text (not JSON) and are intentionally
     skipped by the ``isinstance(payload, dict)`` guard below.
 
     Must never break the turn — every failure mode is swallowed.
     """
-    if not thread_id:
+    if not thread_id or is_resume:
         return
     # Gate on the SAME session-aware predicate that stamping and resolution use
     # (citations_enabled_for), not the agent-only flag — otherwise a thread with
@@ -239,28 +266,35 @@ async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user
     try:
         from cuga.backend.knowledge.sources import get_ledger as _get_ledger
 
-        if _get_ledger(thread_id, create=False) is None:
+        _ledger = _get_ledger(thread_id, create=False)
+        if _ledger is None:
             conversation_db = get_conversation_db()
             stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
             events_list = stream_history.events if stream_history else []
-            if events_list:
-                _ledger = _get_ledger(thread_id)  # create
-                for ev in events_list:
-                    if ev.event_name != "Answer":
+            # Create even when there is no history, so begin_turn() below always
+            # has a ledger to scope — a fresh conversation's first turn included.
+            _ledger = _get_ledger(thread_id)  # create
+            for ev in events_list:
+                if ev.event_name != "Answer":
+                    continue
+                try:
+                    payload = json.loads(ev.event_data)
+                    if not isinstance(payload, dict):
+                        # WXO-mode Answer events are raw text — skip intentionally
                         continue
-                    try:
-                        payload = json.loads(ev.event_data)
-                        if not isinstance(payload, dict):
-                            # WXO-mode Answer events are raw text — skip intentionally
-                            continue
-                        for snap in payload.get("sources", []) or []:
-                            _ledger.restore(snap)
-                    except Exception:
-                        logger.debug(
-                            "Citation ledger rehydration: skipped event for thread %s",
-                            thread_id,
-                        )
-                        continue
+                    for snap in payload.get("sources", []) or []:
+                        _ledger.restore(snap)
+                except Exception:
+                    logger.debug(
+                        "Citation ledger rehydration: skipped event for thread %s",
+                        thread_id,
+                    )
+                    continue
+        # Scope citations to THIS turn's retrieval. Runs AFTER any rehydration
+        # (restore deliberately leaves the turn set empty), so a rehydrated or
+        # earlier-turn id no longer resolves in this turn's answer unless it is
+        # re-retrieved. This is the fix for cross-turn citation mis-attribution.
+        _ledger.begin_turn()
     except Exception as e:
         logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
 
@@ -1490,9 +1524,19 @@ async def event_stream(
 
     local_tracker.task_id = 'demo'
 
-    # Initialize event sequence counter and buffer for stream event tracking
+    # Initialize event sequence counter and buffer for stream event tracking.
     event_sequence = 0
     stream_events_buffer = []  # Buffer to collect events during streaming
+    # Seed from what is already persisted so each turn APPENDS rather than
+    # overwrites. The save does ``UPDATE stream_events SET events = ?`` with this
+    # buffer, so starting empty every turn clobbered the row down to the last
+    # turn only — breaking conversation reload (frontend replays stream_events
+    # first) and citation rehydration across turns. Seeding also continues the
+    # sequence past the loaded events, so no per-turn sequence collision.
+    if thread_id:
+        stream_events_buffer, event_sequence = await _seed_stream_events_buffer(
+            app_state.agent_id, thread_id, user_id
+        )
 
     # Add user message to buffer as first event
     if query and thread_id:
@@ -1551,7 +1595,7 @@ async def event_stream(
             }
 
     if thread_id:
-        await _rehydrate_citation_ledger(app_state, thread_id, user_id)
+        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 

@@ -37,10 +37,15 @@ def test_enable_citations_defaults_to_none():
 class _StubGraph:
     """Minimal stand-in for the compiled LangGraph graph in invoke()."""
 
-    def __init__(self, result: dict):
+    def __init__(self, result: dict, on_ainvoke=None):
         self._result = result
+        # Optional side effect run when the graph executes — models the searches
+        # a real turn performs (which register cite_ids for THIS turn).
+        self._on_ainvoke = on_ainvoke
 
     async def ainvoke(self, *_args, **_kwargs):
+        if self._on_ainvoke is not None:
+            self._on_ainvoke()
         return self._result
 
     def get_state(self, *_args, **_kwargs):
@@ -62,21 +67,16 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
 
     monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
 
-    # Seed the thread ledger so [s1] resolves.
     thread_id = "sdk-fallback-thread"
-    ledger = get_ledger(thread_id)
-    cite_id = ledger.register(
-        SimpleNamespace(
-            text="chunk text",
-            filename="report.pdf",
-            page=4,
-            scope="agent",
-            score=0.9,
-            section_path="",
-        ),
-        query="q",
+    chunk = SimpleNamespace(
+        text="chunk text", filename="report.pdf", page=4, scope="agent", score=0.9, section_path=""
     )
-    assert cite_id == "s1"
+
+    # invoke() starts a NEW turn and resets the citation scope, so [s1] resolves
+    # only if it was retrieved THIS turn. Model that: the graph's search this
+    # turn registers the chunk (content-keyed -> s1, now in-turn scope).
+    def _search_registers_this_turn():
+        assert get_ledger(thread_id).register(chunk, query="q") == "s1"
 
     # invoke() reads the compiled graph via the ``graph`` property; a
     # pre-set _compiled_graph short-circuits graph construction entirely.
@@ -87,7 +87,8 @@ def test_invoke_empty_answer_fallback_resolves_markers_and_overrides_stale_sourc
             "sources": [{"n": 9, "cite_id": "stale"}],
             "variables_storage": {},
             "tool_calls": [],
-        }
+        },
+        on_ainvoke=_search_registers_this_turn,
     )
 
     result = asyncio.run(agent.invoke("question", thread_id=thread_id))
