@@ -21,6 +21,16 @@ llm_manager = LLMManager()
 tracker = ActivityTracker()
 
 
+# 1x1 transparent PNG. When vision is effective the prompt template bakes in a
+# required ``img`` slot, so every invoke must supply a valid image URL even when
+# no screenshot exists yet (e.g. an API-mode sub-task). This keeps the prompt
+# renderable instead of raising ``missing variables {'img'}``.
+_BLANK_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
 _VISION_REJECTION_MARKERS = (
     "content must be a string",
     "image_url",
@@ -83,6 +93,11 @@ class BrowserPlannerAgent(BaseAgent):
             if last_image is not None:
                 data['img'] = last_image
                 image_attached = True
+            else:
+                # No screenshot available, but the template still requires ``img``.
+                # Supply a blank placeholder so the prompt renders; leave
+                # image_attached False so a rejection here isn't retried as vision.
+                data['img'] = _BLANK_IMAGE
         try:
             return await self.chain.ainvoke(data)
         except Exception as exc:
@@ -97,7 +112,10 @@ class BrowserPlannerAgent(BaseAgent):
             )
             self.use_vision_effective = False
             data["use_vision"] = False
-            data.pop('img', None)
+            # The template still has the baked-in image slot, so keep a valid
+            # (blank) img rather than popping it — popping would re-raise
+            # ``missing variables {'img'}``.
+            data['img'] = _BLANK_IMAGE
             return await self.chain.ainvoke(data)
 
     @staticmethod
