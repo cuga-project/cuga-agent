@@ -70,7 +70,8 @@ carry an action if it's an **AP-push** trigger. So:
 | box (AP mode) → gmail | ✅ | needs Box OAuth |
 | slack / discord / telegram → gmail | ✅ **via executor (Option A, 2026-07-20)** | direct trigger owns no AP flow, so the gmail action runs via a reusable `catch_webhook ▸ gmail/send_email` executor CUGA fires after the agent answers. Offline-verified; **live fire pending**. See [`direct_actions.md`](direct_actions.md) |
 | box (direct mode) → gmail | ❌ **declines loudly** | box-direct arms via a separate poll-flow path not yet wired to the executor; still declines. slack/discord/telegram now work |
-| gmail → github (create issue) | ❌ | **github actions not registered** |
+| gmail → github (create issue) | ✅ **(2026-07-20)** | `github/create_issue` registered + validates live in AP (needs owner/repo) |
+| github → github (comment on PR) | ✅ **(2026-07-20)** | `github/create_comment` — same-app; issue_number from the firing PR |
 | gmail → slack (post as an action) | ❌ | slack actions not registered — but **delivery to Slack works** (return-to-caller / deliver_to) |
 
 **Two gaps this reveals (both general, not Gmail-specific):**

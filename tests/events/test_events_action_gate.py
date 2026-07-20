@@ -234,6 +234,55 @@ def test_direct_trigger_action_declines_when_executor_unbuildable():
     assert not store.list()                            # nothing armed
 
 
+def test_github_create_issue_cross_piece():
+    # cross-app: a GMAIL trigger files a GITHUB issue (create_issue is not same-app).
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when an email arrives, file a github issue summarizing it",
+                             "source": "gmail", "event": "new_email",
+                             "action": "github/create_issue", "repo": "o/r"}))
+    assert "ARMED" in msg and "github/create_issue" in msg
+    act = engine.calls[0]["actions"][0]
+    assert act["ap_action"] == "github_create_issue"
+    assert act["params"]["repository"] == "o/r"
+    assert act["params"]["description"] == "{{step_1.body.answer}}"     # agent answer → issue body
+
+
+def test_github_create_comment_same_app():
+    # same-app: a GITHUB PR trigger comments on THAT pr — issue_number from the firing event.
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when a PR opens, review it and comment on the PR",
+                             "source": "github", "event": "new_pr",
+                             "action": "github/create_comment", "repo": "o/r"}))
+    assert "ARMED" in msg
+    act = engine.calls[0]["actions"][0]
+    assert act["ap_action"] == "createCommentOnAIssue"
+    assert act["params"]["issue_number"] == "{{trigger.pull_request.number}}"
+    assert act["params"]["comment"] == "{{step_1.body.answer}}"
+    assert act["params"]["repository"] == "o/r"
+
+
+def test_github_comment_rejected_on_non_github_trigger():
+    # create_comment is same-app — a gmail trigger can't drive it (no PR/issue to comment on).
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when an email arrives, comment on the issue",
+                             "source": "gmail", "event": "new_email",
+                             "action": "github/create_comment", "repo": "o/r"}))
+    assert "needs a github trigger" in msg
+    assert not engine.calls
+
+
+def test_github_create_issue_asks_for_repo():
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when an email arrives, file a github issue",
+                             "source": "gmail", "event": "new_email", "action": "github/create_issue"}))
+    assert "which repository" in msg.lower()
+    assert not engine.calls
+
+
 def test_multi_action_arms_two_native_steps():
     focf, store, engine = _mk()
     msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",

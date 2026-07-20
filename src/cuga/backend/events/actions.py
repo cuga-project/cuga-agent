@@ -187,7 +187,45 @@ _GMAIL_RAW = [
        notes="DESTRUCTIVE — approval-gated at run time.", **_GM),
 ]
 
-ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in (_GMAIL + _GMAIL_RAW)}
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# GitHub — NATIVE actions (piece-github@0.8.5, probed live 2026-07-20). create_issue is cross-app
+# (a fresh issue — like send_email); create_comment keys off the FIRING PR/issue number, so it is
+# same_app_trigger (only valid downstream of a github trigger). `repository` is a DROPDOWN the piece
+# resolves against the connection — the concierge fills it from the utterance's owner/repo (below).
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+_GH = dict(app="github", backend="ap", piece="github")
+
+_GITHUB = [
+    _a(name="create_issue", title="Create Issue", ap_action="github_create_issue", default=True,
+       params=(
+           # ALL props declared (AP validates every declared prop). repository filled by the gate;
+           # title from NL or a default; description = the agent answer; labels/assignees optional.
+           Param("repository", "DROPDOWN", required=True, source="user"),
+           Param("title", "SHORT_TEXT", required=True, source="static", default="CUGA — automated issue"),
+           Param("description", "LONG_TEXT", required=False, source="answer"),
+           Param("labels", "ARRAY", required=False, source="user", array=True),
+           Param("assignees", "ARRAY", required=False, source="user", array=True),
+       ),
+       phrases=(r"\b(file|open|create|raise|log)\b.{0,18}\b(github )?issue\b",
+                r"\bgithub issue\b", r"\bopen an issue\b"),
+       notes="repository from the utterance's owner/repo; title from NL ('with title …') else a "
+             "default; description = the agent's answer. Cross-app: any trigger can file an issue.",
+       **_GH),
+    _a(name="create_comment", title="Comment on Issue/PR", ap_action="createCommentOnAIssue",
+       same_app_trigger=True,
+       params=(
+           Param("repository", "DROPDOWN", required=True, source="user"),
+           Param("issue_number", "NUMBER", required=True, source="trigger"),  # gate sets the template
+           Param("comment", "LONG_TEXT", required=True, source="answer"),
+       ),
+       phrases=(r"\bcomment on\b.{0,18}\b(the )?(pr|issue|pull request)\b",
+                r"\b(reply|respond)\b.{0,12}\bon the (pr|issue)\b", r"\bpost a comment\b"),
+       notes="issue_number resolves from the FIRING PR/issue; comment = the agent's answer. Only "
+             "valid on a github trigger (same-app).",
+       **_GH),
+]
+
+ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in (_GMAIL + _GMAIL_RAW + _GITHUB)}
 
 # Canonical-name aliases the LLM/classifier may emit for an action.
 ACTION_ALIASES = {
@@ -201,6 +239,12 @@ ACTION_ALIASES = {
     ("gmail", "trash"): "trash_email",
     ("gmail", "delete_email"): "trash_email",
     ("gmail", "mark_as_read"): "mark_read",
+    ("github", "issue"): "create_issue",
+    ("github", "create_github_issue"): "create_issue",
+    ("github", "file_issue"): "create_issue",
+    ("github", "comment"): "create_comment",
+    ("github", "comment_on_issue"): "create_comment",
+    ("github", "comment_on_pr"): "create_comment",
 }
 
 

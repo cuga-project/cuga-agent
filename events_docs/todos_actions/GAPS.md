@@ -27,7 +27,12 @@ proven · deployed + blog. Everything not on this list is v2 (see §G and roadma
 
 ### Week 2 — Breadth (the "act" half) + the Level-2 benchmark
 **Tier 1 core (the DoD):**
-- [ ] **GitHub actions** — create_issue / create_comment (§A, §B). `gen_actions.py github --check`.
+- [x] **GitHub actions — create_issue / create_comment DONE (2026-07-20).** Registered rows +
+      concierge wiring (repository from owner/repo · issue_number from the firing PR/issue) + 4 gate
+      tests + 2 benchmark cases (CORRECT-AT-ARM 100%) + catalog examples. **Both validate LIVE in AP**
+      (the repository dropdown accepts the template). Unlocks gmail→github (file issue) + github→github
+      (comment on PR) — the **PR Sentinel** agent. Level-2 remaining: fire a real PR → assert the
+      comment actually posts.
 - [ ] **Slack action** — post-message (§A, §C). Bot-token adapter (no OAuth wall).
 - [ ] **Google Calendar** — trigger (event soon) + create-event action + OAuth entry (§A).
 - [ ] **Google Sheets** — new/updated-row trigger + append-row action + OAuth entry (§A).
@@ -62,9 +67,12 @@ actions + HTTP-out, §E nested/numeric branches, §H approval gates, §I tool-fi
 
 ---
 
-## A. Action registry — only Gmail exists
+## A. Action registry — Gmail + GitHub (as of 2026-07-20)
 
-- ⬜ **Only Gmail actions are registered.** `actions.py` has `send_email`, `reply_to_email`,
+- 🟡 **Two apps act now: Gmail + GitHub.** `actions.py` has gmail (`send_email`, `reply_to_email`,
+  `create_draft_reply`) and **github (`create_issue`, `create_comment`)** — both validate live in AP.
+  Slack/Discord/Box/Calendar/Sheets actions are still unregistered (Week-2). Original note preserved:
+- ⬜ **(historical) Only Gmail actions are registered.** `actions.py` has `send_email`, `reply_to_email`,
   `create_draft_reply`. **No slack / discord / github / box actions at all.** So any utterance whose
   ACTION is non-Gmail ("post to #general", "create a GitHub issue", "upload to Box") extracts **no
   action** — the gate arms a plain watcher or declines. This is the single biggest gap: the registry is

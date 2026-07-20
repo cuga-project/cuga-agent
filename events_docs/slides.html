@@ -74,7 +74,7 @@
     <div><b>7</b><span>integrations</span></div>
     <div><b>33</b><span>triggers</span></div>
     <div><b>4</b><span>channels</span></div>
-    <div><b>116</b><span>examples</span></div>
+    <div><b>118</b><span>examples</span></div>
   </div>
 </section>
 <section class="slide "><h2>Why — the human shouldn't be the trigger</h2>
@@ -134,7 +134,7 @@
 <rect width="1160" height="760" fill="#ffffff"/>
 <defs><marker id="a" markerWidth="11" markerHeight="11" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 Z" fill="#1c1b1a"/></marker></defs>
 <text x="40" y="40" font-size="23" font-weight="700" fill="#1c1b1a">CUGA event-driven agents — the two pieces</text>
-<text x="40" y="63" font-size="13" fill="#8a8785">CREATE a flow (connect a credential, then arm it) · FIRE a flow (a trigger runs the agent). /invoke is the single seam; AP owns the tokens.</text>
+<text x="40" y="63" font-size="13" fill="#8a8785">CREATE a flow (connect a credential, then arm it) · FIRE a flow (a trigger runs the agent, which can then ACT). /invoke is the single seam; AP owns the tokens.</text>
 <rect x="30" y="84" width="1100" height="168" rx="14" fill="none" stroke="#2b5fd9" stroke-width="1.6" stroke-dasharray="7 5"/><text x="44" y="106" font-size="13" font-weight="700" fill="#2b5fd9" letter-spacing="0.5">CREATE  (arm-time)</text>
 <rect x="56" y="120" width="250" height="108" rx="12" fill="#8a8785"/>
 <text x="70" y="145" font-size="14.5" font-weight="700" fill="#fff">You / Admin</text>
@@ -193,6 +193,11 @@
 <text x="818" y="561" font-size="11.5" fill="#fff" fill-opacity="0.92">  CUGA-held .env token</text>
 <text x="818" y="578" font-size="11.5" fill="#fff" fill-opacity="0.92">OR AP send-step {{step_1.body.answer}}</text>
 <text x="818" y="595" font-size="11.5" fill="#fff" fill-opacity="0.92">sink from the thread_id origin</text>
+<rect x="804" y="626" width="300" height="84" rx="12" fill="#b06f10"/>
+<text x="818" y="651" font-size="14.5" font-weight="700" fill="#fff">Post-agent ACTION  (the act half)</text>
+<text x="818" y="670" font-size="11.5" fill="#fff" fill-opacity="0.92">PUSH: an ACTION step in the AP flow</text>
+<text x="818" y="687" font-size="11.5" fill="#fff" fill-opacity="0.92">DIRECT: a reusable executor flow CUGA fires</text>
+<text x="818" y="704" font-size="11.5" fill="#fff" fill-opacity="0.92">reply/draft/send · Gmail live · AP holds creds</text>
 <line x1="288" y1="380" x2="430" y2="386" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
 <text x="360" y="372" font-size="11" fill="#1c1b1a" text-anchor="middle">event → envelope</text>
 <line x1="804" y1="346" x2="680" y2="380" stroke="#b06f10" stroke-width="1.6" marker-end="url(#a)"/>
@@ -201,6 +206,8 @@
 <line x1="555" y1="592" x2="555" y2="624" stroke="#1c1b1a" stroke-width="1.6" marker-end="url(#a)"/>
 <line x1="680" y1="540" x2="804" y2="545" stroke="#2b5fd9" stroke-width="1.6" marker-end="url(#a)"/>
 <text x="744" y="532" font-size="11" fill="#2b5fd9" text-anchor="middle">answer</text>
+<line x1="954" y1="608" x2="954" y2="626" stroke="#b06f10" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="985" y="620" font-size="11" fill="#b06f10" text-anchor="middle">then: act</text>
 <text x="56" y="636" font-size="12" font-weight="700" fill="#1c1b1a">Legend</text>
 <rect x="56" y="645" width="13" height="13" rx="3" fill="#8a8785"/>
 <text x="76" y="656" font-size="11.5" fill="#1c1b1a">external / source</text>
@@ -369,7 +376,7 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
    or (from a direct channel) via the executor. Gmail is the live pilot; more actions are v1 breadth.</p>
 <table class="tbl">
   <tr><th>Say it like this</th><th>Action app</th><th>Status</th></tr>
-  <tr><td>“when I get an email, draft a reply summarizing my response”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when an email arrives, reply to the sender with a short acknowledgement”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when I get an email, email me a summary at me@example.com”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when I get an email, email me a summary at me@example.com and reply to the sender”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a PR opens on my repo, email me a one-line risk summary at me@example.com”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a message is posted in #alerts, email me a summary at me@example.com”</td><td class='k'>slack</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when someone posts in #general on discord, email me a summary at me@example.com”</td><td class='k'>discord</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when the telegram bot gets a link, email me a summary at me@example.com”</td><td class='k'>push</td><td><span class='badge fire-manual'>offline</span></td></tr>
+  <tr><td>“when I get an email, draft a reply summarizing my response”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when an email arrives, reply to the sender with a short acknowledgement”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when I get an email, email me a summary at me@example.com”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when I get an email, email me a summary at me@example.com and reply to the sender”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a PR opens on my repo, email me a one-line risk summary at me@example.com”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a PR opens on my repo, review it and comment on the PR”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when an email arrives, file a github issue on my repo summarizing it”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a message is posted in #alerts, email me a summary at me@example.com”</td><td class='k'>slack</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when someone posts in #general on discord, email me a summary at me@example.com”</td><td class='k'>discord</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when the telegram bot gets a link, email me a summary at me@example.com”</td><td class='k'>push</td><td><span class='badge fire-manual'>offline</span></td></tr>
 </table></section>
 <section class="slide "><h2>Creating a flow — one sentence, or one command</h2>
 <div class="cols">
@@ -540,7 +547,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 <p class="dim">Full sequenced list: events_docs/ROADMAP.md · phase definitions: PHASES.md</p></section>
 <section class="slide "><h2>Try it — the examples board</h2>
 <ul class="tight examples"><li>“POST any event to /api/events/hook/&lt;name&gt;?route=1 — CUGA routes it like a chat message”<span class='dim'> — (auto-routed)</span></li><li>“/automate summarize new emails and message me”<span class='dim'> — mailbot</span></li><li>“/automate when a resume lands in Box, judge it and message me”<span class='dim'> — resume_judge</span></li><li>“/automate new pull requests on psf/requests and summarize them”<span class='dim'> — pr_reviewer</span></li><li>“/automate the market brief every weekday at 8am”<span class='dim'> — market_briefer</span></li><li>“/automate check bitcoin every 5 minutes and ping me on a move”<span class='dim'> — pricebot</span></li></ul>
-<p class="dim">All 116 examples (with feasibility notes) live on the examples
+<p class="dim">All 118 examples (with feasibility notes) live on the examples
    board — <code>events_docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
    and that board are both generated from the code, so neither can drift.</p></section>
 <div id="bar"></div><div id="hud"></div>

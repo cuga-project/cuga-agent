@@ -20,3 +20,5 @@
 {"utterance": "when a message is posted in #alerts, email me a summary at me@example.com", "kind": "push", "source": "slack", "event": "new_channel_message", "slots": {"channel": "#alerts"}, "actions": ["gmail/send_email"], "outcome": "arm"}
 {"utterance": "when someone posts in #general on discord, email me a summary at me@example.com", "kind": "push", "source": "discord", "event": "new_channel_message", "slots": {"channel": "#general"}, "actions": ["gmail/send_email"], "outcome": "arm"}
 {"utterance": "when the telegram bot gets a link, email me a summary at me@example.com", "kind": "push", "source": "telegram", "event": "new_channel_message", "actions": ["gmail/send_email"], "outcome": "arm"}
+{"utterance": "when a PR opens on o/r, review it and comment on the PR", "kind": "push", "source": "github", "event": "new_pr", "slots": {"repo": "o/r"}, "actions": ["github/create_comment"], "outcome": "arm"}
+{"utterance": "when an email arrives, file a github issue on o/r summarizing it", "kind": "push", "source": "gmail", "event": "new_email", "slots": {"repo": "o/r"}, "actions": ["github/create_issue"], "outcome": "arm"}

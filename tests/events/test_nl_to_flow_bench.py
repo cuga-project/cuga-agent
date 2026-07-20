@@ -158,7 +158,9 @@ def test_nl_to_flow_benchmark():
 def _canon(lst):
     # normalize ap_action → canonical app/name for comparison (send_email/reply_to_email/create_draft_reply)
     m = {"gmail/send_email": "gmail/send_email", "gmail/reply_to_email": "gmail/reply_to_email",
-         "gmail/create_draft_reply": "gmail/create_draft_reply"}
+         "gmail/create_draft_reply": "gmail/create_draft_reply",
+         "github/github_create_issue": "github/create_issue",
+         "github/createCommentOnAIssue": "github/create_comment"}
     return [m.get(x, x) for x in lst]
 
 

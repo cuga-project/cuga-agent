@@ -672,6 +672,28 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                             supplied["subject"] = _subj
                         if _cc:
                             supplied["cc"] = _cc
+                    if act_row.app == "github":
+                        # the github actions need a `repository` (a DROPDOWN AP resolves against the
+                        # connection). Fill it from the utterance's owner/repo — the same repo the
+                        # trigger uses; ask if it's missing (like the email recipient).
+                        _repo = (config.get("repo") or "").strip()
+                        if not _repo or "/" not in _repo:
+                            return ("Which repository? Name it as owner/repo — e.g. "
+                                    "`file an issue on psf/requests`.")
+                        supplied["repository"] = _repo
+                        if _subj:                    # "with title 'X'" → the issue title
+                            supplied["title"] = _subj
+                        if act_row.name == "create_comment":
+                            # issue_number comes from the FIRING PR/issue — the template differs by
+                            # trigger event (PR events nest under pull_request, issues under issue).
+                            _numtpl = {"new_pr": "{{trigger.pull_request.number}}",
+                                       "new_review_request": "{{trigger.pull_request.number}}",
+                                       "new_issue": "{{trigger.issue.number}}",
+                                       "new_gh_mention": "{{trigger.issue.number}}"}.get(event or "")
+                            if not _numtpl:
+                                return ("Commenting needs a PR or issue trigger so I know which one "
+                                        "to comment on — e.g. 'when a PR opens on o/r, comment …'.")
+                            supplied["issue_number"] = _numtpl
                     # custom_api_call-backed actions carry a fixed raw_input; native actions render
                     # their params from the (trigger/answer/static/user) sources.
                     a_params = (dict(act_row.raw_input) if act_row.raw_input
