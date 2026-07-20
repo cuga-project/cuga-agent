@@ -121,6 +121,7 @@ validators = [
     Validator("features.task_decomposition", default=False),
     Validator("advanced_features.langfuse_tracing", default=False),
     Validator("observability.openlit", default=False),
+    Validator("observability.pricing_json", default=""),
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),

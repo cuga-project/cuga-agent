@@ -45,6 +45,9 @@ env:
   DYNACONF_SECRETS__VAULT_SKIP_VERIFY: "false"
   DYNACONF_OBSERVABILITY__OPENLIT: "false"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # Airgapped: keep LiteLLM / OpenLit off public GitHub. OpenLit pricing defaults
+  # to the bundled asset inside the image; set OPENLIT_PRICING_JSON to override.
+  LITELLM_LOCAL_MODEL_COST_MAP: "True"
 
 # Name of an existing Secret containing sensitive env vars.
 # When set, sensitive keys are sourced via secretKeyRef instead of plain value.
