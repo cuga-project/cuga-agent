@@ -122,6 +122,7 @@ validators = [
     Validator("advanced_features.langfuse_tracing", default=False),
     Validator("observability.openlit", default=False),
     Validator("observability.pricing_json", default=""),
+    Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),
@@ -312,6 +313,14 @@ try:
 except dynaconf.ValidationError as e:
     accumulative_errors = e.details
     logger.warning(accumulative_errors)
+
+# Bridge Dynaconf observability settings to env vars that LiteLLM reads natively.
+# Override via DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP.
+try:
+    if getattr(getattr(settings, "observability", None), "litellm_local_model_cost_map", True):
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+except Exception:
+    pass
 
 
 def get_class(class_path):

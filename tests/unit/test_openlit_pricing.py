@@ -22,30 +22,31 @@ def test_bundled_pricing_json_exists_and_is_valid():
 
 
 @pytest.mark.unit
-def test_resolve_pricing_json_prefers_env(tmp_path, monkeypatch):
+def test_resolve_pricing_json_prefers_settings(tmp_path):
     custom = tmp_path / "custom-pricing.json"
     custom.write_text('{"chat": {}}', encoding="utf-8")
-    monkeypatch.setenv("OPENLIT_PRICING_JSON", str(custom))
 
-    resolved = openlit_init.resolve_openlit_pricing_json()
+    resolved = openlit_init.resolve_openlit_pricing_json(settings_pricing_json=str(custom))
     assert resolved == str(custom)
 
 
 @pytest.mark.unit
-def test_resolve_pricing_json_falls_back_to_bundled(monkeypatch):
-    monkeypatch.delenv("OPENLIT_PRICING_JSON", raising=False)
+def test_resolve_pricing_json_falls_back_to_bundled():
     resolved = openlit_init.resolve_openlit_pricing_json(settings_pricing_json="")
     assert Path(resolved) == openlit_init.bundled_openlit_pricing_json()
 
 
 @pytest.mark.unit
 def test_init_openlit_passes_local_pricing_json(monkeypatch):
-    monkeypatch.delenv("OPENLIT_PRICING_JSON", raising=False)
     monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
 
     fake_openlit = MagicMock()
     settings = SimpleNamespace(
-        observability=SimpleNamespace(openlit=True, pricing_json=""),
+        observability=SimpleNamespace(
+            openlit=True,
+            pricing_json="",
+            litellm_local_model_cost_map=True,
+        ),
         service=SimpleNamespace(tenant_id="", instance_id=""),
     )
 
@@ -59,4 +60,29 @@ def test_init_openlit_passes_local_pricing_json(monkeypatch):
     kwargs = fake_openlit.init.call_args.kwargs
     assert kwargs["pricing_json"] == str(openlit_init.bundled_openlit_pricing_json())
     assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP", "").lower() in {"1", "true", "yes"}
-    assert os.environ.get("OPENLIT_PRICING_JSON") == str(openlit_init.bundled_openlit_pricing_json())
+
+
+@pytest.mark.unit
+def test_init_openlit_uses_settings_pricing_json(tmp_path, monkeypatch):
+    custom = tmp_path / "custom-pricing.json"
+    custom.write_text('{"chat": {}}', encoding="utf-8")
+    monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+
+    fake_openlit = MagicMock()
+    settings = SimpleNamespace(
+        observability=SimpleNamespace(
+            openlit=True,
+            pricing_json=str(custom),
+            litellm_local_model_cost_map=False,
+        ),
+        service=SimpleNamespace(tenant_id="", instance_id=""),
+    )
+
+    monkeypatch.setattr(openlit_init, "_initialized", False)
+    monkeypatch.setattr(openlit_init, "openlit", fake_openlit)
+
+    with patch("cuga.config.settings", settings):
+        openlit_init.init_openlit()
+
+    assert fake_openlit.init.call_args.kwargs["pricing_json"] == str(custom)
+    assert "LITELLM_LOCAL_MODEL_COST_MAP" not in os.environ

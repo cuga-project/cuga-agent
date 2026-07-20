@@ -29,9 +29,12 @@ Optional headers (e.g. for authenticated collectors):
 ## Airgapped / no GitHub egress
 
 OpenLit defaults to fetching pricing from raw.githubusercontent.com. CUGA always
-passes a local pricing.json (bundled under observability/assets/, or
-OPENLIT_PRICING_JSON / observability.pricing_json). LiteLLM's remote model cost
-map is also disabled by default via LITELLM_LOCAL_MODEL_COST_MAP=True.
+passes a local pricing.json from settings.observability.pricing_json (empty =
+bundled under observability/assets/). LiteLLM's remote model cost map is
+controlled by settings.observability.litellm_local_model_cost_map (default true).
+
+    DYNACONF_OBSERVABILITY__PRICING_JSON=/path/to/pricing.json
+    DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP=true
 
 ## Local testing stack
 
@@ -65,11 +68,6 @@ _logger = logging.getLogger(__name__)
 
 _BUNDLED_PRICING_JSON = Path(__file__).resolve().parent / "assets" / "pricing.json"
 
-# Prefer LiteLLM's bundled model cost map so `import litellm` does not fetch
-# raw.githubusercontent.com (airgapped / sovereign clusters). Operators can
-# still override with LITELLM_LOCAL_MODEL_COST_MAP=False before import.
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
 
 def bundled_openlit_pricing_json() -> Path:
     """Path to the vendored OpenLit pricing.json shipped with Cuga."""
@@ -80,17 +78,11 @@ def resolve_openlit_pricing_json(settings_pricing_json: str | None = None) -> st
     """
     Resolve a local pricing.json path so OpenLit never needs GitHub egress.
 
-    Precedence:
-      1. OPENLIT_PRICING_JSON env (OpenLit's native override)
-      2. settings.observability.pricing_json (when provided)
-      3. Bundled asset under cuga.backend.observability.assets
+    Uses settings.observability.pricing_json (DYNACONF_OBSERVABILITY__PRICING_JSON).
+    Empty/unset falls back to the bundled asset under observability/assets/.
     """
-    for candidate in (
-        os.getenv("OPENLIT_PRICING_JSON"),
-        settings_pricing_json,
-    ):
-        if candidate and str(candidate).strip():
-            return str(candidate).strip()
+    if settings_pricing_json and str(settings_pricing_json).strip():
+        return str(settings_pricing_json).strip()
     return str(bundled_openlit_pricing_json())
 
 
@@ -230,8 +222,8 @@ def init_openlit() -> None:
     Configuration:
         settings.toml:  [observability] openlit = true
         env var:        OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-        env var:        OPENLIT_PRICING_JSON=/path/to/pricing.json  (optional; defaults to bundled)
-        env var:        LITELLM_LOCAL_MODEL_COST_MAP=True           (setdefault when OpenLit enables)
+        env var:        DYNACONF_OBSERVABILITY__PRICING_JSON=/path/to/pricing.json
+        env var:        DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP=true
     """
     global _initialized
     if _initialized:
@@ -285,19 +277,22 @@ def init_openlit() -> None:
         attr_keys = [p.split("=", 1)[0].strip() for p in attrs.split(",") if "=" in p]
         logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES keys={','.join(attr_keys)}")
 
-        # Airgapped / sovereign: never fetch pricing from raw.githubusercontent.com.
-        # Also prefer LiteLLM's bundled cost map so import-time cost-map fetch is offline.
-        settings_pricing = getattr(getattr(settings, "observability", None), "pricing_json", "") or ""
-        pricing_json = resolve_openlit_pricing_json(settings_pricing_json=settings_pricing)
-        os.environ.setdefault("OPENLIT_PRICING_JSON", pricing_json)
-        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        # Airgapped / sovereign: local pricing from settings (bundled when empty).
+        # DYNACONF_OBSERVABILITY__PRICING_JSON / observability.pricing_json
+        obs = getattr(settings, "observability", None)
+        pricing_json = resolve_openlit_pricing_json(
+            settings_pricing_json=getattr(obs, "pricing_json", "") or ""
+        )
+        # Bridge settings → LiteLLM native env (LiteLLM is not Dynaconf-aware).
+        if getattr(obs, "litellm_local_model_cost_map", True):
+            os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
         try:
             # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT
             # from the environment automatically (standard OTel pattern).
             # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
             # is the OTel resource attribute that Tempo uses for the Service column.
-            # pricing_json is always a local path (bundled or operator override) so startup
+            # pricing_json is always a local path (bundled or settings override) so startup
             # does not depend on public GitHub egress (see issue #475).
             openlit.init(
                 application_name="cuga",
