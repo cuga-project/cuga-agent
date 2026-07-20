@@ -13,56 +13,99 @@ from cuga.backend.server.workspace_sandbox import (
 )
 
 
+def _settings(
+    *,
+    opensandbox_sandbox: bool,
+    sandbox_mode: str,
+    enable_shell_tool: bool = False,
+    enable_filesystem_tools: bool = False,
+):
+    class Adv:
+        pass
+
+    adv = Adv()
+    adv.opensandbox_sandbox = opensandbox_sandbox
+    adv.sandbox_mode = sandbox_mode
+    adv.enable_shell_tool = enable_shell_tool
+    adv.enable_filesystem_tools = enable_filesystem_tools
+
+    class Settings:
+        advanced_features = adv
+        execution = type(
+            "Exec",
+            (),
+            {
+                "shell_backend": None,
+                "filesystem_backend": None,
+                "python_backend": None,
+                "workspace_root": None,
+            },
+        )()
+
+    return Settings()
+
+
+@pytest.mark.unit
 def test_workspace_tree_is_native_backed_when_host_shell_with_opensandbox_flag(monkeypatch) -> None:
     from cuga.backend.server import workspace_sandbox as ws
 
-    class Adv:
-        opensandbox_sandbox = True
-        enable_shell_tool = True
-        sandbox_mode = "native"
-        enable_filesystem_tools = True
-
-    class Settings:
-        advanced_features = Adv()
-        execution = type(
-            "Exec",
-            (),
-            {
-                "shell_backend": None,
-                "filesystem_backend": None,
-                "python_backend": None,
-                "workspace_root": None,
-            },
-        )()
-
-    monkeypatch.setattr(ws, "settings", Settings())
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(
+            opensandbox_sandbox=True,
+            enable_shell_tool=True,
+            sandbox_mode="native",
+            enable_filesystem_tools=True,
+        ),
+    )
     assert ws.workspace_tree_is_native_backed() is True
+    assert ws.workspace_tree_is_sandbox_backed() is False
 
 
+@pytest.mark.unit
 def test_workspace_tree_is_not_native_when_opensandbox_shell_only(monkeypatch) -> None:
     from cuga.backend.server import workspace_sandbox as ws
 
-    class Adv:
-        opensandbox_sandbox = True
-        enable_shell_tool = True
-        sandbox_mode = "opensandbox"
-        enable_filesystem_tools = True
-
-    class Settings:
-        advanced_features = Adv()
-        execution = type(
-            "Exec",
-            (),
-            {
-                "shell_backend": None,
-                "filesystem_backend": None,
-                "python_backend": None,
-                "workspace_root": None,
-            },
-        )()
-
-    monkeypatch.setattr(ws, "settings", Settings())
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(
+            opensandbox_sandbox=True,
+            enable_shell_tool=True,
+            sandbox_mode="opensandbox",
+            enable_filesystem_tools=True,
+        ),
+    )
     assert ws.workspace_tree_is_native_backed() is False
+    assert ws.workspace_tree_is_sandbox_backed() is True
+
+
+@pytest.mark.unit
+def test_workspace_tree_uses_native_when_sandbox_mode_native_without_shell_tools(monkeypatch) -> None:
+    """Default-ish settings: opensandbox_sandbox=true, sandbox_mode=native, shell tools off."""
+    from cuga.backend.server import workspace_sandbox as ws
+
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(opensandbox_sandbox=True, sandbox_mode="native"),
+    )
+    assert ws.workspace_tree_is_native_backed() is True
+    assert ws.workspace_tree_is_sandbox_backed() is False
+
+
+@pytest.mark.unit
+def test_workspace_tree_uses_native_when_sandbox_mode_local_with_opensandbox_flag(monkeypatch) -> None:
+    from cuga.backend.server import workspace_sandbox as ws
+
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(opensandbox_sandbox=True, sandbox_mode="local"),
+    )
+    assert ws.workspace_tree_is_native_backed() is True
+    assert ws.workspace_tree_is_sandbox_backed() is False
 
 
 def test_sandbox_workspace_root() -> None:
