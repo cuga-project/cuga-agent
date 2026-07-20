@@ -81,3 +81,33 @@ async def test_img_supplied_after_vision_rejection_disables_flag(monkeypatch):
     await agent.run(AgentState(input="do a task", url=""))
 
     assert chain.captured["img"] == _BLANK_IMAGE
+
+
+async def test_vision_rejection_retries_with_blank_img_then_stays_safe(monkeypatch):
+    # End-to-end retry path: real screenshot -> endpoint rejects vision -> retry
+    # text-only with blank img -> a later run (vision now off) still supplies img.
+    monkeypatch.setattr(bpa.tracker, "images", ["data:image/png;base64,REAL"])
+
+    class _RejectingChain:
+        def __init__(self):
+            self.calls = []
+
+        async def ainvoke(self, data):
+            self.calls.append(data.copy())
+            if len(self.calls) == 1:
+                raise ValueError("model does not support vision")  # real marker
+            return AIMessage(content="ok", name="BrowserPlannerAgent")
+
+    chain = _RejectingChain()
+    agent = _make_agent(chain, use_vision_effective=True)
+
+    await agent.run(AgentState(input="do a task", url=""))
+    assert len(chain.calls) == 2
+    assert chain.calls[0]["img"] == "data:image/png;base64,REAL"  # first sends real image
+    assert chain.calls[1]["img"] == _BLANK_IMAGE  # retry falls back to blank
+    assert chain.calls[1]["use_vision"] is False
+    assert agent.use_vision_effective is False  # flag flipped off for the instance
+
+    await agent.run(AgentState(input="another task", url=""))
+    assert len(chain.calls) == 3
+    assert chain.calls[2]["img"] == _BLANK_IMAGE  # later run still safe
