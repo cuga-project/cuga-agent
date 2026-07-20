@@ -96,7 +96,15 @@ def source_candidates(text: str) -> list[tuple[str, str]]:
     ``source_of`` is this list's head. The full list is what the FlowSpec resolver needs: ONE
     distinct app among the hits means the trigger is unambiguous (armable without an LLM); several
     apps mean a genuine ambiguity the resolver must not guess through."""
-    t = text or ""
+    # Strip email ADDRESSES first — an address is an action recipient ("email me at me@gmail.com"),
+    # never a trigger signal. Left in, the 'gmail' inside 'me@gmail.com' matched the gmail trigger and
+    # a "when a PR opens … email me at …@gmail.com" mis-resolved to gmail/new_email (caught by the
+    # verifier, 2026-07-19). Addresses don't help trigger detection, so masking them is safe.
+    t = re.sub(r"[\w.+-]+@[\w.-]+\.\w+", " ", text or "")
+    # Drop the branch region ("… if <cond> A, otherwise B") before trigger matching. The trigger is
+    # in the "when <trigger>" clause; branch-condition words pollute it — "if it MENTIONS urgent"
+    # matched github/new_gh_mention and a gmail branch flow went ambiguous (verifier-adjacent, 2026-07-20).
+    t = re.sub(r"\bif\b.*", " ", t, flags=re.IGNORECASE | re.DOTALL)
     hits = [se for rx, se in _SOURCES if rx.search(t)]
     named = [se for se in hits if re.search(rf"\b{re.escape(se[0])}\b", t, re.I)]
     out: list[tuple[str, str]] = []

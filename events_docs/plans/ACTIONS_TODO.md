@@ -4,6 +4,18 @@ Living checklist for the action half. Companion to `TRIGGERS_ACTIONS_DESIGN.md` 
 status). Status as of 2026-07-18: Gmail actions work live via chat from any channel; the items below
 are what's left. `[ ]` open · `[~]` partial · `[x]` done-recently (kept for context).
 
+## Direct-trigger → action (Option A) — DONE (2026-07-20)
+
+- [x] **slack/discord/telegram → gmail action.** A direct trigger owns no AP flow, so an AP-only action
+      runs via a reusable EXECUTOR flow (`catch_webhook ▸ gmail/send_email`, `ap_engine.ensure_action_executor`)
+      that CUGA fires after the agent answers (`direct_events.run_action_plan`). AP keeps the creds;
+      the plan is built at arm time (validity gate applies) + stashed on `subscription.config`. Linear
+      + N-way branches (Python-evaluated). Declines loudly if the executor can't be built. Offline-verified
+      (`test_events_direct_actions.py` + gate tests). **Live fire pending.** Full status + gaps:
+      [`../todos_actions/direct_actions.md`](../todos_actions/direct_actions.md).
+      Open: box-direct→action (separate poll path), telegram return-to-caller, same-app direct sends
+      (dormant until slack/discord actions registered), live verification.
+
 ## Hardening pass — DONE (2026-07-19) — a, b, c, + LLM verifier
 
 - [x] **LLM verifier (dual-path assurance).** Deterministic code BUILDS the action plan; an
@@ -78,20 +90,27 @@ Still open for Gmail:
 - [ ] **Real-fire leg (Gmail).** Send an email to the connected inbox, confirm a DRAFT reply actually
       appears (the one leg needing a human-sent email). Add the result to the checklist.
 
-## P1 — branching (the biggest v2 piece) — UNBLOCKED 2026-07-19
+## P1 — LIVE BRANCHING — DONE (2026-07-20)
 
-**AP ROUTER validity confirmed:** an `ADD_ACTION` with `type=ROUTER` validates (HTTP 200) IFF
-`settings.executionType = "EXECUTE_FIRST_MATCH"` is present (without it → 400). So live branching is
-armable; remaining work below.
+`"when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply"` → a
+VALID + ENABLED ROUTER flow (`gmail/new_email ▸ /invoke ▸ ROUTER⟨reply / draft⟩`), verified live.
 
-- [ ] **`ap_engine` ROUTER ops.** Emit the ROUTER step (with `executionType`) + add each branch's
-      action as a child via `ADD_ACTION` with `stepLocationRelativeToParent=INSIDE_BRANCH` +
-      `branchIndex` (verify that child-op shape next — same probe method). Offline builder
-      (`router_step`, Option-B predicates) already done + tested.
-- [ ] **NL condition parsing.** Deterministic patterns for "if it mentions X / if from Y / if >N
-      lines … else …" → `branches` predicates; the concierge emits them.
-- [ ] **Verify + benchmark.** Arm-probe the full branched flow for validity; add branched cases to
-      `nl_to_flow_bench.jsonl`.
+- [x] **AP shapes cracked:** ROUTER op needs `settings.executionType="EXECUTE_FIRST_MATCH"`; branch
+      children add with `stepLocationRelativeToParent="INSIDE_BRANCH"` + `branchIndex`.
+- [x] **`ap_engine.create_branched_push_flow`** — arms trigger ▸ /invoke ▸ ROUTER + per-branch actions,
+      through the validity gate.
+- [x] **`actions.extract_branches`** — "if <cond> A, otherwise B" → branches; content conditions ("if
+      it mentions X") point at the trigger BODY (`{{trigger.message.text}}`), not the agent answer.
+- [x] **Concierge wired** + verifier checks the branch plan + benchmark case + unit tests.
+
+- [x] **Multi-branch (N-way)** — DONE 2026-07-20. "if urgent reply, if invoice email me, otherwise
+      draft" → a valid 3-branch ROUTER flow, verified live. (Also fixed: branch-condition words like
+      "mentions" polluting trigger resolution — `classify` now strips the `if…` region too.)
+
+Branching follow-ups (open):
+- [ ] **Trigger-field numeric conditions live** ("if >300 lines") — predicate model supports it;
+      NL parser covers content + from-address so far.
+- [ ] **Nested branches** — a branch that itself branches (AP supports nested routers; not parsed).
 - [ ] **Step-0 probe.** Arm a 2-level nested-router flow in live AP; confirm the runtime executes it.
       Result decides: nested-in-one-flow vs auto-chained flows.
 - [ ] **Answer-token contract injection.** When a branch tests the answer, inject "begin your reply

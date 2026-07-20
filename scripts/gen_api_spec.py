@@ -231,6 +231,23 @@ ENDPOINTS = [
            "origin — say this in Slack and the summary comes back to Slack. <b>\"my boss\" is not "
            "resolved anywhere</b>: there is no contacts store, and the Gmail trigger takes no sender "
            "filter, so the agent asks for an address or summarises whatever arrives."),
+          ("Arm a PUSH trigger + a post-agent ACTION",
+           {"text": "when an email arrives, reply to the sender with a short acknowledgement",
+            "thread_id": "web:local"},
+           "The <b>action half</b>: after the agent answers, a connector ACTION runs as a step in the "
+           "same Activepieces flow (here <code>gmail/reply_to_email</code>). Gmail is the live pilot "
+           "(reply / draft / send, plus multi-action and N-way branching). Three gates guard an arm — "
+           "deterministic build, an AP <b>validity gate</b> (an invalid step is refused, never a false "
+           "\"ARMED\"), and an LLM intent-verifier. An unsupported action declines, never a silent drop."),
+          ("Direct trigger + action (the executor, Option A)",
+           {"text": "when a message is posted in #alerts, email me a summary at me@example.com",
+            "thread_id": "gw:slack:C0BEYJ9NATB"},
+           "A <b>direct</b> trigger (slack/discord/telegram) owns no AP flow, so its Gmail action runs "
+           "via a reusable <b>executor flow</b> (<code>catch_webhook ▸ gmail/send_email</code>) CUGA "
+           "fires after the agent answers — AP still holds the credentials. No new endpoint: the "
+           "executor is created during this arm. <b>Status:</b> arm + validity gate are live-verified; "
+           "the executor <i>run</i> currently errors at the Activepieces platform level (send not yet "
+           "executed on the test instance). If the executor can't be built, the arm declines."),
           ("A slash command", {"text": "/cron 0 9 * * * papers: new arxiv papers on MoE",
                                "thread_id": "web:local"},
            "<code>/watch · /schedule · /cron · /poll · /push</code> skip the LLM's mode classification. "

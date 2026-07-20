@@ -312,6 +312,39 @@ SCENARIOS = {
         ("cuga", "src", "200 {answer}", "dashed"),
         ("cuga", "slack", "optional: ?deliver_to → direct send", "solid"),
     ]),
+
+# ── FIRE 9 — the ACTION half · AP-push trigger ▸ agent ▸ action step ───────────
+"fire-9-push-action": dict(
+    title="FIRE ⑨ — the ACTION half (trigger ▸ agent ▸ ACTION)",
+    subtitle="Not just notify — ACT. After the agent answers, a connector ACTION runs as a step in the SAME AP flow. Gmail is the live pilot.",
+    actors=[act("gm", "Gmail", "ext"), act("ap", "Activepieces", "ap"),
+            act("cuga", "CUGA\n/invoke", "cuga"), act("ag", "cuga → mailbot\n(supervisor picks)", "agent")],
+    messages=[
+        ("ap", "gm", "poll: new mail?  (AP-held OAuth)", "solid"),
+        ("gm", "ap", "new email {subject, from, body}", "dashed"),
+        ("ap", "cuga", "POST /invoke {source:gmail, payload}", "solid"),
+        ("cuga", "ag", "draft a reply to this email", "solid"),
+        ("ag", "cuga", "200 {answer: the reply text}", "dashed"),
+        (*N, "the flow's NEXT step is a gmail ACTION — AP runs it with the SAME connection", "cred"),
+        ("ap", "gm", "action step: reply_to_email {body:{{step_1.body.answer}}}", "solid"),
+        (*N, "3 gates guard the arm: deterministic build · AP validity gate · LLM verifier", "note"),
+    ]),
+
+# ── FIRE 10 — direct trigger ▸ action via the executor (Option A) ──────────────
+"fire-10-direct-action-executor": dict(
+    title="FIRE ⑩ — direct trigger → ACTION (the executor · Option A)",
+    subtitle="A direct trigger (slack/discord/telegram) owns no AP flow, so its Gmail action runs via a reusable EXECUTOR flow CUGA fires after the agent answers.",
+    actors=[act("sl", "Slack", "ext"), act("cuga", "CUGA\n/invoke", "cuga"),
+            act("ag", "cuga\n(agent)", "agent"), act("ap", "Activepieces\n(executor + creds)", "ap")],
+    messages=[
+        ("sl", "cuga", "message in #alerts → Events API (direct, no AP flow)", "solid"),
+        ("cuga", "ag", "/invoke: summarize it", "solid"),
+        ("ag", "cuga", "answer", "dashed"),
+        (*N, "no AP flow to hold an action step — so CUGA fires a reusable executor flow", "note"),
+        ("cuga", "ap", "POST executor webhook  exec-gmail-send_email {body:answer, to}", "solid"),
+        (*N, "AP resolves {{connections['…gmail']}} in its sandbox — agent still holds no token", "cred"),
+        ("ap", "cuga", "runs gmail/send_email  (arm+validity live-verified; run-level fix pending)", "dashed"),
+    ]),
 }
 
 
@@ -351,8 +384,8 @@ def system_svg() -> str:
          f'<text x="40" y="40" font-size="23" font-weight="700" fill="{C["ink"]}">'
          'CUGA event-driven agents — the two pieces</text>',
          f'<text x="40" y="63" font-size="13" fill="{C["ext"]}">'
-         'CREATE a flow (connect a credential, then arm it) · FIRE a flow (a trigger runs the agent). '
-         '/invoke is the single seam; AP owns the tokens.</text>']
+         'CREATE a flow (connect a credential, then arm it) · FIRE a flow (a trigger runs the agent, '
+         'which can then ACT). /invoke is the single seam; AP owns the tokens.</text>']
 
     # CREATE band (top)
     p.append(band(30, 84, W - 60, 168, "CREATE  (arm-time)", C["cuga"]))
@@ -393,11 +426,16 @@ def system_svg() -> str:
     p.append(box(804, 500, 300, 108, C["cuga"], "Delivery",
                  ["direct adapter (Slack/Discord/Box):", "  CUGA-held .env token",
                   "OR AP send-step {{step_1.body.answer}}", "sink from the thread_id origin"]))
+    # post-agent ACTION — the "act" half (runs in AP: a flow step, or the direct-trigger executor)
+    p.append(box(804, 626, 300, 84, C["ap"], "Post-agent ACTION  (the act half)",
+                 ["PUSH: an ACTION step in the AP flow", "DIRECT: a reusable executor flow CUGA fires",
+                  "reply/draft/send · Gmail live · AP holds creds"]))
     p.append(arrow(288, 380, 430, 386, "event → envelope", lx=360, ly=372))
     p.append(arrow(804, 346, 680, 380, "AP callback", col=C["ap"], lx=742, ly=336))
     p.append(arrow(555, 450, 555, 500, "", ))
     p.append(arrow(555, 592, 555, 624, "", ))
     p.append(arrow(680, 540, 804, 545, "answer", col=C["cuga"], lx=744, ly=532))
+    p.append(arrow(954, 608, 954, 626, "then: act", col=C["ap"], lx=985, ly=620))
 
     # legend
     lx, ly = 56, 636

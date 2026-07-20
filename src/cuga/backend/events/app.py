@@ -226,14 +226,30 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 import asyncio as _aio
                 tr("direct.watch", channel=env.source.name, matched=len(_watchers),
                    agent=_watchers[0].target_agent)
-                if len(_watchers) > 1:
+                _wpay = {"text": env.text, "channel": _org[1]}
+                # A watcher carrying an action_plan (DIRECT trigger → action, Option A) ALWAYS runs in
+                # the background via dispatch_all — that's where run_action_plan fires its action after
+                # the agent answers (engine passed so an executor step can fire its AP flow). Plain
+                # watchers keep the inline-first behavior (first match becomes the foreground worker).
+                _act_w = [w for w in _watchers if (w.config or {}).get("action_plan")]
+                _plain = [w for w in _watchers if not (w.config or {}).get("action_plan")]
+                if _act_w:
                     _aio.create_task(direct_events.dispatch_all(
-                        _watchers[1:], app=env.source.name, event="new_channel_message",
-                        payload={"text": env.text, "channel": _org[1]}))
-                agent = _watchers[0].target_agent
-                env.agent = agent
-                env.text = (f"{_watchers[0].prompt}\n\nThe watched message just arrived: "
-                            f"{env.text}")
+                        _act_w, app=env.source.name, event="new_channel_message",
+                        payload=_wpay, engine=engine))
+                if _plain:
+                    if len(_plain) > 1:
+                        _aio.create_task(direct_events.dispatch_all(
+                            _plain[1:], app=env.source.name, event="new_channel_message",
+                            payload=_wpay, engine=engine))
+                    agent = _plain[0].target_agent
+                    env.agent = agent
+                    env.text = (f"{_plain[0].prompt}\n\nThe watched message just arrived: "
+                                f"{env.text}")
+                elif _act_w:
+                    # consumed ONLY by action watchers (handled in the background) → don't also run the
+                    # converse path, which would post a second, unrelated chat reply to the same message.
+                    return JSONResponse({"ok": True, "consumed": "watcher-action"}, 200)
         if agent == "concierge":
             if concierge is None:
                 tr.error("error", reason="concierge not configured")
@@ -1067,7 +1083,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                           matched=len(subs), gated="mention")
                     asyncio.create_task(direct_events.dispatch_all(
                         subs, app="slack", event="new_channel_message",
-                        payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""}))
+                        payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""},
+                        engine=engine))
             return {"ok": True}
         # 3b) every OTHER event type (reaction_added, app_mention, channel_created, team_join,
         #     emoji_changed, star_added, …) → the DIRECT watcher dispatcher. These used to be
@@ -1087,7 +1104,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 if subs:
                     Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
                     asyncio.create_task(direct_events.dispatch_all(
-                        subs, app="slack", event=kind, payload=dict(ev)))
+                        subs, app="slack", event=kind, payload=dict(ev), engine=engine))
         return {"ok": True}
 
     async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
@@ -1396,7 +1413,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                        gated="mention")
                     await direct_events.dispatch_all(
                         subs, app="discord", event="new_channel_message",
-                        payload={"text": msg.get("content") or "", "channel": channel_id})
+                        payload={"text": msg.get("content") or "", "channel": channel_id},
+                        engine=engine)
             return
         try:
             port = os.environ.get("EVENTS_CUGA_PORT", "7860")
@@ -1435,7 +1453,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 if subs:
                     Trace(new_trace_id())("discord.direct", event=kind, matched=len(subs))
                     await direct_events.dispatch_all(subs, app="discord", event=kind,
-                                                     payload=dict(data))
+                                                     payload=dict(data), engine=engine)
 
             async def _discord_gateway():
                 await _dd.run_gateway(_discord_answer, on_event=_discord_event)

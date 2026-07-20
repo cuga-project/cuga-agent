@@ -92,8 +92,20 @@ function card(s){
     </div>
     <div class="flow"><b>${esc(src)}</b> <span class="arrow">→</span> ${esc(s.target_agent)} <span class="arrow">→</span> <b>${esc(sink)}</b>
       &nbsp;·&nbsp; <span class="muted">${esc((s.prompt||'').slice(0,90))}</span></div>
+    ${actionOf(s)? `<div class="flow"><span class="badge" style="background:#3b2f14;color:#f59e0b">ACTION</span> <b>${esc(actionOf(s))}</b></div>`:''}
     <div class="flow muted">flow: ${esc(s.flow_name||s.ap_flow_id||s.id)}</div>
   </div>`;
+}
+// The post-agent ACTION this flow runs. For a DIRECT trigger (slack/discord/telegram) it lives in
+// config.action_plan (the executor, Option A) — there is no AP flow to walk, so this is the ONLY place
+// it shows. For an AP-push flow the action is also visible as an AP step in the detail view.
+function actionOf(s){
+  const p = s && s.config && s.config.action_plan;
+  if(!p) return '';
+  if(p.steps && p.steps.length) return p.steps.map(x=>x.app+'/'+x.ap_action+' (executor)').join(' + ');
+  if(p.branches && p.branches.length) return 'branched: '+p.branches.map(
+      b=>(b.tag || (b.step&&(b.step.app+'/'+b.step.ap_action)) || '?')).join(' / ');
+  return '';
 }
 async function toggle(id, paused){ await api('/api/events/subscriptions/'+id+'/'+(paused?'resume':'pause'),'POST'); load(); }
 async function del(id){ if(!confirm('Delete this flow? This removes it from Activepieces too.')) return; await api('/api/events/subscriptions/'+id,'DELETE'); load(); }
@@ -106,9 +118,11 @@ async function view(id){
   const src = s.source_connector && s.source_connector!=='cron' ? s.source_connector : (s.mode==='CRON'?'schedule':(s.mode==='POLL'?'timer':'inbound'));
   const sink = (s.deliver_to&&s.deliver_to.length)? s.deliver_to.join(', ') : (s.mode==='PUSH'?'reply to source':'—');
   // CUGA model pipeline
+  const act = actionOf(s);
   const cuga = [
     {k:'Trigger ('+s.mode+')', v:src, d: triggerDesc(s)},
     {k:'Agent', v:s.target_agent, d:(s.prompt||'')},
+    ...(act? [{k:'Action', v:act, d:'runs after the agent — an executor flow (AP keeps the creds)'}]:[]),
     {k:'Deliver', v:sink, d:''}
   ];
   // AP flow steps (rich, from the live AP flow JSON)

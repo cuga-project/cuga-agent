@@ -53,6 +53,17 @@ class FakeEngine:
         self.calls.append(kw)
         return f"flow-{len(self.calls)}"
 
+    async def create_branched_push_flow(self, **kw):
+        self.calls.append(kw)
+        return "bflow"
+
+    async def ensure_action_executor(self, **kw):
+        self.calls.append({"executor": kw})
+        return f"exec-{len(self.calls)}"
+
+    async def trigger_flow(self, flow_id, payload=None, **kw):
+        return {"ok": True}
+
     async def delete_flow(self, fid):
         return True
 
@@ -73,6 +84,13 @@ def _gate(utt, source, event, slots):
     reply = asyncio.run(focf.ainvoke(args))
     low = reply.lower()
     if reply.startswith("ARMED") or reply.startswith("REUSING"):
+        if "branched" in reply:
+            return "arm", ["branched"]
+        # DIRECT trigger → action (Option A): actions arm as executor flows, not a push-flow step.
+        execs = [f"{c['executor']['app']}/{c['executor']['ap_action']}"
+                 for c in engine.calls if isinstance(c, dict) and "executor" in c]
+        if execs:
+            return "arm", execs
         armed = [f"{a['app']}/{a['ap_action']}" for a in (engine.calls[0]["actions"] or [])] if engine.calls else []
         # map ap_action back to canonical name for comparison
         armed = [x.replace("/reply_to_email", "/reply_to_email") for x in armed]

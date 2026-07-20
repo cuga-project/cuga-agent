@@ -147,6 +147,30 @@ def test_extract_actions_none_for_plain():
     assert actions.extract_actions("summarize it and message me") == []
 
 
+# ── branching ───────────────────────────────────────────────────────────────────────────────────
+def test_extract_branches_if_else():
+    b = actions.extract_branches(
+        "when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply")
+    assert b is not None and len(b) == 2
+    assert b[0]["action"] == "gmail/reply_to_email"
+    assert b[0]["when"] == {"field": "answer", "op": "CONTAINS", "value": "urgent"}
+    assert b[1]["action"] == "gmail/create_draft_reply" and b[1]["when"] is None
+
+
+def test_extract_branches_none_for_linear():
+    assert actions.extract_branches("when I get an email, reply to the sender") is None
+
+
+def test_extract_branches_multi_way():
+    b = actions.extract_branches(
+        "when an email arrives, if it mentions urgent reply to the sender, "
+        "if it mentions invoice email me at me@x.com, otherwise draft a reply")
+    assert [x["action"] for x in b] == [
+        "gmail/reply_to_email", "gmail/send_email", "gmail/create_draft_reply"]
+    assert b[0]["when"]["value"] == "urgent" and b[1]["when"]["value"] == "invoice"
+    assert b[2]["when"] is None                          # exactly one trailing fallback
+
+
 # ── custom_api_call rendering ───────────────────────────────────────────────────────────────────
 def test_action_step_custom_api_call_raw_input():
     step = flows.action_step("gmail", "archive_email", {})

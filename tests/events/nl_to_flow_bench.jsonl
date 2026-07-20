@@ -14,3 +14,9 @@
 {"utterance": "watch bitcoin every 2 minutes and ping me on any move", "kind": "poll", "outcome": "arm"}
 {"utterance": "every day at 9am send me new arXiv papers on mixture-of-experts", "kind": "cron", "outcome": "arm"}
 {"utterance": "what is the current price of bitcoin?", "kind": "now", "outcome": "answer"}
+{"utterance": "when a pull request opens on o/r, email me a risk summary at me@gmail.com", "kind": "push", "source": "github", "event": "new_pr", "actions": ["gmail/send_email"], "outcome": "arm", "slots": {"repo": "o/r"}, "why": "email addr must not mis-resolve trigger to gmail"}
+{"utterance": "when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["branched"], "outcome": "arm", "why": "if/else → ROUTER flow"}
+{"utterance": "when an email arrives, if it mentions urgent reply to the sender, if it mentions invoice email me at me@x.com, otherwise draft a reply", "kind": "push", "source": "gmail", "event": "new_email", "actions": ["branched"], "outcome": "arm", "why": "3-way branch"}
+{"utterance": "when a message is posted in #alerts, email me a summary at me@example.com", "kind": "push", "source": "slack", "event": "new_channel_message", "slots": {"channel": "#alerts"}, "actions": ["gmail/send_email"], "outcome": "arm"}
+{"utterance": "when someone posts in #general on discord, email me a summary at me@example.com", "kind": "push", "source": "discord", "event": "new_channel_message", "slots": {"channel": "#general"}, "actions": ["gmail/send_email"], "outcome": "arm"}
+{"utterance": "when the telegram bot gets a link, email me a summary at me@example.com", "kind": "push", "source": "telegram", "event": "new_channel_message", "actions": ["gmail/send_email"], "outcome": "arm"}

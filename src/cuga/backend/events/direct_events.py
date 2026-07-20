@@ -44,6 +44,109 @@ def kind_for(app: str, direct_kind: str) -> str:
     return ""
 
 
+# ── ACTION EXECUTION for a DIRECT trigger (Option A) ─────────────────────────────────────────────
+# A direct watcher can carry an action_plan (built by the concierge, stashed on sub.config). After the
+# agent answers, we run it: an AP-only action fires its reusable EXECUTOR flow (engine.trigger_flow);
+# a same-app action would send via the app's bot adapter (dormant until slack/discord actions exist).
+_TEXT_KEYS = ("text", "content", "message", "body", "subject", "name")
+
+
+def _payload_text(payload: dict) -> str:
+    """A best-effort text haystack from a direct event payload (slack {text}, discord {content}, …)."""
+    if not isinstance(payload, dict):
+        return str(payload or "")
+    parts = [str(payload[k]) for k in _TEXT_KEYS if isinstance(payload.get(k), (str, int, float))]
+    return " ".join(parts) if parts else " ".join(str(v) for v in payload.values()
+                                                   if isinstance(v, (str, int, float)))
+
+
+def _fill_answer(value, answer: str):
+    """Substitute the ``{{answer}}`` sentinel (executor_body places it for answer-source params) with
+    the agent's real answer, recursively through lists/dicts."""
+    if isinstance(value, str):
+        return value.replace("{{answer}}", answer or "")
+    if isinstance(value, list):
+        return [_fill_answer(v, answer) for v in value]
+    if isinstance(value, dict):
+        return {k: _fill_answer(v, answer) for k, v in value.items()}
+    return value
+
+
+def _eval_condition(when: dict, *, answer: str, payload: dict) -> bool:
+    """Evaluate a branch condition for a DIRECT trigger. Content conditions ('mentions urgent') check
+    the incoming MESSAGE (+ the answer, since direct triggers rarely branch on the answer alone);
+    a from-address condition checks the payload sender. Ops: CONTAINS / EQUALS / STARTS_WITH."""
+    field = str((when or {}).get("field", "answer")).lower()
+    op = str((when or {}).get("op", "CONTAINS")).upper()
+    val = str((when or {}).get("value", "")).strip().lower()
+    if not val:
+        return False
+    if "from" in field:
+        hay = str((payload or {}).get("from") or (payload or {}).get("user") or _payload_text(payload))
+    else:
+        hay = f"{_payload_text(payload)} {answer or ''}"
+    hay = hay.lower()
+    if op == "CONTAINS":
+        return val in hay
+    if op == "STARTS_WITH":
+        return hay.strip().startswith(val)
+    if op == "EQUALS":
+        return hay.strip() == val or val in hay
+    return False
+
+
+def _pick_branch_step(branches: list, *, answer: str, payload: dict):
+    """EXECUTE_FIRST_MATCH: first condition branch that matches wins; else the fallback (when=None)."""
+    for b in branches:
+        if b.get("when") is not None and _eval_condition(b["when"], answer=answer, payload=payload):
+            return b.get("step")
+    for b in branches:                                    # no condition matched → fallback
+        if b.get("when") is None:
+            return b.get("step")
+    return None
+
+
+async def _run_step(engine, sub, step: dict, *, answer: str, payload: dict) -> bool:
+    """Run one action step. executor → POST the resolved body to its AP webhook flow; direct_send →
+    send via the app's bot adapter. Returns True on a fire attempt, False if unrunnable. Never raises."""
+    kind = step.get("kind")
+    try:
+        if kind == "executor":
+            if engine is None or not step.get("flow_id"):
+                return False
+            body = _fill_answer(step.get("body") or {}, answer)
+            await engine.trigger_flow(step["flow_id"], body)
+            log.info("direct action executor fired app=%s action=%s flow=%s",
+                     step.get("app"), step.get("ap_action"), step.get("flow_id"))
+            return True
+        if kind == "direct_send":                         # same-app bot send (dormant today)
+            from . import delivery
+            native = (sub.thread_id or "").split(":", 2)[-1] or (sub.deliver_to or [""])[0]
+            ok, _ = await delivery.send_direct(step["app"], native, answer or "")
+            return bool(ok)
+    except Exception as e:  # noqa: BLE001 — an action failure must not crash the dispatch
+        log.warning("direct action step failed kind=%s app=%s: %s", kind, step.get("app"), e)
+    return False
+
+
+async def run_action_plan(engine, sub, *, answer: str, payload: dict) -> int:
+    """Execute the subscription's action_plan (if any) after the agent answered. Linear steps run in
+    order; a branched plan runs the FIRST matching branch (else the fallback). Returns steps fired."""
+    plan = (getattr(sub, "config", None) or {}).get("action_plan")
+    if not plan:
+        return 0
+    if plan.get("branches"):
+        step = _pick_branch_step(plan["branches"], answer=answer, payload=payload)
+        steps = [step] if step else []
+    else:
+        steps = plan.get("steps") or []
+    fired = 0
+    for st in steps:
+        if st and await _run_step(engine, sub, st, answer=answer, payload=payload):
+            fired += 1
+    return fired
+
+
 def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "") -> bool:
     want_ch = str(cfg.get("channel") or "").lstrip("#")
     if want_ch and want_ch != str(channel or "").lstrip("#"):
@@ -91,10 +194,12 @@ def describe(app: str, event: str, payload: dict) -> str:
     return f"[{app}/{event}] " + (", ".join(str(b) for b in bits) or "(see payload)")
 
 
-async def dispatch_all(subs: list, *, app: str, event: str, payload: dict) -> int:
+async def dispatch_all(subs: list, *, app: str, event: str, payload: dict, engine=None) -> int:
     """Fire every matched watcher through POST /invoke (agent pinned to the subscription's,
     deliver=True → the answer goes back to the origin the watcher was armed from, via the
-    existing direct-channel delivery). Returns how many dispatched; never raises."""
+    existing direct-channel delivery). If a watcher carries an ``action_plan`` (a DIRECT trigger →
+    action, Option A), run it after the agent answers — passing ``engine`` so an executor step can
+    fire its AP flow. Returns how many dispatched; never raises."""
     import httpx
     try:
         from .secret_seam import secret as _secret
@@ -116,6 +221,15 @@ async def dispatch_all(subs: list, *, app: str, event: str, payload: dict) -> in
             log.info("direct dispatch %s/%s → %s (HTTP %s)", app, event, sub.target_agent,
                      r.status_code)
             n += 1
+            # DIRECT trigger → action (Option A): run the stashed plan with the agent's answer.
+            if (getattr(sub, "config", None) or {}).get("action_plan"):
+                answer = ""
+                try:
+                    answer = (r.json() or {}).get("answer") or ""
+                except Exception:  # noqa: BLE001
+                    answer = ""
+                fired = await run_action_plan(engine, sub, answer=answer, payload=payload)
+                log.info("direct action_plan fired %d step(s) for %s", fired, sub.id)
         except Exception as e:  # noqa: BLE001 — one broken watcher must not drop the others
             log.warning("direct dispatch %s/%s → %s failed: %s", app, event, sub.target_agent, e)
     return n

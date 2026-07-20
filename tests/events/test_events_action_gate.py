@@ -38,11 +38,29 @@ class FakeEngine:
         self.calls.append(kw)
         return f"flow-{len(self.calls)}"
 
+    async def create_branched_push_flow(self, **kw):
+        self.calls.append(kw)
+        return "bflow"
+
+    async def ensure_action_executor(self, **kw):
+        self.calls.append({"executor": kw})
+        return f"exec-{len([c for c in self.calls if 'executor' in c])}"
+
+    async def trigger_flow(self, flow_id, payload=None, **kw):
+        self.calls.append({"fire": flow_id, "body": payload})
+        return {"ok": True}
+
     async def delete_flow(self, fid):
         return True
 
 
-def _mk():
+class NoExecutorEngine(FakeEngine):
+    """An engine that can't build an executor (e.g. the action app isn't connected)."""
+    async def ensure_action_executor(self, **kw):
+        raise RuntimeError("no connection")
+
+
+def _mk(engine=None):
     rt = CugaRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="mailbot", prompt="triage gmail",
                               mcp_servers=["cuga-text"],
@@ -50,7 +68,7 @@ def _mk():
                               channels=["telegram"]),
                     scope="default")
     store = SubscriptionStore(":memory:")
-    engine = FakeEngine()
+    engine = engine or FakeEngine()
     tools = concierge.make_concierge_tools(rt, store=store, engine=engine, users=None)
     focf = next(t for t in tools if t.name == "find_or_create_flow")
     return focf, store, engine
@@ -157,6 +175,65 @@ def test_cross_piece_reply_rejected_needs_same_app():
     assert not engine.calls
 
 
+def test_direct_trigger_gmail_action_arms_via_executor():
+    # slack is a DIRECT trigger (no AP flow). Option A: the gmail action runs via a reusable EXECUTOR
+    # flow CUGA fires after the agent answers. The watcher arms WITH an action_plan stashed on config.
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when a message is posted in #alerts, email me a summary at me@x.com",
+                             "source": "slack", "event": "new_channel_message",
+                             "channel": "#alerts", "action": "gmail/send_email",
+                             "action_to": "me@x.com"}))
+    assert "ARMED direct watcher" in msg and "executor" in msg
+    # an executor flow was ensured for the gmail action
+    assert any("executor" in c and c["executor"]["ap_action"] == "send_email" for c in engine.calls)
+    # the plan is stashed on the subscription for the dispatcher to run
+    sub = store.find_by_dedup_key(next(iter([s.dedup_key for s in store.list()])))
+    plan = (sub.config or {}).get("action_plan")
+    assert plan and plan["steps"][0]["kind"] == "executor"
+    assert plan["steps"][0]["body"]["receiver"] == ["me@x.com"]
+    assert plan["steps"][0]["body"]["body"] == "{{answer}}"      # answer sentinel for the dispatcher
+
+
+def test_direct_trigger_gates_on_action_app_not_source():
+    # A DIRECT trigger (slack) has NO AP connection — the connect-gate must check the ACTION app
+    # (gmail), not the connectionless source. Regression for the live 2026-07-20 false-negative where
+    # slack→gmail wrongly demanded "connect slack" even with Gmail connected.
+    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt.upsert_agent(AgentSpec(name="cuga", prompt="x",
+                              integrations=[{"app": "slack", "ownership": "per-user"},
+                                            {"app": "gmail", "ownership": "per-user"}]),
+                    scope="default")
+
+    class SlackUnconnected(FakeEngine):
+        async def connection_exists(self, ext, project_name=None):
+            return "slack" not in ext            # slack NOT connected; gmail IS
+
+    store = SubscriptionStore(":memory:")
+    tools = concierge.make_concierge_tools(rt, store=store, engine=SlackUnconnected(), users=None)
+    focf = next(t for t in tools if t.name == "find_or_create_flow")
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when a message is posted in #alerts, email me a summary at me@x.com",
+                             "source": "slack", "event": "new_channel_message", "channel": "#alerts",
+                             "action": "gmail/send_email", "action_to": "me@x.com"}))
+    # gated on gmail (connected) → arms; must NOT demand connecting slack
+    assert "ARMED direct watcher" in msg and "executor" in msg, msg
+    assert "CONNECT NEEDED" not in msg
+
+
+def test_direct_trigger_action_declines_when_executor_unbuildable():
+    # if the executor can't be built (action app not connected), DON'T arm a watcher that silently
+    # drops the action — decline loudly.
+    focf, store, engine = _mk(engine=NoExecutorEngine())
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when a message is posted in #alerts, email me a summary at me@x.com",
+                             "source": "slack", "event": "new_channel_message",
+                             "channel": "#alerts", "action": "gmail/send_email",
+                             "action_to": "me@x.com"}))
+    assert "couldn't set up the executor" in msg
+    assert not store.list()                            # nothing armed
+
+
 def test_multi_action_arms_two_native_steps():
     focf, store, engine = _mk()
     msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
@@ -165,6 +242,20 @@ def test_multi_action_arms_two_native_steps():
     assert "ARMED" in msg
     acts = engine.calls[0]["actions"]
     assert [a["ap_action"] for a in acts] == ["send_email", "reply_to_email"]
+
+
+def test_branched_flow_arms():
+    focf, store, engine = _mk()
+    msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push",
+                             "prompt": "when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply",
+                             "source": "gmail", "event": "new_email"}))
+    assert "ARMED" in msg and "branched" in msg
+    branches = engine.calls[0]["branches"]               # create_branched_push_flow was called
+    assert branches[0]["actions"][0]["ap_action"] == "reply_to_email"
+    assert branches[1]["actions"][0]["ap_action"] == "create_draft_reply"
+    assert branches[1]["when"] is None                   # fallback
+    # the condition points at the EMAIL body, not the agent answer
+    assert "trigger.message" in str(branches[0]["when"]["field"])
 
 
 def test_custom_api_call_actions_are_gated():

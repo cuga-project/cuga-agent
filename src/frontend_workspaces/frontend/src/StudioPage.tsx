@@ -567,11 +567,22 @@ function FlowDetail({ detail }: { detail: any }) {
       action: set.actionName || set.triggerName });
     node = node.nextAction;
   }
+  // The post-agent ACTION. For a DIRECT trigger (slack/discord/telegram) it lives in
+  // config.action_plan (the executor, Option A) — there's no AP flow to walk, so this is the only
+  // place it shows. For an AP-push flow the action also appears as an AP step below.
+  const plan = s.config?.action_plan;
+  const actionLabel = plan?.steps?.length
+    ? plan.steps.map((x: any) => `${x.app}/${x.ap_action} (executor)`).join(" + ")
+    : plan?.branches?.length
+      ? "branched: " + plan.branches.map((b: any) => b.tag || `${b.step?.app}/${b.step?.ap_action}`).join(" / ")
+      : "";
   return (
     <div>
       <p className="studio-muted" style={{ marginBottom: 10 }}>
         <strong>Source</strong> {s.source_connector || s.source_type} → <strong>Agent</strong>{" "}
-        {s.target_agent} → <strong>Sink</strong> {(s.deliver_to || []).join(", ") || "web"}
+        {s.target_agent}
+        {actionLabel && <> → <strong>Action</strong> {actionLabel}</>}
+        {" "}→ <strong>Sink</strong> {(s.deliver_to || []).join(", ") || "web"}
       </p>
       <p style={{ margin: "0 0 8px" }}>
         <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
@@ -590,7 +601,13 @@ function FlowDetail({ detail }: { detail: any }) {
             </li>
           ))}
         </ol>
-      ) : <p className="studio-muted">No live AP flow (a direct/no-AP flow, or AP unreachable).</p>}
+      ) : (
+        <p className="studio-muted">
+          {actionLabel
+            ? <>Direct trigger — no AP watcher flow; the action runs via an executor flow: <code>{actionLabel}</code></>
+            : "No live AP flow (a direct/no-AP flow, or AP unreachable)."}
+        </p>
+      )}
     </div>
   );
 }

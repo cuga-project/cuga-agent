@@ -123,10 +123,10 @@
 // who: 'you' (operator/CLI) | 'test' (chat verification). utt = a chat utterance (click to copy).
 const DATA = [
 {s:"A · Prereqs — server on THIS code + Gmail connected", d:"The action half needs (1) the events server running the current branch (the concierge action gate + ACTION VOCABULARY), and (2) a per-user Gmail OAuth connection — actions are push-only and Gmail is the pilot's acting app.", items:[
-  {id:"a1", who:"you", t:"Offline suite green (includes 26 action tests)", do:"Pure-python — the registry, render_params, resolve_action, Option-B branch predicates, the concierge action gate, dedup.",
-   cmd:"uv run python -m pytest tests/events/test_events_actions.py tests/events/test_events_action_gate.py -q", exp:"26 passed"},
+  {id:"a1", who:"you", t:"Offline action suite green (registry + gate + direct-action executor)", do:"Pure-python — the registry, render_params/executor_input/executor_body, resolve_action, branch predicates, the concierge action gate, the direct-trigger executor plan + dispatch runner, dedup.",
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"55 passed"},
   {id:"a2", who:"you", t:"Full offline suite still green", do:"No regressions across the whole events layer.",
-   cmd:"uv run python -m pytest tests/events/ -q -k 'not live'", exp:"224 passed · 0 failed"},
+   cmd:"uv run python -m pytest tests/events/ -q -k 'not live'", exp:"254 passed · 0 failed"},
   {id:"a3", who:"you", t:"Server runs the current branch", do:"The action vocabulary must be live. If the running server predates this branch, restart it (make up / cuga start demo --events). Verify the new examples are served.",
    cmd:"curl -s -H 'x-user-id: admin' http://localhost:7860/api/events/examples | grep -o 'act-gmail-reply' | head -1", exp:"prints act-gmail-reply (else the server is stale — restart it)"},
   {id:"a4", who:"you", t:"Gmail connected (per-user OAuth)", do:"Actions run as YOU. Open the connect URL, approve. Guide: events_docs/setup/GMAIL.md + setup_action.md.",
@@ -162,6 +162,27 @@ const DATA = [
    utt:"when I get an email, draft a reply and mark it read",
    do:"draft is native (live); mark_read is custom_api_call (gated) — the gate declines the raw one honestly.",
    exp:"gate steers: 'mark_read needs a raw Gmail API call … reply/draft/send work today'"},
+]},
+
+{s:"C2 · DIRECT trigger → Gmail action (Option A — executor)", d:"Slack/Discord/Telegram triggers own NO Activepieces flow, so the Gmail action runs via a reusable EXECUTOR flow (catch_webhook ▸ gmail/send_email) CUGA fires after the agent answers — AP keeps the creds. Built + OFFLINE-verified 2026-07-20 (fake engine + benchmark); LIVE FIRE PENDING (no real Slack message → real Gmail send yet). Details: events_docs/todos_actions/direct_actions.md.", items:[
+  {id:"c2a", who:"test", t:"Slack #alerts message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when a message is posted in #alerts, email me a summary at {{EMAIL}}",
+   do:"slack is a DIRECT trigger → arms a direct watcher WITH an action_plan (executor). Offline-verified; live fire pending.",
+   exp:"ARMED direct watcher (slack/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2b", who:"test", t:"Discord #general message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when someone posts in #general on discord, email me a summary at {{EMAIL}}",
+   do:"same executor path as slack (discord gateway + slack events both pass engine to dispatch).",
+   exp:"ARMED direct watcher (discord/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2c", who:"test", t:"Telegram bot message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when the telegram bot gets a link, email me a summary at {{EMAIL}}",
+   do:"rides the same inline-/invoke watcher seam automatically. NOTE: the action fires, but return-to-caller BACK to telegram is a known nuance (telegram delivers via AP).",
+   exp:"ARMED direct watcher (telegram/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2d", who:"you", t:"Unbuildable executor → declines loudly (no silent drop)", agent:"mailbot", tag:"v2",
+   do:"if the action app isn't connected in AP, the direct path REFUSES rather than arm a watcher that drops the action.",
+   cmd:"uv run python -m pytest tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"pass — arms-via-executor + declines-when-unbuildable + the dispatch runner"},
+  {id:"c2e", who:"you", t:"Benchmark covers the 3 direct combos", agent:"—", tag:"v2",
+   do:"the NL→Flow benchmark now includes slack/discord/telegram → gmail; CORRECT_AT_ARM must stay 100%.",
+   cmd:"uv run python -m pytest tests/events/test_nl_to_flow_bench.py -q -s", exp:"22 cases · CORRECT_AT_ARM 100%"},
 ]},
 
 {s:"D · Branched — answer-based (agent leads with a token)", d:"A router after the agent picks a path from the ANSWER text. Offline builder + unit tests support it (test_router_*); live branched arming is v2. See checklist section for the pytest proof.", items:[

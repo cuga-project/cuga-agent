@@ -245,6 +245,84 @@ class APEngine:
                  folder_id, interval_seconds)
         return flow_id
 
+    def _router_op(self, parent: str, name: str, branches: list) -> dict:
+        """A ROUTER step (design: live branching). Each branch: {name, when:{field,op,value}|None}.
+        A branch with when=None is the FALLBACK. AP requires ``executionType`` (probed 2026-07-20 —
+        without it the op 400s) and one ``children`` slot per branch."""
+        from . import flows
+        ap_branches = []
+        for b in branches:
+            if b.get("when") is None:
+                ap_branches.append({"branchName": b.get("name", "else"), "branchType": "FALLBACK"})
+            else:
+                w = b["when"]
+                ap_branches.append({"branchName": b.get("name") or str(w.get("value", "match")),
+                                    "branchType": "CONDITION",
+                                    "conditions": [[flows._ap_condition(w.get("field", "answer"),
+                                                                        w.get("op", "CONTAINS"),
+                                                                        w.get("value"))]]})
+        return {"type": "ADD_ACTION", "request": {"parentStep": parent, "action": {
+            "name": name, "skip": False, "type": "ROUTER", "valid": True, "displayName": "Router",
+            "settings": {"branches": ap_branches, "executionType": "EXECUTE_FIRST_MATCH"},
+            "children": [None] * len(branches)}}}
+
+    async def create_branched_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
+                                        prompt: str, branches: list, connection: str = "",
+                                        source_input: dict | None = None, name: str | None = None,
+                                        project_name: str | None = None, scope: str = "") -> str:
+        """Arm a BRANCHED push flow: <source>·<event> ▸ /invoke ▸ ROUTER⟨branch→actions⟩. Each branch:
+        {name, when:{field,op,value}|None (fallback), actions:[{app,ap_action,params,connection}]}.
+        Branch children are added with stepLocationRelativeToParent=INSIDE_BRANCH + branchIndex
+        (probed 2026-07-20). The arm-time validity gate refuses to publish an invalid flow."""
+        from . import flows
+        row = _reg = None  # noqa
+        piece_key = flows.resolve_trigger(source, event)
+        piece_key = (piece_key.piece if piece_key is not None
+                     else flows._LEGACY_SOURCE_TRIGGER[source][0])
+        piece = flows.PIECE.get(piece_key, f"@activepieces/piece-{piece_key}")
+        trig = flows.resolve_trigger(source, event)
+        trig = trig.ap_trigger if trig is not None else flows._LEGACY_SOURCE_TRIGGER[source][1]
+        default_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-branched"
+        async with httpx.AsyncClient(timeout=40) as c:
+            hdrs = await self._auth(c)
+            pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
+            flow_id = await self._new_flow(c, hdrs, name or default_name, pid, scope)
+            tver = await self._piece_version(c, piece)
+            hver = await self._piece_version(c, flows.PIECE["http"])
+            tinp = dict(source_input or {})
+            if connection:
+                tinp["auth"] = f"{{{{connections['{connection}']}}}}"
+            await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
+            payload = {**flows.push_payload(source, event), "_raw": "{{trigger}}"}
+            body = {"agent": agent, "text": prompt, "deliver": False, "scope": scope,
+                    "source": {"type": "integration", "name": source, "thread_id": thread_id},
+                    "event": {"kind": event, "payload": payload}}
+            await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
+            await self._post_op(c, flow_id, self._router_op("step_1", "step_2", branches), hdrs)
+            # add each branch's action(s) INSIDE its branch
+            sidx = 3
+            for bi, b in enumerate(branches):
+                parent = "step_2"
+                for act in (b.get("actions") or []):
+                    a_piece = flows.PIECE.get(act["app"], f"@activepieces/piece-{act['app']}")
+                    a_ver = await self._piece_version(c, a_piece)
+                    op = self._action_op(piece=a_piece, ap_action=act["ap_action"],
+                                         inp=act.get("params", {}), ver=a_ver, parent=parent,
+                                         name=f"step_{sidx}", connection=act.get("connection", ""),
+                                         display=act.get("display", ""))
+                    if parent == "step_2":          # first action in the branch → INSIDE it
+                        op["request"]["stepLocationRelativeToParent"] = "INSIDE_BRANCH"
+                        op["request"]["branchIndex"] = bi
+                    await self._post_op(c, flow_id, op, hdrs)
+                    parent = f"step_{sidx}"
+                    sidx += 1
+            await self._assert_steps_valid(c, flow_id, hdrs)
+            await self._post_op(c, flow_id,
+                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
+        log.info("armed BRANCHED push flow source=%s/%s agent=%s flow=%s branches=%d",
+                 source, event, agent, flow_id, len(branches))
+        return flow_id
+
     async def _assert_steps_valid(self, c: httpx.AsyncClient, flow_id: str, hdrs: dict) -> None:
         """Fetch the flow and RAISE if any step is invalid — deleting the throwaway flow first. This
         is the arm-time validity gate: AP marks a step ``valid: false`` when its input doesn't satisfy
@@ -487,6 +565,46 @@ class APEngine:
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
         log.info("armed inbound flow channel=%s agent=%s flow=%s", channel, agent, flow_id)
+        return flow_id
+
+    async def ensure_action_executor(self, *, app: str, ap_action: str, action_input: dict,
+                                     connection: str = "", project_name: str | None = None,
+                                     scope: str = "", name: str | None = None) -> str:
+        """Create (or replace, idempotently by name) a REUSABLE action-executor flow:
+        ``catch_webhook ▸ <app>/<ap_action>``. The action's params read from the webhook body
+        (``action_input`` = actions.executor_input(...)). Returns the AP flow id; fire it later with
+        ``trigger_flow(flow_id, body)`` where body = actions.executor_body(...) + the resolved answer.
+
+        This is Option A: it lets a DIRECT trigger (which owns no AP flow) still run an AP-only action
+        (e.g. gmail/send_email). AP keeps the credential (wired as the action ``auth``); CUGA only
+        POSTs plain values. Published through the same validity gate as every other flow — an invalid
+        action step deletes + raises instead of a false success."""
+        from . import flows
+        piece = flows.PIECE.get(app, f"@activepieces/piece-{app}")
+        wh_piece = flows.PIECE["webhook"]
+        default_name = f"exec-{app}-{ap_action.replace('_', '-')}"
+        async with httpx.AsyncClient(timeout=30) as c:
+            hdrs = await self._auth(c)
+            pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
+            if not pid:
+                raise APError("AP project unresolved for action-executor flow")
+            flow_id = await self._new_flow(c, hdrs, name or default_name, pid, scope)
+            wh_ver = await self._piece_version(c, wh_piece)
+            a_ver = await self._piece_version(c, piece)
+            # catch_webhook trigger — the POST body lands under {{trigger.body.*}}. `authType` is a
+            # REQUIRED prop on the webhook piece (probed live 2026-07-20 — an empty input makes AP mark
+            # the trigger invalid, and the validity gate refuses to arm). "none" = an open webhook
+            # (CUGA's POST is already gateway-token-guarded upstream; the executor URL isn't public).
+            await self._post_op(c, flow_id, self._piece_trigger_op(
+                wh_piece, "catch_webhook", {"authType": "none", "authFields": {}}, wh_ver), hdrs)
+            await self._post_op(c, flow_id, self._action_op(
+                piece=piece, ap_action=ap_action, inp=dict(action_input), ver=a_ver,
+                parent="trigger", name="step_1", connection=connection,
+                display=f"{app} · {ap_action}"), hdrs)
+            await self._assert_steps_valid(c, flow_id, hdrs)
+            await self._post_op(c, flow_id,
+                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
+        log.info("ensured action-executor flow=%s app=%s action=%s", flow_id, app, ap_action)
         return flow_id
 
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,

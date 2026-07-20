@@ -347,6 +347,64 @@ _UNSUPPORTED = re.compile(
     r"|\bmove\s+(it|the\s+(e-?mail|message))\s+to\b", re.IGNORECASE)
 
 
+# branching: "… if <c1> <a1>, if <c2> <a2>, … (otherwise|else) <aN>" — N-way, split on the keywords.
+_BRANCH_KW = re.compile(r"\b(if|otherwise|else\s+just|else)\b", re.IGNORECASE)
+
+
+def _condition_from(clause: str):
+    """A branch condition from the 'if …' clause → {field, op, value}. Answer-content ('mentions/
+    contains/is X') or a trigger field ('from a@b')."""
+    # "about/mentions/contains/says X" — capture the word AFTER the verb (handles "is about billing")
+    m = re.search(r"\b(?:mentions?|contains?|says?|about|regarding)\s+(?:the\s+|an?\s+)?"
+                  r"['\"]?([\w][\w-]{1,28})", clause, re.IGNORECASE)
+    if not m:  # "is urgent", "is a bug", "looks like spam"
+        m = re.search(r"\b(?:is|looks?\s+like|seems?)\s+(?:an?\s+)?['\"]?([\w][\w-]{1,28})",
+                      clause, re.IGNORECASE)
+    if m and m.group(1).lower() not in ("a", "an", "the", "it", "about"):
+        return {"field": "answer", "op": "CONTAINS", "value": m.group(1).strip()}
+    m = re.search(r"\bfrom\s+([\w.+-]+@[\w.-]+\.\w+)", clause, re.IGNORECASE)
+    if m:
+        return {"field": "trigger.from", "op": "EQUALS", "value": m.group(1)}
+    return None
+
+
+def extract_branches(utterance: str):
+    """Parse an N-way branch from NL: '… if it mentions urgent reply, if it mentions invoice email me,
+    otherwise draft a reply' → an ordered list of {name, when:{...}|None (fallback), action}. Returns
+    None when not branched (or a clause has no resolvable condition/action). Deterministic + narrow;
+    the LLM verifier is the backstop for a wrong parse. Requires ≥2 branches and exactly one trailing
+    fallback (else/otherwise). Each branch's action is resolved via :func:`extract_action`."""
+    text = utterance or ""
+    first = _BRANCH_KW.search(text)
+    if not first or first.group(1).lower() != "if":       # branching starts with "if"
+        return None
+    region = text[first.start():]
+    parts = _BRANCH_KW.split(region)                       # ['', 'if', ' c1 a1, ', 'if', ' c2 a2, ', 'otherwise', ' aN']
+    branches: list = []
+    i = 1
+    while i < len(parts) - 1:
+        kw, clause = parts[i].lower().strip(), parts[i + 1]
+        if kw == "if":
+            cond = _condition_from(clause)
+            act, _ = extract_action(clause)
+            if not (cond and act):
+                return None
+            branches.append({"name": str(cond.get("value") or f"b{len(branches)}"),
+                             "when": cond, "action": act})
+        else:                                             # otherwise / else / else just = fallback
+            act, _ = extract_action(clause)
+            if not act:
+                return None
+            branches.append({"name": "else", "when": None, "action": act})
+        i += 2
+    # need ≥2 branches and the LAST must be the single fallback (else/otherwise)
+    if len(branches) < 2 or branches[-1]["when"] is not None:
+        return None
+    if any(b["when"] is None for b in branches[:-1]):      # a fallback before the end = malformed
+        return None
+    return branches
+
+
 def unsupported_action(utterance: str) -> str:
     """If the utterance asks for an action VERB we don't support (and no registry action matched),
     return that verb so the concierge can decline honestly. '' when nothing unsupported is asked."""
@@ -418,3 +476,59 @@ def _match_tool(action: "Action", tool_names: list) -> str:
         if c and c.lower().replace("-", "_") in norm:
             return c
     return ""
+
+
+# ── ACTION EXECUTOR (Option A) — running an AP action for a DIRECT trigger ───────────────────────
+# A direct trigger (slack/discord/telegram/box-direct) has NO AP flow to hold an action step. So an
+# AP-only action (e.g. gmail/send_email) is run out-of-band by a REUSABLE "executor" flow:
+#     catch_webhook  ▸  <app>/<action>
+# whose action params read from the WEBHOOK BODY ({{trigger.body.<name>}}). CUGA fires it after the
+# agent answers by POSTing the concrete values. This keeps AP owning the credentials (the agent/CUGA
+# never sees them) while letting any direct trigger drive any AP action — one general mechanism, no
+# per-channel code. ``executor_input`` is the FLOW-side template (built once); ``executor_body`` is
+# the RUNTIME dict CUGA POSTs each fire.
+
+def _is_baked(p: "Param") -> bool:
+    """A param whose value must be a LITERAL in the flow (AP validates dropdowns/checkboxes at build
+    time, so they can't be a {{trigger.body.*}} template). These are baked from the static default;
+    everything else is supplied dynamically via the webhook body."""
+    return p.type in ("STATIC_DROPDOWN", "CHECKBOX")
+
+
+def _typed_empty(p: "Param"):
+    return [] if p.array else (False if p.type == "CHECKBOX" else "")
+
+
+def executor_input(action: "Action") -> dict:
+    """The action step's ``input`` for a reusable executor flow: baked params are literals; every
+    other param reads from the webhook body as ``{{trigger.body.<name>}}``. Built ONCE per (app,
+    action); the concrete values arrive per-fire (see :func:`executor_body`)."""
+    out: dict = {}
+    for p in action.params:
+        out[p.name] = p.default if _is_baked(p) else f"{{{{trigger.body.{p.name}}}}}"
+    return out
+
+
+def executor_body(action: "Action", supplied: dict | None, answer_key: str = "answer") -> dict:
+    """The RUNTIME JSON CUGA POSTs to the executor webhook. Covers exactly the DYNAMIC params (the
+    baked dropdown/checkbox literals live in the flow already). ``supplied`` are the concierge-resolved
+    literals (receiver/subject/cc…); ``answer_key`` names the body field carrying the agent's answer,
+    filled by the dispatcher at fire time. Answer-source params are set to ``{{answer}}`` sentinels the
+    dispatcher substitutes — kept as data so the plan is JSON-serialisable onto the subscription."""
+    supplied = supplied or {}
+    out: dict = {}
+    for p in action.params:
+        if _is_baked(p):
+            continue
+        if p.name in supplied and supplied[p.name] is not None:
+            val = supplied[p.name]
+        elif p.source == "answer":
+            val = f"{{{{{answer_key}}}}}"          # sentinel → dispatcher swaps in the real answer
+        elif p.source == "static":
+            val = p.default
+        else:                                      # user slot with nothing supplied → typed empty
+            val = _typed_empty(p)
+        if p.array and not isinstance(val, list) and val is not None:
+            val = [val]
+        out[p.name] = val
+    return out

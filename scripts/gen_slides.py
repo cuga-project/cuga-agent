@@ -238,6 +238,27 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
 <p>The <b>sink follows the origin</b>: arm a watcher from Slack and the answers arrive in Slack;
    arm it from web chat and they ride back over HTTP. Same agent, same flow.</p>"""))
 
+    # channels are a SEPARATE deliverable from triggers+actions — make that explicit
+    slides.append(_slide("Two tracks that converge — channels vs. watch/act", """
+<div class="cols">
+  <div class="col">
+    <h3>Track A — Channels (converse)</h3>
+    <p>Where a human <em>talks to</em> the agent: web, Slack, Discord, Telegram. This is
+       <b>transport plumbing</b> — speaking each platform's API (Events API, Gateway, bot stream).</p>
+    <p class="dim">Mostly independent of the product logic. A channel can be added — or a flaky one
+       fixed — <b>without touching a single trigger or action</b>. It ships on its own cadence.</p>
+  </div>
+  <div class="col accent">
+    <h3>Track B — Triggers + Actions (watch / act)</h3>
+    <p>Where the agent <em>value</em> lives: watch a tool, reason, act on another. Registry-driven —
+       adding a piece is data, not code.</p>
+    <p class="dim">This is the product. It doesn't care which channel you spoke from.</p>
+  </div>
+</div>
+<p>The two are <b>decoupled by design</b> and meet at one seam — <code>/invoke</code>. Any channel in,
+   any trigger/action out. So "open up Slack/Discord/Telegram" and "support GitHub/Gmail/Calendar
+   actions" are <b>separate deliverables</b> that compose — not one tangled effort.</p>"""))
+
     # 7 — integrations overview
     over = []
     for app in apps:
@@ -276,6 +297,93 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
   {''.join(trs)}
 </table>""", klass="integration"))
+
+    # ── the ACTION half ────────────────────────────────────────────────────────────────────────
+    # actions from the catalog (any example that arms a post-agent action)
+    _act_ex = [e for e in catalog.EXAMPLES if e.get("action")]
+
+    def _act_rows(pred, n=4):
+        out = []
+        for e in _act_ex:
+            if pred(e) and len(out) < n:
+                live = "live" if e.get("live") else "offline"
+                out.append(f"<tr><td>“{_esc(e['utterance'])}”</td>"
+                           f"<td class='k'>{_esc(e['action'])}</td>"
+                           f"<td><span class='badge fire-{ 'synth' if e.get('live') else 'manual' }'>"
+                           f"{live}</span></td></tr>")
+        return "".join(out)
+
+    slides.append(_slide("From watch → act: the action half", f"""
+<p>A trigger fires the agent — then the agent's answer drives a real <b>action</b> in a connected app,
+   as a step in the same flow. Not just notify: <em>do</em>.</p>
+<table class="tbl">
+  <tr><th>Say it like this</th><th>Action armed</th><th>Status</th></tr>
+  {_act_rows(lambda e: e.get('integration') == 'gmail')}
+</table>
+<ul class="tight">
+  <li><b>Gmail is the live pilot</b> — reply to the sender, draft a reply, send a fresh email;
+      <b>multi-action</b> (“email me AND reply”) and <b>N-way branching</b> (“if urgent reply, else draft”)
+      all arm as valid Activepieces flows.</li>
+  <li><b>Registry-driven</b> — an action is a data row generated from the live AP catalog. Adding
+      GitHub/Slack/Calendar actions is data, not engine code.</li>
+  <li><b>Three anti-silent-failure gates</b> — deterministic build · an arm-time AP <b>validity gate</b>
+      (an invalid step is refused, never a false “ARMED”) · an <b>LLM verifier</b> that flags intent
+      mismatches. A 22-case NL→Flow <b>benchmark</b> holds CORRECT-AT-ARM at 100%.</li>
+</ul>"""))
+
+    slides.append(_slide("Direct triggers can act too — the executor (Option A)", f"""
+<p>Slack / Discord / Telegram triggers own <em>no</em> Activepieces flow (CUGA receives them itself),
+   so their Gmail action runs via a reusable <b>executor flow</b> CUGA fires after the agent answers —
+   Activepieces still keeps the credentials.</p>
+<table class="tbl">
+  <tr><th>Say it like this</th><th>Action armed</th><th>Status</th></tr>
+  {_act_rows(lambda e: e.get('integration') in ('slack', 'discord') or e.get('channel') == 'telegram')}
+</table>
+<ul class="tight">
+  <li><b>One general mechanism</b> unlocks slack/discord/telegram → gmail — no per-channel code.</li>
+  <li><b>Live-verified:</b> the full arm path + executor creation + Activepieces validity gate (which
+      caught two real bugs while proving it). <b>Pending:</b> the executor <em>run</em> hits an
+      Activepieces platform error — the send doesn't execute on the test instance yet.</li>
+  <li><b>Never silent</b> — if the action can't be armed, the concierge declines and says why.</li>
+</ul>"""))
+
+    # ── LAUNDRY LIST — a broad menu of utterances that actually work ────────────────────────────
+    def _ex_rows(pred, n=9):
+        rows_ = []
+        for e in catalog.EXAMPLES:
+            if not (pred(e) and e.get("utterance")):
+                continue
+            app = e.get("integration") if e.get("integration") not in (None, "none") else e.get("trigger")
+            status = ("<span class='badge fire-synth'>live</span>" if e.get("live")
+                      else "<span class='badge fire-manual'>offline</span>")
+            rows_.append(f"<tr><td>“{_esc(e['utterance'])}”</td>"
+                         f"<td class='k'>{_esc(app)}</td><td>{status}</td></tr>")
+            if len(rows_) >= n:
+                break
+        return "".join(rows_)
+
+    slides.append(_slide("Laundry list — TRIGGERS you can say (watch)", f"""
+<p class="dim">Event triggers — the world calls the agent. One sentence in any channel arms a standing flow.</p>
+<table class="tbl">
+  <tr><th>Say it like this</th><th>App</th><th>Status</th></tr>
+  {_ex_rows(lambda e: e.get('trigger') == 'push' and not e.get('action'), n=10)}
+</table>"""))
+
+    slides.append(_slide("Laundry list — SCHEDULES &amp; watchers (cron · poll · webhook)", f"""
+<table class="tbl">
+  <tr><th>Say it like this</th><th>Kind</th><th>Status</th></tr>
+  {_ex_rows(lambda e: e.get('trigger') in ('cron', 'poll') or e.get('integration') == 'webhook', n=10)}
+</table>
+<p class="dim">CRON = pure time · POLL = sample &amp; compare, speak only on change · WEBHOOK = anything
+   that can POST becomes a trigger.</p>"""))
+
+    slides.append(_slide("Laundry list — trigger ▸ agent ▸ ACTION (act)", f"""
+<p class="dim">The action half: after the agent answers, a connector action runs — reply, draft, send,
+   or (from a direct channel) via the executor. Gmail is the live pilot; more actions are v1 breadth.</p>
+<table class="tbl">
+  <tr><th>Say it like this</th><th>Action app</th><th>Status</th></tr>
+  {_ex_rows(lambda e: bool(e.get('action')), n=11)}
+</table>"""))
 
     # creating a flow
     slides.append(_slide("Creating a flow — one sentence, or one command", """
@@ -325,6 +433,29 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
    fast-path {b['high']}/{b['push']} push cases ({100 * b['high'] // max(b['push'], 1)}%),
    correct-at-high {b['right']}/{b['high']}, gated on <b>zero wrong-at-high</b>. It caught two real
    bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p>"""))
+
+    # benchmarking — the two levels ("armed ≠ works")
+    slides.append(_slide("How we know it works — two levels of benchmark", f"""
+<p><b>Arming a flow is not proof it works.</b> A flow can compile perfectly and still never fire, or
+   fire down the wrong branch. So we benchmark at two levels — a capability is "done" only when it
+   passes <b>both</b>.</p>
+<table class="tbl">
+  <tr><th>&nbsp;</th><th>Level 1 · NL → AP</th><th>Level 2 · Execution</th></tr>
+  <tr><td class="k">Question</td><td>Did we build the <b>right flow</b>?</td>
+      <td>Does the flow <b>actually work</b>?</td></tr>
+  <tr><td class="k">Runs against</td><td>fake engine — offline, deterministic</td>
+      <td><b>real Activepieces + real connections</b></td></tr>
+  <tr><td class="k">When</td><td>every commit (CI)</td><td>nightly / pre-release</td></tr>
+  <tr><td class="k">Asserts</td><td>mode · trigger · action · gate outcome</td>
+      <td>valid+enabled → <b>fires</b> → <b>right step ran</b> → <b>effect verified</b> in the app → delivered</td></tr>
+  <tr><td class="k">Metric</td><td><b>CORRECT-AT-ARM</b> ({b['cases']} cases, 100%)</td>
+      <td>FIRE-RATE · EXECUTION-CORRECT · EFFECT-VERIFIED</td></tr>
+  <tr><td class="k">Status</td><td><span class="badge fire-synth">exists</span></td>
+      <td><span class="badge fire-manual">building</span> — validity gate + <code>--check</code> + synth-fire today</td></tr>
+</table>
+<p class="dim">Fire strategy is tagged per trigger: <b>synth</b> (github webhooks, machine-fireable) ·
+   <b>real</b> (a controllable local action — box upload, a slack message) · <b>manual</b> (a real email —
+   a scripted send in the harness). Level 2 is what turns "armed" into "proven."</p>"""))
 
     # under the hood — the API + division of labor
     slides.append(_slide("Under the hood — the technical highlights", f"""

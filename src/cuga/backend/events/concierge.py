@@ -292,6 +292,59 @@ def _log_divergence(utterance: str, plan_desc: str, reason: str) -> None:
         pass
 
 
+# apps CUGA can act on WITHOUT an AP flow (it already holds a direct bot connection). A same-app
+# action on one of these is a direct send — no executor needed. (Dormant until slack/discord ACTIONS
+# are registered; today only gmail actions exist, so every direct-trigger action takes the executor.)
+_DIRECT_SEND_APPS = {"slack", "discord"}
+
+
+async def _build_direct_plan(engine, acts, base_app, engine_actions, engine_branches, *,
+                             project_name, scope):
+    """Build a JSON-serialisable action plan for a DIRECT trigger (Option A: direct-trigger → action).
+
+    A direct trigger (slack/discord/telegram/box-direct) owns no AP flow, so an AP-only action (e.g.
+    gmail/send_email) is run out-of-band by a reusable EXECUTOR flow (``ap_engine.ensure_action_executor``)
+    that CUGA fires after the agent answers. Building it here means the arm-time validity gate still runs
+    (a broken executor deletes + raises, never a false ARM). Returns ``{"steps":[...]}`` (linear) or
+    ``{"branches":[...]}`` (branched), or ``None`` if nothing is buildable (caller declines loudly).
+
+    Each step is one of:
+      {"kind":"executor", app, ap_action, flow_id, body}     — POST body to the executor webhook
+      {"kind":"direct_send", app, ap_action, text_from:"answer"} — CUGA sends via the app's bot adapter
+    """
+    async def _step(a: dict):
+        app, ap_action = a.get("app", ""), a.get("ap_action", "")
+        name = a.get("_name") or ap_action
+        supplied = a.get("_supplied") or {}
+        if app == base_app and app in _DIRECT_SEND_APPS:
+            return {"kind": "direct_send", "app": app, "ap_action": ap_action, "text_from": "answer"}
+        act_row = acts.get(app, name)
+        if act_row is None:
+            return None
+        flow_id = await engine.ensure_action_executor(
+            app=app, ap_action=ap_action, action_input=acts.executor_input(act_row),
+            connection=a.get("connection", ""), project_name=project_name, scope=scope)
+        return {"kind": "executor", "app": app, "ap_action": ap_action, "flow_id": flow_id,
+                "body": acts.executor_body(act_row, supplied)}
+
+    if engine_branches:
+        branches = []
+        for b in engine_branches:
+            acts_list = b.get("actions") or []
+            st = (await _step(acts_list[0])) if acts_list else None
+            if st is None:
+                return None
+            branches.append({"when": b.get("when"), "step": st, "tag": b.get("_tag", "")})
+        return {"branches": branches} if branches else None
+    steps = []
+    for a in engine_actions:
+        st = await _step(a)
+        if st is None:
+            return None
+        steps.append(st)
+    return {"steps": steps} if steps else None
+
+
 def _owner_scope(spec, p: Principal) -> str:
     """Grain follows credentials: tenant-wide if all connectors are shared, else the full user
     scope when any integration is per-user (that flow is necessarily per-user)."""
@@ -495,6 +548,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # destructive action can never arm on an unclear verb (design §3.4b). Returns the resolved
             # steps for the engine, an identity tag for dedup, and a human preview line.
             engine_actions: list = []
+            engine_branches: list = []
             action_tag = ""
             action_preview = ""
             if kind == "push":
@@ -504,12 +558,59 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     import actions as _acts
                     import flows
                 _raw = _utterance.get("") or prompt
+                # BRANCHING: "… if <cond> <action A>, otherwise <action B>" → a ROUTER flow. Detected
+                # deterministically; each branch's action resolved like the linear path. The LLM
+                # verifier is the backstop for a wrong parse.
+                _nl_branches = None if action else _acts.extract_branches(_raw)
+                if _nl_branches:
+                    # "if it mentions X" means the EMAIL content, not the agent's answer → point the
+                    # condition at the trigger's body field ({{trigger.message.text}} for gmail) so we
+                    # check the literal incoming message. Falls back to the answer if the trigger has
+                    # no body field.
+                    _body_tpl = flows.push_payload(source, event).get("body")
+                    for _b in _nl_branches:
+                        _w = _b.get("when")
+                        if _w and _w.get("field") == "answer" and _body_tpl:
+                            _w["field"] = _body_tpl
+                    for _b in _nl_branches:
+                        _ba, _, _bn = _b["action"].partition("/")
+                        _brow, _bprob = _acts.validate(_ba, _bn, {})
+                        if _brow is None:
+                            return f"error: {_bprob}"
+                        if _brow.same_app_trigger and source and source != _brow.app:
+                            return (f"'{_brow.app}/{_brow.name}' needs a {_brow.app} trigger; can't "
+                                    f"use it in a branch on '{source}'.")
+                        if _brow.raw_input:
+                            return (f"'{_brow.app}/{_brow.name}' isn't armable yet, so I can't put it "
+                                    f"in a branch. Use reply/draft/send.")
+                        _bsupp = {}
+                        if _brow.name == "send_email":
+                            _bto = _acts._send_recipient(_raw)
+                            _bsupp["receiver"] = ([_bto] if _bto and "@" in _bto
+                                                  else [flows.push_payload(source, event).get("from", "")]
+                                                  if source == "gmail" else None)
+                            if not _bsupp.get("receiver") or not _bsupp["receiver"][0]:
+                                return "A branch emails someone — give an address (e.g. 'email me at x@y.com')."
+                        _bown = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
+                                      if i.get("app") == _brow.app), "per-user")
+                        _b["actions"] = [{"app": _brow.app, "ap_action": _brow.ap_action,
+                                          "params": _acts.render_params(_brow, _bsupp),
+                                          "connection": credentials.connection_external_id(_brow.app, _bown, p),
+                                          "display": f"{_brow.app.title()} · {_brow.title}",
+                                          "_name": _brow.name, "_supplied": dict(_bsupp)}]
+                        _b["_tag"] = f"{_brow.app}/{_brow.name}"
+                    engine_branches = _nl_branches
+                    action_tag = "branched:" + "+".join(b["_tag"] for b in engine_branches)
+                    action_preview = (" — branched: " + " / ".join(
+                        f"{b['name']}→**{b['_tag']}**" for b in engine_branches))
                 # Build the ordered list of (action, recipient-hint) specs. An explicit `action` arg
                 # (LLM/slash) wins; otherwise extract MULTIPLE actions from the raw utterance — the
                 # deterministic on-ramp (fast-path/slash/LLM-that-omitted-one all reach here). A bare
                 # trigger extracts nothing → plain watcher, as before. Registry-driven: new pieces
                 # (and new actions) need no concierge change.
-                if action:
+                if _nl_branches:
+                    _specs = []                          # branched → skip the linear action path
+                elif action:
                     _specs = [{"action": action, "action_to": action_to}]
                 else:
                     _specs = _acts.extract_actions(_raw)
@@ -580,7 +681,11 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     a_conn = credentials.connection_external_id(act_row.app, _act_own, p)
                     _act_step = {"app": act_row.app, "ap_action": act_row.ap_action, "params": a_params,
                                  "connection": a_conn,
-                                 "display": f"{act_row.app.title()} · {act_row.title}"}
+                                 "display": f"{act_row.app.title()} · {act_row.title}",
+                                 # stashed for the DIRECT-trigger executor path (Option A): the
+                                 # canonical name + resolved literals let it build executor_input/body
+                                 # without re-parsing. create_push_flow ignores these extra keys.
+                                 "_name": act_row.name, "_supplied": dict(supplied)}
                     if act_row.destructive:                  # run-time approval gate (design §3.4b)
                         _act_step["_approve"] = True
                     engine_actions.append(_act_step)
@@ -589,24 +694,37 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # NO action matched, but the user CLEARLY asked for one we don't support (label/
                 # forward/star/…) → decline honestly instead of silently arming a plain watcher that
                 # drops the intent (the benchmark's silent-failure catch).
-                if not engine_actions:
+                if not engine_actions and not engine_branches:
                     _unsup = _acts.unsupported_action(_raw)
                     if _unsup:
                         return (f"I can't **{_unsup}** emails yet — there's no native Gmail action for "
                                 f"it, and I've only wired reply, draft, and send/email-me. I won't arm "
                                 f"a watcher that silently drops that. Try reply/draft/send, or ask me "
                                 f"to add '{_unsup}'.")
-                if engine_actions:
-                    action_tag = "+".join(t.rstrip("!") for t in _tags)
-                    action_preview = " then " + " + ".join(f"**{t}**" for t in _tags)
+                if engine_actions or engine_branches:
+                    if engine_actions:
+                        action_tag = "+".join(t.rstrip("!") for t in _tags)
+                        action_preview = " then " + " + ".join(f"**{t}**" for t in _tags)
                     # DUAL-PATH ASSURANCE: deterministic code built the plan; an independent LLM now
                     # verifies it matches the request. A confident MISMATCH → ask, don't arm (the
                     # anti-silent-failure backstop). MATCH / unavailable → proceed (fail-open).
-                    _plan = (f"When {source}/{event} fires, run the agent, then: "
-                             + "; ".join(f"{a['app']}/{a['ap_action']}"
-                                         + (f" to {a['params'].get('receiver')}"
-                                            if a.get("params", {}).get("receiver") else "")
-                                         for a in engine_actions))
+                    _cfg_str = (" [" + ", ".join(f"{k}={v}" for k, v in config.items()) + "]"
+                                if config else "")
+                    if engine_branches:
+                        def _bdesc(b):
+                            _rcv = (b["actions"][0].get("params", {}).get("receiver")
+                                    if b.get("actions") else None)
+                            _to = f" to {_rcv}" if _rcv else ""
+                            head = f"if [{b['when']}]" if b.get("when") else "else"
+                            return f"{head} → {b['_tag']}{_to}"
+                        _plan = (f"When {source}/{event}{_cfg_str} fires, run the agent, then BRANCH: "
+                                 + "; ".join(_bdesc(b) for b in engine_branches))
+                    else:
+                        _plan = (f"When {source}/{event}{_cfg_str} fires, run the agent, then: "
+                                 + "; ".join(f"{a['app']}/{a['ap_action']}"
+                                             + (f" to {a['params'].get('receiver')}"
+                                                if a.get("params", {}).get("receiver") else "")
+                                             for a in engine_actions))
                     _ok, _why = await _verify_action_plan(_raw, _plan)
                     if not _ok:
                         return (f"⚠️ Before arming, my verifier flags a possible mismatch: {_why}\n"
@@ -647,6 +765,15 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             _gate_app = None
             if kind == "push" and source:
                 _gate_app = {"github_pr": "github", "github_issue": "github"}.get(source, source)
+                # A DIRECT trigger (slack/discord/telegram) arrives at CUGA itself — it has NO AP
+                # connection to gate on. When it drives an action (Option A executor), the app that
+                # actually needs a connection is the ACTION app (e.g. gmail), not the direct source.
+                # Gating on the source here demanded "connect slack", which has no AP connection and
+                # blocked slack→gmail even with Gmail connected (caught live 2026-07-20).
+                if trig_row is not None and trig_row.backend == "direct":
+                    _act_apps = [a["app"] for a in engine_actions] + \
+                                [s["app"] for b in engine_branches for s in b.get("actions", [])]
+                    _gate_app = _act_apps[0] if _act_apps else None
             connect = await _connect_needed(spec, p, engine, only_app=_gate_app)
             if connect:
                 return f"CONNECT NEEDED — {connect[1]}"
@@ -726,6 +853,28 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # just a subscription row; the direct-event dispatcher (direct_events.py) matches
                 # incoming events against it and fires the agent through the same /invoke seam.
                 if trig_row is not None and trig_row.backend == "direct" and base_app != "box":
+                    # DIRECT trigger + action (Option A). A direct trigger owns no AP flow, so an
+                    # AP-only action (e.g. gmail/send_email) runs out-of-band via a reusable EXECUTOR
+                    # flow CUGA fires after the agent answers (AP keeps the creds). We build the plan
+                    # NOW — creating/reusing the executor flow so the arm-time validity gate applies —
+                    # and stash it on the subscription's config; direct_events.run_action_plan runs it.
+                    # If it can't be built, decline LOUDLY (never silently drop the action).
+                    if engine_actions or engine_branches:
+                        try:
+                            _grain = getattr(engine, "project_grain", "tenant")
+                            _plan_obj = await _build_direct_plan(
+                                engine, _acts, base_app, engine_actions, engine_branches,
+                                project_name=p.ap_project_name(_grain), scope=p.scope)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("direct action-plan build failed base_app=%s: %s", base_app, e)
+                            _plan_obj = None
+                        if not _plan_obj:
+                            _what = (action_tag or "a branched action")
+                            return (f"I understood the action ('{_what}') on {base_app}/"
+                                    f"{event or 'default'}, but I couldn't set up the executor flow to "
+                                    f"run it — is the action app connected in Activepieces? I won't arm "
+                                    f"a watcher that silently drops the action.")
+                        config = {**config, "action_plan": _plan_obj}   # dispatcher reads this on fire
                     if base_app == "webhook":
                         hookname = (config.get("pattern") or "my-hook").replace(" ", "-")
                         return ("No arming needed — the generic webhook endpoint is always live. "
@@ -747,12 +896,16 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                                 else "REUSING an existing identical watcher.")
                     log.info("concierge armed DIRECT watcher app=%s event=%s agent=%s",
                              base_app, event, agent)
-                    _cfg = f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else ""
+                    _cfg = (f" [{', '.join(f'{k}={v}' for k, v in config.items() if k != 'action_plan')}]"
+                            if any(k != "action_plan" for k in config) else "")
                     _act = ("" if base_app != "slack" else
                             " (the Slack app must be subscribed to this event type — see "
                             "events_docs/setup/SLACK.md)")
+                    # action-bearing direct watcher (Option A): show the action + how it fires
+                    _dact = (f" then run {action_tag} via an executor flow" if config.get("action_plan")
+                             and action_tag else "")
                     return (f"ARMED direct watcher ({base_app}/{event}{_cfg}) for {agent} → {sink}"
-                            f"{_act}. Subscription {sub.id}.")
+                            f"{_dact}{_act}. Subscription {sub.id}.")
                 _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
                              if i.get("app") == base_app), "per-user")
                 push_conn = credentials.connection_external_id(base_app, _own, p)
@@ -775,16 +928,23 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                              f"{_act_suffix}")
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
-                    ap_flow_id = await engine.create_push_flow(
-                        source=source, event=event or "new_file", agent=agent,
-                        thread_id=p.thread(origin), prompt=prompt,
-                        project_name=p.ap_project_name(grain), scope=p.scope,
-                        connection=push_conn, source_input=src_input, name=flow_name,
-                        actions=engine_actions or None,
-                        # return-to-caller for an AP-backed origin channel (Telegram); direct
-                        # channels (Slack/Discord) are handled by /invoke's deliver=True path.
-                        deliver_channel=deliver_channel, deliver_target=deliver_target,
-                        deliver_connection=deliver_connection)
+                    if engine_branches:                  # BRANCHED flow → ROUTER arming
+                        ap_flow_id = await engine.create_branched_push_flow(
+                            source=source, event=event or "new_file", agent=agent,
+                            thread_id=p.thread(origin), prompt=prompt, branches=engine_branches,
+                            connection=push_conn, source_input=src_input, name=flow_name,
+                            project_name=p.ap_project_name(grain), scope=p.scope)
+                    else:
+                        ap_flow_id = await engine.create_push_flow(
+                            source=source, event=event or "new_file", agent=agent,
+                            thread_id=p.thread(origin), prompt=prompt,
+                            project_name=p.ap_project_name(grain), scope=p.scope,
+                            connection=push_conn, source_input=src_input, name=flow_name,
+                            actions=engine_actions or None,
+                            # return-to-caller for an AP-backed origin channel (Telegram); direct
+                            # channels (Slack/Discord) are handled by /invoke's deliver=True path.
+                            deliver_channel=deliver_channel, deliver_target=deliver_target,
+                            deliver_connection=deliver_connection)
                 except Exception as e:  # noqa: BLE001
                     msg = str(e)
                     # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
