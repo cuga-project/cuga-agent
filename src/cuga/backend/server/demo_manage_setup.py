@@ -474,9 +474,11 @@ def setup_demo_manage_config(
     _normalize_demo_sandbox_mode()
 
     from cuga.backend.server.config_store import (
+        has_any_config,
         reset_config_db,
         save_config,
         save_draft,
+        should_preserve_existing_configs,
     )
 
     if demo_type == "demo_knowledge":
@@ -523,7 +525,23 @@ def setup_demo_manage_config(
         "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
         "What capabilities does the platform highlight on-premises use?",
     ]
-    reset_config_db()
+
+    preserve_existing = False
+    if should_preserve_existing_configs():
+        preserve_existing = asyncio.run(has_any_config(agent_id))
+        if preserve_existing:
+            from cuga.config import get_service_instance_id, get_tenant_id
+
+            logger.info(
+                "Preserving existing agent configs from DB (mode=%s, tenant=%r, instance=%r, agent=%r)",
+                getattr(settings.storage, "mode", "local"),
+                get_tenant_id(),
+                get_service_instance_id(),
+                agent_id,
+            )
+
+    if not preserve_existing:
+        reset_config_db()
 
     # Only wipe knowledge data when explicitly requested (--reset flag).
     # This preserves uploaded documents across normal restarts.
@@ -738,10 +756,17 @@ def setup_demo_manage_config(
     if filesystem:
         config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
+    if preserve_existing:
+        return
+
     async def _setup():
         await save_draft(config, agent_id)
         await save_config(config, agent_id)
 
+    logger.info(
+        "Seeding agent configs from defaults (no existing rows for agent=%r)",
+        agent_id,
+    )
     asyncio.run(_setup())
 
 

@@ -150,6 +150,7 @@ validators = [
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
     Validator("storage.postgres_url", default=""),
+    Validator("storage.preserve_configs_on_startup", default="prod"),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
     Validator("secrets.mode", default="local"),

@@ -1732,39 +1732,60 @@ def start(
             os.environ["CUGA_AGENT_NAME"] = "Travel Agent"
             os.environ["CUGA_AGENT_DESCRIPTION"] = "AI-powered corporate travel planning system"
 
-            from cuga.backend.server.config_store import reset_config_db, save_draft
+            from cuga.backend.server.config_store import (
+                has_any_config,
+                reset_config_db,
+                save_draft,
+                should_preserve_existing_configs,
+            )
             import asyncio
 
             ensure_managed_mcp_file_exists(get_managed_mcp_path())
-            logger.info("🧹 Resetting config db for Travel Agent...")
 
-            reset_config_db()
+            preserve_existing = False
+            if should_preserve_existing_configs():
+                preserve_existing = asyncio.run(has_any_config("cuga-default"))
+                if preserve_existing:
+                    from cuga.config import get_service_instance_id, get_tenant_id
 
-            # Build LLM config from environment (same as setup_demo_manage_config does)
-            llm_api_key_ref = ""
-            try:
-                from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+                    logger.info(
+                        "Preserving existing agent configs from DB "
+                        "(mode=%s, tenant=%r, instance=%r, agent=%r)",
+                        getattr(settings.storage, "mode", "local"),
+                        get_tenant_id(),
+                        get_service_instance_id(),
+                        "cuga-default",
+                    )
 
-                llm_api_key_ref = resolve_llm_api_key_ref()
-            except Exception:
-                pass
+            if not preserve_existing:
+                logger.info("🧹 Resetting config db for Travel Agent...")
+                reset_config_db()
 
-            llm_cfg = {"model": os.environ.get("MODEL_NAME", "")}
-            if llm_api_key_ref:
-                llm_cfg["api_key"] = llm_api_key_ref
+                # Build LLM config from environment (same as setup_demo_manage_config does)
+                llm_api_key_ref = ""
+                try:
+                    from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
-            travel_agent_config = {
-                "agent": {
-                    "name": "Travel Agent",
-                    "description": "AI-powered corporate travel planning system",
-                },
-                "tools": [],
-                "llm": llm_cfg,
-            }
-            asyncio.run(save_draft(travel_agent_config, "cuga-default"))
-            logger.info(
-                "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
-            )
+                    llm_api_key_ref = resolve_llm_api_key_ref()
+                except Exception:
+                    pass
+
+                llm_cfg = {"model": os.environ.get("MODEL_NAME", "")}
+                if llm_api_key_ref:
+                    llm_cfg["api_key"] = llm_api_key_ref
+
+                travel_agent_config = {
+                    "agent": {
+                        "name": "Travel Agent",
+                        "description": "AI-powered corporate travel planning system",
+                    },
+                    "tools": [],
+                    "llm": llm_cfg,
+                }
+                asyncio.run(save_draft(travel_agent_config, "cuga-default"))
+                logger.info(
+                    "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
+                )
 
             app_mgr = _make_app_manager()
             logger.info("🧹 Checking for existing processes on required ports...")
