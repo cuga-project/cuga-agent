@@ -47,6 +47,17 @@ def is_tool_choice_none_tool_use_failed(err: Any) -> bool:
     return "tool_use_failed" in err_str and "Tool choice is none" in err_str
 
 
+def is_ollama_tool_call_parse_error(err: Any) -> bool:
+    """
+    True when Ollama returns a 500 because the model emitted code/text into the
+    tool-call channel and Ollama's parser expected JSON
+    (``error parsing tool call: raw='...' ... looking for beginning of value``).
+    Safe to retry the same completion call.
+    """
+    err_str = err if isinstance(err, str) else str(err)
+    return "error parsing tool call" in err_str
+
+
 async def ainvoke_with_retry_on_tool_choice_none(
     chain: Any, input_data: dict, *, max_attempts: int = 2
 ) -> Any:
@@ -57,10 +68,10 @@ async def ainvoke_with_retry_on_tool_choice_none(
         try:
             return await chain.ainvoke(input_data)
         except Exception as e:
-            if attempt < max_attempts - 1 and is_tool_choice_none_tool_use_failed(e):
-                logger.warning(
-                    "Retrying LLM call after tool_use_failed (Tool choice is none, but model called a tool)"
-                )
+            if attempt < max_attempts - 1 and (
+                is_tool_choice_none_tool_use_failed(e) or is_ollama_tool_call_parse_error(e)
+            ):
+                logger.warning("Retrying LLM call after retryable provider tool-call error: {}", e)
                 continue
             raise
 

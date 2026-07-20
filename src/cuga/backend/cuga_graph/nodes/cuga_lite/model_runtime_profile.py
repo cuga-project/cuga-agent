@@ -15,11 +15,12 @@ GPT_OSS_20B_RUNTIME_DEFAULTS: Dict[str, Any] = {
 
 
 def _normalized_model_key(model_name: str) -> str:
-    """Strip provider prefix so ``openai/gpt-oss-20b`` matches ``gpt-oss-20b``."""
+    """Normalize provider prefix and separator so ``openai/gpt-oss-20b`` and
+    Ollama's ``gpt-oss:20b`` both match ``gpt-oss-20b``."""
     s = model_name.strip().lower()
     if "/" in s:
-        return s.rsplit("/", 1)[-1].strip()
-    return s
+        s = s.rsplit("/", 1)[-1].strip()
+    return s.replace(":", "-")
 
 
 def runtime_defaults_for_model(model_name: Optional[str]) -> Dict[str, Any]:
