@@ -63,6 +63,12 @@ class BrowserPlannerAgent(BaseAgent):
         # ``{% if use_vision %}`` block and the runtime image attachment stay in
         # sync with whether the resolved model accepts multimodal content.
         self.use_vision_effective = use_vision_effective
+        # The prompt template bakes in the ``img`` slot at build time, so it
+        # requires ``img`` on every invoke for the agent's whole lifetime — even
+        # after a vision rejection flips ``use_vision_effective`` off (this is a
+        # process-lifetime singleton graph node). Track that requirement
+        # separately so we always supply a valid ``img``.
+        self._template_requires_img = use_vision_effective
 
     @staticmethod
     def output_parser(result: NextAgentPlan, name) -> Any:
@@ -91,13 +97,14 @@ class BrowserPlannerAgent(BaseAgent):
             except (AttributeError, IndexError, TypeError):
                 last_image = None
             if last_image is not None:
-                data['img'] = last_image
+                data["img"] = last_image
                 image_attached = True
-            else:
-                # No screenshot available, but the template still requires ``img``.
-                # Supply a blank placeholder so the prompt renders; leave
-                # image_attached False so a rejection here isn't retried as vision.
-                data['img'] = _BLANK_IMAGE
+        if self._template_requires_img and "img" not in data:
+            # Template requires ``img`` (fixed at build time) but none is set:
+            # no screenshot yet, or vision was disabled after a rejection.
+            # Supply a blank placeholder so the prompt renders instead of raising
+            # ``missing variables {'img'}``.
+            data["img"] = _BLANK_IMAGE
         try:
             return await self.chain.ainvoke(data)
         except Exception as exc:
@@ -115,7 +122,7 @@ class BrowserPlannerAgent(BaseAgent):
             # The template still has the baked-in image slot, so keep a valid
             # (blank) img rather than popping it — popping would re-raise
             # ``missing variables {'img'}``.
-            data['img'] = _BLANK_IMAGE
+            data["img"] = _BLANK_IMAGE
             return await self.chain.ainvoke(data)
 
     @staticmethod
