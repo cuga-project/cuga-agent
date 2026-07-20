@@ -250,7 +250,7 @@ async def _rehydrate_citation_ledger(
 
     Must never break the turn — every failure mode is swallowed.
     """
-    if not thread_id or is_resume:
+    if not thread_id:
         return
     # Gate on the SAME session-aware predicate that stamping and resolution use
     # (citations_enabled_for), not the agent-only flag — otherwise a thread with
@@ -290,11 +290,13 @@ async def _rehydrate_citation_ledger(
                         thread_id,
                     )
                     continue
-        # Scope citations to THIS turn's retrieval. Runs AFTER any rehydration
-        # (restore deliberately leaves the turn set empty), so a rehydrated or
-        # earlier-turn id no longer resolves in this turn's answer unless it is
-        # re-retrieved. This is the fix for cross-turn citation mis-attribution.
-        _ledger.begin_turn()
+        # Scope citations to THIS turn's retrieval — but only on a genuinely new
+        # turn. A HITL resume is a continuation of the same turn, so begin_turn()
+        # would wipe the pre-interrupt search scope and strip legitimate
+        # citations. Rehydration above still runs on resume, so a restart during
+        # an interrupt (which wipes the in-memory ledger) is recovered.
+        if not is_resume:
+            _ledger.begin_turn()
     except Exception as e:
         logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
 

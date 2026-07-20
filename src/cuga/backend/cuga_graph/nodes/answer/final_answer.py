@@ -86,9 +86,14 @@ class FinalAnswerNode(BaseNode):
         formatters, and must never break answer delivery — any failure
         leaves the text as-is.
 
-        Calling this twice on the same state is destructive: the second run sees no [sN] markers in the already-resolved text and clears state.sources. Call exactly once per terminal path.
+        Idempotent: a second call (e.g. the supervisor callback forwarding an
+        already-resolved last_planner_answer) sees resolved [n] markers instead
+        of [sN] and keeps the sources the first call produced, rather than
+        clearing them.
         """
         try:
+            import re as _re
+
             from cuga.backend.knowledge.sources import (
                 effective_citations_enabled,
                 get_ledger,
@@ -98,7 +103,15 @@ class FinalAnswerNode(BaseNode):
 
             text = state.final_answer or ""
             if not has_citation_markers(text):
-                state.sources = []
+                # No [sN] markers to resolve. Two cases land here: a genuinely
+                # uncited answer, and an ALREADY-resolved one (the supervisor
+                # path re-enters with last_planner_answer that already carries
+                # [n] chips + sources). Keep sources only when the current text
+                # still references them via resolved [n] markers; otherwise clear
+                # so stale prior sources never ride an uncited answer.
+                already_resolved = bool(state.sources) and _re.search(r"\[\d+\]", text) is not None
+                if not already_resolved:
+                    state.sources = []
                 return
             if state.thread_id and effective_citations_enabled(state.thread_id):
                 ledger = get_ledger(state.thread_id, create=True)
