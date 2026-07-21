@@ -26,6 +26,7 @@ import {
 } from "./carbonChatHelpers";
 
 import * as api from "../api";
+import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
@@ -495,6 +496,7 @@ export async function customSendMessage(
           console.log("Received Answer event, finalizing message...");
 
           let answerText = accumulatedText || "";
+          let answerSources: MessageSource[] = [];
           if (typeof event.data === "string") {
             const parsed = parseAnswerEventData(event.data, accumulatedText);
             if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
@@ -513,33 +515,58 @@ export async function customSendMessage(
               return;
             }
             answerText = parsed.answerText;
+            answerSources = parsed.sources as MessageSource[];
           } else if (!answerText) {
             answerText = event.data?.answer || JSON.stringify(event.data);
           }
 
           accumulatedText = answerText;
-          
+
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
-          
+
           console.log(`Finalizing with ${collectedSteps.length} reasoning steps`);
-          
+
+          // The final_response id doubles as the message key stamped on each
+          // <cuga-cite> chip so the host can resolve which message's sources a
+          // click belongs to (chips only carry `n`, which repeats per message).
           const answerCompleteItem = {
             response_type: MessageResponseTypes.TEXT,
-            text: accumulatedText,
+            text: injectCitations(accumulatedText, answerSources, responseID),
             streaming_metadata: { id: "text-stream" },
           };
-          
+
           instance.messaging.addMessageChunk({
             complete_item: answerCompleteItem,
             streaming_metadata: { response_id: responseID },
           });
 
+          const answerGenericItems: any[] = [answerCompleteItem];
+
+          if (answerSources.length > 0) {
+            const sourcesItem = {
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: "cuga_sources",
+                message_key: responseID,
+                sources: answerSources,
+              },
+              streaming_metadata: { id: "cuga-sources" },
+            };
+
+            instance.messaging.addMessageChunk({
+              complete_item: sourcesItem,
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+
+            answerGenericItems.push(sourcesItem);
+          }
+
           const finalResponse: StreamChunk = {
             final_response: {
               id: responseID,
-              output: { generic: [answerCompleteItem] },
+              output: { generic: answerGenericItems },
             },
           };
 

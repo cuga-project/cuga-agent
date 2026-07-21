@@ -21,6 +21,16 @@ llm_manager = LLMManager()
 tracker = ActivityTracker()
 
 
+# 1x1 transparent PNG. When vision is effective the prompt template bakes in a
+# required ``img`` slot, so every invoke must supply a valid image URL even when
+# no screenshot exists yet (e.g. an API-mode sub-task). This keeps the prompt
+# renderable instead of raising ``missing variables {'img'}``.
+_BLANK_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
 _VISION_REJECTION_MARKERS = (
     "content must be a string",
     "image_url",
@@ -53,6 +63,12 @@ class BrowserPlannerAgent(BaseAgent):
         # ``{% if use_vision %}`` block and the runtime image attachment stay in
         # sync with whether the resolved model accepts multimodal content.
         self.use_vision_effective = use_vision_effective
+        # The prompt template bakes in the ``img`` slot at build time, so it
+        # requires ``img`` on every invoke for the agent's whole lifetime — even
+        # after a vision rejection flips ``use_vision_effective`` off (this is a
+        # process-lifetime singleton graph node). Track that requirement
+        # separately so we always supply a valid ``img``.
+        self._template_requires_img = use_vision_effective
 
     @staticmethod
     def output_parser(result: NextAgentPlan, name) -> Any:
@@ -81,8 +97,14 @@ class BrowserPlannerAgent(BaseAgent):
             except (AttributeError, IndexError, TypeError):
                 last_image = None
             if last_image is not None:
-                data['img'] = last_image
+                data["img"] = last_image
                 image_attached = True
+        if self._template_requires_img and "img" not in data:
+            # Template requires ``img`` (fixed at build time) but none is set:
+            # no screenshot yet, or vision was disabled after a rejection.
+            # Supply a blank placeholder so the prompt renders instead of raising
+            # ``missing variables {'img'}``.
+            data["img"] = _BLANK_IMAGE
         try:
             return await self.chain.ainvoke(data)
         except Exception as exc:
@@ -97,7 +119,10 @@ class BrowserPlannerAgent(BaseAgent):
             )
             self.use_vision_effective = False
             data["use_vision"] = False
-            data.pop('img', None)
+            # The template still has the baked-in image slot, so keep a valid
+            # (blank) img rather than popping it — popping would re-raise
+            # ``missing variables {'img'}``.
+            data["img"] = _BLANK_IMAGE
             return await self.chain.ainvoke(data)
 
     @staticmethod
