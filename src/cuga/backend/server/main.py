@@ -211,12 +211,23 @@ def _format_sources_footer(sources: list[dict]) -> str:
     return "\n\nSources:\n" + "\n".join(lines)
 
 
-async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user_id: str) -> None:
-    """Rebuild cited ledger entries from persisted Answer events at turn start.
+async def _rehydrate_citation_ledger(
+    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+) -> None:
+    """Prepare the citation ledger at the start of a NEW user turn.
 
-    In-memory ledgers die with the process. This restores cite_ids from the
-    on-disk conversation so they stay collision-free and re-citable after a
-    server restart. Called once per turn when the ledger is absent.
+    Two jobs:
+    1. Rehydrate: after a restart the in-memory ledger is gone, so restore
+       cite_ids from the on-disk conversation to keep them collision-free.
+       Only runs when the ledger is absent.
+    2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
+       earlier turn cannot resolve in this turn's answer.
+
+    A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
+    but is a CONTINUATION of the same logical turn — the pre-interrupt search
+    node does not re-run, so its cite_ids must stay in scope. On resume we do
+    nothing: the ledger already exists and begin_turn() would wrongly wipe this
+    turn's retrieval scope and strip legitimate citations from the answer.
 
     WXO-mode Answer events are raw text (not JSON) and are intentionally
     skipped by the ``isinstance(payload, dict)`` guard below.
@@ -239,28 +250,37 @@ async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user
     try:
         from cuga.backend.knowledge.sources import get_ledger as _get_ledger
 
-        if _get_ledger(thread_id, create=False) is None:
+        _ledger = _get_ledger(thread_id, create=False)
+        if _ledger is None:
             conversation_db = get_conversation_db()
             stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
             events_list = stream_history.events if stream_history else []
-            if events_list:
-                _ledger = _get_ledger(thread_id)  # create
-                for ev in events_list:
-                    if ev.event_name != "Answer":
+            # Create even when there is no history, so begin_turn() below always
+            # has a ledger to scope — a fresh conversation's first turn included.
+            _ledger = _get_ledger(thread_id)  # create
+            for ev in events_list:
+                if ev.event_name != "Answer":
+                    continue
+                try:
+                    payload = json.loads(ev.event_data)
+                    if not isinstance(payload, dict):
+                        # WXO-mode Answer events are raw text — skip intentionally
                         continue
-                    try:
-                        payload = json.loads(ev.event_data)
-                        if not isinstance(payload, dict):
-                            # WXO-mode Answer events are raw text — skip intentionally
-                            continue
-                        for snap in payload.get("sources", []) or []:
-                            _ledger.restore(snap)
-                    except Exception:
-                        logger.debug(
-                            "Citation ledger rehydration: skipped event for thread %s",
-                            thread_id,
-                        )
-                        continue
+                    for snap in payload.get("sources", []) or []:
+                        _ledger.restore(snap)
+                except Exception:
+                    logger.debug(
+                        "Citation ledger rehydration: skipped event for thread %s",
+                        thread_id,
+                    )
+                    continue
+        # Scope citations to THIS turn's retrieval — but only on a genuinely new
+        # turn. A HITL resume is a continuation of the same turn, so begin_turn()
+        # would wipe the pre-interrupt search scope and strip legitimate
+        # citations. Rehydration above still runs on resume, so a restart during
+        # an interrupt (which wipes the in-memory ledger) is recovered.
+        if not is_resume:
+            _ledger.begin_turn()
     except Exception as e:
         logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
 
@@ -1223,6 +1243,52 @@ async def _save_conversation_and_events_async(
         logger.error(f"Error in async save: {e}")
 
 
+def _build_slash_skill_registry():
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import (
+            build_slash_registry,
+            parse_and_dispatch,
+        )
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+        )
+    except Exception:
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
+        return None
+
+
 async def save_conversation_to_db(
     agent_id: str,
     thread_id: str,
@@ -1490,9 +1556,12 @@ async def event_stream(
 
     local_tracker.task_id = 'demo'
 
-    # Initialize event sequence counter and buffer for stream event tracking
+    # Initialize event sequence counter and buffer for stream event tracking.
     event_sequence = 0
-    stream_events_buffer = []  # Buffer to collect events during streaming
+    # Buffer collects THIS turn's events only. The DB layer (save_stream_events)
+    # appends them to the persisted prior turns and re-sequences, so the row
+    # stays cumulative — no per-turn clobber — without seeding the buffer here.
+    stream_events_buffer = []
 
     # Add user message to buffer as first event
     if query and thread_id:
@@ -1508,6 +1577,23 @@ async def event_stream(
             }
         )
         event_sequence += 1
+
+    slash_result = None
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
+        # Soft dispatch: the planner input becomes the translated suggestion
+        # ("use the skill named '<name>' to: <args>") and the planner decides
+        # to call ``load_skill`` itself. The UserMessage stream event above
+        # already carries the original raw utterance, so display/history keep
+        # what the user actually typed.
+        local_state.input = slash_result.planner_input or query
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to carry the translated planner input, so the planner
+        # sees the raw slash text. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping planner-input translation")
 
     langfuse_handler = (
         CallbackHandler()
@@ -1551,7 +1637,7 @@ async def event_stream(
             }
 
     if thread_id:
-        await _rehydrate_citation_ledger(app_state, thread_id, user_id)
+        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1826,7 +1912,14 @@ async def event_stream(
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except ValueError as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
@@ -1841,9 +1934,15 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
+                        if app_state.output_format == OutputFormat.WXO:
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -3607,6 +3706,30 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "citations_enabled": _knowledge_citations_enabled_for_app_state(app_state),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the registry of slash commands (skills only); rebuilt per request so new SKILL.md files appear without restart."""
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")

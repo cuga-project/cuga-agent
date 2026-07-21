@@ -75,6 +75,22 @@ jobs:
             tests/unit/test_chat_knowledge_mode.py \
             tests/unit/test_chat_agent_knowledge_toggle.py \
             tests/integration/test_knowledge_integration.py
+          # Citations, source ledger, session settings, and durability/reset
+          # regressions — previously not exercised by CI.
+          uv run pytest \
+            tests/unit/test_source_ledger.py \
+            tests/unit/test_citation_resolver.py \
+            tests/unit/test_citation_settings.py \
+            tests/unit/test_final_answer_citations.py \
+            tests/unit/test_envelope_citations.py \
+            tests/unit/test_sdk_citations.py \
+            tests/unit/test_server_citation_egress.py \
+            tests/unit/test_session_settings_routes.py \
+            tests/unit/test_session_citation_override.py \
+            tests/unit/test_ephemeral_stream_events.py \
+            tests/unit/test_config_db_reset_wal_sidecars.py \
+            tests/unit/test_knowledge_copy_source_files.py \
+            tests/unit/test_knowledge_envelope_rank_fields.py
           uv run pytest tests/unit/test_cuga_lite_bind_tools.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \

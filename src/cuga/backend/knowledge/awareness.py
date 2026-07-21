@@ -40,10 +40,10 @@ Rules:
   [sN] markers INSTEAD of `(source: <filename>)` or naming filename/page
   in your sentences. Mention filenames in prose only when the user asks
   about the documents themselves.
-- Use ONLY cite_ids that appeared in this conversation's search results.
-  Results from earlier turns of this conversation remain citable by their
-  original ids. Never invent an id; never write bare numeric citations
-  like [1] — the UI assigns display numbers automatically.
+- Use ONLY cite_ids from THIS turn's search results. An id from an earlier
+  turn no longer resolves — if you need to cite a source again, it must appear
+  in a search you ran this turn. Never invent an id; never write bare numeric
+  citations like [1] — the UI assigns display numbers automatically.
 - Multiple supporting chunks: [s1][s4] (or [s1, s4]).
 - Do NOT add a "Sources" section or list — the UI renders sources from
   your markers.
@@ -503,7 +503,14 @@ async def assemble_system_prompt_section(
     attempts = getattr(cfg, "max_search_attempts", None)
     contract_text = load_knowledge_instructions(max_search_attempts=attempts)
 
-    if getattr(cfg, "citations_enabled", True):
+    # Session-aware: a per-thread override disables citations even when the
+    # agent config leaves them on. Use the SAME predicate resolution uses
+    # (citations_enabled_for), not the agent-only flag — otherwise the prompt
+    # would instruct the model to write [sN] markers that apply_citation_
+    # resolution then strips for a citations-off session ("the prompt lies").
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    if citations_enabled_for(cfg, thread_id):
         # The legacy prose-attribution section contradicts marker citations —
         # drop it from the assembled prompt (operators may have edited or
         # removed it; a non-match is fine) and let CITATIONS_CONTRACT own the

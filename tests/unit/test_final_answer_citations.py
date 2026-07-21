@@ -2,6 +2,9 @@ from types import SimpleNamespace
 
 from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
 from cuga.backend.knowledge.sources import get_ledger, _reset_all_ledgers_for_tests
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 class _State(SimpleNamespace):
@@ -118,3 +121,30 @@ def test_hitl_default_fallback_clears_stale_sources():
     )
     HumanInTheLoopHandler().handle_human_response(state, "FinalAnswerAgent")
     assert state.sources == []  # stale prior-turn sources dropped on the fallback
+
+
+def test_idempotent_keeps_sources_on_already_resolved_text():
+    """MAJ-2: the supervisor callback can re-enter apply_citation_resolution with
+    an already-resolved last_planner_answer ([n] chips, no [sN]). The second call
+    must KEEP the sources the first produced, not clear them."""
+    _seed_ledger()
+    state = _state("answer [s1] done")
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert state.final_answer == "answer [1] done"
+    assert len(state.sources) == 1
+    first = state.sources
+
+    # Re-enter on the already-resolved text (has [1], no [sN]).
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert state.final_answer == "answer [1] done"  # unchanged
+    assert state.sources == first  # NOT clobbered
+
+
+def test_uncited_answer_still_clears_stale_sources():
+    """The keep-sources guard must not leak: an answer with NO markers at all
+    (fresh, or stale prior-turn sources) still clears."""
+    _seed_ledger()
+    state = _state("a plain answer with no citations")
+    state.sources = [{"n": 1, "cite_id": "s1", "filename": "stale.pdf"}]  # stale
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert state.sources == []

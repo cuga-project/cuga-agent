@@ -130,7 +130,10 @@ export function KnowledgeSidePanel({
   }, [threadId]);
 
   const handleSessionCitationsChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!threadId) return;
+    // Mirror the toggle's own disabled condition (sessionScopeEnabled + a real
+    // thread) — a bare !threadId guard lets a programmatic dispatch write a
+    // phantom session override while the session scope is off.
+    if (!conversationReady) return;
     const next = e.target.checked;
     const prev = sessionCitations;
     setSessionCitations(next); // optimistic

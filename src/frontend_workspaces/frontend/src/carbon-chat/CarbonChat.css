@@ -434,3 +434,131 @@
     border-top-color: #3d3d3d;
   }
 }
+
+.cuga-slash-dropdown {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-dropdown__status {
+  padding: 12px 14px;
+  color: #6e7781;
+}
+
+.cuga-slash-dropdown__status--error {
+  color: #cf222e;
+}
+
+.cuga-slash-dropdown__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.cuga-slash-option {
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.cuga-slash-option--active,
+.cuga-slash-option:hover {
+  background: #f6f8fa;
+  border-left-color: #0969da;
+}
+
+.cuga-slash-option__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cuga-slash-option__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.cuga-slash-option__hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6e7781;
+  font-size: 12px;
+}
+
+.cuga-slash-option__kind {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cuga-slash-option__kind--skill {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
+.cuga-slash-option__description {
+  margin-top: 2px;
+  color: #57606a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ── Inline slash-command overlays (light DOM, fixed-position) ──
+   Geometry (left/top/width/height) is set inline per element from
+   Range.getClientRects() measurements; only the skin lives here.
+
+   Colors are derived from Carbon's warning-support token with a literal
+   fallback: the overlays render in the light DOM where the injected Carbon
+   theme variables may not be defined, and CUGA currently has no app-wide
+   dark mode (see the note above the deleted dark-mode rules in git
+   history). --cds-support-warning is the same amber in the G100 dark theme,
+   and the translucent color-mix tint stays legible on dark surfaces, so
+   these survive a future dark mode unchanged. */
+
+/* Translucent pill drawn OVER a known /command token in the composer. The
+   composer is Carbon's Lit-managed contenteditable — we must not wrap its
+   text in spans — so the pill is a pointer-transparent rectangle floated
+   above the glyphs instead. */
+.cuga-slash-inline-pill {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9998;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cds-support-warning, #f1c21b) 24%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--cds-support-warning, #f1c21b) 38%, transparent);
+}
+
+/* Ghost-text continuation of the highlighted match after the caret's
+   /partial token (accepted with Tab). Font is copied inline from the
+   composer's computed style so the ghost aligns with the real glyphs. */
+.cuga-slash-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9998;
+  color: var(--cds-text-placeholder, #a8a8a8);
+  white-space: pre;
+  opacity: 0.9;
+}
+
+/* .cuga-slash-command-pill (known /command mentions inside rendered user
+   bubbles) is styled INLINE in CarbonChat.tsx: those spans live inside
+   Carbon's shadow root, which this light-DOM stylesheet cannot reach. The
+   inline styles use the same --cds-support-warning color-mix recipe as
+   .cuga-slash-inline-pill above — keep the two in sync. */
+
+/* CUGA does not currently have an app-wide dark mode. The slash-dropdown
+   dark-mode rules previously living here were dropped to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Re-add them
+   (selectors: .cuga-slash-dropdown, .cuga-slash-dropdown__status,
+   .cuga-slash-option*) if/when a dark mode is introduced. */

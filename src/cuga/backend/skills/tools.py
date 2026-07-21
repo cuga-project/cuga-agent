@@ -11,11 +11,15 @@ from cuga.backend.skills.registry import SkillRegistry
 
 class LoadSkillInput(BaseModel):
     name: str = Field(..., description="Skill id from <available_skills>")
+    args: str = Field(
+        "",
+        description="Optional arguments to substitute into the skill body ($ARGUMENTS, $1, named args)",
+    )
 
 
 def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
-    def load_skill_impl(name: str) -> str:
-        return registry.load_skill(name)
+    def load_skill_impl(name: str, args: str = "") -> str:
+        return registry.load_skill(name, args)
 
     load_tool = StructuredTool.from_function(
         func=load_skill_impl,

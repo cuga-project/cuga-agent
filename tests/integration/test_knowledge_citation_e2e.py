@@ -39,6 +39,8 @@ from cuga.backend.knowledge.sources import (
     set_session_override_lookup,
 )
 
+pytestmark = pytest.mark.slow
+
 
 # --- fixtures (copied from test_knowledge_integration.py; the integration
 # --- conftest only ships pgvector helpers, so these are not shared) -----------
