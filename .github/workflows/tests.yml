@@ -21,11 +21,18 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # WatsonX is configured via repo Variables + WATSONX_APIKEY secret.
+      # AGENT_SETTING_CONFIG, WATSONX_PROJECT_ID, and WATSONX_URL are Variables.
+      # WATSONX_APIKEY remains a Secret.
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      # Optional fallbacks for openai/groq-compatible paths
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout code
