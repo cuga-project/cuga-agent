@@ -282,6 +282,40 @@ def test_prepare_system_content_appends_todos_ref_when_present():
     assert len(result) > len("You are an agent.")
 
 
+def test_prepare_system_content_appends_observed_tool_shapes_when_present():
+    adapter = _make_adapter(task_todos_ref=[])
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    state = SimpleNamespace(task_todos=None)
+    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    assert result.startswith("You are an agent.")
+    assert "file_readfile" in result
+    assert "list of 3 items" in result
+
+
+def test_prepare_system_content_omits_observed_shapes_block_when_empty():
+    adapter = _make_adapter(task_todos_ref=[])
+    state = SimpleNamespace(task_todos=None)
+    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    assert result == "You are an agent."
+
+
+def test_prepare_system_content_combines_todos_and_observed_shapes():
+    todos = [{"title": "Step 1", "status": "pending"}]
+    adapter = _make_adapter(task_todos_ref=todos)
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    state = SimpleNamespace(task_todos=None)
+    result = adapter.prepare_system_content(state, {}, "You are an agent.")
+    assert "file_readfile" in result
+    assert "list of 3 items" in result
+    assert result.startswith("You are an agent.")
+
+
+def test_new_adapter_has_empty_weak_schema_state_by_default():
+    adapter = _make_adapter()
+    assert adapter._weak_schema_tool_names == frozenset()
+    assert adapter._observed_tool_shapes == {}
+
+
 def test_resolve_max_steps_uses_override_when_given():
     adapter = _make_adapter()
     state = SimpleNamespace(cuga_lite_max_steps=None)
@@ -292,3 +326,25 @@ def test_resolve_max_steps_uses_state_when_set():
     adapter = _make_adapter()
     state = SimpleNamespace(cuga_lite_max_steps=25)
     assert adapter.resolve_max_steps(state, None) == 25
+
+
+# ── 10. get_tools_needing_probing hook ──────────────────────────────────────
+
+
+def test_get_tools_needing_probing_returns_unobserved_weak_schema_tools():
+    adapter = _make_adapter()
+    adapter._weak_schema_tool_names = frozenset({"file_readfile", "get_browser_state"})
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    assert adapter.get_tools_needing_probing() == frozenset({"get_browser_state"})
+
+
+def test_get_tools_needing_probing_empty_when_all_observed():
+    adapter = _make_adapter()
+    adapter._weak_schema_tool_names = frozenset({"file_readfile"})
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    assert adapter.get_tools_needing_probing() == frozenset()
+
+
+def test_get_tools_needing_probing_empty_by_default():
+    adapter = _make_adapter()
+    assert adapter.get_tools_needing_probing() == frozenset()
