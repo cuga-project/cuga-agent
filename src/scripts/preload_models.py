@@ -11,10 +11,37 @@ import os
 import sys
 
 
-# ONNX layout weights used when docling_layout_engine resolves to "onnx"
-# (CUGA default: auto + CPU). download_models() only pulls the transformers
-# heron repo, so airgapped CPU ingest fails without this extra download.
-DOCLING_LAYOUT_HERON_ONNX_REPO = "docling-project/docling-layout-heron-onnx"
+def docling_transformers_layout_repo_id() -> str:
+    """HF repo that ``download_models(with_layout=True)`` caches for layout."""
+    from docling.datamodel.pipeline_options import LayoutOptions
+
+    return LayoutOptions().model_spec.repo_id
+
+
+def docling_onnx_layout_repo_id() -> str:
+    """HF repo the ONNX layout engine resolves under ``artifacts_path``.
+
+    ``download_models()`` does not pull this; CPU ``auto`` layout needs it.
+    """
+    from docling.datamodel.object_detection_engine_options import (
+        ObjectDetectionEngineType,
+        OnnxRuntimeObjectDetectionEngineOptions,
+    )
+    from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+
+    opts = LayoutObjectDetectionOptions(engine_options=OnnxRuntimeObjectDetectionEngineOptions())
+    override = opts.model_spec.engine_overrides[ObjectDetectionEngineType.ONNXRUNTIME]
+    return override.repo_id
+
+
+def docling_airgap_layout_repo_ids() -> frozenset[str]:
+    """Layout HF repos airgap preload guarantees are present on disk."""
+    return frozenset(
+        {
+            docling_transformers_layout_repo_id(),
+            docling_onnx_layout_repo_id(),
+        }
+    )
 
 
 def preload_fastembed() -> None:
@@ -56,10 +83,11 @@ def preload_docling() -> None:
             with_code_formula=with_code_formula,
             with_picture_classifier=with_picture_classifier,
         )
-        onnx_dir = output_dir / DOCLING_LAYOUT_HERON_ONNX_REPO.replace("/", "--")
-        print(f"  Downloading ONNX layout model {DOCLING_LAYOUT_HERON_ONNX_REPO}...")
+        onnx_repo = docling_onnx_layout_repo_id()
+        onnx_dir = output_dir / onnx_repo.replace("/", "--")
+        print(f"  Downloading ONNX layout model {onnx_repo}...")
         download_hf_model(
-            repo_id=DOCLING_LAYOUT_HERON_ONNX_REPO,
+            repo_id=onnx_repo,
             local_dir=onnx_dir,
         )
         print("  ✓ docling models ready")
