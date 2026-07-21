@@ -69,6 +69,12 @@ class TaskConfig(BaseModel):
     mode: TaskMode
     agent: Optional[TaskAgentConfig] = None
     tool: Optional[str] = None
+    # Top-level instruction: alternative to agent.system_instruction for native tasks
+    # or when agent: section is absent.  flow_config.py reads task.get("instruction").
+    instruction: Optional[str] = None
+    # Top-level policy path: legacy alternative to agent.policy.
+    # flow_config.py reads agent_config.get("policy") or task_config.get("policy").
+    policy: Optional[str] = None
     input_mapping: Optional[dict[str, str]] = None
     output_mapping: Optional[dict[str, str]] = None
 
@@ -103,7 +109,19 @@ class HookConfig(BaseModel):
     id: str
     type: HookType
     location: str
-    policy: str
+    # LLM-driven: flow_config.py reads policy path and loads markdown for _llm_hook_decision.
+    # Required when the hook should reason against a policy; omit for static-action hooks.
+    policy: Optional[str] = None
+    # Static fallback: used when no policy is present.
+    # flow_config.py reads action (default "continue") and message to build a fixed HookResult.
+    action: HookAction = "continue"
+    message: Optional[str] = None
+    # Optional guard expression evaluated against process variables before the hook fires.
+    # flow_config.py reads condition and wraps it via _create_condition_function.
+    condition: Optional[str] = None
+    # Set to false to disable the hook without removing it from config.
+    # Used by to_engine_config() when building the engine-consumable hooks list.
+    enabled: bool = True
 
 
 class AppYaml(BaseModel):
