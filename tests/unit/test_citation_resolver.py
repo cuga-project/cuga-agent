@@ -9,6 +9,8 @@ from cuga.backend.knowledge.sources import (
     resolve_citations,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _ledger_with(n=3):
     ledger = SourceLedger()
@@ -173,3 +175,135 @@ def test_space_separated_marker_list():
     text, sources = resolve_citations("x [s1 s3].", _ledger_with())
     assert text == "x [1][2]."
     assert len(sources) == 2
+
+
+# --- turn scoping: a citation must point at THIS turn's retrieval ------------
+#
+# Regression for the mis-attribution bug: the model was handed a stripped-of-
+# provenance answer plus stale cite_ids from earlier questions in the same
+# thread, and cited [s1] (an AppWorld-benchmark chunk) for a scholarship
+# answer. A cite_id from an earlier turn must resolve like a ledger miss:
+# stripped, so the answer renders correct-and-uncited, never confidently wrong.
+
+
+def _chunk(text, filename="f.pdf", page=1):
+    return SimpleNamespace(text=text, filename=filename, page=page, scope="agent", score=0.8, section_path="")
+
+
+def test_marker_from_earlier_turn_is_stripped(caplog):
+    import logging
+
+    ledger = SourceLedger()
+    ledger.register(_chunk("turn-1 benchmark text"), query="benchmarks")  # s1
+    ledger.begin_turn()
+    ledger.register(
+        _chunk("turn-2 scholarship text", filename="milga.pdf", page=13), query="scholarship"
+    )  # s2
+
+    with caplog.at_level(logging.WARNING):
+        text, sources = resolve_citations("you have 5 installments [s1].", ledger)
+
+    assert text == "you have 5 installments ."  # stale marker stripped (surrounding space kept)
+    assert sources == []
+    assert any("s1" in r.message and "not from this turn" in r.message for r in caplog.records)
+
+
+def test_current_turn_marker_still_resolves():
+    ledger = SourceLedger()
+    ledger.register(_chunk("turn-1 benchmark text"), query="benchmarks")  # s1
+    ledger.begin_turn()
+    ledger.register(
+        _chunk("turn-2 scholarship text", filename="milga.pdf", page=13), query="scholarship"
+    )  # s2
+
+    text, sources = resolve_citations("you have 5 installments [s2]", ledger)
+
+    assert text == "you have 5 installments [1]"
+    assert len(sources) == 1
+    assert sources[0]["filename"] == "milga.pdf"
+
+
+def test_chunk_re_retrieved_this_turn_resolves():
+    """Same content pulled again this turn is legitimately current-turn evidence."""
+    ledger = SourceLedger()
+    first = ledger.register(_chunk("stable content", page=3), query="q1")  # s1
+    ledger.begin_turn()
+    again = ledger.register(_chunk("stable content", page=3), query="q2")  # same key -> s1
+    assert first == again == "s1"
+
+    text, sources = resolve_citations("fact [s1]", ledger)
+    assert text == "fact [1]"
+    assert len(sources) == 1
+
+
+def test_begin_turn_alone_scopes_out_prior_ids():
+    ledger = _ledger_with(2)  # s1, s2 registered "last turn"
+    ledger.begin_turn()  # new turn, no new retrieval
+    text, sources = resolve_citations("a [s1]. b [s2].", ledger)
+    assert text == "a . b ."
+    assert sources == []
+
+
+# --- HITL resume must NOT wipe this turn's scope (the review's blocker) -------
+#
+# A tool-approval / clarifying-question resume re-enters the stream but is the
+# SAME logical turn; the pre-interrupt search does not re-run. So begin_turn()
+# must fire only on a genuinely new turn, never on resume — else the answer
+# composed after resume loses its legitimate citations.
+
+
+def test_scope_survives_across_resolves_without_new_begin_turn():
+    """Registered ids keep resolving until the NEXT begin_turn (= next new turn).
+    A resume, which does not call begin_turn, therefore preserves the scope."""
+    ledger = SourceLedger()
+    ledger.begin_turn()  # new turn
+    ledger.register(_chunk("pre-interrupt search result"), query="q")  # s1
+
+    # First resolve (e.g. a partial), then a second resolve after a HITL resume.
+    # No begin_turn() in between (resume path returns early) -> still resolves.
+    for _ in range(2):
+        text, sources = resolve_citations("answer [s1]", ledger)
+        assert text == "answer [1]"
+        assert len(sources) == 1
+
+
+def test_a_new_begin_turn_would_have_stripped_it():
+    """Guard: proves the previous test is meaningful — calling begin_turn()
+    between register and resolve (the bug we avoid on resume) DOES strip."""
+    ledger = SourceLedger()
+    ledger.begin_turn()
+    ledger.register(_chunk("pre-interrupt search result"), query="q")  # s1
+    ledger.begin_turn()  # wrongful reset (what a resume must NOT do)
+    text, sources = resolve_citations("answer [s1]", ledger)
+    assert text == "answer "
+    assert sources == []
+
+
+# --- begin_ledger_turn module helper (SDK + server share it) -----------------
+
+
+def test_begin_ledger_turn_resets_scope_for_thread():
+    from cuga.backend.knowledge.sources import (
+        _reset_all_ledgers_for_tests,
+        begin_ledger_turn,
+        get_ledger,
+    )
+
+    _reset_all_ledgers_for_tests()
+    ledger = get_ledger("thread-A")
+    ledger.register(_chunk("last turn"), query="q")  # s1, in scope
+
+    begin_ledger_turn("thread-A")  # new turn boundary
+
+    text, sources = resolve_citations("stale [s1]", ledger)
+    assert text == "stale "  # scope was reset -> stripped
+    assert sources == []
+    _reset_all_ledgers_for_tests()
+
+
+def test_begin_ledger_turn_is_noop_without_ledger():
+    from cuga.backend.knowledge.sources import begin_ledger_turn, get_ledger
+
+    # Must not create a ledger for a thread that has none (citations off / chit-chat).
+    begin_ledger_turn("never-seen-thread")
+    assert get_ledger("never-seen-thread", create=False) is None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from cuga.backend.skills.guidance import (
     LOAD_SKILL_COMMAND_NORMALIZATION,
@@ -20,6 +20,7 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
+    arguments: tuple[str, ...] = ()  # named args declared in the `arguments` frontmatter key
 
 
 class SkillRegistry:
@@ -29,11 +30,24 @@ class SkillRegistry:
     def summaries(self) -> List[dict[str, str]]:
         return [{"name": e.name, "description": e.description} for e in self._by_name.values()]
 
-    def load_skill(self, name: str) -> str:
+    def entries(self) -> List[SkillEntry]:
+        return list(self._by_name.values())
+
+    def entry(self, name: str) -> Optional[SkillEntry]:
+        return self._by_name.get(name.strip())
+
+    def load_skill(self, name: str, args: str = "") -> str:
         entry = self._by_name.get(name.strip())
         if not entry:
             known = ", ".join(sorted(self._by_name.keys())) or "(none)"
             return f"Unknown skill: {name!r}. Known skills: {known}"
+
+        if args:
+            from cuga.backend.slash_commands.arg_substitution import substitute
+
+            body = substitute(entry.body, args, entry.arguments)
+        else:
+            body = entry.body
 
         skill_dir = f"/workspace/skills/{entry.name}"
         parts = [
@@ -45,6 +59,6 @@ class SkillRegistry:
             "",
             LOAD_SKILL_COMMAND_NORMALIZATION,
             "",
-            f"STEP 1 — SKILL INSTRUCTIONS:\n{entry.body}",
+            f"STEP 1 — SKILL INSTRUCTIONS:\n{body}",
         ]
         return "\n".join(parts)

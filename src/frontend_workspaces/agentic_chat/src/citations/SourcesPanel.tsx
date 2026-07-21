@@ -79,7 +79,11 @@ export default function SourcesPanel({
         )}
         {items.map((s) => (
           <div
-            key={s.n}
+            // Key by the stable cite_id, not the per-message display number:
+            // n repeats across messages (both have n=1), so when the panel stays
+            // mounted and the sources prop switches, React would reuse the same
+            // key=1 DOM node and carry over stale expanded/ref state.
+            key={s.cite_id}
             ref={s.n === activeN ? activeRef : undefined}
             className={`cuga-sources-panel__item${s.n === activeN ? ' is-active' : ''}`}
           >

@@ -3,6 +3,8 @@ import pytest
 from cuga.backend.knowledge.session_provider import SessionProvider
 from cuga.backend.knowledge.routes import _apply_session_settings_patch
 
+pytestmark = pytest.mark.unit
+
 
 def test_patch_applies_only_allowed_keys():
     provider = SessionProvider()

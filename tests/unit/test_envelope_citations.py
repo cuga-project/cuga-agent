@@ -8,6 +8,9 @@ from cuga.backend.knowledge.sources import (
     _reset_all_ledgers_for_tests,
     get_ledger,
 )
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _result(text, filename="a.pdf", page=1, scope="agent"):

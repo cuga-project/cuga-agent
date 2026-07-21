@@ -11,6 +11,9 @@ from types import SimpleNamespace
 import cuga.backend.server.main as _main
 from cuga.backend.knowledge.sources import get_ledger, _reset_all_ledgers_for_tests
 from cuga.backend.server.main import _format_sources_footer, _rehydrate_citation_ledger
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def setup_function():

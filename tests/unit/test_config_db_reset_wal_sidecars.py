@@ -11,6 +11,8 @@ import sqlite3
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 
 def _make_wal_db(path: str) -> None:
     """Create a real WAL-mode DB, leaving -wal/-shm on disk (no checkpoint)."""

@@ -9,6 +9,9 @@ Test 2 - disable_history save path: events_only=True calls save_stream_events
 import asyncio
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
@@ -145,3 +148,39 @@ def test_disable_history_saves_events_not_conversation():
     assert save_conv_calls == [], "save_conversation_to_db must NOT be called in events_only mode"
     assert len(save_events_calls) == 1, "save_stream_events must be called once"
     assert save_events_calls[0] == ("agent", "t-tryitout", 4)
+
+
+# ---------------------------------------------------------------------------
+# Test 3 - durability: stream events ACCUMULATE across turns (no clobber)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_events_accumulate_across_turns():
+    """Durability: save_stream_events appends the turn's events to the persisted
+    prior turns and re-sequences, so the row stays cumulative instead of being
+    clobbered down to the last turn. Underpins conversation-reload and cross-turn
+    citation rehydration. (The append lives in the DB layer; event_stream only
+    buffers the current turn, sequences restarting at 0 each request.)"""
+    db, tmpfile, orig, facade = _setup_in_memory_db()
+    try:
+
+        async def _run():
+            # Turn 1: two events (sequences 0,1).
+            await db.save_stream_events("agent", "thread_X", "user", _make_events(2))
+            # Turn 2: one event, per-request sequence restarts at 0.
+            await db.save_stream_events(
+                "agent",
+                "thread_X",
+                "user",
+                [{"event_name": "Answer", "event_data": "turn2", "timestamp": "t", "sequence": 0}],
+            )
+
+            final = await db.get_stream_events("agent", "thread_X", "user")
+            assert len(final.events) == 3, "both turns retained (not clobbered to last)"
+            # Re-sequenced monotonically across turns — no per-turn collision.
+            assert [e.sequence for e in final.events] == [0, 1, 2]
+            assert final.events[-1].event_data == "turn2"
+
+        asyncio.run(_run())
+    finally:
+        _teardown_db(orig, tmpfile, facade)

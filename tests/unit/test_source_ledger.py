@@ -7,6 +7,9 @@ from cuga.backend.knowledge.sources import (
     drop_ledger,
     _reset_all_ledgers_for_tests,
 )
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _chunk(text="alpha beta", filename="a.pdf", page=1, scope="agent", score=0.9, section_path=""):
