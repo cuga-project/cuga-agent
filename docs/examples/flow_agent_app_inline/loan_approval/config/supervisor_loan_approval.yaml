@@ -55,5 +55,3 @@ agents:
     type: flow_agent
     flow_config: "loan_approval_config.yaml"
     description: "FlowAgent that orchestrates the BPMN-based loan approval workflow with credit checking, gateway routing, and approval/rejection handling"
-
-# Made with Bob

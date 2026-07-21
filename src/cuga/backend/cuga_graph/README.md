@@ -120,3 +120,11 @@ This agent is responsible for gathering the results from all completed tasks and
 ### **ReuseAgent | Reuse Agent**
 
 This agent is used in "save & reuse" mode, where CUGA suggests that the user save the current autonomous flow into deterministic Python code for safer and more predictable execution. It runs after the **FinalAnswerAgent** in conjunction with human-in-the-loop actions.
+
+---
+
+## Integration with FLOWABLE
+
+CUGA FLO can run alongside **Flowable** as a pluggable external workflow engine, replacing the native LangGraph engine for BPMN execution. In this mode Flowable owns process state, persistence, and token routing; CUGA FLO contributes the AI reasoning at each task, gateway, and hook control point.
+
+See **[README-FLOWABLE.md](README-FLOWABLE.md)** for the full description of the integration architecture, the two components that enable it (FlowableProxy and the augmented BPMN model), and the three BPMN extensions required for task agents, decision agents, and hooks.
