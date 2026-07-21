@@ -22,7 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # WatsonX is configured via repo Variables + WATSONX_APIKEY secret.
-      # AGENT_SETTING_CONFIG / WATSONX_* are Variables (vars.*), not Secrets.
+      # AGENT_SETTING_CONFIG, WATSONX_PROJECT_ID, and WATSONX_URL are Variables.
+      # WATSONX_APIKEY remains a Secret.
       AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
       WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
       WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
