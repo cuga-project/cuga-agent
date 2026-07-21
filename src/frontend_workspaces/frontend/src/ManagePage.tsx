@@ -88,7 +88,7 @@ export interface AgentConfig {
     top_k?: number;
     frequency_penalty?: number;
     presence_penalty?: number;
-    stop?: string[];
+    stop?: string | string[];
     extra_params?: Record<string, string | number | boolean>;
     disable_ssl?: boolean;
   };
@@ -1670,7 +1670,7 @@ export function ManagePage() {
                             id="llm-stop"
                             labelText="Stop sequences"
                             helperText="Comma-separated stop strings"
-                            value={(llm.stop ?? []).join(", ")}
+                            value={Array.isArray(llm.stop) ? llm.stop.join(", ") : (llm.stop ?? "")}
                             onChange={(e) => {
                               const raw = e.target.value;
                               const parts = raw
@@ -1699,7 +1699,10 @@ export function ManagePage() {
                               setLlmExtraParamsError(null);
                             }}
                             onBlur={() => {
-                              const raw = (llmExtraParamsDraft ?? "").trim();
+                              if (llmExtraParamsDraft === null) {
+                                return;
+                              }
+                              const raw = llmExtraParamsDraft.trim();
                               if (!raw) {
                                 updateLlm("extra_params", undefined);
                                 setLlmExtraParamsDraft(null);
