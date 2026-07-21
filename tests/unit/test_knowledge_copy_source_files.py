@@ -22,6 +22,9 @@ import pathlib
 import tempfile
 
 from cuga.backend.knowledge.engine import KnowledgeEngine
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _make_engine_skel(files_root: pathlib.Path) -> KnowledgeEngine:
