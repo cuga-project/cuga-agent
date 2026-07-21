@@ -106,6 +106,7 @@ def test_clear_models_still_drops_cache():
 @pytest.mark.unit
 def test_aclose_watsonx_async_clients_on_owning_loop():
     closed = {"n": 0}
+    fresh = object()
 
     class _AsyncClient:
         is_closed = False
@@ -120,10 +121,43 @@ def test_aclose_watsonx_async_clients_on_owning_loop():
     mgr._models["k"] = model
 
     async def _run():
-        with patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx):
+        with (
+            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch(
+                "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
+                return_value=fresh,
+            ),
+        ):
             assert mgr.rebind_async_clients_to_running_loop() == 0
             assert await mgr.aclose_watsonx_async_clients() == 1
             assert closed["n"] == 1
+            assert model.watsonx_client._async_httpx_client is fresh
             assert not hasattr(model.watsonx_client, _CUGA_ASYNC_LOOP_REF)
+            # Next loop must not reuse a closed client — tag the fresh one.
+            assert mgr.rebind_async_clients_to_running_loop() == 0
+            assert model.watsonx_client._async_httpx_client is fresh
+
+    asyncio.run(_run())
+
+
+@pytest.mark.unit
+def test_rebind_replaces_closed_client_even_on_same_loop():
+    closed_client = SimpleNamespace(is_closed=True)
+    fresh = object()
+    model = _DummyWatsonx(closed_client)
+    mgr = LLMManager()
+    mgr._models["k"] = model
+
+    async def _run():
+        with (
+            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch(
+                "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
+                return_value=fresh,
+            ) as factory,
+        ):
+            assert mgr.rebind_async_clients_to_running_loop() == 1
+            assert model.watsonx_client._async_httpx_client is fresh
+            factory.assert_called_once_with(model.watsonx_client)
 
     asyncio.run(_run())

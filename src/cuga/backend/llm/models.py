@@ -286,25 +286,13 @@ class LLMManager:
         return getattr(watsonx_model, "_client", None) if watsonx_model is not None else None
 
     @classmethod
-    def _rebind_watsonx_async_client(cls, model: Any, loop: asyncio.AbstractEventLoop) -> bool:
-        """Replace ChatWatsonx async httpx client if it was bound to another loop.
-
-        Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
-        a rebind happened.
-        """
-        if not isinstance(model, ChatWatsonx):
-            return False
-        client = cls._watsonx_api_client(model)
-        if client is None:
-            return False
-        loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
-        if loop_ref is None:
-            # First sighting under a running loop — tag without recreating.
-            setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
-            return False
-        bound_loop = loop_ref()
-        if bound_loop is loop:
-            return False
+    def _replace_watsonx_async_client(
+        cls,
+        client: Any,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        old_owning_loop: Optional[asyncio.AbstractEventLoop],
+    ) -> bool:
         try:
             from ibm_watsonx_ai._wrappers.httpx_wrapper import _get_async_httpx_client
         except ImportError:
@@ -316,9 +304,40 @@ class LLMManager:
         # the *current* loop, which fails when the previous pytest loop is closed.
         client._async_httpx_client = _get_async_httpx_client(client)
         setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
-        cls._best_effort_aclose_async_client(old_async, bound_loop)
-        logger.debug("Rebound watsonx async httpx client for new event loop")
+        cls._best_effort_aclose_async_client(old_async, old_owning_loop)
         return True
+
+    @classmethod
+    def _rebind_watsonx_async_client(cls, model: Any, loop: asyncio.AbstractEventLoop) -> bool:
+        """Replace ChatWatsonx async httpx client if it was bound to another loop.
+
+        Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
+        a rebind happened.
+        """
+        if not isinstance(model, ChatWatsonx):
+            return False
+        client = cls._watsonx_api_client(model)
+        if client is None:
+            return False
+
+        async_client = getattr(client, "_async_httpx_client", None)
+        client_closed = async_client is None or getattr(async_client, "is_closed", False)
+        loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
+        bound_loop = loop_ref() if loop_ref is not None else None
+
+        if not client_closed and bound_loop is loop:
+            return False
+
+        if not client_closed and loop_ref is None:
+            # First sighting under a running loop — tag without recreating.
+            setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+            return False
+
+        # Closed client (e.g. after fixture teardown aclose) or different/dead loop.
+        if cls._replace_watsonx_async_client(client, loop, old_owning_loop=bound_loop):
+            logger.debug("Rebound watsonx async httpx client for new event loop")
+            return True
+        return False
 
     @staticmethod
     def _best_effort_aclose_async_client(
@@ -338,7 +357,11 @@ class LLMManager:
             logger.debug("Could not aclose displaced watsonx async httpx client: {}", exc)
 
     async def aclose_watsonx_async_clients(self) -> int:
-        """Await-close cached watsonx async clients on the running loop (fixture teardown)."""
+        """Await-close cached watsonx async clients on the running loop (fixture teardown).
+
+        After close, installs a fresh open client and clears the loop tag so the next
+        test's rebind does not reuse a closed httpx client.
+        """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -367,6 +390,13 @@ class LLMManager:
                     closed += 1
             except Exception as exc:
                 logger.debug("Could not aclose watsonx async httpx client on teardown: {}", exc)
+            # Leave an open replacement; next test will tag it to its loop.
+            try:
+                from ibm_watsonx_ai._wrappers.httpx_wrapper import _get_async_httpx_client
+
+                client._async_httpx_client = _get_async_httpx_client(client)
+            except ImportError:
+                pass
             if hasattr(client, _CUGA_ASYNC_LOOP_REF):
                 delattr(client, _CUGA_ASYNC_LOOP_REF)
         return closed
