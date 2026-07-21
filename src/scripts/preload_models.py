@@ -11,6 +11,12 @@ import os
 import sys
 
 
+# ONNX layout weights used when docling_layout_engine resolves to "onnx"
+# (CUGA default: auto + CPU). download_models() only pulls the transformers
+# heron repo, so airgapped CPU ingest fails without this extra download.
+DOCLING_LAYOUT_HERON_ONNX_REPO = "docling-project/docling-layout-heron-onnx"
+
+
 def preload_fastembed() -> None:
     print("→ Preloading fastembed models...")
     try:
@@ -35,6 +41,7 @@ def preload_docling() -> None:
 
     print("→ Preloading docling models...")
     try:
+        from docling.models.utils.hf_model_download import download_hf_model
         from docling.utils.model_downloader import download_models
 
         output_dir = Path(os.environ.get("DOCLING_ARTIFACTS_PATH", Path.home() / ".cache" / "docling"))
@@ -48,6 +55,12 @@ def preload_docling() -> None:
             output_dir=output_dir,
             with_code_formula=with_code_formula,
             with_picture_classifier=with_picture_classifier,
+        )
+        onnx_dir = output_dir / DOCLING_LAYOUT_HERON_ONNX_REPO.replace("/", "--")
+        print(f"  Downloading ONNX layout model {DOCLING_LAYOUT_HERON_ONNX_REPO}...")
+        download_hf_model(
+            repo_id=DOCLING_LAYOUT_HERON_ONNX_REPO,
+            local_dir=onnx_dir,
         )
         print("  ✓ docling models ready")
     except ImportError:
