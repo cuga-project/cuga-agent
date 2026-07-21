@@ -1059,10 +1059,15 @@ const CarbonChat = ({
                 // headers that window.open can't set — so the page has to ride
                 // in as a fragment. Empty for non-PDFs, where `page` is a chunk
                 // ordinal rather than a real page.
-                const url = URL.createObjectURL(blob) + pageFragment(source);
-                window.open(url, "_blank", "noopener");
-                // Leave the blob URL alive long enough for the new tab to load.
-                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                const blobUrl = URL.createObjectURL(blob);
+                window.open(blobUrl + pageFragment(source), "_blank", "noopener,noreferrer");
+                // Revoke the *bare* blob URL, not the #page-appended string: the
+                // File API resolves the object by exact URL, and Firefox/Safari
+                // don't strip the fragment before that lookup — passing the
+                // fragment-bearing string silently fails to free the blob, leaking
+                // it for the whole page session. Keep it alive briefly so the new
+                // tab can load first.
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
                 return true;
               } catch {
                 return false;

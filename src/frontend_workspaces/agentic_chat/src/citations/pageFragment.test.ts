@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pageFragment } from './types';
+import { pageFragment, pageLabel } from './types';
 
 describe('pageFragment', () => {
   it('opens a PDF at the cited page', () => {
@@ -35,5 +35,21 @@ describe('pageFragment', () => {
     // "#page=<positive int>" so `blobUrl + fragment` is always a valid URL.
     const out = pageFragment({ filename: 'a.pdf', page: 12 });
     expect(out).toMatch(/^#page=[1-9]\d*$/);
+  });
+
+  // NTH-1: pageLabel and pageFragment must agree about which formats have real
+  // pages. .docx paginates at render time, so both must treat it as pageless —
+  // otherwise the panel shows "p.5" but the document opens at the top.
+  it.each(['doc.docx', 'notes.md', 'log.txt', 'data.csv'])(
+    'pageLabel and pageFragment agree (both empty) for %s',
+    (filename) => {
+      expect(pageLabel({ filename, page: 5 })).toBe('');
+      expect(pageFragment({ filename, page: 5 })).toBe('');
+    },
+  );
+
+  it('still labels and links real PDF pages', () => {
+    expect(pageLabel({ filename: 'r.pdf', page: 5 })).toBe('p.5');
+    expect(pageFragment({ filename: 'r.pdf', page: 5 })).toBe('#page=5');
   });
 });

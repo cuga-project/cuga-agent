@@ -31,11 +31,14 @@ jobs:
     runs-on: ubuntu-latest
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -119,11 +122,14 @@ jobs:
     timeout-minutes: 25
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -150,11 +156,14 @@ jobs:
     timeout-minutes: 60
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       PYTHONIOENCODING: utf-8
       CUGA_THREAD_WORKSPACE_SEED: crm
 

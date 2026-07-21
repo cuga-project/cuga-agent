@@ -10,7 +10,11 @@ export interface MessageSource {
   query?: string;
 }
 
-const PAGELESS_EXTENSIONS = ['.txt', '.md', '.log', '.json', '.csv', '.xml'];
+// Formats where "page" is a chunk ordinal, not a real page number. `.docx` is
+// here too: Word pagination is a render-time artifact (it reflows with viewport
+// and font), so a stored page can't reliably target a location — pageLabel and
+// pageFragment must both treat it as pageless or they disagree (NTH-1).
+const PAGELESS_EXTENSIONS = ['.txt', '.md', '.log', '.json', '.csv', '.xml', '.docx'];
 
 /** Page label, honest about formats where "page" is really a chunk ordinal. */
 export function pageLabel(source: Pick<MessageSource, 'filename' | 'page'>): string {
