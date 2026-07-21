@@ -19,6 +19,8 @@ from cuga.backend.knowledge.engine import (
     _purge_model_cache,
 )
 
+pytestmark = pytest.mark.unit
+
 ONNX_MSG = (
     "[ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model from /var/folders/xg/T/"
     "fastembed_cache/models--qdrant--bge-small-en-v1.5-onnx-q/snapshots/5239/"
