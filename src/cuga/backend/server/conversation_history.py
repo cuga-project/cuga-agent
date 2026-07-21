@@ -7,7 +7,7 @@ Uses the storage layer (get_storage().get_relational_store("conversation")) for 
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -445,6 +445,39 @@ class ConversationHistoryDB:
         except Exception as e:
             logger.error(f"Error retrieving stream events: {e}")
             return None
+
+    async def gc_ephemeral_stream_events(self, older_than_days: int = 7) -> int:
+        """Delete stream_events rows that have no conversation_history row
+        (ephemeral Try-It-Out threads) and haven't been updated recently.
+        Returns number of rows deleted."""
+        try:
+            await self._ensure_schema()
+            store = self._get_store()
+            cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+            await store.execute(
+                """
+                DELETE FROM stream_events
+                WHERE updated_at < ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM conversation_history ch
+                    WHERE ch.tenant_id = stream_events.tenant_id
+                      AND ch.instance_id = stream_events.instance_id
+                      AND ch.agent_id = stream_events.agent_id
+                      AND ch.thread_id = stream_events.thread_id
+                      AND ch.user_id = stream_events.user_id
+                  )
+                """,
+                (cutoff,),
+            )
+            # Both LocalRelationalStore and ProdRelationalStore set _last_rowcount
+            # on execute(); use it to avoid SELECT changes() (SQLite-only) or
+            # pg-specific row-count queries.
+            removed = getattr(store, "_last_rowcount", 0) or 0
+            await store.commit()
+            return removed
+        except Exception as e:
+            logger.error(f"Error in gc_ephemeral_stream_events: {e}")
+            return 0
 
     async def append_stream_event(
         self, agent_id: str, thread_id: str, user_id: str, event_name: str, event_data: str, sequence: int
