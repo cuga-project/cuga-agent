@@ -172,6 +172,10 @@ export interface ParsedAnswerResult {
   policyInfo: PolicyInfo | null;
   isToolApproval: boolean;
   policyData: any;
+  /** Per-message knowledge citation snapshot from the Answer event payload
+   * (`{data, variables, active_policies, sources?}`). Shape matches the
+   * `MessageSource` type exported by `agentic_chat/Citations`. */
+  sources: any[];
 }
 
 export function parseAnswerEventData(
@@ -183,11 +187,16 @@ export function parseAnswerEventData(
     policyInfo: null,
     isToolApproval: false,
     policyData: null,
+    sources: [],
   };
 
   try {
     const parsed = JSON.parse(data);
     let innerData = parsed.data;
+
+    if (Array.isArray(parsed.sources)) {
+      result.sources = parsed.sources;
+    }
 
     if (typeof innerData === "string") {
       try {

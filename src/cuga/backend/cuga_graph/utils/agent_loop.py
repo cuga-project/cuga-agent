@@ -21,14 +21,14 @@ from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
 from pydantic import TypeAdapter
 import logging
-from typing import Generator, List, Optional, Union, Any
+from typing import Any, Dict, Generator, List, Optional, Union
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall
 from langchain_core.outputs import LLMResult
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -139,6 +139,9 @@ class AgentLoopAnswer(BaseModel):
     has_tools: bool = False
     tools: List[ToolCall]
     flow_generalized: Optional[bool] = False
+    # Per-message citation source snapshots (see knowledge/sources.py) — only
+    # populated on the terminal answer; empty on interrupts/intermediate steps.
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class StreamEvent(BaseModel):
@@ -674,7 +677,13 @@ class AgentLoop:
                     }
                     answer = json.dumps(answer)
 
-            return AgentLoopAnswer(end=True, has_tools=False, answer=answer, tools=msg.tool_calls)
+            return AgentLoopAnswer(
+                end=True,
+                has_tools=False,
+                answer=answer,
+                tools=msg.tool_calls,
+                sources=state.sources or [],
+            )
         else:
             logger.debug(
                 f"No terminal agent detected. Returning intermediate answer with msg.content: {msg.content[:100] if msg and msg.content else 'None'}..."
