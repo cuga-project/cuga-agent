@@ -20,6 +20,9 @@ from fastapi.testclient import TestClient
 from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
 from cuga.backend.knowledge.routes import knowledge_router
 from cuga.backend.knowledge.session_provider import SessionProvider
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _make_app(provider, *, user_id: str | None = None, tenant_id: str | None = None):

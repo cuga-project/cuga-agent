@@ -15,6 +15,8 @@ from cuga.backend.knowledge.sources import (
     set_session_override_lookup,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Stub helpers (mirror the harness in test_knowledge_client_adaptation.py)
@@ -181,3 +183,38 @@ def test_contract_present_iff_enabled():
     assert assembled_off.has_knowledge is True
     assert "## Citations (use [sN] markers" not in assembled_off.text
     assert "## Citing sources" in assembled_off.text  # legacy section retained
+
+
+def test_contract_absent_when_session_override_disables_citations():
+    """Session-aware gate: agent citations ON but a per-session override OFF must
+    suppress CITATIONS_CONTRACT — otherwise the prompt tells the model to write
+    [sN] markers that resolution then strips for this session (prompt lies)."""
+
+    def _cfg_on() -> SimpleNamespace:
+        return SimpleNamespace(
+            enabled=True,
+            citations_enabled=True,  # agent-level ON
+            client_adaptation_text="",
+            client_adaptation_glossary=[],
+            max_search_attempts=3,
+            default_limit=10,
+            rag_profile="standard",
+        )
+
+    engine = _stub_engine([_StubDoc("report.pdf")])
+    tid = "sess-off-thread"
+    set_session_override_lookup(lambda t: {"citations_enabled": False} if t == tid else None)
+    try:
+        assembled = asyncio.run(
+            assemble_system_prompt_section(
+                engine,
+                agent_id="test_agent",
+                thread_id=tid,  # session override OFF for this thread
+                base_instructions="BASE",
+                search_config=_cfg_on(),
+            )
+        )
+        assert "## Citations (use [sN] markers" not in assembled.text  # suppressed
+        assert "## Citing sources" in assembled.text  # legacy retained
+    finally:
+        set_session_override_lookup(None)

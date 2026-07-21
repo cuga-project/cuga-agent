@@ -9,6 +9,8 @@ from cuga.backend.knowledge.sources import (
     resolve_citations,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _ledger_with(n=3):
     ledger = SourceLedger()

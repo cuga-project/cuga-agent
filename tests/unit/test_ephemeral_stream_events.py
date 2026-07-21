@@ -9,6 +9,9 @@ Test 2 - disable_history save path: events_only=True calls save_stream_events
 import asyncio
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------

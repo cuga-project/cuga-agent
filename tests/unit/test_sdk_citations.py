@@ -7,6 +7,9 @@ from langchain_core.messages import AIMessage
 
 from cuga.backend.knowledge.sources import _reset_all_ledgers_for_tests, get_ledger
 from cuga.sdk import InvokeResult
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def setup_function():

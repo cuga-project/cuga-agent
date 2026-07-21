@@ -2,6 +2,9 @@ from types import SimpleNamespace
 
 from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
 from cuga.backend.knowledge.sources import get_ledger, _reset_all_ledgers_for_tests
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 class _State(SimpleNamespace):

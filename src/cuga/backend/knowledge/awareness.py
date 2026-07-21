@@ -503,7 +503,14 @@ async def assemble_system_prompt_section(
     attempts = getattr(cfg, "max_search_attempts", None)
     contract_text = load_knowledge_instructions(max_search_attempts=attempts)
 
-    if getattr(cfg, "citations_enabled", True):
+    # Session-aware: a per-thread override disables citations even when the
+    # agent config leaves them on. Use the SAME predicate resolution uses
+    # (citations_enabled_for), not the agent-only flag — otherwise the prompt
+    # would instruct the model to write [sN] markers that apply_citation_
+    # resolution then strips for a citations-off session ("the prompt lies").
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    if citations_enabled_for(cfg, thread_id):
         # The legacy prose-attribution section contradicts marker citations —
         # drop it from the assembled prompt (operators may have edited or
         # removed it; a non-match is fine) and let CITATIONS_CONTRACT own the
