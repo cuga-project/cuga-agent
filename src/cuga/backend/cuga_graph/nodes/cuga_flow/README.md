@@ -294,3 +294,14 @@ cuga_flow/
 cuga_flo_mcp/
 └── bridge.py              # MCPFlowBridge — FastMCP integration contract
 ```
+
+---
+
+## Integration with FLOWABLE
+
+CUGA FLO can run alongside **Flowable** as a pluggable external workflow engine, replacing the native LangGraph engine for BPMN process execution. In this mode Flowable owns process state, persistence, and token routing; CUGA FLO contributes LLM reasoning at each control point (task, gateway, hook) through the same MCP bridge interface.
+
+See **[README-FLOWABLE.md](README-FLOWABLE.md)** for the full description of:
+
+- The two components that enable the integration: the **FlowableProxy** (REST client mediating communication with Flowable) and the **augmented BPMN model** (the Flowable-deployed process file extended with callbacks to CUGA FLO and hook-action handling)
+- The three BPMN extensions required for each control-point type: task agent (ScriptTask), decision agent (ScriptTask + adapted gateway), and hook (ScriptTask + boundary event + `Task_DynamicSkip`)
