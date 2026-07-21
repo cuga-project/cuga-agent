@@ -283,9 +283,10 @@ def init_openlit() -> None:
         pricing_json = resolve_openlit_pricing_json(
             settings_pricing_json=getattr(obs, "pricing_json", "") or ""
         )
-        # Bridge settings → LiteLLM native env (LiteLLM is not Dynaconf-aware).
-        if getattr(obs, "litellm_local_model_cost_map", True):
-            os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        # Bridge settings → LiteLLM native env (settings win over pre-set native env).
+        from cuga.config import apply_litellm_local_model_cost_map
+
+        apply_litellm_local_model_cost_map(bool(getattr(obs, "litellm_local_model_cost_map", True)))
 
         try:
             # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT

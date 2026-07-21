@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cuga.backend.observability import openlit_init
+from cuga.config import apply_litellm_local_model_cost_map
 
 
 @pytest.mark.unit
@@ -37,8 +38,18 @@ def test_resolve_pricing_json_falls_back_to_bundled():
 
 
 @pytest.mark.unit
+def test_apply_litellm_local_model_cost_map_settings_win_over_native_env(monkeypatch):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "False")
+    apply_litellm_local_model_cost_map(True)
+    assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "True"
+
+    apply_litellm_local_model_cost_map(False)
+    assert "LITELLM_LOCAL_MODEL_COST_MAP" not in os.environ
+
+
+@pytest.mark.unit
 def test_init_openlit_passes_local_pricing_json(monkeypatch):
-    monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "False")
 
     fake_openlit = MagicMock()
     settings = SimpleNamespace(
@@ -59,14 +70,14 @@ def test_init_openlit_passes_local_pricing_json(monkeypatch):
     fake_openlit.init.assert_called_once()
     kwargs = fake_openlit.init.call_args.kwargs
     assert kwargs["pricing_json"] == str(openlit_init.bundled_openlit_pricing_json())
-    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP", "").lower() in {"1", "true", "yes"}
+    assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "True"
 
 
 @pytest.mark.unit
 def test_init_openlit_uses_settings_pricing_json(tmp_path, monkeypatch):
     custom = tmp_path / "custom-pricing.json"
     custom.write_text('{"chat": {}}', encoding="utf-8")
-    monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
     fake_openlit = MagicMock()
     settings = SimpleNamespace(

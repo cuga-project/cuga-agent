@@ -314,11 +314,26 @@ except dynaconf.ValidationError as e:
     accumulative_errors = e.details
     logger.warning(accumulative_errors)
 
-# Bridge Dynaconf observability settings to env vars that LiteLLM reads natively.
-# Override via DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP.
+
+def apply_litellm_local_model_cost_map(enabled: bool) -> None:
+    """
+    Bridge Dynaconf observability.litellm_local_model_cost_map to LiteLLM's native env.
+
+    LiteLLM only treats LITELLM_LOCAL_MODEL_COST_MAP as local when its value.lower()
+    == "true". Settings win over any pre-existing native env value.
+    Override via DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP.
+    """
+    if enabled:
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    else:
+        os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
+
+
+# Apply at config load so `import litellm` later sees the offline flag.
 try:
-    if getattr(getattr(settings, "observability", None), "litellm_local_model_cost_map", True):
-        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    apply_litellm_local_model_cost_map(
+        bool(getattr(getattr(settings, "observability", None), "litellm_local_model_cost_map", True))
+    )
 except Exception:
     pass
 
