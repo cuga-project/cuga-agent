@@ -2,6 +2,7 @@
 enabled = false
 agent_level_enabled = true
 session_level_enabled = true
+citations_enabled = true  # numbered [1] source citations in answers (UI toggle: Knowledge -> Settings)
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
 # Local: vectors in persist_dir/knowledge_vectors.db; metadata in persist_dir/metadata.db. Prod: storage.postgres_url.
 # Uploaded source files always remain under persist_dir/files/ (filesystem).

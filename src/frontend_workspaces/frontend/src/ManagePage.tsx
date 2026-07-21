@@ -108,6 +108,7 @@ export interface AgentConfig {
     enabled?: boolean;
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
+    citations_enabled?: boolean;
     rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
@@ -157,6 +158,7 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
+  citations_enabled: true,
   rag_profile: "standard",
   embedding_provider: "huggingface",
   embedding_model: "",
@@ -225,6 +227,26 @@ function isIndexConfigEquivalent(
   if (current.chunk_overlap !== saved.chunk_overlap) return false;
   if (current.metric_type !== saved.metric_type) return false;
   return true;
+}
+
+// True when the draft's index config differs from the PUBLISHED (live) config.
+// Reuses isIndexConfigEquivalent so the "Live" pill and the profile "Modified"
+// tag share ONE definition of a meaningful change (they must never disagree).
+// null live = baseline not loaded yet = not diverged (don't flag before we
+// know what's actually serving).
+function isDivergedFromLive(
+  current: NonNullable<AgentConfig["knowledge"]>,
+  live: { provider: string; model: string; chunk_size?: number; chunk_overlap?: number; metric_type?: string } | null,
+): boolean {
+  if (!live) return false;
+  return !isIndexConfigEquivalent(current, {
+    ...DEFAULT_KNOWLEDGE_CONFIG,
+    embedding_provider: live.provider,
+    embedding_model: live.model,
+    chunk_size: live.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
+    chunk_overlap: live.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
+    metric_type: live.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
+  });
 }
 
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
@@ -670,7 +692,7 @@ export function ManagePage() {
           if (liveKn && typeof liveKn === "object") {
             setLiveKnowledge({
               provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
-              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
+              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "",
               version: typeof data.version === "number" ? data.version : null,
               chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
               chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
@@ -1934,21 +1956,10 @@ export function ManagePage() {
                         // helper the Re-index banner uses, so both signals
                         // agree on what counts as a meaningful change. Avoids
                         // duplicating the empty-model-as-default rule.
-                        const diverged = !isIndexConfigEquivalent(knowledgeConfig, {
-                          ...DEFAULT_KNOWLEDGE_CONFIG,
-                          embedding_provider: liveKnowledge.provider,
-                          embedding_model: liveKnowledge.model,
-                          // Compare against the PUBLISHED chunk/metric, not the
-                          // draft's own values (Sami review) — otherwise a
-                          // chunk-only draft edit compares against itself and
-                          // never turns the pill yellow.
-                          chunk_size: liveKnowledge.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
-                          chunk_overlap: liveKnowledge.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
-                          metric_type: liveKnowledge.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
-                        });
+                        const diverged = isDivergedFromLive(knowledgeConfig, liveKnowledge);
                         const label = (
                           <>
-                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                            Live: {liveKnowledge.provider} · {liveKnowledge.model || "(default)"}
                             {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
                           </>
                         );
