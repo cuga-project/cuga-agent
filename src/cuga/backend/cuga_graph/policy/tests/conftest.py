@@ -1,15 +1,14 @@
 """Fixtures for policy tests."""
 
-import pytest
+import pytest_asyncio
 
 from cuga.backend.llm.models import LLMManager
 
 
-@pytest.fixture(autouse=True)
-def _clear_llm_manager_cache():
-    # ChatWatsonx binds async httpx to the current event loop; cached models break
-    # the next pytest loop with "Event loop is closed".
-    mgr = LLMManager()
-    mgr.clear_models()
+@pytest_asyncio.fixture(autouse=True)
+async def _rebind_llm_async_clients():
+    # ChatWatsonx caches an httpx.AsyncClient bound to the pytest event loop.
+    # Rebind that client to the current loop instead of dropping the whole
+    # LLMManager cache (which re-auths to IAM on every test). See #523.
+    LLMManager().rebind_async_clients_to_running_loop()
     yield
-    mgr.clear_models()

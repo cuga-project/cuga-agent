@@ -1,6 +1,8 @@
+import asyncio
 import math
 import re
 import threading
+import weakref
 from datetime import date
 from typing import Dict, Any, Optional, Mapping
 import hashlib
@@ -20,6 +22,9 @@ from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_pro
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
+
+# weakref.ref(loop) on watsonx APIClient for the loop the async httpx client is for.
+_CUGA_ASYNC_LOOP_REF = "_cuga_async_loop_ref"
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
@@ -271,6 +276,68 @@ class LLMManager:
         """Clear the pre-instantiated model and return to normal model creation"""
         self._pre_instantiated_model = None
         logger.info("Pre-instantiated model cleared, returning to normal model creation")
+
+    @staticmethod
+    def _watsonx_api_client(model: Any) -> Any:
+        client = getattr(model, "watsonx_client", None)
+        if client is not None:
+            return client
+        watsonx_model = getattr(model, "watsonx_model", None)
+        return getattr(watsonx_model, "_client", None) if watsonx_model is not None else None
+
+    @classmethod
+    def _rebind_watsonx_async_client(cls, model: Any, loop: asyncio.AbstractEventLoop) -> bool:
+        """Replace ChatWatsonx async httpx client if it was bound to another loop.
+
+        Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
+        a rebind happened.
+        """
+        if not isinstance(model, ChatWatsonx):
+            return False
+        client = cls._watsonx_api_client(model)
+        if client is None:
+            return False
+        loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
+        if loop_ref is None:
+            # First sighting under a running loop — tag without recreating.
+            setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+            return False
+        bound_loop = loop_ref()
+        if bound_loop is loop:
+            return False
+        try:
+            from ibm_watsonx_ai._wrappers.httpx_wrapper import _get_async_httpx_client
+        except ImportError:
+            logger.debug("ibm_watsonx_ai httpx wrapper unavailable; cannot rebind async client")
+            return False
+
+        # Assign directly — the property setter schedules aclose via create_task,
+        # which fails when the previous pytest loop is already closed.
+        client._async_httpx_client = _get_async_httpx_client(client)
+        setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+        logger.debug("Rebound watsonx async httpx client for new event loop")
+        return True
+
+    def rebind_async_clients_to_running_loop(self) -> int:
+        """Rebind loop-bound async HTTP clients on cached models to the running loop.
+
+        ChatWatsonx / ibm_watsonx_ai keep an ``httpx.AsyncClient`` that must not be
+        reused across pytest-asyncio function-scoped loops. Prefer this over
+        :meth:`clear_models` so IAM tokens stay cached.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+
+        rebound = 0
+        for model in list(self._models.values()):
+            if self._rebind_watsonx_async_client(model, loop):
+                rebound += 1
+        if self._pre_instantiated_model is not None:
+            if self._rebind_watsonx_async_client(self._pre_instantiated_model, loop):
+                rebound += 1
+        return rebound
 
     def _create_cache_key(self, model_settings: Dict[str, Any]) -> str:
         """Create a unique cache key from model settings including resolved values"""
@@ -1018,6 +1085,7 @@ class LLMManager:
         # Check if pre-instantiated model is available
         if self._pre_instantiated_model is not None:
             logger.debug(f"Using pre-instantiated model: {type(self._pre_instantiated_model).__name__}")
+            self.rebind_async_clients_to_running_loop()
             # Update parameters for the task
             updated_model = self._update_model_parameters(
                 self._pre_instantiated_model,
@@ -1038,8 +1106,8 @@ class LLMManager:
             logger.debug(
                 f"Returning cached model: {platform}/{model_name} (api_version={api_version}, base_url={base_url})"
             )
-            # Update parameters for the task
             cached_model = self._models[cache_key]
+            self.rebind_async_clients_to_running_loop()
             updated_model = self._update_model_parameters(
                 cached_model,
                 temperature=model_settings.get('temperature', 0.1),
@@ -1054,6 +1122,7 @@ class LLMManager:
         )
         model = self._create_llm_instance(model_settings)
         self._models[cache_key] = model
+        self.rebind_async_clients_to_running_loop()
 
         # Update parameters for the task
         updated_model = self._update_model_parameters(
