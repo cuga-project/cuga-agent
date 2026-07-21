@@ -211,22 +211,6 @@ def _format_sources_footer(sources: list[dict]) -> str:
     return "\n\nSources:\n" + "\n".join(lines)
 
 
-async def _seed_stream_events_buffer(agent_id: str, thread_id: str, user_id: str) -> tuple[list, int]:
-    """Load already-persisted stream events so a turn appends instead of clobbers.
-
-    Returns ``(buffer, next_sequence)``. Any read failure yields ``([], 0)`` —
-    a fresh buffer must never block or fail the turn.
-    """
-    try:
-        prior = await get_conversation_db().get_stream_events(agent_id, thread_id, user_id)
-        if prior and prior.events:
-            buf = [e.model_dump() if hasattr(e, "model_dump") else dict(e) for e in prior.events]
-            return buf, len(buf)
-    except Exception:
-        pass
-    return [], 0
-
-
 async def _rehydrate_citation_ledger(
     app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
 ) -> None:
@@ -1574,17 +1558,10 @@ async def event_stream(
 
     # Initialize event sequence counter and buffer for stream event tracking.
     event_sequence = 0
-    stream_events_buffer = []  # Buffer to collect events during streaming
-    # Seed from what is already persisted so each turn APPENDS rather than
-    # overwrites. The save does ``UPDATE stream_events SET events = ?`` with this
-    # buffer, so starting empty every turn clobbered the row down to the last
-    # turn only — breaking conversation reload (frontend replays stream_events
-    # first) and citation rehydration across turns. Seeding also continues the
-    # sequence past the loaded events, so no per-turn sequence collision.
-    if thread_id:
-        stream_events_buffer, event_sequence = await _seed_stream_events_buffer(
-            app_state.agent_id, thread_id, user_id
-        )
+    # Buffer collects THIS turn's events only. The DB layer (save_stream_events)
+    # appends them to the persisted prior turns and re-sequences, so the row
+    # stays cumulative — no per-turn clobber — without seeding the buffer here.
+    stream_events_buffer = []
 
     # Add user message to buffer as first event
     if query and thread_id:
