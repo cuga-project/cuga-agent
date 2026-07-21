@@ -12,10 +12,18 @@ import {
   type ChatInstance,
   type MessageRequest,
   type CustomSendMessageOptions,
+  type RenderUserDefinedState,
   CarbonTheme,
   BusEventType,
 } from '@carbon/ai-chat';
 import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-react";
+import {
+  registerCiteElement,
+  CITE_CLICK_EVENT,
+  MessageSources,
+  SourcesPanel,
+  type MessageSource,
+} from 'agentic_chat/Citations';
 import * as api from '../api';
 import {
   useSessionKnowledgeAttachments,
@@ -29,6 +37,11 @@ import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
 import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
+
+// Register the <cuga-cite> citation chip on the global custom-element registry
+// once per page. It upgrades inside @carbon/ai-chat's shadow roots, where the
+// markdown renderer passes the raw <cuga-cite> HTML through.
+registerCiteElement();
 
 // Reset thread ID when conversation restarts
 export function generateUUID(): string {
@@ -283,11 +296,60 @@ const CarbonChat = ({
   });
   const attachmentsEnabled = knowledgeEnabled !== false && attachmentScope !== "none" && scopeEnabled && attachmentsAvailable;
   const [assistantName, setAssistantName] = useState("CUGA Agent");
+  const [sourcesPanel, setSourcesPanel] = useState<{
+    sources: MessageSource[];
+    activeN: number | null;
+  } | null>(null);
+  // message key (the `msg` attribute stamped on each <cuga-cite> chip and the
+  // `message_key` in the cuga_sources user_defined item) → that message's
+  // source snapshot. Populated in renderUserDefinedResponse, which runs for
+  // both live sends and history replay.
+  const sourcesByMessageKey = useRef<Map<string, MessageSource[]>>(new Map());
+
   // Known slash-command names, used to decorate /command mentions in user
   // bubbles with pills. Slash semantics are soft (a mention anywhere in the
   // message is a suggestion to the agent), so every known token gets a pill,
   // not just a leading one.
   const [knownCommandNames, setKnownCommandNames] = useState<string[]>([]);
+
+  // Citation chip clicks bubble out of ai-chat's shadow DOM as composed
+  // `cuga-cite-click` events. `event.target` is retargeted to the outermost
+  // shadow host by the time the event reaches the document, so the original
+  // <cuga-cite> element is recovered via composedPath()[0].
+  useEffect(() => {
+    const onCiteClick = (event: Event) => {
+      const detail = (event as CustomEvent).detail ?? {};
+      const n = typeof detail.n === 'number' ? detail.n : null;
+      const origin = event.composedPath()[0] as HTMLElement | undefined;
+      const messageKey = origin?.getAttribute?.('msg') ?? '';
+      // Empty-array fallback on a key miss (panel shows its empty state) —
+      // a last-entry fallback could attach chips to the wrong answer.
+      const sources = sourcesByMessageKey.current.get(messageKey) ?? [];
+      setSourcesPanel({ sources, activeN: n });
+    };
+    document.addEventListener(CITE_CLICK_EVENT, onCiteClick);
+    return () => document.removeEventListener(CITE_CLICK_EVENT, onCiteClick);
+  }, []);
+
+  const renderUserDefinedResponse = useCallback((state: RenderUserDefinedState) => {
+    const item = state.messageItem as any;
+    if (item?.user_defined?.type !== 'cuga_sources') {
+      return undefined;
+    }
+    const sources = (item.user_defined.sources ?? []) as MessageSource[];
+    const messageKey = String(
+      item.user_defined.message_key ?? (state.fullMessage as any)?.id ?? '',
+    );
+    if (messageKey) {
+      sourcesByMessageKey.current.set(messageKey, sources);
+    }
+    return (
+      <MessageSources
+        sources={sources}
+        onOpen={(n: number) => setSourcesPanel({ sources, activeN: n })}
+      />
+    );
+  }, []);
 
   useEffect(() => {
     initAgentProfile(useDraft);
@@ -683,6 +745,8 @@ const CarbonChat = ({
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
         resetThreadId();
+        sourcesByMessageKey.current.clear();
+        setSourcesPanel(null);
       },
     });
 
@@ -733,10 +797,15 @@ const CarbonChat = ({
       if (threadId) {
         currentThreadId = threadId;
         if (skipNextHistoryLoadRef.current === threadId) {
+          // Same conversation echoed back after a send — keep citation state.
           skipNextHistoryLoadRef.current = null;
           return;
         }
         skipNextHistoryLoadRef.current = null;
+        // Citation state is per conversation; the map repopulates as
+        // renderUserDefinedResponse runs over the replayed history.
+        sourcesByMessageKey.current.clear();
+        setSourcesPanel(null);
         const loadAndInsertHistory = async () => {
           if (!chatInstanceRef.current) return;
           
@@ -764,6 +833,8 @@ const CarbonChat = ({
         // If threadId is null, start a fresh conversation
         console.log('Starting new conversation');
         currentThreadId = null;
+        sourcesByMessageKey.current.clear();
+        setSourcesPanel(null);
         chatInstanceRef.current.messaging.clearConversation();
       }
     }
@@ -914,6 +985,7 @@ const CarbonChat = ({
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}
+        renderUserDefinedResponse={renderUserDefinedResponse}
         renderWriteableElements={{
           beforeInputElement: (
             <ComposerToolbar
@@ -964,6 +1036,34 @@ const CarbonChat = ({
             event.target.value = "";
           }}
         />
+        {sourcesPanel && (
+          <SourcesPanel
+            sources={sourcesPanel.sources}
+            activeN={sourcesPanel.activeN}
+            onClose={() => setSourcesPanel(null)}
+            onOpenDocument={async (source: MessageSource) => {
+              try {
+                const scope = source.scope === "session" ? "session" : "agent";
+                const response = await api.getKnowledgeDocumentFile(
+                  scope,
+                  source.filename,
+                  currentThreadId ?? undefined,
+                );
+                if (!response.ok) {
+                  return false;
+                }
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                window.open(url, "_blank", "noopener");
+                // Leave the blob URL alive long enough for the new tab to load.
+                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                return true;
+              } catch {
+                return false;
+              }
+            }}
+          />
+        )}
         <SlashCommandDropdown
           chatElement={chatElement}
           portalContainer={wrapperRef.current}

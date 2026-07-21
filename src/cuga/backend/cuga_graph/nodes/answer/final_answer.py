@@ -39,7 +39,10 @@ class HumanInTheLoopHandler:
         if action_id in self._action_handlers:
             return self._action_handlers[action_id](state, node_name)
 
-        # Default fallback
+        # Default fallback — this is a terminal path to END, so resolve
+        # citations here too (every other terminal path does): resolve any [sN]
+        # markers and drop stale prior-turn sources before the state is dumped.
+        FinalAnswerNode.apply_citation_resolution(state)
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     def add_action_handler(self, action_id: str, handler: Callable):
@@ -75,6 +78,56 @@ class FinalAnswerNode(BaseNode):
         self.node = node
 
     @staticmethod
+    def apply_citation_resolution(state) -> None:
+        """Rewrite [sN] ledger markers in final_answer into per-message [n]
+        display numbers and attach self-contained source snapshots.
+
+        Must run AFTER variable placeholder replacement and AFTER output
+        formatters, and must never break answer delivery — any failure
+        leaves the text as-is.
+
+        Idempotent: a second call (e.g. the supervisor callback forwarding an
+        already-resolved last_planner_answer) sees resolved [n] markers instead
+        of [sN] and keeps the sources the first call produced, rather than
+        clearing them.
+        """
+        try:
+            import re as _re
+
+            from cuga.backend.knowledge.sources import (
+                effective_citations_enabled,
+                get_ledger,
+                has_citation_markers,
+                resolve_citations,
+            )
+
+            text = state.final_answer or ""
+            if not has_citation_markers(text):
+                # No [sN] markers to resolve. Two cases land here: a genuinely
+                # uncited answer, and an ALREADY-resolved one (the supervisor
+                # path re-enters with last_planner_answer that already carries
+                # [n] chips + sources). Keep sources only when the current text
+                # still references them via resolved [n] markers; otherwise clear
+                # so stale prior sources never ride an uncited answer.
+                already_resolved = bool(state.sources) and _re.search(r"\[\d+\]", text) is not None
+                if not already_resolved:
+                    state.sources = []
+                return
+            if state.thread_id and effective_citations_enabled(state.thread_id):
+                ledger = get_ledger(state.thread_id, create=True)
+            else:
+                # Feature off (agent flag or session override): strip mode —
+                # markers are removed rather than resolved, sources stay [].
+                ledger = None
+            resolved, sources = resolve_citations(text, ledger)
+            state.final_answer = resolved
+            state.sources = sources
+        except Exception:
+            # stale turn-N sources must not ride an unresolved turn-N+1 answer
+            state.sources = []
+            logger.exception("citation resolution failed; delivering unresolved answer")
+
+    @staticmethod
     async def node_handler(
         state: AgentState, agent: FinalAnswerAgent, name: str, hitl_handler: HumanInTheLoopHandler
     ) -> Command[Literal["__end__", "SuggestHumanActions", "ReuseAgent"]]:
@@ -87,8 +140,9 @@ class FinalAnswerNode(BaseNode):
             state.sender = name
             final_answer_content = state.chat_agent_messages[-1].content
             state.final_answer = final_answer_content
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
-                thoughts=["Chat response provided directly."], final_answer=final_answer_content
+                thoughts=["Chat response provided directly."], final_answer=state.final_answer
             )
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
@@ -97,6 +151,7 @@ class FinalAnswerNode(BaseNode):
         # Handle TaskAnalyzerAgent when final_answer is already set (no apps matched)
         if state.sender == NodeNames.TASK_ANALYZER_AGENT and state.final_answer:
             state.sender = name
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[
                     "No applications matched the request. Providing available applications information."
@@ -108,8 +163,7 @@ class FinalAnswerNode(BaseNode):
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
             state.sender = name
-            state.final_answer = state.final_answer
-            state.sender = name
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
                 final_answer=state.final_answer,
@@ -126,9 +180,10 @@ class FinalAnswerNode(BaseNode):
             answer_to_forward = state.final_answer or state.last_planner_answer or ""
             if answer_to_forward:
                 state.final_answer = answer_to_forward
+                FinalAnswerNode.apply_citation_resolution(state)
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
-                    final_answer=answer_to_forward,
+                    final_answer=state.final_answer,
                 )
                 state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
                 tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
@@ -139,6 +194,7 @@ class FinalAnswerNode(BaseNode):
                     "Supervisor callback: no final_answer or last_planner_answer found, forwarding empty answer"
                 )
                 state.final_answer = ""
+                FinalAnswerNode.apply_citation_resolution(state)
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer="",
@@ -182,3 +238,8 @@ class FinalAnswerNode(BaseNode):
             final_answer_output.final_answer
         )
         state.final_answer = final_answer_output.final_answer
+
+        # Resolve [sN] citation markers into display numbers (must be the
+        # last mutation of final_answer; chat history above keeps raw ids).
+        FinalAnswerNode.apply_citation_resolution(state)
+        final_answer_output.final_answer = state.final_answer

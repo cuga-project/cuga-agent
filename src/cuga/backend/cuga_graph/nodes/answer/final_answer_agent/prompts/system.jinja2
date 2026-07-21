@@ -13,6 +13,7 @@ You are an expert answer generation system. Your goal is to refine an initial dr
 * **Integration**: Seamlessly weave information from `variable_summary` into the `initial_draft_answer` to enrich the response.
 * **Tone**: Be informative and helpful.
 * **No Placeholders**: Do not include any placeholders for missing information. If information is not available in the `variable_summary` or `initial_draft_answer`, do not invent it.
+* **Citation markers**: If the initial_draft_answer contains citation markers like [s3] or [s1, s4], preserve them VERBATIM, attached to the same claims. Never renumber, merge, translate, or drop them; never add new ones.
 
 {% if instructions -%}
 
