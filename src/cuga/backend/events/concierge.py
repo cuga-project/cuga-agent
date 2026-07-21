@@ -766,7 +766,11 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             if origin.startswith("gw:"):
                 _parts = origin.split(":", 2)
                 if len(_parts) == 3:
-                    o_channel, o_native = _parts[1], _parts[2]
+                    # gw thread ids carry the thread anchor as a '#<ts>' suffix (Slack: channel#ts).
+                    # The delivery TARGET is the bare channel/chat id — the '#<ts>' is a separate
+                    # thread locus resolved at send time. Keep it out of the target, or a standing
+                    # watcher delivers to a non-existent 'channel#ts' and the message silently drops.
+                    o_channel, o_native = _parts[1], _parts[2].split("#", 1)[0]
             sink = deliver_to or o_channel or (spec.channels[0] if spec.channels else "web")
             # Deliver to the origin channel only when we have the caller's native id and it's a
             # known channel connector. Then split by BACKEND: an AP-backed channel gets an AP send

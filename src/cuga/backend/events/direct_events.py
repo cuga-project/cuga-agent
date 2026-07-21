@@ -106,45 +106,57 @@ def _pick_branch_step(branches: list, *, answer: str, payload: dict):
     return None
 
 
-async def _run_step(engine, sub, step: dict, *, answer: str, payload: dict) -> bool:
-    """Run one action step. executor → POST the resolved body to its AP webhook flow; direct_send →
-    send via the app's bot adapter. Returns True on a fire attempt, False if unrunnable. Never raises."""
+async def _run_step(engine, sub, step: dict, *, answer: str, payload: dict) -> tuple[bool, str]:
+    """Run one action step. executor → POST the resolved body to its AP webhook flow (SYNC, so we
+    learn the run's real outcome instead of a fire-and-forget 200); direct_send → send via the app's
+    bot adapter. Returns ``(ok, detail)`` — ok False if the step was unrunnable OR the AP run failed;
+    detail is a short human reason on failure (surfaced back to the origin). Never raises."""
     kind = step.get("kind")
     try:
         if kind == "executor":
             if engine is None or not step.get("flow_id"):
-                return False
+                return False, "executor unavailable (no engine/flow)"
             body = _fill_answer(step.get("body") or {}, answer)
-            await engine.trigger_flow(step["flow_id"], body)
-            log.info("direct action executor fired app=%s action=%s flow=%s",
-                     step.get("app"), step.get("ap_action"), step.get("flow_id"))
-            return True
+            ok, detail = await engine.trigger_flow(step["flow_id"], body, sync=True)
+            log.info("direct action executor app=%s action=%s flow=%s → ok=%s %s",
+                     step.get("app"), step.get("ap_action"), step.get("flow_id"), ok, detail)
+            return ok, ("" if ok else detail)
         if kind == "direct_send":                         # same-app bot send (dormant today)
             from . import delivery
             native = (sub.thread_id or "").split(":", 2)[-1] or (sub.deliver_to or [""])[0]
-            ok, _ = await delivery.send_direct(step["app"], native, answer or "")
-            return bool(ok)
+            ok, detail = await delivery.send_direct(step["app"], native, answer or "")
+            return bool(ok), ("" if ok else str(detail))
     except Exception as e:  # noqa: BLE001 — an action failure must not crash the dispatch
         log.warning("direct action step failed kind=%s app=%s: %s", kind, step.get("app"), e)
-    return False
+        return False, str(e)
+    return False, f"unknown step kind {kind!r}"
 
 
-async def run_action_plan(engine, sub, *, answer: str, payload: dict) -> int:
+async def run_action_plan(engine, sub, *, answer: str, payload: dict) -> tuple[int, list[str]]:
     """Execute the subscription's action_plan (if any) after the agent answered. Linear steps run in
-    order; a branched plan runs the FIRST matching branch (else the fallback). Returns steps fired."""
+    order; a branched plan runs the FIRST matching branch (else the fallback). Returns
+    ``(fired, failures)`` — fired = steps that succeeded, failures = short reasons for steps that did
+    NOT (so the caller can correct the origin instead of leaving a false 'done' claim standing)."""
     plan = (getattr(sub, "config", None) or {}).get("action_plan")
     if not plan:
-        return 0
+        return 0, []
     if plan.get("branches"):
         step = _pick_branch_step(plan["branches"], answer=answer, payload=payload)
         steps = [step] if step else []
     else:
         steps = plan.get("steps") or []
     fired = 0
+    failures: list[str] = []
     for st in steps:
-        if st and await _run_step(engine, sub, st, answer=answer, payload=payload):
+        if not st:
+            continue
+        ok, detail = await _run_step(engine, sub, st, answer=answer, payload=payload)
+        if ok:
             fired += 1
-    return fired
+        else:
+            label = st.get("app") or st.get("ap_action") or st.get("kind") or "action"
+            failures.append(f"{label}: {detail}" if detail else str(label))
+    return fired, failures
 
 
 def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "") -> bool:
@@ -228,8 +240,23 @@ async def dispatch_all(subs: list, *, app: str, event: str, payload: dict, engin
                     answer = (r.json() or {}).get("answer") or ""
                 except Exception:  # noqa: BLE001
                     answer = ""
-                fired = await run_action_plan(engine, sub, answer=answer, payload=payload)
-                log.info("direct action_plan fired %d step(s) for %s", fired, sub.id)
+                fired, failures = await run_action_plan(engine, sub, answer=answer, payload=payload)
+                log.info("direct action_plan fired %d step(s), %d failed for %s",
+                         fired, len(failures), sub.id)
+                # The agent's answer (claiming e.g. 'email sent') was already delivered to the origin
+                # with deliver=True — BEFORE this plan ran. If the action then failed, that claim is
+                # now false and silent. Post a correction to the same origin so the failure is seen.
+                if failures:
+                    try:
+                        from . import delivery
+                        native = (sub.thread_id or "").split(":", 2)[-1] or (sub.deliver_to or [""])[0]
+                        note = ("⚠️ Heads up — I generated the summary, but the follow-up action "
+                                "did **not** complete:\n• " + "\n• ".join(failures[:4]) +
+                                "\n(If this is a Gmail/OAuth error, the connector likely needs to be "
+                                "reconnected.)")
+                        await delivery.send_direct(app, native, note)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("failed to deliver action-failure notice for %s: %s", sub.id, e)
         except Exception as e:  # noqa: BLE001 — one broken watcher must not drop the others
             log.warning("direct dispatch %s/%s → %s failed: %s", app, event, sub.target_agent, e)
     return n

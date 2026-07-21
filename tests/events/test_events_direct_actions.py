@@ -57,7 +57,7 @@ class RecEngine:
 
     async def trigger_flow(self, flow_id, payload=None, **kw):
         self.fired.append((flow_id, payload))
-        return {"ok": True}
+        return True, "HTTP 200"          # (ok, detail) — the real trigger_flow contract
 
 
 def _sub(plan):
@@ -73,8 +73,9 @@ def test_run_linear_executor_substitutes_answer():
     eng = RecEngine()
     plan = {"steps": [{"kind": "executor", "app": "gmail", "ap_action": "send_email",
                        "flow_id": "exec-1", "body": {"receiver": ["me@x.com"], "body": "{{answer}}"}}]}
-    n = _run(D.run_action_plan(eng, _sub(plan), answer="Here is your summary.", payload={"text": "hi"}))
-    assert n == 1
+    n, failures = _run(D.run_action_plan(eng, _sub(plan), answer="Here is your summary.",
+                                         payload={"text": "hi"}))
+    assert n == 1 and not failures
     fid, sent = eng.fired[0]
     assert fid == "exec-1"
     assert sent["body"] == "Here is your summary."       # sentinel replaced
@@ -108,7 +109,22 @@ def test_run_branch_falls_back_when_no_match():
     assert eng.fired[0][0] == "exec-fb"
 
 
+class FailEngine:
+    """Mimics an AP run that is ACCEPTED but FAILS during execution (e.g. Gmail 400)."""
+    async def trigger_flow(self, flow_id, payload=None, **kw):
+        return False, "HTTP 200 {'status':'FAILED','error':'invalid_request'}"
+
+
+def test_failed_run_is_reported_not_swallowed():
+    plan = {"steps": [{"kind": "executor", "app": "gmail", "ap_action": "send_email",
+                       "flow_id": "exec-1", "body": {"body": "{{answer}}"}}]}
+    n, failures = _run(D.run_action_plan(FailEngine(), _sub(plan), answer="x", payload={}))
+    assert n == 0
+    assert failures and failures[0].startswith("gmail:")   # surfaced, not a false success
+
+
 def test_no_plan_is_a_noop():
     eng = RecEngine()
-    n = _run(D.run_action_plan(eng, types.SimpleNamespace(id="s", config={}), answer="x", payload={}))
-    assert n == 0 and not eng.fired
+    n, failures = _run(D.run_action_plan(eng, types.SimpleNamespace(id="s", config={}),
+                                         answer="x", payload={}))
+    assert n == 0 and not failures and not eng.fired

@@ -64,8 +64,12 @@
   <h1>CUGA Event-Driven Agents — API Reference</h1>
   <div class="sub">Every HTTP endpoint the events layer exposes on CUGA's FastAPI server (behind
     <code style="color:#9cf">EVENTS_ENABLED</code>): the <code style="color:#9cf">/invoke</code> seam, the concierge,
-    the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.</div>
+    the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.
+    <br><b style="color:#fff">The action half (trigger ▸ agent ▸ ACTION) added no new endpoints</b> — it rides
+    <code style="color:#9cf">POST /api/concierge</code> at arm time; direct-trigger actions fire a reusable executor flow
+    internally. So this reference stays complete.</div>
   <div class="meta">Source of truth: <code>src/cuga/backend/events/app.py</code> ·
+    <a class="link" style="color:#9cf" href="api_spec.html">▶ Full try-it API spec</a> ·
     <a class="link" style="color:#9cf" href="../README.md">◀ Events docs</a> ·
     <a class="link" style="color:#9cf" href="../SETUP.md">⚙ Setup</a> ·
     <a class="link" style="color:#9cf" href="../slides.html">✦ Deck</a> ·

@@ -68,6 +68,23 @@ def _env_upsert(key: str, value: str) -> None:
     os.environ[key] = value
 
 
+# Slack sends the SAME message as two events when an app is subscribed to both `message.channels`
+# and `app_mention` — dedup on the message ts so the bot answers a "@bot …" exactly once.
+_SLACK_ANSWERED_TS: list = []
+
+
+def _slack_first_touch(ts: str) -> bool:
+    """True the first time we see this Slack message ts (and records it); False on a duplicate."""
+    if not ts:
+        return True
+    if ts in _SLACK_ANSWERED_TS:
+        return False
+    _SLACK_ANSWERED_TS.append(ts)
+    if len(_SLACK_ANSWERED_TS) > 300:
+        del _SLACK_ANSWERED_TS[:100]
+    return True
+
+
 def register_events_routes(app, *, runtime, store=None, concierge=None, engine=None,
                            users=None, identity=None, oauth_store=None,
                            gateway_token: str | None = None) -> None:
@@ -1067,7 +1084,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             # do). A gated message still feeds channel-message WATCHERS below — they normally ride
             # the chat path's /invoke, so skipping chat must not skip them.
             to_chat, text = await slack_direct.mention_gate(ev)
-            if to_chat:
+            if to_chat and _slack_first_touch(ev.get("ts")):
                 # thread identity: a threaded reply carries thread_ts; a root message uses its own
                 # ts so the bot's reply STARTS a thread; the conversation stays in that thread.
                 thread_ts = ev.get("thread_ts") or ev.get("ts")
@@ -1086,10 +1103,24 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                         payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""},
                         engine=engine))
             return {"ok": True}
-        # 3b) every OTHER event type (reaction_added, app_mention, channel_created, team_join,
-        #     emoji_changed, star_added, …) → the DIRECT watcher dispatcher. These used to be
-        #     silently dropped at should_process — 15 of Slack's event types were unreachable.
-        #     Requires the Slack app to be SUBSCRIBED to the event (events_docs/setup/SLACK.md).
+        # 3a-bis) an APP MENTION (`@bot …`) is unambiguously addressed to the bot → answer it in CHAT,
+        #     even under EVENTS_SLACK_CHAT=mention. Slack delivers `app_mention` (NOT `message`) when the
+        #     app is subscribed to app-mention events but not `message.channels`, so WITHOUT this an
+        #     @mention silently gets no reply (the exact "@eda-test-app what's the weather" symptom).
+        #     Dedup on ts so we don't double-answer when both subscriptions are on. Falls through to 3b
+        #     so any `new_slack_mention` watcher still fires too.
+        if (ev.get("type") == "app_mention" and ev.get("text") and ev.get("channel")
+                and _slack_first_touch(ev.get("ts"))):
+            _uid = await slack_direct.bot_user_id()
+            _txt = (ev.get("text") or "")
+            if _uid:
+                _txt = _txt.replace(f"<@{_uid}>", " ").strip()
+            _thread_ts = ev.get("thread_ts") or ev.get("ts")
+            asyncio.create_task(_slack_answer(_txt, ev.get("channel", ""), ev.get("user", ""), _thread_ts))
+        # 3b) every OTHER event type (app_mention → new_slack_mention watchers, reaction_added,
+        #     channel_created, team_join, emoji_changed, star_added, …) → the DIRECT watcher dispatcher.
+        #     These used to be silently dropped at should_process — 15 of Slack's event types were
+        #     unreachable. Requires the Slack app to be SUBSCRIBED to the event (events_docs/setup/SLACK.md).
         ev_type = ev.get("type") or ""
         if ev_type and store is not None:
             from . import direct_events
@@ -1148,6 +1179,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import box_direct
         body = await _safe_json(request)
+        # AP's HTTP action posts the body nested under "data" ({"data": {...}}, see _http_action).
+        # A flat/manual caller posts the fields at top level. Unwrap so BOTH shapes read the same —
+        # without this, an AP schedule tick loses folder_id/agent/deliver_to and silently polls root.
+        if isinstance(body.get("data"), dict):
+            body = body["data"]
         folder = str(body.get("folder_id") or "0")
         # `since` in the body wins (manual/test poll); otherwise use the SERVER-tracked last-seen for
         # this folder, so a standing scheduled poll fires only on files added since the previous run.

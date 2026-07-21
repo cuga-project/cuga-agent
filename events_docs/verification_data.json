@@ -244,9 +244,9 @@
    "surface": "discord/new_channel_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Deploy pipeline PLUM‑9 is red again (channel C1) – P1 severity – Compo",
+   "note": "Deploy pipeline PLUM‑9 is red again in channel C1 – P2 severity – Comp",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "discord/new_member::fire_synth": {
    "surface": "discord/new_member",
@@ -254,103 +254,103 @@
    "verdict": "ok",
    "note": "Welcome to Guild G1, zeta_tester_77! 🎉    We’re thrilled to have you j",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "gmail/new_attachment::fire_synth": {
    "surface": "gmail/new_attachment",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The email is from **jane@example.com** with the subject **“resume atta",
+   "note": "**Email Description**  - **Subject:** “resume attached”   - **From:** ",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "gmail/new_email::fire_synth": {
    "surface": "gmail/new_email",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The finance team forwarded a request to approve a $42 k vendor budget ",
+   "note": "Finance requests approval of a $42,000 vendor increase by Friday, warn",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "gmail/new_gmail_label::fire_synth": {
    "surface": "gmail/new_gmail_label",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "New Gmail label created: Q3-Receipts  — cuga · 2.5s",
+   "note": "New Gmail label created: Q3-Receipts  — cuga · 2.4s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "gmail/new_labeled_email::fire_synth": {
    "surface": "gmail/new_labeled_email",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Survey on MoE routing stability (ZL-88).  — cuga · 20.2s",
+   "note": "**Summary:** The email references a “Read‑later” item titled “MoE surv",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/channel_created::fire_synth": {
    "surface": "slack/channel_created",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Channel **proj-orchid** has been created.  — cuga · 1.8s",
+   "note": "🚀 **New Channel Announcement: #proj-orchid** 🚀  Hey everyone!  We’re e",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/new_channel_message::fire_synth": {
    "surface": "slack/new_channel_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Critical – A queue depth of 9 000 indicates a massive backlog that is ",
+   "note": "Queue depth 9000 on JOB‑55 (prod) – P1 severity – Component: job‑proce",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/new_emoji::fire_synth": {
    "surface": "slack/new_emoji",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "🚀 **New Custom Emoji Alert!** 🚀    Hey everyone! We're excited to intr",
+   "note": "A new custom emoji **partyblob77** has just been added! 🎉  — cuga · 2.",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/new_reaction::fire_synth": {
    "surface": "slack/new_reaction",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The incident has been triaged:  - **Issue:** Checkout API is experienc",
+   "note": "500 errors spiking on checkout (GRB‑12) – P1 severity – Component: che",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/new_slack_mention::fire_synth": {
    "surface": "slack/new_slack_mention",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "**Current blockers for release RC‑4**  | Blocker | Description | Sourc",
+   "note": "The release RC‑4 is being held up because the ExpressLRS 4.0.0‑RC4 fir",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/new_slack_user::fire_synth": {
    "surface": "slack/new_slack_user",
    "capability": "fire_synth",
-   "verdict": "ok",
-   "note": "**Onboarding checklist for new.hire.omega**  1. **Account & Access**  ",
+   "verdict": "fail",
+   "note": "forbidden marker 'connect your'",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/reaction_removed::fire_synth": {
    "surface": "slack/reaction_removed",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Incident GRB‑12 has been marked as resolved.  — cuga · 4.7s",
+   "note": "Incident GRB‑12 has been recorded as resolved.  — cuga · 6.7s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "slack/saved_message::fire_synth": {
    "surface": "slack/saved_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "decision: ship flag FLG-31 next sprint  — cuga · 5.1s",
+   "note": "ship flag FLG-31 next sprint  — cuga · 3.9s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "telegram/new_channel_message::fire_synth": {
    "surface": "telegram/new_channel_message",
@@ -358,31 +358,31 @@
    "verdict": "ok",
    "note": "I wasn’t able to retrieve the page at https://example.com/moe-paper —i",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "webhook/inbound::fire_real": {
    "surface": "webhook/inbound",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "The alert has been triaged:  **Alert:** HighCPU   **Service:** checkou",
+   "note": "The alert has been triaged as follows:  - **Alert:** HighCPU   - **Ser",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "box/new_box_comment::fire_synth": {
    "surface": "box/new_box_comment",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The comment requests a re‑check of page 2 of QV‑19 in the file offer.p",
+   "note": "A comment was added to **offer.pdf** requesting that page 2 of **QV‑19",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "box/new_file::fire_synth": {
    "surface": "box/new_file",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Please provide the full text of **jane_doe_resume.pdf** (or a base64‑e",
+   "note": "Please provide the full text (or a base64‑encoded version) of the resu",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   },
   "box/new_folder::fire_synth": {
    "surface": "box/new_folder",
@@ -390,7 +390,7 @@
    "verdict": "fail",
    "note": "none of ['Q3-candidates'] in answer",
    "source": "live_exhaustive.py",
-   "date": "2026-07-17 13:51"
+   "date": "2026-07-20 19:26"
   }
  }
 }

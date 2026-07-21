@@ -543,31 +543,26 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 </ul>"""))
 
     # roadmap (mirrors events_docs/ROADMAP.md — that file is the source of truth)
-    slides.append(_slide("Roadmap — where this goes next", """
-<div class="cols">
-  <div class="col accent">
-    <h3>Finish the MVP (P3, ~75%)</h3>
-    <ul class="tight">
-      <li><b>NL→flow rigor</b> — shipped: a typed FlowSpec + deterministic pre-router (arm
-          without the LLM when unambiguous, <em>ask till legit</em> when a slot is missing) and a
-          47-case CI benchmark gated on zero-wrong-at-high. Next: the LLM seam scored the same
-          way + a concierge model bake-off.</li>
-      <li><b>Webhook-OUT</b> — deliver an answer to any HTTP endpoint → flow-to-flow chaining.</li>
-      <li><b>Email as a sink</b> — “…email me the brief”.</li>
-    </ul>
-  </div>
-  <div class="col">
-    <h3>Then breadth (P4) → cloud (P5)</h3>
-    <ul class="tight">
-      <li><b>P4</b> — WhatsApp · email-as-a-channel · Google Calendar · Drive/Sheets · Notion/Jira ·
-          RSS. Each is <em>one afternoon</em>: registry rows + an OAuth entry — the gates force the
-          rest, the Studio and this deck update themselves.</li>
-      <li><b>P5</b> — multi-tenant cloud: real isolation, IdP/OIDC, a secrets vault replacing
-          <code>.env</code>, observability, scale.</li>
-    </ul>
-  </div>
-</div>
-<p class="dim">Full sequenced list: events_docs/ROADMAP.md · phase definitions: PHASES.md</p>"""))
+    slides.append(_slide("Roadmap — tight, sequenced, quality-first", """
+<p>Don't chase breadth. <b>Make the core undeniable, then extend.</b> Four priorities, in order:</p>
+<table class="tbl">
+  <tr><th>#</th><th>Priority</th><th>What it means</th></tr>
+  <tr><td class="k">1</td><td class="k">NL → Flow</td>
+      <td>The product's front door. Harden the sentence→flow compiler: ambiguity handling,
+          ask-till-legit slot-filling, the LLM-verify seam — one sentence must become the RIGHT flow
+          or a question, never silently the wrong one.</td></tr>
+  <tr><td class="k">2</td><td class="k">Benchmarking</td>
+      <td><b>Two levels.</b> L1 NL→AP (did we build the right flow?) — have it. L2 execution (does it
+          FIRE → run the right action → produce the real effect?) — build it. <em>Armed ≠ works.</em></td></tr>
+  <tr><td class="k">3</td><td class="k">Harden what we have</td>
+      <td>The 7 integrations + Gmail/GitHub actions already in place — take each to Level-2 green,
+          live-vetted end to end. Close the known bugs. Depth over new logos.</td></tr>
+  <tr><td class="k">4</td><td class="k">Extend</td>
+      <td>Only then add pieces — Calendar · Sheets · Outlook · Slack/Discord actions. Each is
+          <em>registry data, not engine code</em>; the gates + Studio + this deck update themselves.</td></tr>
+</table>
+<p class="dim">Discipline: a capability is "done" only when it passes both benchmark levels.
+   Full plan: events_docs/roadmap.html · gaps: events_docs/todos_actions/GAPS.md</p>"""))
 
     # examples closer
     ex_lis = "".join(f"<li>“{_esc(e['utterance'])}”<span class='dim'> — {_esc(e.get('agent', ''))}"

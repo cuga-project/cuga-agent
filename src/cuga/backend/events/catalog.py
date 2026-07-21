@@ -39,6 +39,11 @@ def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integratio
 
 EXAMPLES = [
     # ─────────────────────────── NOW — answer immediately ───────────────────────────
+    _ex("now-wow-tools", "⭐ Ask anything — live tools", "now",
+        "what's the current price of bitcoin, and what's new from OpenAI and Anthropic this week?",
+        agent="cuga", channel="web", phase="run", live=True, star=True,
+        note="WOW: a genuine tool-using agent — the price is LIVE (real finance tool) and the news is "
+             "THIS week (real web tool), so it can't be memorized. Instant, zero setup — best demo opener."),
     _ex("now-price", "Crypto price now", "now", "what is the current price of bitcoin in usd?",
         agent="pricebot", channel="telegram", phase="run", live=True,
         note="router → pricebot → cuga_finance → number"),
@@ -188,16 +193,18 @@ EXAMPLES = [
         agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
         ap_trigger="gmail_new_email_received", action="gmail/send_email+gmail/reply_to_email",
         note="MULTI-ACTION: two Gmail actions chained after the agent (send + reply)"),
-    _ex("act-gmail-branch", "Email → urgent? reply : draft", "push",
+    _ex("act-gmail-branch", "⭐ Inbox autopilot — triage & draft/reply", "push",
         "when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
+        agent="mailbot", channel="web", integration="gmail", phase="run", live=True, star=True,
         ap_trigger="gmail_new_email_received", action="gmail/reply_to_email + gmail/create_draft_reply",
-        note="BRANCHING: a ROUTER routes on the email content — reply if urgent, else draft"),
-    _ex("act-github-email", "PR opens → email me", "push",
-        "when a PR opens on my repo, email me a one-line risk summary at me@example.com",
-        agent="pr_reviewer", channel="web", integration="github", phase="run", live=False,
+        note="WOW: it triages your real inbox and writes a real draft/reply — a 2-way ROUTER on the email "
+             "content (urgent → reply, else → draft). Send yourself an email and watch a draft appear."),
+    _ex("act-github-email", "⭐ PR risk radar — review & email me", "push",
+        "when a PR opens on my repo, review the diff and email me a one-line risk summary at me@example.com",
+        agent="pr_reviewer", channel="web", integration="github", phase="run", live=True, star=True,
         action="gmail/send_email",
-        note="ACTION: gmail/send_email (cross-app: github trigger → gmail action; needs github connected)"),
+        note="WOW: two apps wired by one sentence — GitHub PR → agent reads the real diff → Gmail sends you "
+             "an AI risk review. Cross-app; needs github + gmail connected. Swap for 'comment on the PR' to post back."),
     _ex("act-github-comment", "PR opens → review &amp; comment on it", "push",
         "when a PR opens on my repo, review it and comment on the PR",
         agent="pr_reviewer", channel="web", integration="github", phase="run", live=False,

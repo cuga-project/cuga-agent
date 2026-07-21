@@ -282,6 +282,37 @@ def _tmp():
     return tempfile.mkdtemp()
 
 
+def test_ap_data_wrapped_body_is_unwrapped(monkeypatch):
+    """AP's HTTP action posts {"data": {...}}. The poll endpoint must read folder_id/agent from
+    inside that envelope, not default to root — the bug that made every schedule tick poll folder 0."""
+    import httpx as _httpx
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from events.app import register_events_routes
+
+    seen = {}
+
+    async def _cap_new(folder, since, tok=None):
+        seen["folder"] = folder
+        return []
+
+    monkeypatch.setattr(box_direct, "new_files_since", _cap_new)
+    monkeypatch.setattr(box_direct, "_SINCE_FILE", os.path.join(_tmp(), "since.json"))
+    app = FastAPI()
+    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
+                           gateway_token="gw")
+    c = TestClient(app)
+    # wrapped (AP shape) → folder must come from inside "data"
+    r = c.post("/api/events/box/poll", headers={"X-Gateway-Token": "gw"},
+               json={"data": {"folder_id": "395587297576", "agent": "cuga"}})
+    assert r.status_code == 200 and r.json()["folder"] == "395587297576"
+    assert seen["folder"] == "395587297576"
+    # flat (manual) shape still works
+    r = c.post("/api/events/box/poll", headers={"X-Gateway-Token": "gw"},
+               json={"folder_id": "42", "agent": "cuga"})
+    assert r.json()["folder"] == "42" and seen["folder"] == "42"
+
+
 def test_jd_from_the_poll_body_reaches_the_agent(monkeypatch):
     p = _poll(monkeypatch, {"folder_id": "0", "agent": "resume_judge",
                             "jd": "Senior Rust systems engineer."})

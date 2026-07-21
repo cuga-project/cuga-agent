@@ -162,16 +162,25 @@ class APEngine:
                 "event": {"kind": "tick", "payload": {}}}
 
     def _trigger_op(self, cron: str | None, interval_seconds: int | None, ver: str) -> dict:
-        if cron:
-            tname, inp, display = "cron_expression", {"cronExpression": cron, "timezone": "UTC"}, \
-                f"cron {cron} UTC"
-        elif interval_seconds:
+        if not cron and interval_seconds:
             secs = int(interval_seconds)
             if secs < 60 or secs % 60:
                 raise APError("AP schedules are minute-granularity; use a multiple of 60s")
-            tname, inp, display = "every_x_minutes", {"minutes": secs // 60}, f"every {secs//60}m"
-        else:
+            mins = secs // 60
+            # DON'T use the schedule piece's `every_x_minutes` trigger: in piece-schedule 0.1.18 it is
+            # a STATIC_DROPDOWN whose onEnable crashes (`isValidCron(undefined).trim()`), so the flow
+            # publishes 400 (broke box-direct-poll AND POLL mode, 2026-07-20). Express the interval as
+            # a CRON instead — the `cron_expression` trigger is solid (CRON mode proves it).
+            if mins < 60:
+                cron = f"*/{mins} * * * *"
+            elif mins % 60 == 0 and mins // 60 <= 23:
+                cron = f"0 */{mins // 60} * * *"
+            else:                                    # odd large interval → best-effort minute step
+                cron = f"*/{max(1, mins % 60)} * * * *"
+        if not cron:
             raise APError("schedule needs cron or interval_seconds")
+        tname, inp, display = "cron_expression", {"cronExpression": cron, "timezone": "UTC"}, \
+            f"cron {cron} UTC"
         settings = {"propertySettings": self._prop_settings(inp), "pieceName": SCHEDULE_PIECE,
                     "pieceVersion": ver, "triggerName": tname, "input": inp}
         return {"type": "UPDATE_TRIGGER",
@@ -892,7 +901,7 @@ class APEngine:
             return None
 
     async def trigger_flow(self, flow_id: str, payload: dict | None = None,
-                           headers: dict | None = None) -> tuple[bool, str]:
+                           headers: dict | None = None, *, sync: bool = False) -> tuple[bool, str]:
         """Fire an ENABLED flow immediately, out of band of its own trigger. **Debug use only.**
 
         Activepieces exposes ``POST /api/v1/webhooks/<flowId>`` for *every* flow, whatever its
@@ -909,15 +918,28 @@ class APEngine:
         NB this endpoint takes **no authentication** on AP's side. Anyone who can reach AP and knows a
         flow id can fire it. Keep AP off the public tunnel, and put the auth on CUGA's endpoint.
         """
+        # The plain endpoint is FIRE-AND-FORGET: AP returns 200 the instant the run is *accepted*,
+        # before any step executes — so a 200 here says nothing about whether the flow SUCCEEDED. A
+        # Gmail step that 400s on token refresh still yields a 200 from this call. Pass sync=True to
+        # hit ``/sync``, which blocks until the run finishes and reports its real terminal status;
+        # only then can a caller (e.g. the direct-action executor) tell success from silent failure.
+        suffix = "/sync" if sync else ""
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
+            async with httpx.AsyncClient(timeout=120 if sync else 30) as c:
                 # `headers` lets the caller reproduce the PROVIDER's delivery headers (e.g. GitHub's
                 # X-GitHub-Event). One repo webhook carries many event types, so a piece trigger
                 # disambiguates on that header — omit it and the piece emits nothing at all.
-                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}", json=payload or {},
+                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}{suffix}", json=payload or {},
                                  headers=headers or None)
+            body = r.text or ""
             ok = r.status_code in (200, 204)
-            return ok, (f"HTTP {r.status_code}" + (f" {r.text[:120]}" if r.text else ""))
+            if ok and sync:
+                # A completed-but-failed run comes back 200 with the run object; catch its status.
+                low = body.lower()
+                if '"status":"failed"' in low.replace(" ", "") or '"status": "failed"' in low \
+                        or "internal_error" in low:
+                    ok = False
+            return ok, (f"HTTP {r.status_code}" + (f" {body[:200]}" if body else ""))
         except Exception as e:  # noqa: BLE001
             log.warning("AP trigger flow %s failed: %s", flow_id, e)
             return False, str(e)

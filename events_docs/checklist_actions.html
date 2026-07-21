@@ -81,8 +81,9 @@
   <div class="sub">The <b>action half</b>: after the agent answers, the flow runs a connector ACTION
     (Gmail send / reply / draft) as a step. Companion to <code>checklist.html</code> (the trigger half).
     Design: <code>events_docs/plans/TRIGGERS_ACTIONS_DESIGN.md</code> · registry: <code>src/cuga/backend/events/actions.py</code>.
-    <br><b>Pilot scope:</b> native Gmail actions only — <code>send_email</code>, <code>reply_to_email</code>,
-    <code>create_draft_reply</code> (the piece has no archive/label/delete). Trigger can be ANY app.
+    <br><b>Scope:</b> <b>Gmail</b> — <code>send_email</code>, <code>reply_to_email</code>, <code>create_draft_reply</code>
+    (no native archive/label/delete) · <b>GitHub</b> — <code>create_issue</code>, <code>create_comment</code>
+    (both validate live in AP). Trigger can be ANY app; direct-trigger→action runs via an executor flow.
     Mark each item; status saves in this browser.</div>
 </header>
 
@@ -124,9 +125,9 @@
 const DATA = [
 {s:"A · Prereqs — server on THIS code + Gmail connected", d:"The action half needs (1) the events server running the current branch (the concierge action gate + ACTION VOCABULARY), and (2) a per-user Gmail OAuth connection — actions are push-only and Gmail is the pilot's acting app.", items:[
   {id:"a1", who:"you", t:"Offline action suite green (registry + gate + direct-action executor)", do:"Pure-python — the registry, render_params/executor_input/executor_body, resolve_action, branch predicates, the concierge action gate, the direct-trigger executor plan + dispatch runner, dedup.",
-   cmd:"uv run python -m pytest tests/events/test_events_actions.py tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"55 passed"},
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"60 passed"},
   {id:"a2", who:"you", t:"Full offline suite still green", do:"No regressions across the whole events layer.",
-   cmd:"uv run python -m pytest tests/events/ -q -k 'not live'", exp:"254 passed · 0 failed"},
+   cmd:"uv run python -m pytest tests/events/ -q -k 'not live'", exp:"259 passed · 0 failed"},
   {id:"a3", who:"you", t:"Server runs the current branch", do:"The action vocabulary must be live. If the running server predates this branch, restart it (make up / cuga start demo --events). Verify the new examples are served.",
    cmd:"curl -s -H 'x-user-id: admin' http://localhost:7860/api/events/examples | grep -o 'act-gmail-reply' | head -1", exp:"prints act-gmail-reply (else the server is stale — restart it)"},
   {id:"a4", who:"you", t:"Gmail connected (per-user OAuth)", do:"Actions run as YOU. Open the connect URL, approve. Guide: events_docs/setup/GMAIL.md + setup_action.md.",

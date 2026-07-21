@@ -67,7 +67,10 @@ FORBID = [
     "## New Variables Created", "Execution output:", "We have a loop", "delegate_to_",
     "I'm unable to", "I am unable to", "I cannot run", "execution timeout",
     "time.sleep(", "asyncio.sleep(", "while True",
-    "connect your", "CONNECT NEEDED",
+    # the connect-gate leak ALWAYS carries the "CONNECT NEEDED" sentinel (concierge.py:801). The
+    # bare "connect your" false-positived on legitimate prose — an onboarding agent naturally writes
+    # "connect your accounts to Slack" (slack/new_slack_user, 2026-07-20). Keep the sentinel only.
+    "CONNECT NEEDED",
 ]
 
 
@@ -79,6 +82,12 @@ def quality(answer: str, expect_any: list[str]) -> tuple[bool, str]:
                         ("\u2014", "-"), ("\u2018", "'"), ("\u2019", "'"),
                         ("\u201c", '"'), ("\u201d", '"')):
         a = a.replace(uni.encode().decode("unicode_escape"), ascii_)
+    # a transport/timeout failure is NEVER a valid answer. concierge()/invoke_fire() return
+    # "HTTP <non-200>: ..." on error, and a timeout becomes "HTTP 0: {'error': 'timed out'}" — those
+    # slipped past the checks below (non-empty, no forbidden marker) and scored PASS (research_compass,
+    # 2026-07-20). Fail them explicitly so a timeout can't masquerade as a good answer.
+    if re.match(r"^HTTP \d+: ", a) or "timed out" in a.lower() or "'error':" in a:
+        return False, f"transport error (not an answer): {a[:60]}"
     for bad in FORBID:
         if bad.lower() in a.lower():
             return False, f"forbidden marker {bad!r}"
