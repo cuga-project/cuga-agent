@@ -60,6 +60,10 @@ class CallApiHelper:
                 args: Arguments to pass to the API
                 operation_id: Optional original OpenAPI operationId for tracking
             """
+            from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallBudget
+
+            BlockToolCallBudget.check_and_increment()
+
             if args is None:
                 args = {}
 
