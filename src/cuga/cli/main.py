@@ -1733,30 +1733,15 @@ def start(
             os.environ["CUGA_AGENT_DESCRIPTION"] = "AI-powered corporate travel planning system"
 
             from cuga.backend.server.config_store import (
-                has_any_config,
                 reset_config_db,
+                resolve_preserve_existing,
                 save_draft,
-                should_preserve_existing_configs,
             )
             import asyncio
 
             ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
-            preserve_existing = False
-            if should_preserve_existing_configs():
-                preserve_existing = asyncio.run(has_any_config("cuga-default"))
-                if preserve_existing:
-                    from cuga.config import get_service_instance_id, get_tenant_id
-
-                    logger.info(
-                        "Preserving existing agent configs from DB "
-                        "(mode=%s, tenant=%r, instance=%r, agent=%r)",
-                        getattr(settings.storage, "mode", "local"),
-                        get_tenant_id(),
-                        get_service_instance_id(),
-                        "cuga-default",
-                    )
-
+            preserve_existing = asyncio.run(resolve_preserve_existing("cuga-default"))
             if not preserve_existing:
                 logger.info("🧹 Resetting config db for Travel Agent...")
                 reset_config_db()

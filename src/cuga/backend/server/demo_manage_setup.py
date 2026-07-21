@@ -465,7 +465,9 @@ def setup_demo_manage_config(
     filesystem: bool = True,
 ) -> None:
     """
-    Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
+    Setup agent config (draft + v1) for demo or demo_crm. Resets the config db and
+    reseeds defaults unless storage.preserve_configs_on_startup indicates existing
+    tenant/instance/agent rows should be preserved (see resolve_preserve_existing).
     Uses same SSE links as cli for email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
@@ -474,11 +476,10 @@ def setup_demo_manage_config(
     _normalize_demo_sandbox_mode()
 
     from cuga.backend.server.config_store import (
-        has_any_config,
         reset_config_db,
+        resolve_preserve_existing,
         save_config,
         save_draft,
-        should_preserve_existing_configs,
     )
 
     if demo_type == "demo_knowledge":
@@ -526,20 +527,7 @@ def setup_demo_manage_config(
         "What capabilities does the platform highlight on-premises use?",
     ]
 
-    preserve_existing = False
-    if should_preserve_existing_configs():
-        preserve_existing = asyncio.run(has_any_config(agent_id))
-        if preserve_existing:
-            from cuga.config import get_service_instance_id, get_tenant_id
-
-            logger.info(
-                "Preserving existing agent configs from DB (mode=%s, tenant=%r, instance=%r, agent=%r)",
-                getattr(settings.storage, "mode", "local"),
-                get_tenant_id(),
-                get_service_instance_id(),
-                agent_id,
-            )
-
+    preserve_existing = asyncio.run(resolve_preserve_existing(agent_id))
     if not preserve_existing:
         reset_config_db()
 

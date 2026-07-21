@@ -13,12 +13,15 @@ Database Schema:
 """
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any
 
 from cuga.backend.storage import get_storage
 from cuga.config import get_service_instance_id, get_tenant_id, settings
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_agent_id(agent_id: str) -> str:
@@ -72,6 +75,22 @@ async def has_any_config(agent_id: str = "cuga-default") -> bool:
         (tenant_id, inst_id, base_agent_id),
     )
     return row is not None
+
+
+async def resolve_preserve_existing(agent_id: str = "cuga-default") -> bool:
+    """Return True (and log) when bootstrap should keep existing configs for agent_id."""
+    if not should_preserve_existing_configs():
+        return False
+    if not await has_any_config(agent_id):
+        return False
+    logger.info(
+        "Preserving existing agent configs from DB (mode=%s, tenant=%r, instance=%r, agent=%r)",
+        getattr(settings.storage, "mode", "local"),
+        get_tenant_id(),
+        get_service_instance_id(),
+        agent_id,
+    )
+    return True
 
 
 async def _ensure_schema(store) -> None:
