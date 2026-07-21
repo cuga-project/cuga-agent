@@ -101,3 +101,29 @@ def test_clear_models_still_drops_cache():
     mgr.clear_models()
     assert mgr._models == {}
     assert mgr._pre_instantiated_model is None
+
+
+@pytest.mark.unit
+def test_aclose_watsonx_async_clients_on_owning_loop():
+    closed = {"n": 0}
+
+    class _AsyncClient:
+        is_closed = False
+
+        async def aclose(self):
+            closed["n"] += 1
+            self.is_closed = True
+
+    async_client = _AsyncClient()
+    model = _DummyWatsonx(async_client)
+    mgr = LLMManager()
+    mgr._models["k"] = model
+
+    async def _run():
+        with patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx):
+            assert mgr.rebind_async_clients_to_running_loop() == 0
+            assert await mgr.aclose_watsonx_async_clients() == 1
+            assert closed["n"] == 1
+            assert not hasattr(model.watsonx_client, _CUGA_ASYNC_LOOP_REF)
+
+    asyncio.run(_run())

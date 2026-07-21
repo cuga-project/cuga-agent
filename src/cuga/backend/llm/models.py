@@ -311,12 +311,65 @@ class LLMManager:
             logger.debug("ibm_watsonx_ai httpx wrapper unavailable; cannot rebind async client")
             return False
 
-        # Assign directly — the property setter schedules aclose via create_task,
-        # which fails when the previous pytest loop is already closed.
+        old_async = getattr(client, "_async_httpx_client", None)
+        # Assign directly — the property setter schedules aclose via create_task on
+        # the *current* loop, which fails when the previous pytest loop is closed.
         client._async_httpx_client = _get_async_httpx_client(client)
         setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+        cls._best_effort_aclose_async_client(old_async, bound_loop)
         logger.debug("Rebound watsonx async httpx client for new event loop")
         return True
+
+    @staticmethod
+    def _best_effort_aclose_async_client(
+        async_client: Any, owning_loop: Optional[asyncio.AbstractEventLoop]
+    ) -> None:
+        """Close a displaced AsyncClient on its owning loop when that loop is still open."""
+        if async_client is None:
+            return
+        if owning_loop is None or owning_loop.is_closed():
+            return
+        try:
+            if owning_loop.is_running():
+                owning_loop.call_soon_threadsafe(lambda: owning_loop.create_task(async_client.aclose()))
+            else:
+                owning_loop.run_until_complete(async_client.aclose())
+        except Exception as exc:
+            logger.debug("Could not aclose displaced watsonx async httpx client: {}", exc)
+
+    async def aclose_watsonx_async_clients(self) -> int:
+        """Await-close cached watsonx async clients on the running loop (fixture teardown)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+
+        closed = 0
+        models = list(self._models.values())
+        if self._pre_instantiated_model is not None:
+            models.append(self._pre_instantiated_model)
+        for model in models:
+            if not isinstance(model, ChatWatsonx):
+                continue
+            client = self._watsonx_api_client(model)
+            if client is None:
+                continue
+            loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
+            bound = loop_ref() if loop_ref is not None else None
+            if bound is not None and bound is not loop:
+                continue
+            async_client = getattr(client, "_async_httpx_client", None)
+            if async_client is None:
+                continue
+            try:
+                if not getattr(async_client, "is_closed", False):
+                    await async_client.aclose()
+                    closed += 1
+            except Exception as exc:
+                logger.debug("Could not aclose watsonx async httpx client on teardown: {}", exc)
+            if hasattr(client, _CUGA_ASYNC_LOOP_REF):
+                delattr(client, _CUGA_ASYNC_LOOP_REF)
+        return closed
 
     def rebind_async_clients_to_running_loop(self) -> int:
         """Rebind loop-bound async HTTP clients on cached models to the running loop.
