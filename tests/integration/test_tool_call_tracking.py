@@ -534,7 +534,7 @@ class TestInvokeResult:
 
         assert result.answer == ""
         assert result.tool_calls == []
-        assert result.thread_id == ""
+        assert result.thread_id is None
         assert result.error is None
 
 

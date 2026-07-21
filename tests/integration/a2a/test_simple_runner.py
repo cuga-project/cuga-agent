@@ -12,7 +12,7 @@ from typing import AsyncIterator
 
 import pytest
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 def _task_text(result: dict) -> str:
@@ -200,6 +200,81 @@ async def test_simple_runner_streaming_support(simple_runner_client):
     assert "working" in states
     # Final chunk should be completed.
     assert "completed" in states
+
+
+async def test_simple_runner_named_intermediate_streams_as_progress(mock_app_state):
+    """A mid-stream named intermediate frame surfaces as non-final working progress.
+
+    Pins the intended dispatch in run(): named intermediates that are neither
+    answers nor errors are forwarded as final=False progress updates — not
+    dropped by _decode and not treated as terminal.
+    """
+    pytest.importorskip("cuga.backend.server.a2a")
+    from fastapi import FastAPI
+    from cuga.backend.server.a2a.runner import build_a2a_router_for_settings
+
+    marker = "reasoning about the request"
+
+    async def slash_event_stream(*args, **kwargs) -> AsyncIterator[bytes]:
+        yield b"event: AgentThinking\ndata: Processing request...\n\n"
+        yield f"event: CodeAgent\ndata: {marker}\n\n".encode()
+        payload = json.dumps({"data": "All done", "variables": {}, "active_policies": []})
+        yield f"event: Answer\ndata: {payload}\n\n".encode()
+
+    app = FastAPI()
+    a2a_settings = {
+        "enabled": True,
+        "agent_name": "cuga-simple",
+        "agent_description": "CUGA with simple runner",
+        "agent_version": "0.0.0-test",
+        "agent_url": "http://test.local",
+        "skill_ids": ["delegate_task"],
+        "supervisor_config_path": "",
+    }
+    router = build_a2a_router_for_settings(a2a_settings, mock_app_state, event_stream_func=slash_event_stream)
+    app.include_router(router)
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test.local") as client:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": "slash-1",
+            "method": "message/stream",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "/deck make 3 slides"}],
+                    "messageId": "m-1",
+                }
+            },
+        }
+
+        chunks = []
+        async with client.stream("POST", "/a2a", json=payload) as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                try:
+                    chunks.append(json.loads(line[5:].strip()))
+                except json.JSONDecodeError:
+                    continue
+
+    results = [c["result"] for c in chunks if "result" in c]
+    states = [r.get("status", {}).get("state") for r in results]
+
+    # The named intermediate frame was not dropped: it surfaces as a working
+    # (non-final) update carrying the intermediate text.
+    slash_updates = [r for r in results if marker in _task_text(r)]
+    assert slash_updates, f"named intermediate progress missing from stream (states={states})"
+    for update in slash_updates:
+        assert update["status"]["state"] == "working"
+        assert not update.get("final")
+
+    # And it was not terminal: the stream still ends with a completed task.
+    assert states[-1] == "completed"
 
 
 async def test_simple_runner_error_handling(mock_app_state):

@@ -20,7 +20,16 @@ _LEGACY_DISPLAY_ROOTS = {"tmp", "cuga_workspace"}  # kept for backward-compat pa
 
 
 def workspace_tree_is_sandbox_backed() -> bool:
-    return bool(getattr(settings.advanced_features, "opensandbox_sandbox", False))
+    """True when workspace APIs should use the OpenSandbox SDK.
+
+    ``opensandbox_sandbox`` alone is not enough: when ``sandbox_mode`` is
+    ``native`` or ``local``, files live on the host even if the OpenSandbox
+    flag is set for other features.
+    """
+    if not bool(getattr(settings.advanced_features, "opensandbox_sandbox", False)):
+        return False
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    return mode not in ("native", "local")
 
 
 def workspace_tree_is_native_backed() -> bool:
@@ -30,12 +39,12 @@ def workspace_tree_is_native_backed() -> bool:
     plan = ExecutionRouter.resolve(settings)
     if plan.filesystem_backend == "host" or plan.shell_backend in ("native", "local"):
         return True
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    if mode in ("native", "local"):
+        return True
     if workspace_tree_is_sandbox_backed():
         return False
-    mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
-    return bool(
-        getattr(settings.advanced_features, "enable_shell_tool", False) and mode in ("native", "local")
-    )
+    return bool(getattr(settings.advanced_features, "enable_shell_tool", False))
 
 
 def _hidden_parts(parts: tuple[str, ...]) -> bool:

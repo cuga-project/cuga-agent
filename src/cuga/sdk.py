@@ -134,7 +134,7 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="List of tool calls made during execution (when track_tool_calls is enabled)",
     )
-    thread_id: str = Field(default="", description="Thread ID used for this invocation")
+    thread_id: Optional[str] = Field(default=None, description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
     variables: Dict[str, Any] = Field(
         default_factory=dict,
@@ -2253,6 +2253,51 @@ class CugaAgent:
 
         return self._compiled_graph
 
+    async def _dispatch_slash(self, message: str, thread_id: Optional[str]):
+        """SDK-side wrapper around parse_and_dispatch; returns ``None`` on failure so the caller falls back to the planner."""
+        try:
+            from cuga.backend.skills import SkillRegistry, discover_skills
+            from cuga.backend.slash_commands import (
+                DispatchResult,
+                build_slash_registry,
+                parse_and_dispatch,
+            )
+        except Exception:
+            logger.exception("Failed to import slash_commands package")
+            return None
+
+        # Mirror the server's skills gating (main.py _skills_effective_enabled):
+        # when skills are disabled the slash layer stands down entirely and the
+        # raw message reaches the planner unchanged.
+        skills_on = (
+            self._enable_skills
+            if self._enable_skills is not None
+            else getattr(settings.skills, "enabled", False)
+        )
+        if not skills_on:
+            return DispatchResult(kind="passthrough", raw_input=message)
+
+        skill_registry = None
+        try:
+            skill_registry = SkillRegistry(discover_skills(self.cuga_folder))
+        except Exception:
+            logger.exception("Failed to discover skills for slash dispatch")
+
+        slash_registry = build_slash_registry(skill_registry)
+        try:
+            return await parse_and_dispatch(
+                message,
+                slash_registry=slash_registry,
+                skill_registry=skill_registry,
+                thread_id=thread_id,
+            )
+        except Exception:
+            command_name = message.split(maxsplit=1)[0] if message.startswith("/") else "<non-slash>"
+            logger.exception(f"Slash dispatch failed for command {command_name!r}")
+            if message.startswith("/"):
+                raise
+            return None
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -2324,6 +2369,18 @@ class CugaAgent:
         """
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
+
+        slash_result = None
+        if isinstance(message, str):
+            try:
+                slash_result = await self._dispatch_slash(message, thread_id)
+            except Exception as e:
+                return InvokeResult(
+                    answer="",
+                    tool_calls=[],
+                    thread_id=thread_id,
+                    error=f"Slash dispatch failed: {e}",
+                )
 
         await self._ensure_initialized()
 
@@ -2422,7 +2479,14 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            new_messages = [HumanMessage(content=message)]
+            # If dispatch resolved a skill, soft-dispatch: the planner input
+            # becomes the translated suggestion ("use the skill named '<name>'
+            # to: <args>") and the planner decides to call ``load_skill``
+            # itself. No messages are injected.
+            if slash_result is not None and slash_result.kind == "skill" and slash_result.planner_input:
+                new_messages = [HumanMessage(content=slash_result.planner_input)]
+            else:
+                new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
 
