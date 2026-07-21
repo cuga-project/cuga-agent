@@ -6,6 +6,9 @@ flow:
   version: "1.0"
   bpmn_file: "trip-planner.bpmn"
 
+workflow_engine:
+  type: langgraph
+
 variables:
   destination: ""
   planning_preference: "agent"   # "human" or "agent" — drives the Preference? gateway

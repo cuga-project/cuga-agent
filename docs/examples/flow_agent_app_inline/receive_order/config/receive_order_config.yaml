@@ -6,6 +6,9 @@ flow:
   version: "1.0"
   bpmn_file: "BPMNdiagram.bpmn"
 
+workflow_engine:
+  type: langgraph
+
 variables:
   order_id: ""
   customer_name: ""
