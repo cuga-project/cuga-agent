@@ -262,6 +262,10 @@ class LLMManager:
         )
         return model
 
+    def clear_models(self) -> None:
+        """Drop cached LLM instances (e.g. between pytest event loops)."""
+        self._models.clear()
+
     def clear_pre_instantiated_model(self) -> None:
         """Clear the pre-instantiated model and return to normal model creation"""
         self._pre_instantiated_model = None

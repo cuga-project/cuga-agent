@@ -1,4 +1,4 @@
-"""Fixtures for policy tests."""
+"""Fixtures for SDK core tests."""
 
 import pytest
 
