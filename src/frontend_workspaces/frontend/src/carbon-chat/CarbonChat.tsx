@@ -26,6 +26,8 @@ import {
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { SlashCommandDropdown } from './SlashCommandDropdown';
+import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -50,6 +52,11 @@ export function getOrCreateThreadId(): string {
     currentThreadId = generateUUID();
   }
   return currentThreadId;
+}
+
+// Setter used by customSendMessage on a ``ThreadIdChanged`` SSE event.
+export function setThreadId(newThreadId: string): void {
+  currentThreadId = newThreadId;
 }
 
 const DEFAULT_HOMESCREEN = {
@@ -239,6 +246,8 @@ const CarbonChat = ({
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
   const skipNextHistoryLoadRef = useRef<string | null>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
@@ -274,11 +283,32 @@ const CarbonChat = ({
   });
   const attachmentsEnabled = knowledgeEnabled !== false && attachmentScope !== "none" && scopeEnabled && attachmentsAvailable;
   const [assistantName, setAssistantName] = useState("CUGA Agent");
+  // Known slash-command names, used to decorate /command mentions in user
+  // bubbles with pills. Slash semantics are soft (a mention anywhere in the
+  // message is a suggestion to the agent), so every known token gets a pill,
+  // not just a leading one.
+  const [knownCommandNames, setKnownCommandNames] = useState<string[]>([]);
 
   useEffect(() => {
     initAgentProfile(useDraft);
     getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
   }, [useDraft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getCommands()
+      .then((commands) => {
+        if (!cancelled) setKnownCommandNames(commands.map((c) => c.name));
+      })
+      .catch(() => {
+        // Pills are purely decorative — an unavailable command list just
+        // means undecorated text.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Keep the transport thread ID aligned with the parent-owned draft thread
   // even before the chat instance finishes booting.
@@ -286,39 +316,9 @@ const CarbonChat = ({
     currentThreadId = threadId ?? null;
   }, [threadId]);
 
-  const resolveChatDomRoots = useCallback(() => {
-    const directCandidates = [
-      chatElementRef.current,
-      document.querySelector("cds-custom-aichat-react"),
-      document.querySelector("cds-custom-aichat-custom-element"),
-      document.querySelector("cds-aichat-react"),
-      document.querySelector("cds-aichat-custom-element"),
-    ].filter(Boolean) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>;
-
-    const roots: ShadowRoot[] = [];
-    for (const candidate of directCandidates) {
-      const candidateShadow = candidate.shadowRoot;
-      if (candidateShadow && !roots.includes(candidateShadow)) {
-        roots.push(candidateShadow);
-      }
-
-      const nestedContainers = candidateShadow
-        ? Array.from(
-            candidateShadow.querySelectorAll(
-              "cds-custom-aichat-container, cds-aichat-container",
-            ),
-          ) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>
-        : [];
-
-      for (const nestedContainer of nestedContainers) {
-        if (nestedContainer.shadowRoot && !roots.includes(nestedContainer.shadowRoot)) {
-          roots.push(nestedContainer.shadowRoot);
-        }
-      }
-    }
-
-    return roots;
-  }, []);
+  // Shared shadow-DOM walk (same candidate selectors + nested-container
+  // traversal as the slash-command composer lookup) — see composerTextarea.ts.
+  const resolveChatDomRoots = useCallback(() => findShadowRoots(chatElementRef.current), []);
 
   const refreshMessageAttachmentSnapshots = useCallback(
     async (targetThreadId?: string | null) => {
@@ -406,8 +406,155 @@ const CarbonChat = ({
       return;
     }
 
+    // Relabel Carbon's reasoning-panel toggle from "Show reasoning"/"Hide
+    // reasoning" to "Show details"/"Hide details". The reasoning panel now
+    // also hosts the slash-skill audit step (formerly its own chip), so the
+    // more neutral wording reads better. Carbon's `strings` prop accepts
+    // `reasoningSteps_mainLabelOpen` / `reasoningSteps_mainLabelClosed`, but
+    // the React parent commits the toggle attributes before our `useOnMount`
+    // strings dispatch reaches them, so the labels stay default. Patching
+    // the Lit element directly here is reliable and avoids forking Carbon.
+    const TOGGLE_TAGS = [
+      "cds-aichat-reasoning-steps-toggle",
+      "cds-custom-aichat-reasoning-steps-toggle",
+    ];
+    const applyReasoningToggleLabels = (root: ShadowRoot | Document) => {
+      for (const tag of TOGGLE_TAGS) {
+        const nodes = Array.from(root.querySelectorAll(tag)) as Array<
+          HTMLElement & { openLabelText?: string; closedLabelText?: string }
+        >;
+        for (const el of nodes) {
+          if (el.closedLabelText !== "Show details") {
+            el.closedLabelText = "Show details";
+          }
+          if (el.openLabelText !== "Hide details") {
+            el.openLabelText = "Hide details";
+          }
+          // Mirror the property change onto the attribute so the visible
+          // text inside the toggle's own shadow tree updates immediately.
+          if (el.getAttribute("closed-label-text") !== "Show details") {
+            el.setAttribute("closed-label-text", "Show details");
+          }
+          if (el.getAttribute("open-label-text") !== "Hide details") {
+            el.setAttribute("open-label-text", "Hide details");
+          }
+        }
+      }
+    };
+
+    // Wrap known ``/command`` mentions in user (request) bubbles with pill
+    // spans. Carbon owns the bubble DOM inside its shadow root, so — like
+    // the attachment chips below — decoration happens as a DOM pass driven
+    // by the MutationObserver, and the spans are styled inline (light-DOM
+    // stylesheets cannot pierce the shadow boundary; Carbon's injected
+    // theme defines the --cds-* variables the colors derive from, so both
+    // Carbon themes are covered). Idempotent by construction: text already
+    // inside a pill span is skipped, and the plain-text fragments left
+    // around a wrapped token can no longer match a known /command, so the
+    // decorate pass reaches a fixed point.
+    const wrapKnownSlashTokens = (root: Element | ShadowRoot, known: Set<string>) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const textNodes: Text[] = [];
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const parent = (node as Text).parentElement;
+        if (parent && parent.closest(".cuga-slash-command-pill")) continue;
+        textNodes.push(node as Text);
+      }
+      for (const textNode of textNodes) {
+        const text = textNode.textContent ?? "";
+        // A decorated token is a maximal non-whitespace run ``/name`` at
+        // the start of the text or right after whitespace whose full name
+        // is a known command ("/deck," is NOT decorated — strict match).
+        const re = /(^|\s)\/(\S+)/g;
+        let match: RegExpExecArray | null;
+        let last = 0;
+        let fragment: DocumentFragment | null = null;
+        while ((match = re.exec(text))) {
+          const name = match[2];
+          if (!known.has(name)) continue;
+          const start = match.index + match[1].length;
+          const end = start + 1 + name.length;
+          if (!fragment) fragment = document.createDocumentFragment();
+          if (start > last) {
+            fragment.appendChild(document.createTextNode(text.slice(last, start)));
+          }
+          const pill = document.createElement("span");
+          pill.className = "cuga-slash-command-pill";
+          pill.textContent = text.slice(start, end);
+          // Same color recipe as .cuga-slash-inline-pill in
+          // CarbonChat.css — keep the two in sync.
+          pill.style.background =
+            "color-mix(in srgb, var(--cds-support-warning, #f1c21b) 24%, transparent)";
+          pill.style.boxShadow =
+            "inset 0 0 0 1px color-mix(in srgb, var(--cds-support-warning, #f1c21b) 38%, transparent)";
+          pill.style.borderRadius = "4px";
+          pill.style.padding = "0 0.25em";
+          pill.style.fontFamily = "ui-monospace, SFMono-Regular, Menlo, monospace";
+          pill.style.fontSize = "0.92em";
+          pill.style.fontWeight = "500";
+          pill.style.color = "inherit";
+          fragment.appendChild(pill);
+          last = end;
+        }
+        if (fragment) {
+          if (last < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(last)));
+          }
+          textNode.replaceWith(fragment);
+        }
+      }
+    };
+
+    const applySlashCommandPills = (shadowRoot: ShadowRoot) => {
+      if (knownCommandNames.length === 0) return;
+      const known = new Set(knownCommandNames);
+      // Carbon registers its parts under either the ``cds-aichat--`` or the
+      // ``cds-custom-aichat--`` class prefix depending on the custom-element
+      // registration mode (cf. the dual tag list in the reasoning-toggle
+      // relabel above), so match both.
+      const containers = Array.from(
+        shadowRoot.querySelectorAll(
+          [
+            ".cds-aichat--message--request .cds-aichat--sent--text",
+            ".cds-aichat--message--request .cds-aichat--message--padding",
+            ".cds-custom-aichat--message--request .cds-custom-aichat--sent--text",
+            ".cds-custom-aichat--message--request .cds-custom-aichat--message--padding",
+          ].join(", "),
+        ),
+      ) as HTMLElement[];
+      for (const container of containers) {
+        // Carbon renders the bubble text through a ``cds-aichat-markdown``
+        // Lit element that reflects its source into ITS OWN shadow root; the
+        // light-DOM copy we'd otherwise decorate sits inside a ``<div
+        // hidden>`` slot host and never paints. So decorate the markdown
+        // element's rendered shadow tree. This is safe: a sent message's
+        // markdown source is static (Lit never re-renders it), and our outer
+        // MutationObserver does not observe nested shadow roots, so wrapping
+        // text there can't trigger a decorate loop. If a re-render ever did
+        // clear the pills, the next outer mutation re-runs this pass.
+        const markdowns = Array.from(
+          container.querySelectorAll("cds-aichat-markdown, cds-custom-aichat-markdown"),
+        ) as Array<HTMLElement & { shadowRoot: ShadowRoot | null }>;
+        if (markdowns.length > 0) {
+          for (const md of markdowns) {
+            if (md.shadowRoot) wrapKnownSlashTokens(md.shadowRoot, known);
+          }
+        } else {
+          // Builds that render the text directly (no markdown element).
+          wrapKnownSlashTokens(container, known);
+        }
+      }
+    };
+
     const applyMessageAttachmentDecorations = () => {
       roots.forEach((shadowRoot) => {
+        // Keep the reasoning-toggle relabel inside the per-root pass so it
+        // runs whenever decorations rebuild, but the observer callback also
+        // invokes it directly (without debounce) — relabeling is cheap and
+        // idempotent, and we don't want a queued rAF to delay the label fix.
+        applyReasoningToggleLabels(shadowRoot);
+        applySlashCommandPills(shadowRoot);
         const requestNodes = Array.from(
           shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
         ) as HTMLElement[];
@@ -461,16 +608,37 @@ const CarbonChat = ({
     };
 
     applyMessageAttachmentDecorations();
+
+    // rAF-debounce decoration rebuilds — observer fires per mutation during streaming and a tight rebuild loop is expensive.
+    let scheduled = false;
+    let cancelled = false;
+    let rafHandle = 0;
+    const flush = () => {
+      scheduled = false;
+      if (cancelled) return;
+      applyMessageAttachmentDecorations();
+    };
+    const scheduleDecorations = () => {
+      if (scheduled) return;
+      scheduled = true;
+      rafHandle = window.requestAnimationFrame(flush);
+    };
+
     const observers = roots.map((shadowRoot) => {
       const observer = new MutationObserver(() => {
-        applyMessageAttachmentDecorations();
+        applyReasoningToggleLabels(shadowRoot);
+        scheduleDecorations();
       });
       observer.observe(shadowRoot, { childList: true, subtree: true });
       return observer;
     });
 
-    return () => observers.forEach((observer) => observer.disconnect());
-  }, [chatRenderTick, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
+    return () => {
+      cancelled = true;
+      if (scheduled && rafHandle) window.cancelAnimationFrame(rafHandle);
+      observers.forEach((observer) => observer.disconnect());
+    };
+  }, [chatRenderTick, knownCommandNames, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
   // Wrap the custom send message function to ensure it's properly bound
   const handleCustomSendMessage = useCallback(
@@ -506,6 +674,9 @@ const CarbonChat = ({
     console.log('[CarbonChat] handleChatReady called, setting up event listeners');
     chatInstanceRef.current = instance;
     setChatRenderTick((tick) => tick + 1);
+    if (chatElementRef.current) {
+      setChatElement(chatElementRef.current);
+    }
     
     instance.on({
       type: BusEventType.RESTART_CONVERSATION,
@@ -675,6 +846,7 @@ const CarbonChat = ({
       )}
 
       <div
+        ref={wrapperRef}
         className={`cuga-carbon-chat-wrapper${isDragOver ? ' cuga-carbon-composer--dragover' : ''}`}
         onDragEnter={(e) => {
           if (!attachmentsEnabled) return;
@@ -791,6 +963,10 @@ const CarbonChat = ({
             }
             event.target.value = "";
           }}
+        />
+        <SlashCommandDropdown
+          chatElement={chatElement}
+          portalContainer={wrapperRef.current}
         />
       </div>
     </>

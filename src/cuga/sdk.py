@@ -138,7 +138,7 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="List of tool calls made during execution (when track_tool_calls is enabled)",
     )
-    thread_id: str = Field(default="", description="Thread ID used for this invocation")
+    thread_id: Optional[str] = Field(default=None, description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
     variables: Dict[str, Any] = Field(
         default_factory=dict,
@@ -1085,6 +1085,120 @@ class PoliciesManager:
         logger.info(f"✅ Loaded {result['count']} policies from {file_path} (enabled: {result['enabled']})")
 
         return result
+
+    async def generate_tool_guards_from_json(
+        self,
+        file_path: str,
+        clear_existing: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Load policies from a JSON file and generate ToolGuards for imported Tool Guides.
+
+        Generation is scoped to policy IDs present in the JSON file. Existing policies
+        already in storage are not generated unless their IDs are also present in the file.
+
+        Args:
+            file_path: Path to JSON file containing policies
+            clear_existing: If True, clear all existing policies before loading
+
+        Returns:
+            Dictionary with import summary, source policy IDs, generated results,
+            skipped policies, errors, and overall status.
+        """
+        from cuga.backend.cuga_graph.policy.utils import extract_policies_data_from_json
+        from cuga.backend.server import tool_guard_generation
+
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping generate_tool_guards_from_json")
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": ["Policy system is disabled"]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": ["Policy system is disabled"],
+            }
+
+        try:
+            extracted = extract_policies_data_from_json(file_path)
+        except Exception as exc:
+            error_msg = f"Failed to read policies from {file_path}: {exc}"
+            logger.error(error_msg)
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": [error_msg]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+        apply_result = await apply_policies_data_to_storage(
+            policy_system.storage,
+            extracted["policies"],
+            clear_existing=clear_existing,
+            filesystem_sync=None,
+        )
+        import_result = {
+            "count": apply_result["count"],
+            "enabled": extracted["enabled"],
+            "errors": [*extracted["errors"], *apply_result["errors"]],
+        }
+
+        await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
+
+        runtime_tool_provider = self._agent_tool_provider()
+        if runtime_tool_provider is None:
+            error_msg = "Tool provider is not initialized"
+            return {
+                "status": "error",
+                "import": import_result,
+                "source_policy_ids": extracted["policy_ids"],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        _model = None
+        _llm_config = getattr(self._agent, "llm_config", None)
+        if _llm_config:
+            try:
+                from cuga.backend.llm.models import create_llm_from_config
+
+                _model = create_llm_from_config(_llm_config)
+            except Exception:
+                logger.warning(
+                    "Failed to build model from llm_config for ToolGuard generation; using default"
+                )
+
+        generation_agent = tool_guard_generation.build_tool_guard_generation_agent(
+            policy_system=policy_system,
+            tool_provider=runtime_tool_provider,
+            model=_model,
+        )
+        batch_result = await tool_guard_generation.generate_tool_guards_for_policies(
+            policy_system=policy_system,
+            policy_ids=extracted["policy_ids"],
+            generation_agent=generation_agent,
+        )
+
+        result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
+        status = batch_result.get("status", "error")
+        if result_errors and status == "ok":
+            status = "partial"
+
+        return {
+            "status": status,
+            "import": import_result,
+            "source_policy_ids": extracted["policy_ids"],
+            "generated": batch_result.get("generated", {}),
+            "skipped": batch_result.get("skipped", []),
+            "errors": result_errors,
+        }
 
     async def clear(self) -> bool:
         """
@@ -2167,6 +2281,51 @@ class CugaAgent:
 
         return self._compiled_graph
 
+    async def _dispatch_slash(self, message: str, thread_id: Optional[str]):
+        """SDK-side wrapper around parse_and_dispatch; returns ``None`` on failure so the caller falls back to the planner."""
+        try:
+            from cuga.backend.skills import SkillRegistry, discover_skills
+            from cuga.backend.slash_commands import (
+                DispatchResult,
+                build_slash_registry,
+                parse_and_dispatch,
+            )
+        except Exception:
+            logger.exception("Failed to import slash_commands package")
+            return None
+
+        # Mirror the server's skills gating (main.py _skills_effective_enabled):
+        # when skills are disabled the slash layer stands down entirely and the
+        # raw message reaches the planner unchanged.
+        skills_on = (
+            self._enable_skills
+            if self._enable_skills is not None
+            else getattr(settings.skills, "enabled", False)
+        )
+        if not skills_on:
+            return DispatchResult(kind="passthrough", raw_input=message)
+
+        skill_registry = None
+        try:
+            skill_registry = SkillRegistry(discover_skills(self.cuga_folder))
+        except Exception:
+            logger.exception("Failed to discover skills for slash dispatch")
+
+        slash_registry = build_slash_registry(skill_registry)
+        try:
+            return await parse_and_dispatch(
+                message,
+                slash_registry=slash_registry,
+                skill_registry=skill_registry,
+                thread_id=thread_id,
+            )
+        except Exception:
+            command_name = message.split(maxsplit=1)[0] if message.startswith("/") else "<non-slash>"
+            logger.exception(f"Slash dispatch failed for command {command_name!r}")
+            if message.startswith("/"):
+                raise
+            return None
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -2239,6 +2398,18 @@ class CugaAgent:
         """
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
+
+        slash_result = None
+        if isinstance(message, str):
+            try:
+                slash_result = await self._dispatch_slash(message, thread_id)
+            except Exception as e:
+                return InvokeResult(
+                    answer="",
+                    tool_calls=[],
+                    thread_id=thread_id,
+                    error=f"Slash dispatch failed: {e}",
+                )
 
         await self._ensure_initialized()
 
@@ -2341,7 +2512,14 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            new_messages = [HumanMessage(content=message)]
+            # If dispatch resolved a skill, soft-dispatch: the planner input
+            # becomes the translated suggestion ("use the skill named '<name>'
+            # to: <args>") and the planner decides to call ``load_skill``
+            # itself. No messages are injected.
+            if slash_result is not None and slash_result.kind == "skill" and slash_result.planner_input:
+                new_messages = [HumanMessage(content=slash_result.planner_input)]
+            else:
+                new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
 
