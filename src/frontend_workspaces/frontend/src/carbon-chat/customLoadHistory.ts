@@ -17,6 +17,7 @@ import {
   type ReasoningStep,
 } from "@carbon/ai-chat";
 import * as api from "../api";
+import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import {
   RESPONSE_USER_PROFILE,
   extractEventData,
@@ -158,13 +159,29 @@ async function customLoadHistory(
             history.push({ message: cardMessage as MessageResponse, time: event.timestamp });
           } else {
             currentAnswerText = parsed.answerText;
-            const messageResponse: any = {
-              id: generateMessageId(event.timestamp, "assistant"),
-              output: {
-                generic: [
-                  { response_type: MessageResponseTypes.TEXT, text: currentAnswerText },
-                ],
+            const messageId = generateMessageId(event.timestamp, "assistant");
+            const answerSources = parsed.sources as MessageSource[];
+            // Same transform as the live path (customSendMessage.ts): the
+            // message id doubles as the `msg` key stamped on each chip.
+            const genericItems: any[] = [
+              {
+                response_type: MessageResponseTypes.TEXT,
+                text: injectCitations(currentAnswerText, answerSources, messageId),
               },
+            ];
+            if (answerSources.length > 0) {
+              genericItems.push({
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: {
+                  type: "cuga_sources",
+                  message_key: messageId,
+                  sources: answerSources,
+                },
+              });
+            }
+            const messageResponse: any = {
+              id: messageId,
+              output: { generic: genericItems },
             };
             messageResponse.message_options = {
               ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),

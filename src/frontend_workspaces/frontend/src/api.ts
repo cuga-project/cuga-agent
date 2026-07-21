@@ -513,6 +513,30 @@ export function updateKnowledgeSettings(settings: Record<string, unknown>): Prom
   });
 }
 
+// Per-conversation knowledge settings overrides (citations toggle).
+// Backed by GET/PATCH /api/knowledge/session/settings, keyed on the
+// X-Thread-ID header injected by knowledgeApiFetch.
+export async function getSessionKnowledgeSettings(
+  threadId: string
+): Promise<{ overrides: Record<string, unknown> }> {
+  const res = await knowledgeApiFetch("/api/knowledge/session/settings", { method: "GET" }, threadId);
+  if (!res.ok) throw new Error(`session settings: ${res.status}`);
+  return res.json();
+}
+
+export async function patchSessionKnowledgeSettings(
+  threadId: string,
+  patch: { citations_enabled?: boolean },
+): Promise<{ overrides: Record<string, unknown> }> {
+  const res = await knowledgeApiFetch(
+    "/api/knowledge/session/settings",
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) },
+    threadId,
+  );
+  if (!res.ok) throw new Error(`session settings patch: ${res.status}`);
+  return res.json();
+}
+
 // --- Documents (agent scope) ---
 
 export function uploadKnowledgeDocuments(files: File[], replaceDuplicates = true): Promise<Response> {
