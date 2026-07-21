@@ -1,37 +1,5 @@
 """Pytest configuration for concurrent load tests."""
 
-import os
+from system_tests.load.options import resolve_load_test_users
 
-DEFAULT_LOAD_TEST_USERS = 5
-LOAD_TEST_USERS_ENV = "CUGA_LOAD_TEST_USERS"
-LOAD_TEST_USERS_OPTION = "--load-test-users"
-
-
-def pytest_addoption(parser):
-    parser.addoption(
-        LOAD_TEST_USERS_OPTION,
-        action="store",
-        default=None,
-        type=int,
-        help=(
-            "Number of concurrent user simulations for load tests "
-            f"(default: {DEFAULT_LOAD_TEST_USERS}, or ${LOAD_TEST_USERS_ENV})"
-        ),
-    )
-
-
-def pytest_configure(config):
-    option = config.getoption("load_test_users")
-    if option is not None:
-        os.environ[LOAD_TEST_USERS_ENV] = str(option)
-
-
-def resolve_load_test_users(default: int = DEFAULT_LOAD_TEST_USERS) -> int:
-    """Resolve concurrent user count from pytest CLI flag or env."""
-    raw = os.environ.get(LOAD_TEST_USERS_ENV)
-    if raw is None:
-        return default
-    users = int(raw)
-    if users < 1:
-        raise ValueError(f"{LOAD_TEST_USERS_ENV} must be >= 1, got {users}")
-    return users
+__all__ = ["resolve_load_test_users"]

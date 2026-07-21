@@ -107,6 +107,10 @@ reviews:
         - Touches deployment, Docker, release pipelines, or critical production paths
         - When in doubt between medium and high for security- or data-integrity-related changes, choose high
 
+  slop_detection:
+    enabled: true
+    label: "ai-spam"
+
   auto_review:
     enabled: true
     drafts: false

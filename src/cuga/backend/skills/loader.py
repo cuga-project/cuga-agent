@@ -12,6 +12,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.policy.folder_loader import parse_markdown_with_frontmatter
 from cuga.backend.skills.registry import SkillEntry
 from cuga.config import settings
+from cuga.backend.slash_commands.arg_substitution import validate_arg_names
 
 DEFAULT_GLOBAL_SKILLS_ROOT = "~/.config/agents/skills"
 LEGACY_GLOBAL_SKILLS_ROOT = "~/.config/cuga/skills"
@@ -121,6 +122,20 @@ def _normalize_requirements(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in candidates if str(item).strip())
 
 
+def _normalize_arg_names(value: Any) -> tuple[str, ...]:
+    """Parse the ``arguments`` frontmatter key (whitespace-separated string or YAML list)."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        names: Iterable[Any] = value.split()
+    elif isinstance(value, (list, tuple, set)):
+        names = value
+    else:
+        logger.warning(f"Ignoring unsupported skill arguments value: {value!r}")
+        return ()
+    return tuple(s for s in (str(item).strip() for item in names) if s)
+
+
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
@@ -134,12 +149,17 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
             raise ValueError(f"unsafe skill name {name_str!r}: path separators and '..' are not allowed")
 
         description_str = _sanitize_for_prompt(str(description).strip(), "description", path)
+
+        arguments = _normalize_arg_names(frontmatter.get("arguments"))
+        validate_arg_names(arguments)
+
         return SkillEntry(
             name=name_str,
             description=description_str,
             body=body.strip(),
             source=str(path),
             requirements=_normalize_requirements(frontmatter.get("requirements")),
+            arguments=arguments,
         )
     except Exception as e:
         logger.warning(f"Skipping invalid skill file {path}: {e}")

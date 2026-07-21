@@ -18,6 +18,7 @@ from cuga.backend.knowledge.auth import (
     ensure_agent_scope_manage_if_needed,
     require_internal_or_auth,
     require_knowledge_agent_manage_identity,
+    resolve_agent_collection,
     resolve_collection,
 )
 from cuga.backend.knowledge.engine import (
@@ -231,6 +232,11 @@ async def health(request: Request):
         "details": subsystem.get("details", {}),
         "settings": h["settings"],
         "embeddings_initialized": h.get("embeddings_initialized", False),
+        # Live availability of the ACTIVE embedder. When false, the collection's
+        # vectors can't be searched (query embedding fails) — the UI warns.
+        "embedder_available": h.get("embedder_available"),
+        "embedder_error": h.get("embedder_error"),
+        "embedder_model": h.get("embedder_model"),
     }
     if collection:
         result["stale"] = h.get("stale", False)
@@ -740,6 +746,18 @@ async def delete_document(
         return {"status": "ok"}
     except DocumentNotFoundError:
         raise HTTPException(status_code=404, detail="document not found")
+    except ReindexInProgressError:
+        # Delete is rejected while this collection is being reindexed —
+        # otherwise the doc would be re-embedded into the in-flight target and
+        # resurrect after the pointer flips. 409 mirrors the upload guard shape.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reindex_in_progress",
+                "collections": [collection],
+                "message": "A re-index is running. Wait for it to finish before deleting documents.",
+            },
+        )
 
 
 @knowledge_router.delete("/session")
@@ -794,9 +812,48 @@ async def list_tasks(
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
     engine = _get_engine(request)
+    # Enforce scope-enabled + ownership (raises 403/400); also the exact
+    # collection for the session branch.
     collection = resolve_collection(identity, scope, request)
-    tasks = await engine.get_tasks(collection)
+    if scope == "agent":
+        # Return tasks across ALL of this agent's collections (active +
+        # in-flight), not just the active one. A config-change reindex
+        # (reindex_for_config) ingests into a NEW collection and DEFERS the
+        # pointer flip, so the in-flight collection is not the active one
+        # until promotion. Polling only the active collection leaves the
+        # reindex tile frozen at "Pending" for the whole run, then jumps to
+        # done at flip — no live per-document progress. The base prefix (no
+        # hash) matches every collection this agent owns, and the FE filters
+        # to its own task_ids; other agents'/sessions' tasks are excluded.
+        base = resolve_agent_collection(identity.agent_id, None)
+        # ponytail: full task scan + Python prefix filter. The task table is
+        # small (ingestion jobs, not user traffic). If it ever grows, push
+        # the prefix into the store query (collection = base OR LIKE base_%).
+        all_tasks = await engine.get_tasks(None)
+        tasks = [
+            t for t in all_tasks if (c := str(t.get("collection", ""))) == base or c.startswith(f"{base}_")
+        ]
+    else:
+        tasks = await engine.get_tasks(collection)
     return {"tasks": tasks}
+
+
+def _caller_owns_task_collection(
+    identity: KnowledgeIdentity, scope: str, collection: str, expected_collection: str
+) -> bool:
+    """Whether the caller owns the task's collection.
+
+    Agent tasks may live on ANY of the agent's collections — including the
+    in-flight TARGET of a deferred-flip reindex, whose hash differs from the
+    active pointer — so match the base prefix (the SAME ownership rule the
+    GET /tasks list endpoint uses). Session tasks require an exact match.
+    An exact-match here would 403 every in-flight reindex task for the whole
+    deferred window, freezing the live-progress tile.
+    """
+    if scope == "agent":
+        base = resolve_agent_collection(identity.agent_id, None)
+        return collection == base or collection.startswith(f"{base}_")
+    return collection == expected_collection
 
 
 @knowledge_router.get("/tasks/{task_id}")
@@ -820,7 +877,7 @@ async def get_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     return _enrich_task(task)
@@ -846,7 +903,7 @@ async def cancel_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     if scope == "agent":

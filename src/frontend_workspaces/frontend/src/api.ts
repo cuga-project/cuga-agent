@@ -167,12 +167,17 @@ export async function getManageConfigHistory(agentId?: string): Promise<Response
   return apiFetch(`/api/manage/config/history${q}`);
 }
 
-export async function postManageConfigDraft(config: unknown, agentId?: string): Promise<Response> {
+export async function postManageConfigDraft(
+  config: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+    signal,
   });
 }
 
@@ -237,12 +242,17 @@ export async function patchManageConfigDraftPolicies(
   });
 }
 
-export async function postManageConfig(config: unknown, agentId?: string): Promise<Response> {
+export async function postManageConfig(
+  config: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+    signal,
   });
 }
 
@@ -318,6 +328,28 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   return apiFetch(`/api/conversations/${threadId}?agent_id=cuga-default`, {
     method: "DELETE",
   });
+}
+
+export interface SlashCommandInfo {
+  name: string;
+  kind: "skill";
+  description: string;
+  argument_hint: string | null;
+}
+
+export async function getCommands(): Promise<SlashCommandInfo[]> {
+  const response = await apiFetch("/api/commands");
+  if (!response.ok) {
+    throw new Error(`Failed to load slash commands: HTTP ${response.status}`);
+  }
+  const data = await response.json().catch(() => ({ commands: [] }));
+  const commands = Array.isArray(data?.commands) ? data.commands : [];
+  return commands.map((c: any) => ({
+    name: String(c?.name ?? ""),
+    kind: "skill" as const,
+    description: typeof c?.description === "string" ? c.description : "",
+    argument_hint: typeof c?.argument_hint === "string" ? c.argument_hint : null,
+  }));
 }
 
 export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {

@@ -304,6 +304,63 @@ async def apply_policies_data_to_storage(
     return {"count": count, "errors": errors}
 
 
+def extract_policies_data_from_json(file_path: str) -> Dict[str, Any]:
+    """
+    Extract policy dictionaries and source policy IDs from a JSON policy file.
+
+    Supports the same JSON shapes as load_policies_from_json:
+    - frontend export format: {"enablePolicies": bool, "policies": [...]}
+    - simple array format: [...]
+    - single policy object: {...}
+
+    Returns:
+        Dictionary with:
+            - enabled: Whether policies are enabled (from frontend format, defaults to True)
+            - policies: List of raw policy dicts
+            - policy_ids: List of policy IDs found in the file (missing IDs are skipped)
+            - errors: List of error messages for policies missing an 'id' field
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    enabled = True
+    if isinstance(data, dict) and "policies" in data:
+        enabled = data.get("enablePolicies", True)
+        policies_data = data["policies"]
+        logger.info(f"Loading {len(policies_data)} policies from frontend export format (enabled: {enabled})")
+    elif isinstance(data, list):
+        policies_data = data
+        logger.info(f"Loading {len(policies_data)} policies from array format")
+    else:
+        policies_data = [data]
+        logger.info("Loading single policy from object format")
+
+    policy_ids: List[str] = []
+    errors: List[str] = []
+    valid_policies: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    for index, policy_data in enumerate(policies_data):
+        if not isinstance(policy_data, dict):
+            errors.append(f"Policy at index {index} must be an object")
+            continue
+        policy_id = policy_data.get("id")
+        if not policy_id:
+            errors.append(f"Policy at index {index} is missing required field 'id'")
+            continue
+        policy_id = str(policy_id)
+        valid_policies.append(policy_data)
+        if policy_id not in seen_ids:
+            seen_ids.add(policy_id)
+            policy_ids.append(policy_id)
+
+    return {
+        "enabled": enabled,
+        "policies": valid_policies,
+        "policy_ids": policy_ids,
+        "errors": errors,
+    }
+
+
 async def load_policies_from_json(
     file_path: str,
     storage: PolicyStorage,
@@ -328,36 +385,20 @@ async def load_policies_from_json(
             - enabled: Whether policies are enabled (from frontend format, if present)
             - errors: List of error messages (if any)
     """
-    enabled = True
     try:
-        with open(file_path, "r") as f:
-            data = json.load(f)
-
-        # Handle frontend export format: {"enablePolicies": true, "policies": [...]}
-        if isinstance(data, dict) and "policies" in data:
-            enabled = data.get("enablePolicies", True)
-            policies_data = data["policies"]
-            logger.info(
-                f"Loading {len(policies_data)} policies from frontend export format (enabled: {enabled})"
-            )
-        # Handle simple array format: [...]
-        elif isinstance(data, list):
-            policies_data = data
-            logger.info(f"Loading {len(policies_data)} policies from array format")
-        # Handle single policy object: {...}
-        else:
-            policies_data = [data]
-            logger.info("Loading single policy from object format")
-
+        extracted = extract_policies_data_from_json(file_path)
         result = await apply_policies_data_to_storage(
-            storage, policies_data, clear_existing=clear_existing, filesystem_sync=None
+            storage,
+            extracted["policies"],
+            clear_existing=clear_existing,
+            filesystem_sync=None,
         )
         count = result["count"]
-        errors = result["errors"]
+        errors = [*extracted["errors"], *result["errors"]]
         logger.info(f"📦 Successfully loaded {count} policies from {file_path}")
         if errors:
             logger.warning(f"⚠️  Encountered {len(errors)} errors during loading")
-        return {"count": count, "enabled": enabled, "errors": errors}
+        return {"count": count, "enabled": extracted["enabled"], "errors": errors}
 
     except Exception as e:
         error_msg = f"Failed to load policies from {file_path}: {e}"
