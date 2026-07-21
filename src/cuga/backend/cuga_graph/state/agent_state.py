@@ -1002,6 +1002,10 @@ class AgentState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
+    # Resolved citation sources for the current final_answer (per-message
+    # snapshots, see knowledge/sources.py). Display copy only — the raw [sN]
+    # markers stay in chat history so later turns can re-cite stable ids.
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
     last_summarization_metrics: Optional[Dict[str, Any]] = (
         None  # Stores metrics from the most recent summarization
     )

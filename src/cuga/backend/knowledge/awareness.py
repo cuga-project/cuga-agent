@@ -15,6 +15,7 @@ of the contract / doc-list / hash plumbing.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,30 @@ logger = logging.getLogger("cuga.knowledge")
 
 # Max characters of preview shown per document in the awareness summary
 _AWARENESS_PREVIEW_MAX_CHARS = 200
+
+CITATIONS_CONTRACT = """
+## Citations (use [sN] markers when results carry cite_ids)
+
+Every knowledge search result carries a `cite_id` (like "s3"). In your FINAL
+answer, append the marker right after each claim that comes from a retrieved
+chunk, before the sentence-ending punctuation:
+"The report number is 4521 [s3]."
+
+Rules:
+- This supersedes any earlier instruction to cite sources in prose: use
+  [sN] markers INSTEAD of `(source: <filename>)` or naming filename/page
+  in your sentences. Mention filenames in prose only when the user asks
+  about the documents themselves.
+- Use ONLY cite_ids from THIS turn's search results. An id from an earlier
+  turn no longer resolves — if you need to cite a source again, it must appear
+  in a search you ran this turn. Never invent an id; never write bare numeric
+  citations like [1] — the UI assigns display numbers automatically.
+- Multiple supporting chunks: [s1][s4] (or [s1, s4]).
+- Do NOT add a "Sources" section or list — the UI renders sources from
+  your markers.
+- If no retrieved chunk supports a claim, omit the claim or say the
+  knowledge base doesn't cover it (no marker).
+"""
 
 # Sentinel for {{max_search_attempts}} in knowledge_instructions.md. Using
 # a Jinja-style placeholder makes the template obvious to anyone editing
@@ -477,6 +502,26 @@ async def assemble_system_prompt_section(
     # Load the contract with the configured budget substituted in.
     attempts = getattr(cfg, "max_search_attempts", None)
     contract_text = load_knowledge_instructions(max_search_attempts=attempts)
+
+    # Session-aware: a per-thread override disables citations even when the
+    # agent config leaves them on. Use the SAME predicate resolution uses
+    # (citations_enabled_for), not the agent-only flag — otherwise the prompt
+    # would instruct the model to write [sN] markers that apply_citation_
+    # resolution then strips for a citations-off session ("the prompt lies").
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    if citations_enabled_for(cfg, thread_id):
+        # The legacy prose-attribution section contradicts marker citations —
+        # drop it from the assembled prompt (operators may have edited or
+        # removed it; a non-match is fine) and let CITATIONS_CONTRACT own the
+        # attribution style.
+        contract_text = re.sub(
+            r"^## Citing sources\s*\n.*?(?=^## |\Z)",
+            "",
+            contract_text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        contract_text = contract_text + "\n" + CITATIONS_CONTRACT
 
     composed = compose_knowledge_prompt(contract_text, knowledge_block, base_instructions)
     _hash = prompt_hash(composed)

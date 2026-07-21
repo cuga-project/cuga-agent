@@ -21,13 +21,16 @@ export default defineConfig(({ mode }) => {
     test: {
       globals: true,
       testTimeout: 20000,
-      environment: 'jsdom',
-      setupFiles: '/setupTests.js',
+      // 'node' — jsdom is not installed in this workspace; vitest exits 1 when
+      // the configured environment package is missing, even for pure-logic
+      // tests. DOM-needing tests can opt in per-file via @vitest-environment.
+      environment: 'node',
       include: [
         'src/components/**/*.test.{js,jsx,ts,tsx}',
         'src/snapshot-tests/*.test.tsx',
         'src/pages/**/*.test.{js,jsx,ts,tsx}',
         'src/hooks/**/*.test.{js,jsx,ts,tsx}',
+        'src/citations/**/*.test.{js,jsx,ts,tsx}',
       ],
     },
     resolve: {

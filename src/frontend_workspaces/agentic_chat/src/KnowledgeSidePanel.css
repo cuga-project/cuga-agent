@@ -302,3 +302,85 @@
   font-size: 13px;
   padding: 12px 0;
 }
+
+/* Per-session citations toggle row */
+.knowledge-session-citations {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid #f3f4f6;
+  margin-bottom: 12px;
+}
+
+.knowledge-session-citations-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.knowledge-session-citations-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.knowledge-session-citations-help {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* Mini switch — matches the panel's plain-CSS look (not Carbon) */
+.knowledge-mini-switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.knowledge-mini-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.knowledge-mini-switch-track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: #d1d5db;
+  transition: background 0.2s;
+}
+
+.knowledge-mini-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s;
+}
+
+.knowledge-mini-switch input:checked + .knowledge-mini-switch-track {
+  background: #0f62fe;
+}
+
+.knowledge-mini-switch input:checked + .knowledge-mini-switch-track::after {
+  transform: translateX(12px);
+}
+
+.knowledge-mini-switch input:focus-visible + .knowledge-mini-switch-track {
+  box-shadow: 0 0 0 3px rgba(15, 98, 254, 0.12);
+}
+
+.knowledge-mini-switch input:disabled + .knowledge-mini-switch-track {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

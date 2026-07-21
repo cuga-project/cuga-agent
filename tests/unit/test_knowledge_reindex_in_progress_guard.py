@@ -637,6 +637,48 @@ class TestHttpReindexGuard:
         # Pointer unchanged — no empty-collection activation.
         assert client.app.state.app_state.knowledge_config_hash == "oldhash"
 
+    def test_patch_does_not_adopt_when_current_kb_nonempty(self, app_with_engine, monkeypatch):
+        """A draft embedder/config change on a NON-EMPTY KB must NOT silently
+        repoint retrieval at a pre-existing (possibly stale) collection — even
+        though that collection has docs. The user must Re-index to rebuild their
+        CURRENT documents under the new config. Regression for 'switched to
+        watsonx, reindex banner vanished, retrieval served a stale collection'."""
+        from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+        client, engine = app_with_engine
+        monkeypatch.setattr(_KC, "vector_config_hash", lambda self: "newhash")
+
+        async def _fake_list_docs(coll):
+            # BOTH the target (newhash) AND the current (oldhash) collections are
+            # populated → current KB is non-empty → adopt must be refused.
+            if coll in ("kb_agent_cuga_default_newhash", "kb_agent_cuga_default_oldhash"):
+                return [{"filename": "a.pdf"}]
+            return []
+
+        monkeypatch.setattr(engine, "list_documents", _fake_list_docs)
+
+        _persist_calls: list[str] = []
+
+        async def _capture_persist(_agent_id, _engine, target_hash):
+            _persist_calls.append(target_hash)
+
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_routes.persist_active_vector_config",
+            _capture_persist,
+        )
+
+        client.app.state.app_state.knowledge_config_hash = "oldhash"
+        resp = client.patch(
+            "/api/manage/config/draft/knowledge?agent_id=cuga-default",
+            json={"knowledge": {"rerank_top_k_in": 25}},  # non-vector; apply succeeds
+        )
+        assert resp.status_code == 200, resp.text
+        # NOT adopted — pointer stays on the current collection, nothing persisted.
+        assert client.app.state.app_state.knowledge_config_hash == "oldhash"
+        assert _persist_calls == [], "must not adopt/persist when current KB is non-empty"
+        # ...and the response must NOT claim adoption (reindex still required).
+        assert not resp.json().get("live_changes", {}).get("adopted_existing_collection")
+
     def test_publish_rejected_during_reindex(self, app_with_engine):
         """#2: POST /config (publish) must 409 while a reindex is in flight for
         the agent. Publish calls prepare/commit_knowledge_update directly, NOT
