@@ -2025,6 +2025,17 @@ class KnowledgeEngine:
             try:
                 self._default_embeddings = create_embeddings(self._config)
                 self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
+            except Exception:
+                # Half-init guard: _get_embedding_dim does a live embed_query call,
+                # so it can fail *after* the embedder object is built. Don't leave
+                # _default_embeddings set with a None dim — the lock-free fast path
+                # above would then skip re-init forever, and the ingest path would
+                # later pass dim=None to set_collection_config and blow up as a
+                # confusing sqlite IntegrityError (embedding_dim NOT NULL). Clear
+                # both so the next _ensure_embeddings retries cleanly.
+                self._default_embeddings = None
+                self._default_embedding_dim = None
+                raise
             finally:
                 self._embedder_initializing = False
             active = getattr(self._default_embeddings, "_active_providers", None)

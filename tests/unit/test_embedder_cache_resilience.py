@@ -280,3 +280,40 @@ def test_ready_embedder_reports_available():
     out = _probe(default_embeddings=_Emb(), initializing=False)
     assert out["state"] == "available"
     assert out["available"] is True
+
+
+def test_dim_probe_failure_does_not_leave_half_initialized(monkeypatch):
+    """If _get_embedding_dim raises after the embedder object is built,
+    _ensure_embeddings must reset _default_embeddings back to None — otherwise
+    the lock-free fast path skips re-init forever and the ingest path later
+    passes dim=None into a NOT NULL column. A subsequent call must retry and
+    fully initialize once the dim probe recovers."""
+    import threading
+    from types import SimpleNamespace
+
+    from cuga.backend.knowledge import engine as _engine
+
+    fake = SimpleNamespace(
+        _config=SimpleNamespace(embedding_provider="fastembed", embedding_model="m"),
+        _default_embeddings=None,
+        _default_embedding_dim=None,
+        _embedder_initializing=False,
+        _embedder_init_lock=threading.Lock(),
+    )
+    monkeypatch.setattr(_engine, "create_embeddings", lambda cfg: object())
+
+    # First call: dim probe fails -> must raise AND reset state (no half-init).
+    monkeypatch.setattr(
+        _engine, "_get_embedding_dim", lambda e: (_ for _ in ()).throw(RuntimeError("probe down"))
+    )
+    with pytest.raises(RuntimeError, match="probe down"):
+        _engine.KnowledgeEngine._ensure_embeddings(fake)
+    assert fake._default_embeddings is None, "half-init: embedder left set with None dim"
+    assert fake._default_embedding_dim is None
+    assert fake._embedder_initializing is False
+
+    # Second call: dim probe recovers -> re-init runs (fast path did NOT skip it).
+    monkeypatch.setattr(_engine, "_get_embedding_dim", lambda e: 384)
+    _engine.KnowledgeEngine._ensure_embeddings(fake)
+    assert fake._default_embeddings is not None
+    assert fake._default_embedding_dim == 384

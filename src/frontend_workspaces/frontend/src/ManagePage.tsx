@@ -1834,7 +1834,7 @@ export function ManagePage() {
                         is NOT a failure and must never render as one — a first
                         run downloads hundreds of MB, and a red error there makes
                         working software look broken. */}
-                    {knowledgeEmbedderState === "preparing" && (
+                    {knowledgeEmbedderState === "preparing" && knowledgeDocCount > 0 && (
                       <InlineNotification
                         kind="info"
                         lowContrast
