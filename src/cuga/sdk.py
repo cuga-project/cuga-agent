@@ -138,6 +138,15 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="List of tool calls made during execution (when track_tool_calls is enabled)",
     )
+    sources: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Citation sources for the answer: [{n, cite_id, filename, page, "
+        "section_path, scope, snippet, score, query}] — populated when knowledge "
+        "citations are enabled and the answer cites retrieved chunks. "
+        "section_path and score are optional (omitted when absent). Stream "
+        "consumers: the FinalAnswerAgent node update carries both final_answer "
+        "and sources.",
+    )
     thread_id: Optional[str] = Field(default=None, description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
     variables: Dict[str, Any] = Field(
@@ -1721,6 +1730,7 @@ class CugaAgent:
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
+        enable_citations: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
         tool_calling: Optional["ToolCalling"] = None,
@@ -1740,6 +1750,7 @@ class CugaAgent:
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
+            enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
 
@@ -1787,6 +1798,7 @@ class CugaAgent:
 
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
+        self._enable_citations = enable_citations  # None = follow knowledge settings
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -2193,11 +2205,18 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
+            if self._enable_citations is not None:
+                config.citations_enabled = self._enable_citations
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            # Gate citation-marker resolution on this agent's flag (module-global
+            # hook — matches the session-override hook's single-process assumption).
+            from cuga.backend.knowledge.sources import set_agent_citations_lookup
+
+            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -2496,6 +2515,7 @@ class CugaAgent:
 
             # Get tool calls from result (only if tracking was enabled)
             tool_calls = result.get("tool_calls", []) if track_tool_calls else []
+            sources = result.get("sources", []) or []
 
             from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
@@ -2504,6 +2524,7 @@ class CugaAgent:
             return InvokeResult(
                 answer=final_answer,
                 tool_calls=tool_calls,
+                sources=sources,
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
@@ -2530,6 +2551,16 @@ class CugaAgent:
 
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
+
+        # New user turn (not a HITL resume — that path returns above): scope
+        # citations to this turn's retrieval so an id from an earlier turn can't
+        # resolve in this answer. Mirrors the server's event_stream hook.
+        try:
+            from cuga.backend.knowledge.sources import begin_ledger_turn
+
+            begin_ledger_turn(thread_id)
+        except Exception:
+            pass
 
         # Try to get existing state for this thread_id
         existing_state = None
@@ -2626,6 +2657,7 @@ class CugaAgent:
         # Fallback: if final_answer is still empty, look at the last non-empty AI message.
         # Reasoning models sometimes return content='' with the answer only in
         # additional_kwargs['reasoning_content'], so check both fields.
+        fallback_sources = None
         if not final_answer:
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
@@ -2637,6 +2669,21 @@ class CugaAgent:
                     final_answer = text
                     logger.debug("final_answer extracted from last AI chat message (fallback)")
                     break
+
+            # Chat transcript keeps raw [sN] markers by design; the
+            # fallback text bypassed FinalAnswerNode resolution, so
+            # resolve here before returning it to the caller.
+            from cuga.backend.knowledge.sources import (
+                get_ledger,
+                has_citation_markers,
+                resolve_citations,
+            )
+
+            if final_answer and has_citation_markers(final_answer):
+                ledger = get_ledger(thread_id, create=False)
+                final_answer, fallback_sources = resolve_citations(final_answer, ledger)
+            else:
+                fallback_sources = []
 
         # Check if graph interrupted for approval
         if not final_answer:
@@ -2653,6 +2700,12 @@ class CugaAgent:
 
         # Get tool calls from result (only if tracking was enabled)
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
+
+        # Citation sources: normal path reads the graph state; if the empty-answer
+        # fallback fired, its locally-resolved sources supersede the state copy.
+        sources = result.get("sources", []) or []
+        if fallback_sources is not None:
+            sources = fallback_sources
 
         # Extract sub-agent variables for VariableBridge (Phase 8).
         from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
@@ -2694,6 +2747,7 @@ class CugaAgent:
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,
+            sources=sources,
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
@@ -3140,6 +3194,10 @@ class CugaSupervisor:
                 metadata_key="supervisor_metadata",
             )
 
+            # NOTE: no citation resolution here — sub-agents resolve their own
+            # answers via FinalAnswerNode; if supervisor-level retrieval is ever
+            # added, resolve [sN] markers before END (see
+            # FinalAnswerNode.apply_citation_resolution).
             state.sender = callback_name
             return Command(update=state.model_dump(), goto=END)
 
@@ -3310,9 +3368,16 @@ class CugaSupervisor:
             result.get("tool_calls", []) if isinstance(result, dict) else getattr(result, "tool_calls", [])
         )
 
+        # Citation sources bridged from sub-agent state (empty when the
+        # supervisor state doesn't carry them).
+        sources = (
+            result.get("sources", []) if isinstance(result, dict) else getattr(result, "sources", [])
+        ) or []
+
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,
+            sources=sources,
             thread_id=thread_id,
             error=error_msg,
         )

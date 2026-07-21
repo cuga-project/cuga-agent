@@ -447,6 +447,11 @@ class KnowledgeConfig:
     enabled: bool = False
     agent_level_enabled: bool = True
     session_level_enabled: bool = True
+    # Numbered source citations ([1] + snippets) in agent answers. Search-only
+    # behavior: deliberately EXCLUDED from vector_config_hash() so flipping it
+    # never triggers a reindex.
+    # Per-session override lives in SessionKnowledgeState.overrides (session_provider.py); consumed via citations_enabled_for() in sources.py.
+    citations_enabled: bool = True
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
     # Embeddings
@@ -796,6 +801,10 @@ class KnowledgeConfig:
         # the structured glossary in place so callers see the cleaned form.
         _validate_client_adaptation(self.client_adaptation_text)
         self.client_adaptation_glossary = _validate_glossary(self.client_adaptation_glossary)
+        if not isinstance(self.citations_enabled, bool):
+            raise ValueError(
+                f"citations_enabled must be a boolean, got {type(self.citations_enabled).__name__}"
+            )
         # Reranker bounds: top_k_in 1..100; model name is a free string
         # (operators may point at fine-tuned variants); loading-time tests
         # reachability.
@@ -1040,6 +1049,7 @@ class KnowledgeConfig:
             enabled=kb.get("enabled", False),
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
+            citations_enabled=kb.get("citations_enabled", True),
             persist_dir=persist_dir,
             embedding_provider=embeddings.get("provider", "fastembed"),
             embedding_model=profile_embeddings.get("model", embeddings.get("model", "")),

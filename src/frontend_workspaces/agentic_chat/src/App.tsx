@@ -6,6 +6,7 @@ import { ConfigHeader } from "./ConfigHeader";
 import { LeftSidebar } from "./LeftSidebar";
 import { StatusBar } from "./StatusBar";
 import { KnowledgeSidePanel } from "./KnowledgeSidePanel";
+import { SourcesPanel, CITE_CLICK_EVENT, type MessageSource } from "./citations";
 import { GuidedTour, TourStep } from "./GuidedTour";
 import { useTour } from "./useTour";
 import { AdvancedTourButton } from "./AdvancedTourButton";
@@ -67,6 +68,7 @@ export function App() {
   const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
   const [agentKnowledgeEnabled, setAgentKnowledgeEnabled] = useState<boolean | null>(null);
   const [sessionKnowledgeEnabled, setSessionKnowledgeEnabled] = useState<boolean | null>(null);
+  const [citationsEnabled, setCitationsEnabled] = useState<boolean | null>(null);
   const [agentLabel, setAgentLabel] = useState("this agent");
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
@@ -76,6 +78,10 @@ export function App() {
   const [previousHistoryLength, setPreviousHistoryLength] = useState(0);
   const [threadId, setThreadId] = useState(() => randomUUID());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(undefined);
+  const [sourcesView, setSourcesView] = useState<{ sources: MessageSource[]; activeN: number | null } | null>(null);
+  // Answer-step id (the `msg` attribute stamped on each <cuga-cite> chip) →
+  // that answer's source snapshot. Filled by CardManager via cugaSourcesUpdate.
+  const messageSourcesRef = useRef<Map<string, MessageSource[]>>(new Map());
   const [workspaceFilesystemRoot, setWorkspaceFilesystemRoot] = useState("cuga_workspace");
   const leftSidebarRef = useRef<{ addConversation: (title: string) => void } | null>(null);
   const [hasStartedChat, setHasStartedChat] = useState(() => {
@@ -101,6 +107,7 @@ export function App() {
           setKnowledgeEnabled(data.knowledge_enabled ?? false);
           setAgentKnowledgeEnabled(data.agent_level_knowledge_enabled ?? false);
           setSessionKnowledgeEnabled(data.session_level_knowledge_enabled ?? false);
+          setCitationsEnabled(data.citations_enabled ?? true);
           api.setKnowledgeAgentId(agentId);
           const wfr = data.workspace_filesystem_root;
           if (typeof wfr === "string" && wfr.trim()) {
@@ -118,6 +125,50 @@ export function App() {
         setSessionKnowledgeEnabled(false);
       });
   }, []);
+
+  // Citation events: footer "open" clicks, CardManager's per-answer source
+  // publications, and chip clicks (composed cuga-cite-click events bubbling to
+  // the document — composedPath()[0] recovers the <cuga-cite> element whose
+  // `msg` attribute names the answer step the chip belongs to).
+  useEffect(() => {
+    const onOpenSources = (e: Event) => {
+      const { sources, n } = (e as CustomEvent).detail ?? {};
+      if (Array.isArray(sources)) {
+        setSourcesView({ sources, activeN: typeof n === "number" ? n : null });
+      }
+    };
+    const onSourcesUpdate = (e: Event) => {
+      const { key, sources } = (e as CustomEvent).detail ?? {};
+      if (key && Array.isArray(sources)) {
+        messageSourcesRef.current.set(String(key), sources);
+      }
+    };
+    const onCiteClick = (e: Event) => {
+      const origin = e.composedPath()[0] as HTMLElement | undefined;
+      const key = origin?.getAttribute?.("msg") ?? "";
+      // Empty-array fallback on a miss (panel shows its empty state) — a
+      // last-entry fallback could attach chips to the wrong answer.
+      const sources = messageSourcesRef.current.get(key) ?? [];
+      const n = (e as CustomEvent).detail?.n;
+      setSourcesView({ sources, activeN: typeof n === "number" ? n : null });
+    };
+    window.addEventListener("cugaOpenSources", onOpenSources);
+    window.addEventListener("cugaSourcesUpdate", onSourcesUpdate);
+    document.addEventListener(CITE_CLICK_EVENT, onCiteClick);
+    return () => {
+      window.removeEventListener("cugaOpenSources", onOpenSources);
+      window.removeEventListener("cugaSourcesUpdate", onSourcesUpdate);
+      document.removeEventListener(CITE_CLICK_EVENT, onCiteClick);
+    };
+  }, []);
+
+  // threadId is updated via CustomChat's onThreadIdChange on init, on new
+  // conversations, and on external conversation selection — any switch
+  // invalidates the per-answer source map and closes the panel.
+  useEffect(() => {
+    messageSourcesRef.current.clear();
+    setSourcesView(null);
+  }, [threadId]);
 
   const { isTourActive, hasSeenTour, startTour, completeTour, skipTour, resetTour } = useTour();
 
@@ -244,7 +295,17 @@ export function App() {
               knowledgeEnabled={knowledgeEnabled}
               agentKnowledgeEnabled={agentKnowledgeEnabled}
               sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+              citationsEnabled={citationsEnabled}
               agentLabel={agentLabel}
+            />
+          )}
+          {sourcesView && (
+            <SourcesPanel
+              sources={sourcesView.sources}
+              activeN={sourcesView.activeN}
+              onClose={() => setSourcesView(null)}
+              // No onOpenDocument: the extension surface has no api-module
+              // pattern for document fetch; the panel hides the button.
             />
           )}
         </div>

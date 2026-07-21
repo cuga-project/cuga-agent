@@ -476,7 +476,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                                 f"Allowed scopes: {allowed_text}"
                             )
                         }
-                    if tid and "session" in allowed_scopes:
+                    # Forward the conversation id whenever we have one — the knowledge
+                    # layer needs it for the citations ledger even on agent-scope
+                    # searches. Session-collection access is still gated by scope checks
+                    # server-side; this only adds correlation, not access.
+                    if tid:
                         kwargs.setdefault("thread_id", tid)
                     return await fn(*args, **kwargs)
 

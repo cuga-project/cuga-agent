@@ -33,6 +33,10 @@
     "./KnowledgePanel": {
       "import": "./src/KnowledgeConfig.tsx",
       "default": "./src/KnowledgeConfig.tsx"
+    },
+    "./Citations": {
+      "import": "./src/citations/index.ts",
+      "default": "./src/citations/index.ts"
     }
   },
   "scripts": {

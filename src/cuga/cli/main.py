@@ -1433,6 +1433,11 @@ def start(
         os.environ["DYNACONF_KNOWLEDGE__ENABLED"] = "true"
         os.environ["DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED"] = "true"
         os.environ["DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED"] = "true"
+        # Same local-workspace posture as every other demo preset: without this
+        # the spawned server inherits opensandbox_sandbox=true from settings.toml
+        # and /api/workspace/tree tries to reach a Docker OpenSandbox that this
+        # mode never starts (surfaces as ConnectError + 503 on every UI poll).
+        _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
