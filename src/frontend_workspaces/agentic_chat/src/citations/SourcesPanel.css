@@ -1,0 +1,72 @@
+/* SourcesPanel.css — Carbon tokens with fallbacks (extension surface has no Carbon CSS) */
+.cuga-sources-panel {
+  position: fixed; top: 0; right: 0; height: 100%; width: 380px; max-width: 92vw;
+  background: var(--cds-layer-01, #fff); border-left: 1px solid var(--cds-border-subtle-01, #e0e0e0);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.08);
+  /* Above Carbon's UI Shell header (z 8000) so the panel header is never
+     clipped under the app nav; below modal overlays (z 10000). */
+  z-index: 9000;
+  display: flex; flex-direction: column;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  animation: cuga-sources-in 160ms ease-out;
+}
+@keyframes cuga-sources-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.cuga-sources-panel__header { display: flex; gap: 12px; align-items: flex-start; padding: 16px;
+  border-bottom: 1px solid var(--cds-border-subtle-01, #e0e0e0); }
+.cuga-sources-panel__title { flex: 1; min-width: 0; }
+.cuga-sources-panel__header h3 { margin: 0; font-size: 16px; font-weight: 600;
+  line-height: 1.3; color: var(--cds-text-primary, #161616); }
+.cuga-sources-panel__subtitle { display: block; margin-top: 2px; font-size: 12px;
+  line-height: 1.4; color: var(--cds-text-secondary, #525252); }
+.cuga-sources-panel__close { margin-left: auto; order: 3; border: none; background: none; cursor: pointer;
+  font-size: 14px; color: var(--cds-text-secondary, #525252); padding: 4px 8px; border-radius: 4px; }
+.cuga-sources-panel__close:hover { background: var(--cds-layer-hover-01, #e8e8e8); }
+.cuga-sources-panel__list { overflow-y: auto; padding: 8px 16px 24px; flex: 1; }
+.cuga-sources-panel__empty { color: var(--cds-text-secondary, #525252); font-size: 13px; padding: 16px 0; }
+.cuga-sources-panel__item { padding: 12px; margin-top: 8px; border-radius: 6px;
+  border: 1px solid var(--cds-border-subtle-01, #e0e0e0); }
+.cuga-sources-panel__item.is-active { border-left: 3px solid var(--cds-interactive, #0f62fe);
+  background: var(--cds-layer-selected-01, #e0e0e033); }
+.cuga-sources-panel__item-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cuga-sources-panel__badge { flex: none; min-width: 18px; height: 18px; border-radius: 9px; text-align: center;
+  font: 600 11px/18px "IBM Plex Sans", sans-serif; color: #fff; background: var(--cds-link-primary, #0f62fe); padding: 0 5px; }
+.cuga-sources-panel__file { font-weight: 600; font-size: 13px; color: var(--cds-text-primary, #161616);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+.cuga-sources-panel__meta { margin-left: auto; flex: none; font-size: 11px; color: var(--cds-text-secondary, #525252); }
+.cuga-sources-panel__section { font-size: 11px; color: var(--cds-text-secondary, #525252); margin: 4px 0 0 26px; }
+.cuga-sources-panel__snippet { margin: 8px 0 0; padding: 10px 12px; border-radius: 4px; cursor: pointer;
+  background: var(--cds-layer-02, #f4f4f4); font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+  color: var(--cds-text-primary, #161616); max-height: 260px; overflow: hidden; position: relative; }
+.cuga-sources-panel__snippet.is-expanded { max-height: none; }
+.cuga-sources-panel__snippet:not(.is-expanded)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 32px; background: linear-gradient(transparent, var(--cds-layer-02, #f4f4f4)); }
+.cuga-sources-panel__snippet mark { background: var(--cds-highlight, #d0e2ff); color: inherit; border-radius: 2px; }
+.cuga-sources-panel__expand { border: none; background: none; cursor: pointer; padding: 4px 0 0;
+  font: 400 12px "IBM Plex Sans", system-ui, sans-serif; color: var(--cds-link-primary, #0f62fe); }
+.cuga-sources-panel__expand:hover { text-decoration: underline; }
+.cuga-sources-panel__foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.cuga-sources-panel__query { font-size: 11px; color: var(--cds-text-secondary, #525252); font-style: italic; }
+.cuga-sources-panel__score { width: 56px; height: 4px; border-radius: 2px; background: var(--cds-border-subtle-01, #e0e0e0); overflow: hidden; }
+.cuga-sources-panel__score i { display: block; height: 100%; background: var(--cds-support-info, #0043ce); }
+.cuga-sources-panel__open { margin-left: auto; border: none; background: none; cursor: pointer;
+  color: var(--cds-link-primary, #0f62fe); font-size: 12px; padding: 4px 6px; border-radius: 4px; }
+.cuga-sources-panel__open:hover:not(:disabled) { background: var(--cds-layer-hover-01, #e8e8e8); }
+.cuga-sources-panel__open:disabled { color: var(--cds-text-disabled, #c6c6c6); cursor: not-allowed; }
+/* message footer */
+.cuga-msg-sources { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px;
+  padding-top: 8px; border-top: 1px solid var(--cds-border-subtle-01, #e0e0e0); }
+.cuga-msg-sources__label { font-size: 11px; letter-spacing: 0.32px; color: var(--cds-text-secondary, #525252);
+  text-transform: uppercase; margin-right: 2px; }
+.cuga-msg-sources__card { display: inline-flex; align-items: center; gap: 6px; max-width: 240px;
+  border: 1px solid var(--cds-border-subtle-01, #e0e0e0); background: var(--cds-layer-01, #fff);
+  border-radius: 14px; padding: 3px 10px 3px 4px; cursor: pointer; font-size: 12px;
+  color: var(--cds-text-primary, #161616); }
+.cuga-msg-sources__card:hover { background: var(--cds-layer-hover-01, #e8e8e8); }
+.cuga-msg-sources__badge { min-width: 16px; height: 16px; border-radius: 8px; text-align: center;
+  font: 600 10px/16px "IBM Plex Sans", sans-serif; color: #fff; background: var(--cds-link-primary, #0f62fe); }
+.cuga-msg-sources__file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+.cuga-msg-sources__page { color: var(--cds-text-secondary, #525252); font-size: 11px; }
+.cuga-msg-sources__dot { width: 6px; height: 6px; border-radius: 3px; }
+.cuga-msg-sources__dot--agent { background: var(--cds-link-primary, #0f62fe); }
+.cuga-msg-sources__dot--session { background: var(--cds-support-success, #24a148); }
+.cuga-msg-sources__more { padding: 3px 10px; }

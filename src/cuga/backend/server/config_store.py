@@ -365,5 +365,11 @@ def reset_config_db() -> None:
     # the deleted file; the next access reopens against the recreated DB.
     get_storage().invalidate_relational_stores()
     path = os.path.join(DBS_DIR, "cuga.db")
-    if os.path.exists(path):
-        os.remove(path)
+    # WAL mode makes this a three-file unit. Dropping only the main DB leaves an
+    # orphaned -wal/-shm pair still describing pages the recreated file doesn't
+    # have, so the next connection reads past EOF and raises
+    # SQLITE_IOERR_SHORT_READ — surfaced as a bare "disk I/O error". A hard kill
+    # (crash, SIGKILL, Ctrl-C mid-write) is enough to strand the sidecars.
+    for target in (path, f"{path}-wal", f"{path}-shm"):
+        if os.path.exists(target):
+            os.remove(target)
