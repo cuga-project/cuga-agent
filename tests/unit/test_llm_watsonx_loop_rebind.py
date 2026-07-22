@@ -30,6 +30,24 @@ class _DummyWatsonx:
 
 
 @pytest.mark.unit
+def test_watsonx_api_client_prefers_watsonx_client_then_model_client():
+    """langchain_ibm sets watsonx_client from watsonx_model._client on init; cover both."""
+    direct = SimpleNamespace(_async_httpx_client=object())
+    nested = SimpleNamespace(_async_httpx_client=object())
+
+    via_direct = SimpleNamespace(watsonx_client=direct, watsonx_model=None)
+    assert LLMManager._watsonx_api_client(via_direct) is direct
+
+    via_model = SimpleNamespace(
+        watsonx_client=None,
+        watsonx_model=SimpleNamespace(_client=nested),
+    )
+    assert LLMManager._watsonx_api_client(via_model) is nested
+
+    assert LLMManager._watsonx_api_client(SimpleNamespace(watsonx_client=None, watsonx_model=None)) is None
+
+
+@pytest.mark.unit
 def test_rebind_noop_without_running_loop():
     mgr = LLMManager()
     assert mgr.rebind_async_clients_to_running_loop() == 0
