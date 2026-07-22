@@ -249,6 +249,18 @@ function isDivergedFromLive(
   });
 }
 
+// Providers whose model runs from local files (ONNX / torch weights on disk).
+// They have no API key and no endpoint, so "check its API key / connection"
+// is advice the user literally cannot act on — the real cause is missing or
+// half-downloaded model files, which CUGA now re-fetches by itself.
+const LOCAL_EMBEDDING_PROVIDERS = new Set(["fastembed", "huggingface"]);
+
+// ``embedder_model`` arrives as "<provider>/<model>" (e.g.
+// "fastembed/BAAI/bge-small-en-v1.5"), so the provider is the first segment.
+function isLocalEmbeddingProvider(embedderModel: string): boolean {
+  return LOCAL_EMBEDDING_PROVIDERS.has((embedderModel || "").split("/")[0].trim().toLowerCase());
+}
+
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
   isOn: true,
   greeting: "Hello, how can I help you today?",
@@ -433,6 +445,12 @@ export function ManagePage() {
   // (don't alarm); false = unreachable → the indexed docs can't be searched.
   const [knowledgeEmbedderAvailable, setKnowledgeEmbedderAvailable] = useState<boolean | null>(null);
   const [knowledgeEmbedderModel, setKnowledgeEmbedderModel] = useState<string>("");
+  // "disabled" | "preparing" | "available" | "unavailable". "preparing" means a
+  // cold start is still downloading the model — that must not render as an error.
+  const [knowledgeEmbedderState, setKnowledgeEmbedderState] = useState<string | null>(null);
+  // The scrubbed reason from the backend. It was already on the wire and simply
+  // discarded, which is why the UI could only offer a generic guess.
+  const [knowledgeEmbedderError, setKnowledgeEmbedderError] = useState<string>("");
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<{
@@ -881,6 +899,8 @@ export function ManagePage() {
         typeof data.embedder_available === "boolean" ? data.embedder_available : null,
       );
       setKnowledgeEmbedderModel(data.embedder_model ?? "");
+      setKnowledgeEmbedderState(typeof data.embedder_state === "string" ? data.embedder_state : null);
+      setKnowledgeEmbedderError(data.embedder_error ?? "");
       return data;
     } catch {
       setKnowledgeHealthy(false);
@@ -1810,12 +1830,35 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
+                    {/* Cold start: the model is still being fetched/loaded. This
+                        is NOT a failure and must never render as one — a first
+                        run downloads hundreds of MB, and a red error there makes
+                        working software look broken. */}
+                    {knowledgeEmbedderState === "preparing" && knowledgeDocCount > 0 && (
+                      <InlineNotification
+                        kind="info"
+                        lowContrast
+                        hideCloseButton
+                        title="Preparing embedder"
+                        subtitle={
+                          `Getting the embedding model${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} ready — ` +
+                          `this can take a minute the first time. Search will work as soon as it finishes.`
+                        }
+                        style={{ maxInlineSize: "100%" }}
+                      />
+                    )}
                     {/* Embedder-unavailable alert. Distinct from the removed
                         "re-index recommended" NAG below: this is a real error —
                         the documents exist but their embedder can't embed
-                        queries (missing/invalid key, provider down), so search
-                        returns nothing. Surfaced on the agent card (not just in
-                        the modal) because it makes knowledge silently useless. */}
+                        queries, so search returns nothing. Surfaced on the agent
+                        card (not just in the modal) because it makes knowledge
+                        silently useless.
+
+                        The remedy differs by provider, so the copy does too:
+                        local providers have no key or endpoint to check (that
+                        advice used to be unfollowable), and CUGA re-downloads
+                        corrupt model files itself. We also show the backend's
+                        scrubbed reason, which was previously dropped. */}
                     {knowledgeEmbedderAvailable === false && knowledgeDocCount > 0 && (
                       <InlineNotification
                         kind="error"
@@ -1824,8 +1867,12 @@ export function ManagePage() {
                         title="Embedder unavailable"
                         subtitle={
                           `Your ${knowledgeDocCount} indexed document${knowledgeDocCount !== 1 ? "s" : ""} can't be searched — ` +
-                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't reachable. ` +
-                          `Open Configure knowledge base to check its API key / connection and run Test connection.`
+                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't usable. ` +
+                          (isLocalEmbeddingProvider(knowledgeEmbedderModel)
+                            ? `It runs locally, so there's no key or connection to check — its model files are missing or unreadable. ` +
+                              `Restart to let CUGA re-download them; if it persists, check free disk space and network access.`
+                            : `Open Configure knowledge base to check its API key / connection and run Test connection.`) +
+                          (knowledgeEmbedderError ? ` (${knowledgeEmbedderError})` : "")
                         }
                         style={{ maxInlineSize: "100%" }}
                       />

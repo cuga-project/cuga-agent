@@ -964,7 +964,7 @@ class AgentState(BaseModel):
     api_planner_human_consultations: Optional[List[Dict]] = Field(default_factory=list)
     sub_task_app: Optional[str] = None
     sub_task_type: Optional[Literal['web', 'api']] = None
-    input: str  # User request
+    input: str = ""  # User request (empty on HITL/save-reuse resume, which carries no new input)
     last_planner_answer: Optional[str] = None
     last_question: Optional[str] = None
     final_answer: Optional[str] = ""
@@ -974,7 +974,7 @@ class AgentState(BaseModel):
     # A system message (or messages) containing the intermediate steps]
     sites: Optional[List[str]] = None
     observation: Optional[str] = ""  # The most recent response from a tool
-    url: str  # The URL of the current page
+    url: str = ""  # The URL of the current page
     elements_as_string: Optional[str] = ""
     focused_element_bid: Optional[str] = None
     elements: str = ""  # The elements on the page
