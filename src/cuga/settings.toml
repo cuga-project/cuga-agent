@@ -121,6 +121,9 @@ pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and
 mode = "local"  # "local" | "prod"
 local_db_path = ""  # default DBS_DIR/cuga.db when empty
 postgres_url = ""  # required when mode=prod
+# Skip demo/manager config seed when agent_configs already exist for tenant+instance+agent.
+# Applies when storage.mode matches this value: "prod" | "local" | "any". Default "prod".
+preserve_configs_on_startup = "prod"
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)
@@ -221,8 +224,14 @@ llm_http_timeout = 61  # Seconds; OpenAI/Azure/OpenRouter only (see DEFAULT_LLM_
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
-                 # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-                 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
+# Local OpenLit pricing.json path (airgapped). Empty = bundled asset under observability/assets/.
+# Env: DYNACONF_OBSERVABILITY__PRICING_JSON
+pricing_json = ""
+# Prefer LiteLLM bundled model cost map (avoids raw.githubusercontent.com fetch).
+# Env: DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP
+litellm_local_model_cost_map = true
+# Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
 
 [evolve]
 enabled = true             # Master toggle for Evolve integration

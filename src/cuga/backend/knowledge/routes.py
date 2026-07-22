@@ -238,6 +238,10 @@ async def health(request: Request):
         "embedder_available": h.get("embedder_available"),
         "embedder_error": h.get("embedder_error"),
         "embedder_model": h.get("embedder_model"),
+        # "disabled" | "preparing" | "available" | "unavailable". Lets the UI
+        # distinguish a cold start still downloading its model from a genuine
+        # fault, instead of showing a red error for both.
+        "embedder_state": h.get("embedder_state"),
     }
     if collection:
         result["stale"] = h.get("stale", False)

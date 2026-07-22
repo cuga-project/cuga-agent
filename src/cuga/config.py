@@ -32,6 +32,23 @@ DBS_DIR = os.environ.get("CUGA_DBS_DIR", os.path.join(PACKAGE_ROOT, "./dbs"))
 # Define all path variables at the top (with environment variable overrides)
 ENV_FILE_PATH = os.getenv("ENV_FILE_PATH") or os.path.join(PACKAGE_ROOT, "..", "..", ".env")
 
+# Embedding-model cache. Without this, fastembed falls back to
+# ``tempfile.gettempdir()/fastembed_cache`` — on macOS that is /var/folders/...,
+# which the OS periodically purges, silently deleting hundreds of MB of ONNX
+# models. The next start then re-downloads them, and if that download is
+# interrupted it leaves a dangling snapshot symlink that hard-fails with
+# NoSuchFile on EVERY subsequent start (see _FastEmbedEmbeddings' self-heal).
+# Container images already pin this via Dockerfile.ubi; this gives local
+# installs the same durability.
+#
+# Deliberately NOT under PACKAGE_ROOT (where dbs/ and logging/ live): for a
+# pip-installed CUGA that is site-packages, which is the wrong home for large
+# model blobs and may be read-only.
+FASTEMBED_CACHE_DIR = os.environ.get(
+    "FASTEMBED_CACHE_PATH", os.path.join(os.path.expanduser("~"), ".cache", "cuga", "fastembed")
+)
+os.environ.setdefault("FASTEMBED_CACHE_PATH", FASTEMBED_CACHE_DIR)
+
 
 # Helper function to find config files with existence check
 def _find_config_file(filename: str, env_var_name: str) -> str:
@@ -121,6 +138,8 @@ validators = [
     Validator("features.task_decomposition", default=False),
     Validator("advanced_features.langfuse_tracing", default=False),
     Validator("observability.openlit", default=False),
+    Validator("observability.pricing_json", default=""),
+    Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),
@@ -150,6 +169,7 @@ validators = [
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
     Validator("storage.postgres_url", default=""),
+    Validator("storage.preserve_configs_on_startup", default="prod"),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
     Validator("secrets.mode", default="local"),
@@ -311,6 +331,29 @@ try:
 except dynaconf.ValidationError as e:
     accumulative_errors = e.details
     logger.warning(accumulative_errors)
+
+
+def apply_litellm_local_model_cost_map(enabled: bool) -> None:
+    """
+    Bridge Dynaconf observability.litellm_local_model_cost_map to LiteLLM's native env.
+
+    LiteLLM only treats LITELLM_LOCAL_MODEL_COST_MAP as local when its value.lower()
+    == "true". Settings win over any pre-existing native env value.
+    Override via DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP.
+    """
+    if enabled:
+        os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    else:
+        os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
+
+
+# Apply at config load so `import litellm` later sees the offline flag.
+try:
+    apply_litellm_local_model_cost_map(
+        bool(getattr(getattr(settings, "observability", None), "litellm_local_model_cost_map", True))
+    )
+except Exception:
+    pass
 
 
 def get_class(class_path):
