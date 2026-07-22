@@ -10,11 +10,23 @@ from cuga.backend.server.config_store import (
     has_any_config,
     load_draft,
     reset_config_db,
+    run_sync,
     save_draft,
     should_preserve_existing_configs,
 )
 from cuga.backend.server.demo_manage_setup import setup_demo_manage_config
 from cuga.config import settings as cuga_settings
+
+
+@pytest.mark.unit
+def test_run_sync_works_when_event_loop_already_running():
+    async def _probe() -> str:
+        return "ok"
+
+    async def _caller() -> str:
+        return run_sync(_probe())
+
+    assert asyncio.run(_caller()) == "ok"
 
 
 @pytest.mark.unit

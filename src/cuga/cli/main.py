@@ -1740,13 +1740,13 @@ def start(
             from cuga.backend.server.config_store import (
                 reset_config_db,
                 resolve_preserve_existing,
+                run_sync,
                 save_draft,
             )
-            import asyncio
 
             ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
-            preserve_existing = asyncio.run(resolve_preserve_existing("cuga-default"))
+            preserve_existing = run_sync(resolve_preserve_existing("cuga-default"))
             if not preserve_existing:
                 logger.info("🧹 Resetting config db for Travel Agent...")
                 reset_config_db()
@@ -1772,7 +1772,7 @@ def start(
                     "tools": [],
                     "llm": llm_cfg,
                 }
-                asyncio.run(save_draft(travel_agent_config, "cuga-default"))
+                run_sync(save_draft(travel_agent_config, "cuga-default"))
                 logger.info(
                     "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
                 )

@@ -1,6 +1,5 @@
 """Helper to setup agent config (draft + v1) for demo and demo_crm with manage experience."""
 
-import asyncio
 import json
 import logging
 import os
@@ -478,8 +477,10 @@ def setup_demo_manage_config(
     from cuga.backend.server.config_store import (
         reset_config_db,
         resolve_preserve_existing,
+        run_sync,
         save_config,
         save_draft,
+        should_preserve_existing_configs,
     )
 
     if demo_type == "demo_knowledge":
@@ -527,7 +528,7 @@ def setup_demo_manage_config(
         "What capabilities does the platform highlight on-premises use?",
     ]
 
-    preserve_existing = asyncio.run(resolve_preserve_existing(agent_id))
+    preserve_existing = run_sync(resolve_preserve_existing(agent_id))
     if not preserve_existing:
         reset_config_db()
 
@@ -752,10 +753,12 @@ def setup_demo_manage_config(
         await save_config(config, agent_id)
 
     logger.info(
-        "Seeding agent configs from defaults (no existing rows for agent=%r)",
+        "Seeding agent configs from defaults (agent=%r, preserve_gate=%s, mode=%s)",
         agent_id,
+        should_preserve_existing_configs(),
+        getattr(settings.storage, "mode", "local"),
     )
-    asyncio.run(_setup())
+    run_sync(_setup())
 
 
 # Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.

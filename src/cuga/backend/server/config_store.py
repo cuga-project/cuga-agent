@@ -15,6 +15,7 @@ Database Schema:
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
@@ -40,6 +41,23 @@ def _instance_id() -> str:
 
 def _tenant_id() -> str:
     return get_tenant_id()
+
+
+def run_sync(coro: Any) -> Any:
+    """Run an async config_store coroutine from sync CLI/bootstrap code.
+
+    Safe when no event loop is running (``asyncio.run``) and when one already is
+    (worker thread with its own loop), matching the pattern used elsewhere in
+    the codebase for sync wrappers around async storage.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def should_preserve_existing_configs() -> bool:
