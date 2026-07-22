@@ -17,6 +17,8 @@ src/cuga/backend/skills/number_theory_tools/
 .claude/settings.local.json
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
+src/frontend_workspaces/frontend/test-results/
+src/frontend_workspaces/frontend/playwright-report/
 /frontend/node_modules/
 experiment_results_*
 output_graphs

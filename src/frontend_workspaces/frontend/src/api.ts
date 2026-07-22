@@ -330,6 +330,28 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
+export interface SlashCommandInfo {
+  name: string;
+  kind: "skill";
+  description: string;
+  argument_hint: string | null;
+}
+
+export async function getCommands(): Promise<SlashCommandInfo[]> {
+  const response = await apiFetch("/api/commands");
+  if (!response.ok) {
+    throw new Error(`Failed to load slash commands: HTTP ${response.status}`);
+  }
+  const data = await response.json().catch(() => ({ commands: [] }));
+  const commands = Array.isArray(data?.commands) ? data.commands : [];
+  return commands.map((c: any) => ({
+    name: String(c?.name ?? ""),
+    kind: "skill" as const,
+    description: typeof c?.description === "string" ? c.description : "",
+    argument_hint: typeof c?.argument_hint === "string" ? c.argument_hint : null,
+  }));
+}
+
 export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {
   const params = new URLSearchParams();
   if (threadId) params.set("thread_id", threadId);
@@ -489,6 +511,30 @@ export function updateKnowledgeSettings(settings: Record<string, unknown>): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
+}
+
+// Per-conversation knowledge settings overrides (citations toggle).
+// Backed by GET/PATCH /api/knowledge/session/settings, keyed on the
+// X-Thread-ID header injected by knowledgeApiFetch.
+export async function getSessionKnowledgeSettings(
+  threadId: string
+): Promise<{ overrides: Record<string, unknown> }> {
+  const res = await knowledgeApiFetch("/api/knowledge/session/settings", { method: "GET" }, threadId);
+  if (!res.ok) throw new Error(`session settings: ${res.status}`);
+  return res.json();
+}
+
+export async function patchSessionKnowledgeSettings(
+  threadId: string,
+  patch: { citations_enabled?: boolean },
+): Promise<{ overrides: Record<string, unknown> }> {
+  const res = await knowledgeApiFetch(
+    "/api/knowledge/session/settings",
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) },
+    threadId,
+  );
+  if (!res.ok) throw new Error(`session settings patch: ${res.status}`);
+  return res.json();
 }
 
 // --- Documents (agent scope) ---

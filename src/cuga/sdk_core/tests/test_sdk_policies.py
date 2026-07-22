@@ -816,3 +816,147 @@ class TestSDKPolicyManagement:
         policy = await agent.policies.get(custom_id)
         assert policy is not None
         assert policy["id"] == custom_id
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_tool_guards_from_json_scopes_to_imported_policy_ids(tmp_path, monkeypatch):
+    import json
+
+    from cuga.backend.server import tool_guard_generation
+
+    agent = CugaAgent(tools=[send_email])
+
+    unrelated_policy_id = await agent.policies.add_tool_guide(
+        name="Existing Unrelated Guide",
+        content="This guide already exists and must not be generated.",
+        target_tools=["send_email"],
+        description="Existing unrelated guide",
+        policy_id="existing_unrelated_guide",
+    )
+    assert unrelated_policy_id == "existing_unrelated_guide"
+
+    policies_path = tmp_path / "policies.json"
+    policies_path.write_text(
+        json.dumps(
+            {
+                "enablePolicies": True,
+                "policies": [
+                    {
+                        "id": "imported_guide",
+                        "policy_type": "tool_guide",
+                        "name": "Imported Guide",
+                        "description": "Imported guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["send_email"],
+                        "guide_content": "Only send approved emails.",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured_policy_ids = []
+
+    async def fake_generate_tool_guards_for_policies(*, policy_system, policy_ids, generation_agent):
+        captured_policy_ids.extend(policy_ids)
+        return {
+            "status": "ok",
+            "generated": {
+                "imported_guide": {
+                    "status": "ok",
+                    "policy_id": "imported_guide",
+                    "results": [{"tool": "send_email", "status": "ok"}],
+                }
+            },
+            "skipped": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        tool_guard_generation,
+        "generate_tool_guards_for_policies",
+        fake_generate_tool_guards_for_policies,
+    )
+
+    result = await agent.policies.generate_tool_guards_from_json(str(policies_path))
+
+    assert captured_policy_ids == ["imported_guide"]
+    assert result["status"] == "ok"
+    assert result["import"]["count"] == 1
+    assert result["source_policy_ids"] == ["imported_guide"]
+    assert "existing_unrelated_guide" not in result["generated"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_tool_guards_from_json_clear_existing_replaces_storage(tmp_path, monkeypatch):
+    import json
+
+    from cuga.backend.server import tool_guard_generation
+
+    agent = CugaAgent(tools=[send_email])
+
+    await agent.policies.add_tool_guide(
+        name="Existing Guide",
+        content="This guide should be removed by clear_existing.",
+        target_tools=["send_email"],
+        description="Existing guide",
+        policy_id="existing_guide",
+    )
+
+    policies_path = tmp_path / "policies.json"
+    policies_path.write_text(
+        json.dumps(
+            {
+                "policies": [
+                    {
+                        "id": "replacement_guide",
+                        "policy_type": "tool_guide",
+                        "name": "Replacement Guide",
+                        "description": "Replacement guide",
+                        "triggers": [{"type": "always"}],
+                        "target_tools": ["send_email"],
+                        "guide_content": "Replacement content.",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_generate_tool_guards_for_policies(*, policy_system, policy_ids, generation_agent):
+        return {
+            "status": "ok",
+            "generated": {
+                "replacement_guide": {
+                    "status": "ok",
+                    "policy_id": "replacement_guide",
+                    "results": [{"tool": "send_email", "status": "ok"}],
+                }
+            },
+            "skipped": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        tool_guard_generation,
+        "generate_tool_guards_for_policies",
+        fake_generate_tool_guards_for_policies,
+    )
+
+    result = await agent.policies.generate_tool_guards_from_json(
+        str(policies_path),
+        clear_existing=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["source_policy_ids"] == ["replacement_guide"]
+    assert result["import"]["count"] == 1
+    assert result["generated"]["replacement_guide"]["status"] == "ok"
+    # Verify the old policy was cleared from storage by clear_existing=True.
+    # Access internal storage directly to avoid triggering a filesystem re-sync.
+    assert await agent._policy_system.storage.get_policy("existing_guide") is None

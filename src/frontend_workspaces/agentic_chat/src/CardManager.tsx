@@ -26,6 +26,11 @@ import { fetchStreamingData } from "./StreamingWorkflow";
 import ToolCallFlowDisplay from "./ToolReview";
 import PolicyBlockComponent from "./PolicyBlockComponent";
 import PolicyPlaybookComponent from "./PolicyPlaybookComponent";
+import { registerCiteElement, injectCitations, MessageSources, type MessageSource } from "./citations";
+
+// <cuga-cite> upgrades in light DOM after marked() output is injected via
+// dangerouslySetInnerHTML; register once at module scope.
+registerCiteElement();
 
 interface Step {
   id: string;
@@ -35,6 +40,22 @@ interface Step {
   isNew?: boolean;
   timestamp: number;
   completed?: boolean;
+}
+
+/**
+ * Citation sources for a step, re-parsed from the raw event content on every
+ * call. Steps re-render on expand/collapse, so sources must be recoverable
+ * from `step.content` (the raw Answer event envelope — same place `variables`
+ * comes from) rather than cached in module state.
+ */
+function parseStepSources(content: unknown): MessageSource[] {
+  try {
+    const parsed = typeof content === "string" ? JSON.parse(content) : content;
+    const sources = (parsed as { sources?: unknown } | null)?.sources;
+    return Array.isArray(sources) ? (sources as MessageSource[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 // Color constant for highlighting important information
@@ -395,6 +416,30 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
     });
     window.dispatchEvent(event);
   }, [globalVariables, variablesHistory]);
+
+  // Publish each Answer step's citation sources to App.tsx (same window
+  // CustomEvent bus as variablesUpdate) so chip clicks — which only carry
+  // `n` + the `msg` key — can be resolved to the right source set.
+  // renderStepContent is a plain function (no hooks), so the dispatch lives
+  // here, keyed on currentSteps and guarded by a per-step-id set to avoid
+  // dispatch storms on re-renders.
+  const dispatchedSourceStepsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (currentSteps.length === 0) {
+      dispatchedSourceStepsRef.current.clear();
+      return;
+    }
+    currentSteps.forEach((step) => {
+      if (step.title !== "Answer" && step.title !== "FinalAnswerAgent") return;
+      if (dispatchedSourceStepsRef.current.has(step.id)) return;
+      const sources = parseStepSources(step.content);
+      if (sources.length === 0) return;
+      dispatchedSourceStepsRef.current.add(step.id);
+      window.dispatchEvent(
+        new CustomEvent("cugaSourcesUpdate", { detail: { key: step.id, sources } })
+      );
+    });
+  }, [currentSteps]);
 
   // Toggle code preview expansion
   const toggleCodePreview = useCallback((stepId: string) => {
@@ -839,7 +884,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
               // Parse data if it's a JSON string
               let dataValue = parsedContent.data;
               let extractedPolicies: any[] = parsedContent.active_policies || [];
-              
+
               if (typeof dataValue === "string") {
                 try {
                   const parsedData = JSON.parse(dataValue);
@@ -885,7 +930,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
               // Only data, no variables - check if data is a policy JSON string
               let dataValue = parsedContent.data;
               let extractedPolicies: any[] = [];
-              
+
               if (typeof dataValue === "string") {
                 try {
                   const parsedData = JSON.parse(dataValue);
@@ -1155,30 +1200,35 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
           case "FinalAnswerAgent":
             if (parsedContent) {
               console.log("Answer/FinalAnswerAgent - parsedContent:", parsedContent);
-              
+
+              // Citation sources ride on the Answer event envelope; re-parse
+              // from the raw step content each render (survives expand/collapse
+              // re-renders — see parseStepSources).
+              const stepSources = parseStepSources(step.content);
+
               // Check if data field contains a policy object - if so, extract answer and policies
               let answerText = parsedContent.final_answer || (typeof parsedContent === "string" ? parsedContent : null);
               let activePolicies = parsedContent.active_policies || [];
-              
+
               if (parsedContent.data && typeof parsedContent.data === "object" && parsedContent.data.type === "policy") {
                 // Data is a policy object - extract policies and check for answer
                 const policyData = parsedContent.data;
                 activePolicies = [policyData];
-                
+
                 // For playbook, answer comes separately, but for other policies, content might be the answer
                 if (policyData.policy_type !== "playbook" && !answerText) {
                   answerText = policyData.content || policyData.metadata?.response_content || null;
                 }
               }
-              
+
               // Find playbook policy if any
               const playbookPolicy = activePolicies.find((policy: any) => policy.policy_type === "playbook");
-              
+
               // Extract playbook guide content
               let playbookGuideContent = "";
               if (playbookPolicy) {
-                playbookGuideContent = playbookPolicy.metadata?.playbook_content 
-                  || playbookPolicy.metadata?.playbook_guidance 
+                playbookGuideContent = playbookPolicy.metadata?.playbook_content
+                  || playbookPolicy.metadata?.playbook_guidance
                   || "";
                 if (!playbookGuideContent && playbookPolicy.content) {
                   const content = playbookPolicy.content;
@@ -1186,7 +1236,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                   playbookGuideContent = cleanedContent;
                 }
               }
-              
+
               // For Answer events with playbook policy, ALWAYS look for FinalAnswerAgent step to get the actual final answer
               // The FinalAnswerAgent's final_answer should take precedence over any other answer text
               // IMPORTANT: For playbook policies, the answer should NEVER be the playbook guide content
@@ -1235,7 +1285,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
 
               if (answerText) {
                 let renderedContent: string;
-                
+
                 if (typeof answerText === "string") {
                   // Check if content is in markdown HTML code block (```html ... ```)
                   const htmlCodeBlockMatch = answerText.match(/^```html\s*\n([\s\S]*?)\n```$/);
@@ -1246,8 +1296,12 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                     // Direct HTML content
                     renderedContent = answerText;
                   } else {
-                    // Regular markdown content
-                    renderedContent = marked(answerText) as string;
+                    // Regular markdown content — replace resolved [n] markers
+                    // with <cuga-cite> chips (marked passes unknown inline
+                    // HTML tags through untouched; step.id is the message key
+                    // stamped on each chip for click resolution).
+                    const withCites = injectCitations(answerText, stepSources, step.id);
+                    renderedContent = marked(withCites) as string;
                   }
                 } else {
                   renderedContent = marked(String(answerText)) as string;
@@ -1265,7 +1319,19 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                       }}
                       dangerouslySetInnerHTML={{ __html: renderedContent }}
                     />
-                    
+
+                    {/* Citation sources footer (App.tsx hosts the panel) */}
+                    {stepSources.length > 0 && (
+                      <MessageSources
+                        sources={stepSources}
+                        onOpen={(n) =>
+                          window.dispatchEvent(
+                            new CustomEvent("cugaOpenSources", { detail: { sources: stepSources, n } })
+                          )
+                        }
+                      />
+                    )}
+
                     {/* 2. Playbook guide content (collapsible if available) */}
                     {playbookGuideContent && (
                       <div style={{ marginTop: "20px", paddingTop: "20px", borderTop: "1px solid #e5e7eb" }}>
@@ -1316,7 +1382,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                         </details>
                       </div>
                     )}
-                    
+
                     {/* 3. Policy reasoning (all policies including playbook) */}
                     {activePolicies.length > 0 && (
                       <div style={{ marginTop: "20px", paddingTop: "20px", borderTop: "1px solid #e5e7eb" }}>
@@ -1331,7 +1397,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
 
                             // More subtle design for intent_guard policies
                             const isIntentGuard = policyType === "intent_guard";
-                            
+
                             const backgroundColor = isIntentGuard
                               ? "#f8fafc"
                               : isBlocked
@@ -1556,7 +1622,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                           </details>
                         </div>
                       )}
-                      
+
                       {/* Policy reasoning (all policies including playbook) */}
                       {activePolicies.length > 0 && (
                         <div style={{ marginTop: playbookGuideContent ? "20px" : "0", paddingTop: playbookGuideContent ? "20px" : "0", borderTop: playbookGuideContent ? "1px solid #e5e7eb" : "none" }}>
@@ -1570,7 +1636,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
                             if (!policyReasoning) return null;
 
                             const isIntentGuard = policyType === "intent_guard";
-                            
+
                             const backgroundColor = isIntentGuard
                               ? "#f8fafc"
                               : isBlocked
@@ -1890,13 +1956,13 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
         try {
           parsedContent = JSON.parse(step.content);
           const keys = Object.keys(parsedContent);
-          
+
           // Check if we have variables in the parsed content (matching renderStepContent logic)
           if (parsedContent.data !== undefined && parsedContent.variables) {
             // Parse data if it's a JSON string
             let dataValue = parsedContent.data;
             let extractedPolicies: any[] = parsedContent.active_policies || [];
-            
+
             if (typeof dataValue === "string") {
               try {
                 const parsedData = JSON.parse(dataValue);
@@ -1941,7 +2007,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
             // Only data, no variables - check if data is a policy JSON string
             let dataValue = parsedContent.data;
             let extractedPolicies: any[] = [];
-            
+
             if (typeof dataValue === "string") {
               try {
                 const parsedData = JSON.parse(dataValue);

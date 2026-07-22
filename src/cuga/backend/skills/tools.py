@@ -11,11 +11,15 @@ from cuga.backend.skills.registry import SkillRegistry
 
 class LoadSkillInput(BaseModel):
     name: str = Field(..., description="Skill id from <available_skills>")
+    args: str = Field(
+        "",
+        description="Optional arguments to substitute into the skill body ($ARGUMENTS, $1, named args)",
+    )
 
 
 def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
-    def load_skill_impl(name: str) -> str:
-        instructions = registry.load_skill(name)
+    def load_skill_impl(name: str, args: str = "") -> str:
+        instructions = registry.load_skill(name, args)
         # Print unconditionally: the code-agent's stdout capture is the only
         # guaranteed way these instructions reach the agent's context. If the
         # agent's own code discards the return value instead of printing it

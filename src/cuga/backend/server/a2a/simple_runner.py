@@ -191,7 +191,10 @@ class SimpleA2ARunner:
         - The ``data: {"name": ..., "data": ...}`` envelope used by tests.
 
         Returns ``(None, None)`` for frames we can't attribute to a named
-        event (e.g. the bare-data progress frames OutputFormat.DEFAULT emits).
+        event. Since ``StreamEvent.format()`` now emits a full SSE block for
+        every DEFAULT-mode event, this is purely defensive against
+        malformed/foreign frames — named intermediates are intentionally
+        forwarded as ``final=False`` progress (see ``run()``).
         """
         text = frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame)
         if not text or not text.strip():
@@ -218,7 +221,7 @@ class SimpleA2ARunner:
             if isinstance(obj, dict) and "name" in obj:
                 return obj.get("name", "unknown"), SimpleA2ARunner._payload_text(obj.get("data"))
 
-        # Bare-data progress frame: no name to dispatch on.
+        # Unattributable frame (no event name) — defensive drop.
         return None, None
 
     @staticmethod

@@ -26,6 +26,7 @@ import {
 } from "./carbonChatHelpers";
 
 import * as api from "../api";
+import { injectCitations, type MessageSource } from "agentic_chat/Citations";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
@@ -78,21 +79,28 @@ async function* parseCugaStream(response: Response): AsyncGenerator<CugaStreamEv
       
       for (const eventBlock of events) {
         if (!eventBlock.trim()) continue;
-        
+
         console.log("Raw event block:", JSON.stringify(eventBlock));
-        
+
+        // Per the SSE spec, every ``data:`` line in an event contributes one
+        // line to the event payload (joined by ``\n``). The previous version
+        // overwrote ``currentEvent.data`` on each line, which silently
+        // truncated multi-line responses to their last line.
+        const dataLines: string[] = [];
         const lines = eventBlock.split("\n");
         for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent.name = line.slice(7).trim();
-            console.log("  Parsed event name:", currentEvent.name);
-          } else if (line.startsWith("data: ")) {
-            currentEvent.data = line.slice(6); // Keep the data as-is (may be plain text or JSON)
-            console.log("  Parsed event data:", JSON.stringify(currentEvent.data));
+          if (line.startsWith("event:")) {
+            currentEvent.name = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            // Trim a single leading space (syntactic per the spec), preserve everything else.
+            const raw = line.slice(5);
+            dataLines.push(raw.startsWith(" ") ? raw.slice(1) : raw);
           }
         }
-        
-        // Yield complete event
+        if (dataLines.length > 0) {
+          currentEvent.data = dataLines.join("\n");
+        }
+
         if (currentEvent.name && currentEvent.data !== undefined) {
           console.log("Yielding complete event:", currentEvent);
           yield currentEvent as CugaStreamEvent;
@@ -563,6 +571,7 @@ export async function customSendMessage(
           console.log("Received Answer event, finalizing message...");
 
           let answerText = accumulatedText || "";
+          let answerSources: MessageSource[] = [];
           if (typeof event.data === "string") {
             const parsed = parseAnswerEventData(event.data, accumulatedText);
             if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
@@ -581,33 +590,58 @@ export async function customSendMessage(
               return;
             }
             answerText = parsed.answerText;
+            answerSources = parsed.sources as MessageSource[];
           } else if (!answerText) {
             answerText = event.data?.answer || JSON.stringify(event.data);
           }
 
           accumulatedText = answerText;
-          
+
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
-          
+
           console.log(`Finalizing with ${collectedSteps.length} reasoning steps`);
-          
+
+          // The final_response id doubles as the message key stamped on each
+          // <cuga-cite> chip so the host can resolve which message's sources a
+          // click belongs to (chips only carry `n`, which repeats per message).
           const answerCompleteItem = {
             response_type: MessageResponseTypes.TEXT,
-            text: accumulatedText,
+            text: injectCitations(accumulatedText, answerSources, responseID),
             streaming_metadata: { id: "text-stream" },
           };
-          
+
           instance.messaging.addMessageChunk({
             complete_item: answerCompleteItem,
             streaming_metadata: { response_id: responseID },
           });
 
+          const answerGenericItems: any[] = [answerCompleteItem];
+
+          if (answerSources.length > 0) {
+            const sourcesItem = {
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: "cuga_sources",
+                message_key: responseID,
+                sources: answerSources,
+              },
+              streaming_metadata: { id: "cuga-sources" },
+            };
+
+            instance.messaging.addMessageChunk({
+              complete_item: sourcesItem,
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+
+            answerGenericItems.push(sourcesItem);
+          }
+
           const finalResponse: StreamChunk = {
             final_response: {
               id: responseID,
-              output: { generic: [answerCompleteItem] },
+              output: { generic: answerGenericItems },
             },
           };
 

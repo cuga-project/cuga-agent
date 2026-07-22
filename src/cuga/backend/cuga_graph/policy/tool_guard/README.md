@@ -248,6 +248,49 @@ After this update, the provider runtime/cache is invalidated. The same existing 
 
 ---
 
+## Batch-generating guards from a JSON policy file
+
+The SDK can import a policy JSON file and generate ToolGuards for every eligible
+Tool Guide policy in that file:
+
+```python
+result = await agent.policies.generate_tool_guards_from_json(
+    "policies-export.json",
+)
+```
+
+By default, imported policies are merged into existing policy storage. Existing
+stored policies are not generated unless their IDs are also present in the JSON
+file.
+
+To replace existing policy storage before importing and generating:
+
+```python
+result = await agent.policies.generate_tool_guards_from_json(
+    "policies-export.json",
+    clear_existing=True,
+)
+```
+
+The result includes the import summary, source policy IDs, per-policy generation
+results, skipped policies, and batch-level errors:
+
+```python
+{
+    "status": "ok",
+    "import": {"count": 2, "enabled": True, "errors": []},
+    "source_policy_ids": ["tool_guide_one", "tool_guide_two"],
+    "generated": {...},
+    "skipped": [],
+    "errors": [],
+}
+```
+
+Policies are skipped when they are not Tool Guides, are disabled, are missing
+after import, or target wildcard tools instead of concrete tool names.
+
+---
+
 ## Invoking the same agent
 
 ```python

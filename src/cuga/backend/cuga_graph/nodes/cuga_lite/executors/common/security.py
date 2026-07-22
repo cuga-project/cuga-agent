@@ -1,12 +1,101 @@
 import ast
 import re
-from typing import List, Set, Tuple
+from typing import FrozenSet, Optional, Set
 
 from .benchmark_mode import is_relaxed_execution
 
 
 class CodeSyntaxError(ValueError):
     """Raised when submitted code fails Python syntax validation."""
+
+
+class _SecurityAstVisitor(ast.NodeVisitor):
+    """Reject dangerous imports, calls, and attribute access via AST only."""
+
+    def __init__(
+        self,
+        *,
+        forbidden_modules: FrozenSet[str],
+        forbidden_calls: FrozenSet[str],
+        forbidden_attrs: FrozenSet[str],
+        strict: bool,
+    ) -> None:
+        self.forbidden_modules = forbidden_modules
+        self.forbidden_calls = forbidden_calls
+        self.forbidden_attrs = forbidden_attrs
+        self.strict = strict
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._reject_module(alias.name.split('.')[0])
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module:
+            self._reject_module(node.module.split('.')[0])
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if self.strict:
+            name = self._call_name(node.func)
+            if name in self.forbidden_calls:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"dangerous call '{name}' in wrapped code"
+                )
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if self.strict:
+            attr = node.attr
+            if attr.startswith('__') and attr.endswith('__'):
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"dunder attribute '{attr}' in wrapped code"
+                )
+            if attr in self.forbidden_attrs:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"forbidden attribute '{attr}' in wrapped code"
+                )
+            root = self._root_name(node.value)
+            if root in self.forbidden_modules:
+                raise PermissionError(
+                    f"Security violation: Suspicious pattern detected - "
+                    f"forbidden module '{root}' in wrapped code"
+                )
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if self.strict and isinstance(node.ctx, ast.Load) and node.id in self.forbidden_modules:
+            raise PermissionError(
+                f"Security violation: Suspicious pattern detected - "
+                f"forbidden module '{node.id}' in wrapped code"
+            )
+        self.generic_visit(node)
+
+    def _reject_module(self, module_name: str) -> None:
+        if module_name in self.forbidden_modules:
+            raise PermissionError(
+                f"Security violation: Suspicious pattern detected - "
+                f"forbidden module '{module_name}' in wrapped code"
+            )
+
+    @staticmethod
+    def _call_name(func: ast.AST) -> Optional[str]:
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return None
+
+    @staticmethod
+    def _root_name(node: ast.AST) -> Optional[str]:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        if isinstance(node, ast.Name):
+            return node.id
+        return None
 
 
 class SecurityValidator:
@@ -46,58 +135,57 @@ class SecurityValidator:
         'compile',
     }
 
-    SUSPICIOUS_PATTERNS: List[Tuple[str, str]] = [
-        (r'__', 'dunder method/attribute access'),
-        (r'(?<!\w)os\.', 'os module method call'),
-        (r'\.os\.', 'os module access via attribute'),
-        (r'\.os\b', 'os attribute access'),
-        (r'(?<!\w)sys\.', 'sys module method call'),
-        (r'\.sys\.', 'sys module access via attribute'),
-        (r'\.sys\b', 'sys attribute access'),
-        (r'(?<!\w)subprocess\.', 'subprocess module method call'),
-        (r'\.subprocess\.', 'subprocess module access via attribute'),
-        (r'\.subprocess\b', 'subprocess attribute access'),
-        (r'\.env\b', 'environment variable access'),
-        (r'__import__', 'dangerous builtin function'),
-        (r'__builtins__', 'builtins access'),
-        (r'__globals__', 'globals access'),
-        (r'__dict__', 'dictionary access'),
-        (r'__subclasses__', 'class hierarchy traversal'),
-        (r'__subclass__', 'class hierarchy traversal'),
-        (r'__bases__', 'class hierarchy traversal'),
-        (r'__mro__', 'class hierarchy traversal'),
-        (r'__class__', 'class introspection'),
-        (r'__self__', 'method binding introspection'),
-        (r'setattr\s*\(', 'attribute modification bypass'),
-        (r'delattr\s*\(', 'attribute deletion bypass'),
-        (r'hasattr\s*\(', 'attribute check'),
-        (r'__traceback__', 'stack trace inspection'),
-        (r'\.f_locals', 'stack frame local vars'),
-        (r'\.f_globals', 'stack frame global vars'),
-        (r'\.f_back', 'stack frame traversal'),
-        (r'\.f_code', 'code object inspection'),
-        (r'sys\._getframe', 'direct frame access'),
-        (r'eval\s*\(', 'eval function call'),
-        (r'exec\s*\(', 'exec function call'),
-        (r'compile\s*\(', 'compile function call'),
-        (r'breakpoint\s*\(', 'debugger invocation'),
-        (r'pdb\.set_trace', 'debugger invocation'),
-        (r'open\s*\(', 'file access'),
-        (r'shutil\.', 'high-level file operations'),
-        (r'glob\.', 'file pattern matching'),
-        (r'pathlib\.', 'path object manipulation'),
-        (r'pickle\.', 'serialization vulnerability'),
-        (r'cPickle\.', 'serialization vulnerability'),
-        (r'marshal\.', 'serialization vulnerability'),
-        (r'shelve\.', 'serialization vulnerability'),
-        (r'ctypes', 'foreign function interface (memory access)'),
-        (r'socket', 'network access'),
-        (r'urllib', 'network access'),
-        (r'requests', 'network access'),
-        (r'http\.client', 'network access'),
-        (r'\\x[0-9a-fA-F]{2}', 'hex encoded string (potential obfuscation)'),
-        (r'\\u[0-9a-fA-F]{4}', 'unicode encoded string (potential obfuscation)'),
-    ]
+    # Modules blocked by AST import / name / attribute checks.
+    FORBIDDEN_MODULES: FrozenSet[str] = frozenset(
+        {
+            'os',
+            'sys',
+            'subprocess',
+            'pathlib',
+            'shutil',
+            'glob',
+            'importlib',
+            'requests',
+            'socket',
+            'urllib',
+            'http',
+            'ctypes',
+            'pickle',
+            'cPickle',
+            'marshal',
+            'shelve',
+            'pdb',
+            'builtins',
+        }
+    )
+
+    # Lighter CodeAgent check: only these module imports.
+    DANGEROUS_IMPORT_MODULES: FrozenSet[str] = frozenset({'os', 'sys', 'subprocess', 'pathlib', 'shutil'})
+
+    FORBIDDEN_CALLS: FrozenSet[str] = frozenset(
+        {
+            'open',
+            'eval',
+            'exec',
+            'compile',
+            '__import__',
+            'setattr',
+            'delattr',
+            'hasattr',
+            'getattr',
+            'breakpoint',
+        }
+    )
+
+    FORBIDDEN_ATTRS: FrozenSet[str] = frozenset(
+        {
+            'env',
+            'f_locals',
+            'f_globals',
+            'f_back',
+            'f_code',
+        }
+    )
 
     @staticmethod
     def format_syntax_error(code: str, exc: SyntaxError) -> str:
@@ -177,6 +265,27 @@ class SecurityValidator:
             raise ImportError(f"Import of '{module_name}' is not allowed in restricted execution context")
 
     @staticmethod
+    def _parse_for_security(code: str) -> ast.AST:
+        try:
+            return ast.parse(code)
+        except SyntaxError as exc:
+            raise CodeSyntaxError(SecurityValidator.format_syntax_error(code, exc)) from exc
+
+    @staticmethod
+    def _run_ast_security(code: str, *, strict: bool) -> None:
+        tree = SecurityValidator._parse_for_security(code)
+        forbidden_modules = (
+            SecurityValidator.FORBIDDEN_MODULES if strict else SecurityValidator.DANGEROUS_IMPORT_MODULES
+        )
+        visitor = _SecurityAstVisitor(
+            forbidden_modules=forbidden_modules,
+            forbidden_calls=SecurityValidator.FORBIDDEN_CALLS,
+            forbidden_attrs=SecurityValidator.FORBIDDEN_ATTRS,
+            strict=strict,
+        )
+        visitor.visit(tree)
+
+    @staticmethod
     def validate_dangerous_modules(wrapped_code: str) -> None:
         """Validate wrapped code for dangerous module imports only (lighter validation).
 
@@ -193,19 +302,13 @@ class SecurityValidator:
         if is_relaxed_execution():
             return
 
-        for dangerous_module in ['os', 'sys', 'subprocess', 'pathlib', 'shutil']:
-            if re.search(rf'\bimport\s+{dangerous_module}\b', wrapped_code) or re.search(
-                rf'\bfrom\s+{dangerous_module}\b', wrapped_code
-            ):
-                raise PermissionError(
-                    f"Security violation: Dangerous module '{dangerous_module}' detected in wrapped code"
-                )
+        SecurityValidator._run_ast_security(wrapped_code, strict=False)
 
     @staticmethod
     def validate_wrapped_code(wrapped_code: str) -> None:
         """Validate wrapped code for dangerous imports and suspicious patterns (strict validation).
 
-        This is more restrictive - checks both dangerous modules and suspicious patterns.
+        Uses AST inspection so string/bytes literals (e.g. tool arguments) are ignored.
         Suitable for interactive cuga_lite mode where user code needs stricter validation.
 
         Args:
@@ -217,20 +320,7 @@ class SecurityValidator:
         if is_relaxed_execution():
             return
 
-        SecurityValidator.validate_dangerous_modules(wrapped_code)
-
-        code_without_comments = '\n'.join(line.split('#')[0] for line in wrapped_code.split('\n'))
-
-        for pattern, description in SecurityValidator.SUSPICIOUS_PATTERNS:
-            target_code = (
-                code_without_comments
-                if description in ('eval function call', 'exec function call', 'compile function call')
-                else wrapped_code
-            )
-            if re.search(pattern, target_code):
-                raise PermissionError(
-                    f"Security violation: Suspicious pattern detected - {description} in wrapped code"
-                )
+        SecurityValidator._run_ast_security(wrapped_code, strict=True)
 
     @staticmethod
     def filter_safe_locals(locals_dict: dict) -> dict:
