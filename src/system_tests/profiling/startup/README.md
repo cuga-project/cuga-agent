@@ -9,9 +9,6 @@ timestamped JSON files under `results/`.
 > This tool measures *cold-start* time (import + construction + readiness).
 > The two have no shared code or configuration.
 
-Design reference: `docs/superpowers/specs/2026-07-14-cuga-startup-optimization-design.md`
-(issue #486)
-
 ---
 
 ## Quick Start

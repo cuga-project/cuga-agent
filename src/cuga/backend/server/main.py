@@ -810,6 +810,10 @@ async def lifespan(app: FastAPI):
     # Start the save_reuse server if configured
 
     await manage_save_reuse_server()
+
+    # Deferred imports — kept here intentionally to avoid loading the browser stack
+    # and graph modules before lifespan starts.  Moving these to module-top would
+    # re-introduce the startup latency that was removed by this optimisation.
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
     from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (

@@ -23,7 +23,13 @@ from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 
 def _get_reasoning_chat_openai():
-    """Lazy-load and return the ReasoningChatOpenAI class (cached after first call)."""
+    """Lazy-load and return the ReasoningChatOpenAI class (cached after first call).
+
+    No lock is needed: all callers run on the asyncio event loop (no OS threads
+    reach ``_create_llm_instance``). The cooperative scheduler cannot context-switch
+    in the middle of the synchronous ``class`` statement, so the double-checked
+    cache read/write is safe.
+    """
     if _get_reasoning_chat_openai._cls is not None:
         return _get_reasoning_chat_openai._cls
 
@@ -64,7 +70,11 @@ _get_reasoning_chat_openai._cls = None  # type: ignore[attr-defined]
 
 
 def _get_reasoning_chat_litellm():
-    """Lazy-load and return the ReasoningChatLiteLLM class, or None if langchain_litellm is missing."""
+    """Lazy-load and return the ReasoningChatLiteLLM class, or None if langchain_litellm is missing.
+
+    No lock is needed: same reasoning as ``_get_reasoning_chat_openai`` — all callers
+    are on the asyncio event loop with no OS-thread exposure to this path.
+    """
     if _get_reasoning_chat_litellm._loaded:
         return _get_reasoning_chat_litellm._cls
 
