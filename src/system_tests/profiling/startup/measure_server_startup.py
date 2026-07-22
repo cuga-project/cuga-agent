@@ -102,7 +102,7 @@ def measure() -> float | None:
         "uvicorn",
         "cuga.backend.server.main:app",
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
         str(port),
         # Note: uvicorn does not have a --no-reload flag; omitting --reload
