@@ -257,3 +257,43 @@ def test_list_documents_rejects_disabled_agent_scope():
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Agent-level knowledge is disabled for this agent"
+
+
+class _FileEngine:
+    """Minimal engine for the /documents/file route: returns a real on-disk file
+    whose NAME is whatever was requested, so a non-ASCII name reaches the header."""
+
+    def __init__(self, tmp_path):
+        self._config = SimpleNamespace(enabled=True)
+        self._tmp = tmp_path
+
+    def get_document_file_path(self, collection: str, filename: str):
+        p = self._tmp / filename
+        p.write_bytes(b"%PDF-1.4\n%test\n")
+        return p
+
+
+def test_get_document_file_supports_non_ascii_filename(tmp_path):
+    """Regression: a Hebrew (or any non-latin-1) filename must not 500. Starlette
+    latin-1-encodes HTTP headers, so Content-Disposition must be RFC 5987 encoded
+    (filename*=utf-8''…) — the hand-rolled `filename="<raw>"` header crashed."""
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity_override
+    app.state.app_state = SimpleNamespace(
+        knowledge_engine=_FileEngine(tmp_path),
+        knowledge_provider=None,
+    )
+    client = TestClient(app)
+
+    fname = "אישור מלגה - מנות (1).PDF"  # Hebrew + spaces + parens, from the bug report
+    resp = client.get(
+        "/api/knowledge/documents/file",
+        params={"scope": "agent", "filename": fname},
+    )
+
+    assert resp.status_code == 200, resp.text
+    cd = resp.headers["content-disposition"]
+    assert cd.startswith("inline")
+    assert "filename*=utf-8''" in cd  # RFC 5987 encoding for the non-ASCII name
+    cd.encode("latin-1")  # the header must be latin-1 safe (raised pre-fix)

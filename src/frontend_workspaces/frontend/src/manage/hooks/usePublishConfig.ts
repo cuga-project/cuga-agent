@@ -207,10 +207,11 @@ export function usePublishConfig(opts: {
             typeof knowledgeConfig.embedding_provider === "string"
               ? knowledgeConfig.embedding_provider
               : "fastembed",
-          model:
-            typeof knowledgeConfig.embedding_model === "string" && knowledgeConfig.embedding_model
-              ? knowledgeConfig.embedding_model
-              : "(default)",
+          // Store the RAW model ("" = use provider default), not the "(default)"
+          // display string — isIndexConfigEquivalent treats "" as "provider
+          // default", so persisting a literal "(default)" would break the
+          // Live-pill / Re-index divergence check. Rendering adds the label.
+          model: typeof knowledgeConfig.embedding_model === "string" ? knowledgeConfig.embedding_model : "",
           version: typeof data.version === "number" ? data.version : null,
           chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
           chunk_overlap:

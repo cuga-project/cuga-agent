@@ -583,17 +583,41 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         _adopt_coll = f"{_adopt_base}_{_adopt_hash}"
                         _existing_docs = await live_engine.list_documents(_adopt_coll)
                         if _existing_docs:
-                            live_state.knowledge_config_hash = _adopt_hash
-                            logger.info(
-                                f"Adopted existing collection {_adopt_coll} ({len(_existing_docs)} docs) "
-                                f"as active after config apply (hash {_cur_hash} -> {_adopt_hash}); "
-                                f"no reindex needed."
-                            )
-                            await persist_active_vector_config(agent_id, live_engine, _adopt_hash)
-                            if isinstance(live_apply_result, dict):
-                                live_apply_result["reindex_recommended"] = False
-                                live_apply_result["adopted_existing_collection"] = True
-                                live_apply_result["active_document_count"] = len(_existing_docs)
+                            # Only adopt (silently repoint retrieval at the target) when
+                            # the CURRENT KB is EMPTY — the import / fresh-agent case,
+                            # where the target holds the config's documents and there is
+                            # nothing to lose. When the current KB is NON-EMPTY, a draft
+                            # embedder / chunk / metric change must NOT silently repoint
+                            # retrieval at a pre-existing collection: it may hold stale /
+                            # partial / older content, and the metadata schema has no
+                            # content hash to prove it matches the user's CURRENT docs.
+                            # Leave the pointer on the current collection (retrieval stays
+                            # correct — each collection carries its OWN pinned embedder,
+                            # _resolve_embeddings_for_collection) and require an explicit
+                            # Re-index, which rebuilds the current documents under the new
+                            # config and flips the pointer. Matches the user model:
+                            # changing the embedder requires a re-index.
+                            _cur_coll = f"{_adopt_base}_{_cur_hash}" if _cur_hash else _adopt_base
+                            _current_docs = await live_engine.list_documents(_cur_coll)
+                            if not _current_docs:
+                                live_state.knowledge_config_hash = _adopt_hash
+                                logger.info(
+                                    f"Adopted existing collection {_adopt_coll} ({len(_existing_docs)} docs) "
+                                    f"as active after config apply on an EMPTY current KB "
+                                    f"(hash {_cur_hash} -> {_adopt_hash}); no reindex needed."
+                                )
+                                await persist_active_vector_config(agent_id, live_engine, _adopt_hash)
+                                if isinstance(live_apply_result, dict):
+                                    live_apply_result["reindex_recommended"] = False
+                                    live_apply_result["adopted_existing_collection"] = True
+                                    live_apply_result["active_document_count"] = len(_existing_docs)
+                            else:
+                                logger.info(
+                                    f"Not adopting {_adopt_coll}: current KB has "
+                                    f"{len(_current_docs)} document(s) — an embedder/config "
+                                    f"change requires a Re-index to rebuild them under the new "
+                                    f"config (hash {_cur_hash} -> {_adopt_hash})."
+                                )
             except Exception as _adopt_err:  # noqa: BLE001 — never break the PATCH
                 logger.warning(f"Adopt-existing-collection check failed (non-fatal): {_adopt_err}")
 
