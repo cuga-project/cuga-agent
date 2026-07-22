@@ -198,6 +198,38 @@ def create_call_model_node(
 
         adapter.on_response_processed(state, code, content)
 
+        # ── Repetition guard (issue #386) ──────────────────────────────────
+        # When the model emits the same non-code content two turns in a row
+        # (byte-identical after whitespace strip), inject a stronger prompt
+        # on the first repeat; on any subsequent identical repeat, terminate
+        # rather than burn to the step limit.  Tracked via metadata so the
+        # signal survives across turns without touching the state schema.
+        _meta_snapshot = adapter.get_metadata(state) or {}
+        _prev_raw = _meta_snapshot.get("_last_raw_response") if isinstance(_meta_snapshot, dict) else None
+        _prev_repeat_count = int((_meta_snapshot or {}).get("_repeat_count") or 0)
+        _current_raw = (content or "").strip()
+        _repetition_correction: Optional[str] = None
+        _repetition_terminate = False
+
+        if code:
+            # Productive turn — reset the tracker.
+            _new_last_raw: Optional[str] = None
+            _new_repeat_count = 0
+        elif _current_raw and _current_raw == _prev_raw:
+            _new_last_raw = _current_raw
+            _new_repeat_count = _prev_repeat_count + 1
+            if _new_repeat_count >= 2:
+                _repetition_terminate = True
+            else:
+                _repetition_correction = (
+                    "Your previous response was not extractable as a Python code block. "
+                    "Wrap your next action in ```python ... ```. "
+                    "Do not repeat the previous response verbatim."
+                )
+        else:
+            _new_last_raw = _current_raw or None
+            _new_repeat_count = 0
+
         # ── Build final message list + step count ──────────────────────────
         final_messages: list = modified_messages + [AIMessage(content=content)]
         new_step_count: int = state.step_count + 1
@@ -223,9 +255,38 @@ def create_call_model_node(
                 return approval_command
 
         # ── Metadata update ────────────────────────────────────────────────
-        meta_update = {
-            adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
-        }
+        _base_meta = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
+        _meta_value: dict = {**_base_meta}
+        if _new_last_raw is None:
+            _meta_value.pop("_last_raw_response", None)
+        else:
+            _meta_value["_last_raw_response"] = _new_last_raw
+        _meta_value["_repeat_count"] = _new_repeat_count
+        if _repetition_terminate:
+            _meta_value["failure_category"] = "repetition_loop"
+        meta_update = {adapter.metadata_key: _meta_value}
+
+        # ── Repetition-loop termination ────────────────────────────────────
+        if _repetition_terminate:
+            logger.warning(
+                "{}: repetition_loop — {} identical non-code responses; terminating early",
+                adapter.sender_name,
+                _new_repeat_count + 1,
+            )
+            return Command(
+                goto=END,
+                update={
+                    adapter.messages_key: final_messages,
+                    "script": None,
+                    "final_answer": (
+                        "[repetition_loop] Model produced identical non-code responses; "
+                        "terminating early to avoid burning to the step limit."
+                    ),
+                    "execution_complete": True,
+                    "step_count": new_step_count,
+                    **meta_update,
+                },
+            )
 
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
@@ -242,10 +303,11 @@ def create_call_model_node(
         should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
         if should_continue:
             logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
+            _continue_content = _repetition_correction or "continue"
             return Command(
                 goto="call_model",
                 update={
-                    adapter.messages_key: final_messages + [HumanMessage(content="continue")],
+                    adapter.messages_key: final_messages + [HumanMessage(content=_continue_content)],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,

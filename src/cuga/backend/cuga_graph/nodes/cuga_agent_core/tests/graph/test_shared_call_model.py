@@ -353,3 +353,94 @@ async def test_empty_content_falls_back_to_execution_output(mock_summarize):
 
     assert result.goto == END
     assert result.update["final_answer"] == "avg=200\ntotal=600"
+
+
+# ── 9. Repetition guard (issue #386) ──────────────────────────────────────
+#
+# When the model produces the same non-code content two turns in a row
+# byte-identically, the shared call_model:
+#   (a) injects a stronger correction on the FIRST identical repeat, and
+#   (b) terminates the graph on the SECOND identical repeat with a distinct
+#       ``failure_category = "repetition_loop"`` rather than burning to the
+#       step limit.
+#
+# Both tests seed ``cuga_lite_metadata`` to simulate what would already be
+# tracked from the previous turn, then invoke call_model once and assert on
+# the routing / correction that comes out.
+
+
+_REPEATED_JSON = '{"query": "search emails", "app_name": "gmail"}'
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_repetition_guard_terminates_after_second_identical_repeat(mock_summarize):
+    """After ``_repeat_count == 1`` in metadata and the model returns the same
+    non-code content again, call_model must terminate with the
+    ``repetition_loop`` failure category (rather than loop or exceed step limit)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _AutoContinueAdapter()  # would loop back if the guard didn't fire
+    state = _make_state(
+        metadata={
+            "_last_raw_response": _REPEATED_JSON,
+            "_repeat_count": 1,
+        }
+    )
+    model = _mock_model(_REPEATED_JSON)  # identical non-code content again
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert isinstance(result, Command)
+    assert result.goto == END, "Expected termination, not loop-back to call_model"
+    assert result.update["execution_complete"] is True
+    assert "[repetition_loop]" in result.update["final_answer"]
+    meta_written = result.update.get("cuga_lite_metadata") or {}
+    assert meta_written.get("failure_category") == "repetition_loop"
+    assert meta_written.get("_repeat_count") == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_repetition_guard_injects_correction_on_first_repeat(mock_summarize):
+    """After ``_repeat_count == 0`` in metadata and the model returns the same
+    non-code content once more, call_model must loop back with a correction
+    prompt (instead of the plain "continue" message) so the model gets a
+    chance to break the loop before termination on the next turn."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _AutoContinueAdapter()
+    state = _make_state(
+        metadata={
+            "_last_raw_response": _REPEATED_JSON,
+            "_repeat_count": 0,
+        }
+    )
+    model = _mock_model(_REPEATED_JSON)
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert isinstance(result, Command)
+    assert result.goto == "call_model", "First identical repeat should still loop back (with correction)"
+    msgs = result.update["chat_messages"]
+    injected = msgs[-1].content
+    assert injected != "continue", "Correction was expected on the first identical repeat"
+    assert "python code block" in injected.lower()
+    assert "not repeat" in injected.lower()
+    # And the metadata carries the tracking forward so the next turn can terminate.
+    meta_written = result.update.get("cuga_lite_metadata") or {}
+    assert meta_written.get("_repeat_count") == 1
+    assert meta_written.get("_last_raw_response") == _REPEATED_JSON
+    assert "failure_category" not in meta_written
