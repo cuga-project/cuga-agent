@@ -2501,6 +2501,7 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
+            from langchain_core.messages import HumanMessage
             # If dispatch resolved a skill, soft-dispatch: the planner input
             # becomes the translated suggestion ("use the skill named '<name>'
             # to: <args>") and the planner decides to call ``load_skill``
