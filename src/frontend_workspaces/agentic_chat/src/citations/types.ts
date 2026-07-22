@@ -32,8 +32,12 @@ export function pageLabel(source: Pick<MessageSource, 'filename' | 'page'>): str
  * look like a bug. Better to open at the top than to land confidently wrong.
  */
 export function pageFragment(source: Pick<MessageSource, 'filename' | 'page'>): string {
-  if (typeof source.page !== 'number' || source.page < 1) return '';
-  return source.filename.toLowerCase().endsWith('.pdf') ? `#page=${source.page}` : '';
+  const { page } = source;
+  // Only a real, positive integer page produces a fragment. typeof + isInteger
+  // rejects non-numbers, NaN, ±Infinity, and fractionals, so we never emit
+  // "#page=NaN" / "#page=2.5" into a URL that a PDF viewer would choke on.
+  if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) return '';
+  return source.filename.toLowerCase().endsWith('.pdf') ? `#page=${page}` : '';
 }
 
 export function scopeLabel(scope: string): string {

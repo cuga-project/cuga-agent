@@ -30,6 +30,13 @@ describe('pageFragment', () => {
     expect(pageFragment({ filename: 'a.pdf', page: -1 })).toBe('');
   });
 
+  it.each([NaN, Infinity, -Infinity, 2.5, 0.9])(
+    'rejects the malformed page value %p (no #page=NaN / #page=2.5 in a URL)',
+    (page) => {
+      expect(pageFragment({ filename: 'a.pdf', page })).toBe('');
+    },
+  );
+
   it('never emits a fragment a viewer would choke on', () => {
     // Guards the concatenation site: anything non-empty must be a clean
     // "#page=<positive int>" so `blobUrl + fragment` is always a valid URL.
