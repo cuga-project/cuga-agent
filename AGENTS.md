@@ -24,3 +24,7 @@ When creating a new GitHub issue or pull request, use the AI agent commands docu
 - `/cuga-create-pr` — validate local state, pick the right PR template, and open the PR via `gh`
 
 These commands live under `.cursor/commands/`, `.claude/commands/`, and `.bob/commands/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
+
+## Remote sandbox integrations
+
+Route shell, filesystem tools, workspace tree/upload/read/download, conversation deletion, and server shutdown through the same backend. Conversation deletion and shutdown must terminate retained remote sandboxes.

@@ -15,6 +15,7 @@ from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
+from .tenki import TenkiSandboxExecutor
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
@@ -67,6 +68,7 @@ class CodeExecutor:
     _e2b_executor: RemoteExecutor = None
     _docker_executor: RemoteExecutor = None
     _opensandbox_executor: RemoteExecutor = None
+    _tenki_executor: TenkiSandboxExecutor = None
     _native_executor: NativeSandboxExecutor = None
 
     @classmethod
@@ -98,6 +100,12 @@ class CodeExecutor:
         if cls._opensandbox_executor is None:
             cls._opensandbox_executor = OpenSandboxExecutor()
         return cls._opensandbox_executor
+
+    @classmethod
+    def _get_tenki_executor(cls) -> TenkiSandboxExecutor:
+        if cls._tenki_executor is None:
+            cls._tenki_executor = TenkiSandboxExecutor()
+        return cls._tenki_executor
 
     @classmethod
     def _get_native_executor(cls) -> NativeSandboxExecutor:

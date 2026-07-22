@@ -20,16 +20,15 @@ _LEGACY_DISPLAY_ROOTS = {"tmp", "cuga_workspace"}  # kept for backward-compat pa
 
 
 def workspace_tree_is_sandbox_backed() -> bool:
-    """True when workspace APIs should use the OpenSandbox SDK.
+    """True when workspace APIs should use a remote sandbox SDK.
 
-    ``opensandbox_sandbox`` alone is not enough: when ``sandbox_mode`` is
-    ``native`` or ``local``, files live on the host even if the OpenSandbox
-    flag is set for other features.
+    Tenki is selected directly by ``sandbox_mode``. OpenSandbox additionally
+    retains its legacy feature flag gate.
     """
-    if not bool(getattr(settings.advanced_features, "opensandbox_sandbox", False)):
-        return False
     mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
-    return mode not in ("native", "local")
+    if mode == "tenki":
+        return bool(getattr(settings.advanced_features, "enable_shell_tool", False))
+    return mode == "opensandbox" and bool(getattr(settings.advanced_features, "opensandbox_sandbox", False))
 
 
 def workspace_tree_is_native_backed() -> bool:
@@ -140,6 +139,33 @@ async def _find_paths(commands: Any, type_flag: str) -> list[str]:
 
 async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    if mode == "tenki":
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.tenki.tenki_executor import (
+            REMOTE_WORKSPACE_ROOT,
+        )
+
+        sandbox = await CodeExecutor._get_tenki_executor()._get_or_create_sandbox(thread_id)
+
+        async def find_paths(type_flag: str) -> list[str]:
+            root = shlex.quote(REMOTE_WORKSPACE_ROOT)
+            result = await sandbox.exec(
+                "bash",
+                "-c",
+                f"find {root} -type {type_flag} 2>/dev/null | sort",
+                timeout=30,
+                check=True,
+            )
+            return [line.strip() for line in result.stdout_text.splitlines() if line.strip()]
+
+        dir_lines = await find_paths("d")
+        file_lines = await find_paths("f")
+        return sandbox_paths_to_tree(
+            dir_lines,
+            file_lines,
+            sandbox_root=REMOTE_WORKSPACE_ROOT,
+        )
 
     executor = CodeExecutor._get_opensandbox_executor()
     interpreter = await executor.get_interpreter_for_thread(thread_id)
@@ -298,6 +324,17 @@ async def read_sandbox_workspace_bytes(thread_id: Optional[str], path: str) -> t
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
     sandbox_path = public_path_to_sandbox_abs(path)
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    if mode == "tenki":
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.tenki import (
+            TenkiRemoteSandboxBackend,
+        )
+
+        backend = TenkiRemoteSandboxBackend(CodeExecutor._get_tenki_executor(), thread_id)
+        remote_path = backend._remote(sandbox_path)
+        data = await (await backend._sandbox()).fs.read_bytes(remote_path)
+        return data, remote_path.rsplit("/", 1)[-1]
+
     executor = CodeExecutor._get_opensandbox_executor()
     interpreter = await executor.get_interpreter_for_thread(thread_id)
     data = await interpreter.sandbox.files.read_bytes(sandbox_path)
@@ -311,6 +348,22 @@ async def sandbox_text_preview(
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
     sandbox_path = public_path_to_sandbox_abs(api_path)
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    if mode == "tenki":
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.tenki import (
+            TenkiRemoteSandboxBackend,
+        )
+
+        backend = TenkiRemoteSandboxBackend(CodeExecutor._get_tenki_executor(), thread_id)
+        remote_path = backend._remote(sandbox_path)
+        sandbox = await backend._sandbox()
+        info = await sandbox.fs.stat(remote_path)
+        if info.is_dir:
+            raise IsADirectoryError(remote_path)
+        if int(info.size) > max_size:
+            raise OSError("file too large")
+        return (await sandbox.fs.read_bytes(remote_path)).decode("utf-8")
+
     executor = CodeExecutor._get_opensandbox_executor()
     interpreter = await executor.get_interpreter_for_thread(thread_id)
     infos = await interpreter.sandbox.files.get_file_info([sandbox_path])

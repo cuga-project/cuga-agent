@@ -78,7 +78,7 @@ def _apply_demo_skills_env() -> None:
     os.environ["DYNACONF_ADVANCED_FEATURES__REFLECTION_ENABLED"] = "true"
 
     sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
-    if sandbox_mode in ("native", "local"):
+    if sandbox_mode in ("native", "local", "tenki"):
         os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE"] = sandbox_mode
         os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "false"
     else:
@@ -630,7 +630,7 @@ def callback(
     This tool helps you control various components of the Cuga ecosystem:
 
     - demo: Both registry and demo agent (runs directly)
-    - demo_skills: Like demo; enables skills + shell tools; exits if OpenSandbox is unreachable
+    - demo_skills: Like demo; enables skills + configured sandbox shell tools
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - travel_agent: Corporate travel planning demo with multi-agent supervisor
@@ -639,7 +639,7 @@ def callback(
     - appworld: AppWorld environment and API servers (runs directly)
     Examples:
       cuga start demo           # Start both registry and demo agent directly
-      cuga start demo_skills    # Skills + OpenSandbox shell tools; stops if sandbox server is unreachable
+      cuga start demo_skills    # Skills + configured sandbox shell tools
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start travel_agent   # Start Travel Agent demo (flights, hotels, compliance, approval)
@@ -1099,7 +1099,7 @@ def start(
 
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
-      - demo_skills: Like demo but sets skills + OpenSandbox shell tools via env; requires OpenSandbox TCP
+      - demo_skills: Like demo but enables skills + configured sandbox shell tools
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
@@ -1110,14 +1110,14 @@ def start(
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem tools
-      - demo_skills: default = digital_sales + skills/OpenSandbox shell tools
+      - demo_skills: default = digital_sales + skills/sandbox shell tools
       - demo_crm: default = crm + filesystem tools + email
       - manager: default = filesystem tools
       - demo_health: default = oak_health only
 
     Examples:
       cuga start demo                     # registry + demo; digital_sales + filesystem tools
-      cuga start demo_skills              # skills + OpenSandbox shell tools; aborts if unreachable
+      cuga start demo_skills              # skills + configured sandbox shell tools
       cuga start demo --crm               # add CRM to demo
       cuga start demo_crm                 # crm + filesystem tools + email
       cuga start demo_crm --no-email      # crm + filesystem tools only
@@ -1404,7 +1404,7 @@ def start(
 
                 console.print()
                 demo_panel_title = (
-                    "[bold yellow]Demo (skills + OpenSandbox env) running. Press Ctrl+C to stop[/bold yellow]"
+                    "[bold yellow]Demo (skills + sandbox tools) running. Press Ctrl+C to stop[/bold yellow]"
                     if service == "demo_skills"
                     else "[bold yellow]Demo (manage mode) services are running. Press Ctrl+C to stop[/bold yellow]"
                 )

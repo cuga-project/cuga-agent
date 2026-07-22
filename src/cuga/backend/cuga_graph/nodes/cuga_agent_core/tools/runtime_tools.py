@@ -23,7 +23,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 
 FilesystemChoice = Literal["none", "host", "sandbox_remote"]
-ShellChoice = Literal["none", "local", "native", "opensandbox"]
+ShellChoice = Literal["none", "local", "native", "opensandbox", "tenki"]
 
 
 @dataclass(frozen=True)
@@ -85,12 +85,13 @@ def resolve_runtime_backends(settings: Any, configurable: Dict[str, Any]) -> Run
     _use_sandbox = _shell_tool_on and (
         (_sandbox_mode == "native")
         or (_sandbox_mode == "opensandbox" and _opensandbox_on)
+        or (_sandbox_mode == "tenki")
         or (_sandbox_mode == "local")
     )
 
     if not _fs_tool_on:
         filesystem: FilesystemChoice = "none"
-    elif _use_sandbox and _sandbox_mode == "opensandbox":
+    elif _use_sandbox and _sandbox_mode in ("opensandbox", "tenki"):
         filesystem = "sandbox_remote"
     else:
         filesystem = "host"
@@ -114,7 +115,10 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
         if backends.filesystem == "sandbox_remote":
             from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
-            fs_backend = fs_pkg.RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+            if backends.shell == "tenki":
+                fs_backend = fs_pkg.TenkiRemoteSandboxBackend(CodeExecutor._get_tenki_executor(), thread_id)
+            else:
+                fs_backend = fs_pkg.RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
 
         fs_tools = fs_pkg.create_filesystem_tools(thread_id, backend=fs_backend)
         for ft in fs_tools:
@@ -140,6 +144,9 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
         elif backends.shell == "local":
             sandbox_executor = CodeExecutor._get_local_sandbox_executor()
             sandbox_label = "LocalSandbox"
+        elif backends.shell == "tenki":
+            sandbox_executor = CodeExecutor._get_tenki_executor()
+            sandbox_label = "TenkiSandbox"
         else:
             sandbox_executor = CodeExecutor._get_opensandbox_executor()
             sandbox_label = "OpenSandbox"

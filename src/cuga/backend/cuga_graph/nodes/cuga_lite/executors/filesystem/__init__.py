@@ -29,11 +29,13 @@ from .workspace_fs import (
     get_transfer_callables,
     upload_file,
 )
+from ..tenki.filesystem_backend import TenkiRemoteSandboxBackend
 
 __all__ = [
     "FilesystemBackend",
     "HostWorkspaceBackend",
     "RemoteSandboxBackend",
+    "TenkiRemoteSandboxBackend",
     "WorkspaceFilesystem",
     "create_filesystem_tools",
     "get_transfer_callables",

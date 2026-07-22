@@ -27,6 +27,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     write_bytes_under,
 )
 from cuga.backend.server.workspace_sandbox import workspace_tree_is_sandbox_backed
+from cuga.config import settings
 
 UPLOADS_SUBDIR = "uploads"
 MANIFEST_NAME = ".manifest.json"
@@ -140,11 +141,26 @@ def _write_manifest_host(thread_id: Optional[str], manifest: dict[str, Any]) -> 
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
+def _remote_workspace_backend(thread_id: Optional[str]):
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
-    backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+    mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+    if mode == "tenki":
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.tenki import (
+            TenkiRemoteSandboxBackend,
+        )
+
+        return TenkiRemoteSandboxBackend(CodeExecutor._get_tenki_executor(), thread_id)
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import (
+        RemoteSandboxBackend,
+    )
+
+    return RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+
+
+async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
+    backend = _remote_workspace_backend(thread_id)
     await backend.write_text(
         manifest_sandbox_path(), json.dumps(manifest, indent=2), operation="write_manifest"
     )
@@ -196,10 +212,7 @@ async def upload_workspace_bytes(
     workspace_base = local_base_dir()
 
     if workspace_tree_is_sandbox_backed():
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-
-        backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
+        backend = _remote_workspace_backend(tid)
         tmp_name = f".upload-{secrets.token_hex(8)}.tmp"
         tmp = write_bytes_under(workspace_base, data, tid, UPLOADS_SUBDIR, tmp_name)
         try:
@@ -249,8 +262,15 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
         shutil.rmtree(uploads_dir)
         logger.info(f"[workspace_upload] removed host uploads for thread={safe_tid}")
 
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+    if CodeExecutor._tenki_executor is not None:
+        await CodeExecutor._tenki_executor.release_sandbox(safe_tid)
+
     if workspace_tree_is_sandbox_backed():
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+        mode = str(getattr(settings.advanced_features, "sandbox_mode", "opensandbox") or "opensandbox")
+        if mode == "tenki":
+            return
 
         executor = CodeExecutor._get_opensandbox_executor()
         interpreter = await executor.get_interpreter_for_thread(safe_tid)

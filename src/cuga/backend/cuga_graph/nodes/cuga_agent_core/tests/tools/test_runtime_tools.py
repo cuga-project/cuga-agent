@@ -124,6 +124,14 @@ def test_shell_opensandbox_requires_opensandbox_flag():
     assert off.shell == "none"  # _use_sandbox is False without the flag
 
 
+@pytest.mark.unit
+def test_shell_tenki_is_directly_enabled():
+    backends = resolve_runtime_backends(
+        _settings(enable_shell_tool=True, enable_filesystem_tools=True, sandbox_mode="tenki"), {}
+    )
+    assert backends == RuntimeBackends(filesystem="sandbox_remote", shell="tenki")
+
+
 def test_fs_uses_sandbox_remote_only_with_opensandbox_shell():
     remote = resolve_runtime_backends(
         _settings(
@@ -174,6 +182,7 @@ def patch_packages(monkeypatch):
 
     monkeypatch.setattr(fs_pkg, "create_filesystem_tools", fake_create_fs)
     monkeypatch.setattr(fs_pkg, "RemoteSandboxBackend", FakeRemoteBackend)
+    monkeypatch.setattr(fs_pkg, "TenkiRemoteSandboxBackend", FakeRemoteBackend)
 
     class FakeShellExecutor:
         def __init__(self, label):
@@ -202,6 +211,9 @@ def patch_packages(monkeypatch):
         CodeExecutor,
         "_get_opensandbox_executor",
         classmethod(lambda cls: FakeShellExecutor("opensandbox")),
+    )
+    monkeypatch.setattr(
+        CodeExecutor, "_get_tenki_executor", classmethod(lambda cls: FakeShellExecutor("tenki"))
     )
     return created
 
@@ -234,6 +246,14 @@ def test_shell_native_uses_native_executor_only(patch_packages):
     assert patch_packages["shell_label"] == "native"
     assert set(bundle.execution_callables) == {"run_command"}
     assert bundle.app_definitions == []  # shell-only: no filesystem app def
+
+
+@pytest.mark.unit
+def test_tenki_uses_matching_shell_and_filesystem_executor(patch_packages):
+    bundle = build_runtime_tools(thread_id="t1", backends=RuntimeBackends("sandbox_remote", "tenki"))
+    assert patch_packages["shell_label"] == "tenki"
+    assert patch_packages["remote_executor"].label == "tenki"
+    assert set(bundle.execution_callables) == {"read_file", "write_file", "run_command"}
 
 
 def test_callable_is_coroutine_or_func_and_skips_empty(patch_packages):

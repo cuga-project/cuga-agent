@@ -82,6 +82,30 @@ def test_workspace_tree_is_not_native_when_opensandbox_shell_only(monkeypatch) -
 
 
 @pytest.mark.unit
+def test_workspace_tree_is_tenki_backed_only_when_shell_is_enabled(monkeypatch) -> None:
+    from cuga.backend.server import workspace_sandbox as ws
+
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(
+            opensandbox_sandbox=False,
+            enable_shell_tool=True,
+            sandbox_mode="tenki",
+        ),
+    )
+    assert ws.workspace_tree_is_native_backed() is False
+    assert ws.workspace_tree_is_sandbox_backed() is True
+
+    monkeypatch.setattr(
+        ws,
+        "settings",
+        _settings(opensandbox_sandbox=False, sandbox_mode="tenki"),
+    )
+    assert ws.workspace_tree_is_sandbox_backed() is False
+
+
+@pytest.mark.unit
 def test_workspace_tree_uses_native_when_sandbox_mode_native_without_shell_tools(monkeypatch) -> None:
     """Default-ish settings: opensandbox_sandbox=true, sandbox_mode=native, shell tools off."""
     from cuga.backend.server import workspace_sandbox as ws

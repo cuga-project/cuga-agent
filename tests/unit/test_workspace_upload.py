@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -136,6 +137,33 @@ async def test_delete_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     await wu.delete_thread_uploads("t1")
     assert not uploads.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_thread_uploads_releases_tenki_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+    released: list[str] = []
+
+    class Executor:
+        async def release_sandbox(self, thread_id):
+            released.append(thread_id)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        wu,
+        "settings",
+        SimpleNamespace(advanced_features=SimpleNamespace(sandbox_mode="tenki")),
+    )
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: True)
+    monkeypatch.setattr(CodeExecutor, "_tenki_executor", Executor())
+
+    await wu.delete_thread_uploads("t1")
+
+    assert released == ["t1"]
 
 
 def test_resolve_host_workspace_path_thread_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

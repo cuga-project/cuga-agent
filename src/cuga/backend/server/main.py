@@ -1082,6 +1082,17 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(*app_state.background_tasks, return_exceptions=True)
         app_state.background_tasks.clear()
 
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+        if CodeExecutor._tenki_executor is not None:
+            await CodeExecutor._tenki_executor.release_all()
+            logger.info("Tenki sandboxes terminated.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Tenki sandbox shutdown cleanup failed: {e}")
+
     # Shutdown knowledge engine
     if hasattr(app_state, "knowledge_engine") and app_state.knowledge_engine:
         try:

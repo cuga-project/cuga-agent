@@ -71,10 +71,13 @@ variables_summary_max_length = 12000  # Maximum characters for the "Available Va
 enable_shell_tool = false
 # Sandbox backend for shell tool execution. Options:
 #   "opensandbox" — Docker-based OpenSandbox (default; requires Docker + opensandbox_sandbox = true)
+#   "tenki"       — Tenki cloud microVM (requires TENKI_API_KEY + tenki extra)
 #   "native"      — macOS sandbox-exec (no Docker; macOS only; auto-falls back to "local" on Windows/Linux)
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
+tenki_sandbox_max_duration = 900  # Hard lifecycle backstop in seconds.
+tenki_sandbox_idle_timeout_minutes = 10
 
 [skills]
 # When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.

@@ -361,7 +361,7 @@ Replace `<search term>` with a descriptive phrase, using `+` to separate words. 
 
 
 # Require approval for run_command when using the skills / shell-tools demo preset with
-# sandbox_mode = "local" only (native/opensandbox/e2b are not seeded with this policy here).
+# sandbox_mode = "local" only (native/opensandbox/e2b/tenki are not seeded with this policy here).
 # Stable id for run_command approval in skills demo / local shell workflows (Manage or preset config).
 DEMO_SKILLS_SHELL_TOOL_APPROVAL: dict[str, Any] = {
     "id": "tool_approval_run_command_local",
@@ -639,7 +639,7 @@ def setup_demo_manage_config(
     elif use_skills_starters:
         homescreen = {
             "isOn": True,
-            "greeting": "Try agent skills (SKILL.md under .cuga) and OpenSandbox shell tools.",
+            "greeting": "Try agent skills (SKILL.md under .cuga) and sandbox shell tools.",
             "starters": DEMO_SKILLS_STARTERS,
         }
     elif use_knowledge:

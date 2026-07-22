@@ -18,7 +18,7 @@ from typing import Any, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 PythonBackend = Literal["local", "e2b"]
-ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b"]
+ShellBackend = Literal["none", "local", "native", "opensandbox", "e2b", "tenki"]
 FilesystemBackend = Literal["none", "host", "sandbox_remote"]
 
 
@@ -37,7 +37,7 @@ class ExecutionPlan(BaseModel):
     @property
     def split_execution_active(self) -> bool:
         """True when generated Python runs locally while shell/FS run remotely."""
-        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b")
+        remote_shell = self.shell_backend in ("native", "opensandbox", "e2b", "tenki")
         remote_fs = self.filesystem_backend == "sandbox_remote"
         return self.python_backend == "local" and (remote_shell or remote_fs)
 
@@ -116,7 +116,9 @@ class ExecutionRouter:
         elif _legacy_shell_on:
             sandbox_mode = str(getattr(adv, "sandbox_mode", "native") or "native")
             shell_backend = (
-                sandbox_mode if sandbox_mode in ("local", "native", "opensandbox", "e2b") else "native"
+                sandbox_mode
+                if sandbox_mode in ("local", "native", "opensandbox", "e2b", "tenki")
+                else "native"
             )
         else:
             shell_backend = "none"
@@ -125,7 +127,7 @@ class ExecutionRouter:
         if explicit_fs is not None:
             filesystem_backend: FilesystemBackend = explicit_fs
         elif bool(getattr(adv, "enable_filesystem_tools", False)):
-            filesystem_backend = "sandbox_remote" if shell_backend == "opensandbox" else "host"
+            filesystem_backend = "sandbox_remote" if shell_backend in ("opensandbox", "tenki") else "host"
         else:
             filesystem_backend = "none"
 

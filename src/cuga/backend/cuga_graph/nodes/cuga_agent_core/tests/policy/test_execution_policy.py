@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionPlan,
     ExecutionRouter,
@@ -91,6 +93,19 @@ def test_shell_backend_from_sandbox_mode_when_enabled() -> None:
 def test_shell_backend_native_when_enabled_default_mode() -> None:
     plan = ExecutionRouter.resolve(_settings(enable_shell_tool=True, sandbox_mode="native"))
     assert plan.shell_backend == "native"
+
+
+@pytest.mark.unit
+def test_tenki_shell_uses_remote_filesystem() -> None:
+    plan = ExecutionRouter.resolve(
+        _settings(
+            enable_shell_tool=True,
+            enable_filesystem_tools=True,
+            sandbox_mode="tenki",
+        )
+    )
+    assert plan.shell_backend == "tenki"
+    assert plan.filesystem_backend == "sandbox_remote"
 
 
 # ─── filesystem_backend ─────────────────────────────────────────────────────

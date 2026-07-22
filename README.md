@@ -43,7 +43,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
-> | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
+> | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**/**`tenki`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
 > | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
@@ -738,6 +738,33 @@ Cuga supports isolated code execution using Docker/Podman containers for enhance
    You should see the output: `('test succeeded\n', {})`
 
 **Note**: Without the `--sandbox` flag, Cuga uses local Python execution (default), which is faster but provides less isolation.
+
+</details>
+
+<details>
+<summary> Running with Tenki Cloud Sandbox</summary>
+
+CUGA can run shell and filesystem tools in a per-conversation Tenki microVM.
+
+1. Install the Tenki integration and set your API key:
+
+   ```bash
+   uv sync --extra tenki
+   export TENKI_API_KEY=your-tenki-api-key
+   ```
+
+   CUGA selects the first project returned by the SDK. Set `TENKI_PROJECT_ID` to choose another.
+
+2. Enable the matching shell and filesystem backends in `src/cuga/settings.toml`:
+
+   ```toml
+   [advanced_features]
+   enable_shell_tool = true
+   enable_filesystem_tools = true
+   sandbox_mode = "tenki"
+   ```
+
+3. Run `cuga start demo_skills`. `run_command` and filesystem tools share `/workspace` in one sandbox per conversation. Deleting the conversation terminates its sandbox; configurable idle and maximum-duration limits are additional backstops.
 
 </details>
 
