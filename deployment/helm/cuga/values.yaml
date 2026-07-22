@@ -44,6 +44,9 @@ env:
   DYNACONF_SECRETS__FORCE_ENV: "false"
   DYNACONF_SECRETS__VAULT_SKIP_VERIFY: "false"
   DYNACONF_OBSERVABILITY__OPENLIT: "false"
+  # Airgapped: bundled OpenLit pricing when empty; LiteLLM uses local cost map.
+  # DYNACONF_OBSERVABILITY__PRICING_JSON: ""
+  DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 # Name of an existing Secret containing sensitive env vars.
