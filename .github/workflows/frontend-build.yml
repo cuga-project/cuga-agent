@@ -1,0 +1,60 @@
+# Build the packaged web UI via src/frontend_workspaces/frontend/build.sh.
+# Keeps release artifacts honest and catches broken frontend builds before merge.
+# See: https://github.com/cuga-project/cuga-agent/issues/536
+name: Frontend Build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "src/frontend_workspaces/**"
+      - ".github/workflows/frontend-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-frontend:
+    name: Build frontend (build.sh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 10.28.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: src/frontend_workspaces/pnpm-lock.yaml
+
+      - name: Install workspace dependencies
+        working-directory: src/frontend_workspaces
+        run: pnpm install --frozen-lockfile
+
+      - name: Production build into src/cuga/frontend/dist
+        working-directory: src/frontend_workspaces/frontend
+        run: bash ./build.sh
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cuga-frontend-dist-${{ github.sha }}
+          path: src/cuga/frontend/dist
+          if-no-files-found: error
+          retention-days: 14
