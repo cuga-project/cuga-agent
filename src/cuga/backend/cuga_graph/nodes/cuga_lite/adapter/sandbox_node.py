@@ -55,9 +55,17 @@ def _describe_observed_shape(result: Any) -> str:
 
 
 def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
-    """Stash the first observed output shape for any weak-schema tool this session."""
+    """Stash the first observed output shape for any weak-schema tool this session.
+
+    No-op under probing mode "get_first_and_execute": shapes are never
+    remembered, so ``get_tools_needing_probing()`` keeps returning the full
+    weak-schema set forever and every call stays probed/truncated.
+    """
     weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
     if not weak_schema_tool_names:
+        return
+    mode = getattr(adapter, "_weak_schema_probing_mode", "truncate_at_first_probe")
+    if mode == "get_first_and_execute":
         return
     observed = getattr(adapter, "_observed_tool_shapes", {})
     for call in tool_calls:

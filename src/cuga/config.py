@@ -143,6 +143,11 @@ validators = [
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("advanced_features.cuga_lite_warn_suspect_args", default=True),
+    Validator(
+        "advanced_features.cuga_lite_weak_schema_probing_mode",
+        default="combine_and_execute",
+        is_in=["combine_and_execute", "get_first_and_execute", "truncate_at_first_probe"],
+    ),
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),

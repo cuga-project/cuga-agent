@@ -79,6 +79,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._thread_id = thread_id
         self._weak_schema_tool_names: frozenset = frozenset()
         self._observed_tool_shapes: Dict[str, str] = {}
+        self._weak_schema_probing_mode: str = "combine_and_execute"
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
         return list(state.chat_messages or [])

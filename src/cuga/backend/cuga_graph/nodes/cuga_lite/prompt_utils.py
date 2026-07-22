@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -31,6 +32,12 @@ _WEAK_SCHEMA_PROBE_DIRECTIVE = (
 # import dependency).
 _SYNTHETIC_PLACEHOLDER_KEY = "_synthetic_placeholder"
 
+# Weak-schema tool output probing (issue #272 / PR #417) is gated behind this
+# categorical setting. "combine_and_execute" is the pre-PR legacy behavior and
+# the default/fallback — the feature is off unless explicitly turned on.
+_WEAK_SCHEMA_PROBING_MODES = ("combine_and_execute", "get_first_and_execute", "truncate_at_first_probe")
+_WEAK_SCHEMA_PROBING_DEFAULT_MODE = "combine_and_execute"
+
 
 def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, bool):
@@ -38,6 +45,72 @@ def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, str):
         return val.strip().lower() in ("true", "1", "yes", "on")
     return bool(val)
+
+
+def _normalize_response_schemas(response_schemas: Any) -> Optional[Mapping[str, Any]]:
+    """Coerce accepted-but-unusual ``_response_schemas`` shapes into a dict-like
+    object so callers can use ``.get()``/``in``/truthiness uniformly.
+
+    Handles a plain ``dict`` (unchanged), any other ``collections.abc.Mapping``
+    (``MappingProxyType``, ``UserDict``, a custom ``Mapping`` subclass), and a
+    Pydantic ``BaseModel`` subclass or instance stored directly in place of the
+    ``{"success": ..., "failure": ...}`` dict (wrapped as
+    ``{"success": <json schema>}``). Returns ``None`` for anything else
+    (unrecognized shapes, e.g. a bare list, stay weak — preserving prior
+    behavior).
+    """
+    if isinstance(response_schemas, Mapping):
+        return response_schemas
+    if isinstance(response_schemas, type) and issubclass(response_schemas, BaseModel):
+        schema = (
+            response_schemas.model_json_schema()
+            if hasattr(response_schemas, "model_json_schema")
+            else response_schemas.schema()
+        )
+        return {"success": schema}
+    if isinstance(response_schemas, BaseModel):
+        model_cls = type(response_schemas)
+        schema = (
+            model_cls.model_json_schema() if hasattr(model_cls, "model_json_schema") else model_cls.schema()
+        )
+        return {"success": schema}
+    return None
+
+
+def resolve_weak_schema_probing_mode(settings_obj: Any = None) -> str:
+    """Resolve advanced_features.cuga_lite_weak_schema_probing_mode.
+
+    Warns loudly and falls back to "combine_and_execute" (the pre-PR #272
+    legacy behavior) for any value that isn't an exact match to one of the
+    three valid modes — including a differently-cased value; case is not
+    normalized, an unrecognized value is treated as a misconfiguration.
+
+    Accepts an optional explicit ``settings_obj`` (e.g. a
+    ``SimpleNamespace(advanced_features=SimpleNamespace(...))`` fake) so
+    callers can test this without touching the real Dynaconf singleton;
+    defaults to the module-level ``settings`` import.
+    """
+    target = settings_obj if settings_obj is not None else settings
+    try:
+        raw = getattr(
+            target.advanced_features,
+            "cuga_lite_weak_schema_probing_mode",
+            _WEAK_SCHEMA_PROBING_DEFAULT_MODE,
+        )
+    except Exception:
+        return _WEAK_SCHEMA_PROBING_DEFAULT_MODE
+
+    if raw in _WEAK_SCHEMA_PROBING_MODES:
+        return raw
+
+    logger.warning(
+        "Unknown advanced_features.cuga_lite_weak_schema_probing_mode={!r}; "
+        "valid values are {}; falling back to {!r}",
+        raw,
+        _WEAK_SCHEMA_PROBING_MODES,
+        _WEAK_SCHEMA_PROBING_DEFAULT_MODE,
+    )
+    return _WEAK_SCHEMA_PROBING_DEFAULT_MODE
 
 
 def few_shots_enabled_from_settings() -> bool:
@@ -164,8 +237,8 @@ class PromptUtils:
             return "**kwargs"
 
     @staticmethod
-    def is_weak_schema_tool(tool: StructuredTool) -> bool:
-        """True when a tool has no real declared output schema.
+    def _tool_declares_weak_schema(tool: StructuredTool) -> bool:
+        """Pure schema-shape check: True when a tool has no real declared output schema.
 
         Covers the OpenAPI-derived case (empty ``response_schemas``) and the
         MCP fallback case, where the manager injects a generic placeholder for a
@@ -176,22 +249,48 @@ class PromptUtils:
         match on shape — that suppressed real schemas. Instead the manager tags
         the synthetic placeholder with ``_synthetic_placeholder`` and we trust
         that marker, leaving every genuinely-declared schema intact.
+
+        ``_response_schemas`` may also be a Pydantic ``BaseModel`` (class or
+        instance) or a non-``dict`` ``Mapping`` (``MappingProxyType``,
+        ``UserDict``); ``_normalize_response_schemas`` coerces both into a
+        dict-like object so they aren't misclassified as weak.
         """
-        response_schemas = {}
+        response_schemas = None
         if hasattr(tool, 'func') and hasattr(tool.func, '_response_schemas'):
             response_schemas = tool.func._response_schemas
 
-        if not response_schemas or not isinstance(response_schemas, dict):
+        normalized = _normalize_response_schemas(response_schemas)
+        if not normalized:
             return True
 
-        return bool(response_schemas.get(_SYNTHETIC_PLACEHOLDER_KEY))
+        return bool(normalized.get(_SYNTHETIC_PLACEHOLDER_KEY))
 
     @staticmethod
-    def get_tool_docs(tool: StructuredTool) -> tuple[str, str]:
+    def is_weak_schema_tool(tool: StructuredTool, mode: Optional[str] = None) -> bool:
+        """True when a tool has no real declared output schema AND weak-schema
+        probing is enabled.
+
+        ``mode`` gates the whole feature (see
+        ``advanced_features.cuga_lite_weak_schema_probing_mode``): under
+        ``"combine_and_execute"`` (the default/legacy behavior) this always
+        returns False, regardless of the tool's actual schema, so no probe
+        directive is injected and downstream truncation/shape-memory (which
+        key off this same check) never engage. If ``mode`` is not given, it's
+        resolved from settings.
+        """
+        effective_mode = mode if mode is not None else resolve_weak_schema_probing_mode()
+        if effective_mode == "combine_and_execute":
+            return False
+        return PromptUtils._tool_declares_weak_schema(tool)
+
+    @staticmethod
+    def get_tool_docs(tool: StructuredTool, mode: Optional[str] = None) -> tuple[str, str]:
         """Extract params_doc and response_doc for a tool.
 
         Args:
             tool: The tool to extract docs from
+            mode: Weak-schema probing mode override (see ``is_weak_schema_tool``);
+                resolved from settings when omitted.
 
         Returns:
             Tuple of (params_doc, response_doc)
@@ -199,17 +298,18 @@ class PromptUtils:
         params_doc = "No parameters required"
         response_doc = ""
 
-        response_schemas = {}
+        raw_response_schemas = None
         if hasattr(tool, 'func') and hasattr(tool.func, '_response_schemas'):
-            response_schemas = tool.func._response_schemas
+            raw_response_schemas = tool.func._response_schemas
+        response_schemas = _normalize_response_schemas(raw_response_schemas) or {}
 
         param_constraints = {}
         if hasattr(tool, 'func') and hasattr(tool.func, '_param_constraints'):
             param_constraints = tool.func._param_constraints
 
-        if PromptUtils.is_weak_schema_tool(tool):
+        if PromptUtils.is_weak_schema_tool(tool, mode=mode):
             response_doc = _WEAK_SCHEMA_PROBE_DIRECTIVE
-        elif response_schemas and isinstance(response_schemas, dict) and 'success' in response_schemas:
+        elif response_schemas and 'success' in response_schemas:
             success_schema = json.dumps(response_schemas['success'], indent=4)
             response_doc = f"\n    \n    Returns (on success) - Response Schema:\n{success_schema}"
 
@@ -382,8 +482,8 @@ class PromptUtils:
             # Get output schema from response_schemas if available
             output_schema = {}
             if hasattr(actual_tool, 'func') and hasattr(actual_tool.func, '_response_schemas'):
-                response_schemas = actual_tool.func._response_schemas
-                if response_schemas and isinstance(response_schemas, dict) and 'success' in response_schemas:
+                response_schemas = _normalize_response_schemas(actual_tool.func._response_schemas)
+                if response_schemas and 'success' in response_schemas:
                     raw_output_schema = response_schemas['success']
                     # Ensure output_schema is always a dict
                     if isinstance(raw_output_schema, list):
@@ -632,6 +732,7 @@ def create_mcp_prompt(
     has_knowledge=False,
     few_shot_examples: Optional[List[Dict[str, str]]] = None,
     few_shots_enabled: Optional[bool] = None,
+    weak_schema_probing_mode: Optional[str] = None,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -655,6 +756,8 @@ def create_mcp_prompt(
         has_knowledge: If True, include knowledge-base search guidance in the prompt
         few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
         few_shots_enabled: Unused (reserved for API compatibility).
+        weak_schema_probing_mode: Weak-schema probing mode override (see
+            ``PromptUtils.is_weak_schema_tool``); resolved from settings when omitted.
     """
     processed_tools = []
     # Graph passes "" when no DB instructions; still allow CLI/demo env (e.g. cuga start demo_crm).
@@ -666,7 +769,7 @@ def create_mcp_prompt(
         tool_desc = tool.description if hasattr(tool, 'description') else "No description"
 
         params_str = PromptUtils.get_tool_params_str(tool)
-        params_doc, response_doc = PromptUtils.get_tool_docs(tool)
+        params_doc, response_doc = PromptUtils.get_tool_docs(tool, mode=weak_schema_probing_mode)
 
         processed_tools.append(
             {

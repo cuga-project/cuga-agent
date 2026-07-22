@@ -65,9 +65,15 @@ async def test_weak_schema_tool_names_populated_when_shortlisting_inactive():
     state = _make_state()
 
     configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
-    with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
-        new=False,
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.resolve_weak_schema_probing_mode",
+            return_value="truncate_at_first_probe",
+        ),
     ):
         node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
         await node(state, config={"configurable": configurable})
@@ -97,9 +103,15 @@ async def test_weak_schema_tool_names_populated_when_find_tools_shortlisting_act
 
     # threshold=1 with 3 tools forces enable_find_tools=True (tools_for_prompt -> [find_tool]).
     configurable = {"enable_todos": False, "shortlisting_tool_threshold": 1}
-    with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
-        new=False,
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.resolve_weak_schema_probing_mode",
+            return_value="truncate_at_first_probe",
+        ),
     ):
         node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
         await node(state, config={"configurable": configurable})
@@ -118,6 +130,40 @@ async def test_weak_schema_tool_names_empty_when_all_tools_have_real_schemas():
     state = _make_state()
 
     configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.resolve_weak_schema_probing_mode",
+            return_value="truncate_at_first_probe",
+        ),
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        await node(state, config={"configurable": configurable})
+
+    assert adapter._weak_schema_tool_names == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_weak_schema_tool_names_empty_when_mode_is_combine_and_execute():
+    """Default/legacy gate: even with weak-schema tools present, the set stays empty
+    when probing mode is "combine_and_execute" (also proves the real settings.toml
+    default, since resolve_weak_schema_probing_mode is not patched here)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    weak_tool = _make_fake_tool("file_readfile", {})
+    placeholder_tool = _make_fake_tool(
+        "get_browser_state", {"success": {"type": "string"}, "_synthetic_placeholder": True}
+    )
+    known_tool = _make_fake_tool("get_weather", {"success": {"type": "object"}})
+    adapter = _build_mock_adapter([weak_tool, placeholder_tool, known_tool])
+    state = _make_state()
+
+    configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
         new=False,
@@ -126,3 +172,62 @@ async def test_weak_schema_tool_names_empty_when_all_tools_have_real_schemas():
         await node(state, config={"configurable": configurable})
 
     assert adapter._weak_schema_tool_names == frozenset()
+    assert adapter._weak_schema_probing_mode == "combine_and_execute"
+
+
+@pytest.mark.asyncio
+async def test_weak_schema_tool_names_populated_when_mode_is_get_first_and_execute():
+    """Gate 2 (Part A/B) treats both "on" modes identically — only gate 3 (Part C,
+    tested in sandbox_node) distinguishes get_first_and_execute from truncate_at_first_probe."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    weak_tool = _make_fake_tool("file_readfile", {})
+    known_tool = _make_fake_tool("get_weather", {"success": {"type": "object"}})
+    adapter = _build_mock_adapter([weak_tool, known_tool])
+    state = _make_state()
+
+    configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.resolve_weak_schema_probing_mode",
+            return_value="get_first_and_execute",
+        ),
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        await node(state, config={"configurable": configurable})
+
+    assert adapter._weak_schema_tool_names == frozenset({"file_readfile"})
+    assert adapter._weak_schema_probing_mode == "get_first_and_execute"
+
+
+@pytest.mark.asyncio
+async def test_adapter_weak_schema_probing_mode_attribute_set_after_prepare():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    known_tool = _make_fake_tool("get_weather", {"success": {"type": "object"}})
+    adapter = _build_mock_adapter([known_tool])
+    state = _make_state()
+
+    configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.resolve_weak_schema_probing_mode",
+            return_value="truncate_at_first_probe",
+        ),
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        await node(state, config={"configurable": configurable})
+
+    assert adapter._weak_schema_probing_mode == "truncate_at_first_probe"

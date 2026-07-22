@@ -316,6 +316,11 @@ def test_new_adapter_has_empty_weak_schema_state_by_default():
     assert adapter._observed_tool_shapes == {}
 
 
+def test_new_adapter_has_combine_and_execute_probing_mode_by_default():
+    adapter = _make_adapter()
+    assert adapter._weak_schema_probing_mode == "combine_and_execute"
+
+
 def test_resolve_max_steps_uses_override_when_given():
     adapter = _make_adapter()
     state = SimpleNamespace(cuga_lite_max_steps=None)

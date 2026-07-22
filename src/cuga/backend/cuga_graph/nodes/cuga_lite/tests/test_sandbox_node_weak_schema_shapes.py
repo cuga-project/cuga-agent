@@ -67,6 +67,28 @@ def test_record_weak_schema_shapes_noop_when_no_weak_schema_tools():
     assert adapter._observed_tool_shapes == {}
 
 
+def test_record_weak_schema_shapes_noop_when_mode_get_first_and_execute():
+    """Probing mode 'get_first_and_execute' (Part C off): never remember a shape, so
+    get_tools_needing_probing() keeps enforcing truncation on every call, forever."""
+    adapter = SimpleNamespace(
+        _weak_schema_tool_names=frozenset({"file_readfile"}),
+        _observed_tool_shapes={},
+        _weak_schema_probing_mode="get_first_and_execute",
+    )
+    _record_weak_schema_shapes(adapter, [{"name": "file_readfile", "result": ["a", "b"], "error": None}])
+    assert adapter._observed_tool_shapes == {}
+
+
+def test_record_weak_schema_shapes_records_when_mode_truncate_at_first_probe_explicit():
+    adapter = SimpleNamespace(
+        _weak_schema_tool_names=frozenset({"file_readfile"}),
+        _observed_tool_shapes={},
+        _weak_schema_probing_mode="truncate_at_first_probe",
+    )
+    _record_weak_schema_shapes(adapter, [{"name": "file_readfile", "result": ["a", "b"], "error": None}])
+    assert "file_readfile" in adapter._observed_tool_shapes
+
+
 def test_needs_shape_tracking_true_when_weak_tools_unobserved():
     adapter = SimpleNamespace(_weak_schema_tool_names=frozenset({"file_readfile"}), _observed_tool_shapes={})
     assert _needs_shape_tracking(adapter) is True

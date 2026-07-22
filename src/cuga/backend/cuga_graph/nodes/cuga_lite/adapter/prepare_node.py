@@ -39,6 +39,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     format_apps_for_prompt,
     normalize_mcp_few_shot_examples,
     resolve_cuga_lite_few_shots_enabled,
+    resolve_weak_schema_probing_mode,
 )
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
@@ -105,6 +106,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             configurable,
             model_name=_runtime_model_name,
         )
+        weak_schema_probing_mode = resolve_weak_schema_probing_mode()
         logger.debug(
             f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
         )
@@ -609,8 +611,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         adapter._weak_schema_tool_names = frozenset(
             t.name
             for t in (tools_for_execution or [])
-            if getattr(t, "name", None) and PromptUtils.is_weak_schema_tool(t)
+            if getattr(t, "name", None) and PromptUtils.is_weak_schema_tool(t, mode=weak_schema_probing_mode)
         )
+        adapter._weak_schema_probing_mode = weak_schema_probing_mode
 
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
@@ -635,6 +638,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
+                weak_schema_probing_mode=weak_schema_probing_mode,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
