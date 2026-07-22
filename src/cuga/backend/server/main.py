@@ -13,7 +13,17 @@ import yaml
 import httpx
 import json
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Union, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Union, Optional
+
+if TYPE_CHECKING:
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
+    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
@@ -1946,6 +1956,8 @@ async def event_stream(
                         # WXO mode wraps each event as a Chat Completions
                         # chunk; DEFAULT mode emits the already-formatted SSE
                         # block verbatim to avoid double-wrapping.
+                        from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+
                         if app_state.output_format == OutputFormat.WXO:
                             yield StreamEvent(name=name, data=event).format(
                                 app_state.output_format, thread_id=thread_id
@@ -3421,6 +3433,8 @@ async def get_agent_state(
                     }
                 )
 
+            from cuga.backend.cuga_graph.state.agent_state import AgentState
+
             local_state = AgentState(**state_snapshot.values)
             variables_metadata = local_state.variables_manager.get_all_variables_metadata(
                 include_value=False, include_value_preview=True
@@ -3608,6 +3622,8 @@ async def get_app_tools(
 ):
     """Endpoint to retrieve tools for a specific app."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apis
+
         apis = await get_apis(app_name)
         tools_data = [
             {
@@ -4146,6 +4162,8 @@ async def proxy_function_call(
     Exposes the registry's /functions/call endpoint through the main HuggingFace Space URL.
     """
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
         registry_url = f"{get_registry_base_url()}/functions/call"
 
         body = await request.body()

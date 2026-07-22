@@ -70,7 +70,6 @@ def _get_reasoning_chat_litellm():
 
     try:
         from langchain_litellm import ChatLiteLLM as _ChatLiteLLMBase
-        from langchain_core.outputs import ChatResult
         from langchain_core.messages import AIMessage
 
         class ReasoningChatLiteLLM(_ChatLiteLLMBase):

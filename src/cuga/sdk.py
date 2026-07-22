@@ -614,6 +614,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guide")
@@ -695,6 +697,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guard")
@@ -2937,7 +2941,7 @@ class CugaAgent:
             self.tool_provider, "add_tool"
         ):
             self.tool_provider.add_tool(tool)
-            invalidate_toolguard_provider(self.tool_provider)  # noqa: already imported above
+            invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
             self._graph = None
             self._compiled_graph = None
