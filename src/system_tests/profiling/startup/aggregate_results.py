@@ -77,7 +77,9 @@ def print_table(sdk_stats: dict, server_stats: dict) -> None:
     for metric in sdk_metrics:
         if metric in sdk_stats:
             s = sdk_stats[metric]
-            print(f"  {metric:<20} {_fmt(s['median']):>{col_w}} {_fmt(s['min']):>{col_w}} {_fmt(s['max']):>{col_w}}")
+            print(
+                f"  {metric:<20} {_fmt(s['median']):>{col_w}} {_fmt(s['min']):>{col_w}} {_fmt(s['max']):>{col_w}}"
+            )
             printed_any_sdk = True
 
     if printed_any_sdk:
@@ -86,7 +88,9 @@ def print_table(sdk_stats: dict, server_stats: dict) -> None:
     for metric in server_metrics:
         if metric in server_stats:
             s = server_stats[metric]
-            print(f"  {metric:<20} {_fmt(s['median']):>{col_w}} {_fmt(s['min']):>{col_w}} {_fmt(s['max']):>{col_w}}")
+            print(
+                f"  {metric:<20} {_fmt(s['median']):>{col_w}} {_fmt(s['min']):>{col_w}} {_fmt(s['max']):>{col_w}}"
+            )
 
     print("=" * len(header))
     print()

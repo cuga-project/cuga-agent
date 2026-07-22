@@ -2302,6 +2302,7 @@ if getattr(settings.advanced_features, "use_extension", False):
     @app.post("/extension/agent_query")
     async def extension_agent_query(request: Request):
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
         body = await request.json()
         query = body.get("query", "")
         request_id = body.get("request_id", None)
@@ -2362,6 +2363,7 @@ async def stream(
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
     user_attachments = await get_attachment_snapshot(request)
@@ -3039,6 +3041,7 @@ async def generate_tool_guard_for_policy(
 ):
     """Generate and persist ToolGuards for a saved Tool Guide policy."""
     from cuga.backend.cuga_graph.policy.models import ToolGuide
+
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},
@@ -3219,6 +3222,7 @@ async def get_tools_list(
     try:
         # Check for draft mode from query parameter or header
         from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+
         use_draft = False
         if draft is not None:
             use_draft = str(draft).lower() in ("1", "true", "yes", "on")
@@ -3318,6 +3322,7 @@ async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_ch
     """Endpoint to retrieve tools connection status."""
     try:
         from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+
         # Get available apps and their tools
         apps = await get_apps()
         tools = []
@@ -3579,6 +3584,7 @@ async def get_apps_endpoint(current_user: Optional[UserInfo] = Depends(require_a
     """Endpoint to retrieve available apps."""
     try:
         from cuga.backend.tools_env.registry.utils.api_utils import get_apps
+
         apps = await get_apps()
         apps_data = [
             {
@@ -3652,6 +3658,7 @@ async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_man
     """List configured agents (dashboard)."""
     try:
         from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+
         tools_count = 0
         try:
             apps = await get_apps()
@@ -4197,6 +4204,7 @@ def validate_input_length(text: str) -> None:
 async def get_query(request: Request) -> Union[str, ActionResponse]:
     """Parses the incoming request to extract the user query or action."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     try:
         data = await request.json()
     except json.JSONDecodeError:

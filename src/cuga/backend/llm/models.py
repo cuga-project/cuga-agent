@@ -13,9 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from loguru import logger
 
 if TYPE_CHECKING:
-    from langchain_openai import ChatOpenAI, AzureChatOpenAI
-    from langchain_ibm import ChatWatsonx
-    from langchain_core.messages import AIMessage
+    from langchain_openai import ChatOpenAI
     from langchain_core.outputs import ChatResult
 
 from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
@@ -30,7 +28,6 @@ def _get_reasoning_chat_openai():
         return _get_reasoning_chat_openai._cls
 
     from langchain_openai import ChatOpenAI
-    from langchain_core.outputs import ChatResult
     from langchain_core.messages import AIMessage
 
     class ReasoningChatOpenAI(ChatOpenAI):
@@ -92,7 +89,9 @@ def _get_reasoning_chat_litellm():
                     raw_msg = res.get("message") or {}
                     reasoning = raw_msg.get("reasoning_content")
                     if reasoning and isinstance(result.generations[i].message, AIMessage):
-                        result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
+                        result.generations[i].message.additional_kwargs.setdefault(
+                            "reasoning_content", reasoning
+                        )
                 return result
 
         _get_reasoning_chat_litellm._cls = ReasoningChatLiteLLM

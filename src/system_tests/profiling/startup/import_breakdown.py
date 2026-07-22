@@ -18,9 +18,7 @@ import sys
 # Pattern for importtime stderr lines:
 #   import time:  <self_us> | <cumulative_us> | <module>
 # Indentation before the module name is optional (shows nesting level).
-_IMPORTTIME_RE = re.compile(
-    r"^import time:\s+(\d+)\s*\|\s*(\d+)\s*\|\s*(.+)$"
-)
+_IMPORTTIME_RE = re.compile(r"^import time:\s+(\d+)\s*\|\s*(\d+)\s*\|\s*(.+)$")
 
 
 def run_importtime(stmt: str) -> str:
@@ -60,12 +58,7 @@ def print_table(rows: list[tuple[int, int, str]], top: int) -> None:
     w_cum = max(len("cum_us"), max(len(str(r[1])) for r in sorted_rows))
     w_mod = max(len("module"), max(len(r[2]) for r in sorted_rows))
 
-    header = (
-        f"{'#':>{w_rank}}  "
-        f"{'self_us':>{w_self}}  "
-        f"{'cum_us':>{w_cum}}  "
-        f"{'module':<{w_mod}}"
-    )
+    header = f"{'#':>{w_rank}}  {'self_us':>{w_self}}  {'cum_us':>{w_cum}}  {'module':<{w_mod}}"
     separator = "-" * len(header)
 
     print(separator)
@@ -73,12 +66,7 @@ def print_table(rows: list[tuple[int, int, str]], top: int) -> None:
     print(separator)
 
     for i, (self_us, cum_us, module) in enumerate(sorted_rows, start=1):
-        print(
-            f"{i:>{w_rank}}  "
-            f"{self_us:>{w_self}}  "
-            f"{cum_us:>{w_cum}}  "
-            f"{module:<{w_mod}}"
-        )
+        print(f"{i:>{w_rank}}  {self_us:>{w_self}}  {cum_us:>{w_cum}}  {module:<{w_mod}}")
 
     print(separator)
     print(f"Showing top {len(sorted_rows)} of {len(rows)} modules by self_us")

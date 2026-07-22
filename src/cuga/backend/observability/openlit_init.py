@@ -146,10 +146,12 @@ def _get_openlit():
     if _openlit_module is None:
         try:
             import openlit  # type: ignore[import-untyped]
+
             _openlit_module = openlit
         except ImportError:
             _openlit_module = False  # sentinel: import attempted, not available
     return _openlit_module if _openlit_module is not False else None
+
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
 _init_lock = threading.Lock()  # Protects initialization from race conditions

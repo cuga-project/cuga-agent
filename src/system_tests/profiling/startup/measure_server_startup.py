@@ -38,6 +38,7 @@ STARTUP_LOG_NEEDLE = "Application finished starting up..."
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def find_free_port() -> int:
     """Bind to port 0 and let the OS pick a free ephemeral port."""
     with socket.socket() as s:
@@ -49,6 +50,7 @@ def _try_httpx(url: str) -> bool | None:
     """Return True if ready, False if not yet ready, None on connection error."""
     try:
         import httpx  # noqa: PLC0415
+
         with httpx.Client(timeout=2.0) as client:
             resp = client.get(url)
         data = resp.json()
@@ -86,6 +88,7 @@ def poll_readiness(url: str) -> bool | None:
 # Main measurement
 # ---------------------------------------------------------------------------
 
+
 def measure() -> float | None:
     """
     Start the server, wait for readiness, return elapsed seconds or None.
@@ -94,10 +97,14 @@ def measure() -> float | None:
     url = f"http://localhost:{port}/health/readiness"
 
     cmd = [
-        sys.executable, "-m", "uvicorn",
+        sys.executable,
+        "-m",
+        "uvicorn",
         "cuga.backend.server.main:app",
-        "--host", "0.0.0.0",
-        "--port", str(port),
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
         # Note: uvicorn does not have a --no-reload flag; omitting --reload
         # is the default (no auto-reload), which is what we want here.
     ]
@@ -124,7 +131,7 @@ def measure() -> float | None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        start_new_session=True,   # own process group → clean kill
+        start_new_session=True,  # own process group → clean kill
     )
 
     reader_thread = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)

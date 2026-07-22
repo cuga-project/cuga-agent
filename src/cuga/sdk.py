@@ -92,6 +92,7 @@ def _get_llm_manager():
     global _llm_manager_instance
     if _llm_manager_instance is None:
         from cuga.backend.llm.models import LLMManager
+
         _llm_manager_instance = LLMManager()
     return _llm_manager_instance
 
@@ -172,6 +173,7 @@ class PoliciesManager:
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is not None:
             invalidate_toolguard_provider(provider)
@@ -179,6 +181,7 @@ class PoliciesManager:
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import configure_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is None:
             return
@@ -322,8 +325,12 @@ class PoliciesManager:
             ```
         """
         from cuga.backend.cuga_graph.policy.models import (
-            IntentGuard, IntentGuardResponse, KeywordTrigger, NaturalLanguageTrigger,
+            IntentGuard,
+            IntentGuardResponse,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
         )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_intent_guard")
@@ -419,8 +426,11 @@ class PoliciesManager:
             ```
         """
         from cuga.backend.cuga_graph.policy.models import (
-            Playbook, KeywordTrigger, NaturalLanguageTrigger,
+            Playbook,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
         )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_playbook")
@@ -521,8 +531,11 @@ class PoliciesManager:
             ```
         """
         from cuga.backend.cuga_graph.policy.models import (
-            ToolGuide, KeywordTrigger, AlwaysTrigger,
+            ToolGuide,
+            KeywordTrigger,
+            AlwaysTrigger,
         )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_guide")
@@ -775,6 +788,7 @@ class PoliciesManager:
             ```
         """
         from cuga.backend.cuga_graph.policy.models import ToolApproval
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_approval")
@@ -849,8 +863,12 @@ class PoliciesManager:
             ```
         """
         from cuga.backend.cuga_graph.policy.models import (
-            OutputFormatter, KeywordTrigger, NaturalLanguageTrigger, AlwaysTrigger,
+            OutputFormatter,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+            AlwaysTrigger,
         )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_output_format")
@@ -1795,6 +1813,7 @@ class CugaAgent:
         # provider-level decorator so create-agent-first, add-guard-later flows work.
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
         policy_storage = self._policy_system.storage if self._policy_system is not None else None
         if tool_provider:
             base_provider = tool_provider
@@ -1821,6 +1840,7 @@ class CugaAgent:
             from cuga.config import settings
 
             from cuga.backend.llm.models import LLMManager
+
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
             logger.info(f"Using default model: {self._model.__class__.__name__}")
@@ -1956,7 +1976,10 @@ class CugaAgent:
                     kb_enabled = kb_config.enabled
 
                 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
-                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
+                    DirectLangChainToolsProvider,
+                )
+
                 provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
@@ -2016,6 +2039,7 @@ class CugaAgent:
         from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
         from cuga.backend.cuga_graph.state.agent_state import AgentState
         from langgraph.graph import StateGraph, START, END
+
         cuga_lite_subgraph = create_cuga_lite_graph(
             model=self._model,
             tool_provider=self.tool_provider,
@@ -2261,6 +2285,7 @@ class CugaAgent:
         """
         if self._compiled_graph is None:
             from langgraph.checkpoint.memory import MemorySaver
+
             graph = self._create_graph()
 
             # Always compile with checkpointer and interrupt for HITL support
@@ -2502,6 +2527,7 @@ class CugaAgent:
         # Convert message to list of BaseMessage
         if isinstance(message, str):
             from langchain_core.messages import HumanMessage
+
             # If dispatch resolved a skill, soft-dispatch: the planner input
             # becomes the translated suggestion ("use the skill named '<name>'
             # to: <args>") and the planner decides to call ``load_skill``
@@ -2833,6 +2859,7 @@ class CugaAgent:
         # Convert message to list of BaseMessage
         if isinstance(message, str):
             from langchain_core.messages import HumanMessage
+
             messages = [HumanMessage(content=message)]
         else:
             messages = message
@@ -2899,8 +2926,12 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider, invalidate_toolguard_provider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+            unwrap_tool_provider,
+            invalidate_toolguard_provider,
+        )
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+
         base_provider = unwrap_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
@@ -3048,6 +3079,7 @@ class CugaSupervisor:
 
         if tool_provider is not None:
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
             policy_storage = self._policy_system.storage if self._policy_system is not None else None
             self.tool_provider = ensure_toolguard_provider(
                 tool_provider,
@@ -3063,6 +3095,7 @@ class CugaSupervisor:
             from cuga.config import settings
 
             from cuga.backend.llm.models import LLMManager
+
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
             logger.info(f"Using default model: {self._model.__class__.__name__}")
