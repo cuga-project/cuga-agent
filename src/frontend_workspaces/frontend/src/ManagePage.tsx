@@ -73,6 +73,14 @@ export interface HomescreenConfig {
   starters?: string[];
 }
 
+export type LlmJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | LlmJsonValue[]
+  | { [key: string]: LlmJsonValue };
+
 export interface AgentConfig {
   agent?: { name?: string; description?: string };
   llm?: {
@@ -89,7 +97,7 @@ export interface AgentConfig {
     frequency_penalty?: number;
     presence_penalty?: number;
     stop?: string | string[];
-    extra_params?: Record<string, string | number | boolean>;
+    extra_params?: Record<string, LlmJsonValue>;
     disable_ssl?: boolean;
   };
   tools?: ToolEntry[];
@@ -1134,7 +1142,7 @@ export function ManagePage() {
 
   const updateLlm = (
     field: keyof NonNullable<AgentConfig["llm"]>,
-    value: string | number | boolean | string[] | Record<string, string | number | boolean> | undefined
+    value: string | number | boolean | string[] | Record<string, LlmJsonValue> | undefined
   ) => {
     setLlmConfig((c) => {
       const next = { ...(c ?? {}) };
@@ -1758,11 +1766,28 @@ export function ManagePage() {
                                   setLlmExtraParamsError("Extra params must be a JSON object");
                                   return;
                                 }
-                                const cleaned: Record<string, string | number | boolean> = {};
-                                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-                                  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-                                    cleaned[k] = v;
+                                const isJsonValue = (v: unknown): v is LlmJsonValue => {
+                                  if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+                                    return true;
                                   }
+                                  if (Array.isArray(v)) return v.every(isJsonValue);
+                                  if (typeof v === "object") {
+                                    return Object.values(v as Record<string, unknown>).every(isJsonValue);
+                                  }
+                                  return false;
+                                };
+                                const cleaned: Record<string, LlmJsonValue> = {};
+                                let dropped = false;
+                                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+                                  if (isJsonValue(v)) {
+                                    cleaned[k] = v;
+                                  } else {
+                                    dropped = true;
+                                  }
+                                }
+                                if (dropped) {
+                                  setLlmExtraParamsError("Extra params must be JSON values (no functions)");
+                                  return;
                                 }
                                 updateLlm("extra_params", Object.keys(cleaned).length ? cleaned : undefined);
                                 setLlmExtraParamsDraft(null);

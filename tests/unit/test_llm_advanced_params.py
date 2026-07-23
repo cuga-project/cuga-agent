@@ -168,15 +168,20 @@ class TestCreateLlmInstanceProviderParams:
                             "api_key": _LEAK_CRED,
                             "openai_api_key": _LEAK_CRED,
                             "default_headers": {"X-Injected": "nope"},
+                            "response_format": {"type": "json_object"},
+                            "custom_headers": {"Authorization": "Bearer evil"},
                         },
                     }
                 )
 
         kwargs = mock_openai.call_args.kwargs
         assert kwargs.get("seed") == 42
+        assert kwargs.get("response_format") == {"type": "json_object"}
         assert kwargs.get("openai_api_key") == _TEST_CRED
         assert kwargs.get("api_key") != _LEAK_CRED
         assert "default_headers" not in kwargs
+        custom = kwargs.get("custom_headers") or {}
+        assert "Authorization" not in custom
 
     def test_groq_receives_max_tokens_and_top_p(self):
         with patch("cuga.backend.llm.models.ChatGroq") as mock_groq:
@@ -198,6 +203,27 @@ class TestCreateLlmInstanceProviderParams:
         assert kwargs["max_tokens"] == 1024
         assert kwargs["temperature"] == 0.3
         assert kwargs["top_p"] == 0.95
+
+    def test_groq_omits_openai_only_penalties(self):
+        with patch("cuga.backend.llm.models.ChatGroq") as mock_groq:
+            mock_groq.return_value = object()
+            with patch("cuga.backend.llm.models.resolve_secret", return_value=_TEST_CRED):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "groq",
+                        "model": "llama-3.3-70b-versatile",
+                        "max_tokens": 128,
+                        "temperature": 0.2,
+                        "api_key": _TEST_CRED,
+                        "frequency_penalty": 0.5,
+                        "presence_penalty": 0.25,
+                    }
+                )
+
+        kwargs = mock_groq.call_args.kwargs
+        assert "frequency_penalty" not in kwargs
+        assert "presence_penalty" not in kwargs
 
     def test_watsonx_nests_max_tokens_and_top_p_in_params(self, monkeypatch):
         monkeypatch.setenv("WATSONX_PROJECT_ID", "test-project")
@@ -223,6 +249,27 @@ class TestCreateLlmInstanceProviderParams:
         assert params["top_p"] == 0.85
         assert params["top_k"] == 50
 
+    def test_watsonx_omits_openai_only_penalties(self, monkeypatch):
+        monkeypatch.setenv("WATSONX_PROJECT_ID", "test-project")
+        with patch("cuga.backend.llm.models.ChatWatsonx") as mock_wx:
+            mock_wx.return_value = MagicMock()
+            with patch("cuga.backend.llm.models.ensure_model_context_profile"):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "watsonx",
+                        "model": "ibm/granite-3-8b-instruct",
+                        "max_tokens": 256,
+                        "temperature": 0.1,
+                        "frequency_penalty": 0.5,
+                        "presence_penalty": 0.25,
+                    }
+                )
+
+        params = mock_wx.call_args.kwargs["params"]
+        assert "frequency_penalty" not in params
+        assert "presence_penalty" not in params
+
     def test_litellm_receives_sampling_params(self):
         with patch("cuga.backend.llm.models.ReasoningChatLiteLLM") as mock_lite:
             mock_lite.return_value = object()
@@ -245,3 +292,53 @@ class TestCreateLlmInstanceProviderParams:
         assert kwargs["max_tokens"] == 512
         assert kwargs["top_p"] == 0.7
         assert kwargs["frequency_penalty"] == 0.1
+
+    def test_litellm_omits_default_top_p_when_unset(self):
+        with patch("cuga.backend.llm.models.ReasoningChatLiteLLM") as mock_lite:
+            mock_lite.return_value = object()
+            with patch("cuga.backend.llm.models.resolve_secret", return_value=_TEST_CRED):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "litellm",
+                        "model": "gpt-4o-mini",
+                        "max_tokens": 128,
+                        "temperature": 0.1,
+                        "api_key": _TEST_CRED,
+                        "url": "http://localhost:4000",
+                    }
+                )
+
+        assert "top_p" not in mock_lite.call_args.kwargs
+
+    def test_openrouter_omits_default_top_p_when_unset(self):
+        with patch("cuga.backend.llm.models.ReasoningChatOpenAI") as mock_openai:
+            mock_openai.return_value = object()
+            with patch("cuga.backend.llm.models.resolve_secret", return_value=_TEST_CRED):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "openrouter",
+                        "model": "anthropic/claude-3.5-sonnet",
+                        "max_tokens": 128,
+                        "temperature": 0.1,
+                    }
+                )
+
+        assert "top_p" not in mock_openai.call_args.kwargs
+
+    def test_minimax_omits_default_top_p_when_unset(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", _TEST_CRED)
+        with patch("cuga.backend.llm.models.ReasoningChatOpenAI") as mock_openai:
+            mock_openai.return_value = object()
+            with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
+                mgr = LLMManager()
+                mgr._create_llm_instance(
+                    {
+                        "platform": "minimax",
+                        "max_tokens": 128,
+                        "temperature": 0.1,
+                    }
+                )
+
+        assert "top_p" not in mock_openai.call_args.kwargs

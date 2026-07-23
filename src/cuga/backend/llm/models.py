@@ -148,6 +148,19 @@ _OPTIONAL_SAMPLING_KEYS = (
 )
 
 
+def _is_blocked_extra_key(key: str) -> bool:
+    return key in _BLOCKED_EXTRA_PARAM_KEYS or key.lower() in _BLOCKED_EXTRA_PARAM_KEYS
+
+
+def _sanitize_extra_value(value: Any) -> Any:
+    """Recursively strip blocked auth/transport keys from nested extra_params values."""
+    if isinstance(value, dict):
+        return _safe_extra_params(value)
+    if isinstance(value, list):
+        return [_sanitize_extra_value(item) for item in value]
+    return value
+
+
 def _safe_extra_params(extra: Any) -> Dict[str, Any]:
     if not isinstance(extra, dict):
         return {}
@@ -155,9 +168,9 @@ def _safe_extra_params(extra: Any) -> Dict[str, Any]:
     for key, value in extra.items():
         if not isinstance(key, str):
             continue
-        if key in _BLOCKED_EXTRA_PARAM_KEYS or key.lower() in _BLOCKED_EXTRA_PARAM_KEYS:
+        if _is_blocked_extra_key(key):
             continue
-        out[key] = value
+        out[key] = _sanitize_extra_value(value)
     return out
 
 
@@ -1167,11 +1180,11 @@ class LLMManager:
 
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
-                openrouter_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
                 _merge_optional_sampling(
                     openrouter_params,
                     model_settings,
-                    keys=("frequency_penalty", "presence_penalty", "stop"),
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
                 )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
@@ -1212,11 +1225,11 @@ class LLMManager:
 
             if not is_reasoning:
                 minimax_params["temperature"] = temperature
-                minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
                 _merge_optional_sampling(
                     minimax_params,
                     model_settings,
-                    keys=("frequency_penalty", "presence_penalty", "stop"),
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
                 )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
@@ -1245,12 +1258,11 @@ class LLMManager:
             }
             if not is_reasoning:
                 litellm_params["temperature"] = temperature
-                # Prefer explicit Manage/TOML top_p; default 1.0 for existing TOML paths.
-                litellm_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
                 _merge_optional_sampling(
                     litellm_params,
                     model_settings,
-                    keys=("frequency_penalty", "presence_penalty", "stop", "top_k"),
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop", "top_k"),
                 )
             else:
                 logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
