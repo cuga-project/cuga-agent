@@ -29,7 +29,7 @@ API = "https://discord.com/api/v10"
 # GUILD_MEMBERS (1<<1) is PRIVILEGED: requesting it without enabling "Server Members Intent" in
 # the Discord dev portal closes the whole gateway with 4014 — so it is opt-in via
 # EVENTS_DISCORD_MEMBERS_INTENT=1 (set it only AFTER flipping the portal toggle).
-INTENTS = (1 << 0) | (1 << 9) | (1 << 15)
+INTENTS = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)   # +GUILD_MESSAGE_REACTIONS (bit 10, non-priv)
 
 
 def intents() -> int:
@@ -161,7 +161,8 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
                                 msg = ev.get("d") or {}
                                 if should_process(msg):
                                     asyncio.create_task(on_message(msg))
-                            elif t == "GUILD_MEMBER_ADD" and on_event is not None:
+                            elif t in ("GUILD_MEMBER_ADD", "MESSAGE_REACTION_ADD") \
+                                    and on_event is not None:
                                 asyncio.create_task(on_event(t, ev.get("d") or {}))
                         elif op == 1:                                 # server requests a heartbeat now
                             await ws.send(json.dumps({"op": 1, "d": seq["s"]}))

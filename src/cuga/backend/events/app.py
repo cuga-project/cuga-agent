@@ -1263,6 +1263,71 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         except Exception as e:  # noqa: BLE001
             tr.error("box.event", kind=kind, err=str(e))
 
+    # --- SYNTHETIC FIRE (connection-free trigger testing) ------------------------------------------
+    @app.post("/api/events/synth-fire")
+    async def synth_fire(request: Request):
+        """Fire ANY registry trigger with a piece-exact SYNTHETIC payload at the /invoke seam — no
+        Activepieces flow, no connection, no real event. This is how you test a polling/AP trigger
+        (calendar / pinterest / youtube / rss / gmail / box) whose real fire needs a live connection.
+
+        It reproduces exactly what a real event would deliver: the agent runs on the same payload
+        shape (the registry's ``synth`` sample, or one you POST) with the same event.kind, and — if
+        you pass deliver_to/deliver_target — delivers to that channel just like the real watcher.
+
+        Gateway-token protected. Body: {source, event?, prompt?, agent?, payload?, deliver_to?,
+        deliver_target?, scope?}. ``event`` defaults to the source's default trigger; ``payload``
+        overrides the registry synth; ``prompt`` overrides the agent instruction.
+        Disable with EVENTS_DEBUG_RUN=0 (same switch as /run)."""
+        if os.environ.get("EVENTS_DEBUG_RUN", "1") == "0":
+            return JSONResponse({"ok": False, "error": "debug endpoint disabled (EVENTS_DEBUG_RUN=0)"}, 403)
+        if token and request.headers.get("X-Gateway-Token") != token:
+            return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
+        from . import triggers as _triggers
+        body = await _safe_json(request)
+        source = (body.get("source") or "").strip()
+        row = _triggers.get(source, body.get("event") or "")
+        if row is None:
+            return JSONResponse({"ok": False, "error": f"no trigger for source={source!r} "
+                                 f"event={body.get('event')!r}"}, 404)
+        if row.backend != "ap":
+            return JSONResponse({"ok": False, "error": f"{row.app}/{row.event} is a DIRECT trigger — "
+                                 "fire it through its real transport (or /api/events/box/poll for box)"}, 400)
+        payload = body.get("payload") or row.synth
+        if not payload:
+            return JSONResponse({"ok": False, "error": f"{row.app}/{row.event} has no synth sample; "
+                                 "pass an explicit 'payload'"}, 422)
+        agent = body.get("agent") or "cuga"
+        prompt = (body.get("prompt") or f"A {row.title} event just fired on {row.app}. "
+                  "Summarize what happened and what I should do next.")
+        deliver_to = body.get("deliver_to")
+        deliver_target = body.get("deliver_target")
+        direct = bool(deliver_to and deliver_target)
+        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target}"}
+               if direct else
+               {"type": "integration", "name": row.app, "thread_id": f"synth:{row.app}:{row.event}"})
+        inv = {"agent": agent, "text": prompt, "deliver": direct, "scope": body.get("scope") or "",
+               "source": src, "event": {"kind": row.event, "payload": {**payload, "_raw": payload}}}
+        tr = Trace(new_trace_id())
+        import httpx as _httpx
+        port = os.environ.get("EVENTS_CUGA_PORT", "7860")
+        gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+        try:
+            async with _httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=inv)
+            answer = ""
+            try:
+                answer = (r.json() or {}).get("answer") or ""
+            except Exception:  # noqa: BLE001
+                answer = r.text[:400]
+            tr("synth.fire", source=row.app, event=row.event, delivered=direct, ok=r.status_code == 200)
+            return {"ok": r.status_code == 200, "source": row.app, "event": row.event,
+                    "delivered_to": deliver_to if direct else None, "answer": answer,
+                    "trace_id": tr.id}
+        except Exception as e:  # noqa: BLE001
+            tr.error("synth.fire", err=str(e))
+            return JSONResponse({"ok": False, "error": str(e)}, 502)
+
     async def _resume_jd(body: dict) -> str:
         """The job description a resume is judged against.
 
@@ -1479,13 +1544,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         from . import discord_direct as _dd
         if _dd.bot_token():
             async def _discord_event(dispatch_type: str, data: dict) -> None:
-                """Non-message Gateway dispatches (GUILD_MEMBER_ADD) → the direct watchers."""
+                """Non-message Gateway dispatches (GUILD_MEMBER_ADD, MESSAGE_REACTION_ADD) → the
+                direct watchers. Lift the channel + emoji so the channel/emoji filters can match a
+                reaction (a member-join carries neither and matches on guild only)."""
                 from . import direct_events
                 kind = direct_events.kind_for("discord", dispatch_type)
                 if not kind or store is None:
                     return
-                subs = direct_events.match(store, "discord", kind,
-                                           channel=str(data.get("guild_id") or ""))
+                chan = str(data.get("channel_id") or data.get("guild_id") or "")
+                _emoji = data.get("emoji")
+                emoji = (_emoji.get("name") or "") if isinstance(_emoji, dict) else ""
+                subs = direct_events.match(store, "discord", kind, channel=chan, emoji=emoji)
                 if subs:
                     Trace(new_trace_id())("discord.direct", event=kind, matched=len(subs))
                     await direct_events.dispatch_all(subs, app="discord", event=kind,
@@ -1615,6 +1684,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
                     scope=" ".join(prov.get("scopes", [])),
                     redirect_url=oauth.redirect_uri(app),
+                    authorization_method=prov.get("authorization_method", "BODY"),
                     project_name=p.ap_project_name(grain))
         except Exception as e:  # noqa: BLE001
             Trace(new_trace_id()).error("connect", app=app, err=str(e))

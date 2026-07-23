@@ -120,6 +120,78 @@ GUIDES: dict[str, dict] = {
         "note": "Integrations default to AP (OAuth token lifecycle + the piece trigger). The direct "
                 "token poll stays available behind EVENTS_BOX_BACKEND=direct for a quick, AP-free test.",
     },
+    "google_calendar": {
+        "label": "Google Calendar", "kind": "integration", "connect": "oauth",
+        "wiring": "AP (google-calendar piece) · PUSH new_event + polling",
+        "ownership": ["per_user"], "ownership_default": "per_user",
+        "creds": [
+            {"key": "EVENTS_OAUTH_GOOGLE_CALENDAR_CLIENT_ID", "label": "OAuth Client ID",
+             "required": True, "where": "Google Cloud Console → Credentials → OAuth client "
+             "(you can REUSE your Gmail client — just add the calendar callback URI + scope)"},
+            {"key": "EVENTS_OAUTH_GOOGLE_CALENDAR_CLIENT_SECRET", "label": "OAuth Client Secret",
+             "required": True, "where": "same OAuth client"},
+        ],
+        "steps": [
+            "Google Cloud → OAuth client: add redirect "
+            "<EVENTS_PUBLIC_URL>/api/events/connect/google_calendar/callback and enable the "
+            "Google Calendar API + the .../auth/calendar scope. (Reusing the Gmail client is fine.)",
+            "Put client id/secret in .env as EVENTS_OAUTH_GOOGLE_CALENDAR_CLIENT_ID/_SECRET, "
+            "then `make reload`.",
+            "Connect from CUGA: open <EVENTS_PUBLIC_URL>/api/events/connect/google_calendar and "
+            "approve. AP does the token exchange + refresh; the agent never sees the credential.",
+            "Arm: 'when a new event is added to my google calendar, brief me' or 'when a meeting ends, "
+            "email me the follow-ups'. Name a calendar id (or 'primary') if you have several.",
+        ],
+        "note": "OAuth requires the CONSENT flow (a pasted token won't work). calendar_id is a "
+                "required dropdown resolved against the connection. See setup/GOOGLE_CALENDAR.md.",
+    },
+    "pinterest": {
+        "label": "Pinterest", "kind": "integration", "connect": "oauth",
+        "wiring": "AP (pinterest piece) · polling (new pin / board / follower)",
+        "ownership": ["per_user"], "ownership_default": "per_user",
+        "creds": [
+            {"key": "EVENTS_OAUTH_PINTEREST_CLIENT_ID", "label": "App ID", "required": True,
+             "where": "Pinterest Developer → your app → App ID"},
+            {"key": "EVENTS_OAUTH_PINTEREST_CLIENT_SECRET", "label": "App secret secret",
+             "required": True, "where": "same app"},
+        ],
+        "steps": [
+            "Pinterest Developer (developers.pinterest.com) → create an app; add redirect "
+            "<EVENTS_PUBLIC_URL>/api/events/connect/pinterest/callback; request boards:read, "
+            "pins:read, user_accounts:read.",
+            "Put the App ID/secret in .env as EVENTS_OAUTH_PINTEREST_CLIENT_ID/_SECRET, `make reload`.",
+            "Connect from CUGA: open <EVENTS_PUBLIC_URL>/api/events/connect/pinterest and approve.",
+            "Arm: 'when there's a new pin on my pinterest board, share it' (name the board id) or "
+            "'when I get a new pinterest follower, thank them'.",
+        ],
+        "note": "OAuth consent flow. new_pin needs a board_id (required dropdown). "
+                "See setup/PINTEREST.md.",
+    },
+    "youtube": {
+        "label": "YouTube", "kind": "integration", "connect": "none",
+        "wiring": "AP (youtube piece) · polling a public channel feed",
+        "ownership": ["tenant"], "ownership_default": "tenant",
+        "creds": [],
+        "steps": [
+            "No connection needed — the new-video trigger watches a PUBLIC channel feed.",
+            "Arm: 'when my youtube channel posts a new video, share it' and name the channel (id, URL, "
+            "or @handle).",
+        ],
+        "note": "The new-video trigger is RSS-backed and needs no OAuth — just the channel identifier. "
+                "See setup/YOUTUBE.md.",
+    },
+    "rss": {
+        "label": "RSS / Atom", "kind": "integration", "connect": "none",
+        "wiring": "AP (rss piece) · polling any public feed URL",
+        "ownership": ["tenant"], "ownership_default": "tenant",
+        "creds": [],
+        "steps": [
+            "No connection needed — the new_item trigger watches any PUBLIC feed URL.",
+            "Arm: 'when a new item appears in https://blog.example.com/rss, summarize it' — name the "
+            "feed URL (required).",
+        ],
+        "note": "The new_item trigger is a public feed poll; no OAuth. See setup/RSS.md.",
+    },
     "webhook": {
         "label": "Generic Webhook", "kind": "integration", "wiring": "AP (in) / direct (out)",
         "ownership": ["tenant"], "ownership_default": "tenant", "creds": [],

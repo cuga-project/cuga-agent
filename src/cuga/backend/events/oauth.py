@@ -66,6 +66,22 @@ PROVIDERS: dict[str, dict] = {
                "auth": "https://github.com/login/oauth/authorize",
                "token": "https://github.com/login/oauth/access_token",
                "scopes": ["repo", "admin:repo_hook"]},
+    # Google Calendar — same Google OAuth endpoints as gmail (you can reuse the SAME Google Cloud
+    # OAuth client: set EVENTS_OAUTH_GOOGLE_CALENDAR_CLIENT_ID/_SECRET to the gmail values and add
+    # the calendar callback URI to that client). Calendar scope covers the read triggers.
+    "google_calendar": {"kind": "oauth", "piece": "@activepieces/piece-google-calendar",
+                        "auth": "https://accounts.google.com/o/oauth2/v2/auth",
+                        "token": "https://oauth2.googleapis.com/token",
+                        "scopes": ["https://www.googleapis.com/auth/calendar"],
+                        "extra_auth": {"access_type": "offline", "prompt": "consent"}},
+    # Pinterest — its own OAuth app. Read scopes cover the pin/board/follower triggers. Pinterest's
+    # v5 token endpoint REQUIRES HTTP Basic auth (client creds in the Authorization header); the
+    # default BODY method makes AP's exchange fail with INVALID_CLAIM.
+    "pinterest": {"kind": "oauth", "piece": "@activepieces/piece-pinterest",
+                  "auth": "https://www.pinterest.com/oauth/",
+                  "token": "https://api.pinterest.com/v5/oauth/token",
+                  "authorization_method": "HEADER",
+                  "scopes": ["boards:read", "pins:read", "user_accounts:read"]},
     # token apps — no redirect; the user pastes a secret (handled by ensure_secret_connection).
     # Only pieces whose `auth` really lists SECRET_TEXT belong here.
     "telegram": {"kind": "token", "piece": "@activepieces/piece-telegram-bot"},

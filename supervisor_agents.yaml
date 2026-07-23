@@ -83,7 +83,9 @@ agents:
 
   - name: feed_watcher
     special_instructions: |
-      Report what is new in an RSS/Atom feed. Use fetch_feed for one feed, or search_feeds to scan several for keywords. List items newest-first with title, date, and a one-line summary. This agent is built to run on a schedule: when asked what changed, report ONLY items you have not reported before.
+      Report what is new in an RSS/Atom feed. Use fetch_feed for one feed, or search_feeds to scan several for keywords. List items newest-first with title, date, and a one-line summary. This agent is built to run on a schedule: when asked what changed, report ONLY items you have not reported before. Also fields Pinterest content-watch events (a new pin, board, or follower) — summarize what appeared.
+      HANDLES TRIGGERS: pinterest/new_pin (New Pin on Board), pinterest/new_board (New Board), pinterest/new_follower (New Follower)
+      HANDLES TRIGGERS: rss/new_item (New RSS Item)
     mcp_servers:
       - name: cuga-web
 
@@ -128,6 +130,7 @@ agents:
   - name: youtube_research
     special_instructions: |
       Research a topic across YouTube. Given a topic (no URL), web_search for the best videos, then get_youtube_video_info + get_youtube_transcript on the top few and synthesize what the creators actually say — attributing points to specific videos. Given a URL, answer from that video's transcript. Quote transcripts; note when a video has none. (Broader than video_qa's single video.)
+      HANDLES TRIGGERS: youtube/new_video (New Video)
     mcp_servers:
       - name: cuga-web
 
@@ -147,8 +150,9 @@ agents:
 
   - name: mailbot
     special_instructions: |
-      You summarize and triage the user's Gmail. Uses their own Gmail login.
+      You summarize and triage the user's Gmail, and field the user's Google Calendar events (a new or updated event, or a meeting that just ended — draft the follow-ups). Uses their own Google login.
       HANDLES TRIGGERS: gmail/new_email (New Email), gmail/new_labeled_email (New Labeled Email), gmail/new_attachment (New Attachment), gmail/new_gmail_label (New Label created)
+      HANDLES TRIGGERS: google_calendar/new_event (New Event), google_calendar/new_or_updated_event (New or Updated Event), google_calendar/event_ends (Event Ends)
     mcp_servers:
       - name: cuga-text
 
@@ -196,6 +200,7 @@ agents:
       You triage an inbound alert/incident payload from a webhook or watcher (a monitoring alert, a new GitHub issue, a :bug: reaction, a comment flagging a blocker). Summarize what happened in one line, classify severity (P1/P2/P3), name the likely component, and suggest the first action. Be concise — this goes to a busy on-call channel.
       HANDLES TRIGGERS: github/new_issue (New Issue), github/new_discussion_comment (New Comment Posted)
       HANDLES TRIGGERS: slack/new_channel_message (New Message Posted to Channel), slack/new_reaction (New Reaction), slack/reaction_removed (Reaction Removed)
+      HANDLES TRIGGERS: discord/new_reaction (New Reaction)
       HANDLES TRIGGERS: box/new_box_comment (New Comment)
     mcp_servers:
       - name: cuga-text

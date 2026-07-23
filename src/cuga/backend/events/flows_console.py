@@ -93,7 +93,7 @@ function card(s){
     <div class="flow"><b>${esc(src)}</b> <span class="arrow">→</span> ${esc(s.target_agent)} <span class="arrow">→</span> <b>${esc(sink)}</b>
       &nbsp;·&nbsp; <span class="muted">${esc((s.prompt||'').slice(0,90))}</span></div>
     ${actionOf(s)? `<div class="flow"><span class="badge" style="background:#3b2f14;color:#f59e0b">ACTION</span> <b>${esc(actionOf(s))}</b></div>`:''}
-    <div class="flow muted">flow: ${esc(s.flow_name||s.ap_flow_id||s.id)}</div>
+    <div class="flow muted">flow: ${esc(s.flow_name||s.id)}${s.ap_flow_id?` &nbsp;·&nbsp; <b>flow id</b> <code style="user-select:all">${esc(s.ap_flow_id)}</code>`:' &nbsp;·&nbsp; (direct — no AP flow)'} &nbsp;·&nbsp; sub <code style="user-select:all">${esc(s.id)}</code></div>
   </div>`;
 }
 // The post-agent ACTION this flow runs. For a DIRECT trigger (slack/discord/telegram) it lives in

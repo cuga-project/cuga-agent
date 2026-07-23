@@ -52,6 +52,12 @@ HARNESSES = [
      "Does an armed flow FIRE and answer? (arms a 1-min schedule, waits for a real tick)", 9),
     ("delegation", "test-delegation", {},
      "Does the supervisor pick the right sub-agent? (labelled payloads, >=90% gate)", 10),
+    ("newpieces", "test-new-pieces", {},
+     "Do the newer pieces (Calendar/Pinterest/YouTube/RSS/Discord) arm + synth-fire?", 3),
+    # The full arm+FIRE matrix — supervisor-aware, covers every trigger incl. the new pieces. In
+    # supervisor mode this is what replaces the skipped fleet-era now/matrix/fire with a REAL fire.
+    ("exhaustive", "test-exhaustive", {},
+     "The full matrix: every agent + every trigger armed AND fired, answer-verified, zero-leak", 75),
 ]
 
 # Fleet-era harnesses: they assert per-agent invocation BY NAME, which the single-agent world
@@ -159,6 +165,24 @@ def parse(key: str, out: str) -> dict:
         if v["xpass"]:
             v["note"] = ("XPASS = a known gap started passing. Re-sample before believing it — "
                          "support_digest fabricates on ~5 of 7 runs, so one XPASS is luck.")
+        return v
+
+    if key == "newpieces":
+        # live_new_pieces.py prints "  [PASS]/[FAIL] …" per leg and "RESULT: ALL GREEN | N issue(s)"
+        v["passed"] = len(re.findall(r"\bPASS\b", t))
+        v["failed"] = len(re.findall(r"\bFAIL\b", t))
+        m = re.search(r"RESULT:\s*(\d+)\s*issue", t)
+        if m and not v["failed"]:
+            v["failed"] = int(m.group(1))
+        return v
+
+    if key == "exhaustive":
+        # "92 cases · REAL 61/64 · SYNTH 26/28 · BLOCKED 0 · FAILURES 5"
+        m = re.search(r"(\d+) cases.*?REAL (\d+)/(\d+).*?SYNTH (\d+)/(\d+).*?BLOCKED (\d+).*?FAILURES (\d+)",
+                      t, re.S)
+        if m:
+            _cases, r_ok, _rt, s_ok, _st, blocked, fails = (int(x) for x in m.groups())
+            v.update(passed=r_ok + s_ok, failed=fails, skipped=blocked)
         return v
 
     if key == "delegation":

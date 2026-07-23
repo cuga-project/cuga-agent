@@ -361,7 +361,16 @@ async def _connect_needed(spec, p: Principal, engine,
     arming a github watcher must not demand the agent's unrelated integrations be connected."""
     if engine is None:
         return None
-    for integ in (spec.integrations or []):
+    # The PUSH SOURCE needs its own connection to arm, even if the agent doesn't declare it as an
+    # integration (the supervisor 'cuga' doesn't list every piece). Add it as a candidate so an
+    # unconnected AP-OAuth source (google_calendar / pinterest) gates cleanly with "connect X"
+    # instead of silently falling through to a generic poll. Skip pieces that need NO connection
+    # (youtube = public feed → connect_kind 'none'; direct sources have no AP connection).
+    integs = list(spec.integrations or [])
+    if only_app and oauth.connect_kind(only_app) in ("oauth", "token") \
+            and not any((i.get("app") == only_app) for i in integs):
+        integs = integs + [{"app": only_app, "ownership": "per-user"}]
+    for integ in integs:
         app, ownership = integ.get("app"), integ.get("ownership", "per-user")
         if only_app is not None and app != only_app:
             continue
@@ -535,6 +544,16 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                             m = None
                     if m:
                         config["label"] = m.group(1).strip()
+                # generic slot back-fill for EVERY slot this trigger declares (yt_channel, board,
+                # calendar, rss_feed_url, …) — so a new piece needs no bespoke extractor here. The
+                # hardcoded repo/label paths above stay as-is (their guards are stricter); this only
+                # fills slots still missing.
+                try:
+                    from . import flowspec as _fs
+                except ImportError:
+                    import flowspec as _fs
+                for _sname, _sval in _fs.extract_slots(source, event or "", prompt or "").items():
+                    config.setdefault(_sname, _sval)
                 trig_row, problem = _tr.validate(source, event or "", config)
                 if trig_row is None:
                     return f"error: {problem}"
@@ -872,7 +891,8 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     log.info("concierge armed DIRECT box watcher agent=%s folder=%s flow=%s",
                              agent, folder, ap_flow_id)
                     return (f"ARMED box watcher (direct poll every {every}m, folder {folder}) for "
-                            f"{agent} → {sink}. Flow: \"{flow_name}\" (subscription {sub.id}).")
+                            f"{agent} → {sink}. Flow: \"{flow_name}\" · flow id {ap_flow_id} "
+                            f"(subscription {sub.id}).")
                 # ── DIRECT triggers (slack / discord / telegram watchers) ────────────────
                 # CUGA already receives these transports itself (Slack Events API, Discord Gateway,
                 # the telegram message stream) — there is NO AP flow and NO AP connection. Arming is
@@ -947,11 +967,34 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     src_input = {"repository": {"owner": _owner_part, "repo": _repo_part}}
                 if base_app == "gmail" and config.get("label"):
                     src_input = {"label": config["label"]}
-                # the EVENT is part of the name: AP flow creation deletes any same-named flow, so a
-                # name without the event meant a 2nd trigger on the same app destroyed the 1st.
-                _act_suffix = f"-{action_tag.replace('/', '_')}" if action_tag else ""
-                flow_name = (f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}"
-                             f"{_act_suffix}")
+                # newer AP pieces: pass the trigger's required prop (a literal id/handle) when named.
+                # DROPDOWN props (calendar_id, board_id) accept a literal value; AP validates it
+                # against the connection at publish, so these arm live only once the piece is connected.
+                if base_app == "google_calendar":
+                    # calendar_id is a REQUIRED dropdown — default to 'primary' (the user's main
+                    # calendar) when they don't name one, so a bare "watch my calendar" publishes.
+                    src_input = {"calendar_id": config.get("calendar") or "primary"}
+                    # new_or_updated_event ALSO requires expandRecurringEvent (a checkbox) — without
+                    # it AP marks the trigger invalid and refuses to publish.
+                    if event == "new_or_updated_event":
+                        src_input["expandRecurringEvent"] = False
+                if base_app == "pinterest" and config.get("board"):
+                    src_input = {"board_id": config["board"]}
+                if base_app == "youtube" and config.get("yt_channel"):
+                    src_input = {"channel_identifier": config["yt_channel"]}
+                if base_app == "rss" and config.get("rss_feed_url"):
+                    src_input = {"rss_feed_url": config["rss_feed_url"]}
+                # AP flow creation DELETES any same-named flow, so the flow name must be UNIQUE per
+                # subscription — otherwise arming watcher B destroys watcher A's live flow. Config
+                # alone isn't enough: two watchers with EMPTY config (e.g. plain "when an email
+                # arrives") on the same source+event+agent but different SINK/origin still collided,
+                # and the exhaustive's temp gmail arm silently destroyed a user's live gmail flow
+                # (2026-07-23). Hash the full DEDUP IDENTITY (agent|source|cadence|config|sink|action
+                # |owner) — distinct subscriptions differ here; re-arming the SAME intent is caught by
+                # the dedup-reuse check above BEFORE flow creation, so this hash never blocks a reuse.
+                import hashlib
+                _disc = hashlib.sha1(dedup_key.encode()).hexdigest()[:8]
+                flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-{_disc}"
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     if engine_branches:                  # BRANCHED flow → ROUTER arming
@@ -1023,7 +1066,8 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 _cfg_note = f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else ""
                 _dest = (action_preview or f" → {sink}")
                 return (f"ARMED push ({source}/{event or 'new_file'}{_cfg_note}) for {agent}"
-                        f"{_dest}. Flow name: \"{flow_name}\" (subscription {sub.id}).")
+                        f"{_dest}. Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
+                        f"(subscription {sub.id}).")
             if kind not in ("cron", "poll"):
                 return "error: kind must be cron, poll, or push."
             # THE FIRED PROMPT IS SINGLE-SHOT. The SCHEDULE owns the recurrence — the agent runs
@@ -1081,7 +1125,8 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                      f" It stops itself after {ttl // 60} min" if ttl else "")
             until = until and until + f" (~{_time.strftime('%H:%M', _time.localtime(expires_at))})."
             return (f"ARMED {kind} for {agent} → {sink}. "
-                    f"Flow name: \"{flow_name}\" (subscription {sub.id}).{until}")
+                    f"Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
+                    f"(subscription {sub.id}).{until}")
 
         tools.append(find_or_create_flow)
 

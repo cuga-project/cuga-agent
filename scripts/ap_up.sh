@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 AP_PORT="${AP_PORT:-8081}"
 NET=ap-net
 D="$(command -v podman || command -v docker || true)"
-[ -n "$D" ] || { echo "need docker or podman"; exit 1; }
+[ -n "$D" ] || { echo "✗ no container runtime (podman/docker) — see: make preflight"; exit 1; }
 RUN=/tmp/events_up; mkdir -p "$RUN"
 
 if [ "${1:-}" = "--stop" ]; then
@@ -46,7 +46,7 @@ set -a; . ./.ap.env; set +a
 # tunnel (reuse AP_TUNNEL_URL or start cloudflared)
 TUN="${AP_TUNNEL_URL:-}"
 if [ -z "$TUN" ]; then
-  command -v cloudflared >/dev/null || { echo "need cloudflared"; exit 1; }
+  command -v cloudflared >/dev/null || { echo "✗ cloudflared missing — brew install cloudflared (or: make preflight)"; exit 1; }
   pkill -f "cloudflared tunnel --url http://localhost:$AP_PORT" 2>/dev/null || true
   cloudflared tunnel --url "http://localhost:$AP_PORT" --no-autoupdate > "$RUN/ap_tunnel.log" 2>&1 &
   # NB: the `|| true` is load-bearing. Under `set -euo pipefail`, on the first iteration cloudflared

@@ -30,11 +30,15 @@ import urllib.request
 # The pieces the events layer actually uses (see flows.SOURCE_TRIGGER + AP-backed channels).
 # slack/discord are DIRECT backends (not AP), so they are intentionally not here.
 NEEDED = [
-    "@activepieces/piece-gmail",         # gmail push (new-email) + send
-    "@activepieces/piece-github",        # github PR / issue push
-    "@activepieces/piece-box",           # box new-file push (OAuth path)
-    "@activepieces/piece-telegram-bot",  # telegram channel (AP webhook)
-    "@activepieces/piece-schedule",      # CRON / POLL flows
+    "@activepieces/piece-gmail",           # gmail push (new-email) + send
+    "@activepieces/piece-github",          # github PR / issue push
+    "@activepieces/piece-box",             # box new-file push (OAuth path)
+    "@activepieces/piece-telegram-bot",    # telegram channel (AP webhook)
+    "@activepieces/piece-schedule",        # CRON / POLL flows
+    "@activepieces/piece-google-calendar", # calendar new_event / updated / ends
+    "@activepieces/piece-pinterest",       # pinterest new_pin / board / follower
+    "@activepieces/piece-youtube",         # youtube new_video (public feed)
+    "@activepieces/piece-rss",             # rss new_item (any feed)
 ]
 CLOUD = "https://cloud.activepieces.com/api/v1/pieces"
 
@@ -47,6 +51,10 @@ PINNED = {
     "@activepieces/piece-box": "0.1.5",
     "@activepieces/piece-telegram-bot": "0.6.4",
     "@activepieces/piece-schedule": "0.1.17",
+    "@activepieces/piece-google-calendar": "0.9.5",
+    "@activepieces/piece-pinterest": "0.1.5",
+    "@activepieces/piece-youtube": "0.4.10",
+    "@activepieces/piece-rss": "0.5.7",
 }
 
 

@@ -228,6 +228,38 @@ get a scripted send in the harness. This is exactly what turns the 5 agents' per
   <div class="exit"><b>Exit:</b> live URL + published blog + merged PR. <b>v1 is done.</b></div>
 </div>
 
+<h2>Multi-tenant cloud deployment — the isolation gate</h2>
+<p class="muted" style="font-size:13.5px">A recurring question: can <b>one</b> hosted CUGA + FastAPI + Activepieces
+serve <b>many</b> users, each with their own integrations (my Gmail vs. your Gmail), with no data leak? The
+<b>design</b> is sound — per-user AP connection external-ids (<code>ea::&lt;tenant&gt;::&lt;user&gt;::&lt;app&gt;</code>),
+tokens encrypted in AP where the agent never sees them, a <code>Principal</code> key per request, and a channel
+link-token flow. But the <b>runtime</b> doesn't yet honor it on the web path, and two shared singletons collide
+under concurrency. <b>Verdict today: single-user / trusted-demo only — multi-user cloud leaks by default.</b>
+All issues are fixable; full write-up in <code>events_docs/DEPLOYMENT_ISSUES.md</code>.</p>
+<table>
+  <tr><th>Issue</th><th class="c">Layer</th><th class="c">Effort</th><th>Consequence &amp; fix</th></tr>
+  <tr><td class="k">No <code>X-User-Id</code> from auth</td><td class="c s-todo">events</td><td class="c">small</td>
+    <td class="muted">Web users all collapse to <code>user_id="local"</code> → shared AP connection → user B's Gmail
+    action runs on user A's token. <b>Dominant leak.</b> Fix: auth middleware sets the principal from the session.</td></tr>
+  <tr><td class="k"><code>EVENTS_DB=":memory:"</code></td><td class="c s-todo">events</td><td class="c">trivial</td>
+    <td class="muted">Identity/subscriptions don't persist, can't share across replicas. Fix: point at a durable DB.</td></tr>
+  <tr><td class="k"><code>ActivityTracker</code> singleton</td><td class="c s-wip">CORE CUGA</td><td class="c">larger</td>
+    <td class="muted">Process-global mutable state (<code>intent</code>, <code>steps</code>, tokens, screenshots) →
+    concurrent runs corrupt each other. Latent ~10mo; events layer is first concurrent multi-user load. Fix
+    (upstream): contextvar-scope it.</td></tr>
+  <tr><td class="k">Box-direct single-identity</td><td class="c s-todo">events</td><td class="c">moderate</td>
+    <td class="muted">One global <code>BOX_DEV_TOKEN</code> + per-folder (not per-user) watermark. Fix: route via
+    per-user AP connection, or fence as demo-only.</td></tr>
+  <tr><td class="k">AP one instance/admin/project</td><td class="c s-todo">infra</td><td class="c">topology</td>
+    <td class="muted">CE 1-project cap silently degrades per-tenant projects to one shared project; one admin JWT is
+    a throttle/SPOF. Not a leak — a capacity ceiling. Fix: AP Enterprise or per-tenant AP; vault <code>AP_PASSWORD</code>.</td></tr>
+</table>
+<div class="exit" style="background:var(--shade)"><b>Critical path to "safe for multi-user cloud":</b> the top
+three — auth identity + durable DB + tracker isolation. The first two are contained fixes on this branch; the
+tracker is an upstream CUGA change (schedule risk). After them, your Gmail and another user's become physically
+distinct encrypted AP connections, selected per authenticated request — the safe target state. <b>This stays v2:
+v1 ships single-user / trusted-demo.</b></div>
+
 <h2>Explicitly out of scope (v2)</h2>
 <div class="panel out"><ul class="tight" style="columns:2">
   <li>WhatsApp, Outlook/Teams, Twilio channels</li>

@@ -15,8 +15,28 @@ podman machine init && podman machine start          # the Linux VM podman needs
 uv sync --python 3.12                                # CUGA deps → .venv (minutes)
 scripts/frontend_build.sh                            # build the Studio UI (only if you want the web UI)
 cp .env.events.example .env                          # then fill it in (see .env keys below)
-make env-check                                       # .env complete → green
+
+# 3. verify the machine is ready (both fail LOUD with the exact fix; make up runs preflight too)
+make env-check                                       # .env has the required keys
+make preflight                                       # the TOOLS are installed & running
 ```
+
+### Prerequisites for `make up` (all checked by `make preflight`)
+
+`make up` **runs `make preflight` first**, so a missing tool aborts *before* anything starts — you
+get a clear `✗ … — brew install …` line, never a silent or half-started failure. What it checks:
+
+| Need | Why | If missing |
+|---|---|---|
+| **podman** (or docker), **VM running** | runs Activepieces (app + postgres + redis) | `✗ no container runtime …` / `✗ podman … VM isn't running — podman machine start` |
+| **cloudflared** | the AP public tunnel (`AP_FRONTEND_URL`) | `✗ cloudflared missing — brew install cloudflared` |
+| **uv** + `.venv` | runs CUGA | `✗ uv missing …` / `✗ no .venv — uv sync --python 3.12` |
+| **ngrok** *(only if `EVENTS_NGROK_DOMAIN` is set)* | the stable CUGA public URL | `✗ ngrok missing but EVENTS_NGROK_DOMAIN=… is set — brew install ngrok …` |
+| node *(optional)* | building the Studio UI only, not running | `· node missing …` (info, not a failure) |
+
+If `EVENTS_NGROK_DOMAIN` is **unset**, preflight prints a `·` note and `make up` proceeds with an
+**ephemeral cloudflared** tunnel (URL changes each run → you re-point Slack/OAuth). ngrok is
+recommended precisely to avoid that — see [setup/NGROK.md](setup/NGROK.md).
 
 **Accounts / keys (external, unavoidable):** an LLM key (watsonx or OpenAI); an AP admin
 email+password *you invent*; bot tokens (Telegram @BotFather, Discord dev portal + **Message Content
@@ -66,7 +86,7 @@ make public-url         # prints the public URL + the exact strings to paste int
 **Wire the external consoles once** (stable because of the pinned ngrok URL):
 1. **Slack** → Event Subscriptions Request URL `https://<domain>/api/events/slack/events`, subscribe `message.channels`, invite the bot.
 2. **Discord** → enable **Message Content Intent**.
-3. **OAuth integrations** → each provider's redirect URI = `https://<domain>/api/events/connect/<app>/callback`, then **connect in the browser**: open `https://<domain>/api/events/connect/<app>` (or Studio → Integrations → Connect) and approve. GitHub is OAuth (scopes `repo` + `admin:repo_hook`), **not** a pasted PAT — `piece-github` accepts only OAuth.
+3. **OAuth integrations** (Gmail · GitHub · Box · Google Calendar · Pinterest) → set each provider's redirect URI = `https://<domain>/api/events/connect/<app>/callback`, then **connect in the CUGA Studio** (`http://localhost:7860/studio` → **Integrations** or **Setup** tab → **Connect**). GitHub is OAuth (scopes `repo` + `admin:repo_hook`), **not** a pasted PAT. YouTube · RSS need no connection (public feeds — they show "ready"). *(CLI fallback to the Connect button: open `https://<domain>/api/events/connect/<app>`.)*
 
 **Verify:**
 ```bash
@@ -188,12 +208,25 @@ make doctor        # 3. every live cred green — incl. a FRESH BOX_DEV_TOKEN (s
 make test          # 4. the full offline suite (no stack or creds needed — must be all green)
 ```
 
-5. **Connect Gmail + GitHub in the browser** — a nuke wipes AP's connections and only a human can
-   consent. Open `https://<domain>/api/events/connect/gmail` and `…/connect/github`, approve each,
-   then `curl -s localhost:7860/api/events/integrations` → `gmail` · `box` · `github` all `connected`.
-   ⚠ Google shows an **"unverified app"** warning (testing-mode OAuth app): click *Advanced → Go to …
-   → Allow* and continue to the success page. Abandoning mid-consent leaves NO connection — the
-   server log shows the 302 out to Google but no `/connect/gmail/callback` ever arrives.
+5. **Connect the integrations — do this in the CUGA Studio UI.** A nuke wipes AP's connections and
+   only a human can consent. **Open the Studio → `http://localhost:7860/studio` → Integrations tab**
+   (or the **Setup tab**, where every id/secret, token, and connect/reconnect lives in one place),
+   and click **Connect** on each — a browser tab opens the OAuth consent, approve, done.
+
+   | Integration | Studio button | Notes |
+   |---|---|---|
+   | **Gmail** · **GitHub** · **Box** · **Google Calendar** · **Pinterest** | **Connect** (OAuth) | approve in the popup |
+   | **YouTube** · **RSS** | *(none — shows "ready")* | public feeds, no OAuth |
+
+   ⚠ Google shows an **"unverified app"** warning (testing-mode OAuth app): *Advanced → Go to … →
+   Allow* → success page. Abandoning mid-consent leaves NO connection (the server log shows the 302
+   out to Google but no `…/callback` returns). GitHub is OAuth (scopes `repo` + `admin:repo_hook`),
+   **not** a pasted PAT.
+
+   Verify all connected: **Studio → Integrations** (green), or
+   `curl -s localhost:7860/api/events/integrations` → gmail · github · box · google_calendar ·
+   pinterest = `connected`, youtube · rss = `ready`. *(CLI alternative to the buttons: open
+   `https://<domain>/api/events/connect/<app>` directly — but the Studio is the intended path.)*
 
 ```bash
 make test-live        # 6. live smoke — 4 channels + 4 flow modes (green even before step 5,
@@ -204,10 +237,13 @@ make test-exhaustive  # 7. THE full matrix: every agent · every registry trigge
 ```
 
 8. **Other testing tools** — [checklist.html](checklist.html) is the interactive **manual**
-   checklist (80+ items, browser-saved statuses, *Copy report*); **`make test-report`** runs the
-   harness ladder (offline · live · flows · delegation — the fleet-era now/matrix/fire rungs
-   auto-skip under `EVENTS_SUPERVISOR=1`) and writes the timestamped HTML report to
-   `results/index.html`.
+   checklist (80+ items, browser-saved statuses, *Copy report*; start at section **P** for triggers,
+   item **P0** is the new-pieces sweep); [checklist_actions.html](checklist_actions.html) is the
+   **action-half** checklist. **`make test-report`** runs the full ladder — `offline · live · flows ·
+   delegation · newpieces · exhaustive` (the fleet-era `now/matrix/fire` rungs auto-skip under
+   `EVENTS_SUPERVISOR=1`, superseded by the arm+FIRE `exhaustive` rung) — and writes a persistent,
+   timestamped report to `results/runs/<ts>/` + `results/index.html` + `results/LATEST.md`
+   (open with `make report`).
 
 ### Scheduled flows are single-shot (cadence stripping) — and can be bounded
 
@@ -247,25 +283,37 @@ run `make ap-pieces`.
 
 ## Which test do I run, and when?
 
-Six targets because "does it work?" is six different questions at six different costs — one
-40-minute monolith would just mean nobody runs tests. Each rung names the layer that broke.
+Different targets because "does it work?" is several questions at very different costs — one
+40-minute monolith would just mean nobody runs tests. **The three you actually reach for:**
+
+- **`make test`** — the **fast unit-like gate** (offline, no stack, no creds). Run after every change.
+- **`make test-exhaustive`** — the **true e2e suite**: every agent + every trigger **armed AND fired**, answer-quality gated, zero-leak cleanup. Run before a demo/handoff.
+- **`make test-report`** — the **one-command super-exhaustive**: runs the whole ladder (incl. the two above + the matrix + new pieces) and writes a persistent, timestamped HTML+MD report.
 
 | Target | The question it answers | Cost | Run it when |
 |---|---|---|---|
-| `make test` | Is the code internally correct? (no stack, no creds) | 30 s | **after every change** |
+| `make test` | **Unit gate** — is the code internally correct? (no stack, no creds) | 30–60 s | **after every change** |
 | `make test-live` | Is the running stack plumbed? one probe per channel + flow mode | 2 min | after touching the stack / `.env` / a reload |
-| `make test-suite-now` | Can each agent actually do its job? | 14 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` (asserts per-agent names; ROADMAP §not-yet-vetted) |
 | `make test-suite-flows` | Does an English sentence become the *right* AP flow? | 6 min | after touching the concierge / classifier / registry |
-| `make test-matrix` | Is every trigger × sink combination wired? | 6 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` |
-| `make test-fire` | Does an armed flow genuinely FIRE on a real tick? | 9 min | **fleet-era** — auto-skipped under `EVENTS_SUPERVISOR=1` (the GitHub triggers harness covers real fires there) |
+| `make test-matrix` | **Matrix** — is every trigger × sink combination wired? | 6 min | *fleet-era*: run standalone, or covered by `test-exhaustive` under `EVENTS_SUPERVISOR=1` |
 | `make test-delegation` | Does the supervisor pick the right sub-agent? (≥90% gate) | 10 min | supervisor mode only; after editing `supervisor_agents.yaml` |
-| `make test-exhaustive` | EVERYTHING: every agent + every trigger armed AND fired, answer-quality gated, REAL/SYNTH/BLOCKED marked, zero-leak cleanup | 45–75 min | before a demo/handoff; after big refactors (plans/EXHAUSTIVE_MATRIX.md) |
+| `make test-new-pieces` | Do the newer pieces (Calendar/Pinterest/YouTube/RSS/Discord) arm + synth-fire? | 3 min | after touching the trigger registry / a new piece |
+| `make test-exhaustive` | **True e2e** — every agent + every trigger armed AND fired, answer-quality gated, REAL/SYNTH/BLOCKED marked, zero-leak cleanup | 45–75 min | before a demo/handoff; after big refactors (plans/EXHAUSTIVE_MATRIX.md) |
+| `make test-report` | **Super-exhaustive** — the whole ladder (`offline → live → flows → delegation → new-pieces → exhaustive`) in one run, into a persistent report | ~90–120 min | for a handoff or a citable "all is well" result |
 
-Day to day you need the first two. **`make test-report`** runs the ladder in order and writes the
-timestamped HTML report (`results/index.html`) — the one command for a handoff or a citable result.
-`make doctor` isn't a test — it pings each service with its real `.env` cred and never fails, only
-reports. Full reference (verdict vocabulary, what each harness can and cannot prove, the live
-GitHub/Slack harnesses): [TESTING.md](TESTING.md).
+*(Also present but auto-skipped under `EVENTS_SUPERVISOR=1` because they assert per-agent names, superseded by `test-exhaustive`: `test-suite-now`, `test-fire`. Run them standalone in fleet mode.)*
+
+**`make test-report`** writes the timestamped report to `results/runs/<ts>/` and copies it to
+`results/index.html` + `results/LATEST.md` (open with `make report`). It's the one command that both
+runs everything **and saves the result**. `make doctor` isn't a test — it pings each service with its
+real `.env` cred and never fails, only reports. Full reference (verdict vocabulary, what each harness
+can and cannot prove, the live GitHub/Slack harnesses): [TESTING.md](TESTING.md).
+
+> **Live-run gotcha:** the exhaustive/report harnesses need AP's public tunnel (`AP_FRONTEND_URL`)
+> alive — it's a **cloudflared tunnel baked into the AP container** and trycloudflare URLs *flap*.
+> If a run aborts at preflight with `AP_FRONTEND_URL is DEAD`, run **`make ap`** to re-bake a fresh
+> tunnel (recreates the AP app container; your flows + OAuth connections persist in the DB), then
+> re-run. A dead tunnel also surfaces mid-run as `[Errno 8] nodename nor servname` DNS errors.
 
 ## Resets — know the difference
 

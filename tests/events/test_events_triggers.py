@@ -202,10 +202,24 @@ EVAL = [
     ("when a new user joins the workspace, send an onboarding brief", ("slack", "new_slack_user")),
     ("when a new custom emoji is added, announce it", ("slack", "new_emoji")),
     ("when I save a message for later, research it", ("slack", "saved_message")),
-    # discord (2)
+    # discord (3)
     ("when a new member joins the server on discord, greet them", ("discord", "new_member")),
     ("when someone posts in #help on discord, answer from the docs",
      ("discord", "new_channel_message")),
+    ("when someone reacts in discord with :tada:, thank them", ("discord", "new_reaction")),
+    # google calendar (3)
+    ("when a new event is added to my calendar, brief me", ("google_calendar", "new_event")),
+    ("when a calendar event is updated, tell me what changed",
+     ("google_calendar", "new_or_updated_event")),
+    ("when a meeting ends, email me the follow-ups", ("google_calendar", "event_ends")),
+    # pinterest (3)
+    ("when there's a new pin on my pinterest board, share it", ("pinterest", "new_pin")),
+    ("when a new board is created on pinterest, announce it", ("pinterest", "new_board")),
+    ("when I get a new pinterest follower, thank them", ("pinterest", "new_follower")),
+    # youtube (1)
+    ("when my youtube channel posts a new video, share it", ("youtube", "new_video")),
+    # rss (1)
+    ("when a new item appears in the rss feed, summarize it", ("rss", "new_item")),
 ]
 
 

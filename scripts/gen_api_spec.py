@@ -430,6 +430,42 @@ ENDPOINTS = [
             "Anyone who can reach Activepieces and knows a flow id can fire it. Keep AP off the public "
             "tunnel; the gate that matters is this endpoint's <code>X-Gateway-Token</code>."),
 
+    E("POST", "/api/events/synth-fire", "flows",
+      "Synthetically fire ANY AP trigger with a piece-exact payload — no flow, no connection, no real event.",
+      tier="debug", callers=["operator", "tests"], auth="gateway",
+      body=[("Fire a piece's default trigger with its built-in synth sample", {"source": "google_calendar"},
+             "Uses the registry's <code>synth</code> sample for the source's default trigger and the "
+             "supervisor <code>cuga</code> agent. The agent runs on the exact payload shape a REAL "
+             "event delivers — the way to test calendar/pinterest/youtube/rss/gmail/box triggers "
+             "<b>without</b> a live connection or an armed flow."),
+            ("Deliver the result to a channel, like the real watcher", {
+                "source": "rss", "event": "new_item", "deliver_to": "slack",
+                "deliver_target": "C0123", "prompt": "Summarize this feed item for the team."},
+             "With <code>deliver_to</code>+<code>deliver_target</code> the answer is delivered to that "
+             "channel exactly as the armed watcher would."),
+            ("Override the payload", {"source": "youtube",
+                "payload": {"title": "New video", "link": "https://youtu.be/x", "author": "Fireship",
+                            "pubDate": "2026-07-21T09:00:00Z"}},
+             "Pass your own <code>payload</code> to exercise a specific case; it replaces the registry "
+             "synth sample.")],
+      responses=[
+          (200, {"ok": True, "source": "google_calendar", "event": "new_event",
+                 "delivered_to": None, "answer": "**Event Summary** — Team Sync, Jul 22 10:00…",
+                 "trace_id": "9e0c…"},
+           "The agent ran on the synthetic event and returned its answer."),
+          (400, {"ok": False, "error": "slack/new_reaction is a DIRECT trigger — fire it through its "
+                                       "real transport"},
+           "Direct triggers (slack/discord/telegram) arrive at CUGA over their own transport; this "
+           "endpoint is for AP-backed triggers only."),
+          (401, {"ok": False, "error": "bad or missing X-Gateway-Token"}, ""),
+          (404, {"ok": False, "error": "no trigger for source='foo' event=None"}, ""),
+          (422, {"ok": False, "error": "youtube/new_video has no synth sample; pass an explicit 'payload'"},
+           "Only the default triggers ship a synth sample; pass your own <code>payload</code> for the rest."),
+      ],
+      notes="Unlike <code>/run</code>, this needs <b>no armed flow and no connection</b> — it injects the "
+            "synthetic event straight at the <code>/invoke</code> seam, so it works for POLLING triggers "
+            "that <code>/run</code> cannot fire. Same debug switch: <code>EVENTS_DEBUG_RUN=0</code> disables it."),
+
     E("GET", "/api/events/subscriptions/{sub_id}/flow", "flows",
       "The CUGA model plus the live Activepieces flow JSON.",
       tier="ui", callers=["studio", "tests"], path_params=[("sub_id", "subscription id", "s1")],

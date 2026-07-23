@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -35,7 +35,8 @@ ap-pieces: ## Ensure AP has the integration pieces installed (fixes fresh-DB "pi
 cuga: ## Provision infra (MCP registry + tunnels) then boot `cuga start … --events`
 	scripts/events_up.sh
 
-up: ap cuga ## Full dev stack: Activepieces + infra + `cuga start … --events` (one server)
+up: preflight ap cuga ## Full dev stack: Activepieces + infra + `cuga start … --events` (one server)
+	@echo "✓ stack up.   → NEXT: make status"
 
 start: up ## Alias for `up`. Bare server (no AP/tunnels): `cuga start demo --events`
 
@@ -64,8 +65,16 @@ fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels 
 	@echo "== 2/4 nuke =="; $(MAKE) --no-print-directory nuke
 	@echo "== 3/4 up (fresh AP + CUGA) =="; $(MAKE) --no-print-directory up
 	@echo "== 4/4 arm channels =="; $(MAKE) --no-print-directory channels
-	@echo; echo "✅ fresh stack up. Verify with: make status · make test-live"
 	@scripts/events_up.sh --public-url
+	@echo; echo "✅ Fresh stack up. Now do these IN ORDER:"; \
+	  echo "   1. make status              # 2 servers 200 · 3 containers Up · tunnel URLs"; \
+	  echo "   2. make doctor              # creds green — paste a FRESH BOX_DEV_TOKEN, then: make reload"; \
+	  echo "   3. make test                # offline gate — all green"; \
+	  echo "   4. CONNECT integrations     # open http://localhost:7860/studio → Integrations → Connect"; \
+	  echo "                               #   gmail · github · box · google_calendar · pinterest  (youtube/rss = ready)"; \
+	  echo "   5. make test-live           # 4 channels + 4 flow modes"; \
+	  echo "   6. make test-exhaustive     # full arm+FIRE matrix → results/exhaustive_<ts>.html"; \
+	  echo; echo "   → NEXT: make status"
 
 ## ---- inspect --------------------------------------------------------------
 status: ## Show what's running + tunnel URLs
@@ -73,6 +82,7 @@ status: ## Show what's running + tunnel URLs
 	@echo "--- containers ---"
 	@$(DOCKER) ps --filter name=activepieces --filter name=ap-postgres --filter name=ap-redis \
 	  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+	@echo "   → NEXT (setup): make doctor"
 
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
 	@scripts/events_up.sh --public-url
@@ -111,6 +121,7 @@ bench: ## NL→Flow benchmark scorecard (offline, deterministic; gates CORRECT_A
 
 test-live: ## Live e2e — 4 channels + 4 flow modes. Needs the stack up (make up) + creds (make doctor)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_e2e.py $(ARGS)
+	@echo "   → NEXT: make test-exhaustive   (the full arm+FIRE matrix → HTML report)"
 
 test-suite-now: ## Live suite — every seeded agent, invoked directly (asserts on meta.mcp)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only now $(ARGS)
@@ -149,6 +160,7 @@ doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py
 	@echo; echo "--- Activepieces pieces (integration Connect needs these) ---"; \
 	  $(PY) scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
+	@echo; echo "   → NEXT (setup): make test  (then CONNECT integrations in the Studio → make test-live)"
 
 sync: ## uv sync the venv
 	uv sync --python 3.12
@@ -166,5 +178,24 @@ env-check: ## Check .env has the required keys (offline, no network)
 	if [ $$miss -eq 0 ]; then echo ".env looks good ✅"; \
 	  else echo ".env is missing required keys ✗ (see above)"; exit 1; fi
 
+preflight: ## Check the TOOLS `make up` needs are installed & running — fails LOUD with fixes (run before make up)
+	@ok=1; \
+	if command -v podman >/dev/null 2>&1; then \
+	  podman info >/dev/null 2>&1 || { echo "✗ podman installed but its VM isn't running — run: podman machine start"; ok=0; }; \
+	elif command -v docker >/dev/null 2>&1; then \
+	  docker info >/dev/null 2>&1 || { echo "✗ docker installed but not running — start Docker Desktop"; ok=0; }; \
+	else echo "✗ no container runtime — brew install podman && podman machine init && podman machine start"; ok=0; fi; \
+	command -v cloudflared >/dev/null 2>&1 || { echo "✗ cloudflared missing — brew install cloudflared"; ok=0; }; \
+	command -v uv >/dev/null 2>&1 || { echo "✗ uv missing — brew install uv, then: uv sync --python 3.12"; ok=0; }; \
+	test -x .venv/bin/python || { echo "✗ no .venv — run: uv sync --python 3.12"; ok=0; }; \
+	dom=$$(grep -E '^EVENTS_NGROK_DOMAIN=' .env 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/[[:space:]]*#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//'); \
+	if [ -n "$$dom" ]; then command -v ngrok >/dev/null 2>&1 || { echo "✗ ngrok missing but EVENTS_NGROK_DOMAIN=$$dom is set — brew install ngrok, verify email, reserve the domain (dashboard.ngrok.com)"; ok=0; }; \
+	  else echo "· EVENTS_NGROK_DOMAIN unset — CUGA will use an EPHEMERAL cloudflared tunnel (URL changes each run; re-point Slack/OAuth). ngrok is recommended — see setup/NGROK.md"; fi; \
+	command -v node >/dev/null 2>&1 || echo "· node missing — only needed to build the Studio UI (scripts/frontend_build.sh), NOT to run the stack"; \
+	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events_docs/SETUP.md → Prerequisites.)"; exit 1; fi
+
 test-exhaustive: ## EXHAUSTIVE live matrix — every agent/trigger/channel, arm+FIRE+answer-verified (~45-75 min)
 	$(PY) tests/events/live_exhaustive.py $(ARGS)
+
+test-new-pieces: ## Live sweep of the newer pieces — Calendar/Pinterest/YouTube/RSS/Discord (arm + synth-fire, ~3 min)
+	EVENTS_SERVER_URL=http://localhost:7860 $(PY) tests/events/live_new_pieces.py $(ARGS)

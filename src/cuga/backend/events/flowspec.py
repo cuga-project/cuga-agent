@@ -105,8 +105,42 @@ def _x_pattern(t: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _x_yt_channel(t: str) -> str:
+    """YouTube channel: an @handle, a youtube.com URL, or a raw UC… channel id."""
+    m = re.search(r"(https?://(?:www\.)?youtube\.com/[^\s,]+)", t, re.I)
+    if m:
+        return m.group(1).rstrip(".,;")
+    m = re.search(r"(@[A-Za-z0-9_.-]{2,40})", t)          # @Fireship
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(UC[0-9A-Za-z_-]{20,24})\b", t)     # raw channel id
+    return m.group(1) if m else ""
+
+
+def _x_board(t: str) -> str:
+    """Pinterest board id — a long numeric id (optionally after 'board')."""
+    m = re.search(r"\bboard\s+(?:id\s+)?(\d{6,25})\b", t, re.I) or re.search(r"\b(\d{9,25})\b", t)
+    return m.group(1) if m else ""
+
+
+def _x_calendar(t: str) -> str:
+    """Calendar id — 'primary', a quoted name, or an email-style calendar id."""
+    if re.search(r"\bprimary\b", t, re.I):
+        return "primary"
+    m = re.search(r"\bcalendar\s+(?:id\s+)?([\w.+-]+@[\w.-]+\.\w+)", t, re.I)
+    return m.group(1) if m else ""
+
+
+def _x_rss(t: str) -> str:
+    """RSS feed URL — any http(s) URL in the utterance."""
+    m = re.search(r"(https?://[^\s,]+)", t, re.I)
+    return m.group(1).rstrip(".,;") if m else ""
+
+
 _EXTRACT = {"repo": _x_repo, "label": _x_label, "channel": _x_channel,
-            "emoji": _x_emoji, "folder": _x_folder, "pattern": _x_pattern}
+            "emoji": _x_emoji, "folder": _x_folder, "pattern": _x_pattern,
+            "yt_channel": _x_yt_channel, "board": _x_board, "calendar": _x_calendar,
+            "rss_feed_url": _x_rss}
 
 
 def extract_slots(app: str, event: str, text: str) -> dict:
@@ -137,6 +171,10 @@ _MARKERS = {
     "slack": re.compile(r"\bslack\b", re.I),
     "discord": re.compile(r"\bdiscord\b", re.I),
     "telegram": re.compile(r"\btelegram\b", re.I),
+    "google_calendar": re.compile(r"\b(google )?calendar\b", re.I),
+    "pinterest": re.compile(r"\bpinterest\b", re.I),
+    "youtube": re.compile(r"\byoutube\b", re.I),
+    "rss": re.compile(r"\b(rss|atom|feed)\b", re.I),
 }
 
 

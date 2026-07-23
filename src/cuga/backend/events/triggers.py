@@ -58,6 +58,10 @@ SLOTS = {
                   required=False),
     "folder": Slot("folder", "Which Box folder id should I watch?", required=False),
     "pattern": Slot("pattern", "What text/URL pattern should the message match?", required=False),
+    "calendar": Slot("calendar", "Which Google Calendar (its id, or 'primary')?", required=False),
+    "board": Slot("board", "Which Pinterest board id should I watch?"),   # required: new_pin needs board_id
+    "yt_channel": Slot("yt_channel", "Which YouTube channel (id, URL, or @handle)?"),
+    "rss_feed_url": Slot("rss_feed_url", "Which RSS/Atom feed URL should I watch?"),
 }
 
 
@@ -379,6 +383,103 @@ _DISCORD = [
        payload={"content": None, "channel_id": None, "author": None},
        phrases=(r"\bposts? in #\w+.{0,30}\bdiscord\b", r"\bdiscord\b.{0,30}\bposts? in #\w+",
                 r"\bsomeone posts in #\w+")),
+    # MESSAGE_REACTION_ADD rides the GUILD_MESSAGE_REACTIONS intent (bit 10, NOT privileged — so it
+    # is default-on, unlike GUILD_MEMBERS). The gateway forwards it via on_event; _discord_event
+    # lifts channel_id + emoji.name for the channel/emoji filters.
+    _t(app="discord", event="new_reaction", title="New Reaction", backend="direct",
+       direct_kind="MESSAGE_REACTION_ADD", fire="real", slots=("emoji", "channel"),
+       payload={"emoji": None, "user_id": None, "channel_id": None, "message_id": None},
+       phrases=(r"\breaction\b.{0,20}\bdiscord\b", r"\bdiscord\b.{0,25}\breact(s|ed|ion)?\b",
+                r"\breact(s|ed|ion)?\b.{0,25}\bdiscord\b",
+                r"\breacts?\b.{0,20}:\w+:.{0,20}\bdiscord\b")),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Google Calendar — AP polling/webhook piece. calendar_id is a required DROPDOWN (AP resolves it
+# against the connection); we pass a literal id via source_input when the user names one, else the
+# arm asks. Payload paths follow the piece's sampleData (calendar#event shape).
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# app is our canonical name (google_calendar); piece is the AP piece key (google-calendar). Kept
+# distinct so the app stays [a-z_] — the supervisor-roster/classifier HANDLES convention is app/event.
+_GCAL = dict(app="google_calendar", backend="ap", piece="google-calendar", slots=("calendar",),
+             fire="manual")
+_CAL_PAYLOAD = {"title": "{{trigger.summary}}", "description": "{{trigger.description}}",
+                "start": "{{trigger.start.dateTime}}", "end": "{{trigger.end.dateTime}}",
+                "status": "{{trigger.status}}", "organizer": "{{trigger.organizer.email}}",
+                "url": "{{trigger.htmlLink}}"}
+_GOOGLE_CALENDAR = [
+    _t(event="new_event", title="New Event", ap_trigger="new_event", default=True,
+       payload=dict(_CAL_PAYLOAD),
+       synth={"summary": "Team Sync", "description": "Weekly team sync — agenda in the doc.",
+              "status": "confirmed", "htmlLink": "https://calendar.google.com/event?eid=abc123",
+              "organizer": {"email": "lead@example.com"},
+              "start": {"dateTime": "2026-07-22T10:00:00-07:00"},
+              "end": {"dateTime": "2026-07-22T11:00:00-07:00"}},
+       phrases=(r"\bnew (calendar )?event\b", r"\bevent\b.{0,20}\b(added|created)\b.{0,20}\bcalendar\b",
+                r"\b(added|scheduled)\b.{0,20}\bcalendar\b"), **_GCAL),
+    _t(event="new_or_updated_event", title="New or Updated Event",
+       ap_trigger="new_or_updated_event", payload=dict(_CAL_PAYLOAD),
+       phrases=(r"\bcalendar\b.{0,25}\b(changes?|updated?|modified)\b",
+                r"\b(event|meeting)\b.{0,20}\b(changes?|updated?)\b"), **_GCAL),
+    _t(event="event_ends", title="Event Ends", ap_trigger="event_ends", payload=dict(_CAL_PAYLOAD),
+       phrases=(r"\b(event|meeting)\b.{0,20}\bends?\b", r"\bafter (a |the )?meeting\b"), **_GCAL),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Pinterest — AP polling piece. newPinOnBoard needs a board_id (required DROPDOWN); newBoard and
+# newFollower need no user slot.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+_PIN = dict(app="pinterest", backend="ap", piece="pinterest", fire="manual")
+_PINTEREST = [
+    _t(event="new_pin", title="New Pin on Board", ap_trigger="newPinOnBoard", default=True,
+       slots=("board",), payload={"items": "{{trigger.items}}", "bookmark": "{{trigger.bookmark}}"},
+       synth={"items": [{"id": "813744226420795884", "title": "Sheet-pan dinner",
+                         "description": "One-pan roasted chickpeas + veg",
+                         "link": "https://www.pinterest.com/pin/813744226420795884/"}],
+              "bookmark": "abc"},
+       phrases=(r"\bnew pin\b", r"\bpin\b.{0,20}\bboard\b", r"\bpinterest\b.{0,20}\bpin\b"), **_PIN),
+    _t(event="new_board", title="New Board", ap_trigger="newBoard",
+       payload={"name": "{{trigger.name}}", "description": "{{trigger.description}}",
+                "id": "{{trigger.id}}", "pins": "{{trigger.pin_count}}",
+                "followers": "{{trigger.follower_count}}", "owner": "{{trigger.owner.username}}"},
+       phrases=(r"\bnew board\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bnew board\b"), **_PIN),
+    _t(event="new_follower", title="New Follower", ap_trigger="newFollower",
+       payload={"username": "{{trigger.username}}", "type": "{{trigger.type}}"},
+       phrases=(r"\bnew follower\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bfollower\b"), **_PIN),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# YouTube — AP polling piece (RSS-backed). channel_identifier is a required SHORT_TEXT (id / URL /
+# @handle) → the yt_channel slot. Payload follows the feed sampleData.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+_YOUTUBE = [
+    _t(app="youtube", backend="ap", piece="youtube", event="new_video", title="New Video",
+       ap_trigger="new-video", default=True, slots=("yt_channel",), fire="manual",
+       payload={"title": "{{trigger.title}}", "link": "{{trigger.link}}",
+                "author": "{{trigger.author}}", "published": "{{trigger.pubDate}}"},
+       synth={"title": "How the new transformer variant actually works",
+              "link": "https://www.youtube.com/watch?v=C7MZkWxrtvM",
+              "author": "Fireship", "pubDate": "2026-07-21T09:00:00.000Z"},
+       phrases=(r"\bnew videos?\b", r"\byoutube\b.{0,20}\b(videos?|uploads?|posts?)\b",
+                r"\b(uploads?|posts?)\b.{0,20}\byoutube\b", r"@[\w.-]+.{0,20}\b(video|upload)s?\b")),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# RSS — AP polling piece. rss_feed_url is the required feed URL (SHORT_TEXT). No OAuth (public feed).
+# Same feed sampleData shape as youtube.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+_RSS = [
+    _t(app="rss", backend="ap", piece="rss", event="new_item", title="New RSS Item",
+       ap_trigger="new-item", default=True, slots=("rss_feed_url",), fire="manual",
+       payload={"title": "{{trigger.title}}", "link": "{{trigger.link}}",
+                "author": "{{trigger.author}}", "published": "{{trigger.pubDate}}",
+                "summary": "{{trigger.summary}}"},
+       synth={"title": "Anthropic ships a new agents SDK feature",
+              "link": "https://example.com/blog/agents-sdk",
+              "author": "The Verge", "pubDate": "2026-07-21T08:00:00.000Z",
+              "summary": "A short summary of the feed item."},
+       phrases=(r"\brss\b", r"\b(feed|atom)\b.{0,20}\b(new|item|post|update|entry)\b",
+                r"\bnew (feed )?item\b", r"\bwhen .{0,30}\bfeed\b.{0,20}\bupdates?\b")),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -406,7 +507,8 @@ _WEBHOOK = [
 
 
 TRIGGERS: dict[tuple[str, str], Trigger] = {
-    t.key: t for t in (_GITHUB + _GMAIL + _BOX + _SLACK + _DISCORD + _TELEGRAM + _WEBHOOK)
+    t.key: t for t in (_GITHUB + _GMAIL + _BOX + _SLACK + _DISCORD + _TELEGRAM + _WEBHOOK
+                       + _GOOGLE_CALENDAR + _PINTEREST + _YOUTUBE + _RSS)
 }
 
 # legacy source aliases (the classifier/LLM historically said github_pr / github_issue)

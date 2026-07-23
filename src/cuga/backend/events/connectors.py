@@ -49,6 +49,15 @@ INTEGRATIONS = [
     {"name": "github", "label": "GitHub", "app": "github", "auth": "oauth", "live": True,
      "note": "AP OAuth connection (repo + admin:repo_hook) + new-PR trigger (pr_reviewer). "
              "NOT a pasted PAT: piece-github accepts only OAUTH2/CUSTOM_AUTH"},
+    {"name": "google_calendar", "label": "Google Calendar", "app": "google_calendar",
+     "auth": "oauth", "live": True,
+     "note": "AP OAuth (google-calendar piece): new_event · new_or_updated_event · event_ends"},
+    {"name": "pinterest", "label": "Pinterest", "app": "pinterest", "auth": "oauth", "live": True,
+     "note": "AP OAuth (pinterest piece): new_pin · new_board · new_follower"},
+    {"name": "youtube", "label": "YouTube", "app": "youtube", "auth": "none", "live": True,
+     "note": "AP youtube piece — new_video from a PUBLIC channel feed (no OAuth, just the handle)"},
+    {"name": "rss", "label": "RSS / Atom", "app": "rss", "auth": "none", "live": True,
+     "note": "AP rss piece — new_item from any PUBLIC feed URL (no OAuth)"},
     {"name": "outlook", "label": "Outlook", "app": "microsoft-outlook", "auth": "oauth",
      "live": False, "note": "planned — M365 / Graph"},
 ]
@@ -85,7 +94,10 @@ def integrations_status(connections: list[dict] | None, *, ap_configured: bool,
     connected = _connected_apps(connections) if connections is not None else set()
     out = []
     for i in INTEGRATIONS:
-        if not ap_configured:
+        if i.get("auth") == "none":
+            # a public-feed piece (youtube/rss) needs NO connection — it's ready as soon as AP is up
+            status = "ready" if ap_configured else "ap_not_configured"
+        elif not ap_configured:
             status = "ap_not_configured"
         elif connections is None:
             status = "unknown"
@@ -100,8 +112,10 @@ def integrations_status(connections: list[dict] | None, *, ap_configured: bool,
         out.append({"name": i["name"], "label": i["label"], "kind": "integration",
                     "direction": "watch/act", "auth": _auth_kind(i["app"], i["auth"]),
                     "status": status,
-                    "connected": status == "connected", "live": i["live"], "note": i["note"],
-                    "connect_url": ap_connect_url})
+                    # 'ready' (public-feed pieces) counts as good-to-go — nothing to connect
+                    "connected": status in ("connected", "ready"),
+                    "needs_connection": i.get("auth") != "none",
+                    "live": i["live"], "note": i["note"], "connect_url": ap_connect_url})
     return out
 
 

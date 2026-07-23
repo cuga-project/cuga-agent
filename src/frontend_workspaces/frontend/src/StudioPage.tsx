@@ -434,14 +434,18 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
               {i.backend === "direct" ? "direct backend" : "via Activepieces"}
             </Tag>
             <Tag type="outline" size="sm">
-              {i.backend === "direct" ? "token" : (i.auth === "oauth" ? "OAuth" : "token")}
+              {i.auth === "none" ? "no auth"
+                : (i.backend === "direct" ? "token" : (i.auth === "oauth" ? "OAuth" : "token"))}
             </Tag>
-            {i.status !== "ap_not_configured" && (
+            {/* public-feed pieces (youtube/rss) need NO connection — show 'ready', not a Connect button */}
+            {(i.needs_connection === false || i.auth === "none") ? (
+              <Tag type="green" size="sm">ready · no connection needed</Tag>
+            ) : i.status !== "ap_not_configured" ? (
               <Button kind={i.status === "connected" ? "ghost" : "tertiary"} size="sm"
                 renderIcon={i.auth === "oauth" ? Launch : Plug} onClick={() => connect(i)}>
                 {i.status === "connected" ? "Reconnect" : "Connect"}
               </Button>
-            )}
+            ) : null}
           </div>
         </Tile>
       ))}

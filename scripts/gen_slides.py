@@ -259,6 +259,31 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
    any trigger/action out. So "open up Slack/Discord/Telegram" and "support GitHub/Gmail/Calendar
    actions" are <b>separate deliverables</b> that compose — not one tangled effort.</p>"""))
 
+    # 6.5 — WHAT WAS DONE (the status slide): the two-track story with concrete numbers
+    n_ap_i = len({t.app for t in rows if t.backend == "ap"})
+    n_direct_i = len({t.app for t in rows if t.backend == "direct"})
+    slides.append(_slide("What's built — two tracks, one seam", f"""
+<div class="cols">
+  <div class="col">
+    <h3>Track A · Channels — communication</h3>
+    <p><b>{len(CHANNELS)} channels</b> a human converses over: <b>web · Slack · Discord · Telegram</b>.
+       Two-way — you ask, the answer lands back in the same place.</p>
+    <p class="dim">This half is transport. Necessary, but it is <em>not</em> the product.</p>
+  </div>
+  <div class="col accent">
+    <h3>Track B · Events — watch / act</h3>
+    <p><b>{len(rows)} triggers across {len(apps)} integrations</b> the agent watches, then acts on —
+       {n_ap_i} via Activepieces, {n_direct_i} direct.</p>
+    <p>GitHub · Gmail · Box · Slack · <b>Google&nbsp;Calendar</b> · <b>Pinterest</b> · <b>YouTube</b> ·
+       <b>RSS</b> · Discord · Telegram · Webhook.</p>
+    <p class="dim">Adding a piece is <b>data, not code</b> — the newest four (Calendar, Pinterest,
+       YouTube, RSS) landed as registry rows + a synth sample, then armed live.</p>
+  </div>
+</div>
+<p>Both meet at <code>/invoke</code>. Test any event with <b>no connection</b> via
+   <code>POST /api/events/synth-fire</code>; connect Calendar/Pinterest via OAuth for the real fire.
+   YouTube + RSS need no OAuth (public feeds).</p>"""))
+
     # 7 — integrations overview
     over = []
     for app in apps:
@@ -268,11 +293,19 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
         default = next((t.event for t in ts if t.default), ts[0].event)
         over.append(f"<tr><td class='k'>{_esc(app)}</td><td>{len(ts)}</td>"
                     f"<td>{_esc(b)}</td><td><code>{_esc(default)}</code></td></tr>")
+    # TIME-DRIVEN — the AP schedule piece is the clock behind every CRON/POLL flow (it's what ticks
+    # the youtube/rss/calendar/pinterest pollers and any "every morning at 9…"). It has no OAuth
+    # connection — it's a MODE, not an app — so it sits below the app rows, not among them.
+    over.append("<tr><td class='k'>schedule / cron</td><td>cron + poll</td>"
+                "<td>Activepieces (clock)</td><td><code>cron · poll</code></td></tr>")
     slides.append(_slide(f"Integrations — {len(apps)} apps, {len(rows)} triggers", f"""
 <table class="tbl">
   <tr><th>Integration</th><th>Triggers</th><th>Backend</th><th>Default trigger</th></tr>
   {''.join(over)}
-</table>"""))
+</table>
+<p class="dim"><b>schedule / cron</b> isn't a connectable app — it's the AP <b>timer</b> that powers
+   every POLL and CRON flow (including all four new pollers). Modeled as a time <em>mode</em>
+   (<code>source_type="time"</code>), not an integration you connect.</p>"""))
 
     # 8..N — one slide per integration
     for app in apps:
@@ -526,6 +559,37 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
   <li><b>Signed OAuth state</b>: connect callbacks carry an HMAC-signed, expiring state — a forged or
       replayed callback is a hard reject.</li>
 </ul>"""))
+
+    # multi-tenant deployment honesty slide
+    slides.append(_slide("Multi-tenant cloud — the isolation gate (v2)", """
+<p class="big">Can <b>one</b> hosted CUGA serve <b>many</b> users, each with their own integrations —
+   my Gmail vs. your Gmail — with no data leak? The <b>design</b> says yes; the <b>runtime</b> isn't there yet.
+   <b>Today: single-user / trusted-demo. Multi-user cloud is v2.</b></p>
+<div class="cols">
+  <div class="col accent">
+    <h3>What already holds up (the design)</h3>
+    <ul class="tight">
+      <li><b>Per-user connections</b>: each user's token is a distinct AP connection
+          <code>ea::&lt;tenant&gt;::&lt;user&gt;::&lt;app&gt;</code>, encrypted, never seen by the agent.</li>
+      <li><b>One flow per user</b>: flows are scope-namespaced and the connection is baked in at arm time —
+          you <em>cannot</em> accidentally run user B's flow on user A's token.</li>
+      <li><b>Channels isolate</b> via the link-token handshake; principal threads per request.</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3>What breaks under real multi-user load</h3>
+    <ul class="tight">
+      <li><b>No auth identity on the web path</b> → every browser user collapses to <code>user_id="local"</code>
+          → shared connection → <b>cross-user Gmail leak</b>. The dominant gap.</li>
+      <li><b><code>ActivityTracker</code> is a process-global singleton</b> (core CUGA) → concurrent runs
+          corrupt each other's intent / steps / screenshots.</li>
+      <li><b><code>EVENTS_DB=":memory:"</code></b>, box-direct single-token, AP one-project CE degrade.</li>
+    </ul>
+  </div>
+</div>
+<p class="dim"><b>Critical path to safe:</b> inject <code>X-User-Id</code> from auth · durable
+   <code>EVENTS_DB</code> · contextvar-scope the tracker (upstream). All fixable — full analysis in
+   <code>events_docs/DEPLOYMENT_ISSUES.md</code>. Naming the gate is how we ship v1 honestly.</p>"""))
 
     # tested
     slides.append(_slide("Proven end-to-end — live, not mocked", """

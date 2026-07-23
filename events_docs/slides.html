@@ -71,10 +71,10 @@
   <h1>Event-Driven Agents</h1>
   <p class="sub">Agents that don't wait to be asked — they watch, and act.</p>
   <div class="stats">
-    <div><b>7</b><span>integrations</span></div>
-    <div><b>33</b><span>triggers</span></div>
+    <div><b>11</b><span>integrations</span></div>
+    <div><b>42</b><span>triggers</span></div>
     <div><b>4</b><span>channels</span></div>
-    <div><b>119</b><span>examples</span></div>
+    <div><b>125</b><span>examples</span></div>
   </div>
 </section>
 <section class="slide "><h2>Why — the human shouldn't be the trigger</h2>
@@ -97,7 +97,7 @@
       <td><span class="badge fire-synth">live — CRON</span></td></tr>
   <tr><td class="k">The world changes</td><td class="ex">“ping me only when this PR / price / file
       changes”</td>
-      <td><span class="badge fire-synth">live — 33 triggers, POLL + PUSH</span></td></tr>
+      <td><span class="badge fire-synth">live — 42 triggers, POLL + PUSH</span></td></tr>
 </table></section>
 <section class="slide "><h2>From ask → answer to watch → act</h2>
 <div class="cols">
@@ -251,7 +251,7 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
   <li>Flag unset → the same one agent, as plain classic CUGA — the whole events layer still works.</li>
 </ul></section>
 <section class="slide "><h2>The trigger registry — one table rules everything</h2>
-<p><code>triggers.py</code> holds <b>33 triggers</b> — one row per
+<p><code>triggers.py</code> holds <b>42 triggers</b> — one row per
    <code>(integration, event)</code>: the AP piece trigger <em>or</em> the direct event kind, the
    curated payload map, the config slots, the classifier phrases, and a synthetic fire payload.</p>
 <ul class="tight">
@@ -259,7 +259,7 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
       <b>derive</b> from it — nothing is wired twice</li>
   <li>an unknown trigger <b>fails loudly at build time</b> (the old code silently armed a flow that
       could never publish)</li>
-  <li>19 triggers run via Activepieces · 14 run direct</li>
+  <li>27 triggers run via Activepieces · 15 run direct</li>
 </ul>
 <p class="dim">Adding a trigger = adding one row (+ an agent that declares it). The parametrized test
    suite picks it up automatically.</p></section>
@@ -286,20 +286,44 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
 <p>The two are <b>decoupled by design</b> and meet at one seam — <code>/invoke</code>. Any channel in,
    any trigger/action out. So "open up Slack/Discord/Telegram" and "support GitHub/Gmail/Calendar
    actions" are <b>separate deliverables</b> that compose — not one tangled effort.</p></section>
-<section class="slide "><h2>Integrations — 7 apps, 33 triggers</h2>
+<section class="slide "><h2>What's built — two tracks, one seam</h2>
+<div class="cols">
+  <div class="col">
+    <h3>Track A · Channels — communication</h3>
+    <p><b>4 channels</b> a human converses over: <b>web · Slack · Discord · Telegram</b>.
+       Two-way — you ask, the answer lands back in the same place.</p>
+    <p class="dim">This half is transport. Necessary, but it is <em>not</em> the product.</p>
+  </div>
+  <div class="col accent">
+    <h3>Track B · Events — watch / act</h3>
+    <p><b>42 triggers across 11 integrations</b> the agent watches, then acts on —
+       7 via Activepieces, 5 direct.</p>
+    <p>GitHub · Gmail · Box · Slack · <b>Google&nbsp;Calendar</b> · <b>Pinterest</b> · <b>YouTube</b> ·
+       <b>RSS</b> · Discord · Telegram · Webhook.</p>
+    <p class="dim">Adding a piece is <b>data, not code</b> — the newest four (Calendar, Pinterest,
+       YouTube, RSS) landed as registry rows + a synth sample, then armed live.</p>
+  </div>
+</div>
+<p>Both meet at <code>/invoke</code>. Test any event with <b>no connection</b> via
+   <code>POST /api/events/synth-fire</code>; connect Calendar/Pinterest via OAuth for the real fire.
+   YouTube + RSS need no OAuth (public feeds).</p></section>
+<section class="slide "><h2>Integrations — 11 apps, 42 triggers</h2>
 <table class="tbl">
   <tr><th>Integration</th><th>Triggers</th><th>Backend</th><th>Default trigger</th></tr>
-  <tr><td class='k'>box</td><td>3</td><td>Activepieces + direct</td><td><code>new_file</code></td></tr><tr><td class='k'>discord</td><td>2</td><td>direct</td><td><code>new_member</code></td></tr><tr><td class='k'>github</td><td>14</td><td>Activepieces</td><td><code>new_pr</code></td></tr><tr><td class='k'>gmail</td><td>4</td><td>Activepieces</td><td><code>new_email</code></td></tr><tr><td class='k'>slack</td><td>8</td><td>direct</td><td><code>new_channel_message</code></td></tr><tr><td class='k'>telegram</td><td>1</td><td>direct</td><td><code>new_channel_message</code></td></tr><tr><td class='k'>webhook</td><td>1</td><td>direct</td><td><code>inbound</code></td></tr>
-</table></section>
+  <tr><td class='k'>box</td><td>3</td><td>Activepieces + direct</td><td><code>new_file</code></td></tr><tr><td class='k'>discord</td><td>3</td><td>direct</td><td><code>new_member</code></td></tr><tr><td class='k'>github</td><td>14</td><td>Activepieces</td><td><code>new_pr</code></td></tr><tr><td class='k'>gmail</td><td>4</td><td>Activepieces</td><td><code>new_email</code></td></tr><tr><td class='k'>google_calendar</td><td>3</td><td>Activepieces</td><td><code>new_event</code></td></tr><tr><td class='k'>pinterest</td><td>3</td><td>Activepieces</td><td><code>new_pin</code></td></tr><tr><td class='k'>rss</td><td>1</td><td>Activepieces</td><td><code>new_item</code></td></tr><tr><td class='k'>slack</td><td>8</td><td>direct</td><td><code>new_channel_message</code></td></tr><tr><td class='k'>telegram</td><td>1</td><td>direct</td><td><code>new_channel_message</code></td></tr><tr><td class='k'>webhook</td><td>1</td><td>direct</td><td><code>inbound</code></td></tr><tr><td class='k'>youtube</td><td>1</td><td>Activepieces</td><td><code>new_video</code></td></tr><tr><td class='k'>schedule / cron</td><td>cron + poll</td><td>Activepieces (clock)</td><td><code>cron · poll</code></td></tr>
+</table>
+<p class="dim"><b>schedule / cron</b> isn't a connectable app — it's the AP <b>timer</b> that powers
+   every POLL and CRON flow (including all four new pollers). Modeled as a time <em>mode</em>
+   (<code>source_type="time"</code>), not an integration you connect.</p></section>
 <section class="slide integration"><h2>box — 3 triggers</h2>
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
   <tr><td class='k'><code>new_file</code> ★</td><td>New File<div class='ex'>“when a document lands in Box, summarize it for me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>folder?</span></td></tr><tr><td class='k'><code>new_box_comment</code></td><td>New Comment<div class='ex'>“when someone comments on a Box file, summarize the thread and flag action items”</div></td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>folder?</span></td></tr><tr><td class='k'><code>new_folder</code></td><td>New Folder<div class='ex'>“when a new folder appears in Box, index its contents and summarize what&#x27;s inside”</div></td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>folder?</span></td></tr>
 </table></section>
-<section class="slide integration"><h2>discord — 2 triggers</h2>
+<section class="slide integration"><h2>discord — 3 triggers</h2>
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
-  <tr><td class='k'><code>new_channel_message</code></td><td>New message (channel-scoped)</td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>channel?</span> · <span class='dim'>pattern?</span></td></tr><tr><td class='k'><code>new_member</code></td><td>New Member<div class='ex'>“when a new member joins the server, greet them and point to the resources”</div></td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'></td></tr>
+  <tr><td class='k'><code>new_channel_message</code></td><td>New message (channel-scoped)</td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>channel?</span> · <span class='dim'>pattern?</span></td></tr><tr><td class='k'><code>new_member</code></td><td>New Member<div class='ex'>“when a new member joins the server, greet them and point to the resources”</div></td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_reaction</code></td><td>New Reaction</td><td><span class='badge direct'>direct</span> <span class='badge fire-real' title='fireable with a real local action'>real</span></td><td class='slots'><span class='dim'>emoji?</span> · <span class='dim'>channel?</span></td></tr>
 </table></section>
 <section class="slide integration"><h2>github — 14 triggers</h2>
 <table class="tbl triggers">
@@ -310,6 +334,21 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
   <tr><td class='k'><code>new_email</code> ★</td><td>New Email<div class='ex'>“when I get an email, draft a reply summarizing my response”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_attachment</code></td><td>New Attachment<div class='ex'>“when an email arrives with a resume attached, judge it against the JD and message me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_gmail_label</code></td><td>New Label created<div class='ex'>“when a new Gmail label is created, announce it in our Slack”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_labeled_email</code></td><td>New Labeled Email<div class='ex'>“when I label an email &#x27;Read-later&#x27;, summarize it and send me the digest”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>label</code></td></tr>
+</table></section>
+<section class="slide integration"><h2>google_calendar — 3 triggers</h2>
+<table class="tbl triggers">
+  <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
+  <tr><td class='k'><code>new_event</code> ★</td><td>New Event<div class='ex'>“when a new event is added to my google calendar, brief me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'><span class='dim'>calendar?</span></td></tr><tr><td class='k'><code>event_ends</code></td><td>Event Ends<div class='ex'>“when a meeting ends on my calendar, email me the follow-ups”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'><span class='dim'>calendar?</span></td></tr><tr><td class='k'><code>new_or_updated_event</code></td><td>New or Updated Event</td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'><span class='dim'>calendar?</span></td></tr>
+</table></section>
+<section class="slide integration"><h2>pinterest — 3 triggers</h2>
+<table class="tbl triggers">
+  <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
+  <tr><td class='k'><code>new_pin</code> ★</td><td>New Pin on Board</td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>board</code></td></tr><tr><td class='k'><code>new_board</code></td><td>New Board</td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr><tr><td class='k'><code>new_follower</code></td><td>New Follower</td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'></td></tr>
+</table></section>
+<section class="slide integration"><h2>rss — 1 trigger</h2>
+<table class="tbl triggers">
+  <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
+  <tr><td class='k'><code>new_item</code> ★</td><td>New RSS Item<div class='ex'>“when a new item appears in https://blog.example.com/rss, summarize it in slack”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>rss_feed_url</code></td></tr>
 </table></section>
 <section class="slide integration"><h2>slack — 8 triggers</h2>
 <table class="tbl triggers">
@@ -325,6 +364,11 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
   <tr><td class='k'><code>inbound</code> ★</td><td>Generic inbound webhook (pinned or routed)</td><td><span class='badge direct'>direct</span> <span class='badge fire-synth' title='machine-fireable'>synth</span></td><td class='slots'></td></tr>
+</table></section>
+<section class="slide integration"><h2>youtube — 1 trigger</h2>
+<table class="tbl triggers">
+  <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
+  <tr><td class='k'><code>new_video</code> ★</td><td>New Video<div class='ex'>“when @Fireship posts a new video, summarize it for me”</div></td><td><span class='badge ap'>AP</span> <span class='badge fire-manual' title='needs a real external event'>manual</span></td><td class='slots'>needs <code>yt_channel</code></td></tr>
 </table></section>
 <section class="slide "><h2>From watch → act: the action half</h2>
 <p>A trigger fires the agent — then the agent's answer drives a real <b>action</b> in a connected app,
@@ -362,7 +406,7 @@ channels / triggers / webhooks ──► /invoke {agent: "cuga", source, event}
 <p class="dim">Event triggers — the world calls the agent. One sentence in any channel arms a standing flow.</p>
 <table class="tbl">
   <tr><th>Say it like this</th><th>App</th><th>Status</th></tr>
-  <tr><td>“when a new resume lands in my Box, judge it against the JD and email me”</td><td class='k'>box</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a new PR opens on psf/requests, summarize it and flag risks”</td><td class='k'>github</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a new issue is filed, label it and post a summary to Slack”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when an email from my boss arrives, summarize it and text me”</td><td class='k'>gmail</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when my system POSTs to my webhook, run the triage agent and reply”</td><td class='k'>webhook</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when my CI posts a failed build, triage it and tell me what broke”</td><td class='k'>webhook</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a lead form is submitted, summarize it and post to our channel”</td><td class='k'>webhook</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“POST any event to /api/events/hook/&lt;name&gt;?route=1 — CUGA routes it like a chat message”</td><td class='k'>webhook</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a new email arrives in my inbox, summarize it and message me”</td><td class='k'>gmail</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a task is added to my Notion board, draft a plan and DM me”</td><td class='k'>notion</td><td><span class='badge fire-manual'>offline</span></td></tr>
+  <tr><td>“when a new resume lands in my Box, judge it against the JD and email me”</td><td class='k'>box</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a new PR opens on psf/requests, summarize it and flag risks”</td><td class='k'>github</td><td><span class='badge fire-synth'>live</span></td></tr><tr><td>“when a new issue is filed, label it and post a summary to Slack”</td><td class='k'>github</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when an email from my boss arrives, summarize it and text me”</td><td class='k'>gmail</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a meeting ends on my calendar, email me the follow-ups”</td><td class='k'>google_calendar</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a new event is added to my google calendar, brief me”</td><td class='k'>google_calendar</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when there&#x27;s a new pin on my pinterest board, share it in Slack”</td><td class='k'>pinterest</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when @Fireship posts a new video, summarize it for me”</td><td class='k'>youtube</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when a new item appears in https://blog.example.com/rss, summarize it in slack”</td><td class='k'>rss</td><td><span class='badge fire-manual'>offline</span></td></tr><tr><td>“when someone reacts with :bug: in #incidents on discord, triage the message”</td><td class='k'>discord</td><td><span class='badge fire-synth'>live</span></td></tr>
 </table></section>
 <section class="slide "><h2>Laundry list — SCHEDULES &amp; watchers (cron · poll · webhook)</h2>
 <table class="tbl">
@@ -418,9 +462,9 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
        Both doors arm through one code path: connect gate → dedup (DB unique index) → build.</p>
   </div>
 </div>
-<p><b>Benchmarked in CI:</b> 47 hand-labelled cases (utterance → expected FlowSpec) —
-   fast-path 35/37 push cases (94%),
-   correct-at-high 35/35, gated on <b>zero wrong-at-high</b>. It caught two real
+<p><b>Benchmarked in CI:</b> 56 hand-labelled cases (utterance → expected FlowSpec) —
+   fast-path 43/46 push cases (93%),
+   correct-at-high 43/43, gated on <b>zero wrong-at-high</b>. It caught two real
    bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p></section>
 <section class="slide "><h2>How we know it works — two levels of benchmark</h2>
 <p><b>Arming a flow is not proof it works.</b> A flow can compile perfectly and still never fire, or
@@ -435,7 +479,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
   <tr><td class="k">When</td><td>every commit (CI)</td><td>nightly / pre-release</td></tr>
   <tr><td class="k">Asserts</td><td>mode · trigger · action · gate outcome</td>
       <td>valid+enabled → <b>fires</b> → <b>right step ran</b> → <b>effect verified</b> in the app → delivered</td></tr>
-  <tr><td class="k">Metric</td><td><b>CORRECT-AT-ARM</b> (47 cases, 100%)</td>
+  <tr><td class="k">Metric</td><td><b>CORRECT-AT-ARM</b> (56 cases, 100%)</td>
       <td>FIRE-RATE · EXECUTION-CORRECT · EFFECT-VERIFIED</td></tr>
   <tr><td class="k">Status</td><td><span class="badge fire-synth">exists</span></td>
       <td><span class="badge fire-manual">building</span> — validity gate + <code>--check</code> + synth-fire today</td></tr>
@@ -448,7 +492,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
   <tr><th>Layer</th><th>What it does</th><th>Fuzzy or deterministic?</th></tr>
   <tr><td class="k">The envelope API</td>
       <td><code>POST /invoke {agent, source, event}</code> + gateway token — ONE contract for
-          every wake source: 4 chat channels, 19 AP piece triggers, 14 direct watchers,
+          every wake source: 4 chat channels, 27 AP piece triggers, 15 direct watchers,
           webhooks, cron/poll. New wake source = new caller, zero new agent code.</td>
       <td>deterministic</td></tr>
   <tr><td class="k">NL→Flow (arm time)</td>
@@ -456,7 +500,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
           slots extracted → validated → deduped (DB unique index) → AP flow built. Missing slot =
           ONE question; the next message fills it (<em>ask-till-legit</em>).</td>
       <td>deterministic fast path; LLM only for genuine ambiguity — gated on
-          <b>zero-wrong-at-high</b> (47 labelled cases in CI)</td></tr>
+          <b>zero-wrong-at-high</b> (56 labelled cases in CI)</td></tr>
   <tr><td class="k">Routing (fire time)</td>
       <td>the supervisor reads the event payload + its roster's HANDLES hints and picks one
           specialist; the answer bubbles up. Hints are generated FROM the trigger registry — they
@@ -475,7 +519,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
    spent at fire time, and everything either side of the LLM is a function you can test.</b></p></section>
 <section class="slide "><h2>The receipts — why you can trust this</h2>
 <ul class="tight">
-  <li><b>One registry, zero drift.</b> All 33 triggers live in one table; flows,
+  <li><b>One registry, zero drift.</b> All 42 triggers live in one table; flows,
       classifier, validation, docs, this deck and the tests <em>derive</em> from it — and five
       golden gates fail the build if any generated page goes stale.</li>
   <li><b>Live-fired, not just armed.</b> All 14 GitHub triggers arm as real AP flows with real repo
@@ -507,6 +551,35 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
   <li><b>Signed OAuth state</b>: connect callbacks carry an HMAC-signed, expiring state — a forged or
       replayed callback is a hard reject.</li>
 </ul></section>
+<section class="slide "><h2>Multi-tenant cloud — the isolation gate (v2)</h2>
+<p class="big">Can <b>one</b> hosted CUGA serve <b>many</b> users, each with their own integrations —
+   my Gmail vs. your Gmail — with no data leak? The <b>design</b> says yes; the <b>runtime</b> isn't there yet.
+   <b>Today: single-user / trusted-demo. Multi-user cloud is v2.</b></p>
+<div class="cols">
+  <div class="col accent">
+    <h3>What already holds up (the design)</h3>
+    <ul class="tight">
+      <li><b>Per-user connections</b>: each user's token is a distinct AP connection
+          <code>ea::&lt;tenant&gt;::&lt;user&gt;::&lt;app&gt;</code>, encrypted, never seen by the agent.</li>
+      <li><b>One flow per user</b>: flows are scope-namespaced and the connection is baked in at arm time —
+          you <em>cannot</em> accidentally run user B's flow on user A's token.</li>
+      <li><b>Channels isolate</b> via the link-token handshake; principal threads per request.</li>
+    </ul>
+  </div>
+  <div class="col">
+    <h3>What breaks under real multi-user load</h3>
+    <ul class="tight">
+      <li><b>No auth identity on the web path</b> → every browser user collapses to <code>user_id="local"</code>
+          → shared connection → <b>cross-user Gmail leak</b>. The dominant gap.</li>
+      <li><b><code>ActivityTracker</code> is a process-global singleton</b> (core CUGA) → concurrent runs
+          corrupt each other's intent / steps / screenshots.</li>
+      <li><b><code>EVENTS_DB=":memory:"</code></b>, box-direct single-token, AP one-project CE degrade.</li>
+    </ul>
+  </div>
+</div>
+<p class="dim"><b>Critical path to safe:</b> inject <code>X-User-Id</code> from auth · durable
+   <code>EVENTS_DB</code> · contextvar-scope the tracker (upstream). All fixable — full analysis in
+   <code>events_docs/DEPLOYMENT_ISSUES.md</code>. Naming the gate is how we ship v1 honestly.</p></section>
 <section class="slide "><h2>Proven end-to-end — live, not mocked</h2>
 <ul class="tight">
   <li><b>Offline gate</b> (<code>make test</code>) — every registry row parametrized: flow building,
@@ -542,7 +615,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
    Full plan: events_docs/roadmap.html · gaps: events_docs/todos_actions/GAPS.md</p></section>
 <section class="slide "><h2>Try it — the examples board</h2>
 <ul class="tight examples"><li>“what&#x27;s the current price of bitcoin, and what&#x27;s new from OpenAI and Anthropic this week?”<span class='dim'> — cuga</span></li><li>“when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply”<span class='dim'> — mailbot</span></li><li>“when a PR opens on my repo, review the diff and email me a one-line risk summary at me@example.com”<span class='dim'> — pr_reviewer</span></li><li>“POST any event to /api/events/hook/&lt;name&gt;?route=1 — CUGA routes it like a chat message”<span class='dim'> — (auto-routed)</span></li><li>“/automate summarize new emails and message me”<span class='dim'> — mailbot</span></li><li>“/automate when a resume lands in Box, judge it and message me”<span class='dim'> — resume_judge</span></li><li>“/automate new pull requests on psf/requests and summarize them”<span class='dim'> — pr_reviewer</span></li><li>“/automate the market brief every weekday at 8am”<span class='dim'> — market_briefer</span></li></ul>
-<p class="dim">All 119 examples (with feasibility notes) live on the examples
+<p class="dim">All 125 examples (with feasibility notes) live on the examples
    board — <code>events_docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
    and that board are both generated from the code, so neither can drift.</p></section>
 <div id="bar"></div><div id="hud"></div>

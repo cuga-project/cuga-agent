@@ -152,6 +152,82 @@ class Report:
             print(f"    ⏸ {r[0]}/{r[1]} — {r[4][:100]}")
         return len(fails)
 
+    def counts(self) -> dict:
+        real = [r for r in self.rows if r[2] == "REAL"]
+        synth = [r for r in self.rows if r[2] == "SYNTH"]
+        blocked = [r for r in self.rows if r[2] == "BLOCKED"]
+        fails = [r for r in self.rows if not r[3] and r[2] != "BLOCKED"]
+        return {"cases": len(self.rows), "real_ok": sum(r[3] for r in real), "real": len(real),
+                "synth_ok": sum(r[3] for r in synth), "synth": len(synth),
+                "blocked": len(blocked), "failures": len(fails)}
+
+    def write_reports(self, stamp: str) -> tuple:
+        """Persist the run as JSON + a styled HTML report (and return their paths). The text log is
+        the harness's own stdout; these add a structured, shareable record so a run is never lost."""
+        import html as _html
+        import json as _json
+        outdir = os.path.join(REPO_DIR, "results")
+        os.makedirs(outdir, exist_ok=True)
+        c = self.counts()
+        rows = [{"leg": leg, "case": case, "kind": kind, "ok": bool(ok), "detail": detail}
+                for leg, case, kind, ok, detail in self.rows]
+        jpath = os.path.join(outdir, f"exhaustive_{stamp}.json")
+        with open(jpath, "w") as f:
+            _json.dump({"stamp": stamp, "summary": c, "rows": rows}, f, indent=2)
+        # group rows by leg, preserving encounter order
+        legs: dict = {}
+        for r in rows:
+            legs.setdefault(r["leg"], []).append(r)
+        def badge(r):
+            if r["kind"] == "BLOCKED":
+                return '<span class="b blk">BLOCKED</span>'
+            return f'<span class="b {"ok" if r["ok"] else "no"}">{"PASS" if r["ok"] else "FAIL"}</span>'
+        body = []
+        for leg, rs in legs.items():
+            nfail = sum(1 for r in rs if not r["ok"] and r["kind"] != "BLOCKED")
+            body.append(f'<h2>{_html.escape(leg)} <span class="sub">{len(rs)} cases'
+                        f'{" · "+str(nfail)+" failed" if nfail else ""}</span></h2><table>')
+            for r in rs:
+                cls = "row" + (" fail" if (not r["ok"] and r["kind"] != "BLOCKED") else "")
+                body.append(f'<tr class="{cls}"><td>{badge(r)}</td><td class="k">{_html.escape(r["kind"])}</td>'
+                            f'<td class="c">{_html.escape(r["case"])}</td>'
+                            f'<td class="d">{_html.escape((r["detail"] or "")[:200])}</td></tr>')
+            body.append("</table>")
+        ok_all = c["failures"] == 0
+        verdict = "ALL GREEN" if ok_all else f'{c["failures"]} FAILURE(S)'
+        hpath = os.path.join(outdir, f"exhaustive_{stamp}.html")
+        with open(hpath, "w") as f:
+            f.write(f"""<!doctype html><meta charset=utf-8><title>Exhaustive — {stamp}</title>
+<style>
+:root{{--bg:#0d111a;--card:#151b28;--ink:#eaeef6;--mut:#8b94a6;--line:#232b3b;--ok:#46c996;--no:#f0715f;--blk:#e0a94a;--acc:#5b86f5}}
+body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 ui-sans-serif,system-ui,Arial}}
+.wrap{{max-width:1040px;margin:0 auto;padding:28px 22px}}
+h1{{font-size:24px;margin:0 0 4px}} .meta{{color:var(--mut);font-family:ui-monospace,Menlo,monospace;font-size:12px}}
+.score{{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}}
+.score div{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px}}
+.score b{{font-size:20px}} .score span{{color:var(--mut);font-size:11px;display:block;text-transform:uppercase;letter-spacing:.05em}}
+.verdict{{font-weight:700;padding:4px 12px;border-radius:20px}} .verdict.g{{background:#123227;color:var(--ok)}} .verdict.r{{background:#361a17;color:var(--no)}}
+h2{{font-size:15px;margin:26px 0 8px;border-bottom:1px solid var(--line);padding-bottom:6px}} h2 .sub{{color:var(--mut);font-weight:400;font-size:12px}}
+table{{width:100%;border-collapse:collapse;font-size:13px}} td{{padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}}
+.row.fail{{background:#2a1512}} td.k{{color:var(--mut);font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}}
+td.c{{font-family:ui-monospace,monospace;white-space:nowrap}} td.d{{color:var(--mut)}}
+.b{{font-family:ui-monospace,monospace;font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;white-space:nowrap}}
+.b.ok{{background:#123227;color:var(--ok)}} .b.no{{background:#361a17;color:var(--no)}} .b.blk{{background:#33280f;color:var(--blk)}}
+</style>
+<div class="wrap">
+<h1>Exhaustive live matrix <span class="verdict {'g' if ok_all else 'r'}">{verdict}</span></h1>
+<div class="meta">{stamp} · every agent · every trigger armed AND fired · answer-verified · zero-leak</div>
+<div class="score">
+  <div><b>{c['cases']}</b><span>cases</span></div>
+  <div><b>{c['real_ok']}/{c['real']}</b><span>REAL</span></div>
+  <div><b>{c['synth_ok']}/{c['synth']}</b><span>SYNTH</span></div>
+  <div><b>{c['blocked']}</b><span>blocked</span></div>
+  <div><b>{c['failures']}</b><span>failures</span></div>
+</div>
+{''.join(body)}
+</div>""")
+        return hpath, jpath
+
 
 # ---- payloads per trigger (planted MARKERS make the quality gate deterministic) --------------
 REPO = os.environ.get("GITHUB_TEST_REPO", "anupamamurthi/pachyderm")
@@ -211,6 +287,51 @@ SYNTH_FIRES = {
                             ["QV-19", "page 2", "comment", "offer"]),
     "webhook/inbound": ({"alert": "HighCPU", "service": "checkout-api", "value": "97%"},
                         None, ["P1", "P2", "P3", "sever", "checkout"]),   # fired via real POST
+    # ── the newer AP pieces — piece-exact synth payloads (calendar#event / pin / feed shapes) ──────
+    "google_calendar/new_event": ({"summary": "Board review KX-88", "status": "confirmed",
+                                   "description": "Quarterly board review — deck due.",
+                                   "organizer": {"email": "chair@example.com"},
+                                   "start": {"dateTime": "2026-07-23T15:00:00-07:00"},
+                                   "end": {"dateTime": "2026-07-23T16:00:00-07:00"},
+                                   "htmlLink": "https://calendar.google.com/event?eid=kx88"},
+                                  "when a new calendar event is added, brief me",
+                                  ["KX-88", "board", "review"]),
+    "google_calendar/new_or_updated_event": ({"summary": "Sync moved to 4pm QW-31", "status": "confirmed",
+                                              "start": {"dateTime": "2026-07-23T16:00:00-07:00"},
+                                              "end": {"dateTime": "2026-07-23T16:30:00-07:00"}},
+                                             "when a calendar event changes, tell me what changed",
+                                             ["QW-31", "sync", "4pm", "4:00"]),
+    "google_calendar/event_ends": ({"summary": "Retro RT-42 wrapped", "status": "confirmed",
+                                    "end": {"dateTime": "2026-07-23T17:00:00-07:00"}},
+                                   "when a meeting ends, draft the follow-ups",
+                                   ["RT-42", "retro", "follow"]),
+    "pinterest/new_pin": ({"items": [{"id": "P9", "title": "Sheet-pan chana PN-55",
+                                      "description": "One-pan roasted chickpeas",
+                                      "link": "https://www.pinterest.com/pin/PN-55/"}]},
+                          "when a new pin lands on my board, share it",
+                          ["PN-55", "chana", "chickpea", "pin"]),
+    "pinterest/new_board": ({"name": "Summer recipes BD-12", "description": "warm-weather cooking",
+                             "pin_count": 5, "owner": {"username": "chef_anu"}},
+                            "when a new board is created, announce it",
+                            ["BD-12", "recipe", "board"]),
+    "pinterest/new_follower": ({"username": "follower_ff9", "type": "user"},
+                               "when I get a new pinterest follower, thank them",
+                               ["ff9", "follow"]),
+    "youtube/new_video": ({"title": "How MoE routing works YT-77", "author": "Fireship",
+                           "link": "https://www.youtube.com/watch?v=YT77",
+                           "pubDate": "2026-07-23T09:00:00.000Z"},
+                          "when my channel posts a new video, summarize it",
+                          ["YT-77", "MoE", "routing", "Fireship"]),
+    "rss/new_item": ({"title": "Anthropic ships agents SDK feature RS-19",
+                      "link": "https://example.com/blog/rs-19", "author": "The Verge",
+                      "pubDate": "2026-07-23T08:00:00.000Z",
+                      "summary": "New agents SDK capability."},
+                     "when a new item appears in the feed, summarize it",
+                     ["RS-19", "Anthropic", "agents", "SDK"]),
+    "discord/new_reaction": ({"emoji": {"name": "zap"}, "channel_id": "C1", "message_id": "M9",
+                              "user_id": "U1", "message_text": "prod checkout 500s DR-33"},
+                             "when someone reacts with :zap:, triage the message",
+                             ["DR-33", "checkout", "sever", "P1", "P2"]),
 }
 
 
@@ -382,6 +503,14 @@ def main() -> int:
           f"{subs_before} before → {subs_after} after ({len(leaked)} cleaned)")
 
     fails = r.summary()
+    # persist a structured, shareable record (JSON + styled HTML) alongside the stdout log
+    try:
+        import datetime as _dt
+        stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        hpath, jpath = r.write_reports(stamp)
+        print(f"\n  report → {hpath}\n         → {jpath}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (report write failed: {e})")
     # ledger: per-trigger fire cells
     try:
         from _ledger import record
