@@ -307,6 +307,18 @@ into the container; ⚠ changing the encryption key invalidates stored connectio
 **then `make channels`** (re-register the webhook). If a Connect 404s with `piece_metadata_not_found`,
 run `make ap-pieces`.
 
+**Common day-to-day snags (each now prints its own fix):**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `make up` aborts: `ngrok could not start (ERR_NGROK_334) … already online` | a **stale ngrok** from a previous run still holds your reserved domain | `pkill -f 'ngrok http'` then `make up` — or just `make stop` before `make up` (stop already frees it) |
+| Connect 404s `piece_metadata_not_found` | fresh-DB piece sync hadn't landed | `make ap-pieces` (self-heals; installs the live catalog version) |
+| everything armed but flows fail `INTERNAL_ERROR` / `nodename nor servname` | the **AP cloudflared tunnel died** (it's ephemeral) | `make ap` then `make channels` |
+| an integration shows `✗ connect needed` in `make status` | never consented (or a nuke wiped it) | **Connect in the Studio** → `localhost:7860/studio → Integrations` |
+
+Habit that avoids the ngrok clash entirely: **`make stop` before a fresh `make up`** — `stop` kills the
+ngrok agent, so the domain is free when `up` re-binds it. `make restart` (= stop + up) does this for you.
+
 ## Which test do I run, and when?
 
 Different targets because "does it work?" is several questions at very different costs — one

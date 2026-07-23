@@ -86,12 +86,20 @@ status: ## Show what's running + tunnel URLs + every channel & integration
 	  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
 	@echo "--- channels (inbound chat) ---"
 	@scripts/arm_channels.sh --status 2>/dev/null || echo "  (CUGA not reachable — is the stack up?)"
+	@echo "--- AP pieces (integration Connect needs these installed) ---"
+	@$(PY) scripts/ap_pieces.py --status 2>/dev/null | sed 's/^/  /' \
+	  || echo "  (AP not reachable — run: make ap-pieces)"
 	@echo "--- integrations (watch/act) ---"
 	@curl -s --max-time 5 localhost:$(CUGA_PORT)/api/events/integrations 2>/dev/null \
-	  | python3 -c "import sys,json;\
+	  | CUGA_PORT=$(CUGA_PORT) python3 -c "import sys,json,os;\
 rows=json.load(sys.stdin).get('integrations',[]);\
+port=os.environ.get('CUGA_PORT','7860');\
 mark=lambda i: '✓ connected' if i.get('connected') else ('· ready' if not i.get('needs_connection') else '✗ connect needed');\
-[print(f\"  {i['name']:<17} {mark(i):<15} {i.get('auth','?'):<6} {i.get('backend','?')}\") for i in rows]" 2>/dev/null \
+[print(f\"  {i['name']:<17} {mark(i):<15} {i.get('auth','?'):<6} {i.get('backend','?')}\") for i in rows];\
+need=[i['name'] for i in rows if i.get('needs_connection') and not i.get('connected')];\
+print() or print(f\"  ⚠ {len(need)} need connecting: {', '.join(need)}\") if need else None;\
+print(f\"    → Open the CUGA Studio and click Connect:  http://localhost:{port}/studio  → Integrations tab\") if need else None;\
+print(f\"      (each opens a browser OAuth consent; youtube/rss need nothing — they show 'ready')\") if need else None" 2>/dev/null \
 	  || echo "  (CUGA not reachable — is the stack up?)"
 	@echo "   → NEXT (setup): make doctor"
 

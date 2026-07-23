@@ -129,9 +129,18 @@ if [ -n "$NGROK_DOMAIN" ]; then
   for i in $(seq 1 10); do
     grep -q 'started tunnel\|msg="join connexions"\|url=' "$RUN/cuga_tunnel.log" 2>/dev/null && break
     if grep -q 'ERR_NGROK' "$RUN/cuga_tunnel.log" 2>/dev/null; then
-      echo "  ✗ ngrok could not start ($(grep -ao 'ERR_NGROK_[0-9]*' "$RUN/cuga_tunnel.log" | tail -1)):"
+      _errcode="$(grep -ao 'ERR_NGROK_[0-9]*' "$RUN/cuga_tunnel.log" | tail -1)"
+      echo "  ✗ ngrok could not start ($_errcode):"
       grep -o 'err="[^"]*"' "$RUN/cuga_tunnel.log" | tail -1
-      echo "    Common: verify your email at dashboard.ngrok.com, and reserve the domain '$NGROK_DOMAIN'."
+      if [ "$_errcode" = "ERR_NGROK_334" ]; then
+        # The reserved domain is already served by a stale ngrok agent (a previous run that outlived
+        # its make process). Point the user at the one command that frees it.
+        echo "    → CAUSE: a previous ngrok is still holding '$NGROK_DOMAIN'."
+        echo "    → FIX:   pkill -f 'ngrok http'   (frees the domain), then re-run: make up"
+        echo "             (or 'make stop' to clear the whole stack first, then 'make up')"
+      else
+        echo "    Common: verify your email at dashboard.ngrok.com, and reserve the domain '$NGROK_DOMAIN'."
+      fi
       exit 1
     fi
     sleep 1
