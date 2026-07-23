@@ -4,6 +4,31 @@ Fresh machine → running events platform. The runtime is one command per servic
 manual part is external accounts (bots, OAuth apps) a human must create. Per-connector guides are in
 [setup/](setup/); tests in [TESTING.md](TESTING.md); the public-URL details in [PUBLIC_URL.md](PUBLIC_URL.md).
 
+## Step 0 — external accounts (the real pre-req, do this FIRST)
+
+Everything else is `make`. The one thing no command can do for you is create the bot/app accounts and
+OAuth apps at the providers — each gives you a token or a client-id/secret you paste into `.env`.
+**Follow the per-connector guide, then fill the matching `.env` keys.** Start only the connectors you
+actually want; the platform runs fine with a subset.
+
+| Connector | Guide | You create | `.env` keys |
+|---|---|---|---|
+| **Slack** | [setup/SLACK.md](setup/SLACK.md) | Slack app (bot token + signing secret; Event Subscriptions URL) | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` |
+| **Discord** | [setup/DISCORD.md](setup/DISCORD.md) | Discord app + bot; **enable Message Content Intent** | `DISCORD_BOT_TOKEN` |
+| **Telegram** | [setup/TELEGRAM.md](setup/TELEGRAM.md) | bot via @BotFather | `TELEGRAM_BOT_TOKEN`, `EVENTS_TELEGRAM_BOT_USERNAME` |
+| **Gmail** | [setup/GMAIL.md](setup/GMAIL.md) | Google OAuth app (Testing mode; scopes) | `EVENTS_OAUTH_GMAIL_CLIENT_ID`/`_SECRET` |
+| **GitHub** | [setup/GITHUB.md](setup/GITHUB.md) | GitHub OAuth app (scopes `repo`+`admin:repo_hook`) — **not** a PAT | `EVENTS_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` |
+| **Box** | [setup/BOX.md](setup/BOX.md) | Box OAuth app *or* a dev token (~60-min) | `EVENTS_OAUTH_BOX_CLIENT_ID`/`_SECRET` or `BOX_DEV_TOKEN` |
+| **Google Calendar** | [setup/GOOGLE_CALENDAR.md](setup/GOOGLE_CALENDAR.md) | Google OAuth app (calendar scope) | `EVENTS_OAUTH_GOOGLE_CALENDAR_CLIENT_ID`/`_SECRET` |
+| **Pinterest** | [setup/PINTEREST.md](setup/PINTEREST.md) | Pinterest OAuth app | `EVENTS_OAUTH_PINTEREST_CLIENT_ID`/`_SECRET` |
+| **YouTube** · **RSS** | [setup/YOUTUBE.md](setup/YOUTUBE.md) · [setup/RSS.md](setup/RSS.md) | *nothing* — public feeds | *(none — show "ready")* |
+| **Webhook** | [setup/WEBHOOK.md](setup/WEBHOOK.md) | *(inbound HTTP — just a shared key)* | `EVENTS_WEBHOOK_KEY` |
+| **ngrok** *(infra, recommended)* | [setup/NGROK.md](setup/NGROK.md) | reserve a free domain | `EVENTS_NGROK_DOMAIN` |
+
+Index: [setup/README.md](setup/README.md). The OAuth apps (Gmail/GitHub/Box/Calendar/Pinterest) all
+use the same **redirect URI** `https://<domain>/api/events/connect/<app>/callback` — set it in each
+provider's console, then click **Connect** in the CUGA Studio (Step 5 below) to consent.
+
 ## One-time
 
 ```bash
@@ -90,7 +115,7 @@ make public-url         # prints the public URL + the exact strings to paste int
 
 **Verify:**
 ```bash
-make status      # everything up + tunnel URLs      make doctor   # live creds ok
+make status      # up + tunnels + channel/integration state   make doctor   # live creds ok
 make test        # the offline suite green          make tunnels  # both tunnels reachable
 ```
 Then smoke-test: DM the Telegram bot · @mention the bot in Slack/Discord (mention gates: a plain
@@ -203,7 +228,8 @@ follow it top to bottom, no guidance needed. Last rehearsed end-to-end 2026-07-1
 make fresh         # 1. = nuke (AP volumes + events.db; .env survives) → up → channels.
                    #    ap_up.sh installs the piece catalog itself; if a Connect later 404s with
                    #    piece_metadata_not_found, run `make ap-pieces` once (cold-boot race).
-make status        # 2. registry + cuga both 200, 3 containers Up, both tunnel URLs printed
+make status        # 2. registry + cuga both 200, 3 containers Up, both tunnel URLs +
+                   #    every CHANNEL and INTEGRATION with its connected/ready/connect-needed state
 make doctor        # 3. every live cred green — incl. a FRESH BOX_DEV_TOKEN (starts a ~60-min clock)
 make test          # 4. the full offline suite (no stack or creds needed — must be all green)
 ```
@@ -323,10 +349,17 @@ can and cannot prove, the live GitHub/Slack harnesses): [TESTING.md](TESTING.md)
 | `make nuke` | **AP volumes** + `events.db` | nothing | **reconnect every integration** (below) |
 | `make fresh` | = `nuke` then `up` + `channels` | nothing | reconnect every integration |
 
-**`make nuke` loses all AP connections.** After it, the OAuth integrations need a **browser re-consent**
-(only you can do that): `https://<domain>/api/events/connect/{gmail,github}`. Box direct-poll uses
-`BOX_DEV_TOKEN` from `.env` (which expires ~60 min — refresh it). Channels re-arm from `.env` via
-`make channels`. So reach for `nuke` only for a true from-zero rebuild; `reset-flows` is the everyday reset.
+**`make nuke` loses all AP connections.** It's **guided** — when it finishes it prints exactly what to
+do next (`→ NEXT: make fresh`, the nuke-safe full cycle). After the rebuild, the OAuth integrations
+need a **browser re-consent** (only you can do that) — reconnect them in the **CUGA Studio → Integrations**
+(Step 5 above), or hit `https://<domain>/api/events/connect/{gmail,github,box,google_calendar,pinterest}`.
+Box direct-poll uses `BOX_DEV_TOKEN` from `.env` (which expires ~60 min — refresh it). Channels re-arm
+from `.env` via `make channels`. So reach for `nuke` only for a true from-zero rebuild; `reset-flows`
+is the everyday reset.
+
+> The whole setup chain self-navigates: **every command ends by printing its `→ NEXT:` step** —
+> `preflight → up → status → doctor → test → (connect in Studio) → test-live → test-exhaustive`, and
+> `make fresh` prints the full ordered 1-6 map. You never have to guess what to run next.
 
 ## Perishable creds
 

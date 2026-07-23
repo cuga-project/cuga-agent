@@ -53,6 +53,8 @@ nuke: stop ## Stop everything AND wipe all data (AP volumes + events.db)
 	-$(DOCKER) volume rm $(VOLS)
 	-rm -f $(DB)
 	@echo "💥 nuked: $(VOLS) + $(DB) (ea-postgres / cuga-agent-apps NOT touched)"
+	@echo "   data is gone — pieces + AP connections + tunnels will be rebuilt on next start."
+	@echo "   → NEXT: make fresh   # nuke-safe full cycle (or 'make up' to just start the stack)"
 
 reset-flows: ## Wipe ONLY CUGA's flow DB (events.db) + bounce CUGA — keeps AP connections/pieces/tunnels (no reconnect)
 	-scripts/events_up.sh --stop
@@ -77,11 +79,20 @@ fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels 
 	  echo; echo "   → NEXT: make status"
 
 ## ---- inspect --------------------------------------------------------------
-status: ## Show what's running + tunnel URLs
+status: ## Show what's running + tunnel URLs + every channel & integration
 	@scripts/events_up.sh --status
 	@echo "--- containers ---"
 	@$(DOCKER) ps --filter name=activepieces --filter name=ap-postgres --filter name=ap-redis \
 	  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+	@echo "--- channels (inbound chat) ---"
+	@scripts/arm_channels.sh --status 2>/dev/null || echo "  (CUGA not reachable — is the stack up?)"
+	@echo "--- integrations (watch/act) ---"
+	@curl -s --max-time 5 localhost:$(CUGA_PORT)/api/events/integrations 2>/dev/null \
+	  | python3 -c "import sys,json;\
+rows=json.load(sys.stdin).get('integrations',[]);\
+mark=lambda i: '✓ connected' if i.get('connected') else ('· ready' if not i.get('needs_connection') else '✗ connect needed');\
+[print(f\"  {i['name']:<17} {mark(i):<15} {i.get('auth','?'):<6} {i.get('backend','?')}\") for i in rows]" 2>/dev/null \
+	  || echo "  (CUGA not reachable — is the stack up?)"
 	@echo "   → NEXT (setup): make doctor"
 
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
@@ -105,6 +116,7 @@ logs: ## Tail the runtime logs
 
 channels: ## Connect + arm every inbound chat channel that has a token in .env (needs the stack up)
 	scripts/arm_channels.sh
+	@echo "   → NEXT: make status   (then: make doctor → make test → CONNECT integrations in the Studio)"
 
 channels-status: ## Show inbound-channel state without changing anything
 	@scripts/arm_channels.sh --status

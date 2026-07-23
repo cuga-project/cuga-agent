@@ -47,10 +47,10 @@ CLOUD = "https://cloud.activepieces.com/api/v1/pieces"
 # (get current values from: curl -s https://cloud.activepieces.com/api/v1/pieces | jq).
 PINNED = {
     "@activepieces/piece-gmail": "0.12.7",
-    "@activepieces/piece-github": "0.8.3",
-    "@activepieces/piece-box": "0.1.5",
+    "@activepieces/piece-github": "0.8.5",
+    "@activepieces/piece-box": "0.1.6",
     "@activepieces/piece-telegram-bot": "0.6.4",
-    "@activepieces/piece-schedule": "0.1.17",
+    "@activepieces/piece-schedule": "0.1.19",
     "@activepieces/piece-google-calendar": "0.9.5",
     "@activepieces/piece-pinterest": "0.1.5",
     "@activepieces/piece-youtube": "0.4.10",
@@ -83,11 +83,21 @@ def _req(url, method="GET", body=None, token=None, timeout=60):
         return 0, str(e)
 
 
-def _count(base):
-    """Best-effort catalog size for display. The list endpoint is filtered/paginated — do NOT use it
-    to decide whether a specific piece is installed (it omits installed pieces). Returns None if down."""
+def _catalog(base):
+    """The cloud-synced catalog list → {name: version}. This is what's AVAILABLE to install and
+    carries the CURRENT version AP's own sync uses — the authoritative version to install with, so we
+    never depend on a stale hardcoded pin (pin drift is what makes an install POST 409 and no-op).
+    Do NOT use presence-in-this-list to decide 'installed' (a listed piece may not be materialized yet
+    — that's what _present is for). Returns {} if AP is down."""
     st, d = _req(f"{base}/api/v1/pieces", timeout=15)
-    return len(d) if st == 200 and isinstance(d, list) else None
+    if st != 200 or not isinstance(d, list):
+        return {}
+    return {p.get("name"): p.get("version") for p in d if p.get("name")}
+
+
+def _count(base):
+    """Best-effort catalog size for display. See _catalog for why list-membership != installed."""
+    return len(_catalog(base)) or None
 
 
 def _present(base, name):
@@ -126,10 +136,18 @@ def main():
     # that takes ~3-4 min to deliver all pieces AND saturates that host meanwhile — so an integration
     # Connect 404s until it lands, and racing it by fetching versions from that same cloud just gets us
     # rate-limited. Two independent paths make the pieces resolve; we use BOTH and take whichever wins:
-    #   1) install the needed pieces directly with PINNED versions (the package is pulled from npm — a
-    #      DIFFERENT host — and PINNED means no cloud version call, so this works even mid-sync), and
+    #   1) install the needed pieces directly (the package is pulled from npm — a DIFFERENT host — so
+    #      this works even mid-sync), and
     #   2) the OFFICIAL_AUTO sync, delivering the same pieces in the background.
     # Then poll until all present. Common case resolves in seconds; the sync is the backstop.
+    #
+    # VERSION SOURCE (why we don't just trust PINNED): AP's own sync registers each piece at its CURRENT
+    # version. If our hardcoded PINNED value is OLDER than that (pin drift — e.g. schedule 0.1.17 vs a
+    # synced 0.1.19), the install POST 409s `piece_metadata_already_exists` and does NOTHING useful,
+    # leaving us purely waiting on the slow sync (the exact bug where telegram-bot/schedule/youtube stay
+    # "MISSING" past make up's wait window). So we install the EXACT version AP's live catalog reports,
+    # and fall back to PINNED only if the catalog is unreachable. That forces full materialization
+    # instead of no-op'ing on a stale pin. On 409 we retry once at the live version before giving up.
     email, pw = _env("AP_EMAIL"), _env("AP_PASSWORD")
     st, auth = _req(f"{base}/api/v1/authentication/sign-in", "POST", {"email": email, "password": pw})
     token = auth.get("token") if isinstance(auth, dict) else None
@@ -137,16 +155,29 @@ def main():
         print(f"✗ AP sign-in failed (HTTP {st}). Check AP_EMAIL/AP_PASSWORD in .env.")
         return 2
 
-    print(f"installing {[short(p) for p in missing]} (pinned; the catalog sync also delivers them)…")
+    catalog = _catalog(base)  # {name: current-version} — authoritative version to install with
+
+    def _install(name, ver):
+        return _req(f"{base}/api/v1/pieces", "POST",
+                    {"pieceName": name, "pieceVersion": ver,
+                     "packageType": "REGISTRY", "scope": "PLATFORM"}, token=token)
+
+    print(f"installing {[short(p) for p in missing]} (live catalog version; the sync also delivers them)…")
     for p in missing:
-        ver = PINNED.get(p)
+        ver = catalog.get(p) or PINNED.get(p)
         if not ver:
-            print(f"  {short(p)}: ✗ no pinned version — add it to PINNED in scripts/ap_pieces.py")
+            print(f"  {short(p)}: ✗ not in catalog and no pinned version — add it to PINNED")
             continue
-        st, res = _req(f"{base}/api/v1/pieces", "POST",
-                       {"pieceName": p, "pieceVersion": ver,
-                        "packageType": "REGISTRY", "scope": "PLATFORM"}, token=token)
-        print(f"  install {short(p)} @ {ver}: HTTP {st} {'OK' if st in (200, 201) else str(res)[:100]}")
+        src = "catalog" if catalog.get(p) else "pinned"
+        st, res = _install(p, ver)
+        # 409 = a row for this name already exists but isn't materialized (the split-brain that keeps
+        # _present at 404). Re-fetch the catalog and retry at the freshest version to force it through.
+        if st == 409:
+            fresh = _catalog(base).get(p)
+            if fresh and fresh != ver:
+                st, res = _install(p, fresh)
+                ver, src = fresh, "catalog-retry"
+        print(f"  install {short(p)} @ {ver} ({src}): HTTP {st} {'OK' if st in (200, 201) else str(res)[:90]}")
 
     # Poll until all resolve — the install may settle asynchronously, and the sync backstops anything
     # that didn't take. A fresh-DB sync can take ~3-4 min, so wait generously (override: EVENTS_PIECES_WAIT).
