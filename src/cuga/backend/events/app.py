@@ -561,6 +561,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 "channel": ", ".join(sub.get("deliver_to") or []),
                 "utterance": sub.get("prompt"),
                 "flow_name": sub.get("flow_name"), "subscription_id": sub.get("id"),
+                "flow_id": r.get("flowId"),
                 "kind": "flow",
             })
         # NOW answers (Studio chat / channel DMs) — never AP flows, so without this they'd be
@@ -573,6 +574,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 "agent": nr["agent"] or "concierge", "mode": "NOW",
                 "integration": "—", "channel": nr["channel"],
                 "utterance": nr["prompt"], "flow_name": "", "subscription_id": None,
+                "flow_id": "",
                 "kind": "now",
             })
         out.sort(key=lambda r: r.get("started_at") or "", reverse=True)

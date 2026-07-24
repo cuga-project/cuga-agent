@@ -6,7 +6,7 @@
    "verdict": "ok",
    "note": "all 14 arm as real AP flows + repo webhooks",
    "source": "live_github_triggers.py",
-   "date": "2026-07-21 23:21"
+   "date": "2026-07-23 21:16"
   },
   "github::fire_synth": {
    "surface": "github",
@@ -14,7 +14,7 @@
    "verdict": "ok",
    "note": "14/14 piece-exact payloads fired real AP runs",
    "source": "live_github_triggers.py",
-   "date": "2026-07-21 23:21"
+   "date": "2026-07-23 21:16"
   },
   "github::fire_real": {
    "surface": "github",
@@ -182,7 +182,7 @@
    "verdict": "ok",
    "note": "37 passed · 0 failed (test-live)",
    "source": "make test-report",
-   "date": "2026-07-22 07:51"
+   "date": "2026-07-23 20:28"
   },
   "nlflow::arm": {
    "surface": "nlflow",
@@ -195,10 +195,10 @@
   "nlflow::fire_real": {
    "surface": "nlflow",
    "capability": "fire_real",
-   "verdict": "ok",
-   "note": "10 passed · 0 failed (test-suite-flows)",
+   "verdict": "blocked",
+   "note": "9 passed · 1 failed (test-suite-flows)",
    "source": "make test-report",
-   "date": "2026-07-22 07:51"
+   "date": "2026-07-23 20:29"
   },
   "delegation::fire_real": {
    "surface": "delegation",
@@ -206,7 +206,7 @@
    "verdict": "ok",
    "note": "14 passed · 0 failed (test-delegation)",
    "source": "make test-report",
-   "date": "2026-07-22 08:00"
+   "date": "2026-07-23 20:36"
   },
   "offline::fire_real": {
    "surface": "offline",
@@ -214,7 +214,7 @@
    "verdict": "ok",
    "note": "284 passed · 0 failed (test)",
    "source": "make test-report",
-   "date": "2026-07-22 07:48"
+   "date": "2026-07-23 20:26"
   },
   "box/new_box_comment::fire_real": {
    "surface": "box/new_box_comment",
@@ -244,49 +244,49 @@
    "surface": "discord/new_channel_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Deploy pipeline PLUM‑9 is red again (failure detected) – P1 – Componen",
+   "note": "Deploy pipeline PLUM‑9 turned red again in channel C1 – P1 severity; c",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "discord/new_member::fire_synth": {
    "surface": "discord/new_member",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Welcome to Guild G1, zeta_tester_77! 🎉    We're thrilled to have you j",
+   "note": "Welcome to Guild G1, **zeta_tester_77**! 🎉    We’re thrilled to have y",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "gmail/new_attachment::fire_synth": {
    "surface": "gmail/new_attachment",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "You received an email from **jane@example.com** with the subject **“re",
+   "note": "Email from jane@example.com with subject “resume attached” includes th",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "gmail/new_email::fire_synth": {
    "surface": "gmail/new_email",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The email requests approval of a $42,000 vendor budget increase by Fri",
+   "note": "The finance team requests approval of a $42,000 vendor budget increase",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "gmail/new_gmail_label::fire_synth": {
    "surface": "gmail/new_gmail_label",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "New Gmail label created: Q3-Receipts  — cuga · 2.4s",
+   "note": "A new Gmail label has been created: **Q3-Receipts**.  — cuga · 2.2s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "gmail/new_labeled_email::fire_synth": {
    "surface": "gmail/new_labeled_email",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The email is a “read‑later” notice about the MoE (Mixture‑of‑Experts) ",
+   "note": "The email is a brief note about a survey focusing on the stability of ",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/channel_created::fire_synth": {
    "surface": "slack/channel_created",
@@ -294,95 +294,95 @@
    "verdict": "ok",
    "note": "Channel **proj-orchid** has been created.  — cuga · 4.8s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/new_channel_message::fire_synth": {
    "surface": "slack/new_channel_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Queue depth 9000 on JOB‑55 (production) – P1 – Component: job processi",
+   "note": "Queue depth 9000 on JOB‑55 (reported in channel C9) – P1 severity; com",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/new_emoji::fire_synth": {
    "surface": "slack/new_emoji",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "🚀 **New Custom Emoji Alert!** 🚀    We’re excited to introduce **:party",
+   "note": "🎉 New custom emoji added: :partyblob77:  — cuga · 2.6s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/new_reaction::fire_synth": {
    "surface": "slack/new_reaction",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Checkout 500 errors spiking (GRB‑12) – P1 – Component: checkout servic",
+   "note": "**Summary:** Checkout service is experiencing a spike in 500 errors (r",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/new_slack_mention::fire_synth": {
    "surface": "slack/new_slack_mention",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Could you please provide the GitHub repository identifier (owner/name)",
+   "note": "I’m unable to find any publicly available information about release RC",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/new_slack_user::fire_synth": {
    "surface": "slack/new_slack_user",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Welcome to the workspace, **new.hire.omega**! Here are a few quick poi",
+   "note": "Here’s the onboarding guide for **new.hire.omega**:  **Onboarding Chec",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/reaction_removed::fire_synth": {
    "surface": "slack/reaction_removed",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Incident GRB‑12 has been recorded as resolved following the removal of",
+   "note": "Incident GRB‑12 has been marked as resolved.  — cuga · 5.8s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "slack/saved_message::fire_synth": {
    "surface": "slack/saved_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "ship flag FLG-31 next sprint  — cuga · 3.7s",
+   "note": "decision: ship flag FLG-31 next sprint  — cuga · 3.8s",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "telegram/new_channel_message::fire_synth": {
    "surface": "telegram/new_channel_message",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "I wasn’t able to retrieve the page – the fetch returned a 404 Not Foun",
+   "note": "I wasn’t able to locate any content at https://example.com/moe-paper —",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "webhook/inbound::fire_real": {
    "surface": "webhook/inbound",
    "capability": "fire_real",
    "verdict": "ok",
-   "note": "The alert has been triaged as follows:  **Alert:** HighCPU   **Service",
+   "note": "The monitoring alert indicates a **HighCPU** condition on the **checko",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "box/new_box_comment::fire_synth": {
    "surface": "box/new_box_comment",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "The comment requests a re‑check of page 2 of QV‑19 in the offer.pdf fi",
+   "note": "User comment on offer.pdf: “Please re‑check page 2 of QV‑19.” – a requ",
    "source": "live_exhaustive.py",
-   "date": "2026-07-21 23:25"
+   "date": "2026-07-23 21:17"
   },
   "box/new_file::fire_synth": {
    "surface": "box/new_file",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "SKIP   - The resume file `jane_doe_resume.pdf` could not be found, so ",
+   "note": "Could you please provide the job description you’d like the resume `ja",
    "source": "live_exhaustive.py",
-   "date": "2026-07-21 23:25"
+   "date": "2026-07-23 21:17"
   },
   "box/new_folder::fire_synth": {
    "surface": "box/new_folder",
@@ -390,31 +390,31 @@
    "verdict": "fail",
    "note": "none of ['Q3-candidates'] in answer",
    "source": "live_exhaustive.py",
-   "date": "2026-07-21 23:25"
+   "date": "2026-07-23 21:17"
   },
   "discord/new_reaction::fire_synth": {
    "surface": "discord/new_reaction",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Prod checkout 500 errors (DR‑33) – P1 – Component: checkout service in",
+   "note": "**Summary:** Production incident reported (message M9 in channel C1 by",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "google_calendar/event_ends::fire_synth": {
    "surface": "google_calendar/event_ends",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Subject: Follow‑Up: Retro RT‑42 Wrapped (July 23, 2026)  Hi Team,  Tha",
+   "note": "Subject: Follow‑Up & Action Items – Retro RT‑42 Wrapped (July 23, 2026",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "google_calendar/new_event::fire_synth": {
    "surface": "google_calendar/new_event",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "**Calendar Event Brief**  - **Title:** Board review KX‑88   - **Status",
+   "note": "**Event:** Board review KX-88   **Status:** confirmed   **Description:",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "google_calendar/new_or_updated_event::fire_synth": {
    "surface": "google_calendar/new_or_updated_event",
@@ -422,23 +422,23 @@
    "verdict": "ok",
    "note": "summary=Sync moved to 4pm QW-31, status=confirmed, start={'dateTime': ",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "pinterest/new_board::fire_synth": {
    "surface": "pinterest/new_board",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "🎉 New Board Alert! 🎉    **Board:** Summer recipes BD-12   **Owner:** c",
+   "note": "📢 New Board Announcement!  **Board Name:** Summer Recipes BD‑12   **Th",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "pinterest/new_follower::fire_synth": {
    "surface": "pinterest/new_follower",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Thank you for following me on Pinterest, @follower_ff9! I appreciate y",
+   "note": "Hi @follower_ff9,  Thank you so much for following me on Pinterest! I’",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "pinterest/new_pin::fire_synth": {
    "surface": "pinterest/new_pin",
@@ -446,23 +446,23 @@
    "verdict": "ok",
    "note": "Sheet‑pan chana PN‑55   One‑pan roasted chickpeas   https://www.pinter",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "rss/new_item::fire_synth": {
    "surface": "rss/new_item",
    "capability": "fire_synth",
    "verdict": "ok",
-   "note": "Anthropic has released the agents SDK feature RS‑19, introducing new c",
+   "note": "Anthropic has released a new feature for its agents SDK, called RS‑19.",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   },
   "youtube/new_video::fire_synth": {
    "surface": "youtube/new_video",
    "capability": "fire_synth",
-   "verdict": "fail",
-   "note": "none of ['YT-77', 'MoE', 'routing', 'Fireship'] in answer",
+   "verdict": "ok",
+   "note": "Here’s a concise summary of the video “How MoE routing works” by Fires",
    "source": "live_exhaustive.py",
-   "date": "2026-07-22 12:21"
+   "date": "2026-07-23 21:17"
   }
  }
 }

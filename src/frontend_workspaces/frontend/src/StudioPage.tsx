@@ -810,7 +810,7 @@ function RunsTab({ refresh }: { refresh: number }) {
                 <TableRow>
                   {th("started_at", "Time")}{th("agent", "Agent")}{th("utterance", "Flow (utterance)")}
                   {th("mode", "Trigger")}{th("integration", "Integration")}{th("channel", "Channel")}
-                  {th("status", "Status")}<TableHeader>Output</TableHeader>
+                  {th("flow_id", "Flow ID")}{th("status", "Status")}<TableHeader>Output</TableHeader>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -823,6 +823,10 @@ function RunsTab({ refresh }: { refresh: number }) {
                     <TableCell><Tag type={(MODE_TAG[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag></TableCell>
                     <TableCell>{r.integration}</TableCell>
                     <TableCell>{r.channel}</TableCell>
+                    <TableCell title={r.flow_id ? `AP flow ${r.flow_id}${r.flow_name ? ` · ${r.flow_name}` : ""} — click to copy` : ""}
+                      style={{ fontFamily: "monospace", fontSize: 12, cursor: r.flow_id ? "copy" : "default", whiteSpace: "nowrap" }}
+                      onClick={() => r.flow_id && navigator.clipboard?.writeText(r.flow_id)}>
+                      {r.flow_id ? (String(r.flow_id).length > 12 ? String(r.flow_id).slice(0, 10) + "…" : r.flow_id) : "—"}</TableCell>
                     <TableCell><Tag type={(RUN_STATUS_TAG[r.status] as any) ?? "gray"} size="sm">{r.status}</Tag></TableCell>
                     <TableCell><Button kind="ghost" size="sm" renderIcon={View}
                       onClick={() => view(r)}>View</Button></TableCell>

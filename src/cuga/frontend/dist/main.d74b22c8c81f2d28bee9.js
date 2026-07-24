@@ -14246,12 +14246,15 @@ function IntegrationsTab({
   }, i.backend === "direct" ? "direct backend" : "via Activepieces"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: "outline",
     size: "sm"
-  }, i.backend === "direct" ? "token" : i.auth === "oauth" ? "OAuth" : "token"), i.status !== "ap_not_configured" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+  }, i.auth === "none" ? "no auth" : i.backend === "direct" ? "token" : i.auth === "oauth" ? "OAuth" : "token"), i.needs_connection === false || i.auth === "none" ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "green",
+    size: "sm"
+  }, "ready \xB7 no connection needed") : i.status !== "ap_not_configured" ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
     kind: i.status === "connected" ? "ghost" : "tertiary",
     size: "sm",
     renderIcon: i.auth === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
     onClick: () => connect(i)
-  }, i.status === "connected" ? "Reconnect" : "Connect")))));
+  }, i.status === "connected" ? "Reconnect" : "Connect") : null))));
 }
 
 // The connect SETUP GUIDE — per connector: required creds (+ present?), ownership (per-user vs
@@ -14430,12 +14433,17 @@ function FlowDetail({
     });
     node = node.nextAction;
   }
+  // The post-agent ACTION. For a DIRECT trigger (slack/discord/telegram) it lives in
+  // config.action_plan (the executor, Option A) — there's no AP flow to walk, so this is the only
+  // place it shows. For an AP-push flow the action also appears as an AP step below.
+  const plan = s.config?.action_plan;
+  const actionLabel = plan?.steps?.length ? plan.steps.map(x => `${x.app}/${x.ap_action} (executor)`).join(" + ") : plan?.branches?.length ? "branched: " + plan.branches.map(b => b.tag || `${b.step?.app}/${b.step?.ap_action}`).join(" / ") : "";
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted",
     style: {
       marginBottom: 10
     }
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Source"), " ", s.source_connector || s.source_type, " \u2192 ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Agent"), " ", s.target_agent, " \u2192 ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Sink"), " ", (s.deliver_to || []).join(", ") || "web"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Source"), " ", s.source_connector || s.source_type, " \u2192 ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Agent"), " ", s.target_agent, actionLabel && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, " \u2192 ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Action"), " ", actionLabel), " ", "\u2192 ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Sink"), " ", (s.deliver_to || []).join(", ") || "web"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     style: {
       margin: "0 0 8px"
     }
@@ -14472,7 +14480,7 @@ function FlowDetail({
     className: "studio-muted"
   }, " \xB7 ", st.action)))) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted"
-  }, "No live AP flow (a direct/no-AP flow, or AP unreachable)."));
+  }, actionLabel ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, "Direct trigger \u2014 no AP watcher flow; the action runs via an executor flow: ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, actionLabel)) : "No live AP flow (a direct/no-AP flow, or AP unreachable)."));
 }
 function FlowsTab({
   refresh
@@ -14802,7 +14810,7 @@ function RunsTab({
     subtitle: "Chat with the Concierge or arm a flow \u2014 every answer and flow-fire shows up here with status and output."
   }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Table, {
     size: "sm"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, th("started_at", "Time"), th("agent", "Agent"), th("utterance", "Flow (utterance)"), th("mode", "Trigger"), th("integration", "Integration"), th("channel", "Channel"), th("status", "Status"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Output"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, sorted.map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, th("started_at", "Time"), th("agent", "Agent"), th("utterance", "Flow (utterance)"), th("mode", "Trigger"), th("integration", "Integration"), th("channel", "Channel"), th("flow_id", "Flow ID"), th("status", "Status"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Output"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, sorted.map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
     key: r.id
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, fmtTime(r.started_at)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.agent), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, {
     title: r.utterance || "",
@@ -14812,7 +14820,16 @@ function RunsTab({
   }, r.utterance ? r.utterance.length > 52 ? r.utterance.slice(0, 52) + "…" : r.utterance : "—"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: MODE_TAG[r.mode] ?? "gray",
     size: "sm"
-  }, r.mode)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.integration), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.channel), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+  }, r.mode)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.integration), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.channel), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, {
+    title: r.flow_id ? `AP flow ${r.flow_id}${r.flow_name ? ` · ${r.flow_name}` : ""} — click to copy` : "",
+    style: {
+      fontFamily: "monospace",
+      fontSize: 12,
+      cursor: r.flow_id ? "copy" : "default",
+      whiteSpace: "nowrap"
+    },
+    onClick: () => r.flow_id && navigator.clipboard?.writeText(r.flow_id)
+  }, r.flow_id ? String(r.flow_id).length > 12 ? String(r.flow_id).slice(0, 10) + "…" : r.flow_id : "—"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: RUN_STATUS_TAG[r.status] ?? "gray",
     size: "sm"
   }, r.status)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
@@ -19293,4 +19310,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.b23111aaddf7d80c17a2.js.map
+//# sourceMappingURL=main.d74b22c8c81f2d28bee9.js.map

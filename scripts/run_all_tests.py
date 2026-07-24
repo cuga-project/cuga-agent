@@ -129,9 +129,11 @@ def stack_state() -> dict:
         "worker_backend": (st or {}).get("worker_backend"),
         "agents": len(agents.get("agents", [])),
         "subscriptions_before": len(subs.get("subscriptions", [])),
+        # EVERY integration the platform exposes — not a hardcoded subset — so the report reflects
+        # the full surface (calendar/pinterest/youtube/rss included), and a reader can see at a glance
+        # which were connected vs 'ready' vs 'connect needed' when the run happened.
         "integrations": {i["name"]: i.get("status")
-                         for i in integ.get("integrations", [])
-                         if i["name"] in ("box", "github", "gmail")},
+                         for i in integ.get("integrations", [])},
     }
 
 
