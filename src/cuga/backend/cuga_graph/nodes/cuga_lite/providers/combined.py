@@ -21,6 +21,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import (
     create_tool_from_api_dict,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.policy_guard import RetrieverPolicyGuard
 from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_registry_base_url
 from cuga.config import settings
 
@@ -123,6 +124,10 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
         )
 
         BlockToolCallBudget.check_and_increment()
+
+        block_reason = RetrieverPolicyGuard.check_call(tool_name)
+        if block_reason:
+            return {"error": block_reason, "blocked_by_policy": True}
 
         start_time = time.time()
         result = None

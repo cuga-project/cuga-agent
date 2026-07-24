@@ -231,6 +231,7 @@ class CodeExecutor:
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
                     timeout=settings.advanced_features.sandbox_execution_timeout,
+                    task_key=thread_id,
                 )
 
         except Exception as e:

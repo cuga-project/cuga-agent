@@ -15,6 +15,7 @@ from pydantic import Field, create_model
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallBudgetExceededError
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.policy_guard import RetrieverPolicyGuard
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
@@ -49,6 +50,10 @@ async def call_api(
     )
 
     BlockToolCallBudget.check_and_increment()
+
+    block_reason = RetrieverPolicyGuard.check_call(api_name)
+    if block_reason:
+        return {"error": block_reason, "blocked_by_policy": True}
 
     if args is None:
         args = {}

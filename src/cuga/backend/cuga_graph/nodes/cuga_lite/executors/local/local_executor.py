@@ -12,6 +12,7 @@ from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallBudget
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.policy_guard import RetrieverPolicyGuard
 
 
 class LocalExecutor(BaseExecutor):
@@ -41,6 +42,7 @@ class LocalExecutor(BaseExecutor):
         wrapped_code: str,
         context_locals: dict[str, Any],
         timeout: int = 30,
+        task_key: Optional[str] = None,
     ) -> str:
         """Execute code locally in a restricted environment.
 
@@ -48,6 +50,12 @@ class LocalExecutor(BaseExecutor):
             wrapped_code: Wrapped Python code to execute
             context_locals: Dictionary of variables and tools
             timeout: Execution timeout in seconds
+            task_key: Stable per-task identifier (thread_id), rebound into
+                RetrieverPolicyGuard on every dispatch so tool-call sites can
+                look up this task's retriever-usage policy. Must be rebound
+                unconditionally on every call - a contextvar mutation made in
+                one LangGraph node dispatch is invisible to another, so this
+                cannot be set once and relied on to persist.
 
         Returns:
             Execution result string
@@ -57,6 +65,7 @@ class LocalExecutor(BaseExecutor):
             Exception: For any execution errors
         """
         self._timeout = timeout
+        RetrieverPolicyGuard.bind(task_key)
         with contextlib.redirect_stdout(io.StringIO()) as f:
             benchmark_mode = is_relaxed_execution()
 
