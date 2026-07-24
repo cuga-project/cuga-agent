@@ -58,6 +58,20 @@ class RetrieverPolicyGuard:
         _task_policies.pop(task_key, None)
 
     @staticmethod
+    def alias(existing_task_key: str, new_task_key: str) -> None:
+        """Register new_task_key under the same policy as existing_task_key,
+        if any is registered. Used when a caller needs a fresh LangGraph
+        thread_id for a retry attempt (avoiding checkpoint-state
+        accumulation across retries on the same thread_id - see cuga-eval's
+        docs/m3-cap4-policy-investigation-20260723/README.md, the token-
+        explosion writeup) but the retry must still enforce the same task's
+        retriever-usage policy. A no-op if existing_task_key has no policy
+        registered."""
+        policy_text = _task_policies.get(existing_task_key)
+        if policy_text:
+            _task_policies[new_task_key] = policy_text
+
+    @staticmethod
     def bind(task_key: Optional[str]) -> None:
         _policy_task_key_context.set(task_key)
 
