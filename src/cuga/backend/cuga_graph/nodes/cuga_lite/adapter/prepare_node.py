@@ -205,6 +205,42 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 app_tools = await adapter._base_tool_provider.get_tools(app.name)
                 app_to_tools_map[app.name] = app_tools
 
+        # Apply tool guide to tools_for_execution AND app_to_tools_map BEFORE
+        # find_tools is built below. find_tools (create_find_tools_tool) closes
+        # over both at construction time — and critically, its actual runtime
+        # implementation (find_tools_func in helpers/find_tools.py) filters via
+        # app_to_tools_map[app_name] whenever a map is provided (which it always
+        # is here); the `all_tools` parameter (tools_for_execution) is only a
+        # fallback used when app_to_tools_map is None, so enriching only
+        # tools_for_execution silently fixed dead code, not the actual path the
+        # shortlister sub-agent uses. apply_tool_guide returns *new* enriched
+        # lists rather than mutating in place, so both need to be rebuilt here,
+        # before find_tools captures either one, or its closure stays pointed at
+        # stale, pre-enrichment tools — the shortlister sub-agent inside
+        # find_tools would never see guide content on the actual domain tools it
+        # ranks, only on find_tools' own top-level description (enriched
+        # separately, later, once it already covered just [find_tool]).
+        if settings.policy.enabled and state.cuga_lite_metadata:
+            has_guides_early = (
+                state.cuga_lite_metadata.get("guides")
+                or state.cuga_lite_metadata.get("guide_content")
+                or state.cuga_lite_metadata.get("policy_type") == "tool_guide"
+                or state.cuga_lite_metadata.get("has_guides", False)
+            )
+            if has_guides_early:
+                tools_for_execution = PolicyEnactment.apply_tool_guide(
+                    tools_for_execution, state.cuga_lite_metadata
+                )
+                app_to_tools_map = {
+                    app_name: PolicyEnactment.apply_tool_guide(app_tools, state.cuga_lite_metadata)
+                    for app_name, app_tools in app_to_tools_map.items()
+                }
+                state.cuga_lite_metadata["guides_applied"] = True
+                logger.info(
+                    "Applied tool guide from policy (pre-find_tools, to tools_for_execution "
+                    "and app_to_tools_map)"
+                )
+
         enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
 
         if enable_find_tools:
@@ -285,8 +321,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             )
             adapter._tools_context['create_update_todos'] = make_tool_awaitable(todos_tool_func)
 
-        # Apply tool guide if guides exist in metadata and haven't been applied yet
-        # Guides should apply regardless of whether a playbook matched
+        # Apply tool guide to tools_for_prompt if guides exist in metadata.
+        # tools_for_execution was already enriched above, before find_tools was
+        # built. Only tools_for_prompt still needs enrichment here, and only when
+        # find_tools shortlisting actually collapsed it to a distinct [find_tool]
+        # list (~line 232) — when shortlisting is off, tools_for_prompt IS
+        # tools_for_execution (same object, already enriched above); re-running
+        # apply_tool_guide on it here would append the guide content a second time.
         if settings.policy.enabled and state.cuga_lite_metadata:
             # Check if guides exist (either as separate guides list or legacy format)
             has_guides = (
@@ -296,16 +337,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 or state.cuga_lite_metadata.get("has_guides", False)
             )
 
-            if has_guides:
-                tools_for_execution = PolicyEnactment.apply_tool_guide(
-                    tools_for_execution, state.cuga_lite_metadata
-                )
+            if has_guides and enable_find_tools:
                 tools_for_prompt = PolicyEnactment.apply_tool_guide(
                     tools_for_prompt, state.cuga_lite_metadata
                 )
                 # Mark guides as applied to prevent re-application
                 state.cuga_lite_metadata["guides_applied"] = True
-                logger.info("Applied tool guide from policy")
+                logger.info("Applied tool guide from policy (find_tools meta-tool description)")
+            elif has_guides:
+                logger.debug(
+                    "tools_for_prompt is tools_for_execution (find_tools shortlisting off) — "
+                    "already enriched above, skipping to avoid double-application"
+                )
             else:
                 logger.debug("No tool guides found in metadata")
 
