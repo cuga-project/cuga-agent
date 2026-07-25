@@ -36,10 +36,17 @@ def tool_call_kwarg_literal(value: Any) -> str:
 
 
 def _parse_one_tool_call(tool_call: Any) -> Optional[tuple]:
-    """Parse a single tool-call entry to ``(name, args_dict)``, or None for any
-    malformed entry — this is untrusted LLM/provider output. Guards a truthy
-    non-dict ``function`` field and a truthy non-string ``name`` so the contract
-    ("malformed → None") holds and callers never crash on the value."""
+    """Parse a single tool-call entry to ``(name, args_dict, args_ok)``, or None
+    for any malformed entry — this is untrusted LLM/provider output. Guards a
+    truthy non-dict ``function`` field and a truthy non-string ``name`` so the
+    contract ("malformed → None") holds and callers never crash on the value.
+
+    ``args_ok`` is False when the args payload was present but could not be
+    parsed into a dict (bad JSON string, or a non-dict value). The args are then
+    ``{}``; callers on the multi path use ``args_ok`` to emit a visible skip
+    marker rather than silently invoking the tool with empty args (issue #471,
+    D1 silent-wrong-execution). The legacy single-call path ignores ``args_ok``
+    and stays byte-identical to main (unparseable args → ``{}``)."""
     if not isinstance(tool_call, dict):
         return None
     function = tool_call.get("function")
@@ -48,13 +55,16 @@ def _parse_one_tool_call(tool_call: Any) -> Optional[tuple]:
     name = tool_call.get("name") or function.get("name")
     if not isinstance(name, str) or not name:
         return None
-    args = tool_call.get("args") or function.get("arguments") or {}
-    if isinstance(args, str):
+    raw_args = tool_call.get("args") or function.get("arguments") or {}
+    args, args_ok = raw_args, True
+    if isinstance(raw_args, str):
         try:
-            args = json.loads(args)
+            args = json.loads(raw_args)
         except json.JSONDecodeError:
-            args = {}
-    return name, args if isinstance(args, dict) else {}
+            args, args_ok = {}, False
+    if not isinstance(args, dict):
+        args, args_ok = {}, False
+    return name, args, args_ok
 
 
 def _get_tool_calls(response: Any) -> list:
@@ -66,13 +76,14 @@ def _get_tool_calls(response: Any) -> list:
 
 
 def _parse_tool_calls(response: Any) -> list:
-    """All tool calls as ``(name, args_dict)``; skips malformed / nameless entries."""
+    """All tool calls as ``(name, args_dict, args_ok)``; skips malformed / nameless entries."""
     return [p for tc in _get_tool_calls(response) if (p := _parse_one_tool_call(tc)) is not None]
 
 
-def _tool_call_statements(name: str, args: dict, result_var: str) -> list:
+def _tool_call_statements(name: str, args: dict, result_var: str, args_ok: bool = True) -> list:
     """One transpiled call: ``<result_var> = await name(**{...})`` + a print, or a
-    visible skip marker when ``name`` is not a valid callable identifier.
+    visible skip marker when ``name`` is not a valid callable identifier or the
+    args could not be parsed.
 
     Args are passed via ``**{...}`` (never spliced as ``k=v`` kwargs) so keyword
     or non-identifier parameter names — Gmail ``from``, OData ``$filter``,
@@ -80,9 +91,17 @@ def _tool_call_statements(name: str, args: dict, result_var: str) -> list:
     tool name is never spliced into a dynamic lookup (``getattr``/``globals``/
     ``eval`` are blocked by SecurityValidator and the prompt), so a
     non-identifier/keyword name is reported rather than executed unsafely.
+
+    When ``args_ok`` is False the args payload was present but unparseable; the
+    tool is skipped with a visible marker (so the model sees it and retries)
+    rather than invoked with ``{}`` — which for an all-optional-param tool would
+    silently run with defaults and report success (issue #471 D1).
     """
     if not name.isidentifier() or keyword.iskeyword(name):
         marker = f"[skipped tool with non-callable name: {name!r}]"
+        return [f"print({json.dumps(marker)})"]
+    if not args_ok:
+        marker = f"[skipped tool call with unparseable args: {name}]"
         return [f"print({json.dumps(marker)})"]
     if args:
         pairs = ", ".join(f"{k!r}: {tool_call_kwarg_literal(v)}" for k, v in args.items())
@@ -108,7 +127,7 @@ def extract_code_from_response_tool_calls(response: Any, *, multi: bool = False)
         parsed = _parse_one_tool_call(tool_calls[0])
         if parsed is None:
             return None
-        name, args = parsed
+        name, args, _ = parsed  # legacy path ignores args_ok (byte-identical to main)
         args_str = ", ".join(f"{k}={tool_call_kwarg_literal(v)}" for k, v in args.items())
         return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
 
@@ -116,6 +135,6 @@ def extract_code_from_response_tool_calls(response: Any, *, multi: bool = False)
     if not calls:
         return None
     lines: list = []
-    for i, (name, args) in enumerate(calls):
-        lines.extend(_tool_call_statements(name, args, f"result_{i}"))
+    for i, (name, args, args_ok) in enumerate(calls):
+        lines.extend(_tool_call_statements(name, args, f"result_{i}", args_ok=args_ok))
     return "```python\n" + "\n".join(lines) + "\n```"

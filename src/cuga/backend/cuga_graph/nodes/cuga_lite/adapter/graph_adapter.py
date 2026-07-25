@@ -171,11 +171,20 @@ class AgentGraphAdapter(CoreGraphAdapter):
                     logger.warning("Tool calls emitted alongside a text preamble; executing the tool calls")
                 content = tool_code
         elif not content:
-            # Legacy path (FC off, or FC on with a code block): unchanged behavior.
-            tool_code = extract_code_from_response_tool_calls(response, multi=allow_native)
+            # Legacy path, reached only when allow_native is False (native + empty
+            # content is handled above), so multi is always False here.
+            tool_code = extract_code_from_response_tool_calls(response, multi=False)
             if tool_code:
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code
+        elif allow_native and (getattr(response, "tool_calls", None) or []):
+            # Native FC on, non-empty content that already contains a ```python
+            # block: code-act intent wins and the content is kept as-is, so the
+            # tool_calls are intentionally dropped. Log it so this D1-shaped
+            # silent drop stays diagnosable.
+            logger.warning(
+                "Model emitted a python code block alongside tool_calls; executing the code block and ignoring the tool_calls"
+            )
         return content, reasoning
 
     def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:
