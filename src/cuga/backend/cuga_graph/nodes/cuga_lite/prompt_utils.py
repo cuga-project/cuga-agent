@@ -5,6 +5,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 import functools
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
@@ -12,9 +13,21 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
-from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
+from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates, load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+
+
+@functools.lru_cache(maxsize=1)
+def get_native_mcp_prompt_template():
+    """Load (once) the native function-calling system prompt.
+
+    Used only when native/hybrid tool calling is enabled (issue #471). The
+    default code-act prompt (``mcp_prompt.jinja2``) is untouched and remains the
+    template for the code path.
+    """
+    prompts_dir = Path(__file__).parent / "prompts"
+    return load_one_prompt(str(prompts_dir / "mcp_prompt_native.jinja2"), relative_to_caller=False)
 
 
 def _coerce_bool_setting(val: Any) -> bool:

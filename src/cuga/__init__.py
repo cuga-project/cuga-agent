@@ -25,6 +25,7 @@ For more information, visit: https://cuga.dev
 
 from cuga.sdk import CugaAgent, CugaSupervisor, run_agent, InvokeResult
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import ToolCalling
 from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
 from cuga.backend.knowledge.config import (
     CLIENT_ADAPTATION_MAX_CHARS,
@@ -42,6 +43,7 @@ __all__ = [
     "CugaSupervisor",
     "run_agent",
     "InvokeResult",
+    "ToolCalling",
     "tracked_tool",
     "KnowledgeClient",
     "KnowledgeEngine",

@@ -29,6 +29,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     classify_nl_auto_continue,
     normalize_assistant_text,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import native_tool_calls_enabled
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.config import settings
@@ -146,16 +147,44 @@ class AgentGraphAdapter(CoreGraphAdapter):
             logger.warning(f"AgentGraphAdapter.resolve_bind_tools failed: {exc}")
         return None
 
-    def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
+    def normalize_response(
+        self, response: Any, configurable: Optional[dict] = None
+    ) -> Tuple[str, Optional[str]]:
         content = normalize_assistant_text(response.content)
-        if not content:
-            tool_code = extract_code_from_response_tool_calls(response)
-            if tool_code:
-                logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
-                content = tool_code
         reasoning = normalize_assistant_text(
             (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
         )
+        # Derived per call from configurable/settings (no adapter state: the
+        # adapter is shared across concurrent invokes with possibly different
+        # tool_calling modes).
+        allow_native = native_tool_calls_enabled(configurable)
+        if allow_native and "```python" not in content:
+            # Native FC opted in: honor tool_calls even alongside a text preamble,
+            # unless the model already emitted a PYTHON code block (explicit
+            # code-act intent wins). A non-python fence (```json / ```text) in the
+            # preamble must NOT suppress the tool calls. The preamble is preserved
+            # as reasoning, not lost (issue #471 D2).
+            tool_code = extract_code_from_response_tool_calls(response, multi=True)
+            if tool_code:
+                if content:
+                    reasoning = f"{reasoning}\n{content}".strip() if reasoning else content
+                    logger.warning("Tool calls emitted alongside a text preamble; executing the tool calls")
+                content = tool_code
+        elif not content:
+            # Legacy path, reached only when allow_native is False (native + empty
+            # content is handled above), so multi is always False here.
+            tool_code = extract_code_from_response_tool_calls(response, multi=False)
+            if tool_code:
+                logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
+                content = tool_code
+        elif allow_native and (getattr(response, "tool_calls", None) or []):
+            # Native FC on, non-empty content that already contains a ```python
+            # block: code-act intent wins and the content is kept as-is, so the
+            # tool_calls are intentionally dropped. Log it so this D1-shaped
+            # silent drop stays diagnosable.
+            logger.warning(
+                "Model emitted a python code block alongside tool_calls; executing the code block and ignoring the tool_calls"
+            )
         return content, reasoning
 
     def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:

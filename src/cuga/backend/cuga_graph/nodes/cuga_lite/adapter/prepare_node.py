@@ -36,9 +36,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolv
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
+    get_native_mcp_prompt_template,
     normalize_mcp_few_shot_examples,
     resolve_cuga_lite_few_shots_enabled,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_calling import native_tool_calls_enabled
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.skills import (
@@ -86,6 +88,10 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             state.task_todos = None
 
         configurable = config.get("configurable", {}) if config else {}
+        # Native function calling opt-in (issue #471), resolved once here:
+        # configurable > global setting > "code". Used for few-shot selection
+        # below and prompt-template selection later.
+        allow_native_tool_calls = native_tool_calls_enabled(configurable)
         enable_todos = (
             configurable.get("enable_todos")
             if "enable_todos" in configurable
@@ -242,16 +248,22 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 "Exposing only find_tools in prompt (all tools + find_tools available in execution context)"
             )
 
+        # The bundled find_tools few-shots are code-act examples (they contain
+        # ```python``` blocks). Under native function calling they would fight the
+        # dedicated FC prompt and push the model back to writing code, so skip
+        # them in native/hybrid mode. Explicit caller-supplied few-shots
+        # (configurable["mcp_few_shot_examples"]) are still honored in any mode.
+        _use_bundled_few_shots = enable_find_tools and not allow_native_tool_calls
         if few_shots_enabled:
             if "mcp_few_shot_examples" in configurable:
                 raw_fs = configurable["mcp_few_shot_examples"]
                 if raw_fs is not None:
                     few_shot_examples = normalize_mcp_few_shot_examples(raw_fs)
-                elif enable_find_tools:
+                elif _use_bundled_few_shots:
                     few_shot_examples = _load_default_find_tools_few_shot_examples()
                 else:
                     few_shot_examples = []
-            elif enable_find_tools:
+            elif _use_bundled_few_shots:
                 few_shot_examples = _load_default_find_tools_few_shot_examples()
             else:
                 few_shot_examples = []
@@ -602,6 +614,17 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
 
+        # Native function calling (issue #471): when enabled (resolved above),
+        # render the dedicated function-calling prompt instead of the code-act
+        # one. Default: unchanged code-act template.
+        prompt_template = adapter._prompt_template
+        if allow_native_tool_calls:
+            try:
+                prompt_template = get_native_mcp_prompt_template()
+            except Exception as e:
+                logger.warning(f"Native prompt load failed; using code-act prompt: {e}")
+                prompt_template = adapter._prompt_template
+
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
@@ -615,7 +638,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 task_loaded_from_file=task_loaded_from_file,
                 is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                 or is_autonomous_subtask,
-                prompt_template=adapter._prompt_template,
+                prompt_template=prompt_template,
                 enable_find_tools=enable_find_tools,
                 enable_todos=enable_todos,
                 special_instructions=special_instructions_final,

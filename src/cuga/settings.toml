@@ -57,6 +57,10 @@ cuga_lite_bind_tools_mode = "none"
 cuga_lite_bind_tools_apps = []  # mode=apps or apps_and_tools
 cuga_lite_bind_tools_tool_names = []  # mode=tools or apps_and_tools (StructuredTool.name)
 cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools/apps_and_tools
+# Native function calling (issue #471). "code" (default) = tools called only via generated Python
+# (unchanged behavior). "native"/"hybrid" = permit native tool_calls in the prompt and execute them.
+# Normally set per-agent via the SDK (CugaAgent(tool_calling=...)), not globally here.
+cuga_lite_tool_invocation_mode = "code"
 # Cap on tools sent to LLM.bind_tools (0 disables). Over-cap triggers an LLM shortlister; failure raises.
 cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.

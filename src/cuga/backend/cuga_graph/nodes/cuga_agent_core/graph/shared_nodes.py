@@ -191,7 +191,7 @@ def create_call_model_node(
         response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
 
         # ── Normalise response ─────────────────────────────────────────────
-        content, reasoning = adapter.normalize_response(response)
+        content, reasoning = adapter.normalize_response(response, configurable)
 
         # ── Extract code ───────────────────────────────────────────────────
         code = extract_code_from_model_response(content, reasoning)

@@ -539,6 +539,41 @@ if __name__ == "__main__":
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
+### Native Function Calling
+
+CUGA-lite is a **code-act** agent: by default the model calls tools by writing
+Python. You can opt into **native function calling**, where the model emits native
+tool calls instead — CUGA executes them through the same guarded, tracked,
+variable-aware pipeline as code. When enabled, CUGA renders a **dedicated
+function-calling system prompt** (a sibling of the code-act prompt, with the
+sandbox/code guidance replaced by tool-calling guidance) so the model actually
+answers with tool calls. This is **off by default**: without `tool_calling`,
+nothing about the agent changes — same prompt, same behavior.
+
+```python
+from cuga import CugaAgent, ToolCalling
+
+agent = CugaAgent(
+    tools=[send_email, create_invoice],
+    tool_calling=ToolCalling(mode="native"),   # or "hybrid" (code + native) / "code" (default)
+)
+
+# A tool-calling-trained model can emit several tool calls in one turn; they all
+# execute (previously only the first ran, and a text preamble suppressed them).
+result = await agent.invoke("Email acme and globex about the outage.")
+
+# Per-invoke override — turn it on/off for a single call:
+result = await agent.invoke("...", tool_calling=ToolCalling(mode="code"))
+```
+
+`ToolCalling` options: `mode` (`code` | `native` | `hybrid`), `native_tools=[...]`
+(bind specific tools) or `apps=[...]` (bind whole apps; default binds all),
+`include_find_tools`, `max_bound_tools`, and `tool_choice` (`"auto"` |
+`"required"` | provider-specific — nudges/forces native calls for models that
+otherwise prefer code; providers that don't support it degrade gracefully).
+Runnable example:
+**[docs/examples/native_function_calling/](./docs/examples/native_function_calling)**.
+
 ### Knowledge Base
 
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
