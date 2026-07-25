@@ -33,6 +33,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from loguru import logger
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser_v0 import OpenAPITransformer
 from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_response_schema
+from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 import yaml
 from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_TRM_URL
 
@@ -433,7 +434,7 @@ class MCPManager:
             if isinstance(param_schema, dict):
                 param_info = {
                     "name": param_name,
-                    "type": param_schema.get('type', 'string'),
+                    "type": json_schema_type(param_schema),
                     "required": param_name in required_fields,
                     "description": param_schema.get('description', ''),
                     "default": param_schema.get('default'),
@@ -470,7 +471,7 @@ class MCPManager:
             if isinstance(param_schema, dict):
                 param_info = {
                     "name": param_name,
-                    "type": param_schema.get('type', 'string'),
+                    "type": json_schema_type(param_schema),
                     "required": param_name in required_fields,
                     "description": param_schema.get('description', ''),
                     "default": param_schema.get('default'),
