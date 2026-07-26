@@ -39,6 +39,24 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
+AUTO_CONTINUE_MSG = (
+    "Your previous assistant response was classified as non-terminal/interim. "
+    "Do not return another progress or status message.\n\n"
+    "Continue by taking the next valid step under your current output contract. "
+    "If an internal action, tool call, lookup, verification, search, calculation, "
+    "or subtask is needed, proceed with that action now.\n\n"
+    "Only return plain text if you are asking for genuinely missing user input, "
+    "refusing, reporting an error, or giving a final answer based on already "
+    "observed data."
+)
+
+MAX_AUTO_CONTINUE_RECOVERY_ATTEMPTS = 3
+AUTO_CONTINUE_RECOVERY_COUNT_KEY = "auto_continue_recovery_count"
+AUTO_CONTINUE_FAILED_KEY = "auto_continue_failed"
+AUTO_CONTINUE_FAILURE_MESSAGE = (
+    "Auto-continue recovery failed: the agent repeatedly produced "
+    "non-terminal natural-language responses instead of a valid next output."
+)
 
 def create_call_model_node(
     adapter: CoreGraphAdapter,
@@ -169,6 +187,28 @@ def create_call_model_node(
             adapter.sender_name,
         )
 
+        print("==== CALL_MODEL TOOL DEBUG ====", flush=True)
+        print("adapter type:", type(adapter), flush=True)
+
+        for name in [
+            "tools",
+            "lc_bind_tools",
+            "lc_bind_tools_meta",
+            "tools_context",
+            "available_tools",
+            "tool_schemas",
+        ]:
+            value = locals().get(name, "<not in locals>")
+            try:
+                length = len(value)
+            except Exception:
+                length = "n/a"
+            print(f"{name}: type={type(value)} len={length} value={value}", flush=True)
+
+        print("state type:", type(state), flush=True)
+        print("state:", state, flush=True)
+        print("==== END CALL_MODEL TOOL DEBUG ====", flush=True)
+
         # ── Resolve bound model (bind-tools, Lite-only) ────────────────────
         bound = await adapter.resolve_bind_tools(state, active_model, configurable, config) or active_model
 
@@ -214,8 +254,15 @@ def create_call_model_node(
         meta_value = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
         meta_update = {adapter.metadata_key: meta_value}
 
+        auto_continue_count = int(
+            (adapter.get_metadata(state) or {}).get(AUTO_CONTINUE_RECOVERY_COUNT_KEY, 0) or 0
+        )
+
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
+            # Recovered: the model moved from NL interim text to executable code.
+            meta_value[AUTO_CONTINUE_RECOVERY_COUNT_KEY] = 0
+
             return Command(
                 goto=adapter.execute_node_name,
                 update={
@@ -228,11 +275,44 @@ def create_call_model_node(
 
         should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
         if should_continue:
-            logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
+            next_auto_continue_count = auto_continue_count + 1
+            meta_value[AUTO_CONTINUE_RECOVERY_COUNT_KEY] = next_auto_continue_count
+
+            if next_auto_continue_count >= MAX_AUTO_CONTINUE_RECOVERY_ATTEMPTS:
+                logger.warning(
+                    "{}: auto-continue recovery failed after {} attempts; stopping graph",
+                    adapter.sender_name,
+                    next_auto_continue_count,
+                )
+
+                meta_value[AUTO_CONTINUE_FAILED_KEY] = True
+
+                failure_message = AUTO_CONTINUE_FAILURE_MESSAGE
+                failure_messages = final_messages + [AIMessage(content=failure_message)]
+
+                return Command(
+                    goto=END,
+                    update={
+                        adapter.messages_key: failure_messages,
+                        "script": None,
+                        "final_answer": failure_message,
+                        "execution_complete": True,
+                        "step_count": new_step_count,
+                        **meta_update,
+                    },
+                )
+
+            logger.info(
+                "{}: NL response classified as interim — auto-continuing ({}/{})",
+                adapter.sender_name,
+                next_auto_continue_count,
+                MAX_AUTO_CONTINUE_RECOVERY_ATTEMPTS,
+            )
+
             return Command(
                 goto="call_model",
                 update={
-                    adapter.messages_key: final_messages + [HumanMessage(content="continue")],
+                    adapter.messages_key: final_messages + [HumanMessage(content=AUTO_CONTINUE_MSG)],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
@@ -257,6 +337,8 @@ def create_call_model_node(
                             break
         if not (content or "").strip() and final_answer:
             final_messages = modified_messages + [AIMessage(content=final_answer)]
+
+        meta_value[AUTO_CONTINUE_RECOVERY_COUNT_KEY] = 0
 
         return Command(
             goto=END,

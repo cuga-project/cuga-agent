@@ -35,6 +35,35 @@ from cuga.config import settings
 from cuga.backend.cuga_graph.tooling.profile import ToolingProfile
 
 
+def _shorten_for_auto_continue(value: Any, max_chars: int = 500) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\x00", "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "...[truncated]"
+
+
+def _message_role_for_auto_continue(message: Any) -> str:
+    role = (
+        getattr(message, "type", None)
+        or getattr(message, "role", None)
+        or message.__class__.__name__
+    )
+    return str(role)
+
+
+def _message_content_for_auto_continue(message: Any) -> str:
+    if hasattr(message, "content"):
+        return str(getattr(message, "content") or "")
+
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+
+    return str(message)
+
+
+
+
 class AgentGraphAdapter(CoreGraphAdapter):
     """CoreGraphAdapter implementation for the CugaLite single-agent graph."""
 
@@ -176,10 +205,89 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return {**meta, "playbook_guidance_added": True}
         return meta
 
+    def _summarize_state_for_auto_continue(self, state: Any) -> str:
+        """Build a compact context block for deciding whether NL should auto-continue.
+
+        Do not include the full prepared prompt or full policy. This classifier only
+        needs recent conversation, known variables, available executable tools, and
+        basic execution status.
+        """
+        lines: list[str] = []
+
+        # 1. Recent chat
+        chat_messages = list(getattr(state, "chat_messages", []) or [])
+        recent_messages = chat_messages[-8:]
+
+        lines.append("Recent chat messages:")
+        if recent_messages:
+            for message in recent_messages:
+                role = _message_role_for_auto_continue(message)
+                content = _message_content_for_auto_continue(message)
+                lines.append(
+                    f"- {role}: {_shorten_for_auto_continue(content, 450)}"
+                )
+        else:
+            lines.append("- none")
+
+        # 2. Known variables
+        variables_storage = getattr(state, "variables_storage", {}) or {}
+
+        lines.append("")
+        lines.append("Known variables:")
+        if variables_storage:
+            for name, metadata in list(variables_storage.items())[:25]:
+                if isinstance(metadata, dict):
+                    value_type = metadata.get("type") or type(metadata.get("value")).__name__
+                    value_preview = metadata.get("value")
+                else:
+                    value_type = type(metadata).__name__
+                    value_preview = metadata
+
+                lines.append(
+                    f"- {name}: type={value_type}, "
+                    f"preview={_shorten_for_auto_continue(value_preview, 350)}"
+                )
+        else:
+            lines.append("- none")
+
+        # 3. Available executable tools
+        # In CugaLite, prepare_node populates self._tools_context with the injected
+        # callable tools. This is much cheaper than passing the full prepared_prompt.
+        tools_context = getattr(self, "_tools_context", {}) or {}
+        tool_names = sorted(str(name) for name in tools_context.keys())
+
+        lines.append("")
+        lines.append("Available executable tool names:")
+        if tool_names:
+            for tool_name in tool_names[:80]:
+                lines.append(f"- {tool_name}")
+        else:
+            lines.append("- none")
+
+        # 4. Basic execution state
+        lines.append("")
+        lines.append("Execution state:")
+        lines.append(f"- tools_prepared={getattr(state, 'tools_prepared', None)}")
+        lines.append(f"- execution_complete={getattr(state, 'execution_complete', None)}")
+        lines.append(
+            f"- current_script={_shorten_for_auto_continue(getattr(state, 'script', None), 350)}"
+        )
+        lines.append(
+            f"- current_final_answer={_shorten_for_auto_continue(getattr(state, 'final_answer', None), 350)}"
+        )
+        lines.append(f"- step_count={getattr(state, 'step_count', None)}")
+
+        return "\n".join(lines)
+
+
     async def classify_auto_continue(
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
     ) -> bool:
-        return await classify_nl_auto_continue(model, content, reasoning)
+        state_context = self._summarize_state_for_auto_continue(state)
+
+        return await classify_nl_auto_continue(model, content, reasoning, state_context=state_context)
+        #return await classify_nl_auto_continue(model, content, reasoning)
+
 
     def build_prepare_node(self, lc_bind_tools_meta: dict):
         return create_prepare_tools_and_apps_node(self, lc_bind_tools_meta)
