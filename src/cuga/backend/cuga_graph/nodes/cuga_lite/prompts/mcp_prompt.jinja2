@@ -56,6 +56,7 @@ The following applications are available for you, you can view their tools and p
 {% if enable_find_tools %}- **find_tools(query: str, app_name: str)**: A special tool to search and discover relevant tools from a specific connected application based on a natural language query. You must provide both the query and the app_name of the application to search within.
 {% endif %}
 {% if enable_todos %}- **create_update_todos(todos)**: Create or update a todo list for complex multi-step tasks. Pass a list: `create_update_todos([{'text': '...', 'status': 'pending'}, ...])` or a dict: `create_update_todos({'todos': [...]})`. After each run that calls it, the latest todo list is **re-appended to the bottom of your system prompt** under **Current Plan** (each item labeled by status).
+  > **This list is your own private scratchpad — it is not a connected application.** It is never visible to the user and never needs to be mirrored anywhere. Do not create, complete, or sync these items in a real task manager (Todoist, Simple Note, or any other app), and never match your own todo titles against records in a connected app. Tasks that live in a connected app are only in scope when the user's request refers to them.
 {% endif %}
 
 {% if skills_enabled %}
