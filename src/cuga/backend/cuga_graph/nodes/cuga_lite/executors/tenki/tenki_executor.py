@@ -20,15 +20,17 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
 from cuga.config import settings
 
 REMOTE_WORKSPACE_ROOT = "/home/tenki/workspace"
+CLEANUP_TIMEOUT_SECONDS = 60.0
 
 
 class TenkiSandboxExecutor:
     """Provide CUGA shell tools through the Tenki Python SDK."""
 
-    _sandboxes: dict[str, Any] = {}
-    _clients: dict[str, Any] = {}
-    _locks: dict[str, asyncio.Lock] = {}
-    _released: set[str] = set()
+    def __init__(self) -> None:
+        self._sandboxes: dict[str, Any] = {}
+        self._clients: dict[str, Any] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._released: set[str] = set()
 
     def _key_lock(self, key: str) -> asyncio.Lock:
         if key not in self._locks:
@@ -51,8 +53,19 @@ class TenkiSandboxExecutor:
             raise RuntimeError("Tenki account has no project; set TENKI_PROJECT_ID") from exc
 
     async def _finish_cleanup(self, awaitable: Any) -> bool:
-        """Finish cleanup even if this task receives cancellation."""
-        task = asyncio.create_task(awaitable)
+        """Finish cleanup even if this task receives cancellation, bounded by a deadline.
+
+        External cancellation must not abandon a live sandbox, but a stalled Tenki
+        call must not hang conversation deletion or server shutdown either.
+        """
+
+        async def bounded() -> None:
+            try:
+                await asyncio.wait_for(awaitable, CLEANUP_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(f"Tenki cleanup timed out after {CLEANUP_TIMEOUT_SECONDS:.0f}s") from exc
+
+        task = asyncio.create_task(bounded())
         cancelled = False
         while not task.done():
             try:

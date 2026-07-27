@@ -62,17 +62,14 @@ class _Client:
         self.closed += 1
 
 
-@pytest.fixture(autouse=True)
-def _clear_executor_state():
-    TenkiSandboxExecutor._sandboxes.clear()
-    TenkiSandboxExecutor._clients.clear()
-    TenkiSandboxExecutor._locks.clear()
-    TenkiSandboxExecutor._released.clear()
-    yield
-    TenkiSandboxExecutor._sandboxes.clear()
-    TenkiSandboxExecutor._clients.clear()
-    TenkiSandboxExecutor._locks.clear()
-    TenkiSandboxExecutor._released.clear()
+@pytest.mark.unit
+def test_lifecycle_state_is_instance_scoped():
+    first = TenkiSandboxExecutor()
+    second = TenkiSandboxExecutor()
+    first._sandboxes["thread"] = _Sandbox(_Result())
+    first._released.add("thread")
+    assert not second._sandboxes
+    assert not second._released
 
 
 @pytest.mark.unit
@@ -200,6 +197,26 @@ async def test_release_all_terminates_every_cached_sandbox():
     assert not executor._clients
     assert all(sandbox.closed == 1 for sandbox in sandboxes.values())
     assert all(client.closed == 1 for client in clients.values())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_sandbox_times_out_on_stalled_teardown(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.tenki import tenki_executor
+
+    executor = TenkiSandboxExecutor()
+    sandbox = _Sandbox(_Result())
+
+    async def stalled_close():
+        await asyncio.sleep(3600)
+
+    sandbox.close_if_open = stalled_close
+    executor._sandboxes["thread"] = sandbox
+    monkeypatch.setattr(tenki_executor, "CLEANUP_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await executor.release_sandbox("thread")
+    assert "thread" not in executor._sandboxes
 
 
 @pytest.mark.unit

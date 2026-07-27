@@ -24,21 +24,32 @@ from cuga.backend.server.workspace_sandbox import (
 from cuga.config import settings
 
 
-@pytest.mark.e2e
-@pytest.mark.asyncio
-@pytest.mark.parametrize("run_number", [1, 2])
-async def test_tenki_runtime_workspace_and_cleanup_e2e(monkeypatch, tmp_path, run_number):
+@pytest.fixture
+def tenki_settings():
+    """Apply Tenki env overrides, then restore the settings singleton on teardown."""
     if not os.getenv("TENKI_API_KEY"):
         pytest.skip("TENKI_API_KEY is required")
 
+    patch = pytest.MonkeyPatch()
+    patch.setenv("DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE", "tenki")
+    patch.setenv("DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL", "true")
+    patch.setenv("DYNACONF_ADVANCED_FEATURES__ENABLE_FILESYSTEM_TOOLS", "true")
+    patch.setenv("DYNACONF_ADVANCED_FEATURES__TENKI_SANDBOX_MAX_DURATION", "300")
+    patch.setenv("DYNACONF_ADVANCED_FEATURES__TENKI_SANDBOX_IDLE_TIMEOUT_MINUTES", "2")
+    settings.reload()
+    try:
+        yield
+    finally:
+        patch.undo()
+        settings.reload()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_number", [1, 2])
+async def test_tenki_runtime_workspace_and_cleanup_e2e(tenki_settings, monkeypatch, tmp_path, run_number):
     assert Version(importlib.metadata.version("tenki-sandbox")) >= Version("0.4.0")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE", "tenki")
-    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL", "true")
-    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__ENABLE_FILESYSTEM_TOOLS", "true")
-    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__TENKI_SANDBOX_MAX_DURATION", "300")
-    monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__TENKI_SANDBOX_IDLE_TIMEOUT_MINUTES", "2")
-    settings.reload()
 
     thread_id = f"tenki-e2e-{run_number}-{uuid.uuid4().hex[:12]}"
     executor = TenkiSandboxExecutor()
