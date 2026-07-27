@@ -56,34 +56,45 @@ class LocalExecutor(BaseExecutor):
             Exception: For any execution errors
         """
         self._timeout = timeout
-        with contextlib.redirect_stdout(io.StringIO()) as f:
-            benchmark_mode = is_relaxed_execution()
+        stdout_buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout_buf):
+                benchmark_mode = is_relaxed_execution()
 
-            restricted_import = RestrictedEnvironment.create_restricted_import(self.ALLOWED_MODULES)
+                restricted_import = RestrictedEnvironment.create_restricted_import(self.ALLOWED_MODULES)
 
-            safe_builtins = RestrictedEnvironment.create_safe_builtins(restricted_import)
+                safe_builtins = RestrictedEnvironment.create_safe_builtins(restricted_import)
 
-            # In benchmark mode, don't filter locals
-            if benchmark_mode:
-                safe_locals = context_locals
-            else:
-                safe_locals = SecurityValidator.filter_safe_locals(context_locals)
+                # In benchmark mode, don't filter locals
+                if benchmark_mode:
+                    safe_locals = context_locals
+                else:
+                    safe_locals = SecurityValidator.filter_safe_locals(context_locals)
 
-            restricted_globals = RestrictedEnvironment.create_restricted_globals(safe_builtins, safe_locals)
+                restricted_globals = RestrictedEnvironment.create_restricted_globals(
+                    safe_builtins, safe_locals
+                )
 
-            SecurityValidator.assert_safe_globals(restricted_globals)
+                SecurityValidator.assert_safe_globals(restricted_globals)
 
-            if context_locals:
-                SecurityValidator.validate_context_usage(wrapped_code, context_locals)
+                if context_locals:
+                    SecurityValidator.validate_context_usage(wrapped_code, context_locals)
 
-            exec_locals = {}
-            exec(wrapped_code, restricted_globals, exec_locals)
+                exec_locals = {}
+                exec(wrapped_code, restricted_globals, exec_locals)
 
-            async_main = exec_locals['_async_main']
-            result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
-            context_locals.update(result_locals)
+                async_main = exec_locals['_async_main']
+                result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
+                context_locals.update(result_locals)
+        except Exception as e:
+            # Preserve prints from earlier successful lines so the agent still
+            # sees discovery output (e.g. find_tools) when a later line raises.
+            captured = stdout_buf.getvalue()
+            if captured:
+                e.captured_stdout = captured  # type: ignore[attr-defined]
+            raise
 
-        result = f.getvalue()
+        result = stdout_buf.getvalue()
         if not result:
             result = "<code ran, no output printed to stdout>"
 
@@ -106,26 +117,34 @@ class LocalExecutor(BaseExecutor):
                 silent retry-loop (the agent re-inventing the same bogus name
                 until the step limit) into a single-step recovery.
             code: The code that raised the error. Used to tell fabricated tool
-                *calls* apart from plain undefined *variables* — the correction
-                only fires when the missing name is invoked like a function, so
-                a NameError on an unset variable keeps its bare traceback (the
-                right fix there is to define the variable, not to re-query
-                find_tools).
+                *usage* apart from plain undefined *variables* — the correction
+                fires when the missing name is invoked like a function or bound
+                on an assignment RHS (alias pattern), so a NameError on an unset
+                variable keeps its bare traceback (the right fix there is to
+                define the variable, not to re-query find_tools).
 
         Returns:
             Formatted error string
         """
         if isinstance(error, asyncio.TimeoutError):
-            return (
+            error_msg = (
                 f"Error during execution: Execution timed out after {self._timeout} seconds"
                 + traceback.format_exc()
             )
+            captured_stdout = getattr(error, "captured_stdout", None)
+            if captured_stdout:
+                error_msg = f"Output before error:\n{captured_stdout.rstrip()}\n\n{error_msg}"
+            return error_msg
 
         if isinstance(error, CodeSyntaxError):
             return f"Error during execution: {error}"
 
         error_msg = f"Error during execution: {repr(error)}"
         error_msg += f"\n{traceback.format_exc()}"
+
+        captured_stdout = getattr(error, "captured_stdout", None)
+        if captured_stdout:
+            error_msg = f"Output before error:\n{captured_stdout.rstrip()}\n\n{error_msg}"
 
         correction = self._unknown_tool_correction(error, available_tools, code)
         if correction:
@@ -146,14 +165,17 @@ class LocalExecutor(BaseExecutor):
         treated as an ordinary retryable error, so the agent re-fabricates until
         the step/token limit. Surfacing the real names breaks that loop.
 
-        The hint is suppressed when the missing name is not called like a
-        function in ``code`` — a NameError on a plain variable reference means
-        the agent forgot to compute something, and tool guidance there would
-        steer it away from the real fix. It is also suppressed when ``code``
-        itself defines the name (def / class / assignment / import): that
-        NameError is an ordering or self-reference bug in the agent's own code,
-        not a fabricated tool name. Both checks work on the AST, so names
-        inside string literals or comments never count as calls.
+        The hint is suppressed when the missing name is neither called like a
+        function nor bound on an assignment RHS in ``code`` — a NameError on a
+        plain variable reference (e.g. ``print(x)``) means the agent forgot to
+        compute something, and tool guidance there would steer it away from the
+        real fix. Assignment aliases like ``send_email = fabricated_tool_name``
+        do count, since that is a common fabricated-tool pattern. The hint is
+        also suppressed when ``code`` itself defines the name (def / class /
+        assignment target / import): that NameError is an ordering or
+        self-reference bug in the agent's own code, not a fabricated tool name.
+        Both checks work on the AST, so names inside string literals or comments
+        never count as usage.
         """
         if not isinstance(error, NameError) or not available_tools:
             return ""
@@ -163,8 +185,8 @@ class LocalExecutor(BaseExecutor):
             return ""
 
         if code is not None:
-            called, defined = LocalExecutor._missing_name_usage(missing, code)
-            if not called or defined:
+            used, defined = LocalExecutor._missing_name_usage(missing, code)
+            if not used or defined:
                 return ""
 
         close = difflib.get_close_matches(missing, available_tools, n=5, cutoff=0.6)
@@ -194,24 +216,36 @@ class LocalExecutor(BaseExecutor):
 
     @staticmethod
     def _missing_name_usage(missing: str, code: str) -> tuple[bool, bool]:
-        """Return ``(called, defined)`` for *missing* in *code*, via the AST.
+        """Return ``(used, defined)`` for *missing* in *code*, via the AST.
 
-        ``called`` — the name is invoked as a bare function (directly or under
-        ``await``). ``defined`` — the code itself binds the name (function /
-        class definition, assignment, or import). Code that raised a runtime
-        ``NameError`` always parses; the text fallback covers callers that pass
-        arbitrary snippets.
+        ``used`` — the name is invoked as a bare function (directly or under
+        ``await``) or appears as the value of an assignment / annotated
+        assignment (alias pattern). ``defined`` — the code itself binds the
+        name as a target (function / class definition, assignment target, or
+        import). Code that raised a runtime ``NameError`` always parses; the
+        text fallback covers callers that pass arbitrary snippets.
         """
         try:
             tree = ast.parse(code)
         except SyntaxError:
             return bool(re.search(rf"\b{re.escape(missing)}\s*\(", code)), False
 
-        called = False
+        used = False
         defined = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == missing:
-                called = True
+                used = True
+            elif (
+                isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id == missing
+            ):
+                used = True
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and node.value is not None
+                and isinstance(node.value, ast.Name)
+                and node.value.id == missing
+            ):
+                used = True
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name == missing:
                     defined = True
@@ -221,4 +255,4 @@ class LocalExecutor(BaseExecutor):
                         defined = True
             elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == missing:
                 defined = True
-        return called, defined
+        return used, defined
