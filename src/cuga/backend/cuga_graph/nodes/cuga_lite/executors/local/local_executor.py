@@ -11,7 +11,7 @@ from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallBudget
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
 
 class LocalExecutor(BaseExecutor):
@@ -81,7 +81,7 @@ class LocalExecutor(BaseExecutor):
             exec(wrapped_code, restricted_globals, exec_locals)
 
             async_main = exec_locals['_async_main']
-            BlockToolCallBudget.reset()
+            BlockToolCallCounter.reset()
             try:
                 result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -89,7 +89,7 @@ class LocalExecutor(BaseExecutor):
                 # otherwise sees a bare timeout, learns nothing, and re-runs
                 # the same loop until the step limit.
                 partial_stdout = f.getvalue()
-                calls_made = BlockToolCallBudget.current_count()
+                calls_made = BlockToolCallCounter.current_count()
                 guidance = (
                     f"Error during execution: Execution timed out after {timeout} seconds.\n"
                     f"This code block completed {calls_made} tool call(s) before it was killed; "

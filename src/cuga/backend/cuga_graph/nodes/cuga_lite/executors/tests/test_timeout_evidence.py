@@ -1,26 +1,19 @@
 """
-Tests for timeout evidence preservation and the per-block tool-call budget.
+Tests for timeout evidence preservation.
 
 When a sandbox code block hits `sandbox_execution_timeout`, the agent used to
 receive only a bare "Execution timed out" traceback: stdout printed before the
 kill and the number of tool calls completed were discarded, so the agent's
 usual response was to re-run the same doomed loop until the step limit.
 `LocalExecutor.execute` now returns the partial stdout, the per-block
-tool-call count, and restructuring guidance instead.
-
-The count comes from `BlockToolCallBudget`, which also enforces an optional
-per-block budget (`advanced_features.max_tool_calls_per_block`, 0 = off).
+tool-call count (from `BlockToolCallCounter`), and restructuring guidance
+instead.
 """
-
-import asyncio
 
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-    BlockToolCallBudget,
-    ToolCallBudgetExceededError,
-)
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
 
 def _wrap(body: str) -> str:
@@ -76,7 +69,7 @@ async def test_timeout_reports_block_tool_call_count():
     executor = LocalExecutor()
 
     async def fake_tool():
-        BlockToolCallBudget.check_and_increment()
+        BlockToolCallCounter.increment()
         return {"ok": True}
 
     code = _wrap(
@@ -101,28 +94,10 @@ async def test_successful_block_unaffected():
     assert result == "done\n"
 
 
-@pytest.mark.asyncio
-async def test_budget_breach_raises_inside_wait_for_task(monkeypatch):
-    """With a budget configured, the block aborts on the call after the limit."""
-    from cuga.config import settings
+def test_counter_is_a_noop_without_block_scope():
+    """Counting outside a block scope (direct tool use) must not blow up."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker
 
-    monkeypatch.setattr(settings.advanced_features, "max_tool_calls_per_block", 5, raising=False)
-
-    async def over_budget():
-        for _ in range(6):
-            BlockToolCallBudget.check_and_increment()
-
-    BlockToolCallBudget.reset()
-    with pytest.raises(ToolCallBudgetExceededError):
-        await asyncio.wait_for(over_budget(), timeout=5)
-
-
-def test_budget_disabled_by_default_and_without_scope(monkeypatch):
-    """Budget 0 (the default) never raises, and no open block scope is a no-op."""
-    from cuga.config import settings
-
-    monkeypatch.setattr(settings.advanced_features, "max_tool_calls_per_block", 0, raising=False)
-    BlockToolCallBudget.reset()
-    for _ in range(1000):
-        BlockToolCallBudget.check_and_increment()
-    assert BlockToolCallBudget.current_count() == 1000
+    tracker._block_tool_calls_context.set(None)
+    BlockToolCallCounter.increment()
+    assert BlockToolCallCounter.current_count() == 0

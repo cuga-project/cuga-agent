@@ -14,7 +14,6 @@ from loguru import logger
 from pydantic import Field, create_model
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallBudgetExceededError
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
@@ -44,11 +43,11 @@ async def call_api(
     """
     import time
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-        BlockToolCallBudget,
+        BlockToolCallCounter,
         ToolCallTracker,
     )
 
-    BlockToolCallBudget.check_and_increment()
+    BlockToolCallCounter.increment()
 
     if args is None:
         args = {}
@@ -233,10 +232,6 @@ def create_tool_from_api_dict(
             )
             return result
         except TimeoutError:
-            raise
-        except ToolCallBudgetExceededError:
-            # Must abort the whole block — never swallow into an {"error": ...}
-            # return value, or the runaway loop would keep spinning.
             raise
         except Exception as e:
             error_msg = f"Error calling {tool_name}: {str(e)}"

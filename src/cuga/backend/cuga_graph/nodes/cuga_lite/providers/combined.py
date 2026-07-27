@@ -118,11 +118,11 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
     async def tool_func(*args, **kwargs):
         import time
         from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-            BlockToolCallBudget,
+            BlockToolCallCounter,
             ToolCallTracker,
         )
 
-        BlockToolCallBudget.check_and_increment()
+        BlockToolCallCounter.increment()
 
         start_time = time.time()
         result = None

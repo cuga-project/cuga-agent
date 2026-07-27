@@ -41,19 +41,15 @@ _block_tool_calls_context: contextvars.ContextVar[dict] = contextvars.ContextVar
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-class ToolCallBudgetExceededError(RuntimeError):
-    """A single code block exceeded ``advanced_features.max_tool_calls_per_block``."""
-
-
-class BlockToolCallBudget:
-    """Per-code-block tool-call budget.
+class BlockToolCallCounter:
+    """Counts the tool calls made by a single code block.
 
     The executor calls :meth:`reset` at the start of every block; every tool
-    invocation path (registry ``call_api``, local ``call_api`` helper) calls
-    :meth:`check_and_increment` before doing any work. When the configured
-    budget (``advanced_features.max_tool_calls_per_block``; 0 disables) is
-    breached, the block aborts immediately with a descriptive error instead of
-    burning the whole sandbox timeout on a runaway per-record loop.
+    invocation path (registry ``call_api``, local ``call_api`` helper,
+    combined-provider tools) calls :meth:`increment` before doing any work.
+    When a block is killed at ``sandbox_execution_timeout`` the executor reads
+    :meth:`current_count` so it can tell the agent how far the block actually
+    got, instead of reporting a bare timeout.
     """
 
     @staticmethod
@@ -66,26 +62,13 @@ class BlockToolCallBudget:
         return holder["n"] if holder else 0
 
     @staticmethod
-    def check_and_increment() -> None:
-        from cuga.config import settings
-
+    def increment() -> None:
         holder = _block_tool_calls_context.get()
         if holder is None:
             # No block scope was opened (direct tool use outside the code
-            # executor) — don't enforce a budget there.
+            # executor) — nothing to count.
             return
         holder["n"] += 1
-        count = holder["n"]
-
-        limit = int(getattr(settings.advanced_features, "max_tool_calls_per_block", 0) or 0)
-        if limit > 0 and count > limit:
-            raise ToolCallBudgetExceededError(
-                f"Tool-call budget exceeded: this code block already made {limit} tool calls, "
-                "so it was aborted and its variables are LOST. Do NOT rerun the same loop. "
-                f"Restructure instead: look for a bulk/aggregate tool (find_tools), or process "
-                f"fewer than {limit} items per code block and store partial progress in a "
-                "variable (variables persist across blocks only when the block finishes)."
-            )
 
 
 class ToolCallTracker:
