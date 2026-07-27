@@ -15,6 +15,8 @@ import pytest
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
+pytestmark = pytest.mark.unit
+
 
 def _wrap(body: str) -> str:
     indented = "\n".join("    " + line for line in body.split("\n"))
@@ -80,7 +82,7 @@ await asyncio.sleep(5)"""
 
     result = await executor.execute(wrapped_code=code, context_locals={"fake_tool": fake_tool}, timeout=1)
 
-    assert "completed 7 tool call(s)" in result
+    assert "started 7 tool call(s)" in result
 
 
 @pytest.mark.asyncio
@@ -98,6 +100,9 @@ def test_counter_is_a_noop_without_block_scope():
     """Counting outside a block scope (direct tool use) must not blow up."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker
 
-    tracker._block_tool_calls_context.set(None)
-    BlockToolCallCounter.increment()
-    assert BlockToolCallCounter.current_count() == 0
+    token = tracker._block_tool_calls_context.set(None)
+    try:
+        BlockToolCallCounter.increment()
+        assert BlockToolCallCounter.current_count() == 0
+    finally:
+        tracker._block_tool_calls_context.reset(token)

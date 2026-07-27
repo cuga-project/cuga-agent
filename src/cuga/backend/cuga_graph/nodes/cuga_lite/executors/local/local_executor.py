@@ -92,7 +92,7 @@ class LocalExecutor(BaseExecutor):
                 calls_made = BlockToolCallCounter.current_count()
                 guidance = (
                     f"Error during execution: Execution timed out after {timeout} seconds.\n"
-                    f"This code block completed {calls_made} tool call(s) before it was killed; "
+                    f"This code block started {calls_made} tool call(s) before it was killed; "
                     "ALL variables from this block are LOST (nothing was saved).\n"
                     "Do NOT rerun the same code — it will time out again. Restructure instead: "
                     "use a bulk/aggregate tool (find_tools), or process a small batch of items "
