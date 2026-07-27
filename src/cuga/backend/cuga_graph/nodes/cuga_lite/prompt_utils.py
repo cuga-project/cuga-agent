@@ -106,8 +106,110 @@ class FindToolsOutput(BaseModel):
     )
 
 
+# Bounded LLM retries when the shortlister invents tool names (#546).
+_SHORTLIST_NAME_MAX_RETRIES = 2
+
+
 class PromptUtils:
     """Utilities for creating prompts and finding tools."""
+
+    @staticmethod
+    def _partition_shortlist_details(
+        result: List[Any],
+        valid_names: set,
+    ) -> tuple[List[Any], List[str]]:
+        """Split shortlister details into known tools vs hallucinated names."""
+        valid_details: List[Any] = []
+        invalid_names: List[str] = []
+        seen: set = set()
+        for detail in result or []:
+            name = getattr(detail, "name", None)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if name in valid_names:
+                valid_details.append(detail)
+            else:
+                invalid_names.append(name)
+        return valid_details, invalid_names
+
+    @staticmethod
+    def _shortlist_retry_instructions(
+        base_instructions: str,
+        invalid_names: List[str],
+    ) -> str:
+        feedback = (
+            "Your previous response included tool names that are not in the available "
+            f"tools list: {', '.join(invalid_names)}. "
+            "Reply again using ONLY exact names from the available tools. "
+            "Do not invent names."
+        )
+        base = (base_instructions or "").strip()
+        return f"{base}\n\n{feedback}" if base else feedback
+
+    @staticmethod
+    def _format_filtered_tool_names_note(invalid_names: List[str]) -> str:
+        if not invalid_names:
+            return ""
+        unique = list(dict.fromkeys(invalid_names))
+        quoted = ", ".join(f"`{n}`" for n in unique)
+        count = len(unique)
+        noun = "name" if count == 1 else "names"
+        return (
+            f"**Note:** Filtered out {count} unrecognized tool {noun} returned by the shortlister: {quoted}."
+        )
+
+    @staticmethod
+    async def _ainvoke_shortlister_with_name_validation(
+        *,
+        chain: Any,
+        query: str,
+        apps_as_dict: Dict[str, Any],
+        tools_as_dict: Dict[str, Any],
+        base_instructions: str,
+        valid_names: set,
+        run_config: Optional[Any] = None,
+        max_retries: int = _SHORTLIST_NAME_MAX_RETRIES,
+    ) -> tuple[List[Any], List[str]]:
+        """Invoke the shortlister and retry when returned names are unknown.
+
+        Returns ``(valid_details, filtered_invalid_names)``. After retries are
+        exhausted, unknown names are dropped (never forwarded as discoveries).
+        """
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
+
+        instructions = base_instructions or ""
+        last_valid: List[Any] = []
+        last_invalid: List[str] = []
+        for attempt in range(max_retries + 1):
+            response = await chain.ainvoke(
+                {
+                    "input": query,
+                    "all_apps": apps_as_dict,
+                    "all_tools": tools_as_dict,
+                    "instructions": instructions,
+                },
+                config=nested_langgraph_invoke_config(run_config),
+            )
+            last_valid, last_invalid = PromptUtils._partition_shortlist_details(
+                getattr(response, "result", None) or [],
+                valid_names,
+            )
+            if not last_invalid:
+                return last_valid, []
+            logger.warning(
+                "Shortlister returned unrecognized tool names (attempt {}/{}): {}",
+                attempt + 1,
+                max_retries + 1,
+                last_invalid,
+            )
+            if attempt >= max_retries:
+                break
+            instructions = PromptUtils._shortlist_retry_instructions(
+                base_instructions or "",
+                last_invalid,
+            )
+        return last_valid, last_invalid
 
     @staticmethod
     def get_tool_params_str(tool: StructuredTool) -> str:
@@ -342,23 +444,26 @@ class PromptUtils:
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": "",
-            },
-            config=nested_langgraph_invoke_config(run_config),
+        valid_names = {t.name for t in all_tools}
+        (
+            validated_details,
+            filtered_invalid_names,
+        ) = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=chain,
+            query=query,
+            apps_as_dict=apps_as_dict,
+            tools_as_dict=tools_as_dict,
+            base_instructions="",
+            valid_names=valid_names,
+            run_config=run_config,
         )
 
         enriched_tools = []
-        for api_detail in response.result:
+        for api_detail in validated_details:
             # Find the actual tool to get input schema and output schema
             actual_tool = None
             for t in all_tools:
@@ -413,7 +518,11 @@ class PromptUtils:
             )
             enriched_tools.append(enriched_tool)
 
+        filtered_note = PromptUtils._format_filtered_tool_names_note(filtered_invalid_names)
+
         if not enriched_tools:
+            if filtered_note:
+                return f"No matching tools found for your query.\n\n{filtered_note}"
             return "No matching tools found for your query."
 
         tool_descriptions = {
@@ -455,6 +564,9 @@ class PromptUtils:
                 markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
 
             markdown_lines.append("---\n")
+
+        if filtered_note:
+            markdown_lines.append(filtered_note)
 
         return "\n".join(markdown_lines)
 
@@ -513,29 +625,30 @@ class PromptUtils:
         )
         tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
-
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": effective_instructions,
-            },
-            config=nested_langgraph_invoke_config(run_config),
-        )
-
         valid_names = {t.name for t in all_tools}
+        validated_details, filtered_invalid = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=chain,
+            query=query,
+            apps_as_dict=apps_as_dict,
+            tools_as_dict=tools_as_dict,
+            base_instructions=effective_instructions,
+            valid_names=valid_names,
+            run_config=run_config,
+        )
+        if filtered_invalid:
+            logger.warning(
+                "shortlist_tool_names: dropping unrecognized names after retries: {}",
+                filtered_invalid,
+            )
+
         ranked: List[str] = []
-        seen: set = set()
-        for api_detail in getattr(response, "result", None) or []:
+        for api_detail in validated_details:
             name = getattr(api_detail, "name", None)
-            if not name or name in seen or name not in valid_names:
+            if not name:
                 continue
-            seen.add(name)
             ranked.append(name)
             if len(ranked) >= top_k:
                 break
