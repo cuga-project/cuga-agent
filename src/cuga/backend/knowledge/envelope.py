@@ -51,6 +51,11 @@ def _result_to_chunk(r: SearchResult, *, include_scores: bool) -> dict[str, Any]
     so single-leg / pure-dense / pre-upgrade responses stay terse. When
     debugging "why X ranked above Y" or "is BM25 actually firing?", the
     presence of these fields is the signal.
+
+    Citations: when enabled, chunks additionally gain a ``cite_id``
+    (``"s3"``) — stamped AFTER envelope construction by the two callers
+    (``client.py::search_envelope`` and ``routes.py::search``) via
+    ``sources.annotate_envelope_with_citations``, never here.
     """
     chunk: dict[str, Any] = {
         "source": r.scope,

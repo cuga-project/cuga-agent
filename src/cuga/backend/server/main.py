@@ -160,6 +160,10 @@ def _session_knowledge_collection(thread_id: str) -> str:
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
+    from cuga.backend.knowledge.sources import drop_ledger
+
+    drop_ledger(thread_id)
+
     if not app_state:
         return
 
@@ -172,20 +176,113 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
         provider.delete_session(thread_id)
 
 
-def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+def _knowledge_config(app_state: "AppState" | None):
     engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    return getattr(engine, "_config", None) if engine else None
+
+
+def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    config = _knowledge_config(app_state)
     return bool(config and getattr(config, "enabled", False))
 
 
 def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: str) -> bool:
-    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    config = _knowledge_config(app_state)
     if not config or not getattr(config, "enabled", False):
         return False
     if scope == "session":
         return bool(getattr(config, "session_level_enabled", True))
     return bool(getattr(config, "agent_level_enabled", True))
+
+
+def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    config = _knowledge_config(app_state)
+    if not config or not getattr(config, "enabled", False):
+        return False
+    return bool(getattr(config, "citations_enabled", True))
+
+
+def _format_sources_footer(sources: list[dict]) -> str:
+    """Build a plain-text sources footer for WXO-mode answers."""
+    lines = []
+    for s in sources:
+        page = f" p.{s['page']}" if s.get("page") is not None else ""
+        lines.append(f"[{s['n']}] {s['filename']}{page}")
+    return "\n\nSources:\n" + "\n".join(lines)
+
+
+async def _rehydrate_citation_ledger(
+    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+) -> None:
+    """Prepare the citation ledger at the start of a NEW user turn.
+
+    Two jobs:
+    1. Rehydrate: after a restart the in-memory ledger is gone, so restore
+       cite_ids from the on-disk conversation to keep them collision-free.
+       Only runs when the ledger is absent.
+    2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
+       earlier turn cannot resolve in this turn's answer.
+
+    A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
+    but is a CONTINUATION of the same logical turn — the pre-interrupt search
+    node does not re-run, so its cite_ids must stay in scope. On resume we do
+    nothing: the ledger already exists and begin_turn() would wrongly wipe this
+    turn's retrieval scope and strip legitimate citations from the answer.
+
+    WXO-mode Answer events are raw text (not JSON) and are intentionally
+    skipped by the ``isinstance(payload, dict)`` guard below.
+
+    Must never break the turn — every failure mode is swallowed.
+    """
+    if not thread_id:
+        return
+    # Gate on the SAME session-aware predicate that stamping and resolution use
+    # (citations_enabled_for), not the agent-only flag — otherwise a thread with
+    # a per-session override diverges: rehydration is skipped while writes still
+    # register, so the fresh ledger re-issues colliding cite_ids after a restart.
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    config = _knowledge_config(app_state)
+    if not config or not getattr(config, "enabled", False):
+        return
+    if not citations_enabled_for(config, thread_id):
+        return
+    try:
+        from cuga.backend.knowledge.sources import get_ledger as _get_ledger
+
+        _ledger = _get_ledger(thread_id, create=False)
+        if _ledger is None:
+            conversation_db = get_conversation_db()
+            stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
+            events_list = stream_history.events if stream_history else []
+            # Create even when there is no history, so begin_turn() below always
+            # has a ledger to scope — a fresh conversation's first turn included.
+            _ledger = _get_ledger(thread_id)  # create
+            for ev in events_list:
+                if ev.event_name != "Answer":
+                    continue
+                try:
+                    payload = json.loads(ev.event_data)
+                    if not isinstance(payload, dict):
+                        # WXO-mode Answer events are raw text — skip intentionally
+                        continue
+                    for snap in payload.get("sources", []) or []:
+                        _ledger.restore(snap)
+                except Exception:
+                    logger.debug(
+                        "Citation ledger rehydration: skipped event for thread %s",
+                        thread_id,
+                    )
+                    continue
+        # Scope citations to THIS turn's retrieval — but only on a genuinely new
+        # turn. A HITL resume is a continuation of the same turn, so begin_turn()
+        # would wipe the pre-interrupt search scope and strip legitimate
+        # citations. Rehydration above still runs on resume, so a restart during
+        # an interrupt (which wipes the in-memory ledger) is recovered.
+        if not is_resume:
+            _ledger.begin_turn()
+    except Exception as e:
+        logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
 
 
 def _skills_effective_enabled() -> bool:
@@ -552,6 +649,32 @@ async def lifespan(app: FastAPI):
         if not getattr(app_state, "knowledge_provider", None):
             _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+
+        # Wire per-session citation overrides into the knowledge sources module
+        # so citations_enabled_for() can honor session-level toggles.
+        from cuga.backend.knowledge import sources as knowledge_sources
+
+        def _session_overrides_lookup(thread_id: str):
+            provider = getattr(app_state, "knowledge_provider", None)
+            if provider is None:
+                return None
+            session = provider.get_session(thread_id)
+            return session.overrides if session else None
+
+        knowledge_sources.set_session_override_lookup(_session_overrides_lookup)
+
+        # Wire the agent-level citations flag the same way, reading the LIVE
+        # engine config each call (apply_knowledge_config can replace it at
+        # runtime). Engine absent means "no gating info" -> enabled, so
+        # SDK/edge paths keep resolving citations.
+        def _agent_citations_lookup() -> bool:
+            engine = getattr(app_state, "knowledge_engine", None)
+            config = getattr(engine, "_config", None) if engine is not None else None
+            if config is None:
+                return True
+            return bool(getattr(config, "citations_enabled", True))
+
+        knowledge_sources.set_agent_citations_lookup(_agent_citations_lookup)
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
         app_state.knowledge_engine.start_background_tasks()
@@ -934,6 +1057,15 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
+    try:
+        removed = await get_conversation_db().gc_ephemeral_stream_events()
+        if removed:
+            logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
+    except Exception:
+        logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1086,22 +1218,75 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
+    events_only: bool = False,
 ):
-    """Save conversation history and stream events asynchronously."""
+    """Save conversation history and stream events asynchronously.
+
+    When *events_only* is True (e.g. X-Disable-History / Try-It-Out mode) only
+    stream_events are persisted so that citation-ledger rehydration and reload
+    replay still work — the conversation_history table (sidebar) is left untouched.
+    """
     try:
-        await save_conversation_to_db(
-            agent_id,
-            thread_id,
-            state,
-            user_id,
-            user_attachments=user_attachments,
-        )
+        if not events_only:
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
         if events:
             conversation_db = get_conversation_db()
             await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
             logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
+
+
+def _build_slash_skill_registry():
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import (
+            build_slash_registry,
+            parse_and_dispatch,
+        )
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+        )
+    except Exception:
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
+        return None
 
 
 async def save_conversation_to_db(
@@ -1371,9 +1556,12 @@ async def event_stream(
 
     local_tracker.task_id = 'demo'
 
-    # Initialize event sequence counter and buffer for stream event tracking
+    # Initialize event sequence counter and buffer for stream event tracking.
     event_sequence = 0
-    stream_events_buffer = []  # Buffer to collect events during streaming
+    # Buffer collects THIS turn's events only. The DB layer (save_stream_events)
+    # appends them to the persisted prior turns and re-sequences, so the row
+    # stays cumulative — no per-turn clobber — without seeding the buffer here.
+    stream_events_buffer = []
 
     # Add user message to buffer as first event
     if query and thread_id:
@@ -1389,6 +1577,23 @@ async def event_stream(
             }
         )
         event_sequence += 1
+
+    slash_result = None
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
+        # Soft dispatch: the planner input becomes the translated suggestion
+        # ("use the skill named '<name>' to: <args>") and the planner decides
+        # to call ``load_skill`` itself. The UserMessage stream event above
+        # already carries the original raw utterance, so display/history keep
+        # what the user actually typed.
+        local_state.input = slash_result.planner_input or query
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to carry the translated planner input, so the planner
+        # sees the raw slash text. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping planner-input translation")
 
     langfuse_handler = (
         CallbackHandler()
@@ -1430,6 +1635,9 @@ async def event_stream(
                 "prefix": _sess_prefix(thread_id),
                 "filenames": _session_kb.filenames,
             }
+
+    if thread_id:
+        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1556,19 +1764,25 @@ async def event_stream(
                                             },
                                         }
                                         active_policies.append(policy_data)
-                        final_answer_text = (
-                            event.answer
-                            if settings.advanced_features.wxo_integration
-                            else json.dumps(
-                                {
-                                    "data": event.answer,
-                                    "variables": variables_metadata,
-                                    "active_policies": active_policies,
-                                }
-                            )
-                            if event.answer
-                            else "Done."
-                        )
+                        if settings.advanced_features.wxo_integration:
+                            # WXO is raw text — append a plain-text sources footer
+                            # (applied once, before final_answer_text is built, so
+                            # both the streamed payload and the persisted Answer
+                            # event carry it).
+                            if event.answer and event.sources:
+                                event.answer = f"{event.answer}{_format_sources_footer(event.sources)}"
+                            final_answer_text = event.answer
+                        elif event.answer:
+                            answer_payload = {
+                                "data": event.answer,
+                                "variables": variables_metadata,
+                                "active_policies": active_policies,
+                            }
+                            if event.sources:
+                                answer_payload["sources"] = event.sources
+                            final_answer_text = json.dumps(answer_payload)
+                        else:
+                            final_answer_text = "Done."
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1587,8 +1801,11 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                            # Batch save all events and conversation history synchronously (for debugging)
-                            # Skip saving if disable_history is True
+                            # Batch save all events and conversation history.
+                            # When disable_history is True (Try-It-Out / X-Disable-History)
+                            # we still persist stream_events so citation-ledger rehydration
+                            # and reload replay work, but we skip conversation_history so
+                            # the sidebar is not polluted.
                             if not disable_history:
                                 await _save_conversation_and_events_async(
                                     agent_id=app_state.agent_id,
@@ -1599,7 +1816,28 @@ async def event_stream(
                                     user_attachments=user_attachments,
                                 )
                             else:
-                                logger.info(f"History saving disabled for thread_id: {thread_id}")
+                                try:
+                                    await _save_conversation_and_events_async(
+                                        agent_id=app_state.agent_id,
+                                        thread_id=thread_id,
+                                        user_id=user_id,
+                                        # state is unused when events_only=True; pass it
+                                        # like the normal branch does (AgentState() would
+                                        # raise on its required fields anyway).
+                                        state=local_state,
+                                        events=stream_events_buffer.copy(),
+                                        user_attachments=user_attachments,
+                                        events_only=True,
+                                    )
+                                    logger.info(
+                                        f"Try-It-Out: saved stream events (no conversation history) "
+                                        f"for thread_id: {thread_id}"
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        f"Try-It-Out: ephemeral stream-events save failed (non-fatal) "
+                                        f"for thread_id: {thread_id}"
+                                    )
 
                         yield StreamEvent(
                             name="Answer",
@@ -1674,7 +1912,14 @@ async def event_stream(
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except ValueError as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
@@ -1689,9 +1934,15 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
+                        if app_state.output_format == OutputFormat.WXO:
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -2192,6 +2443,11 @@ async def reset_agent_state(
             # Clear stop event for this thread
             if thread_id in app_state.stop_events:
                 app_state.stop_events[thread_id].clear()
+
+            # Drop the in-memory citation source ledger for this thread
+            from cuga.backend.knowledge.sources import drop_ledger
+
+            drop_ledger(thread_id)
 
             # In LangGraph, state is persisted per thread_id. The client should generate a new thread_id
             # for a fresh start. If we need to clear the thread state, we would need to delete it from
@@ -3447,8 +3703,33 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "knowledge_enabled": _knowledge_enabled_for_app_state(app_state),
             "agent_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "agent"),
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
+            "citations_enabled": _knowledge_citations_enabled_for_app_state(app_state),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the registry of slash commands (skills only); rebuilt per request so new SKILL.md files appear without restart."""
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")

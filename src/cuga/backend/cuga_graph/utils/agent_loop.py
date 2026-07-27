@@ -21,14 +21,14 @@ from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
 from pydantic import TypeAdapter
 import logging
-from typing import Generator, List, Optional, Union, Any
+from typing import Any, Dict, Generator, List, Optional, Union
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall
 from langchain_core.outputs import LLMResult
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -126,6 +126,9 @@ class AgentLoopAnswer(BaseModel):
     has_tools: bool = False
     tools: List[ToolCall]
     flow_generalized: Optional[bool] = False
+    # Per-message citation source snapshots (see knowledge/sources.py) — only
+    # populated on the terminal answer; empty on interrupts/intermediate steps.
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class StreamEvent(BaseModel):
@@ -158,52 +161,31 @@ class StreamEvent(BaseModel):
 
     @staticmethod
     def parse(formatted_str: str) -> 'StreamEvent':
+        """Inverse of :meth:`format`. Collects all ``data:`` lines (preserving
+        blank ones, which the SSE spec requires for multi-line bodies) and
+        joins them with newlines.
         """
-        Parses a formatted string back into a StreamEvent.
-        Handles formats like:
-            event: EventName
-            data: some data
+        # Strip the trailing blank line (event terminator) so we don't pick up
+        # a phantom empty data line.
+        event_block = formatted_str.rstrip("\n")
 
-        Now correctly handles data that contains newlines by parsing from the last \n\n.
-        """
-
-        # Find the last occurrence of \n\n to split the string
-        last_double_newline = formatted_str.rfind('\n\n')
-
-        if last_double_newline == -1:
-            raise ValueError("No double newline (\\n\\n) found in formatted string")
-
-        # Split at the last \n\n - everything before is the event block
-        event_block = formatted_str[:last_double_newline].strip()
-        lines = event_block.split('\n', 1) if event_block else []
-
-        name = None
-        data = None
-
-        # Parse the event block (everything before the last \n\n)
-        for line in lines:
-            if line.startswith('event: '):
-                name = line[7:].strip()  # Remove 'event: '
-            elif line.startswith('data: '):
-                # For data lines, we need to handle the case where data might span multiple lines
-                # Everything after 'data: ' in the event block, plus everything after the last \n\n
-                data_start = line[6:]  # Remove 'data: ', preserve any leading spaces
-
-                # Append everything after the last \n\n as part of the data
-                remaining_data = formatted_str[last_double_newline + 2 :]
-                data = data_start + '\n' + remaining_data if data_start else remaining_data
-                break  # Found data line, no need to continue
-
-        # If we didn't find data in the event block, check if everything after last \n\n is data
-        if data is None:
-            data = formatted_str[last_double_newline + 2 :]
+        name: Optional[str] = None
+        data_lines: List[str] = []
+        for line in event_block.split("\n"):
+            if line.startswith("event:"):
+                name = line[6:].lstrip()
+            elif line.startswith("data:"):
+                # Per the SSE spec a single leading space after the colon is
+                # syntactic, not part of the value — strip exactly one if present.
+                value = line[5:]
+                if value.startswith(" "):
+                    value = value[1:]
+                data_lines.append(value)
 
         if name is None:
             raise ValueError("No 'event:' line found in formatted string")
-        if data is None:
-            data = ""
 
-        return StreamEvent(name=name, data=data)
+        return StreamEvent(name=name, data="\n".join(data_lines))
 
     @staticmethod
     def format_event(raw_event: str) -> str:
@@ -243,20 +225,32 @@ class StreamEvent(BaseModel):
         return message
 
     def format(self, format: OutputFormat = None, **kwargs) -> str:
-        """
-        Formats the stream event for output.
+        """Formats the stream event for output.
 
-        :return: Formatted string of the event.
+        Per the SSE spec, a blank line terminates the event, so multi-line
+        ``data`` must split on newlines and prefix each line with ``data: ``
+        (including empty lines). Without that, a body containing ``\\n\\n``
+        (e.g. markdown with a blank line between heading and bullets) is
+        truncated at the first blank line and the rest is dropped by the
+        client.
         """
         if format is OutputFormat.WXO:
             thread_id = kwargs.get("thread_id")
             message = StreamEvent.prepare_message(self.data, thread_id)
+            # The data here is JSON-encoded by ``prepare_message``, so it
+            # never contains a bare newline.
             return f"data: {json.dumps(message)}\n\n"
-        elif format is OutputFormat.DEFAULT:
-            if self.name == "Answer":
-                return f"event: {self.name}\ndata: {self.data}\n\n"
-            return self.data
-        return f"event: {self.name}\ndata: {self.data}\n\n"
+        # For ``OutputFormat.DEFAULT`` and ``format=None`` we emit a fully
+        # SSE-conformant block: ``event: <name>\n``, one ``data:`` line per
+        # logical line of ``self.data``, then a blank line terminator. The
+        # earlier short-circuit that returned bare ``self.data`` for non-Answer
+        # events under DEFAULT was a leftover from when this method only
+        # produced the final answer payload; slash-command events (and any
+        # other caller passing ``app_state.output_format``) need the wrapper
+        # too — otherwise the SSE client sees raw JSON glued to the next event.
+        data_lines = self.data.split("\n")
+        data_block = "\n".join(f"data: {line}" for line in data_lines)
+        return f"event: {self.name}\n{data_block}\n\n"
 
 
 class AgentLoop:
@@ -670,7 +664,13 @@ class AgentLoop:
                     }
                     answer = json.dumps(answer)
 
-            return AgentLoopAnswer(end=True, has_tools=False, answer=answer, tools=msg.tool_calls)
+            return AgentLoopAnswer(
+                end=True,
+                has_tools=False,
+                answer=answer,
+                tools=msg.tool_calls,
+                sources=state.sources or [],
+            )
         else:
             logger.debug(
                 f"No terminal agent detected. Returning intermediate answer with msg.content: {msg.content[:100] if msg and msg.content else 'None'}..."

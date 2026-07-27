@@ -851,6 +851,61 @@ def _detect_accelerator(use_gpu: bool) -> tuple[str, list[str]]:
 # --- Embedding factory ---
 
 
+# Substrings that mean "the model files on disk are missing or truncated",
+# i.e. a half-finished download rather than a user/config problem. Kept
+# deliberately narrow: an unsupported model name, a rejected API key or an
+# offline hub must NOT match, or we would silently re-download on every start
+# and hide a real misconfiguration.
+_CORRUPT_MODEL_CACHE_MARKERS = (
+    "no_suchfile",
+    "file doesn't exist",
+    "no such file",
+    "protobuf parsing failed",
+)
+
+
+def _is_corrupt_model_cache_error(exc: BaseException) -> bool:
+    """True when ``exc`` looks like an incomplete/corrupt on-disk model cache."""
+    if isinstance(exc, FileNotFoundError):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _CORRUPT_MODEL_CACHE_MARKERS)
+
+
+def _model_cache_root_from_error(exc: BaseException, cache_dir: str | None = None) -> Path | None:
+    """Pull the HuggingFace ``models--<repo>`` dir out of a path in the error text.
+
+    onnxruntime/huggingface_hub both embed the absolute failing path in their
+    messages, which is the only reliable link from "this load failed" to "this
+    cache entry is bad" — the fastembed model name (BAAI/bge-small-en-v1.5)
+    does not match its backing repo dir (models--qdrant--bge-small-en-v1.5-onnx-q).
+    Returns None when no such path is present, in which case we must not guess.
+
+    ``cache_dir`` (when known) constrains the result to live inside the cache:
+    the caller feeds this straight to ``rmtree``, so a path parsed out of an
+    arbitrary string must never be able to point somewhere else.
+    """
+    match = re.search(r"(/[^\s'\"]*?/models--[^/\s'\"]+)(?:/|\s|$)", str(exc))
+    if not match:
+        return None
+    candidate = Path(match.group(1))
+    if not candidate.name.startswith("models--"):
+        return None
+    if cache_dir:
+        try:
+            candidate.resolve().relative_to(Path(cache_dir).resolve())
+        except (ValueError, OSError):
+            return None
+    return candidate
+
+
+def _purge_model_cache(cache_root: Path) -> None:
+    """Delete a model's cache entry plus its sibling HF lock dir."""
+    shutil.rmtree(cache_root, ignore_errors=True)
+    lock_dir = cache_root.parent / ".locks" / cache_root.name
+    shutil.rmtree(lock_dir, ignore_errors=True)
+
+
 class _FastEmbedEmbeddings(Embeddings):
     """LangChain Embeddings adapter around fastembed.TextEmbedding.
 
@@ -874,7 +929,27 @@ class _FastEmbedEmbeddings(Embeddings):
         kwargs: dict[str, Any] = {"cache_dir": cache_dir, "local_files_only": local_files_only}
         if providers:
             kwargs["providers"] = providers
-        self._model = TextEmbedding(model_name, **kwargs)
+        try:
+            self._model = TextEmbedding(model_name, **kwargs)
+        except Exception as exc:
+            # A purged or interrupted download leaves a dangling snapshot
+            # symlink (and a 0-byte .incomplete blob). HuggingFace then still
+            # believes the model is cached, so onnxruntime hard-fails with
+            # NoSuchFile on EVERY subsequent start — the user is bricked with
+            # no path out short of deleting a hashed dir under /var/folders.
+            # Purge that one entry and re-fetch so it heals invisibly.
+            cache_root = _model_cache_root_from_error(exc, cache_dir)
+            if local_files_only or cache_root is None or not _is_corrupt_model_cache_error(exc):
+                raise
+            logger.warning(
+                f"Embedding model cache for {model_name} is incomplete or corrupt "
+                f"({cache_root.name}); purging and re-downloading once."
+            )
+            _purge_model_cache(cache_root)
+            # Exactly once. A second failure is a genuine fault (offline, out of
+            # disk, upstream gone) and must surface instead of looping.
+            self._model = TextEmbedding(model_name, **kwargs)
+            logger.info(f"Embedding model cache for {model_name} recovered after re-download")
         # Record what onnxruntime actually loaded so the engine can log honestly.
         self._active_providers = self._detect_active_providers()
         # GPU-aware embed kwargs:
@@ -1690,6 +1765,17 @@ class KnowledgeEngine:
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None
         self._default_embedding_dim = None
+        # True while the first embedder init is running. A cold cache means
+        # downloading a multi-hundred-MB model, and reporting that as
+        # "unavailable" makes a first run look broken — health reports
+        # "preparing" instead so the UI can show progress, not an error.
+        self._embedder_initializing = False
+        # Serializes _ensure_embeddings across its callers (probe, per-collection
+        # resolve, ingest tokenizer — several run in to_thread workers). Without
+        # it two callers can both pass the `is None` check and load the model
+        # twice (duplicate ONNX session + download). HF file-locking protects the
+        # blob, not a double load.
+        self._embedder_init_lock = threading.Lock()
 
         # Vector store LRU cache (bounded)
         self._vector_stores: collections.OrderedDict[str, VectorStoreAdapter] = collections.OrderedDict()
@@ -1924,9 +2010,34 @@ class KnowledgeEngine:
 
     def _ensure_embeddings(self) -> None:
         """Initialize embeddings on first use (not at engine startup)."""
-        if self._default_embeddings is None:
-            self._default_embeddings = create_embeddings(self._config)
-            self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
+        # Double-checked lock: the fast path stays lock-free once loaded, and the
+        # check-and-set is serialized so concurrent callers can't both construct
+        # the model. (Several callers reach here from different to_thread workers:
+        # probe, per-collection resolve, ingest tokenizer.)
+        if self._default_embeddings is not None:
+            return
+        with self._embedder_init_lock:
+            if self._default_embeddings is not None:
+                return
+            # Flagged for the health probe: on a cold cache this call downloads
+            # the model, and that wait must read as "preparing", not "broken".
+            self._embedder_initializing = True
+            try:
+                self._default_embeddings = create_embeddings(self._config)
+                self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
+            except Exception:
+                # Half-init guard: _get_embedding_dim does a live embed_query call,
+                # so it can fail *after* the embedder object is built. Don't leave
+                # _default_embeddings set with a None dim — the lock-free fast path
+                # above would then skip re-init forever, and the ingest path would
+                # later pass dim=None to set_collection_config and blow up as a
+                # confusing sqlite IntegrityError (embedding_dim NOT NULL). Clear
+                # both so the next _ensure_embeddings retries cleanly.
+                self._default_embeddings = None
+                self._default_embedding_dim = None
+                raise
+            finally:
+                self._embedder_initializing = False
             active = getattr(self._default_embeddings, "_active_providers", None)
             extra = f", onnx_active={active}" if active else ""
             logger.info(
@@ -3899,6 +4010,7 @@ class KnowledgeEngine:
                 "enabled": self._config.enabled,
                 "agent_level_enabled": self._config.agent_level_enabled,
                 "session_level_enabled": self._config.session_level_enabled,
+                "citations_enabled": getattr(self._config, "citations_enabled", True),
                 "rag_profile": self._config.rag_profile,
                 "embedding_provider": self._config.embedding_provider,
                 "embedding_model": self._config.embedding_model,
@@ -4019,14 +4131,23 @@ class KnowledgeEngine:
         endpoint doesn't hit the provider on every call. Cache is invalidated on
         config apply (see ``commit_knowledge_update``) so fixing a key re-probes.
 
-        Returns ``{available, error, model}``; ``available`` is None when
-        knowledge is disabled (nothing to probe).
+        Returns ``{available, error, model, state}``. ``available`` is None when
+        knowledge is disabled (nothing to probe) or while the embedder is still
+        being prepared; ``state`` is one of "disabled" / "preparing" /
+        "available" / "unavailable" so the UI can tell a cold start apart from
+        a real fault.
         """
         import time as _t
 
         model = f"{self._config.embedding_provider or ''}/{self._config.embedding_model or ''}".strip("/")
         if not self._config.enabled:
-            return {"available": None, "error": None, "model": model}
+            return {"available": None, "error": None, "model": model, "state": "disabled"}
+        # A first-time init is already in flight. On a cold cache that means a
+        # multi-hundred-MB download, so report progress rather than blocking the
+        # polled health endpoint — or, worse, calling _ensure_embeddings again
+        # here and kicking off a duplicate download of the same model.
+        if self._default_embeddings is None and self._embedder_initializing:
+            return {"available": None, "error": None, "model": model, "state": "preparing"}
         try:
             cfg_hash = self._config.vector_config_hash()
         except Exception:
@@ -4034,7 +4155,12 @@ class KnowledgeEngine:
         now = _t.monotonic()
         cache = self._embedder_probe_cache
         if cache and cache[0] == cfg_hash and (now - cache[3]) < 60:
-            return {"available": cache[1], "error": cache[2], "model": model}
+            return {
+                "available": cache[1],
+                "error": cache[2],
+                "model": model,
+                "state": "available" if cache[1] else "unavailable",
+            }
 
         available, error = True, None
         try:
@@ -4054,7 +4180,12 @@ class KnowledgeEngine:
         self._embedder_probe_cache = (cfg_hash, available, error, now)
         if not available:
             logger.warning(f"Active embedder probe failed ({model}): {error}")
-        return {"available": available, "error": error, "model": model}
+        return {
+            "available": available,
+            "error": error,
+            "model": model,
+            "state": "available" if available else "unavailable",
+        }
 
     async def health(self, collection: str | None = None) -> dict[str, Any]:
         _emb = await self.probe_active_embedder()
@@ -4066,6 +4197,7 @@ class KnowledgeEngine:
             "embedder_available": _emb["available"],
             "embedder_error": _emb["error"],
             "embedder_model": _emb["model"],
+            "embedder_state": _emb.get("state"),
             "reindex_in_progress": list(self._reindex_in_progress),
             "stale": False,
             "reindex_deferred": False,

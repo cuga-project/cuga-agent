@@ -1433,6 +1433,11 @@ def start(
         os.environ["DYNACONF_KNOWLEDGE__ENABLED"] = "true"
         os.environ["DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED"] = "true"
         os.environ["DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED"] = "true"
+        # Same local-workspace posture as every other demo preset: without this
+        # the spawned server inherits opensandbox_sandbox=true from settings.toml
+        # and /api/workspace/tree tries to reach a Docker OpenSandbox that this
+        # mode never starts (surfaces as ConnectError + 503 on every UI poll).
+        _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
@@ -1732,39 +1737,45 @@ def start(
             os.environ["CUGA_AGENT_NAME"] = "Travel Agent"
             os.environ["CUGA_AGENT_DESCRIPTION"] = "AI-powered corporate travel planning system"
 
-            from cuga.backend.server.config_store import reset_config_db, save_draft
-            import asyncio
+            from cuga.backend.server.config_store import (
+                reset_config_db,
+                resolve_preserve_existing,
+                run_sync,
+                save_draft,
+            )
 
             ensure_managed_mcp_file_exists(get_managed_mcp_path())
-            logger.info("🧹 Resetting config db for Travel Agent...")
 
-            reset_config_db()
+            preserve_existing = run_sync(resolve_preserve_existing("cuga-default"))
+            if not preserve_existing:
+                logger.info("🧹 Resetting config db for Travel Agent...")
+                reset_config_db()
 
-            # Build LLM config from environment (same as setup_demo_manage_config does)
-            llm_api_key_ref = ""
-            try:
-                from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+                # Build LLM config from environment (same as setup_demo_manage_config does)
+                llm_api_key_ref = ""
+                try:
+                    from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
-                llm_api_key_ref = resolve_llm_api_key_ref()
-            except Exception:
-                pass
+                    llm_api_key_ref = resolve_llm_api_key_ref()
+                except Exception:
+                    pass
 
-            llm_cfg = {"model": os.environ.get("MODEL_NAME", "")}
-            if llm_api_key_ref:
-                llm_cfg["api_key"] = llm_api_key_ref
+                llm_cfg = {"model": os.environ.get("MODEL_NAME", "")}
+                if llm_api_key_ref:
+                    llm_cfg["api_key"] = llm_api_key_ref
 
-            travel_agent_config = {
-                "agent": {
-                    "name": "Travel Agent",
-                    "description": "AI-powered corporate travel planning system",
-                },
-                "tools": [],
-                "llm": llm_cfg,
-            }
-            asyncio.run(save_draft(travel_agent_config, "cuga-default"))
-            logger.info(
-                "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
-            )
+                travel_agent_config = {
+                    "agent": {
+                        "name": "Travel Agent",
+                        "description": "AI-powered corporate travel planning system",
+                    },
+                    "tools": [],
+                    "llm": llm_cfg,
+                }
+                run_sync(save_draft(travel_agent_config, "cuga-default"))
+                logger.info(
+                    "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
+                )
 
             app_mgr = _make_app_manager()
             logger.info("🧹 Checking for existing processes on required ports...")

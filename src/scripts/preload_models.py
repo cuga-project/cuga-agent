@@ -11,6 +11,39 @@ import os
 import sys
 
 
+def docling_transformers_layout_repo_id() -> str:
+    """HF repo that ``download_models(with_layout=True)`` caches for layout."""
+    from docling.datamodel.pipeline_options import LayoutOptions
+
+    return LayoutOptions().model_spec.repo_id
+
+
+def docling_onnx_layout_repo_id() -> str:
+    """HF repo the ONNX layout engine resolves under ``artifacts_path``.
+
+    ``download_models()`` does not pull this; CPU ``auto`` layout needs it.
+    """
+    from docling.datamodel.object_detection_engine_options import (
+        ObjectDetectionEngineType,
+        OnnxRuntimeObjectDetectionEngineOptions,
+    )
+    from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+
+    opts = LayoutObjectDetectionOptions(engine_options=OnnxRuntimeObjectDetectionEngineOptions())
+    override = opts.model_spec.engine_overrides[ObjectDetectionEngineType.ONNXRUNTIME]
+    return override.repo_id
+
+
+def docling_airgap_layout_repo_ids() -> frozenset[str]:
+    """Layout HF repos airgap preload guarantees are present on disk."""
+    return frozenset(
+        {
+            docling_transformers_layout_repo_id(),
+            docling_onnx_layout_repo_id(),
+        }
+    )
+
+
 def preload_fastembed() -> None:
     print("→ Preloading fastembed models...")
     try:
@@ -35,6 +68,7 @@ def preload_docling() -> None:
 
     print("→ Preloading docling models...")
     try:
+        from docling.models.utils.hf_model_download import download_hf_model
         from docling.utils.model_downloader import download_models
 
         output_dir = Path(os.environ.get("DOCLING_ARTIFACTS_PATH", Path.home() / ".cache" / "docling"))
@@ -48,6 +82,13 @@ def preload_docling() -> None:
             output_dir=output_dir,
             with_code_formula=with_code_formula,
             with_picture_classifier=with_picture_classifier,
+        )
+        onnx_repo = docling_onnx_layout_repo_id()
+        onnx_dir = output_dir / onnx_repo.replace("/", "--")
+        print(f"  Downloading ONNX layout model {onnx_repo}...")
+        download_hf_model(
+            repo_id=onnx_repo,
+            local_dir=onnx_dir,
         )
         print("  ✓ docling models ready")
     except ImportError:
