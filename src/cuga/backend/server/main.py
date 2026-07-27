@@ -2418,12 +2418,24 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
         app_state.stop_events[thread_id].set()
+        try:
+            from cuga.backend.agent_spawn import clear_runtime_caches
+
+            clear_runtime_caches(thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to clear spawn caches on stop for {thread_id}: {e}")
         return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
     else:
         logger.warning("Received stop request without thread_id, stopping all threads")
         # Fallback: stop all threads (for backward compatibility)
         for event in app_state.stop_events.values():
             event.set()
+        try:
+            from cuga.backend.agent_spawn import clear_runtime_caches
+
+            clear_runtime_caches()
+        except Exception as e:
+            logger.warning(f"Failed to clear spawn caches on stop-all: {e}")
         return {"status": "success", "message": "Stop request received for all threads"}
 
 
@@ -2451,6 +2463,12 @@ async def reset_agent_state(
             # Clear stop event for this thread
             if thread_id in app_state.stop_events:
                 app_state.stop_events[thread_id].clear()
+            try:
+                from cuga.backend.agent_spawn import clear_runtime_caches
+
+                clear_runtime_caches(thread_id)
+            except Exception as e:
+                logger.warning(f"Failed to clear spawn caches on reset for {thread_id}: {e}")
 
             # Drop the in-memory citation source ledger for this thread
             from cuga.backend.knowledge.sources import drop_ledger
@@ -2466,6 +2484,12 @@ async def reset_agent_state(
             # Clear all stop events (for backward compatibility)
             for event in app_state.stop_events.values():
                 event.clear()
+            try:
+                from cuga.backend.agent_spawn import clear_runtime_caches
+
+                clear_runtime_caches()
+            except Exception as e:
+                logger.warning(f"Failed to clear spawn caches on reset-all: {e}")
 
         # Note: We don't reset the agent graph or environment as they are shared resources.
         # State is managed per-thread via LangGraph's checkpointer.

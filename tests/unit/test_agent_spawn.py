@@ -140,6 +140,141 @@ async def test_get_agent_result_timeout():
     get_result = next(t for t in tools if t.name == "get_agent_result")
     result = await get_result.coroutine(future_id="fid_run", timeout=0.1)
     assert "[SpawnTimeout]" in result
+    assert "fid_run" not in futures
+
+
+@pytest.mark.asyncio
+async def test_get_agent_result_timeout_cancels_task(monkeypatch):
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime as rt
+    from cuga.backend.agent_spawn.tools import create_spawn_tools
+
+    rt.clear_runtime_caches()
+    try:
+        parent_cfg = {"configurable": {"thread_id": "thr-timeout"}}
+        futures = rt.thread_spawn_futures("thr-timeout")
+
+        async def _fake_execute(self, task, spawn_id="", share_workspace=False):
+            await asyncio.sleep(60)
+            return "never"
+
+        monkeypatch.setattr(rt.SpawnAgentRuntime, "execute", _fake_execute)
+        tools = create_spawn_tools(futures, parent_config=parent_cfg)
+        spawn = next(t for t in tools if t.name == "spawn_agent")
+        get_result = next(t for t in tools if t.name == "get_agent_result")
+
+        future_id = await spawn.coroutine(task="slow", mode="async")
+        result = await get_result.coroutine(future_id=future_id, timeout=0.1)
+        assert "[SpawnTimeout]" in result
+        assert future_id not in futures
+        # Let CancelledError propagate and done-callback clear the bucket.
+        for _ in range(20):
+            if not rt.pending_spawn_tasks("thr-timeout"):
+                break
+            await asyncio.sleep(0.01)
+        assert rt.pending_spawn_tasks("thr-timeout") == []
+    finally:
+        rt.clear_runtime_caches()
+
+
+@pytest.mark.asyncio
+async def test_execute_and_store_records_cancelled(monkeypatch):
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime as rt
+
+    rt.clear_runtime_caches()
+    try:
+        runtime = rt.SpawnAgentRuntime.from_parent(
+            parent_config={"configurable": {"thread_id": "thr-c"}},
+            spawn_futures_ref={},
+        )
+
+        async def _boom(*_a, **_k):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(runtime, "execute", _boom)
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._execute_and_store("future_cancel1", "t")
+        assert runtime._spawn_futures["future_cancel1"]["status"] == "cancelled"
+    finally:
+        rt.clear_runtime_caches()
+
+
+@pytest.mark.asyncio
+async def test_cancel_spawn_future_cancels_running_task():
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime as rt
+
+    rt.clear_runtime_caches()
+    try:
+        parent = "thr-cancel"
+        future_id = "future_deadbeef"
+
+        async def _hang():
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(_hang())
+        rt.thread_spawn_futures(parent)[future_id] = {
+            "status": "running",
+            "result": None,
+            "error": None,
+        }
+        rt._track_task(parent, future_id, task)
+
+        assert rt.cancel_spawn_future(parent, future_id) is True
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done()
+        entry = rt.thread_spawn_futures(parent)[future_id]
+        assert entry["status"] == "timeout"
+    finally:
+        rt.clear_runtime_caches()
+
+
+@pytest.mark.asyncio
+async def test_wait_pending_spawns_cancels_on_timeout():
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime as rt
+
+    rt.clear_runtime_caches()
+    try:
+        parent = "thr-wait"
+
+        async def _hang():
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(_hang())
+        rt._track_task(parent, "future_wait01", task)
+        await rt.wait_pending_spawns(parent, timeout=0.05, cancel_on_timeout=True)
+        assert task.cancelled() or task.done()
+        assert rt.pending_spawn_tasks(parent) == []
+    finally:
+        rt.clear_runtime_caches()
+
+
+def test_wait_pending_spawns_default_timeout_is_five_seconds():
+    import inspect
+
+    from cuga.backend.agent_spawn.runtime import wait_pending_spawns
+
+    params = inspect.signature(wait_pending_spawns).parameters
+    assert params["timeout"].default == 5.0
+    assert params["cancel_on_timeout"].default is True
+
+
+def test_agent_loop_waits_pending_spawns_with_short_timeout():
+    src = Path("src/cuga/backend/cuga_graph/utils/agent_loop.py").read_text()
+    assert "wait_pending_spawns(self.thread_id, timeout=5.0)" in src
+
+
+def test_stop_and_reset_clear_spawn_caches():
+    src = Path("src/cuga/backend/server/main.py").read_text()
+    assert "clear_runtime_caches(thread_id)" in src
+    assert "Failed to clear spawn caches on stop" in src
+    assert "Failed to clear spawn caches on reset" in src
 
 
 def test_format_available_agents_block_adhoc_description():

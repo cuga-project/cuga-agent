@@ -791,8 +791,9 @@ class AgentLoop:
 
             # Wait for fire-and-forget async spawns so late SubAgent events still
             # reach this stream, then drain whatever is left (get_nowait, not empty()).
+            # Residual tasks are cancelled so the stream can end cleanly.
             if agent_spawn_enabled:
-                await _spawn_runtime.wait_pending_spawns(self.thread_id, timeout=60.0)
+                await _spawn_runtime.wait_pending_spawns(self.thread_id, timeout=5.0)
 
             while True:
                 try:

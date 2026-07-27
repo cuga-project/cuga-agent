@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime, pop_spawn_future
+from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime, cancel_spawn_future, pop_spawn_future
 
 
 class SpawnAgentInput(BaseModel):
@@ -78,7 +78,15 @@ def create_spawn_tools(
                 pop_spawn_future(parent_thread_id, future_id)
                 spawn_futures.pop(future_id, None)
                 return err
+            if entry["status"] in ("timeout", "cancelled"):
+                err = f"[SpawnError] {entry.get('error', entry['status'])}"
+                pop_spawn_future(parent_thread_id, future_id)
+                spawn_futures.pop(future_id, None)
+                return err
             await asyncio.sleep(0.5)
+        cancel_spawn_future(parent_thread_id, future_id)
+        pop_spawn_future(parent_thread_id, future_id)
+        spawn_futures.pop(future_id, None)
         return f"[SpawnTimeout] Agent {future_id!r} did not complete within {timeout}s"
 
     spawn_tool = StructuredTool.from_function(

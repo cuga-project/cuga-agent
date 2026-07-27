@@ -45,6 +45,7 @@ _SUBAGENT_SPECIAL_INSTRUCTIONS = (
 # Per-parent-thread async future store + task tracking (graph is process-wide).
 _futures_by_thread: Dict[str, Dict[str, Any]] = {}
 _tasks_by_thread: Dict[str, Set[asyncio.Task]] = {}
+_task_by_future: Dict[str, asyncio.Task] = {}
 
 
 def set_event_callback(cb: Optional[Callable[[str, dict], None]]) -> contextvars.Token:
@@ -79,19 +80,36 @@ def pop_spawn_future(thread_id: str, future_id: str) -> None:
             _futures_by_thread.pop(thread_id or "_default", None)
 
 
+def cancel_spawn_future(thread_id: str, future_id: str) -> bool:
+    """Cancel one async spawn by future_id. Returns True if a running task was cancelled."""
+    task = _task_by_future.get(future_id)
+    cancelled = False
+    if task is not None and not task.done():
+        task.cancel()
+        cancelled = True
+    key = thread_id or "_default"
+    store = _futures_by_thread.get(key)
+    if store is not None and future_id in store and store[future_id].get("status") == "running":
+        store[future_id] = {"status": "timeout", "result": None, "error": "timeout"}
+    return cancelled
+
+
 def clear_runtime_caches(thread_id: Optional[str] = None) -> None:
     """Clear spawn futures (and cancel tracked async tasks) for one thread or all."""
     if thread_id is None:
-        for tid, tasks in list(_tasks_by_thread.items()):
+        for tasks in list(_tasks_by_thread.values()):
             for t in list(tasks):
                 t.cancel()
-            tasks.clear()
         _tasks_by_thread.clear()
         _futures_by_thread.clear()
+        _task_by_future.clear()
         return
     key = thread_id or "_default"
     for t in list(_tasks_by_thread.get(key, ())):
         t.cancel()
+    store = _futures_by_thread.get(key) or {}
+    for fid in list(store):
+        _task_by_future.pop(fid, None)
     _tasks_by_thread.pop(key, None)
     _futures_by_thread.pop(key, None)
 
@@ -101,27 +119,38 @@ def pending_spawn_tasks(thread_id: str) -> List[asyncio.Task]:
     return [t for t in _tasks_by_thread.get(key, set()) if not t.done()]
 
 
-async def wait_pending_spawns(thread_id: str, timeout: float = 60.0) -> None:
-    """Await in-flight async spawns for this parent thread (best-effort)."""
+async def wait_pending_spawns(
+    thread_id: str, timeout: float = 5.0, *, cancel_on_timeout: bool = True
+) -> None:
+    """Await in-flight async spawns for this parent thread (best-effort).
+
+    On timeout, cancels residual tasks by default so the parent stream can end
+    without leaving tool-inheriting children running.
+    """
     pending = pending_spawn_tasks(thread_id)
     if not pending:
         return
     try:
         await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=timeout)
     except asyncio.TimeoutError:
+        still = pending_spawn_tasks(thread_id)
         logger.warning(
-            f"agent_spawn: {len(pending_spawn_tasks(thread_id))} async spawn(s) still running "
+            f"agent_spawn: {len(still)} async spawn(s) still running "
             f"after {timeout}s for thread={thread_id!r}"
         )
+        if cancel_on_timeout and still:
+            clear_runtime_caches(thread_id)
 
 
-def _track_task(thread_id: str, task: asyncio.Task) -> None:
+def _track_task(thread_id: str, future_id: str, task: asyncio.Task) -> None:
     key = thread_id or "_default"
     bucket = _tasks_by_thread.setdefault(key, set())
     bucket.add(task)
+    _task_by_future[future_id] = task
 
     def _done(t: asyncio.Task) -> None:
         bucket.discard(t)
+        _task_by_future.pop(future_id, None)
         if not bucket:
             _tasks_by_thread.pop(key, None)
 
@@ -251,24 +280,28 @@ class SpawnAgentRuntime:
         try:
             agent = self._build_agent(tools)
             answer = await self._run_stream(agent, task, thread_id, invoke_cfg, spawn_id=spawn_id)
+        except asyncio.CancelledError:
+            status = "cancelled"
+            answer = "[SpawnError] cancelled"
+            raise
         except Exception as e:
             status = "error"
             answer = f"[SpawnError] {e}"
             logger.warning(f"agent_spawn: sync execute failed spawn_id={spawn_id}: {e}")
         finally:
             _spawn_depth.reset(token)
-
-        _emit(
-            "SpawnAgentResult",
-            {
-                "agent_name": "SubCuga",
-                "thread_id": thread_id,
-                "workspace_thread_id": workspace_thread_id,
-                "status": status,
-                "answer": (answer or "")[:500],
-                "spawn_id": spawn_id,
-            },
-        )
+            if status != "cancelled":
+                _emit(
+                    "SpawnAgentResult",
+                    {
+                        "agent_name": "SubCuga",
+                        "thread_id": thread_id,
+                        "workspace_thread_id": workspace_thread_id,
+                        "status": status,
+                        "answer": (answer or "")[:500],
+                        "spawn_id": spawn_id,
+                    },
+                )
         return answer
 
     async def execute_async(self, task: str, share_workspace: bool = False) -> str:
@@ -281,13 +314,29 @@ class SpawnAgentRuntime:
         task_obj = asyncio.create_task(
             self._execute_and_store(future_id, task, share_workspace=share_workspace)
         )
-        _track_task(parent_thread_id, task_obj)
+        _track_task(parent_thread_id, future_id, task_obj)
         return future_id
 
     async def _execute_and_store(self, future_id: str, task: str, share_workspace: bool = False) -> None:
         try:
             result = await self.execute(task, spawn_id=future_id, share_workspace=share_workspace)
             self._spawn_futures[future_id] = {"status": "done", "result": result, "error": None}
+        except asyncio.CancelledError:
+            self._spawn_futures[future_id] = {
+                "status": "cancelled",
+                "result": None,
+                "error": "cancelled",
+            }
+            _emit(
+                "SpawnAgentResult",
+                {
+                    "agent_name": "SubCuga",
+                    "status": "cancelled",
+                    "answer": "cancelled",
+                    "spawn_id": future_id,
+                },
+            )
+            raise
         except Exception as e:
             logger.warning(f"agent_spawn: async execute failed for future_id={future_id}: {e}")
             self._spawn_futures[future_id] = {"status": "error", "result": None, "error": str(e)}
