@@ -16,6 +16,21 @@ from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
 
+_WEAK_SCHEMA_PROBE_DIRECTIVE = (
+    "\n    \n    ⚠️ No declared output schema for this tool. Call it ALONE in its own "
+    "```python block and print() the raw result — don't write code in the same block "
+    "that indexes, slices, or assumes its shape. Write follow-up code using the real "
+    "shape once you see it on your next turn."
+)
+
+# Sentinel key the MCP manager injects into ``response_schemas`` when a tool
+# declares no ``outputSchema`` and it falls back to a generic placeholder. It
+# lets ``is_weak_schema_tool`` tell that placeholder apart from a genuine
+# string-returning tool, whose ``success`` schema is byte-identical. Kept in
+# sync with mcp_manager.py (a plain literal there to avoid a graph→registry
+# import dependency).
+_SYNTHETIC_PLACEHOLDER_KEY = "_synthetic_placeholder"
+
 
 def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, bool):
@@ -149,6 +164,29 @@ class PromptUtils:
             return "**kwargs"
 
     @staticmethod
+    def is_weak_schema_tool(tool: StructuredTool) -> bool:
+        """True when a tool has no real declared output schema.
+
+        Covers the OpenAPI-derived case (empty ``response_schemas``) and the
+        MCP fallback case, where the manager injects a generic placeholder for a
+        tool that declared no ``outputSchema`` (see mcp_manager.py). A genuine
+        string-returning tool (an OpenAPI text/plain body, or an MCP tool that
+        actually declares ``outputSchema: {"type": "string"}``) produces a
+        ``success`` schema *identical* to that placeholder, so we no longer
+        match on shape — that suppressed real schemas. Instead the manager tags
+        the synthetic placeholder with ``_synthetic_placeholder`` and we trust
+        that marker, leaving every genuinely-declared schema intact.
+        """
+        response_schemas = {}
+        if hasattr(tool, 'func') and hasattr(tool.func, '_response_schemas'):
+            response_schemas = tool.func._response_schemas
+
+        if not response_schemas or not isinstance(response_schemas, dict):
+            return True
+
+        return bool(response_schemas.get(_SYNTHETIC_PLACEHOLDER_KEY))
+
+    @staticmethod
     def get_tool_docs(tool: StructuredTool) -> tuple[str, str]:
         """Extract params_doc and response_doc for a tool.
 
@@ -169,10 +207,11 @@ class PromptUtils:
         if hasattr(tool, 'func') and hasattr(tool.func, '_param_constraints'):
             param_constraints = tool.func._param_constraints
 
-        if response_schemas and isinstance(response_schemas, dict):
-            if 'success' in response_schemas:
-                success_schema = json.dumps(response_schemas['success'], indent=4)
-                response_doc = f"\n    \n    Returns (on success) - Response Schema:\n{success_schema}"
+        if PromptUtils.is_weak_schema_tool(tool):
+            response_doc = _WEAK_SCHEMA_PROBE_DIRECTIVE
+        elif response_schemas and isinstance(response_schemas, dict) and 'success' in response_schemas:
+            success_schema = json.dumps(response_schemas['success'], indent=4)
+            response_doc = f"\n    \n    Returns (on success) - Response Schema:\n{success_schema}"
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:

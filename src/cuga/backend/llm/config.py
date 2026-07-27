@@ -1,6 +1,6 @@
 """LLM Configuration Models"""
 
-from typing import Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Union
 from pydantic import BaseModel, Field
 
 
@@ -47,7 +47,42 @@ class LLMConfig(BaseModel):
     )
 
     max_tokens: Optional[int] = Field(
-        default=16000, gt=0, description="Maximum number of tokens in the response"
+        default=None,
+        gt=0,
+        description=(
+            "Maximum number of tokens in the response. Unset/null keeps the TOML or provider default."
+        ),
+    )
+
+    top_p: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Nucleus sampling probability (when supported)"
+    )
+
+    top_k: Optional[int] = Field(
+        default=None, gt=0, description="Top-k sampling (Watsonx/LiteLLM where supported)"
+    )
+
+    frequency_penalty: Optional[float] = Field(
+        default=None,
+        ge=-2.0,
+        le=2.0,
+        description="Frequency penalty (OpenAI-compatible providers)",
+    )
+
+    presence_penalty: Optional[float] = Field(
+        default=None,
+        ge=-2.0,
+        le=2.0,
+        description="Presence penalty (OpenAI-compatible providers)",
+    )
+
+    stop: Optional[Union[str, List[str]]] = Field(
+        default=None, description="Stop sequence(s) where generation should halt"
+    )
+
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Provider-agnostic extra generation params (auth/transport keys are stripped)",
     )
 
     timeout: Optional[float] = Field(
