@@ -648,10 +648,16 @@ class MCPManager:
                                 "failure": {"type": "string"},
                             }
                         else:
-                            # Fallback to default if no output schema is defined
+                            # Fallback to default if no output schema is defined.
+                            # Tag it so downstream weak-schema detection can tell
+                            # this synthetic placeholder apart from a tool that
+                            # genuinely returns a bare string (identical success
+                            # schema). Key kept in sync with prompt_utils.py
+                            # (_SYNTHETIC_PLACEHOLDER_KEY).
                             api_info["response_schemas"] = {
                                 "success": {"type": "string"},
                                 "failure": {"type": "string"},
+                                "_synthetic_placeholder": True,
                             }
 
                     result[tool_name] = api_info

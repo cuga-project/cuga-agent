@@ -35,6 +35,45 @@ from cuga.config import settings
 _llm_manager = LLMManager()
 
 
+def _describe_observed_shape(result: Any) -> str:
+    """Render a short, human-readable description of an observed tool result."""
+    if isinstance(result, dict):
+        keys = list(result.keys())[:8]
+        suffix = ", ..." if len(result) > len(keys) else ""
+        return f"dict with keys [{', '.join(repr(k) for k in keys)}{suffix}]"
+    if isinstance(result, (list, tuple)):
+        kind = type(result).__name__
+        if result:
+            return (
+                f"{kind} of {len(result)} items, e.g. first item: "
+                f"{type(result[0]).__name__} {str(result[0])[:120]!r}"
+            )
+        return f"empty {kind}"
+    if isinstance(result, str):
+        return f"str of {len(result)} chars, e.g. {result[:120]!r}"
+    return type(result).__name__
+
+
+def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
+    """Stash the first observed output shape for any weak-schema tool this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    if not weak_schema_tool_names:
+        return
+    observed = getattr(adapter, "_observed_tool_shapes", {})
+    for call in tool_calls:
+        name = call.get("name")
+        if name not in weak_schema_tool_names or name in observed or call.get("error"):
+            continue
+        observed[name] = _describe_observed_shape(call.get("result"))
+
+
+def _needs_shape_tracking(adapter: Any) -> bool:
+    """True when at least one weak-schema tool's shape hasn't been observed yet this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    observed = getattr(adapter, "_observed_tool_shapes", {})
+    return bool(weak_schema_tool_names - observed.keys())
+
+
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
     async def sandbox(state: Any, config: Optional[RunnableConfig] = None):
         """Execute code in sandbox and return results."""
@@ -75,8 +114,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
-        # Start tool call tracking (only if enabled via invoke parameter)
-        ToolCallTracker.start_tracking(enabled=track_tool_calls)
+        # Start tool call tracking (enabled via invoke parameter, or internally
+        # whenever a weak-schema tool's output shape hasn't been observed yet)
+        ToolCallTracker.start_tracking(enabled=track_tool_calls or _needs_shape_tracking(adapter))
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -198,7 +238,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             # Collect tool calls from this execution
             execution_tool_calls = ToolCallTracker.stop_tracking()
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             if error_message:
                 return core_create_error_command(
@@ -229,7 +272,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         except Exception as e:
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
