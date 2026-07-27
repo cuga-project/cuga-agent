@@ -2689,6 +2689,10 @@ class CugaAgent:
                 "last_planner_answer": final_answer,
             }
             # Same ACTION/QUERY gate as FinalAnswerAgent (plain mode): action tasks → N/A.
+            # Gate extraction on this decision, not on `final_answer == "N/A"` — a planner
+            # that legitimately answers the string "N/A" on a QUERY task must still be
+            # extracted, as it was before the classifier existed.
+            is_action = False
             if appworld_plain and getattr(settings.advanced_features, "appworld_classify_action_tasks", True):
                 try:
                     classifier = BaseAgent.get_chain(
@@ -2700,12 +2704,13 @@ class CugaAgent:
                     clf_raw = (clf_msg.content if hasattr(clf_msg, "content") else str(clf_msg)) or ""
                     if is_appworld_action_label(clf_raw):
                         logger.info("SDK AppWorld classifier -> ACTION (answer=N/A)")
+                        is_action = True
                         final_answer = "N/A"
                     else:
                         logger.info("SDK AppWorld classifier -> QUERY")
                 except Exception as e:
                     logger.warning(f"SDK AppWorld action/query classifier failed, defaulting to QUERY: {e}")
-            if final_answer != "N/A":
+            if not is_action:
                 if appworld_plain:
                     pmt = load_appworld_plain_final_answer_prompt(
                         model_config=settings.agent.final_answer.model
