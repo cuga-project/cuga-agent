@@ -97,6 +97,19 @@ def _apply_palette_supervisor_env() -> None:
     os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = os.path.join(
         PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_palette.yaml"
     )
+    # A deck is two to four minutes of bounded polling, so the model surfaces
+    # progress as prose ("still rendering, I'll keep checking") far more often
+    # than a normal task does. With auto-continue off, the first such message
+    # ends the run — and it ends it mid-build, leaving a finished deck on the
+    # server that nobody downloads. Observed twice at step ~40 of 100.
+    os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "true")
+    # A deck advances by bounded polls, one per step, so the step length sets
+    # how many steps a deck costs. At the 30s default a slow build (geometry
+    # repair can run several passes) is twenty-odd polls and agents abandon it
+    # around step 40 — with the build still running, and finishing uncollected
+    # minutes later. At 120s the same deck is five or six polls. The skill's
+    # CUGA profile passes `--max-seconds 100` to match; keep the two in step.
+    os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
     # PALETTE_URL reaches the sandbox through the inherited environment; warn
     # early rather than letting the agent discover it mid-deck.
     if not os.environ.get("PALETTE_URL"):

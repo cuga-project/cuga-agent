@@ -458,11 +458,34 @@ cd ../cuga-agent-july25
 PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
 ```
 
+Or consume a **released** skill, with no Palette checkout at all — the same shape as a `skills.sh` install:
+
+```bash
+mkdir -p .cuga/skills
+tar xzf palette-skill-0.1.0-cuga.tar.gz -C .cuga/skills/   # from Palette's `make release`
+```
+
 The preset layers supervisor coordination on top of the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on, and `[supervisor] config_path` pointed at [`supervisor_palette.yaml`](src/cuga/backend/tools_env/registry/config/supervisor_palette.yaml). Edit that file to change which sub-agents supply deck content.
 
 Skills load at supervisor level (see [`prepare_agents_and_prompt.py`](src/cuga/backend/cuga_graph/nodes/cuga_supervisor/nodes/prepare_agents_and_prompt.py)), gated only on `[skills] enabled`.
 
-> A deck build takes two to four minutes, which is longer than `[advanced_features] sandbox_execution_timeout` (30s). The skill handles this by starting the build in the background and polling it across several short steps — it does not need the timeout raised.
+**Two settings the preset raises**, both because a deck is minutes of polling rather than a handful of calls, and both applied with `setdefault` so an explicit env var still wins:
+
+| Setting | Default | `demo_palette` | Why |
+| --- | --- | --- | --- |
+| `sandbox_execution_timeout` | 30s | **120s** | Each bounded poll is one step. A deck takes three to ten minutes — the spread is how many geometry repair passes it needs — so at 30s a long build is twenty-odd steps, and agents abandon that around step 40 of 100. The build then finishes on the server with nobody collecting it. |
+| `cuga_lite_nl_auto_continue` | false | **true** | Mid-build the model often writes a progress note as prose with no code. That reads as a finished answer and ends the run. |
+
+The skill polls at `--max-seconds 100` to fit inside the 120s step; the two are kept matched by a test in the Palette repo.
+
+**Checking a deck is real.** An agent can describe files it never wrote, so verify from your shell rather than the chat:
+
+```bash
+ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
+cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
+```
+
+That state file is written by `palette-skill deck` and by nothing else, so its absence means the draft/build sequence was driven by hand — which is how a deck goes missing while being reported as built.
 
 **Install a sample skill (Anthropic `pptx`)**
 

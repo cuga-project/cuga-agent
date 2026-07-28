@@ -57,6 +57,26 @@ class TestPresetEnvironment:
         """The palette skill drives its CLI through run_command."""
         assert palette_env["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] == "true"
 
+    def test_natural_language_auto_continue_is_on(self, palette_env: dict[str, str]) -> None:
+        """A deck is minutes of polling, so the model narrates progress a lot.
+
+        With auto-continue off, the first "still rendering, I'll keep checking"
+        is prose with no code, the run ends there, and the build finishes on
+        the server with nobody downloading it. Seen twice, both at roughly
+        step 40 of 100 — nowhere near the step limit.
+        """
+        assert palette_env["DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE"] == "true"
+
+    def test_auto_continue_defers_to_an_explicit_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """setdefault, not assignment — someone debugging turn-by-turn keeps control."""
+        from cuga.cli.main import _apply_palette_supervisor_env
+
+        monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "false")
+        _apply_palette_supervisor_env()
+        assert os.environ["DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE"] == "false"
+
     def test_supervisor_is_enabled_and_configured(self, palette_env: dict[str, str]) -> None:
         assert palette_env["DYNACONF_SUPERVISOR__ENABLED"] == "true"
         assert Path(palette_env["DYNACONF_SUPERVISOR__CONFIG_PATH"]).is_file()

@@ -173,7 +173,7 @@ class TestAgentInvokesTheSkill:
         # The instructions the agent now has must be Palette's, not a stub's.
         for expected in (
             "palette-skill",  # the CLI it must drive
-            "start-build",  # the non-blocking build it must use
+            "palette-skill deck",  # the one command that makes a deck
             "pptxgenjs",  # the thing it is forbidden to hand-write
         ):
             assert expected in transcript, (
@@ -184,7 +184,14 @@ class TestAgentInvokesTheSkill:
     async def test_agent_is_told_not_to_block_on_a_build(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The 30s step limit is the whole reason the skill exists in this shape."""
+        """The per-step limit is the whole reason the skill exists in this shape.
+
+        A deck is three to ten minutes and no step is, so the instructions must
+        describe a resumable loop rather than one blocking call. They must also
+        say what ends it: every observed failure ended a turn mid-build, either
+        by asking whether to keep going or by narrating progress with no command
+        attached, and on this host a turn of plain prose reads as a final answer.
+        """
         monkeypatch.chdir(tmp_path)
         install_real_skill(tmp_path)
         configure_skills(monkeypatch, tmp_path)
@@ -198,9 +205,14 @@ class TestAgentInvokesTheSkill:
         await run_graph(model, "Build a deck")
 
         transcript = conversation_text(model)
-        assert "wait" in transcript and "terminal" in transcript, (
-            "the poll-until-terminal loop is missing from the loaded instructions"
-        )
+        for expected, why in (
+            ("--max-seconds", "no bounded poll — a blocking call would be killed by the step limit"),
+            ('"done": true', "nothing tells the agent what ends the loop"),
+            ("every turn you take must contain a `deck` call",
+             "nothing stops the agent narrating progress instead of polling for it"),
+            ("verified", "completion is left to the agent's belief rather than the filesystem"),
+        ):
+            assert expected in transcript, f"{expected!r} missing: {why}"
 
     @pytest.mark.asyncio
     async def test_unknown_skill_does_not_masquerade_as_palette(

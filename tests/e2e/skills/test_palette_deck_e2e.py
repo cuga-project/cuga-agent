@@ -116,22 +116,35 @@ def _configure(
 ) -> None:
     """Settings a skills-enabled agent runs under, mirroring `demo_palette`.
 
-    ``step_seconds`` raises the per-step wall clock above CUGA's 30s default.
-    Route A does not need it — a build alone fits in bounded 25s polls. Route B
-    chains a draft *and* a build, roughly seventeen polls, and the poll count
-    rather than any single call is what exhausts the run. Widening the step
-    lets each poll cover more ground; the skill itself is unchanged.
+    The preset's two departures from CUGA's defaults both exist because a deck
+    is minutes of polling rather than a handful of calls, and both were paid
+    for in failed runs:
+
+      * a **120s step**, so each bounded poll covers real ground. At the 30s
+        default a ten-minute build is twenty-odd polls, and agents abandon that
+        around step 40 of 100 — with the build still running, finishing
+        uncollected minutes later.
+      * **auto-continue on**, so a progress note the model writes as prose does
+        not read as a finished answer and end the run.
+
+    ``step_seconds`` overrides the first for a test that wants something else.
     """
     from cuga.config import settings
 
     monkeypatch.chdir(workspace)
-    if step_seconds is not None:
-        monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", step_seconds)
+    # 120s mirrors `_apply_palette_supervisor_env`, and the skill's CUGA
+    # profile polls at 100s to fit inside it. At the 30s default a ten-minute
+    # build is twenty-odd polls and the agent abandons it around step 40.
+    monkeypatch.setattr(
+        settings.advanced_features, "sandbox_execution_timeout", step_seconds or 120
+    )
     monkeypatch.setenv("CUGA_FOLDER", str(workspace / ".cuga"))
     monkeypatch.setenv("PALETTE_URL", PALETTE_URL)
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", False)
+    # Mirrors `_apply_palette_supervisor_env`. Left off, the first "still
+    # rendering, I'll keep checking" the model emits ends the run mid-build.
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
     monkeypatch.setattr(settings.policy, "enabled", False)
 
 
