@@ -34,6 +34,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import make_recording_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     PromptUtils,
@@ -349,7 +350,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # provider tools record inside their own wrappers), so wrap them for
         # ToolCallTracker — otherwise track_tool_calls=True yields no trace
         # unless every tool is hand-decorated with @tracked_tool.
+        # The SDK installs decorators around the base provider (e.g. ToolGuard),
+        # so unwrap before detecting the direct provider.
         _provider = adapter._base_tool_provider
+        while isinstance(_provider, ToolGuardingToolProvider):
+            _provider = _provider.unwrap()
         _direct_tool_names = (
             {t.name for t in _provider.tools}
             if isinstance(_provider, DirectLangChainToolsProvider)

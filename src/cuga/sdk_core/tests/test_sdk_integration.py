@@ -184,6 +184,11 @@ class TestSDKInvokeIntegration:
         assert "15" in result.answer
         # Tool calls should be tracked when enabled
         assert isinstance(result.tool_calls, list)
+        # Direct tools are auto-recorded: the add_numbers call must appear with
+        # its arguments (proves the DirectLangChainToolsProvider wiring)
+        add_calls = [c for c in result.tool_calls if c.get("name") == "add_numbers"]
+        assert add_calls, f"expected a recorded add_numbers call, got: {result.tool_calls}"
+        assert add_calls[0].get("arguments"), "recorded call must include arguments"
 
     @pytest.mark.asyncio
     async def test_invoke_result_str_compatibility(self):
