@@ -356,6 +356,10 @@ def clamp_completion_tokens(
     return max(1, remaining)
 
 
+# First-seen completion budget per client, so repeated clamps never compound.
+_ORIGINAL_COMPLETION_BUDGETS: dict[int, int] = {}
+
+
 def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     """Prevent negative max_completion_tokens when prompt size nears the context window."""
     try:
@@ -389,13 +393,18 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
 
     params = dict(llm.params or {})
-    requested = (
-        getattr(llm, "max_completion_tokens", None)
-        or getattr(llm, "max_tokens", None)
-        or params.get("max_completion_tokens")
-        or 16000
-    )
-    requested = int(requested)
+    # Resolve from the first-seen budget: params["max_completion_tokens"] is the key
+    # this function writes below, so re-reading it would make any clamp sticky for
+    # the client's lifetime (keyed by id() — ChatWatsonx is an unhashable pydantic model).
+    requested = _ORIGINAL_COMPLETION_BUDGETS.get(id(llm))
+    if requested is None:
+        requested = int(
+            getattr(llm, "max_completion_tokens", None)
+            or getattr(llm, "max_tokens", None)
+            or params.get("max_completion_tokens")
+            or 16000
+        )
+        _ORIGINAL_COMPLETION_BUDGETS[id(llm)] = requested
 
     clamped = clamp_completion_tokens(
         context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
