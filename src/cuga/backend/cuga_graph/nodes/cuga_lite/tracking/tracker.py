@@ -150,13 +150,14 @@ class ToolCallTracker:
         from cuga.config import settings
 
         max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 100)
-        box[0] += 1
-        if max_tool_calls and box[0] > max_tool_calls:
+        # Check before counting so rejected attempts never inflate the counter.
+        if max_tool_calls and box[0] >= max_tool_calls:
             raise RuntimeError(
                 f"Tool call limit reached: this task has already made {max_tool_calls} tool calls. "
                 "Do not call any more tools — produce a final answer from the data already retrieved. "
                 "(Configurable via advanced_features.max_tool_calls; 0 disables.)"
             )
+        box[0] += 1
 
 
 def tracked_tool(
