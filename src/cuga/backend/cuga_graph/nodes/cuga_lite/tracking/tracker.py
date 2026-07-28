@@ -116,6 +116,46 @@ class ToolCallTracker:
         return _tool_calls_context.get() or []
 
 
+def make_recording_awaitable(
+    awaitable_func: Callable[..., Any],
+    tool_name: str,
+    app_name: Optional[str] = None,
+) -> Callable[..., Any]:
+    """Wrap an already-awaitable tool function so each call is recorded.
+
+    Used for direct LangChain tools, which (unlike registry/combined provider
+    tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
+    tools record in the event-loop context, where this tracker's contextvars
+    are visible. Recording is a no-op unless a tracking session is active.
+    """
+
+    @functools.wraps(awaitable_func)
+    async def _recorded(*args, **kwargs):
+        start_time = time.time()
+        result = None
+        error_msg = None
+
+        try:
+            result = await awaitable_func(*args, **kwargs)
+            return result
+        except Exception as e:
+            error_msg = str(e)
+            raise
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
+            ToolCallTracker.record_call(
+                tool_name=tool_name,
+                arguments=kwargs if kwargs else {f"arg{i}": a for i, a in enumerate(args)},
+                result=result,
+                app_name=app_name,
+                operation_id=tool_name,
+                duration_ms=duration_ms,
+                error=error_msg,
+            )
+
+    return _recorded
+
+
 def tracked_tool(
     _func: Optional[F] = None,
     *,

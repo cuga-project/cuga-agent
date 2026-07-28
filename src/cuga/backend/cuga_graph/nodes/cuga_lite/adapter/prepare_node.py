@@ -33,6 +33,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _knowledge_scope_instruction,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import make_recording_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     PromptUtils,
     create_mcp_prompt,
@@ -343,6 +345,17 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _af = getattr(settings, "advanced_features", None)
         _warn_args = bool(getattr(_af, "cuga_lite_warn_suspect_args", True))
 
+        # Direct LangChain tools have no built-in recorder (registry/combined
+        # provider tools record inside their own wrappers), so wrap them for
+        # ToolCallTracker — otherwise track_tool_calls=True yields no trace
+        # unless every tool is hand-decorated with @tracked_tool.
+        _provider = adapter._base_tool_provider
+        _direct_tool_names = (
+            {t.name for t in _provider.tools}
+            if isinstance(_provider, DirectLangChainToolsProvider)
+            else set()
+        )
+
         for tool in tools_for_execution:
             # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
             # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
@@ -362,7 +375,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     getattr(tool, "args_schema", None),
                     enable=_warn_args,
                 )
-                adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
+                awaitable_tool = make_tool_awaitable(tool_func)
+                if tool.name in _direct_tool_names:
+                    awaitable_tool = make_recording_awaitable(
+                        awaitable_tool, tool.name, app_name=_provider.app_name
+                    )
+                adapter._tools_context[tool.name] = awaitable_tool
             else:
                 logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
