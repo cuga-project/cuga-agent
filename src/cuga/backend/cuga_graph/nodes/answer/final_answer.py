@@ -102,6 +102,10 @@ class FinalAnswerNode(BaseNode):
             )
 
             text = state.final_answer or ""
+            if "<|" in text:
+                # harmony-format models (gpt-oss) can leak <|...|> control tokens
+                text = _re.sub(r"<\|[^>]*?\|>", "", text).strip()
+                state.final_answer = text
             if not has_citation_markers(text):
                 # No [sN] markers to resolve. Two cases land here: a genuinely
                 # uncited answer, and an ALREADY-resolved one (the supervisor

@@ -50,6 +50,22 @@ def test_hallucinated_marker_stripped_even_without_ledger():
     assert state.sources == []
 
 
+def test_control_tokens_stripped_from_uncited_answer():
+    state = _state("The total is 42<|return|>")
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert "<|" not in state.final_answer
+    assert state.final_answer == "The total is 42"
+
+
+def test_control_tokens_stripped_from_cited_answer():
+    _seed_ledger()
+    state = _state("answer [s1] done<|channel|>")
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert "<|" not in state.final_answer
+    assert state.final_answer == "answer [1] done"
+    assert state.sources[0]["filename"] == "f.pdf"
+
+
 def test_disabled_citations_strip_markers_instead_of_resolving():
     from cuga.backend.knowledge.sources import set_session_override_lookup
 
