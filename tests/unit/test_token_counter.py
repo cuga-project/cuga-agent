@@ -278,6 +278,7 @@ def test_clamp_watsonx_completion_for_messages_updates_params():
     assert model.params["max_completion_tokens"] == 16000
 
 
+@pytest.mark.unit
 def test_clamp_watsonx_completion_recovers_when_budget_only_in_params():
     """Production clients carry the budget only inside ``params`` (see llm/models.py),
     so a clamp must not become sticky by re-reading the value it wrote."""

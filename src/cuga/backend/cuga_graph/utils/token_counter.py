@@ -356,8 +356,10 @@ def clamp_completion_tokens(
     return max(1, remaining)
 
 
-# First-seen completion budget per client, so repeated clamps never compound.
-_ORIGINAL_COMPLETION_BUDGETS: dict[int, int] = {}
+# Attribute stashing the first-seen completion budget on the client itself, so
+# repeated clamps never compound and the value's lifetime matches the client's
+# (an id()-keyed module cache could outlive the client and collide on id reuse).
+_ORIGINAL_BUDGET_ATTR = "_cuga_original_completion_budget"
 
 
 def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
@@ -395,8 +397,8 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     params = dict(llm.params or {})
     # Resolve from the first-seen budget: params["max_completion_tokens"] is the key
     # this function writes below, so re-reading it would make any clamp sticky for
-    # the client's lifetime (keyed by id() — ChatWatsonx is an unhashable pydantic model).
-    requested = _ORIGINAL_COMPLETION_BUDGETS.get(id(llm))
+    # the client's lifetime (object.__setattr__ bypasses pydantic's field guard).
+    requested = getattr(llm, _ORIGINAL_BUDGET_ATTR, None)
     if requested is None:
         requested = int(
             getattr(llm, "max_completion_tokens", None)
@@ -404,7 +406,7 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
             or params.get("max_completion_tokens")
             or 16000
         )
-        _ORIGINAL_COMPLETION_BUDGETS[id(llm)] = requested
+        object.__setattr__(llm, _ORIGINAL_BUDGET_ATTR, requested)
 
     clamped = clamp_completion_tokens(
         context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
