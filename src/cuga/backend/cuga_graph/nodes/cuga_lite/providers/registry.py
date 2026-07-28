@@ -47,6 +47,8 @@ async def call_api(
     if args is None:
         args = {}
 
+    ToolCallTracker.enforce_call_budget()
+
     registry_base = get_registry_base_url()
     registry_host = f"{registry_base}/functions/call"
 

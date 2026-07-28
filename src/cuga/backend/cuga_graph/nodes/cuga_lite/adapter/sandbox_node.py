@@ -117,6 +117,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Start tool call tracking (enabled via invoke parameter, or internally
         # whenever a weak-schema tool's output shape hasn't been observed yet)
         ToolCallTracker.start_tracking(enabled=track_tool_calls or _needs_shape_tracking(adapter))
+        # Per-task tool-call budget: carry the count from earlier steps so
+        # advanced_features.max_tool_calls caps the whole task, not one block
+        ToolCallTracker.seed_call_budget(getattr(state, "tool_calls_used", 0))
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -264,6 +267,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "variable_creation_order": state.variable_creation_order,
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
+                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
             }
             if todo_state_update is not None:
                 base_update["task_todos"] = todo_state_update
@@ -295,6 +299,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
+                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
             }
 
     return sandbox

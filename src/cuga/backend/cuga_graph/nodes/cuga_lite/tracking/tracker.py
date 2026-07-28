@@ -30,6 +30,12 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
     "tracking_enabled", default=False
 )
 
+# Mutable [count] box so increments made inside child tasks (e.g. under
+# asyncio.wait_for) stay visible to the seeding context, like the calls list above.
+_tool_call_budget_context: contextvars.ContextVar[Optional[List[int]]] = contextvars.ContextVar(
+    "tool_call_budget", default=None
+)
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -114,6 +120,43 @@ class ToolCallTracker:
         if not ToolCallTracker.is_enabled():
             return []
         return _tool_calls_context.get() or []
+
+    @staticmethod
+    def seed_call_budget(used: int) -> None:
+        """Start counting tool calls for the current execution context.
+
+        ``used`` carries the count accumulated by earlier steps of the task, so
+        the ``advanced_features.max_tool_calls`` cap applies per task, not per step.
+        """
+        _tool_call_budget_context.set([used])
+
+    @staticmethod
+    def get_call_budget_used() -> int:
+        """Number of tool calls counted so far (0 when no budget is active)."""
+        box = _tool_call_budget_context.get()
+        return box[0] if box else 0
+
+    @staticmethod
+    def enforce_call_budget() -> None:
+        """Count one tool call and raise once the per-task cap is exceeded.
+
+        No-op outside a seeded execution context (e.g. tool calls made outside
+        the CugaLite sandbox loop) or when ``advanced_features.max_tool_calls``
+        is 0 (disabled).
+        """
+        box = _tool_call_budget_context.get()
+        if box is None:
+            return
+        from cuga.config import settings
+
+        max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 100)
+        box[0] += 1
+        if max_tool_calls and box[0] > max_tool_calls:
+            raise RuntimeError(
+                f"Tool call limit reached: this task has already made {max_tool_calls} tool calls. "
+                "Do not call any more tools — produce a final answer from the data already retrieved. "
+                "(Configurable via advanced_features.max_tool_calls; 0 disables.)"
+            )
 
 
 def tracked_tool(

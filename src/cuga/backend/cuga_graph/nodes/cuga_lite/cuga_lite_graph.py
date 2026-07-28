@@ -102,6 +102,7 @@ class CugaLiteState(BaseModel):
     error: Optional[str] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
     step_count: int = 0  # Counter for number of steps (call_model + sandbox cycles)
+    tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
