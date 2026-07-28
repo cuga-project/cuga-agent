@@ -259,7 +259,10 @@ def create_call_model_node(
         # ponytail: reasoning-only models may finalize with empty visible content
         final_answer = content
         if not (final_answer or "").strip() and reasoning:
-            final_answer = (reasoning or "").strip()
+            candidate = (reasoning or "").strip()
+            # never surface harmony/control tokens (e.g. <|channel|>) as an answer
+            if "<|" not in candidate:
+                final_answer = candidate
         if not (final_answer or "").strip():
             exec_prefix = "Execution output:\n"
             for msg in reversed(modified_messages):
