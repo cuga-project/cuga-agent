@@ -444,6 +444,18 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "oak_health": False,
             "knowledge": knowledge,
         }
+    if preset == "demo_palette":
+        # digital_sales backs the supervisor's content sub-agent (see
+        # supervisor_palette.yaml); filesystem is where built decks land.
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": True,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": False,
+            "knowledge": knowledge,
+        }
     return {
         "crm": False,
         "email": False,
@@ -520,6 +532,11 @@ def setup_demo_manage_config(
         "List what agent skills are available and summarize what each is for",
         "Use the pptx skill to outline a short deck about our product",
         "What is in my workspace .cuga skills folder?",
+    ]
+    DEMO_PALETTE_STARTERS = [
+        "Build a deck explaining retrieval-augmented generation to backend engineers",
+        "Draft a plan for a Q3 sales review, show it to me, then build it",
+        "Is the Palette server reachable, and which models is it using?",
     ]
     # Aligns with OOBE doc sovereign_core_overview.pdf (ingested on first demo_knowledge start).
     DEMO_KNOWLEDGE_STARTERS = [
@@ -617,6 +634,7 @@ def setup_demo_manage_config(
     use_docs_starters = demo_type == "demo_docs"
     use_health_starters = demo_type == "demo_health"
     use_skills_starters = demo_type == "demo_skills"
+    use_palette = demo_type == "demo_palette"
     use_knowledge = demo_type == "demo_knowledge"
     if use_crm_starters:
         homescreen = {
@@ -641,6 +659,15 @@ def setup_demo_manage_config(
             "isOn": True,
             "greeting": "Try agent skills (SKILL.md under .cuga) and OpenSandbox shell tools.",
             "starters": DEMO_SKILLS_STARTERS,
+        }
+    elif use_palette:
+        homescreen = {
+            "isOn": True,
+            "greeting": (
+                "Describe a deck and I'll build it — a plan you can edit first, "
+                "then a rendered .pptx. Builds take a few minutes."
+            ),
+            "starters": DEMO_PALETTE_STARTERS,
         }
     elif use_knowledge:
         homescreen = {
@@ -698,6 +725,14 @@ def setup_demo_manage_config(
                 "referrals, and finding in-network providers—grounded in member coverage APIs"
             ),
         }
+    elif use_palette:
+        agent_meta = {
+            "name": "Deck Builder",
+            "description": (
+                "Supervisor agent that builds slide decks with Palette — drafts an editable plan, "
+                "renders a .pptx, and iterates slide by slide; pulls figures from specialist agents"
+            ),
+        }
     elif use_knowledge:
         agent_meta = {
             "name": "Knowledge Agent",
@@ -722,7 +757,7 @@ def setup_demo_manage_config(
     if tools and any(t.get("name") == "docs" for t in tools):
         policies.append(DOCS_PLAYBOOK)
         policies.append(DOCS_OUTPUT_FORMATTER)
-    if demo_type == "demo_skills":
+    if demo_type in ("demo_skills", "demo_palette"):
         _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
         if _sandbox_mode == "local":
             policies.append(DEMO_SKILLS_SHELL_TOOL_APPROVAL)
@@ -736,11 +771,15 @@ def setup_demo_manage_config(
         "llm": llm_cfg,
         "knowledge": knowledge_cfg,
     }
-    if tools and (any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills")):
+    if tools and (
+        any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills", "demo_palette")
+    ):
         config["feature_flags"] = config.get("feature_flags") or {}
         config["feature_flags"]["enable_todos"] = True
 
-    if demo_type == "demo_skills":
+    # The palette skill drives the CLI through run_command, so the shell tool
+    # is not optional for this preset.
+    if demo_type in ("demo_skills", "demo_palette"):
         config.setdefault("advanced_features", {})["enable_shell_tool"] = True
     if filesystem:
         config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True

@@ -441,6 +441,29 @@ For Docker/Podman isolation instead, use **`uv sync --group sandbox`** then **`c
 
 For settings you keep beyond a one-off run, configure `[skills]` and `[advanced_features]` in [`settings.toml`](src/cuga/settings.toml) (Dynaconf env overrides apply as documented there).
 
+### `cuga start demo_palette` — a skill-backed agent
+
+A worked example of a skill wired into a purpose-built agent rather than the generic skills demo. **`demo_palette`** starts CUGA in **supervisor mode** as a *Deck Builder*: the supervisor owns the [`palette`](https://github.com/IBM/project-palette) skill and turns a request into a rendered `.pptx`, delegating to a sub-agent for the figures that go on the slides.
+
+```bash
+# 1. Install the skill from the Palette repo (it is generated there, not hand-written here)
+cd ../project-palette && make skill-install CUGA=../cuga-agent-july25
+
+# 2. Make sure a Palette server is reachable
+palette-skill serve doctor     # what's missing, per mode
+palette-skill serve ensure     # start a local one and wait for health
+
+# 3. Start the agent
+cd ../cuga-agent-july25
+PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
+```
+
+The preset layers supervisor coordination on top of the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on, and `[supervisor] config_path` pointed at [`supervisor_palette.yaml`](src/cuga/backend/tools_env/registry/config/supervisor_palette.yaml). Edit that file to change which sub-agents supply deck content.
+
+Skills load at supervisor level (see [`prepare_agents_and_prompt.py`](src/cuga/backend/cuga_graph/nodes/cuga_supervisor/nodes/prepare_agents_and_prompt.py)), gated only on `[skills] enabled`.
+
+> A deck build takes two to four minutes, which is longer than `[advanced_features] sandbox_execution_timeout` (30s). The skill handles this by starting the build in the background and polling it across several short steps — it does not need the timeout raised.
+
 **Install a sample skill (Anthropic `pptx`)**
 
 The [Anthropic skills repo](https://github.com/anthropics/skills) publishes ready-made folders such as [`skills/pptx`](https://github.com/anthropics/skills/tree/main/skills/pptx) (`SKILL.md`, scripts, and helper markdown). Install the `pptx` skill into the project-local universal agent skills folder from the repository root:

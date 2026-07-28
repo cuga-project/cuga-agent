@@ -85,6 +85,27 @@ def _apply_demo_skills_env() -> None:
         os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
 
 
+def _apply_palette_supervisor_env() -> None:
+    """Deck-builder preset: supervisor coordination on top of the skills env.
+
+    Layers on `_apply_demo_skills_env` (which turns on skills + the shell tool
+    the palette skill drives through `run_command`). The supervisor loads
+    skills itself — see cuga_supervisor/nodes/prepare_agents_and_prompt.py —
+    gated only on `settings.skills.enabled`.
+    """
+    os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+    os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = os.path.join(
+        PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_palette.yaml"
+    )
+    # PALETTE_URL reaches the sandbox through the inherited environment; warn
+    # early rather than letting the agent discover it mid-deck.
+    if not os.environ.get("PALETTE_URL"):
+        logger.warning(
+            "PALETTE_URL is not set — the palette skill will default to http://127.0.0.1:18814. "
+            "Start a local server with `palette-skill serve ensure`, or export PALETTE_URL."
+        )
+
+
 def _apply_local_demo_workspace_env() -> None:
     """Demos that use ./cuga_workspace with runtime filesystem tools — not OpenSandbox /tmp paths from settings.toml."""
     os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "false"
@@ -631,6 +652,7 @@ def callback(
 
     - demo: Both registry and demo agent (runs directly)
     - demo_skills: Like demo; enables skills + shell tools; exits if OpenSandbox is unreachable
+    - demo_palette: Deck builder — supervisor mode + the palette skill (needs a Palette server)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - travel_agent: Corporate travel planning demo with multi-agent supervisor
@@ -640,6 +662,7 @@ def callback(
     Examples:
       cuga start demo           # Start both registry and demo agent directly
       cuga start demo_skills    # Skills + OpenSandbox shell tools; stops if sandbox server is unreachable
+      cuga start demo_palette   # Deck builder: supervisor + palette skill
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start travel_agent   # Start Travel Agent demo (flights, hotels, compliance, approval)
@@ -815,6 +838,7 @@ def validate_service(service: str):
     valid_services = [
         "demo",
         "demo_skills",
+        "demo_palette",
         "demo_crm",
         "demo_docs",
         "demo_health",
@@ -858,7 +882,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, or appworld",
+        help="Service to start: demo, demo_skills, demo_palette, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, or appworld",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -1100,6 +1124,7 @@ def start(
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_skills: Like demo but sets skills + OpenSandbox shell tools via env; requires OpenSandbox TCP
+      - demo_palette: Like demo_skills plus supervisor mode wired to supervisor_palette.yaml
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
@@ -1111,6 +1136,7 @@ def start(
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem tools
       - demo_skills: default = digital_sales + skills/OpenSandbox shell tools
+      - demo_palette: default = digital_sales (deck content) + skills + supervisor
       - demo_crm: default = crm + filesystem tools + email
       - manager: default = filesystem tools
       - demo_health: default = oak_health only
@@ -1330,16 +1356,18 @@ def start(
         return
 
     # Handle direct execution services (demo and registry)
-    if service in ("demo", "demo_skills"):
-        if service == "demo_skills":
+    if service in ("demo", "demo_skills", "demo_palette"):
+        if service in ("demo_skills", "demo_palette"):
             _apply_demo_skills_env()
+            if service == "demo_palette":
+                _apply_palette_supervisor_env()
             if getattr(settings.advanced_features, "sandbox_mode", "opensandbox") == "opensandbox":
                 _uv_sync_opensandbox_extra()
                 if not _check_opensandbox_reachable():
                     raise typer.Exit(1)
         else:
             _apply_local_demo_workspace_env()
-        demo_preset = "demo_skills" if service == "demo_skills" else "demo"
+        demo_preset = service if service in ("demo_skills", "demo_palette") else "demo"
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
@@ -1354,9 +1382,10 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            if service == "demo_skills":
+            if service in ("demo_skills", "demo_palette"):
                 logger.info(
-                    "demo_skills: filesystem tools %s for this agent",
+                    "%s: filesystem tools %s for this agent",
+                    service,
                     "enabled" if fs_for_demo else "disabled",
                 )
             ports_to_clean.extend(app_mgr.ports_for_apps(False, False, False, app_docs, app_oak_health))
@@ -1367,7 +1396,7 @@ def start(
                 logger.info("Starting demo with remote sandbox mode enabled (features.local_sandbox=false)")
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
-            if service != "demo_skills":
+            if service not in ("demo_skills", "demo_palette"):
                 app_mgr.prepare_workspace(workspace_path)
             if app_docs:
                 app_mgr.start_docs()
@@ -1403,11 +1432,21 @@ def start(
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
                 console.print()
-                demo_panel_title = (
-                    "[bold yellow]Demo (skills + OpenSandbox env) running. Press Ctrl+C to stop[/bold yellow]"
-                    if service == "demo_skills"
-                    else "[bold yellow]Demo (manage mode) services are running. Press Ctrl+C to stop[/bold yellow]"
-                )
+                if service == "demo_palette":
+                    demo_panel_title = (
+                        "[bold yellow]Deck Builder (supervisor + palette skill) running. "
+                        "Press Ctrl+C to stop[/bold yellow]"
+                    )
+                elif service == "demo_skills":
+                    demo_panel_title = (
+                        "[bold yellow]Demo (skills + OpenSandbox env) running. "
+                        "Press Ctrl+C to stop[/bold yellow]"
+                    )
+                else:
+                    demo_panel_title = (
+                        "[bold yellow]Demo (manage mode) services are running. "
+                        "Press Ctrl+C to stop[/bold yellow]"
+                    )
                 console.print(
                     Panel(
                         table,
@@ -1884,7 +1923,7 @@ def manage_service(action: str, service: str):
     validate_service(service)
 
     if action == "stop":
-        if service in ("demo", "demo_skills", "manager", "travel_agent"):
+        if service in ("demo", "demo_skills", "demo_palette", "manager", "travel_agent"):
             stopped_any = False
             for service_name in ["oak-health", "docs-mcp", "registry", "demo"]:
                 if service_name in direct_processes:
@@ -1988,7 +2027,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
+        help="Service to stop: demo, demo_skills, demo_palette, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
     ),
 ):
     """
@@ -1997,6 +2036,7 @@ def stop(
     Available services:
       - demo: Stops both registry and demo agent (direct processes)
       - demo_skills: Same processes as demo
+      - demo_palette: Same processes as demo
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
       - demo_health: Stops oak-health API, registry, and demo
@@ -2046,7 +2086,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
+        help="Service to check status: demo, demo_skills, demo_palette, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
     ),
 ):
     """
@@ -2055,6 +2095,7 @@ def status(
     Available services:
       - demo: Shows status of both registry and demo agent (direct processes)
       - demo_skills: Same as demo
+      - demo_palette: Same as demo
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
       - demo_health: Shows oak-health API, registry, and demo
@@ -2072,7 +2113,7 @@ def status(
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
     """
-    if service in ("demo", "demo_skills", "manager", "travel_agent"):
+    if service in ("demo", "demo_skills", "demo_palette", "manager", "travel_agent"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
