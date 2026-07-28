@@ -293,9 +293,58 @@ def _assert_came_from_palette(outcome: DeckResult) -> None:
         )
 
 
+def _assert_orchestrator_was_used(workspace: Path, name: str) -> None:
+    """`palette-skill deck` leaves a state file; hand-managed sequences do not.
+
+    This is the distinction that matters. An agent stitching draft/build calls
+    together itself owns the thread id, the polling and the notion of "done" —
+    and that is precisely the arrangement that produced a deck announcement
+    with no deck behind it. ``run_deck`` owns all three instead, and records
+    that it did in ``.palette-deck.json``. No file, no orchestrator.
+    """
+    states = sorted(workspace.rglob(".palette-deck.json"))
+    assert states, (
+        f"{name}: no .palette-deck.json anywhere — the agent hand-managed the "
+        "draft/build sequence instead of running `palette-skill deck`, which is "
+        "the exact arrangement that hallucinated a completed deck."
+    )
+    stage = json.loads(states[0].read_text()).get("stage")
+    assert stage == "done", f"{name}: orchestrator stopped in stage {stage!r}, not 'done'"
+
+
 # --------------------------------------------------------------------------
 # Tests
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deck_from_a_bare_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The prompt that hallucinated, verbatim, with nothing added.
+
+    Every other test here scaffolds: it names the stage, says "poll until the
+    build finishes", sometimes even passes a ``--max-seconds`` value. Under
+    that much instruction the agent cannot go wrong in the way it actually
+    went wrong. This one says what a person says — draft, show me, build —
+    and leaves the agent to work out the rest.
+
+    It failed once already, announcing files that were never written while the
+    server logs showed four drafts and zero builds. It runs at the default 30s
+    step, like the demo, because the shortened step was part of the pressure.
+    """
+    _configure(monkeypatch, _prepare_skill(tmp_path))
+    thread_id = f"deck_bare_{uuid.uuid4().hex[:8]}"
+
+    transcript = await _run_agent(
+        "Draft a plan for a Q3 sales review, show it to me, then build it.",
+        thread_id,
+        max_steps=100,
+    )
+
+    workspace = _sandbox_workspace(thread_id)
+    outcome = _collect("bare_request", workspace, transcript)
+    _assert_real_deck(outcome, min_slides=5)
+    _assert_came_from_palette(outcome)
+    _assert_orchestrator_was_used(workspace, outcome.name)
 
 
 @pytest.mark.asyncio
