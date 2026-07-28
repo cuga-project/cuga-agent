@@ -23,12 +23,14 @@ tracker = ActivityTracker()
 # Feature flag for human-in-the-loop functionality
 ENABLE_SAVE_REUSE = settings.features.save_reuse
 
-# harmony-format models (gpt-oss) can leak <|...|> control tokens into answers
-_CONTROL_TOKEN_RE = re.compile(r"<\|[^>]*?\|>")
+# harmony-format models (gpt-oss) can leak their control tokens into answers.
+# Matched as a closed vocabulary (the harmony protocol's special tokens), not a
+# generic <|...|> wildcard, so legitimate answer text like "<|custom|>" survives.
+_CONTROL_TOKEN_RE = re.compile(r"<\|(?:start|end|message|channel|constrain|return|call|endoftext)\|>")
 
 
 def _strip_control_tokens(text: str) -> str:
-    if "<|" not in (text or ""):
+    if "<|" not in (text or "") or not _CONTROL_TOKEN_RE.search(text):
         return text
     return _CONTROL_TOKEN_RE.sub("", text).strip()
 

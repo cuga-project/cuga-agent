@@ -82,6 +82,15 @@ def test_control_tokens_stripped_from_uncited_answer():
     assert state.final_answer == "The total is 42"
 
 
+def test_legitimate_special_token_text_is_preserved():
+    """Only the harmony protocol vocabulary is stripped — an answer that
+    legitimately discusses <|...|>-style markers must pass through untouched."""
+    text = "Custom markers like <|custom|> or <|im_end|> delimit segments."
+    state = _state(text)
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert state.final_answer == text
+
+
 def test_control_tokens_stripped_from_cited_answer():
     _seed_ledger()
     state = _state("answer [s1] done<|channel|>")
