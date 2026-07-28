@@ -50,6 +50,31 @@ def test_hallucinated_marker_stripped_even_without_ledger():
     assert state.sources == []
 
 
+def test_chat_history_copy_is_sanitized(monkeypatch):
+    """The chat-history copy is appended before apply_citation_resolution runs,
+    so it must be stripped of control tokens independently."""
+    import asyncio
+    import json as _json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langchain_core.messages import AIMessage
+
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
+        SimpleNamespace(features=SimpleNamespace(chat=True)),
+    )
+    state = _make_agent_state(chat_agent_messages=[AIMessage(content="")])
+    payload = _json.dumps({"thoughts": [], "final_answer": "The total is 42<|return|>"})
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=AIMessage(content=payload))
+
+    asyncio.run(FinalAnswerNode._generate_final_answer(state, agent, "FinalAnswerAgent"))
+
+    assert "<|" not in state.chat_agent_messages[-1].content
+    assert "The total is 42" in state.chat_agent_messages[-1].content
+    assert state.final_answer == "The total is 42"
+
+
 def test_control_tokens_stripped_from_uncited_answer():
     state = _state("The total is 42<|return|>")
     FinalAnswerNode.apply_citation_resolution(state)

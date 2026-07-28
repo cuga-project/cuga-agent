@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Literal, Dict, Callable
 
 from langchain_core.messages import AIMessage
@@ -21,6 +22,15 @@ tracker = ActivityTracker()
 
 # Feature flag for human-in-the-loop functionality
 ENABLE_SAVE_REUSE = settings.features.save_reuse
+
+# harmony-format models (gpt-oss) can leak <|...|> control tokens into answers
+_CONTROL_TOKEN_RE = re.compile(r"<\|[^>]*?\|>")
+
+
+def _strip_control_tokens(text: str) -> str:
+    if "<|" not in (text or ""):
+        return text
+    return _CONTROL_TOKEN_RE.sub("", text).strip()
 
 
 class HumanInTheLoopHandler:
@@ -103,8 +113,7 @@ class FinalAnswerNode(BaseNode):
 
             text = state.final_answer or ""
             if "<|" in text:
-                # harmony-format models (gpt-oss) can leak <|...|> control tokens
-                text = _re.sub(r"<\|[^>]*?\|>", "", text).strip()
+                text = _strip_control_tokens(text)
                 state.final_answer = text
             if not has_citation_markers(text):
                 # No [sN] markers to resolve. Two cases land here: a genuinely
@@ -229,9 +238,12 @@ class FinalAnswerNode(BaseNode):
         # Parse and process output
         final_answer_output = FinalAnswerOutput(**json.loads(response.content))
 
-        # Add to chat if enabled
+        # Add to chat if enabled (sanitized: this copy is delivered before
+        # apply_citation_resolution runs on state.final_answer below)
         if settings.features.chat:
-            chat_message = f"{MessagePrefixes.ANSWER_PREFIX}{final_answer_output.final_answer}"
+            chat_message = (
+                f"{MessagePrefixes.ANSWER_PREFIX}{_strip_control_tokens(final_answer_output.final_answer)}"
+            )
             state.append_to_last_chat_message(chat_message)
 
         # Track the step
