@@ -445,24 +445,14 @@ For settings you keep beyond a one-off run, configure `[skills]` and `[advanced_
 
 A worked example of a skill wired into a purpose-built agent rather than the generic skills demo. **`demo_palette`** starts CUGA in **supervisor mode** as a *Deck Builder*: the supervisor owns the [`palette`](https://github.com/IBM/project-palette) skill and turns a request into a rendered `.pptx`, delegating to a sub-agent for the figures that go on the slides.
 
-```bash
-# 1. Install the skill from the Palette repo (it is generated there, not hand-written here)
-cd ../project-palette && make skill-install CUGA=../cuga-agent-july25
+**Setup lives in the Palette repo**, because the skill is generated there rather than hand-written here: run `make install`, `make release`, then `make skill-install CUGA=<this repo>`. The whole loop, including the reset levels and how to verify a deck is real, is `palette_skill/CHEATSHEET.md` in [project-palette](https://github.com/IBM/project-palette) — §0 is six lines.
 
-# 2. Make sure a Palette server is reachable
-palette-skill serve doctor     # what's missing, per mode
-palette-skill serve ensure     # start a local one and wait for health
-
-# 3. Start the agent
-cd ../cuga-agent-july25
-PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
-```
-
-Or consume a **released** skill, with no Palette checkout at all — the same shape as a `skills.sh` install:
+Consuming a **released** skill needs no Palette checkout at all — the same shape as a `skills.sh` install:
 
 ```bash
 mkdir -p .cuga/skills
 tar xzf palette-skill-0.1.0-cuga.tar.gz -C .cuga/skills/   # from Palette's `make release`
+PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
 ```
 
 The preset layers supervisor coordination on top of the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on, and `[supervisor] config_path` pointed at [`supervisor_palette.yaml`](src/cuga/backend/tools_env/registry/config/supervisor_palette.yaml). Edit that file to change which sub-agents supply deck content.
