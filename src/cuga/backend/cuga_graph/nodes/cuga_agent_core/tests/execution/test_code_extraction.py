@@ -97,3 +97,96 @@ def test_pydantic_result_is_model_dumped_for_sync_and_async() -> None:
 
     assert asyncio.run(make_tool_awaitable(make_sync)()) == {"value": 7}
     assert asyncio.run(make_tool_awaitable(make_async)()) == {"value": 9}
+
+
+def test_truncates_after_first_block_referencing_probing_tool():
+    text = (
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\nprint(res_2)\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')\nprint(res)"
+
+
+def test_keeps_all_blocks_when_no_probing_tool_referenced():
+    text = (
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\nprint(res_2)\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"some_other_tool"}))
+    assert code == "res = await file_readfile('x')\nprint(res)\n\nres_2 = res[0]\nprint(res_2)"
+
+
+def test_default_tools_needing_probing_preserves_old_combine_behavior():
+    text = "```python\na = 1\n```\n```python\nb = 2\n```"
+    assert extract_and_combine_codeblocks(text) == "a = 1\n\nb = 2"
+
+
+def test_truncation_keeps_prefix_blocks_before_the_matching_one():
+    text = (
+        "```python\nx = 1\nprint(x)\n```\n"
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "x = 1\nprint(x)\n\nres = await file_readfile('x')\nprint(res)"
+
+
+def test_truncation_is_word_boundary_safe():
+    """A tool name that's a prefix of a longer identifier must not false-match."""
+    text = "```python\nfile_readfile_v2('x')\n```\n```python\ny = 2\n```"
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "file_readfile_v2('x')\n\ny = 2"
+
+
+def test_extract_code_from_model_response_threads_tools_needing_probing_through():
+    content = "```python\nres = await file_readfile('x')\nprint(res)\n```\n```python\nres_2 = res[0]\n```"
+    code = extract_code_from_model_response(content, None, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')\nprint(res)"
+
+
+# ── Probing isolation also covers the recovery paths (unclosed fence / raw) ──
+def test_unclosed_fence_truncates_at_first_probing_line():
+    """An unclosed fence collapses would-be-separate blocks into one blob; the
+    probe must still be isolated from later dependent code (line-level cut)."""
+    text = "```python\nres = await file_readfile('x')\nres_2 = res[0][0:15]\nprint(res_2)"
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')"
+
+
+def test_raw_python_truncates_at_first_probing_line():
+    text = "res = await file_readfile('x')\nres_2 = res[0]\nprint(res_2)"
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')"
+
+
+def test_raw_python_keeps_full_multiline_probing_statement():
+    """A probing call spanning multiple lines must be kept whole — cutting at
+    the first matching line alone would return invalid Python (unclosed paren)
+    and the probe would never execute."""
+    text = 'res = await file_readfile(\n    "x"\n)\nres_2 = res[0]\nprint(res_2)'
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == 'res = await file_readfile(\n    "x"\n)'
+    # The kept code must be valid Python (parseable), unlike a bare line cut.
+    compile(code.replace("await ", ""), "<string>", "exec")
+
+
+def test_unclosed_fence_keeps_full_multiline_probing_statement():
+    text = '```python\nres = await file_readfile(\n    "x",\n)\nres_2 = res[0]\nprint(res_2)'
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == 'res = await file_readfile(\n    "x",\n)'
+    compile(code.replace("await ", ""), "<string>", "exec")
+
+
+def test_recovery_paths_unchanged_without_probing_tools():
+    """Regression: with no probing tools the recovery paths keep the full blob."""
+    unclosed = "```python\nres = await file_readfile('x')\nprint(res)"
+    assert extract_and_combine_codeblocks(unclosed) == "res = await file_readfile('x')\nprint(res)"
+    raw = "res = await file_readfile('x')\nprint(res)"
+    assert extract_and_combine_codeblocks(raw) == "res = await file_readfile('x')\nprint(res)"
+
+
+def test_recovery_path_keeps_full_blob_when_probing_tool_absent():
+    text = "res = await some_other_tool('x')\nprint(res)"
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await some_other_tool('x')\nprint(res)"
