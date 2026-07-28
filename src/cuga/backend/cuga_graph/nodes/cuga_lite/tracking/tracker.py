@@ -145,7 +145,7 @@ def make_recording_awaitable(
             duration_ms = (time.time() - start_time) * 1000
             ToolCallTracker.record_call(
                 tool_name=tool_name,
-                arguments=kwargs if kwargs else {f"arg{i}": a for i, a in enumerate(args)},
+                arguments={**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs},
                 result=result,
                 app_name=app_name,
                 operation_id=tool_name,

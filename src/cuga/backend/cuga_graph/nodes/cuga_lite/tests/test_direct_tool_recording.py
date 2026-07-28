@@ -31,6 +31,7 @@ def _get_data_sync(x: int) -> dict:
     return {"value": x * 3}
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_direct_tool_calls_recorded_in_order_with_args_and_results():
     async_tool = _wrap_like_prepare_node(_get_data, "get_data")
@@ -49,7 +50,14 @@ async def test_direct_tool_calls_recorded_in_order_with_args_and_results():
     assert calls[1]["arguments"] == {"x": 4}
     assert calls[1]["result"] == {"value": 12}
 
+    # positional arguments are preserved in the trace too
+    ToolCallTracker.start_tracking(enabled=True)
+    assert await async_tool(7) == {"value": 14}
+    calls = ToolCallTracker.stop_tracking()
+    assert calls[0]["arguments"] == {"arg0": 7}
 
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_direct_tool_errors_recorded_and_reraised():
     async def boom(x: int) -> dict:
@@ -68,6 +76,7 @@ async def test_direct_tool_errors_recorded_and_reraised():
     assert calls[0]["result"] is None
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_no_tracking_session_leaves_behavior_unchanged():
     tool = _wrap_like_prepare_node(_get_data, "get_data")
