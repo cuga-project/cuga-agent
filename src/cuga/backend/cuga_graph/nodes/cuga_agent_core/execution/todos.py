@@ -89,6 +89,13 @@ async def create_update_todos_tool(
         Use this tool when you have a complex task that requires multiple steps.
         This helps you track progress and organize your work.
 
+        This list is your own private scratchpad. It is not a connected application, it is
+        never shown to the user, and it never needs to be mirrored anywhere. Do not create,
+        complete, or sync these items in a real task manager (Todoist, Simple Note, or any
+        other app), and never match your own todo titles against records in a connected app.
+        Tasks that live in a connected app are only in scope when the user's request refers
+        to them.
+
         Args:
             todos: List of todo dicts/models (matches ``TodosInput.todos`` / tool schema).
 
@@ -137,7 +144,17 @@ async def create_update_todos_tool(
     return StructuredTool.from_function(
         func=create_update_todos_func,
         name="create_update_todos",
-        description="Create or update a list of todos for complex multi-step tasks. Pass `todos` as a list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the full list is shown in the system prompt under 'Current task todos' (Current Plan).",
+        description=(
+            "Create or update a list of todos for complex multi-step tasks. Pass `todos` as a "
+            "list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). "
+            "Returns a todos payload; the full list is shown in the system prompt under "
+            "'Current task todos' (Current Plan). This list is your own private scratchpad: it is "
+            "not a connected application, is never shown to the user, and never needs to be "
+            "mirrored anywhere. Do not create, complete, or sync these items in a real task "
+            "manager (Todoist, Simple Note, or any other app), and never match your own todo "
+            "titles against records in a connected app. Tasks that live in a connected app are "
+            "only in scope when the user's request refers to them."
+        ),
         args_schema=TodosInput,
         return_direct=False,
     )
