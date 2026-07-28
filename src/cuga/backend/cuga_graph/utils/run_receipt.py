@@ -32,6 +32,7 @@ class RunReceipt(BaseModel):
     output_tokens: int = 0
     total_tokens: int = 0
     cache_read_tokens: int = 0  # subset of input_tokens served from provider prompt cache
+    reasoning_tokens: int = 0  # subset of output_tokens spent on reasoning (when reported)
     cost_usd: Optional[float] = None  # None when any used model has no known price
     llm_calls: int = 0
     tool_call_count: int = 0
@@ -46,6 +47,8 @@ class RunReceipt(BaseModel):
         tokens_line = f"tokens: {self.input_tokens:,} in / {self.output_tokens:,} out ({self.total_tokens:,})"
         if self.cache_read_tokens and self.input_tokens:
             tokens_line += f" — {100 * self.cache_read_tokens // self.input_tokens}% cached"
+        if self.reasoning_tokens:
+            tokens_line += f" — {self.reasoning_tokens:,} reasoning"
         lines = [
             f"model: {', '.join(self.models) if self.models else 'unknown'}",
             tokens_line,
@@ -113,6 +116,7 @@ class RunMetricsCollector(AsyncCallbackHandler):
             usage = getattr(message, "usage_metadata", None) or {}
             llm_output = getattr(response, "llm_output", None) or {}
             cache_read_tokens = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+            reasoning_tokens = int((usage.get("output_token_details") or {}).get("reasoning") or 0)
             if not usage:
                 legacy = llm_output.get("token_usage") or {}
                 usage = {
@@ -135,12 +139,19 @@ class RunMetricsCollector(AsyncCallbackHandler):
             )
             per_model = self.usage_by_model.setdefault(
                 str(model_name),
-                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cache_read_tokens": 0},
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
             )
             per_model["input_tokens"] += input_tokens
             per_model["output_tokens"] += output_tokens
             per_model["total_tokens"] += total_tokens
             per_model["cache_read_tokens"] += cache_read_tokens
+            per_model["reasoning_tokens"] += reasoning_tokens
         except Exception as e:
             logger.debug(f"RunMetricsCollector.on_llm_end skipped: {e}")
 
@@ -167,6 +178,7 @@ def build_run_receipt(
         output_tokens = sum(u["output_tokens"] for u in collector.usage_by_model.values())
         total_tokens = sum(u["total_tokens"] for u in collector.usage_by_model.values())
         cache_read_tokens = sum(u.get("cache_read_tokens", 0) for u in collector.usage_by_model.values())
+        reasoning_tokens = sum(u.get("reasoning_tokens", 0) for u in collector.usage_by_model.values())
 
         # Cost is only reported when every used model has a known price;
         # a partial sum would silently understate the real cost. Cached input
@@ -192,6 +204,7 @@ def build_run_receipt(
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             cache_read_tokens=cache_read_tokens,
+            reasoning_tokens=reasoning_tokens,
             cost_usd=cost_usd,
             llm_calls=collector.llm_calls,
             tool_call_count=sum(t.calls for t in tool_timings),

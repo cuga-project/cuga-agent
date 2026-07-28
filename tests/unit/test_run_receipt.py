@@ -56,6 +56,7 @@ async def test_collector_falls_back_to_legacy_llm_output():
         "output_tokens": 10,
         "total_tokens": 60,
         "cache_read_tokens": 0,
+        "reasoning_tokens": 0,
     }
 
 
@@ -93,6 +94,25 @@ async def test_collector_accumulates_cache_read_tokens():
     receipt = build_run_receipt(collector, [], wall_time_s=1.0)
     assert receipt.cache_read_tokens == 160
     assert "80% cached" in str(receipt)
+
+
+@pytest.mark.asyncio
+async def test_collector_accumulates_reasoning_tokens():
+    collector = RunMetricsCollector()
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "total_tokens": 150,
+        "output_token_details": {"reasoning": 30},
+    }
+    await _run_call(collector, usage_metadata=usage, model_name="gpt-oss-120b")
+    await _run_call(collector, usage_metadata=usage, model_name="gpt-oss-120b")
+
+    assert collector.usage_by_model["gpt-oss-120b"]["reasoning_tokens"] == 60
+
+    receipt = build_run_receipt(collector, [], wall_time_s=1.0)
+    assert receipt.reasoning_tokens == 60
+    assert "60 reasoning" in str(receipt)
 
 
 @pytest.mark.asyncio
