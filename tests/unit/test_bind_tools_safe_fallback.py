@@ -2,11 +2,14 @@
 
 from typing import Any, List, Optional
 
+import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import _safe_bind
+
+pytestmark = pytest.mark.unit
 
 
 class _NoBindModel(BaseChatModel):
