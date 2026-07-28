@@ -242,18 +242,18 @@ def test_missing_name_usage_detects_assignment_rhs():
     """AST helper marks assignment-RHS references as tool-shaped usage."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
 
-    called, defined = LocalExecutor._missing_name_usage(
+    used, defined = LocalExecutor._missing_name_usage(
         'gmail_send_message_send_message_post',
         'send_email = gmail_send_message_send_message_post',
     )
-    assert called is True
+    assert used is True
     assert defined is False
 
-    called, defined = LocalExecutor._missing_name_usage(
+    used, defined = LocalExecutor._missing_name_usage(
         'formatted_total',
         'print(formatted_total)',
     )
-    assert called is False
+    assert used is False
     assert defined is False
 
 
