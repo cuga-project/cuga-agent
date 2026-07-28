@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import traceback as tb
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import httpx
 from fastapi import HTTPException
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
@@ -100,13 +100,31 @@ class ApiRegistry:
         logger.debug("ApiRegistry: show_all_apis() called.")
         return self.mcp_client.get_all_apis(include_response_schema)
 
-    async def auth_apps(self, apps: List[str]):
-        """Gets all API definitions."""
-        logger.debug("auth_apps: auth_apps called.")
+    async def auth_apps(self, apps: Optional[List[str]] = None):
+        """Pre-fetch & store an access token for each app (empty/None = all
+        configured apps). Best-effort per app: one app's failure (e.g. an app
+        with no login, or a transient 401) is logged and skipped so it can't
+        abort the batch — downstream cross-app params (file_system_access_token,
+        auto-injected by api_overrides) depend on the file_system token being
+        stored here.
+        """
+        logger.debug(f"auth_apps: auth_apps called with apps={apps}.")
         if not self.auth_manager:
             self.auth_manager = AppWorldAuthManager()
+        if not apps:
+            apps = self.mcp_client.get_app_names()
+        results: Dict[str, str] = {}
         for app in apps:
-            self.auth_manager.get_access_token(app)
+            try:
+                token = self.auth_manager.get_access_token(app)
+                results[app] = "ok" if token else "no_credentials"
+            except Exception as e:
+                logger.warning(f"auth_apps: failed to authenticate '{app}': {e}")
+                results[app] = f"error: {type(e).__name__}"
+        logger.info(
+            f"auth_apps: {sum(1 for v in results.values() if v == 'ok')}/{len(results)} apps authenticated"
+        )
+        return {"authenticated": results}
 
     def _get_web_search_api_definition(self, include_response_schema: bool = False) -> Dict[str, Dict]:
         """Get API definition for web search tool."""
@@ -319,9 +337,10 @@ class ApiRegistry:
                                     )
                                     if isinstance(result_json, dict) and "access_token" in result_json:
                                         token = result_json["access_token"]
-                                        # Update the auth manager's stored token
+                                        # Update the auth manager's stored token (via _store
+                                        # so its fetch time is recorded for the age-based refresh)
                                         if self.auth_manager:
-                                            self.auth_manager._tokens[app_name] = token
+                                            self.auth_manager._store(app_name, token)
                                             logger.info(
                                                 f"✅ Updated stored token for {app_name} from /auth/token endpoint"
                                             )

@@ -60,6 +60,23 @@ def load_appworld_plain_final_answer_prompt(model_config: Optional[Any] = None) 
     )
 
 
+def load_appworld_task_classifier_prompt(model_config: Optional[Any] = None) -> ChatPromptTemplate:
+    """Classifier prompt: is the AppWorld task an ACTION (no return value -> N/A) or a
+    QUERY (a value must be returned)? Reuses the plain user message (intent + system answer)."""
+    return load_prompt_simple(
+        "classify_task_appworld.jinja2",
+        "user_msg_appworld_plain.jinja2",
+        model_config=model_config,
+        relative_to_caller=True,
+    )
+
+
+def is_appworld_action_label(raw: str) -> bool:
+    """True when classifier output is ACTION (not QUERY)."""
+    up = (raw or "").upper()
+    return "ACTION" in up and "QUERY" not in up
+
+
 def parse_appworld_plain_completion(raw: str) -> str:
     """Parse `answer:` / `completion answer:` line; strip fences and whitespace."""
     text = (raw or "").strip()

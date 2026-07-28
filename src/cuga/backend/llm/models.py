@@ -971,14 +971,18 @@ class LLMManager:
         return _DEFAULT_LLM_HTTP_TIMEOUT
 
     def _is_reasoning_model(self, model_name: str) -> bool:
-        """Check if model is a reasoning model that doesn't support temperature
+        """Check if model is a reasoning model that doesn't support temperature.
 
-        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature parameter
+        OpenAI reasoning models (o1/o3/o4, gpt-5*) reject non-default temperature.
+        LiteLLM/Azure names often look like ``azure/gpt-5.6-terra`` — strip the
+        provider prefix before matching.
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
-        return model_name.startswith(reasoning_prefixes)
+        name = model_name.strip().lower()
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        return name.startswith(("o1", "o3", "o4", "gpt-5"))
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
         """Create LLM instance based on platform and settings"""
