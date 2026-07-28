@@ -15,7 +15,6 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from loguru import logger
 
 if TYPE_CHECKING:
-    from langchain_openai import ChatOpenAI
     from langchain_core.outputs import ChatResult
 
 from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
@@ -276,9 +275,6 @@ class _ModelSettingsWrap:
 
     def to_dict(self) -> dict:
         return self._d.copy()
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._d
 
 
 class LLMManager:
@@ -1113,6 +1109,8 @@ class LLMManager:
             )
             llm = ChatGroq(**groq_params)
         elif platform == "watsonx":
+            from langchain_ibm import ChatWatsonx
+
             wx_gen_params: Dict[str, Any] = {
                 "temperature": temperature,
                 "max_completion_tokens": max_tokens,
@@ -1152,6 +1150,8 @@ class LLMManager:
             llm = ChatWatsonx(**watsonx_params)
             ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
+            from langchain_openai import ChatOpenAI
+
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
@@ -1173,6 +1173,8 @@ class LLMManager:
                 rits_params["top_p"] = model_settings.get('top_p', 1.0)
             llm = ChatOpenAI(**rits_params)
         elif platform == "rits-restricted":
+            from langchain_openai import ChatOpenAI
+
             api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
                 "RITS_API_KEY_RESTRICT"
             )
