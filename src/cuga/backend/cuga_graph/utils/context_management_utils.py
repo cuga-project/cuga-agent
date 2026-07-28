@@ -174,7 +174,8 @@ def _log_and_track_metrics(
 
     # Failure shape: hard truncation happened — emit a tracker event so eval analysis
     # can find affected tasks (issue #563), then stop (no success metrics to log).
-    if metrics.get("error"):
+    # Detect by key presence, not truthiness: str(exception) can be empty.
+    if "error" in metrics or metrics.get("hard_truncation"):
         if tracker:
             try:
                 tracker.collect_step(Step(name="ContextSummarizationFailure", data=json.dumps(metrics)))

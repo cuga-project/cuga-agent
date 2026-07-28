@@ -12,6 +12,8 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(scope="function", autouse=True)
 def ensure_settings_validated():

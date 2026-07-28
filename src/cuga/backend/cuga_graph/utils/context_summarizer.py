@@ -328,19 +328,21 @@ class ContextSummarizer:
             # Hard truncation is the maximal state-loss mode (dropped IDs, variables,
             # partial results) — signal it loudly with counts, and return metrics rich
             # enough for the tracker/eval analysis to find affected tasks (issue #563).
-            dropped = len(messages) - keep_n
+            # keep_n <= 0 must keep nothing: messages[-0:] would return the WHOLE list.
+            kept_messages = messages[-keep_n:] if keep_n > 0 else []
+            dropped = len(messages) - len(kept_messages)
             logger.exception(f"Failed to summarize messages: {e}")
             logger.error(
                 f"🚨 Context summarization FAILED — hard truncation applied: dropped {dropped} "
                 f"of {before_metrics['message_count']} messages (~{before_metrics['token_count']} "
-                f"tokens before), kept last {keep_n} only. State loss is likely."
+                f"tokens before), kept last {len(kept_messages)} only. State loss is likely."
             )
-            return messages[-keep_n:], {
+            return kept_messages, {
                 "error": str(e),
                 "fallback": "kept recent messages only",
                 "hard_truncation": True,
                 "messages_dropped": dropped,
-                "messages_kept": keep_n,
+                "messages_kept": len(kept_messages),
                 "message_count_before": before_metrics["message_count"],
                 "token_count_before": before_metrics["token_count"],
             }
