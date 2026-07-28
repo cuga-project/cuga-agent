@@ -1163,7 +1163,17 @@ class AgentState(BaseModel):
             if "skipped" in summary_metrics:
                 logger.info(f"Summarization skipped: {summary_metrics['skipped']}")
             elif "error" in summary_metrics:
-                logger.warning(f"Summarization error: {summary_metrics['error']}")
+                logger.error(
+                    f"Summarization FAILED for {list_name}: {summary_metrics['error']} — "
+                    f"hard truncation dropped {summary_metrics.get('messages_dropped', '?')} "
+                    f"messages, kept {summary_metrics.get('messages_kept', '?')}"
+                )
+                # Store failure metrics too, so the tracker records the truncation (issue #563)
+                if store_metrics:
+                    self.last_summarization_metrics = {
+                        list_name: summary_metrics,
+                        "timestamp": summary_metrics.get("timestamp"),
+                    }
             elif "after" in summary_metrics:
                 # Successful summarization
                 logger.info(
