@@ -1,0 +1,97 @@
+# Local Ollama (OpenAI-compatible endpoint). Uses the "openai" client pointed at Ollama.
+# Enable with: AGENT_SETTING_CONFIG=settings.ollama.toml and OPENAI_API_KEY=ollama (dummy, ignored by Ollama).
+# Override the model with MODEL_NAME or the base URL with OPENAI_BASE_URL if needed.
+# timeout is raised to 300s because a local model can exceed the 61s default on long outputs.
+# enable_vision = false because gpt-oss:20b is text-only; this keeps the browser planner
+# from building a multimodal prompt (which would 400 / require an image). Point this profile
+# at a vision-capable Ollama model and drop that line to re-enable vision.
+
+[agent.task_decomposition.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.planner.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.chat.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.shortlister.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.plan_controller.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.final_answer.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.code.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.code_planner.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.qa.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 16000
+enable_vision = false
+
+[agent.action.model]
+platform = "openai"
+model_name = "gpt-oss:20b"
+url = "http://localhost:11434/v1"
+timeout = 300
+temperature = 0.1
+max_tokens = 400
+enable_vision = false

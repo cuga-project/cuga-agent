@@ -178,6 +178,7 @@ cuga = [
     "backend/cuga_graph/nodes/cuga_lite/prompts/*.json",
     "backend/**/*.js",
     "backend/server/demo_setup_utils/*.json",
+    "backend/observability/assets/*.json",
     "frontend/dist/**",
     "demo_tools/**",
 ]
