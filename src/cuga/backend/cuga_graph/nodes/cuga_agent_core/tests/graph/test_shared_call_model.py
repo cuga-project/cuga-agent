@@ -412,6 +412,7 @@ async def test_empty_content_falls_back_to_execution_output(mock_summarize):
     assert result.update["final_answer"] == "avg=200\ntotal=600"
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 @patch(
     "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
