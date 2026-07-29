@@ -134,7 +134,7 @@ _WORKER_CODE = (
     "prev_snap = _ALL[_start_idx][1]\n"
     "\n"
     "results = []\n"
-    "for name, snap, rss in _ALL:\n"
+    "for name, snap, rss in _ALL[_start_idx:]:\n"
     "    total = _total_mb(snap)\n"
     "    diff_lineno = snap.compare_to(prev_snap, 'lineno')\n"
     "    diff_fname  = snap.compare_to(prev_snap, 'filename')\n"
