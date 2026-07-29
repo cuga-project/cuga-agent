@@ -442,3 +442,28 @@ async def test_reasoning_with_control_tokens_not_surfaced_as_final_answer(mock_s
     assert result.goto == END
     assert "<|" not in result.update["final_answer"]
     assert result.update["final_answer"] == "avg=200\ntotal=600"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_reasoning_mentioning_other_special_tokens_is_still_surfaced(mock_summarize):
+    """Only the harmony vocabulary blocks the fallback — reasoning that merely
+    discusses other <|...|>-style markers is a legitimate answer."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("")
+    reasoning = "The delimiter <|custom|> is not part of the harmony spec."
+    model.ainvoke = AsyncMock(return_value=_mock_response("", reasoning=reasoning))
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == reasoning

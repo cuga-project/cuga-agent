@@ -21,6 +21,7 @@ Differences handled via hooks:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -41,6 +42,12 @@ from cuga.backend.cuga_graph.utils.context_management_utils import (
     apply_context_summarization,
     truncate_text_for_context,
 )
+
+
+# The harmony protocol's control tokens (gpt-oss). Matching this closed set —
+# rather than any "<|...|>" — keeps text that merely mentions other special
+# tokens usable as an answer.
+HARMONY_CONTROL_TOKEN_RE = re.compile(r"<\|(?:start|end|message|channel|constrain|return|call|endoftext)\|>")
 
 
 def create_call_model_node(
@@ -260,8 +267,10 @@ def create_call_model_node(
         final_answer = content
         if not (final_answer or "").strip() and reasoning:
             candidate = (reasoning or "").strip()
-            # never surface harmony/control tokens (e.g. <|channel|>) as an answer
-            if "<|" not in candidate:
+            # Never surface raw harmony protocol framing as an answer. Matched as
+            # the harmony vocabulary rather than any "<|...|>", so reasoning that
+            # legitimately discusses other special tokens is still usable.
+            if not HARMONY_CONTROL_TOKEN_RE.search(candidate):
                 final_answer = candidate
         if not (final_answer or "").strip():
             exec_prefix = "Execution output:\n"
