@@ -45,6 +45,16 @@ def _action_vocabulary() -> str:
     return action_registry.prompt_vocabulary()
 
 
+def _actions_on() -> bool:
+    """Live read of the ACTION gate (EVENTS_ACTIONS, default off). When off, the concierge builds no
+    action steps — every push arms as a plain watcher that delivers the agent's text."""
+    try:
+        from . import actions as _acts
+    except ImportError:
+        import actions as _acts
+    return _acts.enabled()
+
+
 # recipient ask-till-legit: thread → the ORIGINAL utterance that's waiting for an email address.
 # In-process (like flowspec's slot parking); when the next message on that thread IS an address, the
 # concierge completes the original utterance instead of making the user restate it.
@@ -108,8 +118,13 @@ CONCIERGE_PROMPT = (
     "  " + trigger_registry.prompt_vocabulary() + "\n"
     "  Slots: repo='owner/repo' (every github event) · label=<gmail label> (new_labeled_email) · "
     "emoji / pattern / watch_channel (slack + discord filters) · folder (box).\n"
-    "\n"
-    "ACTION VOCABULARY — **only for kind=push**, optional. After the agent answers, run a connector "
+    + CHAT_STYLE)
+
+# The ACTION half is gated (EVENTS_ACTIONS, default off — see actions.enabled). Kept OUT of the base
+# prompt and appended by _concierge_prompt() ONLY when actions are on, so with the default-off stance
+# the LLM is never even told it can run a connector action — every push is "answer + deliver text".
+_ACTION_VOCAB_BLOCK = (
+    "\nACTION VOCABULARY — **only for kind=push**, optional. After the agent answers, run a connector "
     "action instead of just delivering the text. Pass action='<app>/<name>' (+ action_to for a send "
     "recipient). Use ONLY when the user asks to DO something to the source (reply/draft/email), not "
     "for plain 'tell me / notify me' (that's deliver_to). '!' marks a destructive action (needs "
@@ -118,8 +133,17 @@ CONCIERGE_PROMPT = (
     "  e.g. 'when I get an email, draft a reply' → source=gmail event=new_email "
     "action=gmail/create_draft_reply · 'when an email arrives, reply to the sender' → "
     "action=gmail/reply_to_email · 'email me a summary when a PR opens' → source=github event=new_pr "
-    "action=gmail/send_email action_to=<your address>."
-    + CHAT_STYLE)
+    "action=gmail/send_email action_to=<your address>.")
+
+
+def _concierge_prompt() -> str:
+    """The system prompt for the concierge react-agent, composed at graph-build time so the action
+    vocabulary is present ONLY when EVENTS_ACTIONS is on (read live, not at import)."""
+    try:
+        from . import actions as _acts
+    except ImportError:
+        import actions as _acts
+    return CONCIERGE_PROMPT + (_ACTION_VOCAB_BLOCK if _acts.enabled() else "")
 
 
 def _slash_parse(text: str) -> dict | None:
@@ -570,7 +594,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             engine_branches: list = []
             action_tag = ""
             action_preview = ""
-            if kind == "push":
+            if kind == "push" and _actions_on():          # ACTION half gated off by default (Phase 1)
                 try:
                     from . import actions as _acts, flows
                 except ImportError:
@@ -1149,7 +1173,7 @@ class Concierge:
             from .llm import default_model_factory
             self._model_factory = default_model_factory
         model = self._model_factory(None)
-        self._graph = create_react_agent(model, self._tools, prompt=CONCIERGE_PROMPT,
+        self._graph = create_react_agent(model, self._tools, prompt=_concierge_prompt(),
                                          checkpointer=MemorySaver())
 
     async def run(self, thread_id: str, text: str, principal: Principal | None = None) -> str:

@@ -140,6 +140,15 @@ async def run_action_plan(engine, sub, *, answer: str, payload: dict) -> tuple[i
     plan = (getattr(sub, "config", None) or {}).get("action_plan")
     if not plan:
         return 0, []
+    # Phase-1 gate (EVENTS_ACTIONS, default off): even a plan armed while actions were ON must not
+    # fire when the ACTION half is disabled. The concierge no longer builds these; this skips any
+    # already-stashed on a live subscription so AP stays a pure trigger system.
+    try:
+        from . import actions as _acts
+    except ImportError:
+        import actions as _acts
+    if not _acts.enabled():
+        return 0, []
     if plan.get("branches"):
         step = _pick_branch_step(plan["branches"], answer=answer, payload=payload)
         steps = [step] if step else []

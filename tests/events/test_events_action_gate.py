@@ -21,6 +21,12 @@ from runtime import CugaRuntime, AgentSpec            # noqa: E402
 from subscriptions import SubscriptionStore           # noqa: E402
 import concierge                                       # noqa: E402
 import principal as _principal_mod                     # noqa: E402
+import actions as _actions                              # noqa: E402
+import pytest                                           # noqa: E402
+
+# ACTION half gated off by default (EVENTS_ACTIONS=0) — the gate only exists when actions are on.
+pytestmark = pytest.mark.skipif(
+    not _actions.enabled(), reason="ACTION half gated off (set EVENTS_ACTIONS=1 to run)")
 
 
 class FakeEngine:

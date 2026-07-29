@@ -15,6 +15,12 @@ if _EVENTS not in sys.path:
 
 import actions            # noqa: E402
 import flows              # noqa: E402
+import pytest             # noqa: E402
+
+# The ACTION half is gated off by default (EVENTS_ACTIONS=0). These tests validate the action
+# machinery, so they only run when it's enabled — flip EVENTS_ACTIONS=1 to exercise them.
+pytestmark = pytest.mark.skipif(
+    not actions.enabled(), reason="ACTION half gated off (set EVENTS_ACTIONS=1 to run)")
 
 
 # ── registry lookup / aliases / default ─────────────────────────────────────────────────────────

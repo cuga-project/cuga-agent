@@ -34,8 +34,22 @@ LLM-free deterministic half of NL→Flow.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+
+
+def enabled() -> bool:
+    """Phase-1 gate — the ACTION half is OFF by default.
+
+    Design stance: **AP is the trigger system; CUGA handles the tools.** Running a connector action
+    *after* a trigger fires (send-email, create-issue, …) is no longer AP's job — the agent performs
+    such steps with its OWN in-run tools, and if a customer wants an action we don't cover, they
+    supply the tool. When off, the concierge never compiles an action step and never stashes an
+    action_plan, and a previously-armed plan is skipped at fire time — every push degrades cleanly to
+    "answer + deliver the text". Flip on with ``EVENTS_ACTIONS=1`` to restore AP-executed actions.
+    Read live (not cached) so tests can toggle it per-case."""
+    return os.environ.get("EVENTS_ACTIONS", "0").split(" #", 1)[0].strip().lower() in ("1", "true", "yes")
 
 
 @dataclass(frozen=True)

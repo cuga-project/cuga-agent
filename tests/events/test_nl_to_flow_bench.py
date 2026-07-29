@@ -34,9 +34,22 @@ from runtime import CugaRuntime, AgentSpec               # noqa: E402
 from subscriptions import SubscriptionStore             # noqa: E402
 import concierge                                          # noqa: E402
 import principal as _principal_mod                        # noqa: E402
+import actions as _actions                                # noqa: E402
 
 CASES = [json.loads(_ln) for _ln in open(os.path.join(os.path.dirname(__file__), "nl_to_flow_bench.jsonl"))
          if _ln.strip()]
+
+
+def _is_action_case(cx: dict) -> bool:
+    """A case whose EXPECTED behavior depends on the ACTION half (arms an action, or asks/declines
+    BECAUSE of one). With EVENTS_ACTIONS off these correctly degrade to a plain watcher, so their
+    action-era labels no longer apply — filter them out and keep the action-independent coverage
+    (router mode, push-trigger resolution, plain-watcher arms)."""
+    return bool(cx.get("actions")) or cx.get("outcome") in ("ask", "decline")
+
+
+if not _actions.enabled():
+    CASES = [c for c in CASES if not _is_action_case(c)]
 
 
 class FakeEngine:

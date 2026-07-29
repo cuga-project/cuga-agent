@@ -78,4 +78,8 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    import os as _os
+    if _os.environ.get("EVENTS_ACTIONS", "0").split(" #", 1)[0].strip().lower() not in ("1", "true", "yes"):
+        print("SKIP: ACTION half gated off (EVENTS_ACTIONS=0). Set EVENTS_ACTIONS=1 to run this harness.")
+        sys.exit(0)
     sys.exit(asyncio.run(main()))

@@ -18,6 +18,11 @@ if _EVENTS not in sys.path:
 
 import actions as A                        # noqa: E402
 import direct_events as D                  # noqa: E402
+import pytest                              # noqa: E402
+
+# ACTION half gated off by default (EVENTS_ACTIONS=0) — run only when enabled.
+pytestmark = pytest.mark.skipif(
+    not A.enabled(), reason="ACTION half gated off (set EVENTS_ACTIONS=1 to run)")
 
 
 # ── executor_input: flow-side templates ─────────────────────────────────────────────────────────
