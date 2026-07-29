@@ -12,7 +12,7 @@ Checkpoints
 - ``converged``         — after one GET /api/commands request
                           (forces lazy import of cuga.backend.slash_commands +
                            SkillRegistry; no LLM credentials needed)
-- ``growth``            — after 20 GET /api/commands requests
+- ``growth``            — after 21 GET /api/commands requests (1 converged + 20 growth)
 
 Open question — "converged" request choice:
   Route: GET /api/commands
@@ -359,12 +359,12 @@ def _measure_cuga(port: int) -> tuple[dict, dict, dict]:
         converged_rec = process_sample(proc.pid, "converged")
         print(f"  [cuga] converged rss_mb={converged_rec['rss_mb']:.1f}", file=sys.stderr)
 
-        # growth — 20 additional requests
+        # growth — GROWTH_N additional requests (total = 1 converged + GROWTH_N growth)
         for i in range(GROWTH_N):
             _get(converged_url)
         growth_rec = process_sample(proc.pid, "growth")
         print(
-            f"  [cuga] growth rss_mb={growth_rec['rss_mb']:.1f} (after {GROWTH_N} requests)",
+            f"  [cuga] growth rss_mb={growth_rec['rss_mb']:.1f} (after {GROWTH_N + 1} requests: 1 converged + {GROWTH_N} growth)",
             file=sys.stderr,
         )
 

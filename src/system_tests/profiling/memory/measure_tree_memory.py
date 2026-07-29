@@ -157,16 +157,19 @@ def _enrich_processes(processes: list[dict]) -> list[dict]:
     for rec in processes:
         pid = rec.get("pid")
         label = "unknown"
+        name = "unknown"
         try:
             p = psutil.Process(pid)
+            name = p.name()
             cmdline = p.cmdline()
             if cmdline:
                 label = _label_from_cmdline(cmdline)
             else:
-                label = p.name()
+                label = name
         except Exception:
             pass
         new_rec = dict(rec)
+        new_rec["name"] = name
         new_rec["label"] = label
         enriched.append(new_rec)
     return enriched
@@ -285,6 +288,7 @@ def measure(extra_flags: list[str]) -> dict:
             "checkpoint": "demo_ready" if demo_ready else "demo_timeout",
             "processes": [
                 {
+                    "name": r["name"],
                     "label": r["label"],
                     "pid": r["pid"],
                     "rss_mb": round(r["rss_mb"] or 0.0, 2),

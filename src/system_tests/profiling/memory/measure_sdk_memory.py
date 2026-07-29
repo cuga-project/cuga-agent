@@ -210,7 +210,10 @@ def _run_worker(code: str, memlib_dir: str) -> dict:
     if result.returncode != 0:
         raise RuntimeError(f"Worker subprocess failed (exit {result.returncode})\n{result.stderr}")
 
-    last_line = result.stdout.strip().splitlines()[-1]
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        raise RuntimeError(f"Worker produced no stdout (exit={result.returncode})")
+    last_line = lines[-1]
     return json.loads(last_line)
 
 
