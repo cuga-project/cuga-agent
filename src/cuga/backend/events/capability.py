@@ -31,8 +31,10 @@ def report() -> list[str]:
     ok = lambda s: lines.append(f"  ✓ {s}")          # noqa: E731
     no = lambda s: lines.append(f"  ✗ {s}")          # noqa: E731
 
-    ok("web chat · webhooks (/api/events/hook/…) · direct watchers (Slack/Discord/Box-direct) "
-       "— no extra infra")
+    _tg_direct = os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct").split(" #", 1)[0].strip() != "ap"
+    ok("web chat · webhooks (/api/events/hook/…) · direct watchers (Slack/Discord/Box-direct"
+       + (" · Telegram-direct" if _tg_direct else "") + ") — no extra infra"
+       + (" (Telegram chat runs AP-free via long-poll)" if _tg_direct else ""))
 
     sup = os.environ.get("EVENTS_SUPERVISOR", "").split(" #", 1)[0].strip() in ("1", "true", "yes")
     roster = (os.environ.get("EVENTS_SUPERVISOR_ROSTER", "").strip()
@@ -58,12 +60,24 @@ def report() -> list[str]:
         no("Activepieces not reachable → cron/poll + AP-backed integration triggers unavailable "
            "(start it: `make ap`, or the full stack: `make up`)")
 
+    # Telegram-direct (long-poll) is OUTBOUND, so it does NOT need a public URL — only the AP
+    # webhook backend (EVENTS_TELEGRAM_BACKEND=ap) does. Keep the message honest about that.
+    _tg_note = "" if _tg_direct else " / Telegram webhook"
     pub = os.environ.get("EVENTS_PUBLIC_URL", "").strip()
-    if pub:
-        ok(f"public URL set ({pub}) — Slack events / OAuth callbacks / Telegram can reach you")
+    # EVENTS_NO_TUNNEL (set by events_up.sh --no-tunnel) means a URL may be CONFIGURED in .env but
+    # nothing is forwarding it — don't claim Slack/OAuth can reach us. This is the "up-noap" state.
+    no_tunnel = os.environ.get("EVENTS_NO_TUNNEL", "").split(" #", 1)[0].strip() in ("1", "true", "yes")
+    if pub and not no_tunnel:
+        ok(f"public URL set ({pub}) — Slack events / OAuth callbacks{_tg_note} can reach you")
+    elif pub and no_tunnel:
+        no(f"public URL is CONFIGURED ({pub}) but NO tunnel is running → Slack events, "
+           f"OAuth callbacks{_tg_note} won't arrive. Start one: `make up-noap-slack` (no AP + tunnel) "
+           f"or `make up` (full stack)."
+           + ("  [web · Telegram · Discord chat work regardless — direct/outbound]" if _tg_direct else ""))
     else:
-        no("no EVENTS_PUBLIC_URL → Slack events, OAuth callbacks, Telegram webhooks unreachable "
-           "(`make tunnels`, then `make channels`)")
+        no(f"no EVENTS_PUBLIC_URL → Slack events, OAuth callbacks{_tg_note} unreachable "
+           "(`make tunnels`, then `make channels`)"
+           + ("  [Telegram chat still works — it's direct/outbound]" if _tg_direct else ""))
 
     return lines
 

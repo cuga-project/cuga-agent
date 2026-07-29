@@ -122,6 +122,35 @@ Then smoke-test: DM the Telegram bot · @mention the bot in Slack/Discord (menti
 channel message is deliberately ignored) · open `localhost:7860/studio`. For a full from-zero
 rehearsal, follow **Clean run from zero** below; for exhaustive testing see **Which test do I run**.
 
+## Running WITHOUT Activepieces (the no-AP path)
+
+You do **not** need AP to chat. The events layer runs in tiers — the **NOW/chat trigger works with
+zero Activepieces and zero tunnel**:
+
+```bash
+make preflight-noap   # minimal tools: uv + .venv only (no podman, no tunnel)
+make up-noap          # boot events with NO AP, NO tunnel, then arm channels
+```
+
+What's live in this mode: **web · Telegram · Discord** chat (a user asks → the concierge answers →
+the reply goes back). What's off until you add AP/a tunnel: **cron/poll/push triggers, Slack, and the
+SaaS integration triggers**. The server's boot **capability report** (also `GET /api/events/status`)
+says exactly what's available.
+
+Why it works: three of four channels use an **outbound** transport, so they need no public URL and no
+AP — Telegram (long-poll `getUpdates`), Discord (Gateway WebSocket), web (in-process). Slack is the
+only **inbound** channel (it POSTs to you), so it alone needs a public URL.
+
+- **Telegram backend** is a flag, `direct` by default: `EVENTS_TELEGRAM_BACKEND=direct` (long-poll, no
+  AP) or `=ap` (the legacy AP webhook flow). Discord/Slack have the same `EVENTS_{DISCORD,SLACK}_BACKEND`
+  pair, also `direct` by default.
+- Full per-channel sequence diagrams + data envelopes: **[latest/channels_without_ap.html](latest/channels_without_ap.html)**.
+
+**On a real deployment (e.g. Code Engine) there's no tunnel at all** — the platform route *is* your
+public URL, so even Slack/OAuth work by pointing at the app's route. Two caveats for the outbound
+channels: don't scale to zero, and run the poller/Gateway as a single instance (they're persistent
+loops; N replicas double-process). Details in the reference doc's cloud section.
+
 ## Starting the server — one entry point
 
 There is ONE command; `make up` is just the infra-provisioning wrapper around it:

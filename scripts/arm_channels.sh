@@ -15,7 +15,10 @@ cd "$(dirname "$0")/.."
 CUGA="${EVENTS_CUGA_URL:-http://localhost:7860}"
 SCOPE="${EVENTS_SCOPE:-default/default/admin}"
 
-val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/ *#.*//' | tr -d ' '; }
+# NB: trailing `|| true` — grep exits 1 when the key is ABSENT, which under `set -o pipefail` would
+# abort the whole script. val() is used for OPTIONAL keys (missing tokens, unset backend flags), so a
+# no-match must yield an empty string, not a failure.
+val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/ *#.*//' | tr -d ' ' || true; }
 
 curl -s -o /dev/null --max-time 4 "$CUGA/api/events/status" \
   || { echo "✗ CUGA not reachable at $CUGA — start it first: make cuga (or make up)"; exit 1; }
@@ -40,12 +43,18 @@ echo "== arming inbound channels (scope: $SCOPE) =="
 echo "web       ✓ built-in (always on)"
 
 TG=$(val TELEGRAM_BOT_TOKEN)
+TG_BACKEND=$(val EVENTS_TELEGRAM_BACKEND); TG_BACKEND=${TG_BACKEND:-direct}
 if [ -n "$TG" ]; then
-  # 1) ensure the bot connection exists (auto-created on startup too; this makes --re-run safe)
-  post "/api/events/connect/telegram/token" "{\"scope\":\"$SCOPE\",\"token\":\"$TG\"}" >/dev/null || true
-  # 2) arm the AP webhook flow
-  echo -n "telegram  "; post "/api/events/admin/channels/telegram/arm" "{\"scope\":\"$SCOPE\"}" \
-    | show "print('✓ AP flow armed & enabled:', d.get('ap_flow_id'))"
+  if [ "$TG_BACKEND" = "ap" ]; then
+    # AP backend: ensure the bot connection exists (auto-created on startup too), then arm the webhook flow
+    post "/api/events/connect/telegram/token" "{\"scope\":\"$SCOPE\",\"token\":\"$TG\"}" >/dev/null || true
+    echo -n "telegram  "; post "/api/events/admin/channels/telegram/arm" "{\"scope\":\"$SCOPE\"}" \
+      | show "print('✓ AP flow armed & enabled:', d.get('ap_flow_id'))"
+  else
+    # DIRECT backend (default): the long-poll loop connects on server start — no AP, no public URL.
+    echo -n "telegram  "; post "/api/events/admin/channels/telegram/arm" "{\"scope\":\"$SCOPE\"}" \
+      | show "print('✓ direct long-poll —', str(d.get('note',''))[:100])"
+  fi
 else
   echo "telegram  · no TELEGRAM_BOT_TOKEN (skip)"
 fi

@@ -109,12 +109,30 @@ if [ "${1:-}" = "--reload" ]; then
   exit 0
 fi
 
+# --no-tunnel: boot CUGA with NO public tunnel (and tolerate AP being down). This is the zero-AP
+# path — web + Telegram-direct (long-poll) + Discord-direct (Gateway) all work with no tunnel and no
+# Activepieces. Slack (needs a public webhook URL) and AP-backed triggers are simply unavailable.
+NO_TUNNEL=""; [ "${1:-}" = "--no-tunnel" ] && NO_TUNNEL=1
+# Tell the SERVER (hence its capability report) that no tunnel is being served, so it stops claiming
+# "public URL set" just because EVENTS_PUBLIC_URL sits in .env. Not in .env → survives dotenv reload.
+[ -n "$NO_TUNNEL" ] && export EVENTS_NO_TUNNEL=1
+
 mkdir -p "$RUN"
 echo "== prereqs =="
-for c in uv cloudflared; do command -v $c >/dev/null || { echo "MISSING: $c (see events_docs/SETUP.md)"; exit 1; }; done
+# Require the tunnel tool we ACTUALLY use: ngrok when a reserved domain is set, else cloudflared.
+_need="uv"
+if [ -z "$NO_TUNNEL" ]; then
+  if [ -n "$NGROK_DOMAIN" ]; then _need="uv ngrok"; else _need="uv cloudflared"; fi
+fi
+for c in $_need; do command -v $c >/dev/null || { echo "MISSING: $c (see events_docs/SETUP.md)"; exit 1; }; done
 [ -d .venv ] || { echo "no .venv — running uv sync (minutes)…"; uv sync --python 3.12; }
-curl -s -o /dev/null --max-time 4 "http://localhost:$AP_PORT/api/v1/flags" || \
-  echo "WARN: Activepieces not reachable on :$AP_PORT — start your AP container (SETUP.md §2)."
+if [ -n "$NO_TUNNEL" ]; then
+  echo "== NO-AP mode: skipping tunnel; AP not required =="
+  echo "   channels that work here: web · Telegram (long-poll) · Discord (Gateway).  Slack needs a tunnel → use 'make up'."
+else
+  curl -s -o /dev/null --max-time 4 "http://localhost:$AP_PORT/api/v1/flags" || \
+    echo "WARN: Activepieces not reachable on :$AP_PORT — start your AP container (SETUP.md §2)."
+fi
 
 # (No separate registry launch — `cuga start demo --events` boots the registry itself; the
 #  exported MCP_SERVERS_FILE below makes it serve the cuga-apps MCP config.)
@@ -122,7 +140,9 @@ curl -s -o /dev/null --max-time 4 "http://localhost:$AP_PORT/api/v1/flags" || \
 # ONLY the CUGA (:7860) tunnel here. The AP (:8081) tunnel is owned by ap_up.sh, which bakes its URL
 # into the AP container as AP_FRONTEND_URL — starting a second one here just clobbers ap_tunnel.log
 # and leaves AP pointing at a different (often dead) URL, breaking Telegram/Slack-AP setWebhook.
-if [ -n "$NGROK_DOMAIN" ]; then
+if [ -n "$NO_TUNNEL" ]; then
+  echo "== CUGA tunnel: SKIPPED (--no-tunnel) — outbound channels need none =="
+elif [ -n "$NGROK_DOMAIN" ]; then
   echo "== CUGA tunnel (ngrok STATIC: $NGROK_DOMAIN) =="
   command -v ngrok >/dev/null || { echo "MISSING: ngrok — brew install ngrok, then verify email + reserve a domain (dashboard.ngrok.com)"; exit 1; }
   ngrok http "$CUGA_PORT" --domain="$NGROK_DOMAIN" --log=stdout > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
@@ -152,10 +172,12 @@ fi
 
 # capture the fresh CUGA tunnel URL and feed it to the server as EVENTS_PUBLIC_URL, so the server
 # always matches the live tunnel (no stale-.env "one step behind" after a restart).
-echo "== resolving CUGA tunnel URL =="
-for i in $(seq 1 20); do [ -n "$(cuga_tunnel_url)" ] && break; sleep 2; done
-export_public_url
-echo "   EVENTS_PUBLIC_URL = ${EVENTS_PUBLIC_URL:-<none — tunnel not up yet>}"
+if [ -z "$NO_TUNNEL" ]; then
+  echo "== resolving CUGA tunnel URL =="
+  for i in $(seq 1 20); do [ -n "$(cuga_tunnel_url)" ] && break; sleep 2; done
+  export_public_url
+  echo "   EVENTS_PUBLIC_URL = ${EVENTS_PUBLIC_URL:-<none — tunnel not up yet>}"
+fi
 
 echo "== CUGA server :$CUGA_PORT  (registry :$REGISTRY_PORT boots inside it) =="
 # THE one entry point — the literal same command a user types. The CLI starts the registry and

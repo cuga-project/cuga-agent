@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -37,6 +37,30 @@ cuga: ## Provision infra (MCP registry + tunnels) then boot `cuga start … --ev
 
 up: preflight ap cuga ## Full dev stack: Activepieces + infra + `cuga start … --events` (one server)
 	@echo "✓ stack up.   → NEXT: make status"
+
+## ---- NO-AP path: run the events layer with ZERO Activepieces (web + Telegram + Discord chat) -----
+preflight-noap: ## Check the MINIMAL tools the no-AP path needs (uv + .venv only — no podman/tunnel)
+	@command -v uv >/dev/null || { echo "✗ uv missing — brew install uv"; exit 1; }
+	@test -d .venv || { echo "✗ no .venv — run: uv sync --python 3.12"; exit 1; }
+	@echo "✓ minimal tools present.   → NEXT: make up-noap"
+
+up-noap: preflight-noap ## Boot the events layer WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
+	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh --no-tunnel
+	@$(MAKE) --no-print-directory channels
+	@echo
+	@echo "✓ CUGA up — NO Activepieces.   Chat channels live: web · Telegram · Discord."
+	@echo "   NOW-trigger (chat) works fully. cron/poll/push + Slack + AP integrations are OFF (need AP/tunnel)."
+	@echo "   Want Slack too (still no AP)? use: make up-noap-slack"
+	@echo "   → NEXT: make status   ·   test: DM your Telegram bot, or open http://localhost:7860"
+
+up-noap-slack: preflight-noap ## Boot events WITHOUT Activepieces but WITH the CUGA tunnel — so Slack works too (web · Telegram · Discord · Slack)
+	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh
+	@$(MAKE) --no-print-directory channels
+	@echo
+	@echo "✓ CUGA up — NO Activepieces, WITH tunnel.   Chat channels live: web · Telegram · Discord · Slack."
+	@echo "   Slack: set its Event Subscriptions Request URL to <public>/api/events/slack/events (see 'make status')."
+	@echo "   cron/poll/push + AP integrations are still OFF (need AP)."
+	@echo "   → NEXT: make status"
 
 start: up ## Alias for `up`. Bare server (no AP/tunnels): `cuga start demo --events`
 

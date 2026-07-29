@@ -1568,6 +1568,61 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             _bg.append(_discord_gateway)
             app.state.events_background = _bg
 
+    # --- DIRECT Telegram (default backend; long-poll — no AP, no public URL) -----------------------
+    async def _telegram_answer(msg: dict) -> None:
+        """A Telegram getUpdates message → /invoke(concierge) → reply back to the chat. Mirrors
+        _discord_answer: thread_id keys memory per chat; source.user = the sender (per-user identity).
+
+        EVENTS_TELEGRAM_CHAT=mention: in a GROUP, only @bot messages reach CHAT (a private chat always
+        does) — a gated-out message still feeds the channel-message WATCHERS (mirrors Slack/Discord)."""
+        from . import telegram_direct
+        import httpx
+        tr = Trace(new_trace_id())
+        chat_id = str((msg.get("chat") or {}).get("id") or "")
+        sender = str((msg.get("from") or {}).get("id") or "")
+        to_chat, text = telegram_direct.mention_gate(msg)
+        if not to_chat:
+            if store is not None:
+                from . import direct_events
+                subs = direct_events.match(store, "telegram", "new_channel_message",
+                                           channel=chat_id, text=msg.get("text") or "")
+                if subs:
+                    tr("telegram.direct", event="new_channel_message", matched=len(subs), gated="mention")
+                    await direct_events.dispatch_all(
+                        subs, app="telegram", event="new_channel_message",
+                        payload={"text": msg.get("text") or "", "channel": chat_id}, engine=engine)
+            return
+        try:
+            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
+            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+            payload = {"text": text, "agent": "concierge", "deliver": False,
+                       "source": {"type": "channel", "name": "telegram",
+                                  "thread_id": f"gw:telegram:{chat_id}", "user": sender},
+                       "event": {"kind": "message", "payload": {"telegram_user": sender}}}
+            async with httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=payload)
+                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            if answer:
+                res = await telegram_direct.send_message(chat_id, answer,
+                                                         reply_to=msg.get("message_id"))
+                tr("telegram.reply", chat=chat_id, ok=res.get("ok"))
+            else:
+                tr.error("telegram", reason="no answer", status=r.status_code)
+        except Exception as e:  # noqa: BLE001
+            tr.error("telegram", err=str(e))
+
+    # register the long-poll loop as a startup background task (direct is the DEFAULT — no AP, no
+    # tunnel). The AP webhook backend stays behind EVENTS_TELEGRAM_BACKEND=ap.
+    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
+        from . import telegram_direct as _tg
+        if _tg.bot_token():
+            async def _telegram_poller():
+                await _tg.run_poller(_telegram_answer)
+            _bg = list(getattr(app.state, "events_background", []) or [])
+            _bg.append(_telegram_poller)
+            app.state.events_background = _bg
+
     # Auto-connect .env USER tokens (single-operator convenience): a token set in .env becomes the
     # operator's AP connection on startup, so "set in .env" == "connected". Multi-user deployments
     # leave these blank and each user connects their own in the Studio.
@@ -1582,7 +1637,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # token-auth pieces whose secret sits in .env → create the operator's SECRET_TEXT AP
         # connection on startup, so "set in .env" == "connected" (mirrors the Studio's connect).
         # Without this the piece's inbound flow can't publish (AP: ConnectionNotFound) at arm time.
-        #   · telegram — bot token; Telegram is ALWAYS the AP backend, so it always needs this
+        #   · telegram — bot token, but only when the AP backend is selected (default is the direct
+        #                long-poll, which needs no AP connection — same as Discord's Gateway)
         #   · discord  — bot token, but only when the AP backend is selected (default is the direct
         #                Gateway, which connects the socket on boot and needs no AP connection)
         #
@@ -1590,7 +1646,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # GITHUB_TOKEN here as SECRET_TEXT produces a connection AP stores and the piece cannot use;
         # the flow then fails at publish with "401 Bad credentials" that reads like a scope problem.
         # GitHub connects through the OAuth consent flow: GET /api/events/connect/github.
-        autoconn = [("telegram", os.environ.get("TELEGRAM_BOT_TOKEN", ""))]
+        autoconn = []
+        if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") == "ap":
+            autoconn.append(("telegram", os.environ.get("TELEGRAM_BOT_TOKEN", "")))
         if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") == "ap":
             autoconn.append(("discord", os.environ.get("DISCORD_BOT_TOKEN", "")))
         import asyncio
@@ -1878,6 +1936,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                               "OFF (set SLACK_SIGNING_SECRET)",
                     "note": "Set this events_url as your Slack app's Event Subscriptions Request URL "
                             "and subscribe the bot event 'message.channels'. No AP flow needed."}
+        # Telegram DIRECT backend (default): nothing to arm in AP — the long-poll loop connects
+        # (outbound) on server start. No AP, no public URL. Set EVENTS_TELEGRAM_BACKEND=ap for the
+        # (webhook) AP path.
+        if channel == "telegram" and os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
+            from . import telegram_direct
+            if not telegram_direct.bot_token():
+                return JSONResponse({"ok": False, "error": "set TELEGRAM_BOT_TOKEN"}, 400)
+            return {"ok": True, "channel": "telegram", "backend": "direct",
+                    "note": "Direct long-poll backend — the bot polls getUpdates on server start; "
+                            "nothing to arm, no AP, no public URL. DM the bot to test. Set "
+                            "EVENTS_TELEGRAM_BACKEND=ap for the (webhook) AP path."}
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
