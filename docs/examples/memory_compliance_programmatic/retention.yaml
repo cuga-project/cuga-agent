@@ -1,0 +1,15 @@
+rules:
+  - name: unused-guidelines
+    entity_type: guideline
+    max_unused_days: 180
+    action: delete
+    on_missing_access_signal: skip
+  - name: stale-guidelines
+    entity_type: guideline
+    max_age_days: 90
+    action: flag
+  - name: old-conversations
+    entity_type: trajectory
+    max_age_days: 365
+    action: delete
+    cascade_derived: true

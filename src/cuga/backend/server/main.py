@@ -13,7 +13,7 @@ import yaml
 import httpx
 import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, List, Dict, Any, Union, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Literal, Union, Optional
 
 if TYPE_CHECKING:
     from cuga.backend.activity_tracker.tracker import ActivityTracker
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from pathlib import Path
 import traceback
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from fastapi import Depends, FastAPI, Request, HTTPException, Query, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -508,6 +508,34 @@ draft_app_state = DraftAppState()
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]
     stream: bool = False
+
+
+class MemoryMetadataPatchRequest(BaseModel):
+    metadata: Dict[str, Any]
+
+
+class MemoryAccessRequest(BaseModel):
+    entity_ids: List[str]
+
+
+class RetentionPolicyRequest(BaseModel):
+    policy: Dict[str, Any]
+
+
+class RetentionRunRequest(RetentionPolicyRequest):
+    dry_run: bool = True
+    as_of: Optional[str] = None
+    scan_limit: Optional[int] = None
+    run_id: Optional[str] = None
+    metadata_filters: Optional[Dict[str, Any]] = None
+
+
+class MemoryAutomationPatchRequest(BaseModel):
+    retention_enabled: Optional[bool] = None
+    retention_frequency: Optional[Literal["Every day", "Every week", "Every month"]] = None
+    retention_time: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    events_enabled: Optional[bool] = None
+    event_destination: Optional[str] = Field(default=None, min_length=1, max_length=500)
 
 
 class AttachmentSnapshotItem(BaseModel):
@@ -1570,6 +1598,7 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    memory_turn_id = str(uuid.uuid4())
     run_agent = agent if agent is not None else app_state.agent
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
@@ -1638,6 +1667,12 @@ async def event_stream(
 
     if local_state:
         apply_request_user_context(local_state, user_id)
+        local_state.service_scope.update(
+            {
+                "agent_id": app_state.agent_id,
+                "memory_turn_id": memory_turn_id,
+            }
+        )
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -1882,6 +1917,20 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
+                            from cuga.backend.evolve.compliance_poc import get_turn_memory_usage
+
+                            try:
+                                memory_usage = await get_turn_memory_usage(
+                                    turn_id=memory_turn_id,
+                                    agent_id=app_state.agent_id,
+                                    user_id=user_id,
+                                )
+                                if memory_usage["count"]:
+                                    answer_payload["memory_usage"] = memory_usage
+                            except Exception as exc:
+                                logger.warning(
+                                    f"Memory usage disclosure unavailable (non-fatal): {exc}"
+                                )
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
@@ -2998,6 +3047,577 @@ async def save_memory_config(
     except Exception as e:
         logger.error(f"Failed to save memory config: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save memory config: {str(e)}")
+
+
+def _memory_namespace_id() -> Optional[str]:
+    from cuga.config import get_tenant_id
+
+    return get_tenant_id() or None
+
+
+def _memory_result(result: Optional[dict]) -> JSONResponse:
+    if result is None:
+        raise HTTPException(status_code=503, detail="Evolve memory service is unavailable")
+    error = result.get("error")
+    if error:
+        message = str(error)
+        if "Permission denied" in message:
+            raise HTTPException(status_code=403, detail=message)
+        if "not found" in message:
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail={"message": message, "details": result.get("details")})
+    return JSONResponse(result)
+
+
+_MEMORY_METADATA_FIELDS = {
+    "category",
+    "display_name",
+    "last_accessed",
+    "legal_hold",
+    "person",
+    "retention_flagged_at",
+    "retention_rule",
+    "session_id",
+    "thread_id",
+    "title",
+    "user_name",
+}
+_ADMIN_MEMORY_METADATA_FIELDS = _MEMORY_METADATA_FIELDS | {"owner_id", "user_id"}
+
+
+def _project_memory_item(
+    item: dict[str, Any],
+    *,
+    audience: Literal["user", "admin"],
+    include_content: bool,
+    related_ids: Optional[list[str]] = None,
+    usage: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    metadata = item.get("metadata")
+    allowed_metadata = (
+        _ADMIN_MEMORY_METADATA_FIELDS if audience == "admin" else _MEMORY_METADATA_FIELDS
+    )
+    safe_metadata = {}
+    for key, value in (metadata.items() if isinstance(metadata, dict) else []):
+        if key not in allowed_metadata or not isinstance(value, (str, int, float, bool, type(None))):
+            continue
+        safe_metadata[key] = value
+    projected = {
+        "id": item.get("id"),
+        "type": item.get("type"),
+        "created_at": item.get("created_at"),
+        "metadata": safe_metadata,
+    }
+    if related_ids:
+        projected["related_ids"] = related_ids
+    if include_content:
+        projected["content"] = item.get("content")
+    projected["usage"] = {
+        "count": int((usage or {}).get("count") or 0),
+        "last_used_at": (usage or {}).get("last_used_at"),
+        "recent": [
+            {
+                "thread_id": entry.get("thread_id"),
+                "conversation_label": entry.get("conversation_label"),
+                "used_at": entry.get("used_at"),
+            }
+            for entry in (usage or {}).get("recent", [])
+            if isinstance(entry, dict)
+        ],
+    }
+    return projected
+
+
+def _project_memory_inventory(
+    result: dict[str, Any],
+    *,
+    audience: Literal["user", "admin"],
+    include_content: bool,
+    usage_by_id: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    items = [item for item in result.get("items", []) if isinstance(item, dict)]
+    related_groups: dict[str, list[str]] = {}
+    trace_by_id: dict[str, str] = {}
+    for item in items:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        trace = str(
+            metadata.get("source_task_id")
+            or metadata.get("trace_id")
+            or metadata.get("task_id")
+            or ""
+        )
+        item_id = str(item.get("id") or "")
+        if trace and item_id:
+            trace_by_id[item_id] = trace
+            related_groups.setdefault(trace, []).append(item_id)
+    return {
+        "items": [
+            _project_memory_item(
+                item,
+                audience=audience,
+                include_content=include_content,
+                related_ids=[
+                    related_id
+                    for related_id in related_groups.get(
+                        trace_by_id.get(str(item.get("id") or ""), ""),
+                        [],
+                    )
+                    if related_id != str(item.get("id") or "")
+                ],
+                usage=(usage_by_id or {}).get(str(item.get("id") or "")),
+            )
+            for item in items
+        ],
+        "total": int(result.get("total") or 0),
+        "next_cursor": result.get("next_cursor"),
+    }
+
+
+def _project_memory_access(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result[key]
+        for key in ("updated_ids", "denied_ids", "missing_ids", "accessed_at")
+        if key in result
+    }
+
+
+def _project_memory_action(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result[key]
+        for key in ("success", "entity_id", "updated_ids", "denied_ids", "missing_ids")
+        if key in result
+    }
+
+
+def _project_compliance_status(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "healthy": bool(result.get("healthy")),
+        "evolve_version": result.get("evolve_version"),
+        "backend": result.get("backend"),
+        "retention_available": bool(result.get("retention_available")),
+        "plugins": [
+            {
+                key: plugin.get(key)
+                for key in ("name", "protection_class", "hooks", "enabled", "healthy")
+            }
+            for plugin in result.get("plugins", [])
+            if isinstance(plugin, dict)
+        ],
+    }
+
+
+def _project_automation_config(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result.get(key)
+        for key in (
+            "retention_enabled",
+            "retention_frequency",
+            "retention_time",
+            "events_enabled",
+            "event_destination",
+            "event_type",
+        )
+    }
+
+
+def _memory_query_filters(value: Optional[str]) -> Optional[dict[str, Any]]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="metadata_filters must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="metadata_filters must be a JSON object")
+    return parsed
+
+
+@app.get("/api/memory/entities")
+async def list_user_memory_entities(
+    entity_type: Optional[List[str]] = Query(default=None),
+    session_id: Optional[str] = None,
+    metadata_filters: Optional[str] = None,
+    cursor: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    include_content: bool = False,
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.compliance_poc import get_memory_usage_summaries
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    user_id = _workspace_user_id(current_user)
+    result = await EvolveIntegration.list_entities(
+        entity_types=entity_type,
+        user_id=user_id,
+        agent_id=app_state.agent_id,
+        session_id=session_id,
+        metadata_filters=_memory_query_filters(metadata_filters),
+        cursor=cursor,
+        limit=limit,
+        include_content=include_content,
+        record_access=False,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    usage_by_id = await get_memory_usage_summaries(
+        agent_id=app_state.agent_id,
+        user_id=user_id,
+        entity_ids=[str(item.get("id") or "") for item in result.get("items", [])],
+    )
+    return JSONResponse(
+        _project_memory_inventory(
+            result,
+            audience="user",
+            include_content=include_content,
+            usage_by_id=usage_by_id,
+        )
+    )
+
+
+@app.get("/api/memory/entities/{entity_id}")
+async def get_user_memory_entity(
+    entity_id: str,
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.compliance_poc import get_memory_usage_summaries
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    user_id = _workspace_user_id(current_user)
+    result = await EvolveIntegration.get_entity(
+        entity_id,
+        user_id=user_id,
+        agent_id=app_state.agent_id,
+        record_access=False,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    usage = await get_memory_usage_summaries(
+        agent_id=app_state.agent_id,
+        user_id=user_id,
+        entity_ids=[entity_id],
+    )
+    return JSONResponse(
+        _project_memory_item(
+            result,
+            audience="user",
+            include_content=True,
+            usage=usage.get(entity_id),
+        )
+    )
+
+
+@app.patch("/api/memory/entities/{entity_id}/metadata")
+async def patch_user_memory_entity(
+    entity_id: str,
+    body: MemoryMetadataPatchRequest,
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    allowed_fields = {"title", "category"}
+    unsupported = sorted(set(body.metadata) - allowed_fields)
+    if unsupported:
+        raise HTTPException(
+            status_code=422,
+            detail=f"User-editable memory fields are limited to: {', '.join(sorted(allowed_fields))}",
+        )
+    result = await EvolveIntegration.patch_entity_metadata(
+        entity_id,
+        body.metadata,
+        user_id=_workspace_user_id(current_user),
+        agent_id=app_state.agent_id,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    return JSONResponse(_project_memory_item(result, audience="user", include_content=True))
+
+
+@app.delete("/api/memory/entities/{entity_id}")
+async def delete_user_memory_entity(
+    entity_id: str,
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.compliance_poc import record_user_request
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    user_id = _workspace_user_id(current_user)
+    result = await EvolveIntegration.delete_entity(
+        entity_id,
+        user_id=user_id,
+        agent_id=app_state.agent_id,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result and result.get("success"):
+        await record_user_request(
+            app_state.agent_id,
+            user_id,
+            entity_id,
+            action="forget",
+            status="completed",
+        )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    return JSONResponse(_project_memory_action(result))
+
+
+@app.post("/api/memory/access")
+async def record_user_memory_access(
+    body: MemoryAccessRequest,
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    result = await EvolveIntegration.record_access(
+        body.entity_ids,
+        user_id=_workspace_user_id(current_user),
+        agent_id=app_state.agent_id,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    return JSONResponse(_project_memory_access(result))
+
+
+@app.get("/api/memory/retention")
+async def get_user_memory_retention(
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    from cuga.backend.evolve.compliance_poc import get_user_retention_summary
+
+    return await get_user_retention_summary(app_state.agent_id)
+
+
+@app.get("/api/admin/memory/entities")
+async def list_admin_memory_entities(
+    entity_type: Optional[List[str]] = Query(default=None),
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    metadata_filters: Optional[str] = None,
+    cursor: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    include_content: bool = False,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import get_memory_usage_summaries
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    result = await EvolveIntegration.list_entities(
+        entity_types=entity_type,
+        user_id=user_id,
+        agent_id=app_state.agent_id,
+        session_id=session_id,
+        metadata_filters=_memory_query_filters(metadata_filters),
+        cursor=cursor,
+        limit=limit,
+        include_content=False,
+        record_access=False,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    usage_by_id = await get_memory_usage_summaries(
+        agent_id=app_state.agent_id,
+        entity_ids=[str(item.get("id") or "") for item in result.get("items", [])],
+    )
+    return JSONResponse(
+        _project_memory_inventory(
+            result,
+            audience="admin",
+            include_content=False,
+            usage_by_id=usage_by_id,
+        )
+    )
+
+
+@app.get("/api/admin/memory/entities/{entity_id}")
+async def get_admin_memory_entity(
+    entity_id: str,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import get_memory_usage_summaries
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    result = await EvolveIntegration.get_entity(
+        entity_id,
+        agent_id=app_state.agent_id,
+        record_access=False,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    usage = await get_memory_usage_summaries(
+        agent_id=app_state.agent_id,
+        entity_ids=[entity_id],
+    )
+    return JSONResponse(
+        _project_memory_item(
+            result,
+            audience="admin",
+            include_content=False,
+            usage=usage.get(entity_id),
+        )
+    )
+
+
+@app.patch("/api/admin/memory/entities/{entity_id}/metadata")
+async def patch_admin_memory_entity(
+    entity_id: str,
+    body: MemoryMetadataPatchRequest,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    allowed_fields = {"category", "legal_hold", "title"}
+    unsupported = sorted(set(body.metadata) - allowed_fields)
+    if unsupported:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Admin-editable memory fields are limited to: {', '.join(sorted(allowed_fields))}",
+        )
+    result = await EvolveIntegration.patch_entity_metadata(
+        entity_id,
+        body.metadata,
+        agent_id=app_state.agent_id,
+        namespace_id=_memory_namespace_id(),
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    return JSONResponse(_project_memory_item(result, audience="admin", include_content=False))
+
+
+@app.post("/api/admin/memory/retention/validate")
+async def validate_admin_retention_policy(
+    body: RetentionPolicyRequest,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    return _memory_result(await EvolveIntegration.validate_retention_policy(body.policy))
+
+
+@app.post("/api/admin/memory/retention/runs")
+async def run_admin_retention(
+    body: RetentionRunRequest,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    result = await EvolveIntegration.run_retention(
+        body.policy,
+        dry_run=body.dry_run,
+        as_of=body.as_of,
+        scan_limit=body.scan_limit,
+        run_id=body.run_id,
+        namespace_id=_memory_namespace_id(),
+        metadata_filters={**(body.metadata_filters or {}), "agent_id": app_state.agent_id},
+    )
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    from cuga.backend.evolve.compliance_poc import project_retention_report
+
+    return JSONResponse(project_retention_report(result))
+
+
+@app.get("/api/admin/memory/compliance/status")
+async def get_admin_memory_compliance_status(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.integration import EvolveIntegration
+
+    result = await EvolveIntegration.get_compliance_status(namespace_id=_memory_namespace_id())
+    if result is None or result.get("error"):
+        return _memory_result(result)
+    return JSONResponse(_project_compliance_status(result))
+
+
+@app.post("/api/admin/memory/poc/bootstrap")
+async def bootstrap_compliance_poc(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import bootstrap
+
+    if os.getenv("CUGA_COMPLIANCE_POC_SEED_ENABLED", "").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(
+            status_code=404,
+            detail="Compliance demonstration provisioning is not enabled",
+        )
+    user_name = (current_user.name or current_user.email) if current_user else "Demo user"
+    try:
+        return await bootstrap(
+            app_state.agent_id,
+            _workspace_user_id(current_user),
+            _memory_namespace_id(),
+            user_name or "Demo user",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/memory/scheduled-runs")
+async def run_simulated_memory_schedule(
+    body: RetentionRunRequest,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import project_retention_report, run_simulated_schedule
+
+    try:
+        result = await run_simulated_schedule(
+            app_state.agent_id,
+            _memory_namespace_id(),
+            _workspace_user_id(current_user),
+            dry_run=body.dry_run,
+            as_of=body.as_of,
+        )
+        return project_retention_report(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/memory/activity")
+async def list_memory_activity(
+    limit: int = Query(default=100, ge=1, le=200),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import list_ledger
+
+    return {"items": await list_ledger("activity", app_state.agent_id, limit)}
+
+
+@app.get("/api/admin/memory/automation")
+async def get_memory_automation_config(current_user: Optional[UserInfo] = Depends(require_manage_access)):
+    from cuga.backend.evolve.compliance_poc import get_automation_config
+
+    return _project_automation_config(await get_automation_config(app_state.agent_id))
+
+
+@app.patch("/api/admin/memory/automation")
+async def patch_memory_automation_config(
+    body: MemoryAutomationPatchRequest,
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import update_automation_config
+
+    return _project_automation_config(
+        await update_automation_config(
+            app_state.agent_id,
+            body.model_dump(exclude_none=True),
+        )
+    )
+
+
+@app.get("/api/admin/memory/deliveries")
+async def list_memory_deliveries(
+    limit: int = Query(default=100, ge=1, le=200),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.compliance_poc import list_ledger
+
+    return {"items": await list_ledger("deliveries", app_state.agent_id, limit)}
 
 
 def _policy_to_frontend_dict(policy_dict: dict) -> dict:

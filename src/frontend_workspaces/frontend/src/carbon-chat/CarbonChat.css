@@ -13,6 +13,27 @@
   position: relative;
 }
 
+.cuga-memory-usage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--cds-link-primary, #0f62fe);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cuga-memory-usage-link:hover {
+  text-decoration: underline;
+}
+
+.cuga-memory-usage-link:focus-visible {
+  outline: 2px solid var(--cds-focus, #0f62fe);
+  outline-offset: 2px;
+}
+
 /* ── Composer toolbar (paperclip + chips row) ── */
 
 .cuga-composer-toolbar {

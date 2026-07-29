@@ -102,6 +102,7 @@ interface CarbonChatProps {
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
+  onOpenMemoryUsage?: (entityIds: string[], relationship: "used" | "saved") => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
 }
 
@@ -253,6 +254,7 @@ const CarbonChat = ({
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   onOpenKnowledge,
+  onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
@@ -334,6 +336,23 @@ const CarbonChat = ({
 
   const renderUserDefinedResponse = useCallback((state: RenderUserDefinedState) => {
     const item = state.messageItem as any;
+    if (
+      item?.user_defined?.type === 'cuga_memory_usage' ||
+      item?.user_defined?.type === 'cuga_memory_saved'
+    ) {
+      const entityIds = (item.user_defined.entity_ids ?? []).map(String);
+      const count = Number(item.user_defined.count) || entityIds.length;
+      const verb = item.user_defined.type === 'cuga_memory_saved' ? 'saved' : 'used';
+      return (
+        <button
+          type="button"
+          className="cuga-memory-usage-link"
+          onClick={() => onOpenMemoryUsage?.(entityIds, verb)}
+        >
+          {count} {count === 1 ? "memory" : "memories"} {verb} <span aria-hidden="true">→</span>
+        </button>
+      );
+    }
     if (item?.user_defined?.type !== 'cuga_sources') {
       return undefined;
     }
@@ -350,7 +369,7 @@ const CarbonChat = ({
         onOpen={(n: number) => setSourcesPanel({ sources, activeN: n })}
       />
     );
-  }, []);
+  }, [onOpenMemoryUsage]);
 
   useEffect(() => {
     initAgentProfile(useDraft);

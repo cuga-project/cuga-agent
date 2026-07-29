@@ -44,6 +44,8 @@ import {
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
+import { useAuth } from "./AuthContext";
+import { CompliancePrototype } from "./CompliancePrototype";
 import "./ChatLanding.css";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -340,6 +342,11 @@ const LEFT_W = "22rem";
 const RIGHT_W = "26rem";
 
 export function ChatLanding() {
+  const { user, authorizationEnabled } = useAuth();
+  const [primaryView, setPrimaryView] = useState<"chat" | "memory">("chat");
+  const [memoryFocusIds, setMemoryFocusIds] = useState<string[]>([]);
+  const [memoryFocusRelationship, setMemoryFocusRelationship] =
+    useState<"used" | "saved">("used");
   const [draftThread, setDraftThread] = useState<DraftThreadState>(() => loadDraftThreadState() ?? createDraftThreadState());
   const [windowW, setWindowW] = useState(window.innerWidth);
   const [leftOpen, setLeftOpen] = useState(true);
@@ -400,6 +407,12 @@ export function ChatLanding() {
 
   const canShowLeft = windowW >= BP_HIDE_LEFT;
   const canShowRight = windowW >= BP_HIDE_RIGHT;
+  const canManageAgent =
+    !authorizationEnabled ||
+    user === null ||
+    (user.roles ?? []).some((role) =>
+      ["ServiceOwner", "ServiceAdmin"].includes(role),
+    );
 
   // Toast notification helpers
   const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
@@ -1090,34 +1103,64 @@ export function ChatLanding() {
   const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
-    <div className="chat-landing">
+      <div className="chat-landing">
         <ConfigHeader
-          onToggleLeftSidebar={handleToggleLeft}
-          onToggleWorkspace={handleToggleWorkspace}
+          onToggleLeftSidebar={() => {
+            setPrimaryView("chat");
+            handleToggleLeft();
+          }}
+          onToggleWorkspace={() => {
+            setPrimaryView("chat");
+            handleToggleWorkspace();
+          }}
+          onOpenMemory={() =>
+            setPrimaryView((current) => (current === "memory" ? "chat" : "memory"))
+          }
         />
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
-        <CarbonChat
-          contained={true}
-          threadId={effectiveChatThreadId}
-          attachmentScope="session"
-          knowledgeEnabled={knowledgeEnabled}
-          sessionKnowledgeEnabled={sessionKnowledgeEnabled}
-          isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
-          onThreadChange={handleThreadChange}
-          homescreen={homescreenConfig}
-          sessionDocsVersion={sessionDocsVersion}
-          onSessionDocsChanged={handleSessionDocsChanged}
-          onOpenKnowledge={handleToggleKnowledge}
-          onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
-        />
+        {primaryView === "chat" ? (
+          <CarbonChat
+            contained={true}
+            threadId={effectiveChatThreadId}
+            attachmentScope="session"
+            knowledgeEnabled={knowledgeEnabled}
+            sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+            isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
+            onThreadChange={handleThreadChange}
+            homescreen={homescreenConfig}
+            sessionDocsVersion={sessionDocsVersion}
+            onSessionDocsChanged={handleSessionDocsChanged}
+            onOpenKnowledge={handleToggleKnowledge}
+            onOpenMemoryUsage={(entityIds, relationship) => {
+              setMemoryFocusIds(entityIds);
+              setMemoryFocusRelationship(relationship);
+              setPrimaryView("memory");
+            }}
+            onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
+          />
+        ) : (
+          <CompliancePrototype
+            embedded
+            agentName={agentConfig.name}
+            canManage={canManageAgent}
+            focusEntityIds={memoryFocusIds}
+            focusRelationship={memoryFocusRelationship}
+            onClearFocus={() => setMemoryFocusIds([])}
+            onOpenConversation={(threadId) => {
+              setPrimaryView("chat");
+              handleSelectThread(threadId);
+              void refreshThreads();
+            }}
+          />
+        )}
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
           LEFT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
-      {canShowLeft && (
+      {primaryView === "chat" && canShowLeft && (
         <div style={panelStyle("left", HEADER_HEIGHT, LEFT_W, leftOpen)}>
           {/* Header */}
           <div style={panelHeader}>
@@ -1254,7 +1297,7 @@ export function ChatLanding() {
       {/* ══════════════════════════════════════════════════════════════════════
           RIGHT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
-      {canShowRight && (
+      {primaryView === "chat" && canShowRight && (
         <div style={panelStyle("right", HEADER_HEIGHT, RIGHT_W, rightOpen)}>
           {/* Agent identity header */}
           <div style={panelHeader}>
@@ -1678,7 +1721,7 @@ export function ChatLanding() {
       )}
 
       {/* ── Floating re-open buttons when panels are closed ──────────────── */}
-      {canShowLeft && !leftOpen && (
+      {primaryView === "chat" && canShowLeft && !leftOpen && (
         <button
           onClick={() => setLeftOpen(true)}
           title="Open conversations"
@@ -1702,7 +1745,7 @@ export function ChatLanding() {
         </button>
       )}
 
-      {canShowRight && !rightOpen && (
+      {primaryView === "chat" && canShowRight && !rightOpen && (
         <button
           onClick={() => setRightOpen(true)}
           title="Open agent panel"

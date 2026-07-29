@@ -229,6 +229,26 @@ async function customLoadHistory(
                 },
               });
             }
+            if (parsed.memoryUsage) {
+              genericItems.push({
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: {
+                  type: "cuga_memory_usage",
+                  count: parsed.memoryUsage.count,
+                  entity_ids: parsed.memoryUsage.entityIds,
+                },
+              });
+            }
+            if (parsed.memorySaved) {
+              genericItems.push({
+                response_type: MessageResponseTypes.USER_DEFINED,
+                user_defined: {
+                  type: "cuga_memory_saved",
+                  count: parsed.memorySaved.count,
+                  entity_ids: parsed.memorySaved.entityIds,
+                },
+              });
+            }
             const messageResponse: any = {
               id: messageId,
               output: { generic: genericItems },

@@ -5,11 +5,13 @@ import { CugaHeader } from "./CugaHeader";
 interface ConfigHeaderProps {
   onToggleLeftSidebar: () => void;
   onToggleWorkspace: () => void;
+  onOpenMemory: () => void;
 }
 
 export function ConfigHeader({
   onToggleLeftSidebar,
   onToggleWorkspace,
+  onOpenMemory,
 }: ConfigHeaderProps) {
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
   // Show the Events Studio entry only when the events layer is mounted (EVENTS_ENABLED).
@@ -42,6 +44,7 @@ export function ConfigHeader({
       agentContext={agentContext ?? undefined}
       navItems={[
         { label: "Conversations", onClick: onToggleLeftSidebar },
+        { label: "Memory", onClick: onOpenMemory },
         { label: "Agent Config", onClick: onToggleWorkspace },
         { label: "Manage", href: "/manage" },
         ...(studioOn ? [{ label: "Events Studio ⚗", href: "/studio" }] : []),

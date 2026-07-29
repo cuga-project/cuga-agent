@@ -326,21 +326,25 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.1.0"
+version = "1.1.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
     { name = "fastmcp", marker = "python_full_version >= '3.12'" },
     { name = "jinja2", marker = "python_full_version >= '3.12'" },
     { name = "litellm", marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sentence-transformers", marker = "python_full_version >= '3.12'" },
     { name = "typer", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/bf/f922d54f8174621f256fad0e8bf737a0b58174f5022a87186e3a1858b658/altk_evolve-1.1.0.tar.gz", hash = "sha256:afdd7010dfb90e72b6c311eb06eef720b9f542063d1ae4fbfbf89ac35fcd4cfe", size = 260021, upload-time = "2026-05-01T13:23:21.809Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/0d/c86cbdf8db8cbd4f34ea21ebdbfc84c3d3088a956e46cc596d57d6165361/altk_evolve-1.1.5.tar.gz", hash = "sha256:c1604396977cf3940c6f1b3b02f6a50fc98f572767dc12e0ed4c61f2030618e6", size = 345747, upload-time = "2026-07-24T18:42:10.506Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/fc/e0e074ab51b17919b6d2b2d6b7147591526289c3f9437c1c2b0d9d0a01f5/altk_evolve-1.1.0-py3-none-any.whl", hash = "sha256:fd448398d76a803e50cf429ac8020f86f51e90f2eecc71f4c5695c17c9c96dbe", size = 275712, upload-time = "2026-05-01T13:23:19.679Z" },
+    { url = "https://files.pythonhosted.org/packages/05/d3/0da06c3977180ca96c3b41bf331fc5b5acb8372fb5981c1b8cfe43537fbb/altk_evolve-1.1.5-py3-none-any.whl", hash = "sha256:2e48fca6d20f835300582e1b5c08b9b607d9092376d8da4525ded46c21e31611", size = 376000, upload-time = "2026-07-24T18:42:09.125Z" },
 ]
 
 [[package]]

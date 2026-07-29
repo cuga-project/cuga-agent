@@ -77,25 +77,31 @@ export async function getResponseUserProfile(useDraft = false) {
   };
 }
 
-export const RESPONSE_USER_PROFILE = {
+export let RESPONSE_USER_PROFILE = {
   id: "cuga-agent",
   nickname: DEFAULT_NICKNAME,
   user_type: UserType.BOT,
   profile_picture_url: undefined as string | undefined,
 };
 
+function replaceResponseUserProfile(profile_picture_url: string | undefined, nickname: string) {
+  RESPONSE_USER_PROFILE = {
+    ...RESPONSE_USER_PROFILE,
+    profile_picture_url,
+    nickname,
+  };
+}
+
 export async function initAgentProfile(useDraft: boolean) {
   const [url, nick] = await Promise.all([
     getProfilePictureUrl(),
     getAgentNickname(useDraft),
   ]);
-  RESPONSE_USER_PROFILE.profile_picture_url = url;
-  RESPONSE_USER_PROFILE.nickname = nick;
+  replaceResponseUserProfile(url, nick);
 }
 
 Promise.all([getProfilePictureUrl(), getAgentNickname(false)]).then(([url, nick]) => {
-  RESPONSE_USER_PROFILE.profile_picture_url = url;
-  RESPONSE_USER_PROFILE.nickname = nick;
+  replaceResponseUserProfile(url, nick);
 });
 
 export const BUTTON_KIND = {
@@ -176,6 +182,14 @@ export interface ParsedAnswerResult {
    * (`{data, variables, active_policies, sources?}`). Shape matches the
    * `MessageSource` type exported by `agentic_chat/Citations`. */
   sources: any[];
+  memoryUsage: {
+    count: number;
+    entityIds: string[];
+  } | null;
+  memorySaved: {
+    count: number;
+    entityIds: string[];
+  } | null;
 }
 
 export function parseAnswerEventData(
@@ -188,6 +202,8 @@ export function parseAnswerEventData(
     isToolApproval: false,
     policyData: null,
     sources: [],
+    memoryUsage: null,
+    memorySaved: null,
   };
 
   try {
@@ -196,6 +212,26 @@ export function parseAnswerEventData(
 
     if (Array.isArray(parsed.sources)) {
       result.sources = parsed.sources;
+    }
+    if (
+      parsed.memory_usage &&
+      Number(parsed.memory_usage.count) > 0 &&
+      Array.isArray(parsed.memory_usage.entity_ids)
+    ) {
+      result.memoryUsage = {
+        count: Number(parsed.memory_usage.count),
+        entityIds: parsed.memory_usage.entity_ids.map(String),
+      };
+    }
+    if (
+      parsed.memory_saved &&
+      Number(parsed.memory_saved.count) > 0 &&
+      Array.isArray(parsed.memory_saved.entity_ids)
+    ) {
+      result.memorySaved = {
+        count: Number(parsed.memory_saved.count),
+        entityIds: parsed.memory_saved.entity_ids.map(String),
+      };
     }
 
     if (typeof innerData === "string") {

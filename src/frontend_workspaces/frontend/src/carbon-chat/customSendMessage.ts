@@ -594,6 +594,8 @@ export async function customSendMessage(
 
           let answerText = accumulatedText || "";
           let answerSources: MessageSource[] = [];
+          let memoryUsage: { count: number; entityIds: string[] } | null = null;
+          let memorySaved: { count: number; entityIds: string[] } | null = null;
           if (typeof event.data === "string") {
             const parsed = parseAnswerEventData(event.data, accumulatedText);
             if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
@@ -613,6 +615,8 @@ export async function customSendMessage(
             }
             answerText = parsed.answerText;
             answerSources = parsed.sources as MessageSource[];
+            memoryUsage = parsed.memoryUsage;
+            memorySaved = parsed.memorySaved;
           } else if (!answerText) {
             answerText = event.data?.answer || JSON.stringify(event.data);
           }
@@ -656,6 +660,38 @@ export async function customSendMessage(
             } as StreamChunk);
 
             answerGenericItems.push(sourcesItem);
+          }
+          if (memoryUsage) {
+            const memoryUsageItem = {
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: "cuga_memory_usage",
+                count: memoryUsage.count,
+                entity_ids: memoryUsage.entityIds,
+              },
+              streaming_metadata: { id: "cuga-memory-usage" },
+            };
+            instance.messaging.addMessageChunk({
+              complete_item: memoryUsageItem,
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+            answerGenericItems.push(memoryUsageItem);
+          }
+          if (memorySaved) {
+            const memorySavedItem = {
+              response_type: MessageResponseTypes.USER_DEFINED,
+              user_defined: {
+                type: "cuga_memory_saved",
+                count: memorySaved.count,
+                entity_ids: memorySaved.entityIds,
+              },
+              streaming_metadata: { id: "cuga-memory-saved" },
+            };
+            instance.messaging.addMessageChunk({
+              complete_item: memorySavedItem,
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+            answerGenericItems.push(memorySavedItem);
           }
 
           const finalResponse: StreamChunk = {
