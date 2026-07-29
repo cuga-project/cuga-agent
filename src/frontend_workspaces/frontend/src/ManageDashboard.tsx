@@ -33,7 +33,14 @@ export function ManageDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [studioOn, setStudioOn] = useState(false);
   const navigate = useNavigate();
+
+  // Show the Studio entry only when the events layer is mounted (EVENTS_ENABLED).
+  // Vanilla CUGA (flag off) → getEventsStatus() returns null → nothing changes.
+  useEffect(() => {
+    api.getEventsStatus().then((s) => setStudioOn(!!s));
+  }, []);
 
   useEffect(() => {
     api.getAuthConfig().then((c) => {
@@ -91,14 +98,23 @@ export function ManageDashboard() {
         agentContext={agentContext ?? undefined}
         navItems={[
           { label: "Chat", href: "/chat" },
+          ...(studioOn ? [{ label: "Studio", href: "/studio" }] : []),
         ]}
       />
 
       <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", padding: "2rem 3rem", marginTop: "3rem", width: "100%" }}>
         <Heading style={{ marginBottom: "0.5rem" }}>Agent dashboard</Heading>
-        <p style={{ marginBottom: "2rem", color: "#525252" }}>
+        <p style={{ marginBottom: studioOn ? "1rem" : "2rem", color: "#525252" }}>
           Select an agent to configure it and try it out.
         </p>
+
+        {studioOn && (
+          <div style={{ marginBottom: "2rem" }}>
+            <Button kind="tertiary" size="sm" onClick={() => navigate("/studio")}>
+              Open Event Studio →
+            </Button>
+          </div>
+        )}
 
         {loading && <InlineLoading description="Loading agents…" />}
 

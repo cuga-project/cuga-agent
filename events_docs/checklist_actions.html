@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Events — Trigger+Action Acceptance Checklist</title>
+<style>
+  :root{--blue:#0f62fe;--ink:#161616;--ink2:#393939;--mut:#6f6f6f;--line:#e0e0e0;--bg:#f4f4f4;--card:#fff;
+        --ok:#24a148;--okbg:#defbe6;--fail:#da1e28;--failbg:#fff1f1;--skip:#8d8d8d;--skipbg:#f2f2f2;--code:#f2f4f8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:var(--ink);
+       background:var(--bg);line-height:1.5;font-size:15px}
+  header{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:20px 32px}
+  header h1{margin:0 0 3px;font-size:21px} header .sub{color:#c6c6c6;font-size:13.5px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px 90px}
+  .bar{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);padding:10px 20px;
+       box-shadow:0 1px 4px rgba(0,0,0,.06)}
+  .barin{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .prog{flex:1;min-width:180px;height:10px;background:#e8e8e8;border-radius:6px;overflow:hidden;display:flex}
+  .prog i{display:block;height:100%}
+  .prog .p{background:var(--ok)} .prog .f{background:var(--fail)} .prog .s{background:var(--skip)}
+  .stat{font-size:13px;color:var(--ink2);white-space:nowrap}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  .btn:hover{border-color:var(--blue);color:var(--blue)}
+  .cfg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:18px 0}
+  .cfg h3{margin:0 0 4px;font-size:14px} .cfg p{margin:0 0 10px;font-size:12.5px;color:var(--mut)}
+  .cfg .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+  .cfg label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);margin-bottom:3px;font-weight:600}
+  .cfg input{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+  details.sec{border:1px solid var(--line);border-radius:10px;margin:12px 0;background:#fff;overflow:hidden}
+  details.sec>summary{cursor:pointer;list-style:none;padding:13px 16px;font-weight:700;font-size:15px;
+       display:flex;align-items:center;gap:10px;background:#fafafa;position:sticky}
+  details.sec>summary::-webkit-details-marker{display:none}
+  details.sec>summary::before{content:'▸';color:var(--blue);font-size:12px;transition:transform .15s}
+  details.sec[open]>summary::before{transform:rotate(90deg)}
+  details.sec>summary .cnt{margin-left:auto;font-weight:500;color:var(--mut);font-size:12px}
+  details.sec>summary .pill{font-size:11px;font-weight:700;border-radius:10px;padding:1px 9px}
+  .secdesc{font-size:12.5px;color:var(--mut);padding:2px 16px 8px}
+  .item{border-top:1px solid var(--line);padding:12px 16px}
+  .item .top{display:flex;gap:12px;align-items:flex-start}
+  .item .num{font-size:11px;color:var(--mut);font-family:ui-monospace,monospace;padding-top:3px;min-width:34px}
+  .item .body{flex:1;min-width:0}
+  .item .t{font-weight:600;font-size:14.5px}
+  .item .agent{font-size:11px;font-weight:600;color:var(--blue);background:#e5f0ff;border-radius:4px;padding:1px 7px;margin-left:6px}
+  .tag{font-size:10.5px;font-weight:700;border-radius:4px;padding:1px 7px;margin-left:6px;letter-spacing:.2px}
+  .tag-live{background:var(--okbg);color:var(--ok)}
+  .tag-v2{background:#fff8e1;color:#8e6a00}
+  .tag-ask{background:#e5f0ff;color:var(--blue)}
+  .tag-trig{background:#f2f2f2;color:var(--mut)}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 6px;font-size:11px}
+  .legend span{border-radius:4px;padding:1px 7px;font-weight:700}
+  .item .who{font-size:11px;font-weight:600;border-radius:4px;padding:1px 7px;margin-left:6px}
+  .who-you{background:#f0e6ff;color:#6929c4}.who-test{background:#fff2d9;color:#8e6a00}
+  .item .do{font-size:13.5px;color:var(--ink2);margin-top:4px}
+  .item .exp{font-size:12.5px;color:var(--mut);margin-top:4px}
+  .item .exp b{color:var(--ok)}
+  pre.cmd{background:#0b0b0d;color:#e8e8e8;border-radius:7px;padding:9px 12px;margin:8px 0 0;font-size:12.5px;
+       font-family:ui-monospace,Menlo,monospace;overflow-x:auto;white-space:pre;position:relative}
+  pre.cmd .cp{position:absolute;top:6px;right:6px;background:#2a2a2e;color:#ddd;border:0;border-radius:5px;
+       padding:3px 8px;font-size:11px;cursor:pointer}
+  pre.cmd .cp:hover{background:#3a3a40}
+  .utt{background:var(--code);border-left:3px solid var(--blue);border-radius:0 5px 5px 0;padding:6px 10px;margin-top:6px;
+       font-family:ui-monospace,Menlo,monospace;font-size:13px;cursor:pointer}
+  .utt:hover{background:#e8ecf5}
+  .sbtns{display:flex;gap:6px;margin-top:9px;align-items:center;flex-wrap:wrap}
+  .sb{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 12px;cursor:pointer;font-size:12.5px;font-weight:600}
+  .sb.pass.on{background:var(--okbg);border-color:var(--ok);color:var(--ok)}
+  .sb.fail.on{background:var(--failbg);border-color:var(--fail);color:var(--fail)}
+  .sb.skip.on{background:var(--skipbg);border-color:var(--skip);color:var(--skip)}
+  .note{width:100%;margin-top:8px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12.5px;
+       font-family:inherit;resize:vertical;min-height:0;display:none}
+  .item.has-note .note{display:block}
+  .item.pass{background:#fbfffc}.item.fail{background:#fffafa}
+  code{font-family:ui-monospace,monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .pill-ok{background:var(--okbg);color:var(--ok)}.pill-part{background:#fff8e1;color:#8e6a00}.pill-none{background:#f2f2f2;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1>CUGA Events — Trigger + Action Acceptance Checklist</h1>
+  <div class="sub">The <b>action half</b>: after the agent answers, the flow runs a connector ACTION
+    (Gmail send / reply / draft) as a step. Companion to <code>checklist.html</code> (the trigger half).
+    Design: <code>events_docs/plans/TRIGGERS_ACTIONS_DESIGN.md</code> · registry: <code>src/cuga/backend/events/actions.py</code>.
+    <br><b>Scope:</b> <b>Gmail</b> — <code>send_email</code>, <code>reply_to_email</code>, <code>create_draft_reply</code>
+    (no native archive/label/delete) · <b>GitHub</b> — <code>create_issue</code>, <code>create_comment</code>
+    (both validate live in AP). Trigger can be ANY app; direct-trigger→action runs via an executor flow.
+    <br><b>Trigger sources (11 integrations, 42 triggers)</b> — GitHub · Gmail · Box · Slack · Discord ·
+    Telegram · Webhook · <b>Google&nbsp;Calendar</b> · <b>Pinterest</b> · <b>YouTube</b> · <b>RSS</b>.
+    The four newest are <b>trigger-only</b> (no actions yet) — verify them in <code>checklist.html</code>
+    (item P0) or run <code>tests/events/live_new_pieces.py</code>. This checklist covers the ACTION half only.
+    Mark each item; status saves in this browser.</div>
+</header>
+
+<div class="bar"><div class="barin">
+  <div class="prog" id="prog"><i class="p" style="width:0"></i><i class="f" style="width:0"></i><i class="s" style="width:0"></i></div>
+  <div class="stat" id="stat">0 / 0</div>
+  <button class="btn" onclick="expandAll(true)">Expand all</button>
+  <button class="btn" onclick="expandAll(false)">Collapse</button>
+  <button class="btn" onclick="copyReport()">Copy report</button>
+  <button class="btn" onclick="resetAll()">Reset</button>
+</div></div>
+
+<div class="wrap">
+  <div class="cfg">
+    <h3>Your environment</h3>
+    <p>Filled into the commands/utterances below (saved in this browser).</p>
+    <div class="grid">
+      <div><label>Tester name</label><input id="c-tester" data-cfg="TESTER" placeholder="your name"></div>
+      <div><label>Machine / date</label><input id="c-machine" data-cfg="MACHINE" placeholder="macbook · 2026-07-18"></div>
+      <div><label>Public URL (ngrok)</label><input id="c-public" data-cfg="PUBLIC" value="https://pregnant-reveal-defile.ngrok-free.dev"></div>
+      <div><label>Your email (for 'email me')</label><input id="c-email" data-cfg="EMAIL" placeholder="you@example.com"></div>
+      <div><label>GitHub test repo</label><input id="c-repo" data-cfg="REPO" value="anupamamurthi/pachyderm"></div>
+      <div><label>Connected Gmail inbox</label><input id="c-inbox" data-cfg="INBOX" placeholder="cugatest@gmail.com"></div>
+    </div>
+  </div>
+  <div class="legend">
+    <span class="tag-live">ACTIONS ✓ live</span>= new, arms via the concierge today &nbsp;
+    <span class="tag-v2">ACTIONS ⚙ v2</span>= new, offline builder + tests (live arming next) &nbsp;
+    <span class="tag-ask">ASK path</span>= NL→Flow follow-up (new) &nbsp;
+    <span class="tag-trig">trigger-half</span>= pre-existing, shown for contrast
+  </div>
+  <div id="list"></div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Trigger+ACTION checklist. {{PUBLIC}} {{EMAIL}} {{REPO}} {{INBOX}} come from the config above.
+// who: 'you' (operator/CLI) | 'test' (chat verification). utt = a chat utterance (click to copy).
+const DATA = [
+{s:"A · Prereqs — server on THIS code + Gmail connected", d:"The action half needs (1) the events server running the current branch (the concierge action gate + ACTION VOCABULARY), and (2) a per-user Gmail OAuth connection — actions are push-only and Gmail is the pilot's acting app.", items:[
+  {id:"a1", who:"you", t:"Offline action suite green (registry + gate + direct-action executor)", do:"Pure-python — the registry, render_params/executor_input/executor_body, resolve_action, branch predicates, the concierge action gate, the direct-trigger executor plan + dispatch runner, dedup.",
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"60 passed"},
+  {id:"a2", who:"you", t:"Full offline suite still green", do:"No regressions across the whole events layer.",
+   cmd:"uv run python -m pytest tests/events/ -q -k 'not live'", exp:"259 passed · 0 failed"},
+  {id:"a3", who:"you", t:"Server runs the current branch", do:"The action vocabulary must be live. If the running server predates this branch, restart it (make up / cuga start demo --events). Verify the new examples are served.",
+   cmd:"curl -s -H 'x-user-id: admin' http://localhost:7860/api/events/examples | grep -o 'act-gmail-reply' | head -1", exp:"prints act-gmail-reply (else the server is stale — restart it)"},
+  {id:"a4", who:"you", t:"Gmail connected (per-user OAuth)", do:"Actions run as YOU. Open the connect URL, approve. Guide: events_docs/setup/GMAIL.md + setup_action.md.",
+   cmd:"open {{PUBLIC}}/api/events/connect/gmail\ncurl -s http://localhost:7860/api/events/integrations", exp:"gmail shows connected"},
+]},
+
+{s:"B · Sequential — single action", d:"One trigger → the agent answers → ONE connector action. The core implemented path; each arms through the concierge action gate. Say in the web chat.", items:[
+  {id:"b1", who:"test", t:"New issue → email me a triage summary", agent:"incident_triage", tag:"live",
+   utt:"when a new issue opens on {{REPO}}, email me a triage summary at {{EMAIL}}",
+   exp:"ARMED push (github/new_issue) then gmail/send_email (receiver={{EMAIL}})"},
+  {id:"b2", who:"test", t:"Labeled 'Invoices' → reply confirming receipt", agent:"mailbot", tag:"live",
+   utt:"when I get an email labeled 'Invoices', reply confirming receipt",
+   exp:"ARMED push (gmail/new_labeled_email [label=Invoices]) then gmail/reply_to_email"},
+  {id:"b3", who:"test", t:"PR opens → email me a one-line risk summary", agent:"pr_reviewer", tag:"live",
+   utt:"when a PR opens on {{REPO}}, email me a one-line risk summary at {{EMAIL}}",
+   exp:"ARMED push (github/new_pr [repo={{REPO}}]) then gmail/send_email — needs github+gmail connected"},
+  {id:"b4", who:"test", t:"Box file lands → email me name + uploader", agent:"resume_judge", tag:"live",
+   utt:"when a file lands in my Box folder, email me its name and uploader at {{EMAIL}}",
+   exp:"ARMED (box trigger) then gmail/send_email — cross-piece: box trigger, gmail action"},
+  {id:"b7", who:"test", t:"PR opens → review &amp; comment on the PR", agent:"pr_reviewer", tag:"v2",
+   utt:"when a PR opens on {{REPO}}, review it and comment on the PR",
+   do:"github/create_comment — same-app; issue_number resolves from the firing PR. Validates live in AP; Level-2 = a real PR posts a real comment.",
+   exp:"ARMED push (github/new_pr) then github/create_comment (issue_number={{'{{'}}trigger.pull_request.number{{'}}'}})"},
+  {id:"b8", who:"test", t:"Email → file a GitHub issue (cross-app)", agent:"mailbot", tag:"v2",
+   utt:"when an email arrives, file a github issue on {{REPO}} summarizing it",
+   do:"github/create_issue — cross-app (any trigger files an issue). Needs owner/repo; description = the agent answer.",
+   exp:"ARMED then github/create_issue (repository={{REPO}}, description=the answer)"},
+  {id:"b5", who:"test", t:"Reply to the sender (native reply)", agent:"mailbot", tag:"live",
+   utt:"when an email arrives, reply to the sender with a short acknowledgement",
+   exp:"ARMED then gmail/reply_to_email (message_id = the firing email)"},
+  {id:"b6", who:"test", t:"Draft a reply (safest — no send)", agent:"mailbot", tag:"live",
+   utt:"when I get a new email, draft a reply that summarizes my response",
+   exp:"ARMED then gmail/create_draft_reply — a DRAFT appears in the inbox on fire"},
+]},
+
+{s:"C · Sequential — multi-action (NATIVE Gmail, live)", d:"One trigger → SEVERAL Gmail actions in a row, chained after the agent. Native actions (send/reply/draft) arm as a VALID multi-step AP flow today.", items:[
+  {id:"c1", who:"test", t:"Email → email me a summary AND reply to the sender", agent:"mailbot", tag:"live",
+   utt:"when I get an email, email me a summary at {{EMAIL}} and reply to the sender",
+   exp:"ARMED … then gmail/send_email + gmail/reply_to_email (a valid 2-action AP flow)"},
+  {id:"c2", who:"test", t:"Email → draft a reply AND mark read (mixed — draft live, mark-read gated)", agent:"mailbot", tag:"v2",
+   utt:"when I get an email, draft a reply and mark it read",
+   do:"draft is native (live); mark_read is custom_api_call (gated) — the gate declines the raw one honestly.",
+   exp:"gate steers: 'mark_read needs a raw Gmail API call … reply/draft/send work today'"},
+]},
+
+{s:"C2 · DIRECT trigger → Gmail action (Option A — executor)", d:"Slack/Discord/Telegram triggers own NO Activepieces flow, so the Gmail action runs via a reusable EXECUTOR flow (catch_webhook ▸ gmail/send_email) CUGA fires after the agent answers — AP keeps the creds. Built + OFFLINE-verified 2026-07-20 (fake engine + benchmark); LIVE FIRE PENDING (no real Slack message → real Gmail send yet). Details: events_docs/todos_actions/direct_actions.md.", items:[
+  {id:"c2a", who:"test", t:"Slack #alerts message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when a message is posted in #alerts, email me a summary at {{EMAIL}}",
+   do:"slack is a DIRECT trigger → arms a direct watcher WITH an action_plan (executor). Offline-verified; live fire pending.",
+   exp:"ARMED direct watcher (slack/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2b", who:"test", t:"Discord #general message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when someone posts in #general on discord, email me a summary at {{EMAIL}}",
+   do:"same executor path as slack (discord gateway + slack events both pass engine to dispatch).",
+   exp:"ARMED direct watcher (discord/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2c", who:"test", t:"Telegram bot message → email me a summary", agent:"mailbot", tag:"v2",
+   utt:"when the telegram bot gets a link, email me a summary at {{EMAIL}}",
+   do:"rides the same inline-/invoke watcher seam automatically. NOTE: the action fires, but return-to-caller BACK to telegram is a known nuance (telegram delivers via AP).",
+   exp:"ARMED direct watcher (telegram/new_channel_message) … then run gmail/send_email via an executor flow"},
+  {id:"c2d", who:"you", t:"Unbuildable executor → declines loudly (no silent drop)", agent:"mailbot", tag:"v2",
+   do:"if the action app isn't connected in AP, the direct path REFUSES rather than arm a watcher that drops the action.",
+   cmd:"uv run python -m pytest tests/events/test_events_action_gate.py tests/events/test_events_direct_actions.py -q", exp:"pass — arms-via-executor + declines-when-unbuildable + the dispatch runner"},
+  {id:"c2e", who:"you", t:"Benchmark covers the 3 direct combos", agent:"—", tag:"v2",
+   do:"the NL→Flow benchmark now includes slack/discord/telegram → gmail; CORRECT_AT_ARM must stay 100%.",
+   cmd:"uv run python -m pytest tests/events/test_nl_to_flow_bench.py -q -s", exp:"22 cases · CORRECT_AT_ARM 100%"},
+]},
+
+{s:"D · Branched — answer-based (agent leads with a token)", d:"A router after the agent picks a path from the ANSWER text. Offline builder + unit tests support it (test_router_*); live branched arming is v2. See checklist section for the pytest proof.", items:[
+  {id:"d1", who:"you", t:"Resume → email me ONLY IF a MATCH", agent:"resume_judge", tag:"v2",
+   utt:"when a resume lands in Box, judge fit and email me only if it's a MATCH",
+   do:"The canonical branch (now generic): agent leads with MATCH/SKIP; router TEXT_STARTS_WITH → gmail / else stop.",
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py -q -k 'router_legacy or push_flow_with_branches'", exp:"pass — MATCH branch → gmail action, else stop"},
+  {id:"d2", who:"you", t:"Email → if 'urgent' Slack #urgent, else draft reply", agent:"mailbot", tag:"v2",
+   utt:"when an email arrives, if it mentions 'urgent' post to Slack #urgent, otherwise create a draft reply",
+   do:"Option B answer CONTAINS. Cross-piece branches (slack vs gmail).",
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py -q -k router_predicate_answer_contains", exp:"pass — TEXT_CONTAINS on the answer"},
+  {id:"d3", who:"you", t:"New issue → if bug email me, else draft 'thanks'", agent:"incident_triage", tag:"v2",
+   utt:"when a new issue opens, if it looks like a bug email me, otherwise just draft a 'thanks' reply",
+   do:"Agent classifies (bug/not) in its leading token; router routes to gmail send vs draft.",
+   exp:"builder: two branches, each a gmail action (v2 live)"},
+]},
+
+{s:"E · Branched — trigger-field-based (Option B only)", d:"The router tests a RAW trigger field — AP decides deterministically, no agent guesswork. Numeric + equality ops. Offline builder + tests; live arming v2.", items:[
+  {id:"e1", who:"you", t:"PR → if >300 lines email me, else reply 'small PR'", agent:"pr_reviewer", tag:"v2",
+   utt:"when a PR opens, if it changed more than 300 lines email me, otherwise reply 'small PR, auto-ok'",
+   do:"NUMBER_IS_GREATER_THAN on {{'{{'}}trigger.pull_request.changed_files{{'}}'}} — no agent involvement in the decision.",
+   cmd:"uv run python -m pytest tests/events/test_events_actions.py -q -k router_predicate_trigger_field_number", exp:"pass — numeric branch on the trigger field"},
+  {id:"e2", who:"you", t:"Email from ceo@ → email me now, else draft", agent:"mailbot", tag:"v2",
+   utt:"when an email arrives from ceo@company.com, email me immediately; otherwise draft a reply",
+   do:"EQUALS on {{'{{'}}trigger.message.from…{{'}}'}} — a trigger-field text condition.",
+   exp:"builder: equality branch → gmail send / else draft (v2 live)"},
+]},
+
+{s:"F · NL→Flow follow-ups — the ASK path (never silently wrong)", d:"Ambiguous or underspecified → ONE question, build nothing. The deterministic gates are the core safety story; the softer 'which?' asks are LLM-guided.", items:[
+  {id:"f1", who:"test", t:"'do something about it' → asks which action", agent:"pr_reviewer", tag:"ask",
+   utt:"when a PR opens on {{REPO}}, do something about it",
+   exp:"asks reply-on-the-PR / email you / post to Slack — does not guess (LLM-guided ask)"},
+  {id:"f2", who:"test", t:"'label it read-later' → Gmail can't natively", agent:"mailbot", tag:"ask",
+   utt:"when an email arrives, label it read-later",
+   exp:"unknown action → 'Gmail has no native label — reply/draft instead, or skip?' (deterministic reject)"},
+  {id:"f3", who:"test", t:"'tell the team' → asks which channel", agent:"support_digest", tag:"ask",
+   utt:"when a file lands in Box, tell the team",
+   exp:"asks which channel — Slack / Discord / email (sink ambiguous)"},
+  {id:"f4", who:"test", t:"'email me' with no address → asks", agent:"mailbot", tag:"ask",
+   utt:"when I get an email, email me about it",
+   exp:"'Who should I send the email to? Give an address.' — nothing armed (can't infer your own)"},
+]},
+
+{s:"F2 · No silent failures — the three gates", d:"An action flow only arms silently if THREE independent checks agree: deterministic build · AP validity · LLM intent-match. Any disagreement → ask, never a wrong/dead flow.", items:[
+  {id:"fx1", who:"test", t:"Unsupported verb → honest decline (not a silent plain watcher)", agent:"mailbot", tag:"live",
+   utt:"when I get an email, archive it",
+   exp:"declines: 'needs a raw Gmail API call that isn't armable yet — reply/draft/send work today' (also: label/forward/star/delete)"},
+  {id:"fx2", who:"you", t:"Arm-time AP validity gate", tag:"live",
+   do:"Every real arm fetches the flow and refuses to publish if AP marks any step invalid — so 'ARMED' never lies about a flow that can't fire. This retro-caught the send_email-invalid class.",
+   exp:"a would-be-invalid flow returns an error naming the bad step, not a false ARMED"},
+  {id:"fx3", who:"you", t:"LLM verifier (dual-path assurance)", tag:"live",
+   do:"Deterministic code BUILDS the plan; an independent LLM verifies it matches the request. Confident MISMATCH → ask; MATCH/unavailable → proceed (fail-open). Divergences logged to EVENTS_VERIFY_LOG. Toggle EVENTS_VERIFY_ACTIONS=0.",
+   exp:"a correct plan MATCHes + arms; a plan that drops/misdirects an action is flagged before arming"},
+  {id:"fx4", who:"you", t:"Benchmark gate (CORRECT_AT_ARM = 100%)", tag:"live",
+   do:"make bench — the labeled NL→Flow scorecard fails CI if any armed flow is the WRONG one.",
+   cmd:"make bench", exp:"CORRECT_AT_ARM 100% · gate_outcome 100%"},
+]},
+
+{s:"G · Per-channel + approval (arm & deliver where you asked)", d:"The request originates in a channel; the arm confirmation + delivery go back THERE. Items 15–16 are trigger/delivery (the pre-existing half) — shown for contrast; the action tag marks what's new.", items:[
+  {id:"g1", who:"test", t:"From Telegram: star → ping me here", agent:"repo_watcher", tag:"trig",
+   utt:"when {{REPO}} gets a star, ping me here",
+   do:"Send from Telegram (/automate …). Trigger→deliver, no gmail action — the existing trigger half.",
+   exp:"armed + delivered back in Telegram (approval question also lands in Telegram)"},
+  {id:"g2", who:"test", t:"From Slack: email from manager → DM me here", agent:"mailbot", tag:"trig",
+   utt:"@bot /automate when I get an email from my manager, DM me here",
+   do:"Send from Slack. Delivery to the origin channel — pre-existing; the NEW bit is if you ask it to ACT (reply/draft).",
+   exp:"armed + delivered in Slack; add 'reply to them' to make it an ACTION flow (tag→live)"},
+]},
+
+{s:"H · Dedup — the action is part of identity", d:"Two flows differing only by action must NOT collide; re-arming the same one reuses.", items:[
+  {id:"h1", who:"you", t:"Same action re-armed reuses; different action = new flow", agent:"mailbot", tag:"live",
+   do:"The concierge folds the action into dedup_key (and drops the chat sink when acting).",
+   cmd:"uv run python -m pytest tests/events/test_events_action_gate.py -q -k dedup", exp:"pass — reply reused, draft is a distinct flow"},
+  {id:"h2", who:"test", t:"Live: arm the same draft flow twice → REUSE", agent:"mailbot", tag:"live",
+   utt:"when I get a new email, draft a reply that summarizes my response",
+   exp:"'REUSING existing flow …' the 2nd time; a different action (send vs draft) arms a NEW flow"},
+]},
+
+{s:"I · Live proof + reference (add another app = DATA, not code)", d:"The live signals I can run without a browser step, plus the generic 'new piece' contract.", items:[
+  {id:"i1", who:"you", t:"LIVE arm probe against real Activepieces", tag:"live", do:"Arms a REAL AP flow with a Gmail action step, asserts it lands (piece + actionName + templates), deletes it. No server/tunnel/Gmail-OAuth needed.",
+   cmd:"uv run python tests/events/live_action_arm_probe.py", exp:"PASS — real AP flow carries the Gmail action step"},
+  {id:"i2", who:"you", t:"Draft rows from the LIVE AP catalog", do:"The generator reads GET /api/v1/pieces/<piece> and prints ready-to-verify Action rows.",
+   cmd:"uv run python scripts/gen_actions.py gmail\nuv run python scripts/gen_actions.py github", exp:"typed rows with required flags + a note on custom_api_call-only capabilities"},
+  {id:"i3", who:"you", t:"Full live action e2e (needs server on this branch + Gmail connected)", do:"Arms a real draft-reply flow via the concierge and asserts the AP flow CONTAINS the gmail action step; checks the no-recipient ASK.",
+   cmd:"EVENTS_SERVER_URL=http://localhost:7860 uv run python tests/events/live_gmail_action_e2e.py", exp:"PASS — action flow armed with a real Gmail action step"},
+]},
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+const LS="cuga-checklist-actions-v1", LSC="cuga-checklist-actions-cfg-v1";
+let state=JSON.parse(localStorage.getItem(LS)||"{}");
+let cfg=JSON.parse(localStorage.getItem(LSC)||"{}");
+function saveState(){localStorage.setItem(LS,JSON.stringify(state));}
+function saveCfg(){localStorage.setItem(LSC,JSON.stringify(cfg));}
+function sub(s){return (s||"").replace(/\{\{(\w+)\}\}/g,(m,k)=>cfg[k]||m);}
+function esc(s){return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// tag = which utterances are the NEW action work, and their status:
+//   'live'    ACTIONS ✓ live   — arms through the concierge action gate today (single action)
+//   'v2'      ACTIONS ⚙ v2     — offline builder + unit tests support it; live arming is the next increment
+//   'ask'     ASK path         — the NL→Flow follow-up (deterministic gate, part of the action work)
+//   'trig'    trigger-half     — pre-existing trigger/delivery, NOT new action work (shown for contrast)
+const TAGS={live:['tag-live','ACTIONS ✓ live'],v2:['tag-v2','ACTIONS ⚙ v2'],ask:['tag-ask','ASK path'],trig:['tag-trig','trigger-half']};
+function tagBadge(t){if(!t||!TAGS[t])return"";return `<span class="tag ${TAGS[t][0]}">${TAGS[t][1]}</span>`;}
+const allItems=DATA.flatMap(s=>s.items);
+
+document.querySelectorAll('[data-cfg]').forEach(inp=>{
+  const k=inp.dataset.cfg;
+  if(cfg[k]!==undefined) inp.value=cfg[k]; else cfg[k]=inp.value;
+  inp.addEventListener('input',()=>{cfg[k]=inp.value;saveCfg();render();});
+});
+saveCfg();
+
+function setStatus(id,st){
+  const cur=state[id]||{};
+  cur.st = (cur.st===st? "" : st);
+  state[id]=cur; saveState(); render();
+}
+function setNote(id,v){state[id]=state[id]||{};state[id].note=v;saveState();updateProgress();}
+
+function render(){
+  const host=document.getElementById('list');
+  host.innerHTML=DATA.map(sec=>{
+    const rows=sec.items.map(it=>{
+      const st=(state[it.id]||{}).st||"";
+      const note=(state[it.id]||{}).note||"";
+      const whoCls=it.who==='you'?'who-you':'who-test';
+      const whoTxt=it.who==='you'?'operator':'verify';
+      const cmd=it.cmd?`<pre class="cmd"><button class="cp" onclick="cpFrom(this)">copy</button>${esc(sub(it.cmd))}</pre>`:"";
+      const utt=it.utt?`<div class="utt" onclick="cp(this.dataset.u,this)" data-u="${esc(sub(it.utt))}">${esc(sub(it.utt))}</div>`:"";
+      const doo=it.do?`<div class="do">${esc(sub(it.do))}</div>`:"";
+      return `<div class="item ${st} ${note?'has-note':''}" id="row-${it.id}">
+        <div class="top">
+          <div class="num">${it.id.toUpperCase()}</div>
+          <div class="body">
+            <div class="t">${esc(it.t)}${it.agent?`<span class="agent">${esc(it.agent)}</span>`:""}${tagBadge(it.tag)}<span class="who ${whoCls}">${whoTxt}</span></div>
+            ${doo}${utt}${cmd}
+            ${it.exp?`<div class="exp">expect: <b>${esc(sub(it.exp))}</b></div>`:""}
+            <div class="sbtns">
+              <button class="sb pass ${st==='pass'?'on':''}" onclick="setStatus('${it.id}','pass')">✓ pass</button>
+              <button class="sb fail ${st==='fail'?'on':''}" onclick="setStatus('${it.id}','fail')">✗ fail</button>
+              <button class="sb skip ${st==='skip'?'on':''}" onclick="setStatus('${it.id}','skip')">– skip</button>
+              <button class="sb" onclick="document.getElementById('row-${it.id}').classList.toggle('has-note');const n=document.getElementById('note-${it.id}');if(n)n.focus();">note</button>
+            </div>
+            <textarea class="note" id="note-${it.id}" placeholder="note (saved)" oninput="setNote('${it.id}',this.value)">${esc(note)}</textarea>
+          </div>
+        </div></div>`;
+    }).join('');
+    const done=sec.items.filter(i=>(state[i.id]||{}).st==='pass').length;
+    const fail=sec.items.filter(i=>(state[i.id]||{}).st==='fail').length;
+    const pill = fail? `<span class="pill pill-part">${fail} fail</span>` : (done===sec.items.length? `<span class="pill pill-ok">done</span>` : `<span class="pill pill-none">${done}/${sec.items.length}</span>`);
+    const open = fail>0 || done<sec.items.length ? 'open' : '';
+    return `<details class="sec" ${open}><summary>${esc(sec.s)} ${pill}<span class="cnt">${done}/${sec.items.length} pass</span></summary>
+      ${sec.d?`<div class="secdesc">${esc(sub(sec.d))}</div>`:""}${rows}</details>`;
+  }).join('');
+  updateProgress();
+}
+function updateProgress(){
+  const n=allItems.length;
+  const p=allItems.filter(i=>(state[i.id]||{}).st==='pass').length;
+  const f=allItems.filter(i=>(state[i.id]||{}).st==='fail').length;
+  const s=allItems.filter(i=>(state[i.id]||{}).st==='skip').length;
+  const bar=document.getElementById('prog');
+  bar.children[0].style.width=(100*p/n)+'%';
+  bar.children[1].style.width=(100*f/n)+'%';
+  bar.children[2].style.width=(100*s/n)+'%';
+  document.getElementById('stat').textContent=`${p} pass · ${f} fail · ${s} skip · ${n-p-f-s} left  (of ${n})`;
+}
+function expandAll(v){document.querySelectorAll('details.sec').forEach(d=>d.open=v);}
+function resetAll(){if(confirm('Clear all statuses and notes on this machine?')){state={};saveState();render();}}
+function cp(text,el){navigator.clipboard.writeText(text).then(()=>{const o=el.style.background;el.style.background='#defbe6';setTimeout(()=>el.style.background=o,500);});}
+function cpFrom(btn){const pre=btn.parentElement;const t=pre.innerText.replace(/^copy\n?/,'');navigator.clipboard.writeText(t).then(()=>{btn.textContent='copied';setTimeout(()=>btn.textContent='copy',900);});}
+function copyReport(){
+  const lines=[`CUGA Events — trigger+action acceptance report`,
+    `tester: ${cfg.TESTER||'?'}   machine: ${cfg.MACHINE||'?'}`,
+    `public: ${cfg.PUBLIC||'?'}`,``];
+  DATA.forEach(sec=>{
+    lines.push(`## ${sec.s}`);
+    sec.items.forEach(it=>{
+      const s=(state[it.id]||{});
+      const mark={pass:'[x]',fail:'[FAIL]',skip:'[skip]'}[s.st]||'[ ]';
+      lines.push(`  ${mark} ${it.id.toUpperCase()} ${it.t}${it.agent?' ('+it.agent+')':''}${s.note?'  — '+s.note:''}`);
+    });
+    lines.push('');
+  });
+  const p=allItems.filter(i=>(state[i.id]||{}).st==='pass').length;
+  const f=allItems.filter(i=>(state[i.id]||{}).st==='fail').length;
+  lines.splice(3,0,`result: ${p} pass · ${f} fail · of ${allItems.length}`,'');
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>alert('Report copied to clipboard.'));
+}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="772" height="564" viewBox="0 0 772 564" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="772" height="564" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">FIRE ① — NOW (no flow, no AP)</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">A one-shot question. The answer IS the HTTP response. No integration credential involved.</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="119" y1="142" x2="119" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="162" height="46" rx="9" fill="#6b6866"/>
+<text x="119" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<line x1="297" y1="142" x2="297" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="216" y="96" width="162" height="46" rx="9" fill="#2b5fd9"/>
+<text x="297" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">CUGA</text>
+<text x="297" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">/invoke</text>
+<line x1="475" y1="142" x2="475" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="394" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
+<text x="475" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga → pricebot</text>
+<text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(supervisor picks)</text>
+<line x1="653" y1="142" x2="653" y2="540" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">MCP tool</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">server</text>
+<text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /invoke {agent, text, source:time/runonce}</text>
+<line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="386.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">runtime.run(agent, worker_input)</text>
+<line x1="297" y1="212" x2="468" y2="212" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="564.0" y="256" font-size="12" fill="#1c1b1a" text-anchor="middle">call get_crypto_price(...)</text>
+<line x1="475" y1="264" x2="646" y2="264" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="300" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
+<text x="386" y="320" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 the tool authenticates at the MCP server (its own key) — not via AP</text>
+<text x="564.0" y="352" font-size="12" fill="#1c1b1a" text-anchor="middle">result</text>
+<line x1="653" y1="360" x2="482" y2="360" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="386.0" y="404" font-size="12" fill="#1c1b1a" text-anchor="middle">answer + meta.mcp (tools that actually ran)</text>
+<line x1="475" y1="412" x2="304" y2="412" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="208.0" y="456" font-size="12" fill="#1c1b1a" text-anchor="middle">200 {answer, meta:{mcp,tools,ms}}</text>
+<line x1="297" y1="464" x2="126" y2="464" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+</svg>

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Event-Driven Agents — API Reference</title>
+<style>
+  :root{
+    --blue:#0f62fe; --blue-d:#0043ce; --ink:#161616; --ink2:#393939; --mut:#6f6f6f;
+    --line:#e0e0e0; --bg:#f4f4f4; --card:#fff; --ok:#24a148; --warn:#f1c21b; --part:#ff832b;
+    --pend:#8d8d8d; --road:#8a3ffc; --code:#f2f4f8;
+    --get:#24a148; --post:#0f62fe;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:28px 40px 22px}
+  header.top h1{margin:0 0 4px;font-size:24px;font-weight:600;letter-spacing:-.3px}
+  header.top .sub{color:#c6c6c6;font-size:14px;max-width:900px}
+  header.top .meta{margin-top:10px;font-size:12px;color:#a8a8a8}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px 80px}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--code);color:var(--blue)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:22px 0;padding:22px 26px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:5px;font-size:12px;padding:2px 8px;font-weight:600}
+  h3{font-size:15px;margin:18px 0 8px;color:var(--ink2)}
+  p.lead{color:var(--ink2);margin:2px 0 14px;max-width:940px}
+  table{width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  tbody tr:hover{background:#fafcff}
+  code,.mono{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+  .p-done{background:var(--ok)} .p-part{background:var(--part)} .p-pend{background:var(--pend)}
+  .p-road{background:var(--road)} .p-live{background:var(--blue)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .box{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:#fcfcfc}
+  .box h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  ul.tight{margin:6px 0;padding-left:18px} ul.tight li{margin:3px 0}
+  a.link{color:var(--blue);text-decoration:none} a.link:hover{text-decoration:underline}
+  .ep{border:1px solid var(--line);border-radius:8px;margin:12px 0;overflow:hidden}
+  .ep>.hd{display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fbfbfb;border-bottom:1px solid var(--line);cursor:pointer}
+  .ep>.hd .path{font-family:'IBM Plex Mono',monospace;font-size:13.5px;font-weight:600}
+  .ep>.hd .desc{color:var(--mut);font-size:12.5px;margin-left:auto;text-align:right}
+  .verb{display:inline-block;min-width:48px;text-align:center;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:700;color:#fff}
+  .v-get{background:var(--get)} .v-post{background:var(--post)}
+  .ep .body{padding:12px 16px}
+  pre.blk{background:var(--ink);color:#e8e8e8;border-radius:8px;padding:12px 14px;font-family:'IBM Plex Mono',monospace;
+       font-size:12px;line-height:1.6;overflow-x:auto;margin:8px 0}
+  pre.blk .k{color:#78a9ff} pre.blk .s{color:#a7f0ba} pre.blk .c{color:#8d8d8d}
+  .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;margin:10px 0 2px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink2);background:var(--code);border-radius:6px;padding:10px 14px;margin:10px 0}
+  @media print{nav.toc{display:none}section{break-inside:avoid}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CUGA Event-Driven Agents — API Reference</h1>
+  <div class="sub">Every HTTP endpoint the events layer exposes on CUGA's FastAPI server (behind
+    <code style="color:#9cf">EVENTS_ENABLED</code>): the <code style="color:#9cf">/invoke</code> seam, the concierge,
+    the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.
+    <br><b style="color:#fff">The action half (trigger ▸ agent ▸ ACTION) added no new endpoints</b> — it rides
+    <code style="color:#9cf">POST /api/concierge</code> at arm time; direct-trigger actions fire a reusable executor flow
+    internally. So this reference stays complete.</div>
+  <div class="meta">Source of truth: <code>src/cuga/backend/events/app.py</code> ·
+    <a class="link" style="color:#9cf" href="api_spec.html">▶ Full try-it API spec</a> ·
+    <a class="link" style="color:#9cf" href="../README.md">◀ Events docs</a> ·
+    <a class="link" style="color:#9cf" href="../SETUP.md">⚙ Setup</a> ·
+    <a class="link" style="color:#9cf" href="../slides.html">✦ Deck</a> ·
+    <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#conv">Conventions</a>
+  <a href="#core">Core (invoke · concierge)</a>
+  <a href="#studio">Studio read</a>
+  <a href="#slack">Direct (Slack · Box)</a>
+  <a href="#connect">Connect &amp; credentials</a>
+  <a href="#identity">Identity</a>
+  <a href="#admin">Admin</a>
+  <a href="#codes">Status codes</a>
+</nav>
+
+<div class="wrap">
+
+<!-- CONVENTIONS -->
+<section id="conv">
+  <h2><span class="n">0</span> Conventions</h2>
+  <div class="grid2">
+    <div class="box"><h4>Auth &amp; identity</h4><ul class="tight">
+      <li><b><code>/invoke</code></b> is gateway-only: requires header <code>X-Gateway-Token: &lt;GATEWAY_TOKEN&gt;</code>
+      (401 otherwise). It's the callback seam every AP flow / trigger uses.</li>
+      <li>All other endpoints resolve a <b>Principal</b> from headers (or a <code>scope</code>/<code>?scope=</code> override):
+      <code>tenant/instance/user</code>. Isolation is by scope — you only see your own subscriptions/connections.</li>
+      <li><b>Admin</b> endpoints (<code>/admin/*</code>) require an admin role in the user store → 403 otherwise.</li>
+    </ul></div>
+    <div class="box"><h4>Shapes</h4><ul class="tight">
+      <li>Requests &amp; responses are JSON. Errors are <code>{"ok":false,"error":"…"}</code> with a matching status.</li>
+      <li>Most write endpoints echo <code>{"ok":true, …}</code>; reads return the resource directly.</li>
+      <li>A <code>trace_id</code> rides on <code>/invoke</code> and <code>/api/concierge</code> for correlation.</li>
+    </ul></div>
+  </div>
+  <div class="legend"><b>Legend:</b>
+    <span><span class="verb v-get">GET</span> read</span>
+    <span><span class="verb v-post">POST</span> write</span>
+    <span><span class="pill p-live">Live-verified</span></span>
+    <span><span class="pill p-part">Wired</span></span>
+    <span><span class="pill p-done">Green</span></span>
+  </div>
+</section>
+
+<!-- CORE -->
+<section id="core">
+  <h2><span class="n">1</span> Core — the reasoning seam</h2>
+
+  <div class="ep">
+    <div class="hd"><span class="verb v-post">POST</span><span class="path">/invoke</span>
+      <span class="desc">the callback seam · gateway-token only</span></div>
+    <div class="body">
+      <p class="lead">Every trigger (AP flow, schedule, channel webhook) calls back here. <code>agent:"cuga"</code>
+      runs the <b>one agent</b> directly on the worker runtime — its supervisor picks the specialist internally
+      per wake-up; <code>agent:"concierge"</code> routes to the NL→flow router instead. (<code>cuga</code> is the
+      only addressable worker; a sub-agent name is not — it 404s as "unknown agent".) The reply carries a
+      <b>metadata footer</b> and structured <code>meta</code> (who answered + tools). This is also where
+      <b>direct-channel delivery</b> happens (see the callout below).</p>
+      <div class="lbl">Request body</div>
+<pre class="blk"><span class="k">{</span>
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>,               <span class="c">// the one agent · or "concierge" for the NL→flow router</span>
+  <span class="k">"text"</span>:  <span class="s">"what moved in crypto today?"</span>,
+  <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123"</span>,   <span class="c">// conversation key; gw:&lt;channel&gt;:&lt;native&gt; for channels</span>
+  <span class="k">"deliver"</span>: <span class="k">false</span>,             <span class="c">// true → CUGA owns delivery (direct channel or EA_CAPTURE_URL)</span>
+  <span class="k">"scope"</span>: <span class="s">"acme/inst/alice"</span>,      <span class="c">// optional tenant scope (set by AP when the flow was armed)</span>
+  <span class="k">"source"</span>: <span class="k">{</span> <span class="k">"type"</span>: <span class="s">"channel"</span>, <span class="k">"name"</span>: <span class="s">"slack"</span>, <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123#169.9"</span>, <span class="k">"user"</span>: <span class="s">"U_ALICE"</span> <span class="k">}</span>, <span class="c">// user = the AUTHOR → per-user identity; #&lt;ts&gt; = per-thread memory</span>
+  <span class="k">"event"</span>:  <span class="k">{</span> <span class="k">"kind"</span>: <span class="s">"message"</span>, <span class="k">"payload"</span>: <span class="k">{}</span> <span class="k">}</span>
+<span class="k">}</span></pre>
+      <div class="lbl">Response</div>
+<pre class="blk"><span class="k">{</span>
+  <span class="k">"ok"</span>: <span class="k">true</span>,
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>,
+  <span class="k">"answer"</span>: <span class="s">"Bitcoin +3.1% …\n\n— cuga · via cuga-finance · 4.2s"</span>,
+  <span class="k">"trace_id"</span>: <span class="s">"tr_…"</span>,
+  <span class="k">"meta"</span>: <span class="k">{</span> <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"backend"</span>: <span class="s">"cuga"</span>, <span class="k">"hint"</span>: <span class="s">"pricebot"</span>, <span class="c">// supervisor's internal pick</span>
+            <span class="k">"mcp"</span>: [<span class="s">"cuga-finance"</span>], <span class="k">"tools"</span>: [<span class="s">"…"</span>], <span class="k">"ms"</span>: <span class="s">4200</span> <span class="k">}</span>
+<span class="k">}</span></pre>
+      <p class="lead"><b>Also handles:</b> account-linking (<code>/start &lt;token&gt;</code> / <code>/link &lt;token&gt;</code> from a channel
+      binds the sender's native id → profile), and <code>EVENTS_REPLY_METADATA=0</code> to suppress the footer.</p>
+      <div class="box" style="border-left:3px solid var(--blue)">
+        <h4>Direct-channel delivery (deliver=true)</h4>
+        <p class="lead" style="margin:0">When <code>deliver:true</code> and <code>source.type=="channel"</code> and the
+        channel's backend is <b>direct</b> (<code>delivery.is_direct</code>, e.g. Slack), CUGA sends the answer itself via
+        <code>delivery.send_direct → slack_direct.chat.postMessage</code> — <b>no AP send-step</b>. Otherwise, if
+        <code>EA_CAPTURE_URL</code> is set, the answer is POSTed there (assertable e2e/web sink).</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="ep">
+    <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/concierge</span>
+      <span class="desc">NL → flow (LLM router) · <code>?dry_run=1</code> for the deterministic plan</span></div>
+    <div class="body">
+      <p class="lead">The human-facing concierge entry. <code>?dry_run=1</code> returns the deterministic planner's
+      decision with <b>no side effects</b> (great for tests/UI preview). Live path runs the LLM concierge (reuse/create
+      + run/arm a flow).</p>
+      <p class="lead"><b>Slash commands</b> are handled here too (<code>concierge.run</code>, same handler from any
+      surface — web chat or channels): <code>/automate &lt;what&gt;</code> is the router-driven one — its heuristic
+      classifier picks the trigger mode (<b>push / cron / poll</b>) from the phrasing, e.g.
+      <code>/automate summarize new emails and message me</code> → PUSH,
+      <code>/automate the market brief every weekday at 8am</code> → CRON,
+      <code>/automate check bitcoin every 5 min on a move</code> → POLL. Five hidden overrides force a mode
+      (<code>/watch</code> = <code>/automate</code>, <code>/push</code>, <code>/schedule</code>, <code>/cron</code>,
+      <code>/poll</code>). Manage the armed flows via the lifecycle endpoints below
+      (<code>subscriptions/&lt;id&gt;/pause · /resume</code>, <code>DELETE subscriptions/&lt;id&gt;</code>,
+      <code>flows/console</code>).</p>
+      <div class="lbl">Request</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"text"</span>: <span class="s">"every weekday 8am post a market brief to slack"</span>,
+  <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"thread_id"</span>: <span class="s">"web:local"</span> <span class="k">}</span></pre>
+      <div class="lbl">Response (live)</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"reply"</span>: <span class="s">"ARMED cron for market_briefer → slack (AP flow …)"</span>,
+  <span class="k">"scope"</span>: <span class="s">"acme/inst/alice"</span>, <span class="k">"trace_id"</span>: <span class="s">"tr_…"</span> <span class="k">}</span></pre>
+      <div class="lbl">Response (<code>?dry_run=1</code>)</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"dry_run"</span>: <span class="k">true</span>, <span class="k">"decision"</span>: <span class="k">{</span> <span class="k">"mode"</span>: <span class="s">"CRON"</span>, … <span class="k">}</span>, <span class="k">"flow"</span>: <span class="k">{</span>…<span class="k">}</span> <span class="k">}</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- STUDIO READ -->
+<section id="studio">
+  <h2><span class="n">2</span> Studio read endpoints <span class="tag">the dumb UI's data contract</span></h2>
+  <p class="lead">The Studio renders exactly what the backend reports — no client-side business logic. All are
+  <span class="verb v-get">GET</span>, all scope-isolated, all return <code>200</code> even when AP is down (status → <code>unknown</code>, never 500).</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Returns</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/events/status</code></td><td><code>{enabled, worker_backend, concierge_backend, ap_configured, project_grain, features:{now,cron,poll,push,channels_inbound}}</code></td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/subscriptions</code></td><td><code>{scope, subscriptions:[…]}</code> — this principal's standing flows</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/pause</code><br><code>POST /api/events/subscriptions/&lt;id&gt;/resume</code></td><td>pause/resume a flow — disables/enables it in Activepieces, not just in CUGA's row. <code>404</code> (never <code>403</code>) for another principal's id, so ids don't leak across tenants</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>DELETE /api/events/subscriptions/&lt;id&gt;</code></td><td>delete a flow — removes it from Activepieces too</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/subscriptions/&lt;id&gt;/flow</code></td><td>rich flow detail: the CUGA model + the live AP flow JSON (trigger + steps)</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/run</code> <span class="tag">debug · real side effects</span></td><td><b>Fire an armed flow now</b>, out of band of its own trigger — so a 9am cron is testable at 3pm. Returns the run and the agent's <code>answer</code> (<code>?wait=0</code> to fire and forget). <b>Not a dry run:</b> it delivers to the flow's real sink. <code>409</code> if the flow is dangling; disable with <code>EVENTS_DEBUG_RUN=0</code></td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/synth-fire</code> <span class="tag">debug · connection-free</span></td><td><b>Synthetically fire ANY AP trigger</b> with a piece-exact payload at the <code>/invoke</code> seam — no Activepieces flow, no connection, no real event. The way to test a polling/AP trigger (calendar · pinterest · youtube · rss · gmail · box) whose real fire needs a live connection. Body: <code>{source, event?, prompt?, agent?, payload?, deliver_to?, deliver_target?}</code>; <code>payload</code> defaults to the registry <code>synth</code> sample. Disable with <code>EVENTS_DEBUG_RUN=0</code></td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/flows/console</code></td><td>the self-contained <b>Flows console</b> page (list · pause/resume · delete · view)</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/channels</code></td><td><code>{channels:[{name,status}]}</code> — web/telegram/discord/slack connect state</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/integrations</code></td><td><code>{integrations:[{name,status,backend,auto_connect_pending}]}</code> — box/github/gmail/slack connection state; now also returns <code>backend</code> (via AP vs direct) and an <code>auto_connect_pending</code> status</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/runs</code></td><td>execution log: AP flow-runs joined with subscriptions (agent/mode/integration/channel/status) + per-run output</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/runs/&lt;run_id&gt;</code></td><td><code>{run:{id,status,started_at,finished_at}, answer, trigger_payload, error}</code> — one run, with the agent's <b>answer</b> lifted out of <code>steps.&lt;n&gt;.output.body.answer</code> and the raw event that fired it. <code>404</code> when the run's flow isn't yours</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/agents</code></td><td>read-only ROSTER view — the sub-agents of the one <code>cuga</code> agent, from <code>supervisor_agents.yaml</code> (name, prompt, tools). Nothing here is addressable</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/agents</code> · <code>PUT /api/events/agents/&lt;name&gt;</code> <span class="tag">builder or admin</span></td><td><b>RETIRED (410)</b> in the single-agent world — sub-agents are defined in <code>supervisor_agents.yaml</code> (canonical CUGA-main schema): edit the file + <code>make reload</code>. <code>GET /api/events/agents</code> remains the read-only roster view. <code>403</code> without the builder role, <code>400</code> on a bad spec</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/mcp-servers</code></td><td><code>{servers:[{name,tools:[…]}]}</code> — the tool inventory agents draw on; the Studio's agent editor populates its MCP picker from this</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/docs/&lt;page&gt;</code></td><td>serve an API reference page for the Studio's API tab to embed: <code>api</code>=api.html, <code>spec</code>=api_spec.html, <code>examples</code>=examples.html, <code>slides</code>=the event-driven-agents deck (events_docs/slides.html), <code>nlflow</code>=the NL→Flow explainer (events_docs/nl_to_flow.html). Files resolve from <code>events_docs/api/</code> (override with <code>EVENTS_DOCS_DIR</code>); <code>404</code> for any other page name</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/examples</code></td><td>tagged catalog examples (channel/integration/trigger/phase/live) for the UI</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/triggers</code></td><td>the trigger registry — every <code>(integration, event)</code> the platform can watch, grouped per app with backend (<code>ap</code>/<code>direct</code>), fire mode and config slots. Generated from <code>triggers.py</code>; drives the Studio agent editor's trigger picker and the slides deck</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/setup-guides</code></td><td>per-connector setup guide with live <code>public_url</code>, cred <code>present</code> status, derived <code>connect</code> type (direct/oauth/token/none)</td><td><span class="pill p-live">Live</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- SLACK DIRECT -->
+<section id="slack">
+  <h2><span class="n">3</span> Direct (AP-free) surfaces — Slack · Discord · (Box opt-in)</h2>
+  <p class="lead"><b>Discord</b> runs a <b>Gateway WebSocket bot</b> (not an HTTP endpoint): a
+  background task launched from the server lifespan that holds a connection to Discord and, on each
+  message, calls <code>/invoke</code> then replies via the REST API. Default backend (AP polling
+  behind <code>EVENTS_DISCORD_BACKEND=ap</code>); it needs no public URL. Arm returns
+  <code>{backend:"direct"}</code> — nothing to configure.</p>
+  <div class="ep">
+    <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/slack/events</span>
+      <span class="desc">Slack Events API target (this is CUGA, not AP)</span></div>
+    <div class="body">
+      <p class="lead">Point your Slack app's <b>Event Subscriptions → Request URL</b> here (subscribe bot event
+      <code>message.channels</code>). Handles the one-time <code>url_verification</code> challenge, verifies the Slack
+      signature (<code>SLACK_SIGNING_SECRET</code>), filters bot/edit messages, and for a real human message calls
+      <code>/invoke(concierge)</code> then posts the reply via <code>chat.postMessage</code>.</p>
+      <div class="lbl">url_verification handshake</div>
+<pre class="blk"><span class="c">// Slack sends:</span>
+<span class="k">{</span> <span class="k">"type"</span>: <span class="s">"url_verification"</span>, <span class="k">"challenge"</span>: <span class="s">"abc123"</span> <span class="k">}</span>
+<span class="c">// CUGA echoes the challenge back as text/plain → 200</span></pre>
+      <div class="lbl">event_callback</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"type"</span>: <span class="s">"event_callback"</span>,
+  <span class="k">"event"</span>: <span class="k">{</span> <span class="k">"type"</span>: <span class="s">"message"</span>, <span class="k">"text"</span>: <span class="s">"hi"</span>, <span class="k">"channel"</span>: <span class="s">"C123"</span>, <span class="k">"user"</span>: <span class="s">"U1"</span> <span class="k">}</span> <span class="k">}</span>
+<span class="c">// → {"ok":true} immediately; the answer is posted back asynchronously.</span></pre>
+      <p class="lead"><b>Env:</b> <code>SLACK_BOT_TOKEN</code> (required) · <code>SLACK_SIGNING_SECRET</code> (recommended).
+      Set <code>EVENTS_SLACK_BACKEND=ap</code> to use the parked AP path instead. See
+      <a class="link" href="../decisions/0008-direct-backends-for-channels.md">ADR-0008</a> for the
+      two-backend story.</p>
+    </div>
+  </div>
+
+  <div class="ep">
+    <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/box/poll</span>
+      <span class="desc">Box direct poll — <b>opt-in</b> (<code>EVENTS_BOX_BACKEND=direct</code>) · gateway-token only</span></div>
+    <div class="body">
+      <p class="lead">Poll a Box folder for <b>new files</b> and fire the watcher agent on each — the
+      direct Box path that sidesteps AP's OAuth wall <i>and</i> the paid-app webhook. Box's REST API
+      takes a bearer token directly (<code>BOX_DEV_TOKEN</code>, a ~60-min dev token — no OAuth app,
+      no redirect URI, no Gmail). A schedule/cron can drive this endpoint. New files are dispatched
+      through <code>/invoke</code>; <code>deliver_to</code> a <b>direct</b> channel (Slack) uses
+      direct-channel delivery — so the whole chain is AP-free.</p>
+      <div class="lbl">Request body</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"folder_id"</span>: <span class="s">"0"</span>,           <span class="c">// Box folder to watch (0 = All Files root)</span>
+  <span class="k">"since"</span>: <span class="s">"2026-07-06T00:00:00-07:00"</span>, <span class="c">// created_at baseline (null → all files)</span>
+  <span class="k">"agent"</span>: <span class="s">"resume_judge"</span>,
+  <span class="k">"deliver_to"</span>: <span class="s">"slack"</span>          <span class="c">// optional: a DIRECT channel sink (CUGA sends)</span>
+<span class="k">}</span></pre>
+      <div class="lbl">Response</div>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"folder"</span>: <span class="s">"0"</span>,
+  <span class="k">"processed"</span>: [ <span class="k">{</span> <span class="k">"id"</span>: <span class="s">"9"</span>, <span class="k">"name"</span>: <span class="s">"resume.pdf"</span> <span class="k">}</span> ],
+  <span class="k">"newest"</span>: <span class="s">"2026-07-06T11:00:00-07:00"</span>  <span class="c">// store as the next `since`</span> <span class="k">}</span></pre>
+      <p class="lead"><b>Env:</b> <code>BOX_DEV_TOKEN</code> or <code>EVENTS_BOX_TOKEN</code>. Verify with
+      <code>tests/events/live_box_direct_check.py</code>. Returns <code>502</code> if the token is
+      expired/invalid (Box list fails) so a stale token is loud, not silent.</p>
+    </div>
+
+    <div class="ep">
+      <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/hook/&lt;name&gt;</span>
+        <span class="desc">generic inbound webhook — no AP, no piece, no connection</span></div>
+      <p class="lead">Any external system (monitoring, CI, a form, a payment provider) POSTs JSON to
+      <code>&lt;EVENTS_PUBLIC_URL&gt;/api/events/hook/&lt;name&gt;</code>. CUGA serialises the payload into
+      a prompt, runs an agent on it, and optionally delivers the result to a channel. It is a thin
+      wrapper over the same <code>/invoke</code> seam every AP flow uses.</p>
+      <p class="lead"><b>Choosing the agent — two ways:</b></p>
+      <ul class="lead" style="margin-top:-6px">
+        <li><b>PINNED</b> — <code>?agent=&lt;agent&gt;</code> (default <code>incident_triage</code>). This
+          exact agent handles every event. Deterministic; best for a high-volume, known source.</li>
+        <li><b>ROUTED</b> — <code>?route=1</code> (aliases <code>true</code>/<code>llm</code>). CUGA picks
+          the best-fit agent <b>the same way the chat concierge does</b> — the caller need not know the
+          agent catalog. It can't ask a clarifying question, so it falls back to a generic triage if
+          nothing fits. The chosen agent is echoed back as <code>agent</code>. Costs one router pass.</li>
+      </ul>
+      <p class="lead"><b>Other query:</b> <code>?deliver_to=&lt;channel&gt;</code> + <code>?target=&lt;native id&gt;</code>
+      to post the result into e.g. a Slack channel · <code>?key=</code> — <b>required</b> iff
+      <code>EVENTS_WEBHOOK_KEY</code> is set, compared with <code>hmac.compare_digest</code>. Unset key ⇒
+      the endpoint is open to anyone who finds the public URL.</p>
+<pre class="blk"><span class="c"># PINNED — you name the agent</span>
+curl -X POST "$PUBLIC/api/events/hook/monitoring?agent=incident_triage&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
+  -H 'content-type: application/json' \
+  -d '{"alert":"HighCPU","service":"checkout-api","value":97,"threshold":85}'
+
+<span class="c"># ROUTED — lands on the ONE agent (cuga); its supervisor picks the specialist</span>
+curl -X POST "$PUBLIC/api/events/hook/stripe?route=1&amp;deliver_to=slack&amp;target=C0BEYJ9NATB&amp;key=$K" \
+  -H 'content-type: application/json' \
+  -d '{"type":"charge.dispute.created","amount":48000,"reason":"fraudulent"}'</pre>
+<pre class="blk"><span class="k">{</span> <span class="k">"ok"</span>: <span class="k">true</span>, <span class="k">"webhook"</span>: <span class="s">"stripe"</span>, <span class="k">"routed"</span>: <span class="k">true</span>,
+  <span class="k">"agent"</span>: <span class="s">"incident_triage"</span>, <span class="c">// ← the concierge's pick</span> <span class="k">"answer"</span>: <span class="s">"P1 — payment dispute…"</span> <span class="k">}</span></pre>
+      <p class="lead"><code>401</code> bad/missing <code>?key</code> · <code>502</code> the internal
+      <code>/invoke</code> call failed. An empty body is accepted — the agent is told
+      <code>(empty body)</code> rather than the request being rejected.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CONNECT / CREDS -->
+<section id="connect">
+  <h2><span class="n">4</span> Connect &amp; credentials</h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/events/connect/{app}</code></td><td>Begin connecting the caller's own account. <b>OAuth</b> app → 302 redirect to consent; <b>token</b> app → tells the UI to POST a token. <code>?ownership=tenant|per-user</code>, <code>?agent=</code>, <code>?return=</code>.</td></tr>
+      <tr><td><code>GET /api/events/connect/{app}/callback</code></td><td>OAuth redirect target — passes the <b>code</b> to AP (<code>ensure_oauth_connection</code>; AP does the exchange) and creates the connection. Honors <code>ownership</code> from state.</td></tr>
+      <tr><td><code>POST /api/events/connect/{app}/token</code></td><td>Paste a raw token → a SECRET_TEXT AP connection. <b>Token pieces only</b> (Telegram / Discord bot tokens). OAuth pieces (gmail · box · <b>github</b> · slack) get a clear <code>400</code> pointing to the OAuth login. Body <code>{token, ownership?}</code>.</td></tr>
+      <tr><td><code>GET /api/events/connections</code></td><td>The caller's own AP connections (which integrations they've logged into).</td></tr>
+    </tbody>
+  </table>
+  <div class="box" style="margin-top:10px;border-left:3px solid var(--part)">
+    <h4>The AP OAuth wall (why token-paste fails for Box/Gmail/Slack-ap)</h4>
+    <p class="lead" style="margin:0">AP 0.82's <code>UpsertOAuth2Request</code> schema <b>requires the authorization code</b>
+    and does the token exchange itself — it refuses a pre-obtained access/dev/bot token. So OAuth pieces must go through
+    the consent flow (<code>connect/{app}</code> → callback). This is exactly why Slack ships a <b>direct</b> backend that
+    takes the bot token without AP.</p>
+  </div>
+</section>
+
+<!-- IDENTITY -->
+<section id="identity">
+  <h2><span class="n">5</span> Identity &amp; account-linking</h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/events/me</code></td><td>The caller's profile: <code>{user_id, email, roles, linked_channels, connections}</code>.</td></tr>
+      <tr><td><code>POST /api/events/link/{channel}</code></td><td>Issue a link token from the authenticated profile → <code>{token, how}</code>. The user sends it to the bot (<code>/start</code> / <code>/link</code>) to bind their channel-native id → this account (decision 0007).</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ADMIN -->
+<section id="admin">
+  <h2><span class="n">6</span> Admin <span class="tag">admin role required · 403 otherwise</span></h2>
+  <table>
+    <thead><tr><th>Endpoint</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/events/admin/users</code></td><td>List users in the tenant.</td></tr>
+      <tr><td><code>POST /api/events/admin/users</code></td><td>Add a user. Body <code>{user_id, email?, roles?, password?}</code>.</td></tr>
+      <tr><td><code>POST /api/events/admin/channels/{channel}/arm</code></td><td>Arm a channel INBOUND flow. <b>Slack (direct):</b> nothing to arm in AP — returns <code>{backend:"direct", events_url, signature_verification, note}</code>. Other channels build an AP inbound flow (Discord passes <code>{channel:"&lt;id&gt;"}</code> to poll).</td></tr>
+      <tr><td><code>GET /api/events/admin/oauth-apps</code></td><td>Which OAuth providers have client id/secret configured (via UI or .env). <b>No secrets returned.</b></td></tr>
+      <tr><td><code>POST /api/events/admin/oauth-apps</code></td><td>Enter a provider's OAuth client id/secret once (UI instead of .env).</td></tr>
+      <tr><td><code>POST /api/events/admin/credential</code></td><td>Set/modify one connector credential (its <code>.env</code> var) from the Studio. Whitelisted to known connector keys; reports live-vs-reload.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- STATUS CODES -->
+<section id="codes">
+  <h2><span class="n">7</span> Status codes</h2>
+  <table>
+    <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>200</code></td><td>OK. Read endpoints return 200 even when AP is unreachable (status fields degrade to <code>unknown</code>).</td></tr>
+      <tr><td><code>302</code></td><td>OAuth consent redirect (<code>connect/{app}</code> for an OAuth app).</td></tr>
+      <tr><td><code>400</code></td><td>Bad request — e.g. token-paste to an OAuth piece, missing <code>token</code>/<code>user_id</code>, no <code>SLACK_BOT_TOKEN</code>.</td></tr>
+      <tr><td><code>401</code></td><td><code>/invoke</code> with a bad/missing <code>X-Gateway-Token</code>.</td></tr>
+      <tr><td><code>403</code></td><td>Admin endpoint without an admin role.</td></tr>
+      <tr><td><code>404</code></td><td>Unknown agent (<code>/invoke</code>) or unknown app (connect).</td></tr>
+      <tr><td><code>501</code></td><td>A dependency isn't configured (concierge / AP engine / identity / user store absent).</td></tr>
+      <tr><td><code>500</code></td><td>Unhandled error — always <code>{"ok":false,"error":"…"}</code> with a trace.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+</body>
+</html>

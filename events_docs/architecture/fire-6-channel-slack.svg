@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="772" height="512" viewBox="0 0 772 512" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="772" height="512" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">FIRE ⑥ — Channel · Slack (direct backend)</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">No AP. Slack's Events API → CUGA, signature-verified → concierge → reply in-thread.</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="119" y1="142" x2="119" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="162" height="46" rx="9" fill="#6b6866"/>
+<text x="119" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<line x1="297" y1="142" x2="297" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="216" y="96" width="162" height="46" rx="9" fill="#8a8785"/>
+<text x="297" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Slack</text>
+<line x1="475" y1="142" x2="475" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="394" y="96" width="162" height="46" rx="9" fill="#2b5fd9"/>
+<text x="475" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">CUGA</text>
+<line x1="653" y1="142" x2="653" y2="488" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="572" y="96" width="162" height="46" rx="9" fill="#1a7f4b"/>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">cuga</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(the one agent)</text>
+<text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">type a message in the channel</text>
+<line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="386.0" y="204" font-size="12" fill="#1c1b1a" text-anchor="middle">POST /api/events/slack/events  (signed)</text>
+<line x1="297" y1="212" x2="468" y2="212" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="248" width="712" height="30" rx="6" fill="#fdecea" stroke="#c0392b" stroke-opacity="0.55"/>
+<text x="386" y="268" font-size="12" fill="#c0392b" text-anchor="middle" font-style="italic">🔑 CUGA verifies X-Slack-Signature with SLACK_SIGNING_SECRET; ack &lt;3s</text>
+<text x="564.0" y="300" font-size="12" fill="#1c1b1a" text-anchor="middle">background: /invoke via the concierge</text>
+<line x1="475" y1="308" x2="646" y2="308" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="564.0" y="352" font-size="12" fill="#1c1b1a" text-anchor="middle">answer</text>
+<line x1="653" y1="360" x2="482" y2="360" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="386.0" y="404" font-size="12" fill="#1c1b1a" text-anchor="middle">chat.postMessage in-thread  (SLACK_BOT_TOKEN)</text>
+<line x1="475" y1="412" x2="304" y2="412" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+</svg>
