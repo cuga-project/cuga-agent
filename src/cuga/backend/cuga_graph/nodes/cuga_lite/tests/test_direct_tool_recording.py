@@ -50,7 +50,9 @@ async def test_direct_tool_calls_recorded_in_order_with_args_and_results():
     assert calls[1]["arguments"] == {"x": 4}
     assert calls[1]["result"] == {"value": 12}
 
-    # positional arguments are preserved in the trace too
+    # Positional args are preserved too. Without a schema (no param_names) they
+    # fall back to positional keys; prepare_node passes the tool's real parameter
+    # names — see test_prepare_node_direct_tool_recording.py.
     ToolCallTracker.start_tracking(enabled=True)
     assert await async_tool(7) == {"value": 14}
     calls = ToolCallTracker.stop_tracking()

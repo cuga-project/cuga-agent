@@ -22,6 +22,8 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+
 _tool_calls_context: contextvars.ContextVar[List[Dict[str, Any]]] = contextvars.ContextVar(
     "tool_calls", default=None
 )
@@ -120,6 +122,7 @@ def make_recording_awaitable(
     awaitable_func: Callable[..., Any],
     tool_name: str,
     app_name: Optional[str] = None,
+    param_names: Optional[List[str]] = None,
 ) -> Callable[..., Any]:
     """Wrap an already-awaitable tool function so each call is recorded.
 
@@ -127,6 +130,9 @@ def make_recording_awaitable(
     tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
     tools record in the event-loop context, where this tracker's contextvars
     are visible. Recording is a no-op unless a tracking session is active.
+
+    ``param_names`` (from the tool's args schema) maps positional arguments to
+    their real parameter names, so traces read the same as registry-tool traces.
     """
 
     @functools.wraps(awaitable_func)
@@ -145,7 +151,7 @@ def make_recording_awaitable(
             duration_ms = (time.time() - start_time) * 1000
             ToolCallTracker.record_call(
                 tool_name=tool_name,
-                arguments={**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs},
+                arguments=merge_tool_call_args(args, kwargs, param_names or []),
                 result=result,
                 app_name=app_name,
                 operation_id=tool_name,
@@ -256,6 +262,11 @@ def tracked_tool(
                     duration_ms=duration_ms,
                     error=error_msg,
                 )
+
+        # Mark so callers that add their own recording (e.g. prepare_node's
+        # direct-tool wrapper) can avoid recording the same call twice.
+        async_wrapper._cuga_tracked = True
+        sync_wrapper._cuga_tracked = True
 
         if asyncio.iscoroutinefunction(func):
             return async_wrapper  # type: ignore
