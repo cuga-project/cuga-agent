@@ -592,8 +592,12 @@ function FlowDetail({ detail }: { detail: any }) {
         <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
         <Tag type={s.status === "paused" ? "gray" : "green"} size="sm">{s.status}</Tag>
         {s.flow_name && <Tag type="outline" size="sm">{s.flow_name}</Tag>}
+        {s.read_only && <Tag type="cool-gray" size="sm">
+          Managed by {String(s.managed_by || "CUGA").replaceAll("_", " ")}
+        </Tag>}
       </p>
       <p className="studio-muted" style={{ fontSize: 13 }}>{s.prompt}</p>
+      {s.config?.schedule && <p><strong>Schedule</strong><br />{s.config.schedule}</p>}
       <h5 style={{ margin: "16px 0 6px" }}>Activepieces flow steps</h5>
       {ap ? (
         <ol style={{ paddingLeft: 18, margin: 0 }}>
@@ -677,16 +681,19 @@ function FlowsTab({ refresh }: { refresh: number }) {
               <div className="studio-card-foot">
                 <Tag type="outline" size="sm">{s.backend}</Tag>
                 <Tag type={paused ? "gray" : "green"} size="sm">{s.status}</Tag>
+                {s.read_only && <Tag type="cool-gray" size="sm">Read-only</Tag>}
                 {s.deliver_to?.length > 0 && <Tag type="blue" size="sm">→ {s.deliver_to.join(", ")}</Tag>}
               </div>
               <div style={{ display: "flex", gap: 4, marginTop: 12, flexWrap: "wrap" }}>
                 <Button size="sm" kind="ghost" renderIcon={View}
                   onClick={() => view(s.id)} disabled={busy === s.id}>View</Button>
-                <Button size="sm" kind="ghost" renderIcon={paused ? Play : Pause}
-                  onClick={() => act(s.id, paused ? api.resumeFlow : api.pauseFlow)}
-                  disabled={busy === s.id}>{paused ? "Resume" : "Pause"}</Button>
-                <Button size="sm" kind="danger--ghost" renderIcon={TrashCan}
-                  onClick={() => del(s.id, s.flow_name || s.id)} disabled={busy === s.id}>Delete</Button>
+                {!s.read_only && <>
+                  <Button size="sm" kind="ghost" renderIcon={paused ? Play : Pause}
+                    onClick={() => act(s.id, paused ? api.resumeFlow : api.pauseFlow)}
+                    disabled={busy === s.id}>{paused ? "Resume" : "Pause"}</Button>
+                  <Button size="sm" kind="danger--ghost" renderIcon={TrashCan}
+                    onClick={() => del(s.id, s.flow_name || s.id)} disabled={busy === s.id}>Delete</Button>
+                </>}
               </div>
             </Tile>
           );

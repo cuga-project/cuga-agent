@@ -490,6 +490,66 @@ class APEngine:
                                                    if direct_source else "none"))
         return flow_id
 
+    async def create_callback_schedule_flow(
+        self,
+        *,
+        name: str,
+        callback_url: str,
+        body: dict,
+        cron: str,
+        replace: bool = True,
+        project_name: str | None = None,
+        scope: str = "",
+    ) -> str:
+        """Create a deterministic schedule that calls a non-agent CUGA job endpoint."""
+        async with httpx.AsyncClient(timeout=30) as c:
+            hdrs = await self._auth(c)
+            project_id = (
+                await self.ensure_project(c, hdrs, project_name)
+                if project_name
+                else self.project_id
+            )
+            if not project_id:
+                raise APError("AP project unresolved (no project_name and no default project)")
+            flow_name = f"{scope}::{name}" if scope else name
+            if replace:
+                existing = await self.find_flow_by_name(c, hdrs, flow_name, project_id)
+                if existing:
+                    await c.delete(f"{self.base}/api/v1/flows/{existing}", headers=hdrs)
+            schedule_version = await self._piece_version(c, SCHEDULE_PIECE)
+            http_version = await self._piece_version(c, HTTP_PIECE)
+            response = await c.post(
+                f"{self.base}/api/v1/flows",
+                headers=hdrs,
+                json={"displayName": flow_name, "projectId": project_id},
+            )
+            if response.status_code >= 300:
+                raise APError(
+                    f"AP create flow failed: HTTP {response.status_code} {response.text[:300]}"
+                )
+            flow_id = response.json()["id"]
+            await self._post_op(c, flow_id, self._trigger_op(cron, None, schedule_version), hdrs)
+            await self._post_op(
+                c,
+                flow_id,
+                self._http_action(
+                    body,
+                    http_version,
+                    url=callback_url,
+                    display="Run CUGA retention",
+                ),
+                hdrs,
+            )
+            await self._assert_steps_valid(c, flow_id, hdrs)
+            await self._post_op(
+                c,
+                flow_id,
+                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}},
+                hdrs,
+            )
+        log.info("created AP callback schedule flow=%s name=%s cron=%s", flow_id, name, cron)
+        return flow_id
+
     # ---- inbound (channel) + push (integration) flows -------------------
     # These arm the CHANNEL/INTEGRATION plane in AP: a piece trigger → HTTP /invoke → send/router.
     # All channel/integration specifics come from flows.CHANNELS / flows.SOURCE_TRIGGER (config),

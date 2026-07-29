@@ -85,7 +85,18 @@ def test_user_inventory_route_scopes_to_authenticated_user_and_active_agent(clie
 
 def test_user_retention_route_returns_active_agent_policy_summary(client):
     summary = {
-        "rules": [{"summary": "Guidance reviewed after 90 days", "scheduled": False}],
+        "schedule": {
+            "state": "not_configured",
+            "label": "Automatic cleanup is not configured",
+            "detail": "No scheduler is configured",
+        },
+        "rules": [
+            {
+                "summary": "Guidance reviewed after 90 days",
+                "scheduled": False,
+                "state": "not_configured",
+            }
+        ],
     }
     with patch(
         "cuga.backend.evolve.compliance_poc.get_user_retention_summary",
@@ -95,7 +106,7 @@ def test_user_retention_route_returns_active_agent_policy_summary(client):
 
     assert response.status_code == 200
     assert response.json() == summary
-    get_summary.assert_awaited_once_with("cuga-default")
+    get_summary.assert_awaited_once_with("cuga-default", None)
 
 
 def test_admin_retention_route_forwards_policy_and_clock(client):
@@ -366,20 +377,94 @@ def test_scheduled_run_reports_evolve_unavailability(client):
     assert response.json()["detail"] == "Evolve retention service is unavailable"
 
 
+def test_scheduler_callback_requires_a_configured_machine_credential(client, monkeypatch):
+    monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
+
+    response = client.post(
+        "/api/internal/memory/automations/unknown/runs",
+        json={},
+    )
+
+    assert response.status_code == 503
+
+
+def test_scheduler_callback_rejects_bad_credentials_before_resolving_scope(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("GATEWAY_TOKEN", "correct-token")
+
+    response = client.post(
+        "/api/internal/memory/automations/unknown/runs",
+        headers={"X-Gateway-Token": "wrong-token"},
+        json={},
+    )
+
+    assert response.status_code == 401
+
+
+def test_scheduler_callback_resolves_scope_server_side(client, monkeypatch):
+    monkeypatch.setenv("GATEWAY_TOKEN", "correct-token")
+    report = {
+        "run_id": "run-a",
+        "completed_at": "2026-07-29T02:01:00Z",
+        "dry_run": True,
+        "flagged": [],
+        "deleted": [],
+        "skipped": [],
+        "errors": [],
+        "warnings": [],
+    }
+    with (
+        patch(
+            "cuga.backend.evolve.retention_scheduling.retention_automation_id",
+            return_value="automation-a",
+        ),
+        patch(
+            "cuga.backend.evolve.compliance_poc.get_automation_config",
+            new=AsyncMock(
+                return_value={
+                    "retention_enabled": 1,
+                    "retention_frequency": "Every week",
+                    "retention_time": "02:00",
+                    "scheduler_flow_id": "flow-a",
+                }
+            ),
+        ),
+        patch(
+            "cuga.backend.evolve.retention_jobs.run_retention_occurrence",
+            new=AsyncMock(return_value=report),
+        ) as run_occurrence,
+    ):
+        response = client.post(
+            "/api/internal/memory/automations/automation-a/runs",
+            headers={"X-Gateway-Token": "correct-token"},
+            json={"data": {"agent_id": "other-agent", "user_id": "other-user"}},
+        )
+
+    assert response.status_code == 200
+    assert run_occurrence.await_args.kwargs == {
+        "agent_id": "cuga-default",
+        "namespace_id": None,
+        "dry_run": True,
+    }
+
+
 def test_poc_routes_require_manage_access_and_forward_active_namespace(client, monkeypatch):
     monkeypatch.setenv("CUGA_COMPLIANCE_POC_SEED_ENABLED", "1")
     with (
         patch("cuga.backend.server.main._memory_namespace_id", return_value="tenant-a"),
         patch(
-            "cuga.backend.evolve.compliance_poc.bootstrap", new=AsyncMock(return_value={"memory_count": 36})
-        ) as bootstrap,
+            "cuga.backend.evolve.compliance_poc.bootstrap_runtime",
+            new=AsyncMock(return_value={"memory_count": 36}),
+        ) as bootstrap_runtime,
     ):
         response = client.post("/api/admin/memory/poc/bootstrap")
 
     assert response.status_code == 200
-    bootstrap.assert_awaited_once()
-    assert bootstrap.await_args.args[0] == "cuga-default"
-    assert bootstrap.await_args.args[2] == "tenant-a"
+    bootstrap_runtime.assert_awaited_once()
+    assert bootstrap_runtime.await_args.args[0] == "cuga-default"
+    assert bootstrap_runtime.await_args.args[2] == "tenant-a"
 
     app.dependency_overrides[require_manage_access] = lambda: (_ for _ in ()).throw(
         HTTPException(status_code=403)

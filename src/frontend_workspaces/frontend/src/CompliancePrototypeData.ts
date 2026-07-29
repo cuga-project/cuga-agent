@@ -47,11 +47,6 @@ export type MemoryRecord = {
   };
 };
 
-type AutomationRuntime =
-  | { runtime: "active"; health: "Healthy" | "Not running" }
-  | { runtime: "configured"; health: "Configured only" }
-  | { runtime: "unavailable"; health: "Status unavailable" };
-
 export type AutomationRecord = {
   id: "save-check" | "send-check" | "retention" | "events";
   title: string;
@@ -64,7 +59,18 @@ export type AutomationRecord = {
   time?: string;
   destination?: string;
   proposed?: boolean;
-} & AutomationRuntime;
+  runtime: "active" | "configured" | "unavailable";
+  health: "Healthy" | "Not running" | "Configured only" | "Status unavailable";
+  schedulerProvider?: string | null;
+  schedulerConnected?: boolean;
+  schedulerConfirmedEnabled?: boolean | null;
+  schedulerHealth?: "healthy" | "unhealthy" | "unavailable";
+  schedulerDetail?: string;
+  lastOccurrenceAt?: string | null;
+  lastOccurrenceStatus?: string | null;
+  lastOccurrenceTrigger?: "scheduler" | "simulation" | "run_now" | null;
+  nextOccurrenceAt?: string | null;
+};
 
 export type ActivityRecord = {
   id: string;
@@ -552,16 +558,24 @@ const automations: AutomationRecord[] = [
     id: "retention",
     title: "Scheduled retention",
     description:
-      "Stores the retention rules and schedule used by the manual simulation. A scheduler is not connected.",
+      "Evaluates the published retention rules on the configured schedule.",
     enabled: true,
-    runtime: "configured",
-    health: "Configured only",
-    schedule: "Every day at 02:00",
-    latest: "Completed today at 02:01",
+    runtime: "unavailable",
+    health: "Status unavailable",
+    schedule: "Every week at 02:00",
+    latest: "No scheduled occurrence recorded",
     kind: "retention",
-    frequency: "Every day",
+    frequency: "Every week",
     time: "02:00",
-    proposed: true,
+    schedulerProvider: null,
+    schedulerConnected: false,
+    schedulerConfirmedEnabled: null,
+    schedulerHealth: "unavailable",
+    schedulerDetail: "No scheduler is configured",
+    lastOccurrenceAt: null,
+    lastOccurrenceStatus: null,
+    nextOccurrenceAt: null,
+    proposed: false,
   },
   {
     id: "events",

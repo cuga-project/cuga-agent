@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import uuid
@@ -14,6 +15,15 @@ from cuga.backend.storage import get_storage
 from cuga.config import get_service_instance_id, get_tenant_id
 
 POC_SEED = "cuga-compliance-poc-2026-07"
+POC_BASELINE_VERSION = 1
+AUTOMATION_BASELINE = {
+    "retention_enabled": 1,
+    "retention_frequency": "Every week",
+    "retention_time": "02:00",
+    "events_enabled": 1,
+    "event_destination": "Simulated event delivery",
+    "event_type": "retention.outcome",
+}
 POLICY = {
     "rules": [
         {
@@ -33,7 +43,6 @@ POLICY = {
         },
     ]
 }
-SCHEDULER_CONNECTED = False
 _REPORT_FIELDS = {
     "as_of",
     "completed_at",
@@ -75,12 +84,37 @@ def _retention_rule_summary(rule: dict[str, Any]) -> tuple[int, str]:
     return 99, f"{entity_type or 'Memory'} {action or 'reviewed'} after {days} days"
 
 
-async def get_user_retention_summary(agent_id: str) -> dict[str, Any]:
+async def get_user_retention_summary(agent_id: str, engine: Any | None = None) -> dict[str, Any]:
+    from cuga.backend.evolve.retention_scheduling import get_schedule_status
+
     config = await get_automation_config(agent_id)
     rules = sorted((_retention_rule_summary(rule) for rule in POLICY["rules"]), key=lambda item: item[0])
-    scheduled = bool(config.get("retention_enabled")) and SCHEDULER_CONNECTED
+    status = await get_schedule_status(agent_id, config, engine)
+    if not config.get("retention_enabled"):
+        state, label = "disabled", "Automatic cleanup is disabled"
+    elif status["scheduler_confirmed_enabled"] is True and status.get("scheduler_health") == "healthy":
+        state, label = "scheduled", "Automatic cleanup is scheduled"
+    elif engine is None:
+        state, label = "not_configured", "Automatic cleanup is not configured"
+    elif not status["scheduler_connected"]:
+        state, label = "unreachable", "Automatic cleanup cannot reach Activepieces"
+    else:
+        state, label = "needs_attention", "Automatic cleanup needs attention"
+    scheduled = state == "scheduled"
     return {
-        "rules": [{"summary": summary, "scheduled": scheduled} for _, summary in rules],
+        "schedule": {
+            "state": state,
+            "label": label,
+            "detail": status["scheduler_detail"],
+        },
+        "rules": [
+            {
+                "summary": summary,
+                "scheduled": scheduled,
+                "state": state,
+            }
+            for _, summary in rules
+        ],
     }
 
 
@@ -107,6 +141,9 @@ async def _ensure_schema() -> None:
         "CREATE TABLE IF NOT EXISTS compliance_automation_config (tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, agent_id TEXT NOT NULL, retention_enabled INTEGER NOT NULL, retention_frequency TEXT NOT NULL, retention_time TEXT NOT NULL, events_enabled INTEGER NOT NULL, event_destination TEXT NOT NULL, event_type TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (tenant_id, instance_id, agent_id))"
     )
     await store.execute(
+        "CREATE TABLE IF NOT EXISTS compliance_occurrences (tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, automation_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, agent_id TEXT NOT NULL, request_fingerprint TEXT NOT NULL, trigger_type TEXT NOT NULL, scheduled_for TEXT NOT NULL, status TEXT NOT NULL, run_id TEXT, report_json TEXT, error_message TEXT, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (tenant_id, instance_id, automation_id, occurrence_id))"
+    )
+    await store.execute(
         "CREATE TABLE IF NOT EXISTS compliance_seed_state (tenant_id TEXT NOT NULL, instance_id TEXT NOT NULL, seed_id TEXT NOT NULL, agent_id TEXT NOT NULL, user_id TEXT NOT NULL, completed_at TEXT NOT NULL, PRIMARY KEY (tenant_id, instance_id, seed_id, agent_id, user_id))"
     )
     await store.execute(
@@ -127,6 +164,16 @@ async def _ensure_schema() -> None:
         )
     except Exception:
         pass
+    for statement in (
+        "ALTER TABLE compliance_automation_config ADD COLUMN scheduler_provider TEXT",
+        "ALTER TABLE compliance_automation_config ADD COLUMN scheduler_flow_id TEXT",
+        "ALTER TABLE compliance_automation_config ADD COLUMN scheduler_checked_at TEXT",
+        "ALTER TABLE compliance_automation_config ADD COLUMN scheduler_error TEXT",
+    ):
+        try:
+            await store.execute(statement)
+        except Exception:
+            pass
     await store.commit()
 
 
@@ -280,15 +327,19 @@ async def get_automation_config(agent_id: str) -> dict[str, Any]:
         (tenant_id, instance_id, agent_id),
     )
     if row:
-        return dict(row)
+        result = dict(row)
+        result.setdefault("scheduler_provider", None)
+        result.setdefault("scheduler_flow_id", None)
+        result.setdefault("scheduler_checked_at", None)
+        result.setdefault("scheduler_error", None)
+        return result
     return {
         "agent_id": agent_id,
-        "retention_enabled": 1,
-        "retention_frequency": "Every week",
-        "retention_time": "02:00",
-        "events_enabled": 1,
-        "event_destination": "Simulated event delivery",
-        "event_type": "retention.outcome",
+        **AUTOMATION_BASELINE,
+        "scheduler_provider": None,
+        "scheduler_flow_id": None,
+        "scheduler_checked_at": None,
+        "scheduler_error": None,
     }
 
 
@@ -326,6 +377,40 @@ async def update_automation_config(agent_id: str, values: dict[str, Any]) -> dic
             params,
         )
     await store.commit()
+    return await get_automation_config(agent_id)
+
+
+async def update_scheduler_state(agent_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Persist provider-owned fields separately from the admin-editable configuration."""
+    await _ensure_schema()
+    current = await get_automation_config(agent_id)
+    if not await _store().fetchone(
+        "SELECT agent_id FROM compliance_automation_config WHERE tenant_id = ? AND instance_id = ? AND agent_id = ?",
+        (*_scope(), agent_id),
+    ):
+        await update_automation_config(agent_id, {})
+        current = await get_automation_config(agent_id)
+    allowed = {
+        "scheduler_provider",
+        "scheduler_flow_id",
+        "scheduler_checked_at",
+        "scheduler_error",
+    }
+    merged = {**current, **{key: value for key, value in values.items() if key in allowed}}
+    tenant_id, instance_id = _scope()
+    await _store().execute(
+        "UPDATE compliance_automation_config SET scheduler_provider = ?, scheduler_flow_id = ?, scheduler_checked_at = ?, scheduler_error = ? WHERE tenant_id = ? AND instance_id = ? AND agent_id = ?",
+        (
+            merged.get("scheduler_provider"),
+            merged.get("scheduler_flow_id"),
+            merged.get("scheduler_checked_at"),
+            merged.get("scheduler_error"),
+            tenant_id,
+            instance_id,
+            agent_id,
+        ),
+    )
+    await _store().commit()
     return await get_automation_config(agent_id)
 
 
@@ -375,35 +460,23 @@ def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
 def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
     buckets = {
         bucket: [
-            {
-                key: item[key]
-                for key in ("entity_id", "action", "outcome")
-                if key in item
-            }
+            {key: item[key] for key in ("entity_id", "action", "outcome") if key in item}
             for item in report.get(bucket, [])
             if isinstance(item, dict)
         ]
         for bucket in ("flagged", "deleted", "skipped")
     }
     return {
-        **{
-            key: report[key]
-            for key in ("run_id", "completed_at", "dry_run")
-            if key in report
-        },
+        **{key: report[key] for key in ("run_id", "completed_at", "dry_run") if key in report},
         **buckets,
         "summary": (
             f"Retention evaluation found {len(buckets['flagged'])} for review, "
             f"{len(buckets['deleted'])} deletion matches, and "
             f"{len(buckets['skipped'])} kept because evidence was incomplete."
         ),
-        "errors": (
-            ["One or more memories could not be evaluated."] if report.get("errors") else []
-        ),
+        "errors": (["One or more memories could not be evaluated."] if report.get("errors") else []),
         "warnings": (
-            ["Some memories were evaluated with incomplete usage data."]
-            if report.get("warnings")
-            else []
+            ["Some memories were evaluated with incomplete usage data."] if report.get("warnings") else []
         ),
     }
 
@@ -570,10 +643,7 @@ def _entity_specs(now: dt.datetime, threads: list[str]) -> list[dict[str, Any]]:
                 "metadata": {
                     "source": "cuga-lite",
                     "key": "escalation_handoff_format",
-                    "value": (
-                        "begin with customer impact, then technical details, then owner "
-                        "and next step"
-                    ),
+                    "value": ("begin with customer impact, then technical details, then owner and next step"),
                 },
             },
             {
@@ -593,8 +663,7 @@ def _entity_specs(now: dt.datetime, threads: list[str]) -> list[dict[str, Any]]:
                 "metadata": {
                     "creation_mode": "auto-mcp",
                     "task_description": (
-                        "Acknowledge and interpret user feedback to update future "
-                        "response patterns"
+                        "Acknowledge and interpret user feedback to update future response patterns"
                     ),
                     "rationale": (
                         "This demonstrates the AI's attentiveness, reassures the user "
@@ -602,8 +671,7 @@ def _entity_specs(now: dt.datetime, threads: list[str]) -> list[dict[str, Any]]:
                         "misunderstandings."
                     ),
                     "trigger": (
-                        "When the user provides explicit feedback or requests changes "
-                        "to response formatting."
+                        "When the user provides explicit feedback or requests changes to response formatting."
                     ),
                     "implementation_steps": [
                         "Identify and extract the user's preference or instruction from their feedback.",
@@ -735,9 +803,7 @@ async def _save_demo_conversations(
     now: dt.datetime,
 ) -> None:
     db = get_conversation_db()
-    for index, (thread_id, transcript) in enumerate(
-        zip(threads, _conversation_specs(), strict=True)
-    ):
+    for index, (thread_id, transcript) in enumerate(zip(threads, _conversation_specs(), strict=True)):
         started = _conversation_started(now, index)
         messages = [
             {
@@ -793,9 +859,7 @@ async def _seed_demo_conversation_evidence(
         ):
             eligible_by_thread[thread_id].append(entity_id)
 
-    for conversation_index, (thread_id, transcript) in enumerate(
-        zip(threads, transcripts, strict=True)
-    ):
+    for conversation_index, (thread_id, transcript) in enumerate(zip(threads, transcripts, strict=True)):
         started = _conversation_started(now, conversation_index)
         candidates = eligible_by_thread[thread_id]
         events: list[dict[str, Any]] = []
@@ -813,9 +877,7 @@ async def _seed_demo_conversation_evidence(
                 )
                 continue
 
-            captured_turn = CAPTURED_SIL_CONVERSATIONS[conversation_index]["turns"][
-                assistant_index
-            ]
+            captured_turn = CAPTURED_SIL_CONVERSATIONS[conversation_index]["turns"][assistant_index]
             explicit_seed_keys = captured_turn["memory_seed_keys"]
             disclosure_ids = [
                 entity_id_by_seed_key[seed_key]
@@ -912,36 +974,6 @@ async def bootstrap(
         threads=threads,
         now=now,
     )
-    if completed:
-        inventory = await EvolveIntegration.list_entities(
-            metadata_filters={"poc_seed_id": POC_SEED, "agent_id": agent_id, "user_id": user_id},
-            limit=200,
-            include_content=False,
-            record_access=False,
-            namespace_id=namespace_id,
-        )
-        items = inventory.get("items", []) if isinstance(inventory, dict) else []
-        entity_ids = [item["id"] for item in items if item.get("id")]
-        demo_evidence = await _seed_demo_conversation_evidence(
-            agent_id=agent_id,
-            user_id=user_id,
-            entities=items,
-            threads=threads,
-        )
-        return {
-            "seed_id": POC_SEED,
-            "agent_id": agent_id,
-            "namespace_id": namespace_id,
-            "conversation_ids": threads,
-            "entity_ids": entity_ids,
-            "created_entities": 0,
-            "memory_count": len(items),
-            "seeded_answer_count": demo_evidence["answer_count"],
-            "usage_count": demo_evidence["usage_count"],
-            "already_completed": True,
-            "protection_status": await EvolveIntegration.get_compliance_status(namespace_id=namespace_id),
-            "synthetic_values_are_fake": True,
-        }
     inventory = await EvolveIntegration.list_entities(
         metadata_filters={"poc_seed_id": POC_SEED, "agent_id": agent_id, "user_id": user_id},
         limit=200,
@@ -1013,13 +1045,15 @@ async def bootstrap(
         entities=usage_entities,
         threads=threads,
     )
-    await store.execute(
-        "INSERT INTO compliance_seed_state VALUES (?, ?, ?, ?, ?, ?)",
-        (tenant_id, instance_id, POC_SEED, agent_id, user_id, dt.datetime.now(dt.UTC).isoformat()),
-    )
-    await store.commit()
+    if not completed:
+        await store.execute(
+            "INSERT INTO compliance_seed_state VALUES (?, ?, ?, ?, ?, ?)",
+            (tenant_id, instance_id, POC_SEED, agent_id, user_id, dt.datetime.now(dt.UTC).isoformat()),
+        )
+        await store.commit()
     return {
         "seed_id": POC_SEED,
+        "baseline_version": POC_BASELINE_VERSION,
         "agent_id": agent_id,
         "namespace_id": namespace_id,
         "conversation_ids": threads,
@@ -1028,9 +1062,43 @@ async def bootstrap(
         "memory_count": len(entity_ids),
         "seeded_answer_count": demo_evidence["answer_count"],
         "usage_count": demo_evidence["usage_count"],
+        "already_completed": bool(completed),
         "protection_status": status,
         "synthetic_values_are_fake": True,
     }
+
+
+async def bootstrap_runtime(
+    agent_id: str,
+    user_id: str,
+    namespace_id: str | None,
+    user_name: str = "Demo user",
+    *,
+    engine: Any | None = None,
+    subscription_store: Any | None = None,
+    scheduler_attempts: int = 1,
+    scheduler_retry_seconds: float = 5,
+) -> dict[str, Any]:
+    """Seed the PoC and publish its schedule without depending on the UI."""
+    result = await bootstrap(agent_id, user_id, namespace_id, user_name)
+    if engine is None:
+        return result
+
+    from cuga.backend.evolve.retention_scheduling import ActivepiecesRetentionScheduler
+
+    scheduler = ActivepiecesRetentionScheduler(engine, subscription_store)
+    config = await get_automation_config(agent_id)
+    attempts = max(1, scheduler_attempts)
+    for attempt in range(attempts):
+        status = await scheduler.reconcile(agent_id, config)
+        result["scheduler"] = status
+        if not config.get("retention_enabled") or (
+            status.get("scheduler_confirmed_enabled") is True and status.get("scheduler_health") == "healthy"
+        ):
+            break
+        if attempt + 1 < attempts:
+            await asyncio.sleep(scheduler_retry_seconds)
+    return result
 
 
 async def run_simulated_schedule(
@@ -1041,137 +1109,23 @@ async def run_simulated_schedule(
     dry_run: bool = True,
     as_of: str | None = None,
 ) -> dict[str, Any]:
-    await _ensure_schema()
+    from cuga.backend.evolve.retention_jobs import RetentionOccurrence, run_retention_occurrence
+    from cuga.backend.evolve.retention_scheduling import retention_automation_id
+
     config = await get_automation_config(agent_id)
-    if not config.get("retention_enabled", 1):
-        raise ValueError("Retention scheduling is disabled for this agent")
-    run_id = str(uuid.uuid4())
-    metadata_filters = {"agent_id": agent_id}
-    if user_id:
-        metadata_filters["user_id"] = user_id
-    report = await EvolveIntegration.run_retention(
-        POLICY,
+    scheduled_for = as_of or f"{dt.datetime.now(dt.UTC).date().isoformat()}T{config['retention_time']}:00Z"
+    return await run_retention_occurrence(
+        RetentionOccurrence(
+            automation_id=retention_automation_id(agent_id),
+            occurrence_id=f"simulation:{uuid.uuid4()}",
+            scheduled_for=scheduled_for,
+            trigger="simulation",
+        ),
+        agent_id=agent_id,
+        namespace_id=namespace_id,
+        user_id=user_id,
         dry_run=dry_run,
-        as_of=as_of,
-        run_id=run_id,
-        namespace_id=namespace_id,
-        metadata_filters=metadata_filters,
     )
-    if not isinstance(report, dict) or report.get("error"):
-        raise RuntimeError("Evolve retention service is unavailable")
-    report = sanitize_retention_report(report)
-    report["trigger"] = "scheduled (simulated)"
-    report["scheduled_for"] = (
-        as_of or f"{dt.datetime.now(dt.UTC).date().isoformat()}T{config['retention_time']}:00Z"
-    )
-    report["destination"] = config["event_destination"]
-    report["event_type"] = config["event_type"]
-    report["events_enabled"] = bool(config.get("events_enabled", 1))
-    run_id = str(report.get("run_id") or run_id)
-    tenant_id, instance_id = _scope()
-    now = dt.datetime.now(dt.UTC).isoformat()
-    store = _store()
-    exists = await store.fetchone(
-        "SELECT run_id FROM compliance_runs WHERE tenant_id = ? AND instance_id = ? AND run_id = ?",
-        (tenant_id, instance_id, run_id),
-    )
-    values = (tenant_id, instance_id, run_id, agent_id, "completed", 1, json.dumps(report), now)
-    if exists:
-        await store.execute(
-            "UPDATE compliance_runs SET status = ?, simulated = ?, report_json = ?, created_at = ? WHERE tenant_id = ? AND instance_id = ? AND run_id = ?",
-            ("completed", 1, json.dumps(report), now, tenant_id, instance_id, run_id),
-        )
-    else:
-        await store.execute("INSERT INTO compliance_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values)
-    filters = {"agent_id": agent_id}
-    if user_id:
-        filters["user_id"] = user_id
-    inventory = await EvolveIntegration.list_entities(
-        metadata_filters=filters,
-        limit=200,
-        include_content=False,
-        record_access=False,
-        namespace_id=namespace_id,
-    )
-    by_id = {
-        str(item.get("id")): item
-        for item in ((inventory or {}).get("items", []) if isinstance(inventory, dict) else [])
-    }
-    outcomes = [
-        *(report.get("flagged") or []),
-        *(report.get("deleted") or []),
-        *(report.get("skipped") or []),
-    ]
-    for index, outcome in enumerate(outcomes):
-        entity_id = str(outcome.get("entity_id") or "")
-        metadata = (by_id.get(entity_id) or {}).get("metadata") or {}
-        conversation_id = metadata.get("session_id") or metadata.get("thread_id")
-        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:event:{index}:{entity_id}"))
-        payload = {
-            "simulated": True,
-            "run_id": run_id,
-            "entity_id": entity_id,
-            "conversation_id": conversation_id,
-            "action": outcome.get("action"),
-            "rule": outcome.get("rule"),
-            "outcome": outcome.get("outcome"),
-            "event_type": config["event_type"],
-            "destination": config["event_destination"],
-        }
-        event_exists = await store.fetchone(
-            "SELECT event_id FROM compliance_events WHERE tenant_id = ? AND instance_id = ? AND event_id = ?",
-            (tenant_id, instance_id, event_id),
-        )
-        if not event_exists:
-            await store.execute(
-                "INSERT INTO compliance_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    tenant_id,
-                    instance_id,
-                    event_id,
-                    run_id,
-                    agent_id,
-                    "retention.outcome",
-                    entity_id,
-                    conversation_id,
-                    json.dumps(payload),
-                    now,
-                ),
-            )
-        if config.get("events_enabled", 1):
-            delivery_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{event_id}:delivery"))
-            delivery_exists = await store.fetchone(
-                "SELECT delivery_id FROM compliance_deliveries WHERE tenant_id = ? AND instance_id = ? AND delivery_id = ?",
-                (tenant_id, instance_id, delivery_id),
-            )
-            if not delivery_exists:
-                await store.execute(
-                    "INSERT INTO compliance_deliveries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        tenant_id,
-                        instance_id,
-                        delivery_id,
-                        event_id,
-                        run_id,
-                        agent_id,
-                        "simulated-delivered",
-                        1,
-                        now,
-                        json.dumps(
-                            {
-                                "simulated": True,
-                                "event_id": event_id,
-                                "event_type": config["event_type"],
-                                "destination": config["event_destination"],
-                                "run_id": run_id,
-                                "entity_id": entity_id,
-                                "conversation_id": conversation_id,
-                            }
-                        ),
-                    ),
-                )
-    await store.commit()
-    return report
 
 
 async def record_user_request(

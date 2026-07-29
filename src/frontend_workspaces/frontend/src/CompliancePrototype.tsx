@@ -22,7 +22,6 @@ import {
   type MemoryState,
 } from "./CompliancePrototypeData";
 import {
-  applyRetentionReport,
   deleteLiveMemory,
   loadLiveComplianceData,
   runRetentionPreview,
@@ -99,14 +98,40 @@ function statusTone(status: string) {
     status === "Incomplete" ||
     status === "Needs attention" ||
     status === "Protected" ||
-    status === "Scheduled for deletion"
+    status === "Scheduled for deletion" ||
+    status === "Awaiting scheduler confirmation"
   ) {
     return "warning";
   }
-  if (status === "Deleted") {
+  if (
+    status === "Deleted" ||
+    status === "Scheduler not connected" ||
+    status === "Schedule needs attention"
+  ) {
     return "error";
   }
+  if (status === "Disabled" || status === "Status unavailable") return "neutral";
   return "healthy";
+}
+
+function automationStatus(automation: AutomationRecord) {
+  if (!automation.enabled) return "Disabled";
+  if (automation.kind !== "retention") {
+    return `Enabled and ${automation.health.toLowerCase()}`;
+  }
+  if (!automation.schedulerConnected) return "Scheduler not connected";
+  if (automation.schedulerConfirmedEnabled === null) {
+    return "Awaiting scheduler confirmation";
+  }
+  if (!automation.schedulerConfirmedEnabled) return "Schedule needs attention";
+  if (automation.schedulerHealth !== "healthy") return "Schedule needs attention";
+  return "Enabled and scheduled";
+}
+
+function readableOccurrence(value?: string | null) {
+  if (!value) return "None recorded";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "Unavailable" : parsed.toLocaleString();
 }
 
 function protectionSummary(automation: AutomationRecord) {
@@ -605,19 +630,8 @@ function AutomationDetail({
           className="compliance-d-detail-body compliance-d-edit-form"
           onSubmit={(event) => {
             event.preventDefault();
-            const runtime =
-              draft.kind === "protection"
-                ? {
-                    runtime: "active" as const,
-                    health: draft.enabled ? ("Healthy" as const) : ("Not running" as const),
-                  }
-                : {
-                    runtime: "configured" as const,
-                    health: "Configured only" as const,
-                  };
             onSave({
               ...draft,
-              ...runtime,
               schedule:
                 draft.kind === "retention"
                   ? `${draft.frequency} at ${draft.time}`
@@ -693,16 +707,60 @@ function AutomationDetail({
       <DetailHeader
         eyebrow="Automation"
         title={automation.title}
-        status={automation.enabled ? `Enabled and ${automation.health.toLowerCase()}` : "Disabled"}
+        status={automationStatus(automation)}
       />
       <div className="compliance-d-detail-body">
         <p>{automation.description}</p>
         <DefinitionList
           items={[
-            { label: "Status", value: automation.enabled ? "Enabled" : "Disabled" },
-            { label: "Health", value: automation.health },
+            { label: "Desired status", value: automation.enabled ? "Enabled" : "Disabled" },
+            ...(automation.kind === "retention"
+              ? [
+                  {
+                    label: "Scheduler",
+                    value: automation.schedulerProvider ?? "Not configured",
+                  },
+                  {
+                    label: "Connection",
+                    value: automation.schedulerConnected ? "Connected" : "Not connected",
+                  },
+                  {
+                    label: "Provider confirmation",
+                    value:
+                      automation.schedulerConfirmedEnabled === true
+                        ? "Schedule enabled"
+                        : automation.schedulerConfirmedEnabled === false
+                          ? "Schedule not enabled"
+                          : "Not checked",
+                  },
+                ]
+              : [{ label: "Health", value: automation.health }]),
             { label: "Schedule", value: automation.schedule },
-            { label: "Latest", value: automation.latest },
+            ...(automation.kind === "retention"
+              ? [
+                  {
+                    label:
+                      automation.lastOccurrenceTrigger === "simulation"
+                        ? "Latest simulation"
+                        : automation.lastOccurrenceTrigger === "run_now"
+                          ? "Latest manual run"
+                          : "Last scheduled occurrence",
+                    value: readableOccurrence(automation.lastOccurrenceAt),
+                  },
+                  {
+                    label: "Last result",
+                    value: automation.lastOccurrenceStatus ?? "None recorded",
+                  },
+                  {
+                    label: "Next occurrence",
+                    value: readableOccurrence(automation.nextOccurrenceAt),
+                  },
+                  {
+                    label: "Scheduler report",
+                    value: automation.schedulerDetail ?? "Status unavailable",
+                  },
+                ]
+              : [{ label: "Latest", value: automation.latest }]),
             ...(automation.destination
               ? [{ label: "Destination", value: automation.destination }]
               : []),
@@ -725,7 +783,7 @@ function AutomationDetail({
               disabled={runningRetention}
               onClick={onRunRetention}
             >
-              {runningRetention ? "Running preview..." : "Run preview"}
+              {runningRetention ? "Simulating..." : "Simulate next run"}
             </Button>
           )}
           {automation.kind !== "protection" && (
@@ -1162,6 +1220,7 @@ export function CompliancePrototype({
               {retention && (
                 <div className="compliance-d-retention-summary">
                   <strong>Retention policy</strong>
+                  <p title={retention.schedule.detail}>{retention.schedule.label}</p>
                   <ul>
                     {retention.rules.map((rule) => (
                       <li key={rule.summary}>
@@ -1294,9 +1353,12 @@ export function CompliancePrototype({
                   <p className="compliance-d-eyebrow">Published configuration</p>
                   <h1>Automation</h1>
                   <p>
-                    Protection runs continuously. Retention and event delivery
-                    are configured for this simulation; no scheduler or external
-                    event transport is connected.
+                    Protection runs continuously.{" "}
+                    {data.automations.find((item) => item.id === "retention")
+                      ?.schedulerConfirmedEnabled
+                      ? "The retention schedule is confirmed active."
+                      : "The retention policy is published, but its schedule is not confirmed active."}{" "}
+                    Lifecycle outcomes are recorded in the local proof-of-concept ledger.
                   </p>
                 </Column>
               </Grid>
@@ -1319,9 +1381,7 @@ export function CompliancePrototype({
                             title={automation.title}
                             meta={automation.description}
                             status={
-                              automation.enabled
-                                ? `Enabled and ${automation.health.toLowerCase()}`
-                                : "Disabled"
+                              automationStatus(automation)
                             }
                             statusDetail={automation.schedule}
                             onSelect={() => {
@@ -1348,7 +1408,6 @@ export function CompliancePrototype({
                         try {
                           const report = await runRetentionPreview();
                           await loadMemoryData();
-                          setData((current) => applyRetentionReport(current, report));
                           setSelectedLatestActivityId(report.run_id);
                           setSelectedActivityId(report.run_id);
                           setMessage("Retention simulation completed");
@@ -1362,17 +1421,19 @@ export function CompliancePrototype({
                         if (liveData) {
                           try {
                             await saveAutomationConfig(updated);
+                            await loadMemoryData();
                           } catch {
                             setMessage("Automation settings could not be saved");
                             return;
                           }
+                        } else {
+                          setData((current) => ({
+                            ...current,
+                            automations: current.automations.map((automation) =>
+                              automation.id === updated.id ? updated : automation,
+                            ),
+                          }));
                         }
-                        setData((current) => ({
-                          ...current,
-                          automations: current.automations.map((automation) =>
-                            automation.id === updated.id ? updated : automation,
-                          ),
-                        }));
                         setEditingAutomation(false);
                         setMessage(`${updated.title} updated`);
                       }}
@@ -1388,7 +1449,7 @@ export function CompliancePrototype({
               <section className="compliance-d-section-band">
                 <div className="compliance-d-section-title">
                   <h2>Latest activity</h2>
-                  <p>Results from manual simulations of the configured schedule.</p>
+                  <p>Scheduled and simulated retention outcomes.</p>
                 </div>
                 <MasterDetail
                   listLabel="Latest activity"
@@ -1439,15 +1500,15 @@ export function CompliancePrototype({
 
               <section className="compliance-d-section-band">
                 <div className="compliance-d-section-title">
-                  <h2>Simulated lifecycle notifications</h2>
+                  <h2>Lifecycle event records</h2>
                   <p>
-                    Examples of notifications CUGA could publish to an audit,
-                    governance, or workflow system. Until eventing is connected,
-                    they remain in this PoC&apos;s local ledger.
+                    Sanitized outcomes prepared for an audit, governance, or
+                    workflow system. Until eventing is connected, they remain
+                    in this PoC&apos;s local ledger.
                   </p>
                 </div>
                 <MasterDetail
-                  listLabel="Simulated lifecycle notifications"
+                  listLabel="Lifecycle event records"
                   list={
                     <ul className="compliance-d-list">
                       {data.deliveries.map((delivery) => (

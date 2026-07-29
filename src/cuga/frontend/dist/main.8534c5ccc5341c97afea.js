@@ -10862,13 +10862,32 @@ function createEmptyComplianceData(agentName) {
   };
 }
 function statusTone(status) {
-  if (status === "Attention" || status === "Warning" || status === "Incomplete" || status === "Needs attention" || status === "Protected" || status === "Scheduled for deletion") {
+  if (status === "Attention" || status === "Warning" || status === "Incomplete" || status === "Needs attention" || status === "Protected" || status === "Scheduled for deletion" || status === "Awaiting scheduler confirmation") {
     return "warning";
   }
-  if (status === "Deleted") {
+  if (status === "Deleted" || status === "Scheduler not connected" || status === "Schedule needs attention") {
     return "error";
   }
+  if (status === "Disabled" || status === "Status unavailable") return "neutral";
   return "healthy";
+}
+function automationStatus(automation) {
+  if (!automation.enabled) return "Disabled";
+  if (automation.kind !== "retention") {
+    return `Enabled and ${automation.health.toLowerCase()}`;
+  }
+  if (!automation.schedulerConnected) return "Scheduler not connected";
+  if (automation.schedulerConfirmedEnabled === null) {
+    return "Awaiting scheduler confirmation";
+  }
+  if (!automation.schedulerConfirmedEnabled) return "Schedule needs attention";
+  if (automation.schedulerHealth !== "healthy") return "Schedule needs attention";
+  return "Enabled and scheduled";
+}
+function readableOccurrence(value) {
+  if (!value) return "None recorded";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "Unavailable" : parsed.toLocaleString();
 }
 function protectionSummary(automation) {
   const action = automation.id === "save-check" ? "Filtering sensitive information before saving" : "Filtering sensitive information before sending";
@@ -11187,16 +11206,8 @@ function AutomationDetail({
       className: "compliance-d-detail-body compliance-d-edit-form",
       onSubmit: event => {
         event.preventDefault();
-        const runtime = draft.kind === "protection" ? {
-          runtime: "active",
-          health: draft.enabled ? "Healthy" : "Not running"
-        } : {
-          runtime: "configured",
-          health: "Configured only"
-        };
         onSave({
           ...draft,
-          ...runtime,
           schedule: draft.kind === "retention" ? `${draft.frequency} at ${draft.time}` : draft.schedule
         });
       }
@@ -11260,23 +11271,44 @@ function AutomationDetail({
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(DetailHeader, {
     eyebrow: "Automation",
     title: automation.title,
-    status: automation.enabled ? `Enabled and ${automation.health.toLowerCase()}` : "Disabled"
+    status: automationStatus(automation)
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "compliance-d-detail-body"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, automation.description), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(DefinitionList, {
     items: [{
-      label: "Status",
+      label: "Desired status",
       value: automation.enabled ? "Enabled" : "Disabled"
+    }, ...(automation.kind === "retention" ? [{
+      label: "Scheduler",
+      value: automation.schedulerProvider ?? "Not configured"
     }, {
+      label: "Connection",
+      value: automation.schedulerConnected ? "Connected" : "Not connected"
+    }, {
+      label: "Provider confirmation",
+      value: automation.schedulerConfirmedEnabled === true ? "Schedule enabled" : automation.schedulerConfirmedEnabled === false ? "Schedule not enabled" : "Not checked"
+    }] : [{
       label: "Health",
       value: automation.health
-    }, {
+    }]), {
       label: "Schedule",
       value: automation.schedule
+    }, ...(automation.kind === "retention" ? [{
+      label: automation.lastOccurrenceTrigger === "simulation" ? "Latest simulation" : automation.lastOccurrenceTrigger === "run_now" ? "Latest manual run" : "Last scheduled occurrence",
+      value: readableOccurrence(automation.lastOccurrenceAt)
     }, {
+      label: "Last result",
+      value: automation.lastOccurrenceStatus ?? "None recorded"
+    }, {
+      label: "Next occurrence",
+      value: readableOccurrence(automation.nextOccurrenceAt)
+    }, {
+      label: "Scheduler report",
+      value: automation.schedulerDetail ?? "Status unavailable"
+    }] : [{
       label: "Latest",
       value: automation.latest
-    }, ...(automation.destination ? [{
+    }]), ...(automation.destination ? [{
       label: "Destination",
       value: automation.destination
     }] : [])]
@@ -11289,7 +11321,7 @@ function AutomationDetail({
     size: "sm",
     disabled: runningRetention,
     onClick: onRunRetention
-  }, runningRetention ? "Running preview..." : "Run preview"), automation.kind !== "protection" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
+  }, runningRetention ? "Simulating..." : "Simulate next run"), automation.kind !== "protection" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
     kind: "secondary",
     size: "sm",
     onClick: onEdit
@@ -11575,7 +11607,9 @@ function CompliancePrototype({
     }, summary.symbol), " ", summary.text);
   }), retention && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "compliance-d-retention-summary"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Retention policy"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ul", null, retention.rules.map(rule => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("li", {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Retention policy"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    title: retention.schedule.detail
+  }, retention.schedule.label), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ul", null, retention.rules.map(rule => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("li", {
     key: rule.summary
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
     className: `compliance-d-status-marker compliance-d-status-marker--${rule.scheduled ? "healthy" : "error"}`,
@@ -11692,7 +11726,7 @@ function CompliancePrototype({
     lg: 16
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "compliance-d-eyebrow"
-  }, "Published configuration"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h1", null, "Automation"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Protection runs continuously. Retention and event delivery are configured for this simulation; no scheduler or external event transport is connected."))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("section", {
+  }, "Published configuration"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h1", null, "Automation"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Protection runs continuously.", " ", data.automations.find(item => item.id === "retention")?.schedulerConfirmedEnabled ? "The retention schedule is confirmed active." : "The retention policy is published, but its schedule is not confirmed active.", " ", "Lifecycle outcomes are recorded in the local proof-of-concept ledger."))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("section", {
     className: "compliance-d-section-band"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "compliance-d-section-title"
@@ -11708,7 +11742,7 @@ function CompliancePrototype({
       selected: automation.id === selectedAutomation.id,
       title: automation.title,
       meta: automation.description,
-      status: automation.enabled ? `Enabled and ${automation.health.toLowerCase()}` : "Disabled",
+      status: automationStatus(automation),
       statusDetail: automation.schedule,
       onSelect: () => {
         setSelectedAutomationId(automation.id);
@@ -11729,7 +11763,6 @@ function CompliancePrototype({
         try {
           const report = await (0,_CompliancePrototypeApi__WEBPACK_IMPORTED_MODULE_4__.runRetentionPreview)();
           await loadMemoryData();
-          setData(current => (0,_CompliancePrototypeApi__WEBPACK_IMPORTED_MODULE_4__.applyRetentionReport)(current, report));
           setSelectedLatestActivityId(report.run_id);
           setSelectedActivityId(report.run_id);
           setMessage("Retention simulation completed");
@@ -11743,15 +11776,17 @@ function CompliancePrototype({
         if (liveData) {
           try {
             await (0,_CompliancePrototypeApi__WEBPACK_IMPORTED_MODULE_4__.saveAutomationConfig)(updated);
+            await loadMemoryData();
           } catch {
             setMessage("Automation settings could not be saved");
             return;
           }
+        } else {
+          setData(current => ({
+            ...current,
+            automations: current.automations.map(automation => automation.id === updated.id ? updated : automation)
+          }));
         }
-        setData(current => ({
-          ...current,
-          automations: current.automations.map(automation => automation.id === updated.id ? updated : automation)
-        }));
         setEditingAutomation(false);
         setMessage(`${updated.title} updated`);
       }
@@ -11764,7 +11799,7 @@ function CompliancePrototype({
     className: "compliance-d-section-band"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "compliance-d-section-title"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", null, "Latest activity"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Results from manual simulations of the configured schedule.")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(MasterDetail, {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", null, "Latest activity"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Scheduled and simulated retention outcomes.")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(MasterDetail, {
     listLabel: "Latest activity",
     list: /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ul", {
       className: "compliance-d-list"
@@ -11800,8 +11835,8 @@ function CompliancePrototype({
     className: "compliance-d-section-band"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "compliance-d-section-title"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", null, "Simulated lifecycle notifications"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Examples of notifications CUGA could publish to an audit, governance, or workflow system. Until eventing is connected, they remain in this PoC's local ledger.")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(MasterDetail, {
-    listLabel: "Simulated lifecycle notifications",
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h2", null, "Lifecycle event records"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, "Sanitized outcomes prepared for an audit, governance, or workflow system. Until eventing is connected, they remain in this PoC's local ledger.")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(MasterDetail, {
+    listLabel: "Lifecycle event records",
     list: /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ul", {
       className: "compliance-d-list"
     }, data.deliveries.map(delivery => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("li", {
@@ -12005,7 +12040,6 @@ function CompliancePrototype({
 /***/ (function(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
 
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
-/* harmony export */   applyRetentionReport: function() { return /* binding */ applyRetentionReport; },
 /* harmony export */   deleteLiveMemory: function() { return /* binding */ deleteLiveMemory; },
 /* harmony export */   loadLiveComplianceData: function() { return /* binding */ loadLiveComplianceData; },
 /* harmony export */   runRetentionPreview: function() { return /* binding */ runRetentionPreview; },
@@ -12178,7 +12212,6 @@ function applyStatus(automations, status) {
       return {
         ...automation,
         runtime: "configured",
-        enabled: status.retention_available,
         health: "Configured only",
         latest: status.retention_available ? `Retention is available in Evolve ${status.evolve_version}` : "Retention is unavailable",
         proposed: false
@@ -12226,51 +12259,59 @@ async function loadLiveComplianceData(fallback, canManage) {
         };
       }
       const report = run.report ?? {};
+      const simulated = Boolean(run.simulated);
+      const flaggedCount = report.flagged?.length ?? 0;
+      const deletedCount = report.deleted?.length ?? 0;
+      const skippedCount = report.skipped?.length ?? 0;
+      const hasErrors = Boolean(report.errors?.length);
       return {
         id: run.run_id,
         type: "Retention run",
-        title: `Retention simulation · ${new Date(run.created_at).toLocaleDateString()}`,
+        title: `${simulated ? "Retention simulation" : "Scheduled retention"} · ${new Date(run.created_at).toLocaleDateString()}`,
         timestamp: new Date(run.created_at).toLocaleString(),
-        status: report.errors?.length ? "Incomplete" : "Simulation",
-        statusDetail: "Manual simulation",
-        summary: `Simulation found ${report.flagged?.length ?? 0} for review, ${report.deleted?.length ?? 0} deletion matches, and ${report.skipped?.length ?? 0} kept because evidence was incomplete.`,
+        status: hasErrors ? "Incomplete" : simulated ? "Simulation" : "Automatic",
+        statusDetail: hasErrors ? "Completed with errors" : simulated ? "Preview completed" : "Completed automatically",
+        summary: `Retention found ${flaggedCount} for review, ${deletedCount} deletion matches, and ${skippedCount} kept because evidence was incomplete.`,
         facts: [{
           label: "Run ID",
           value: run.run_id
         }, {
           label: "Trigger",
-          value: "Manual simulation of the configured schedule"
+          value: simulated ? "Simulation of the configured schedule" : "Connected scheduler"
         }, {
-          label: "Affected memories",
-          value: String(run.affected_entity_ids.length)
+          label: "Policy matches",
+          value: `${run.affected_entity_ids.length} (${flaggedCount} review, ${deletedCount} deletion)`
         }],
         affectedMemoryIds: run.affected_entity_ids.map(id => `memory-${id}`)
       };
     });
-    deliveries = delivered.items.map(item => ({
-      eventId: item.event_id,
-      eventType: item.payload.event_type ?? "retention.outcome",
-      title: "Simulated retention outcome",
-      deliveredAt: new Date(item.delivered_at).toLocaleString(),
-      deliveryId: item.delivery_id,
-      attempt: "1",
-      destination: item.payload.destination ?? "No simulated destination configured",
-      correlationId: item.run_id,
-      relatedActivityId: item.run_id,
-      affectedMemoryId: item.payload.entity_id ? `memory-${item.payload.entity_id}` : undefined,
-      outcomeLabel: outcomeByDeliveryKey.get(`${item.run_id}:${item.payload.entity_id ?? ""}`),
-      fields: [{
-        name: "Run ID",
-        value: item.run_id
-      }, {
-        name: "Entity ID",
-        value: item.payload.entity_id ?? "Unavailable"
-      }, {
-        name: "Conversation ID",
-        value: item.payload.conversation_id ?? "Unavailable"
-      }],
-      privacyNote: "Recorded locally for this simulation. No external event was delivered."
-    }));
+    deliveries = delivered.items.map(item => {
+      const simulated = Boolean(item.simulated);
+      return {
+        eventId: item.event_id,
+        eventType: item.payload.event_type ?? "retention.outcome",
+        title: simulated ? "Simulated retention outcome" : "Scheduled retention outcome",
+        deliveredAt: new Date(item.delivered_at).toLocaleString(),
+        deliveryId: item.delivery_id,
+        attempt: "1",
+        destination: item.payload.destination ?? "Local proof-of-concept ledger",
+        correlationId: item.run_id,
+        relatedActivityId: item.run_id,
+        affectedMemoryId: item.payload.entity_id ? `memory-${item.payload.entity_id}` : undefined,
+        outcomeLabel: outcomeByDeliveryKey.get(`${item.run_id}:${item.payload.entity_id ?? ""}`),
+        fields: [{
+          name: "Run ID",
+          value: item.run_id
+        }, {
+          name: "Entity ID",
+          value: item.payload.entity_id ?? "Unavailable"
+        }, {
+          name: "Conversation ID",
+          value: item.payload.conversation_id ?? "Unavailable"
+        }],
+        privacyNote: `${simulated ? "Simulated and " : ""}recorded locally. No external event transport is connected.`
+      };
+    });
     [adminInventory, complianceStatus] = await Promise.all([getAllEntities("/api/admin/memory/entities"), getJson("/api/admin/memory/compliance/status")]);
     automationConfig = await getJson("/api/admin/memory/automation");
   }
@@ -12281,22 +12322,37 @@ async function loadLiveComplianceData(fallback, canManage) {
       memories: allMemories,
       automations: applyStatus(fallback.automations, complianceStatus).map(automation => {
         if (!automationConfig) return automation;
-        if (automation.id === "retention") return {
-          ...automation,
-          runtime: "configured",
-          health: "Configured only",
-          enabled: Boolean(automationConfig.retention_enabled),
-          frequency: automationConfig.retention_frequency,
-          time: automationConfig.retention_time,
-          schedule: `${automationConfig.retention_frequency} at ${automationConfig.retention_time}`
-        };
+        if (automation.id === "retention") {
+          const confirmed = automationConfig.scheduler_confirmed_enabled;
+          const connected = Boolean(automationConfig.scheduler_connected);
+          const healthy = automationConfig.scheduler_health === "healthy";
+          return {
+            ...automation,
+            runtime: confirmed && healthy ? "active" : connected ? "configured" : "unavailable",
+            health: confirmed && healthy ? "Healthy" : connected ? "Not running" : "Status unavailable",
+            enabled: Boolean(automationConfig.retention_enabled),
+            frequency: automationConfig.retention_frequency,
+            time: automationConfig.retention_time,
+            schedule: `${automationConfig.retention_frequency} at ${automationConfig.retention_time}`,
+            schedulerProvider: automationConfig.scheduler_provider,
+            schedulerConnected: connected,
+            schedulerConfirmedEnabled: confirmed,
+            schedulerHealth: automationConfig.scheduler_health,
+            schedulerDetail: automationConfig.scheduler_detail,
+            lastOccurrenceAt: automationConfig.last_occurrence_at,
+            lastOccurrenceStatus: automationConfig.last_occurrence_status,
+            lastOccurrenceTrigger: automationConfig.last_occurrence_trigger,
+            nextOccurrenceAt: automationConfig.next_occurrence_at,
+            latest: automationConfig.last_occurrence_at ? `Last occurrence ${automationConfig.last_occurrence_status ?? "recorded"}` : "No scheduled occurrence recorded"
+          };
+        }
         if (automation.id === "events") return {
           ...automation,
           runtime: "configured",
           health: "Configured only",
           enabled: Boolean(automationConfig.events_enabled),
           destination: automationConfig.event_destination,
-          latest: `${automationConfig.event_type} · local simulation only`
+          latest: `${automationConfig.event_type} · local ledger only`
         };
         return automation;
       }),
@@ -12345,44 +12401,6 @@ async function saveAutomationConfig(record) {
       events_enabled: record.id === "events" ? record.enabled : undefined
     })
   });
-}
-function applyRetentionReport(data, report) {
-  const outcomes = [...report.flagged, ...report.deleted, ...report.skipped];
-  const affectedIds = outcomes.map(item => `memory-${item.entity_id}`);
-  const activity = {
-    id: report.run_id,
-    type: "Retention run",
-    title: `Retention simulation · ${new Date(report.completed_at).toLocaleDateString()}`,
-    timestamp: new Date(report.completed_at).toLocaleString(),
-    status: report.errors.length ? "Incomplete" : report.warnings.length ? "Warning" : "Simulation",
-    statusDetail: `${report.flagged.length} for review, ${report.deleted.length} for deletion`,
-    summary: report.summary,
-    facts: [{
-      label: "Run ID",
-      value: report.run_id
-    }, {
-      label: "Mode",
-      value: report.dry_run ? "Preview" : "Applied"
-    }, {
-      label: "Flagged",
-      value: String(report.flagged.length)
-    }, {
-      label: "Deletion matches",
-      value: String(report.deleted.length)
-    }, {
-      label: "Kept on uncertain signal",
-      value: String(report.skipped.length)
-    }],
-    affectedMemoryIds: affectedIds,
-    notice: report.warnings.length ? {
-      title: "Retention warning",
-      text: report.warnings[0]
-    } : undefined
-  };
-  return {
-    ...data,
-    activities: [activity, ...data.activities.filter(item => item.id !== activity.id)]
-  };
 }
 
 /***/ }),
@@ -12736,16 +12754,24 @@ const automations = [{
 }, {
   id: "retention",
   title: "Scheduled retention",
-  description: "Stores the retention rules and schedule used by the manual simulation. A scheduler is not connected.",
+  description: "Evaluates the published retention rules on the configured schedule.",
   enabled: true,
-  runtime: "configured",
-  health: "Configured only",
-  schedule: "Every day at 02:00",
-  latest: "Completed today at 02:01",
+  runtime: "unavailable",
+  health: "Status unavailable",
+  schedule: "Every week at 02:00",
+  latest: "No scheduled occurrence recorded",
   kind: "retention",
-  frequency: "Every day",
+  frequency: "Every week",
   time: "02:00",
-  proposed: true
+  schedulerProvider: null,
+  schedulerConnected: false,
+  schedulerConfirmedEnabled: null,
+  schedulerHealth: "unavailable",
+  schedulerDetail: "No scheduler is configured",
+  lastOccurrenceAt: null,
+  lastOccurrenceStatus: null,
+  nextOccurrenceAt: null,
+  proposed: false
 }, {
   id: "events",
   title: "Lifecycle event delivery",
@@ -17464,12 +17490,15 @@ function FlowDetail({
   }, s.status), s.flow_name && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: "outline",
     size: "sm"
-  }, s.flow_name)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+  }, s.flow_name), s.read_only && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "cool-gray",
+    size: "sm"
+  }, "Managed by ", String(s.managed_by || "CUGA").replaceAll("_", " "))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted",
     style: {
       fontSize: 13
     }
-  }, s.prompt), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h5", {
+  }, s.prompt), s.config?.schedule && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Schedule"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("br", null), s.config.schedule), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("h5", {
     style: {
       margin: "16px 0 6px"
     }
@@ -17591,7 +17620,10 @@ function FlowsTab({
     }, s.backend), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
       type: paused ? "gray" : "green",
       size: "sm"
-    }, s.status), s.deliver_to?.length > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    }, s.status), s.read_only && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+      type: "cool-gray",
+      size: "sm"
+    }, "Read-only"), s.deliver_to?.length > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
       type: "blue",
       size: "sm"
     }, "\u2192 ", s.deliver_to.join(", "))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -17607,7 +17639,7 @@ function FlowsTab({
       renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.View,
       onClick: () => view(s.id),
       disabled: busy === s.id
-    }, "View"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+    }, "View"), !s.read_only && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
       size: "sm",
       kind: "ghost",
       renderIcon: paused ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Play : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Pause,
@@ -17619,7 +17651,7 @@ function FlowsTab({
       renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.TrashCan,
       onClick: () => del(s.id, s.flow_name || s.id),
       disabled: busy === s.id
-    }, "Delete")));
+    }, "Delete"))));
   })), detail && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Modal, {
     open: true,
     passiveModal: true,
@@ -24676,4 +24708,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.2d60f4a617ecebc57432.js.map
+//# sourceMappingURL=main.8534c5ccc5341c97afea.js.map

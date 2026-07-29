@@ -7,6 +7,7 @@ import pytest
 from cuga.backend.evolve.compliance_poc_sil_fixture import CAPTURED_SIL_CONVERSATIONS
 from cuga.backend.evolve.compliance_poc import _conversation_specs, _entity_specs
 from cuga.backend.evolve import compliance_poc
+from cuga.backend.evolve.retention_jobs import RetentionOccurrence, run_retention_occurrence
 
 pytestmark = pytest.mark.unit
 
@@ -41,11 +42,7 @@ def test_conversation_fixture_uses_distinct_sil_captures():
     assert len({message for transcript in transcripts for _, message, _ in transcript}) == sum(
         len(transcript) for transcript in transcripts
     )
-    assert all(
-        turn["detail_events"]
-        for capture in CAPTURED_SIL_CONVERSATIONS
-        for turn in capture["turns"]
-    )
+    assert all(turn["detail_events"] for capture in CAPTURED_SIL_CONVERSATIONS for turn in capture["turns"])
 
 
 @pytest.mark.asyncio
@@ -64,12 +61,94 @@ async def test_user_retention_summary_is_derived_from_policy_and_scheduler_state
         summary = await compliance_poc.get_user_retention_summary("agent-a")
 
     assert summary == {
+        "schedule": {
+            "state": "not_configured",
+            "label": "Automatic cleanup is not configured",
+            "detail": "No scheduler is configured",
+        },
         "rules": [
-            {"summary": "Guidance reviewed after 90 days", "scheduled": False},
-            {"summary": "Unused guidance deleted after 180 days", "scheduled": False},
-            {"summary": "Conversations deleted after one year", "scheduled": False},
-        ]
+            {
+                "summary": "Guidance reviewed after 90 days",
+                "scheduled": False,
+                "state": "not_configured",
+            },
+            {
+                "summary": "Unused guidance deleted after 180 days",
+                "scheduled": False,
+                "state": "not_configured",
+            },
+            {
+                "summary": "Conversations deleted after one year",
+                "scheduled": False,
+                "state": "not_configured",
+            },
+        ],
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config", "status", "expected_state", "expected_label"),
+    [
+        (
+            {"retention_enabled": 0},
+            {"scheduler_connected": False, "scheduler_confirmed_enabled": None},
+            "disabled",
+            "Automatic cleanup is disabled",
+        ),
+        (
+            {"retention_enabled": 1},
+            {"scheduler_connected": False, "scheduler_confirmed_enabled": None},
+            "unreachable",
+            "Automatic cleanup cannot reach Activepieces",
+        ),
+        (
+            {"retention_enabled": 1},
+            {"scheduler_connected": True, "scheduler_confirmed_enabled": False},
+            "needs_attention",
+            "Automatic cleanup needs attention",
+        ),
+        (
+            {"retention_enabled": 1},
+            {
+                "scheduler_connected": True,
+                "scheduler_confirmed_enabled": True,
+                "scheduler_health": "healthy",
+            },
+            "scheduled",
+            "Automatic cleanup is scheduled",
+        ),
+    ],
+)
+async def test_user_retention_summary_preserves_scheduler_state(
+    config,
+    status,
+    expected_state,
+    expected_label,
+):
+    status = {**status, "scheduler_detail": "Provider detail"}
+    with (
+        patch.object(
+            compliance_poc,
+            "get_automation_config",
+            new=AsyncMock(return_value=config),
+        ),
+        patch(
+            "cuga.backend.evolve.retention_scheduling.get_schedule_status",
+            new=AsyncMock(return_value=status),
+        ),
+    ):
+        summary = await compliance_poc.get_user_retention_summary(
+            "agent-a",
+            engine=object(),
+        )
+
+    assert summary["schedule"] == {
+        "state": expected_state,
+        "label": expected_label,
+        "detail": "Provider detail",
+    }
+    assert {rule["state"] for rule in summary["rules"]} == {expected_state}
 
 
 @pytest.mark.asyncio
@@ -135,6 +214,96 @@ async def test_bootstrap_repairs_missing_seed_keys_and_scopes_namespace():
         record_access=False,
         namespace_id="tenant-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_recreates_memories_when_completed_seed_inventory_was_deleted():
+    store = AsyncMock()
+    store.fetchone.return_value = {"completed_at": "2026-07-29T00:00:00Z"}
+    conversation_db = AsyncMock()
+    created = []
+
+    async def create_entity(**kwargs):
+        created.append(kwargs)
+        return {"id": f"entity-{len(created)}", "created_at": kwargs["created_at"]}
+
+    with (
+        patch.object(compliance_poc, "_ensure_schema", new=AsyncMock()),
+        patch.object(compliance_poc, "_store", return_value=store),
+        patch.object(compliance_poc, "get_conversation_db", return_value=conversation_db),
+        patch.object(
+            compliance_poc.EvolveIntegration,
+            "list_entities",
+            new=AsyncMock(return_value={"items": []}),
+        ),
+        patch.object(compliance_poc.EvolveIntegration, "create_entity", new=create_entity),
+        patch.object(
+            compliance_poc.EvolveIntegration,
+            "get_compliance_status",
+            new=AsyncMock(return_value={"healthy": True}),
+        ),
+    ):
+        result = await compliance_poc.bootstrap("agent-a", "user-a", "tenant-a", "Demo User")
+
+    assert result["already_completed"] is True
+    assert result["created_entities"] == len(
+        compliance_poc._entity_specs(dt.datetime.now(dt.UTC), result["conversation_ids"])
+    )
+    assert result["memory_count"] == len(created)
+    assert not any(
+        "INSERT INTO compliance_seed_state" in call.args[0] for call in store.execute.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_runtime_retries_scheduler_without_ui():
+    engine = object()
+    scheduler = AsyncMock()
+    scheduler.reconcile.side_effect = [
+        {
+            "scheduler_connected": True,
+            "scheduler_confirmed_enabled": False,
+            "scheduler_detail": "Pieces are still loading",
+        },
+        {
+            "scheduler_connected": True,
+            "scheduler_confirmed_enabled": True,
+            "scheduler_health": "healthy",
+            "scheduler_detail": "Schedule enabled",
+        },
+    ]
+    config = {"retention_enabled": 1}
+    with (
+        patch.object(
+            compliance_poc,
+            "bootstrap",
+            new=AsyncMock(return_value={"memory_count": 43}),
+        ) as bootstrap,
+        patch.object(
+            compliance_poc,
+            "get_automation_config",
+            new=AsyncMock(return_value=config),
+        ),
+        patch(
+            "cuga.backend.evolve.retention_scheduling.ActivepiecesRetentionScheduler",
+            return_value=scheduler,
+        ),
+        patch.object(compliance_poc.asyncio, "sleep", new=AsyncMock()) as sleep,
+    ):
+        result = await compliance_poc.bootstrap_runtime(
+            "agent-a",
+            "user-a",
+            "tenant-a",
+            "Demo User",
+            engine=engine,
+            scheduler_attempts=3,
+            scheduler_retry_seconds=0.01,
+        )
+
+    bootstrap.assert_awaited_once_with("agent-a", "user-a", "tenant-a", "Demo User")
+    assert scheduler.reconcile.await_count == 2
+    sleep.assert_awaited_once_with(0.01)
+    assert result["scheduler"]["scheduler_confirmed_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -206,7 +375,7 @@ async def test_schedule_persists_linked_private_ledger_payloads():
     run_retention.assert_awaited_once_with(
         compliance_poc.POLICY,
         dry_run=True,
-        as_of=None,
+        as_of=ANY,
         run_id=ANY,
         namespace_id="tenant-a",
         metadata_filters={"agent_id": "agent-a", "user_id": "user-a"},
@@ -216,6 +385,7 @@ async def test_schedule_persists_linked_private_ledger_payloads():
 @pytest.mark.asyncio
 async def test_schedule_does_not_persist_when_evolve_is_unavailable():
     store = AsyncMock()
+    store.fetchone.return_value = None
     with (
         patch.object(compliance_poc, "_ensure_schema", new=AsyncMock()),
         patch.object(compliance_poc, "_store", return_value=store),
@@ -241,7 +411,109 @@ async def test_schedule_does_not_persist_when_evolve_is_unavailable():
         with pytest.raises(RuntimeError, match="unavailable"):
             await compliance_poc.run_simulated_schedule("agent-a", "tenant-a", "user-a")
 
-    store.execute.assert_not_awaited()
+    statements = [call.args[0] for call in store.execute.await_args_list]
+    assert any("INSERT INTO compliance_occurrences" in statement for statement in statements)
+    assert any("UPDATE compliance_occurrences SET status" in statement for statement in statements)
+    assert not any("compliance_runs" in statement for statement in statements)
+    assert not any("compliance_events" in statement for statement in statements)
+
+
+@pytest.mark.asyncio
+async def test_completed_occurrence_is_reused_without_running_evolve_again():
+    occurrence = RetentionOccurrence(
+        automation_id="automation-a",
+        occurrence_id="activepieces:flow-a:2026-W31",
+        scheduled_for="2026-07-29T02:00:00Z",
+        trigger="scheduler",
+    )
+    stored_report = {"run_id": "run-a", "flagged": [], "deleted": [], "skipped": []}
+    store = AsyncMock()
+    store.fetchone.return_value = {
+        "request_fingerprint": occurrence.fingerprint(),
+        "status": "completed",
+        "report_json": json.dumps(stored_report),
+    }
+    with (
+        patch.object(compliance_poc, "_ensure_schema", new=AsyncMock()),
+        patch.object(compliance_poc, "_store", return_value=store),
+        patch.object(compliance_poc, "_scope", return_value=("tenant-a", "instance-a")),
+        patch.object(
+            compliance_poc,
+            "get_automation_config",
+            new=AsyncMock(return_value={"retention_enabled": 1}),
+        ),
+        patch.object(
+            compliance_poc.EvolveIntegration,
+            "run_retention",
+            new=AsyncMock(),
+        ) as run_retention,
+    ):
+        result = await run_retention_occurrence(
+            occurrence,
+            agent_id="agent-a",
+            namespace_id="tenant-a",
+        )
+
+    assert result == stored_report
+    run_retention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_occurrence_is_retried_with_the_same_idempotency_key():
+    occurrence = RetentionOccurrence(
+        automation_id="automation-a",
+        occurrence_id="activepieces:flow-a:2026-W31",
+        scheduled_for="2026-07-29T02:00:00Z",
+        trigger="scheduler",
+    )
+    store = AsyncMock()
+    store.fetchone.side_effect = [
+        {
+            "request_fingerprint": occurrence.fingerprint(),
+            "status": "failed",
+            "error_message": "RuntimeError",
+        },
+        None,
+    ]
+    publisher = AsyncMock()
+    report = {
+        "run_id": "run-a",
+        "flagged": [],
+        "deleted": [],
+        "skipped": [],
+    }
+    with (
+        patch.object(compliance_poc, "_ensure_schema", new=AsyncMock()),
+        patch.object(compliance_poc, "_store", return_value=store),
+        patch.object(compliance_poc, "_scope", return_value=("tenant-a", "instance-a")),
+        patch.object(
+            compliance_poc,
+            "get_automation_config",
+            new=AsyncMock(
+                return_value={
+                    "retention_enabled": 1,
+                    "event_destination": "local-ledger",
+                    "event_type": "retention.outcome",
+                }
+            ),
+        ),
+        patch.object(
+            compliance_poc.EvolveIntegration,
+            "run_retention",
+            new=AsyncMock(return_value=report),
+        ) as run_retention,
+    ):
+        result = await run_retention_occurrence(
+            occurrence,
+            agent_id="agent-a",
+            namespace_id="tenant-a",
+            publisher=publisher,
+        )
+
+    assert result["run_id"] == "run-a"
+    run_retention.assert_awaited_once()
+    assert "UPDATE compliance_occurrences SET status" in store.execute.await_args_list[0].args[0]
+    assert store.execute.await_args_list[0].args[1][-1] == "failed"
 
 
 @pytest.mark.asyncio
@@ -546,9 +818,7 @@ async def test_demo_conversations_seed_matching_answer_disclosures_and_usage():
         )
 
     expected_usage_count = sum(
-        len(turn["memory_seed_keys"])
-        for capture in CAPTURED_SIL_CONVERSATIONS
-        for turn in capture["turns"]
+        len(turn["memory_seed_keys"]) for capture in CAPTURED_SIL_CONVERSATIONS for turn in capture["turns"]
     )
     assert result == {"answer_count": 11, "usage_count": expected_usage_count}
     assert conversation_db.save_stream_events.await_count == 10

@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync compliance-poc compliance-poc-stop compliance-poc-status
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -39,6 +39,15 @@ up: preflight ap cuga ## Full dev stack: Activepieces + infra + `cuga start … 
 	@echo "✓ stack up.   → NEXT: make status"
 
 start: up ## Alias for `up`. Bare server (no AP/tunnels): `cuga start demo --events`
+
+compliance-poc: ## Start the local Activepieces + Evolve + CUGA memory-compliance PoC
+	scripts/compliance_poc.sh
+
+compliance-poc-stop: ## Stop CUGA and Evolve processes started by compliance-poc
+	scripts/compliance_poc.sh --stop
+
+compliance-poc-status: ## Report local compliance PoC service status
+	scripts/compliance_poc.sh --status
 
 stop: ## Stop everything (AP + CUGA + tunnels), keep data
 	-scripts/ap_up.sh --stop

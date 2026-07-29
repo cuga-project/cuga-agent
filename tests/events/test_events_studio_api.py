@@ -226,6 +226,86 @@ def test_schedule_flow_direct_sink_has_no_ap_send_step():
     assert body["source"] == {"type": "channel", "name": "slack", "thread_id": "gw:slack:C1"}
 
 
+def test_callback_schedule_targets_the_job_endpoint_without_an_agent_envelope():
+    import asyncio
+    from events.ap_engine import APEngine
+
+    posted = []
+
+    class _Resp:
+        status_code = 200
+        text = '{"id":"flow-retention-1"}'
+
+        def json(self):
+            return {"id": "flow-retention-1"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            posted.append(("POST", url, json))
+            return _Resp()
+
+        async def delete(self, url, headers=None):
+            return _Resp()
+
+    eng = APEngine.__new__(APEngine)
+    eng.base, eng.project_id, eng.gateway_token = "http://ap", "proj", "tok"
+
+    async def _auth(c):
+        return {}
+
+    async def _pv(c, piece):
+        return "1.0.0"
+
+    async def _post_op(c, fid, op, hdrs):
+        posted.append(("OP", op.get("type"), op))
+
+    async def _ff(c, hdrs, name, pid):
+        return None
+
+    async def _valid(c, fid, hdrs):
+        return None
+
+    eng._auth = _auth
+    eng._piece_version = _pv
+    eng._post_op = _post_op
+    eng.find_flow_by_name = _ff
+    eng._assert_steps_valid = _valid
+
+    import httpx as _httpx
+
+    original = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _Client()
+    try:
+        flow_id = asyncio.run(
+            eng.create_callback_schedule_flow(
+                name="memory-retention",
+                callback_url="http://cuga/api/internal/memory/automations/a1/runs",
+                body={"automation_id": "a1"},
+                cron="0 2 * * 0",
+            )
+        )
+    finally:
+        _httpx.AsyncClient = original
+
+    assert flow_id == "flow-retention-1"
+    operations = [item for item in posted if item[0] == "OP"]
+    assert [item[1] for item in operations] == [
+        "UPDATE_TRIGGER",
+        "ADD_ACTION",
+        "LOCK_AND_PUBLISH",
+    ]
+    http_input = operations[1][2]["request"]["action"]["settings"]["input"]
+    assert http_input["url"].endswith("/api/internal/memory/automations/a1/runs")
+    assert http_input["headers"] == {"X-Gateway-Token": "tok"}
+    assert http_input["body"]["data"] == {"automation_id": "a1"}
+
+
 def test_box_direct_new_files_filter():
     """box_direct.new_files_since: files only (no folders), created strictly after `since`."""
     import asyncio

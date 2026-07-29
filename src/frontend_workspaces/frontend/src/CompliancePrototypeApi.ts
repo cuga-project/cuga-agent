@@ -54,12 +54,30 @@ type AutomationConfig = {
   events_enabled: number;
   event_destination: string;
   event_type: string;
+  scheduler_provider: string | null;
+  scheduler_connected: boolean;
+  scheduler_confirmed_enabled: boolean | null;
+  scheduler_health: "healthy" | "unhealthy" | "unavailable";
+  scheduler_detail: string;
+  scheduler_callback_ready: boolean;
+  retention_service_connected: boolean;
+  retention_service_healthy: boolean;
+  last_occurrence_at: string | null;
+  last_occurrence_status: string | null;
+  last_occurrence_trigger: "scheduler" | "simulation" | "run_now" | null;
+  next_occurrence_at: string | null;
 };
 
 export type RetentionTransparency = {
+  schedule: {
+    state: "scheduled" | "disabled" | "not_configured" | "unreachable" | "needs_attention";
+    label: string;
+    detail: string;
+  };
   rules: Array<{
     summary: string;
     scheduled: boolean;
+    state: "scheduled" | "disabled" | "not_configured" | "unreachable" | "needs_attention";
   }>;
 };
 
@@ -91,6 +109,7 @@ type LedgerDelivery = {
   run_id: string;
   agent_id: string;
   status: string;
+  simulated: number;
   delivered_at: string;
   payload: { entity_id?: string; conversation_id?: string; run_id?: string; event_id?: string; destination?: string; event_type?: string };
 };
@@ -320,7 +339,6 @@ function applyStatus(
       return {
         ...automation,
         runtime: "configured",
-        enabled: status.retention_available,
         health: "Configured only",
         latest: status.retention_available
           ? `Retention is available in Evolve ${status.evolve_version}`
@@ -391,43 +409,61 @@ export async function loadLiveComplianceData(
         };
       }
       const report = run.report ?? ({} as RetentionReport);
+      const simulated = Boolean(run.simulated);
+      const flaggedCount = report.flagged?.length ?? 0;
+      const deletedCount = report.deleted?.length ?? 0;
+      const skippedCount = report.skipped?.length ?? 0;
+      const hasErrors = Boolean(report.errors?.length);
       return {
         id: run.run_id,
         type: "Retention run",
-        title: `Retention simulation · ${new Date(run.created_at).toLocaleDateString()}`,
+        title: `${simulated ? "Retention simulation" : "Scheduled retention"} · ${new Date(run.created_at).toLocaleDateString()}`,
         timestamp: new Date(run.created_at).toLocaleString(),
-        status: report.errors?.length ? "Incomplete" : "Simulation",
-        statusDetail: "Manual simulation",
-        summary: `Simulation found ${report.flagged?.length ?? 0} for review, ${report.deleted?.length ?? 0} deletion matches, and ${report.skipped?.length ?? 0} kept because evidence was incomplete.`,
+        status: hasErrors ? "Incomplete" : simulated ? "Simulation" : "Automatic",
+        statusDetail: hasErrors
+          ? "Completed with errors"
+          : simulated
+            ? "Preview completed"
+            : "Completed automatically",
+        summary: `Retention found ${flaggedCount} for review, ${deletedCount} deletion matches, and ${skippedCount} kept because evidence was incomplete.`,
         facts: [
           { label: "Run ID", value: run.run_id },
-          { label: "Trigger", value: "Manual simulation of the configured schedule" },
-          { label: "Affected memories", value: String(run.affected_entity_ids.length) },
+          {
+            label: "Trigger",
+            value: simulated ? "Simulation of the configured schedule" : "Connected scheduler",
+          },
+          {
+            label: "Policy matches",
+            value: `${run.affected_entity_ids.length} (${flaggedCount} review, ${deletedCount} deletion)`,
+          },
         ],
         affectedMemoryIds: run.affected_entity_ids.map((id) => `memory-${id}`),
       };
     });
-    deliveries = delivered.items.map((item) => ({
-      eventId: item.event_id,
-      eventType: item.payload.event_type ?? "retention.outcome",
-      title: "Simulated retention outcome",
-      deliveredAt: new Date(item.delivered_at).toLocaleString(),
-      deliveryId: item.delivery_id,
-      attempt: "1",
-      destination: item.payload.destination ?? "No simulated destination configured",
-      correlationId: item.run_id,
-      relatedActivityId: item.run_id,
-      affectedMemoryId: item.payload.entity_id ? `memory-${item.payload.entity_id}` : undefined,
-      outcomeLabel: outcomeByDeliveryKey.get(
-        `${item.run_id}:${item.payload.entity_id ?? ""}`,
-      ),
-      fields: [
-        { name: "Run ID", value: item.run_id },
-        { name: "Entity ID", value: item.payload.entity_id ?? "Unavailable" },
-        { name: "Conversation ID", value: item.payload.conversation_id ?? "Unavailable" },
-      ],
-      privacyNote: "Recorded locally for this simulation. No external event was delivered.",
-    }));
+    deliveries = delivered.items.map((item) => {
+      const simulated = Boolean(item.simulated);
+      return {
+        eventId: item.event_id,
+        eventType: item.payload.event_type ?? "retention.outcome",
+        title: simulated ? "Simulated retention outcome" : "Scheduled retention outcome",
+        deliveredAt: new Date(item.delivered_at).toLocaleString(),
+        deliveryId: item.delivery_id,
+        attempt: "1",
+        destination: item.payload.destination ?? "Local proof-of-concept ledger",
+        correlationId: item.run_id,
+        relatedActivityId: item.run_id,
+        affectedMemoryId: item.payload.entity_id ? `memory-${item.payload.entity_id}` : undefined,
+        outcomeLabel: outcomeByDeliveryKey.get(
+          `${item.run_id}:${item.payload.entity_id ?? ""}`,
+        ),
+        fields: [
+          { name: "Run ID", value: item.run_id },
+          { name: "Entity ID", value: item.payload.entity_id ?? "Unavailable" },
+          { name: "Conversation ID", value: item.payload.conversation_id ?? "Unavailable" },
+        ],
+        privacyNote: `${simulated ? "Simulated and " : ""}recorded locally. No external event transport is connected.`,
+      };
+    });
     [adminInventory, complianceStatus] = await Promise.all([
       getAllEntities("/api/admin/memory/entities"),
       getJson<ComplianceStatus>("/api/admin/memory/compliance/status"),
@@ -442,8 +478,33 @@ export async function loadLiveComplianceData(
       memories: allMemories,
       automations: applyStatus(fallback.automations, complianceStatus).map((automation) => {
         if (!automationConfig) return automation;
-        if (automation.id === "retention") return { ...automation, runtime: "configured" as const, health: "Configured only" as const, enabled: Boolean(automationConfig.retention_enabled), frequency: automationConfig.retention_frequency, time: automationConfig.retention_time, schedule: `${automationConfig.retention_frequency} at ${automationConfig.retention_time}` };
-        if (automation.id === "events") return { ...automation, runtime: "configured" as const, health: "Configured only" as const, enabled: Boolean(automationConfig.events_enabled), destination: automationConfig.event_destination, latest: `${automationConfig.event_type} · local simulation only` };
+        if (automation.id === "retention") {
+          const confirmed = automationConfig.scheduler_confirmed_enabled;
+          const connected = Boolean(automationConfig.scheduler_connected);
+          const healthy = automationConfig.scheduler_health === "healthy";
+          return {
+            ...automation,
+            runtime: confirmed && healthy ? ("active" as const) : connected ? ("configured" as const) : ("unavailable" as const),
+            health: confirmed && healthy ? ("Healthy" as const) : connected ? ("Not running" as const) : ("Status unavailable" as const),
+            enabled: Boolean(automationConfig.retention_enabled),
+            frequency: automationConfig.retention_frequency,
+            time: automationConfig.retention_time,
+            schedule: `${automationConfig.retention_frequency} at ${automationConfig.retention_time}`,
+            schedulerProvider: automationConfig.scheduler_provider,
+            schedulerConnected: connected,
+            schedulerConfirmedEnabled: confirmed,
+            schedulerHealth: automationConfig.scheduler_health,
+            schedulerDetail: automationConfig.scheduler_detail,
+            lastOccurrenceAt: automationConfig.last_occurrence_at,
+            lastOccurrenceStatus: automationConfig.last_occurrence_status,
+            lastOccurrenceTrigger: automationConfig.last_occurrence_trigger,
+            nextOccurrenceAt: automationConfig.next_occurrence_at,
+            latest: automationConfig.last_occurrence_at
+              ? `Last occurrence ${automationConfig.last_occurrence_status ?? "recorded"}`
+              : "No scheduled occurrence recorded",
+          };
+        }
+        if (automation.id === "events") return { ...automation, runtime: "configured" as const, health: "Configured only" as const, enabled: Boolean(automationConfig.events_enabled), destination: automationConfig.event_destination, latest: `${automationConfig.event_type} · local ledger only` };
         return automation;
       }),
       activities: activity,
@@ -497,37 +558,4 @@ export async function saveAutomationConfig(record: AutomationRecord): Promise<vo
       events_enabled: record.id === "events" ? record.enabled : undefined,
     }),
   });
-}
-
-export function applyRetentionReport(
-  data: ComplianceDemoData,
-  report: RetentionReport,
-): ComplianceDemoData {
-  const outcomes = [...report.flagged, ...report.deleted, ...report.skipped];
-  const affectedIds = outcomes.map((item) => `memory-${item.entity_id}`);
-  const activity: ActivityRecord = {
-    id: report.run_id,
-    type: "Retention run",
-    title: `Retention simulation · ${new Date(report.completed_at).toLocaleDateString()}`,
-    timestamp: new Date(report.completed_at).toLocaleString(),
-    status: report.errors.length ? "Incomplete" : report.warnings.length ? "Warning" : "Simulation",
-    statusDetail: `${report.flagged.length} for review, ${report.deleted.length} for deletion`,
-    summary: report.summary,
-    facts: [
-      { label: "Run ID", value: report.run_id },
-      { label: "Mode", value: report.dry_run ? "Preview" : "Applied" },
-      { label: "Flagged", value: String(report.flagged.length) },
-      { label: "Deletion matches", value: String(report.deleted.length) },
-      { label: "Kept on uncertain signal", value: String(report.skipped.length) },
-    ],
-    affectedMemoryIds: affectedIds,
-    notice: report.warnings.length
-      ? { title: "Retention warning", text: report.warnings[0] }
-      : undefined,
-  };
-
-  return {
-    ...data,
-    activities: [activity, ...data.activities.filter((item) => item.id !== activity.id)],
-  };
 }

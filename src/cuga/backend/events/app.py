@@ -486,11 +486,22 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         sub = store.get(sub_id) if store else None
         return (sub if (sub and sub.tenant == scope) else None), scope
 
+    def _read_only_response(sub):
+        if not sub.read_only:
+            return None
+        owner = sub.managed_by or "another CUGA subsystem"
+        return JSONResponse(
+            {"ok": False, "error": f"This flow is managed by {owner} and is read-only here"},
+            409,
+        )
+
     @app.post("/api/events/subscriptions/{sub_id}/pause")
     async def pause_subscription(sub_id: str, request: Request):
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if response := _read_only_response(sub):
+            return response
         if engine is not None and sub.ap_flow_id:
             await engine.set_flow_status(sub.ap_flow_id, enabled=False)   # disable in AP
         store.set_status(sub_id, "paused")
@@ -502,6 +513,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if response := _read_only_response(sub):
+            return response
         if engine is not None and sub.ap_flow_id:
             await engine.set_flow_status(sub.ap_flow_id, enabled=True)    # re-enable in AP
         store.set_status(sub_id, "active")
@@ -513,6 +526,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if response := _read_only_response(sub):
+            return response
         if engine is not None and sub.ap_flow_id:
             await engine.delete_flow(sub.ap_flow_id)                      # delete in AP
         store.delete(sub_id)
@@ -530,6 +545,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         ap_flow = None
         if engine is not None and sub.ap_flow_id:
             ap_flow = await engine.get_flow(sub.ap_flow_id)
+        if ap_flow is not None and sub.read_only:
+            from cuga.backend.evolve.retention_scheduling import sanitize_managed_flow
+
+            ap_flow = sanitize_managed_flow(ap_flow)
         return {"ok": True, "subscription": _dc.asdict(sub), "ap_flow": ap_flow}
 
     @app.get("/api/events/flows/console")
@@ -619,10 +638,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                         "agent": nr["agent"], "mcp": nr["mcp"],
                                         "tools": nr["tools"], "ms": nr["ms"]},
                     "error": None if is_ok else nr["answer"]}
-        owned = {s.get("ap_flow_id") for s in (store.as_dicts(scope=scope) if store else [])}
+        owned = {
+            s.get("ap_flow_id"): s
+            for s in (store.as_dicts(scope=scope) if store else [])
+            if s.get("ap_flow_id")
+        }
         run = await engine.get_run(run_id) if engine is not None else None
-        if run is None or run.get("flowId") not in owned:
+        sub = owned.get(run.get("flowId")) if run is not None else None
+        if run is None or sub is None:
             return JSONResponse({"ok": False, "error": "run not found"}, 404)
+        if sub.get("read_only"):
+            from cuga.backend.evolve.retention_scheduling import project_managed_run_detail
+
+            return project_managed_run_detail(run)
         answer, trigger_payload, error = _dissect_run(run)
         return {"ok": True,
                 "run": {"id": run.get("id"), "status": run.get("status"),
@@ -671,6 +699,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if response := _read_only_response(sub):
+            return response
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         if not sub.ap_flow_id:

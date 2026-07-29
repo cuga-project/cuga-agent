@@ -50,6 +50,8 @@ class Subscription:
     # pattern/folder). Empty for legacy rows.
     event: str = ""
     config: dict = field(default_factory=dict)
+    managed_by: str = ""          # owning subsystem; empty means user/concierge managed
+    read_only: bool = False       # owner, not Events Studio, controls lifecycle/configuration
 
 
 class SubscriptionStore:
@@ -80,7 +82,11 @@ class SubscriptionStore:
                  status TEXT NOT NULL DEFAULT 'active',
                  created_at REAL NOT NULL DEFAULT 0,
                  dedup_key TEXT NOT NULL DEFAULT '',
-                 flow_name TEXT NOT NULL DEFAULT ''
+                 flow_name TEXT NOT NULL DEFAULT '',
+                 event TEXT NOT NULL DEFAULT '',
+                 config TEXT NOT NULL DEFAULT '{}',
+                 managed_by TEXT NOT NULL DEFAULT '',
+                 read_only INTEGER NOT NULL DEFAULT 0
                )""")
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(subscription)").fetchall()}
         if "dedup_key" not in cols:
@@ -91,6 +97,14 @@ class SubscriptionStore:
             self._db.execute("ALTER TABLE subscription ADD COLUMN event TEXT NOT NULL DEFAULT ''")
         if "config" not in cols:
             self._db.execute("ALTER TABLE subscription ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
+        if "managed_by" not in cols:
+            self._db.execute(
+                "ALTER TABLE subscription ADD COLUMN managed_by TEXT NOT NULL DEFAULT ''"
+            )
+        if "read_only" not in cols:
+            self._db.execute(
+                "ALTER TABLE subscription ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0"
+            )
         # Dedup used to be check-then-write with no constraint — two concurrent arms with the same
         # identity both missed the check and created duplicate AP flows. The partial UNIQUE index
         # makes the database the referee; upsert() surfaces the loser as a DuplicateSubscription.
@@ -114,19 +128,22 @@ class SubscriptionStore:
             self._db.execute(
                 """INSERT INTO subscription
                      (id,mode,target_agent,tenant,backend,source_type,source_connector,ap_flow_id,
-                      deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name,event,config)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name,event,config,
+                      managed_by,read_only)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      mode=excluded.mode, target_agent=excluded.target_agent, tenant=excluded.tenant,
                      backend=excluded.backend, source_type=excluded.source_type,
                      source_connector=excluded.source_connector, ap_flow_id=excluded.ap_flow_id,
                      deliver_to=excluded.deliver_to, thread_id=excluded.thread_id,
                      prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key,
-                     flow_name=excluded.flow_name, event=excluded.event, config=excluded.config""",
+                     flow_name=excluded.flow_name, event=excluded.event, config=excluded.config,
+                     managed_by=excluded.managed_by, read_only=excluded.read_only""",
                 (sub.id, sub.mode, sub.target_agent, sub.tenant, sub.backend, sub.source_type,
                  sub.source_connector, sub.ap_flow_id, json.dumps(sub.deliver_to),
                  sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key,
-                 sub.flow_name, sub.event, json.dumps(sub.config or {})))
+                 sub.flow_name, sub.event, json.dumps(sub.config or {}), sub.managed_by,
+                 int(sub.read_only)))
         except sqlite3.IntegrityError as e:
             if "uq_subscription_dedup" in str(e) or "dedup" in str(e):
                 raise DuplicateSubscription(sub.dedup_key) from e
@@ -156,6 +173,7 @@ class SubscriptionStore:
         d = dict(r)
         d["deliver_to"] = json.loads(d.get("deliver_to") or "[]")
         d["config"] = json.loads(d.get("config") or "{}")
+        d["read_only"] = bool(d.get("read_only"))
         return Subscription(**d)
 
     def get(self, sub_id: str) -> Subscription | None:

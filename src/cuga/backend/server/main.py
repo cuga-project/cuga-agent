@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hmac
 import platform
 import re
 import shutil
@@ -536,6 +537,11 @@ class MemoryAutomationPatchRequest(BaseModel):
     retention_time: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     events_enabled: Optional[bool] = None
     event_destination: Optional[str] = Field(default=None, min_length=1, max_length=500)
+
+
+class RetentionJobRequest(BaseModel):
+    scheduled_for: Optional[datetime.datetime] = None
+    data: Optional[Dict[str, Any]] = None
 
 
 class AttachmentSnapshotItem(BaseModel):
@@ -1179,6 +1185,53 @@ async def lifespan(app: FastAPI):
                         len(_events_bg_tasks))
     except Exception as _bg_err:  # noqa: BLE001
         logger.warning("events background launch failed: {}", _bg_err)
+
+    if os.getenv("CUGA_COMPLIANCE_POC_SEED_ENABLED", "").lower() in {"1", "true", "yes"}:
+
+        async def _bootstrap_compliance_poc_runtime() -> None:
+            from cuga.backend.evolve.compliance_poc import bootstrap_runtime
+
+            try:
+                result = await bootstrap_runtime(
+                    app_state.agent_id,
+                    _workspace_user_id(None),
+                    _memory_namespace_id(),
+                    "Demo user",
+                    engine=getattr(app.state, "ev_engine", None),
+                    subscription_store=getattr(app.state, "ev_store", None),
+                    scheduler_attempts=int(
+                        os.getenv("CUGA_COMPLIANCE_POC_SCHEDULER_ATTEMPTS", "60")
+                    ),
+                    scheduler_retry_seconds=float(
+                        os.getenv("CUGA_COMPLIANCE_POC_SCHEDULER_RETRY_SECONDS", "5")
+                    ),
+                )
+                scheduler = result.get("scheduler") or {}
+                if getattr(app.state, "ev_engine", None) is None:
+                    logger.info(
+                        "Compliance PoC data ready; Activepieces is not configured"
+                    )
+                elif (
+                    scheduler.get("scheduler_confirmed_enabled") is True
+                    and scheduler.get("scheduler_health") == "healthy"
+                ):
+                    logger.info(
+                        "Compliance PoC data and Activepieces retention schedule are ready"
+                    )
+                else:
+                    logger.warning(
+                        "Compliance PoC data is ready, but its Activepieces schedule was not "
+                        "confirmed: {}",
+                        scheduler.get("scheduler_detail", "status unavailable"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Compliance PoC startup bootstrap failed: {}", exc)
+
+        app_state.background_tasks.append(
+            asyncio.create_task(_bootstrap_compliance_poc_runtime())
+        )
 
     yield
     logger.info("Application is shutting down...")
@@ -2191,6 +2244,8 @@ try:
                 _ev_engine = APEngine()
         except Exception:  # noqa: BLE001
             _ev_engine = None
+        app.state.ev_engine = _ev_engine
+        app.state.ev_store = _ev_store
         # identity anchor (decision 0007): local users + the channel identity map (shared store)
         from cuga.backend.events.users import UserStore
         from cuga.backend.events.identity import IdentityMap
@@ -3216,6 +3271,19 @@ def _project_automation_config(result: dict[str, Any]) -> dict[str, Any]:
             "events_enabled",
             "event_destination",
             "event_type",
+            "automation_id",
+            "scheduler_provider",
+            "scheduler_connected",
+            "scheduler_confirmed_enabled",
+            "scheduler_health",
+            "scheduler_detail",
+            "scheduler_callback_ready",
+            "retention_service_connected",
+            "retention_service_healthy",
+            "last_occurrence_at",
+            "last_occurrence_status",
+            "last_occurrence_trigger",
+            "next_occurrence_at",
         )
     }
 
@@ -3387,7 +3455,10 @@ async def get_user_memory_retention(
 ):
     from cuga.backend.evolve.compliance_poc import get_user_retention_summary
 
-    return await get_user_retention_summary(app_state.agent_id)
+    return await get_user_retention_summary(
+        app_state.agent_id,
+        getattr(app.state, "ev_engine", None),
+    )
 
 
 @app.get("/api/admin/memory/entities")
@@ -3537,7 +3608,7 @@ async def get_admin_memory_compliance_status(
 async def bootstrap_compliance_poc(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    from cuga.backend.evolve.compliance_poc import bootstrap
+    from cuga.backend.evolve.compliance_poc import bootstrap_runtime
 
     if os.getenv("CUGA_COMPLIANCE_POC_SEED_ENABLED", "").lower() not in {"1", "true", "yes"}:
         raise HTTPException(
@@ -3546,11 +3617,13 @@ async def bootstrap_compliance_poc(
         )
     user_name = (current_user.name or current_user.email) if current_user else "Demo user"
     try:
-        return await bootstrap(
+        return await bootstrap_runtime(
             app_state.agent_id,
             _workspace_user_id(current_user),
             _memory_namespace_id(),
             user_name or "Demo user",
+            engine=getattr(app.state, "ev_engine", None),
+            subscription_store=getattr(app.state, "ev_store", None),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -3578,6 +3651,71 @@ async def run_simulated_memory_schedule(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/api/internal/memory/automations/{automation_id}/runs")
+async def run_scheduled_memory_automation(
+    automation_id: str,
+    body: RetentionJobRequest,
+    request: Request,
+):
+    """Machine-only callback whose retention scope is resolved entirely by CUGA."""
+    token = os.environ.get("GATEWAY_TOKEN", "").split(" #", 1)[0].strip()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="Scheduled retention is unavailable until GATEWAY_TOKEN is configured",
+        )
+    if not hmac.compare_digest(request.headers.get("X-Gateway-Token", ""), token):
+        raise HTTPException(status_code=401, detail="Invalid scheduler credential")
+
+    from cuga.backend.evolve.compliance_poc import get_automation_config, project_retention_report
+    from cuga.backend.evolve.retention_jobs import (
+        OccurrenceConflictError,
+        OccurrenceInProgressError,
+        RetentionOccurrence,
+        run_retention_occurrence,
+    )
+    from cuga.backend.evolve.retention_scheduling import (
+        retention_automation_id,
+        scheduler_occurrence_id,
+    )
+
+    expected_id = retention_automation_id(app_state.agent_id)
+    if not hmac.compare_digest(automation_id, expected_id):
+        raise HTTPException(status_code=404, detail="Retention automation not found")
+    config = await get_automation_config(app_state.agent_id)
+    nested_scheduled_for = (body.data or {}).get("scheduled_for")
+    scheduled_for = body.scheduled_for
+    if scheduled_for is None and isinstance(nested_scheduled_for, str):
+        try:
+            scheduled_for = datetime.datetime.fromisoformat(
+                nested_scheduled_for.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="scheduled_for must be ISO 8601") from exc
+    scheduled_for = scheduled_for or datetime.datetime.now(datetime.UTC)
+    if scheduled_for.tzinfo is None:
+        scheduled_for = scheduled_for.replace(tzinfo=datetime.UTC)
+    scheduled_for = scheduled_for.astimezone(datetime.UTC)
+    occurrence = RetentionOccurrence(
+        automation_id=automation_id,
+        occurrence_id=scheduler_occurrence_id(config, scheduled_for),
+        scheduled_for=scheduled_for.isoformat().replace("+00:00", "Z"),
+        trigger="scheduler",
+    )
+    try:
+        result = await run_retention_occurrence(
+            occurrence,
+            agent_id=app_state.agent_id,
+            namespace_id=_memory_namespace_id(),
+            dry_run=True,
+        )
+        return project_retention_report(result)
+    except (OccurrenceConflictError, OccurrenceInProgressError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/admin/memory/activity")
 async def list_memory_activity(
     limit: int = Query(default=100, ge=1, le=200),
@@ -3591,8 +3729,15 @@ async def list_memory_activity(
 @app.get("/api/admin/memory/automation")
 async def get_memory_automation_config(current_user: Optional[UserInfo] = Depends(require_manage_access)):
     from cuga.backend.evolve.compliance_poc import get_automation_config
+    from cuga.backend.evolve.retention_scheduling import get_schedule_status
 
-    return _project_automation_config(await get_automation_config(app_state.agent_id))
+    config = await get_automation_config(app_state.agent_id)
+    status = await get_schedule_status(
+        app_state.agent_id,
+        config,
+        getattr(app.state, "ev_engine", None),
+    )
+    return _project_automation_config({**config, **status})
 
 
 @app.patch("/api/admin/memory/automation")
@@ -3601,13 +3746,26 @@ async def patch_memory_automation_config(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
     from cuga.backend.evolve.compliance_poc import update_automation_config
-
-    return _project_automation_config(
-        await update_automation_config(
-            app_state.agent_id,
-            body.model_dump(exclude_none=True),
-        )
+    from cuga.backend.evolve.retention_scheduling import (
+        ActivepiecesRetentionScheduler,
+        get_schedule_status,
     )
+
+    values = body.model_dump(exclude_none=True)
+    config = await update_automation_config(app_state.agent_id, values)
+    engine = getattr(app.state, "ev_engine", None)
+    retention_changed = bool(
+        {"retention_enabled", "retention_frequency", "retention_time"} & values.keys()
+    )
+    if retention_changed and engine is not None:
+        status = await ActivepiecesRetentionScheduler(
+            engine,
+            getattr(app.state, "ev_store", None),
+        ).reconcile(app_state.agent_id, config)
+        config = await update_automation_config(app_state.agent_id, {})
+    else:
+        status = await get_schedule_status(app_state.agent_id, config, engine)
+    return _project_automation_config({**config, **status})
 
 
 @app.get("/api/admin/memory/deliveries")

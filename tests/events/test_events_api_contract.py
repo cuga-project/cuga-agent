@@ -501,6 +501,66 @@ def test_subscription_flow_without_ap_configured():
     assert b["ok"] is True and b["ap_flow"] is None
 
 
+@pytest.mark.parametrize("method,path", [
+    ("post", "/api/events/subscriptions/s1/pause"),
+    ("post", "/api/events/subscriptions/s1/resume"),
+    ("delete", "/api/events/subscriptions/s1"),
+    ("post", "/api/events/subscriptions/s1/run"),
+])
+def test_owner_managed_subscription_rejects_studio_mutations(method, path):
+    eng = _FakeEngine(flow={"id": "flow-1"})
+    c, st = _client(
+        [_sub(read_only=True, managed_by="memory_compliance")],
+        engine=eng,
+    )
+
+    response = getattr(c, method)(path)
+
+    assert response.status_code == 409
+    assert "read-only" in response.json()["error"]
+    assert st.get("s1") is not None
+    assert eng.calls == []
+
+
+def test_owner_managed_flow_detail_does_not_expose_action_inputs():
+    eng = _FakeEngine(flow={
+        "id": "flow-1",
+        "status": "ENABLED",
+        "version": {
+            "trigger": {
+                "name": "trigger",
+                "settings": {
+                    "pieceName": "@activepieces/piece-schedule",
+                    "triggerName": "cron_expression",
+                    "input": {"cronExpression": "0 2 * * 0", "timezone": "UTC"},
+                },
+                "nextAction": {
+                    "name": "step_1",
+                    "settings": {
+                        "pieceName": "@activepieces/piece-http",
+                        "actionName": "send_request",
+                        "input": {"headers": {"X-Gateway-Token": "must-not-leak"}},
+                    },
+                },
+            }
+        },
+    })
+    c, _ = _client(
+        [_sub(read_only=True, managed_by="memory_compliance")],
+        engine=eng,
+    )
+
+    body = c.get("/api/events/subscriptions/s1/flow").json()
+
+    assert body["ok"] is True
+    assert body["subscription"]["read_only"] is True
+    assert "must-not-leak" not in str(body)
+    assert (
+        body["ap_flow"]["version"]["trigger"]["nextAction"]["settings"]["actionName"]
+        == "send_request"
+    )
+
+
 # ── POST /subscriptions/{id}/run — the debug trigger ──────────────────────────
 class _RunEngine(_FakeEngine):
     """An AP that produces a new, finished run the moment the flow is triggered."""
