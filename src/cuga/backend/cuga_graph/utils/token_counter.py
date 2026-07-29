@@ -400,13 +400,14 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     # the client's lifetime (object.__setattr__ bypasses pydantic's field guard).
     requested = getattr(llm, _ORIGINAL_BUDGET_ATTR, None)
     if requested is None:
-        requested = int(
+        requested = (
             getattr(llm, "max_completion_tokens", None)
             or getattr(llm, "max_tokens", None)
             or params.get("max_completion_tokens")
             or 16000
         )
         object.__setattr__(llm, _ORIGINAL_BUDGET_ATTR, requested)
+    requested = int(requested)
 
     clamped = clamp_completion_tokens(
         context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
