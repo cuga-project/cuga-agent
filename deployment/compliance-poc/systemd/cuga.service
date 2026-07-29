@@ -1,0 +1,23 @@
+[Unit]
+Description=CUGA compliance PoC
+After=network-online.target evolve.service activepieces-bootstrap.service
+Wants=network-online.target
+Requires=evolve.service activepieces-bootstrap.service
+
+[Service]
+Type=simple
+User=cuga
+Group=cuga
+WorkingDirectory=/app
+EnvironmentFile=/etc/cuga-poc/defaults.env
+EnvironmentFile=-/data/cuga-poc/secrets.env
+EnvironmentFile=-/etc/cuga-poc/container.env
+Environment=HOME=/data/cuga/home
+ExecStart=/app/.venv/bin/uvicorn cuga.backend.server.main:app --host 0.0.0.0 --port 7860
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=5min
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

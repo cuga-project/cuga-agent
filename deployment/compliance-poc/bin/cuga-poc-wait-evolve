@@ -1,0 +1,11 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+for _ in $(seq 1 60); do
+  response="$(curl --silent --no-buffer --max-time 2 http://127.0.0.1:8201/sse || true)"
+  grep -q "event: endpoint" <<<"${response}" && exit 0
+  sleep 2
+done
+
+echo "Evolve MCP did not become ready at http://127.0.0.1:8201/sse" >&2
+exit 1

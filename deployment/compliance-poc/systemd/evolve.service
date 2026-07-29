@@ -1,0 +1,22 @@
+[Unit]
+Description=Evolve memory MCP server
+After=network-online.target cuga-poc-prepare.service
+Wants=network-online.target
+Requires=cuga-poc-prepare.service
+
+[Service]
+Type=simple
+User=cuga
+Group=cuga
+WorkingDirectory=/data/evolve
+EnvironmentFile=/etc/cuga-poc/defaults.env
+EnvironmentFile=-/data/cuga-poc/secrets.env
+EnvironmentFile=-/etc/cuga-poc/container.env
+Environment=HOME=/data/cuga/home
+ExecStart=/app/.venv/bin/evolve-mcp --transport sse --host 127.0.0.1 --port 8201
+ExecStartPost=/usr/local/bin/cuga-poc-wait-evolve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

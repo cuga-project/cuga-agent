@@ -1,0 +1,19 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+install -d -m 0750 -o activepieces -g activepieces \
+  /data/activepieces \
+  /data/activepieces/cache \
+  /data/activepieces/home \
+  /data/activepieces/pieces \
+  /data/activepieces/redis
+
+install -d -m 0750 -o cuga -g cuga \
+  /data/cuga \
+  /data/cuga/crm \
+  /data/cuga/dbs \
+  /data/cuga/home \
+  /data/cuga/logging \
+  /data/evolve
+
+install -d -m 0755 -o cuga -g cuga /app/.cuga

@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare durable state for the CUGA compliance PoC
+Before=activepieces.service evolve.service cuga.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cuga-poc-prepare
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,154 @@
+ARG ACTIVEPIECES_IMAGE=activepieces/activepieces:0.82.0
+ARG EVOLVE_REF=af3e1310134b3397302e260cb3504b23a732fead
+ARG EVOLVE_REPO=https://github.com/AgentToolkit/altk-evolve.git
+ARG PYTHON_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
+ARG REDIS_IMAGE=redis:7.4-bookworm
+
+FROM ${ACTIVEPIECES_IMAGE} AS activepieces
+FROM ${REDIS_IMAGE} AS redis
+
+FROM ${PYTHON_IMAGE} AS builder
+
+USER root
+RUN dnf install -y git-core findutils binutils && dnf clean all
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV PATH="/usr/local/bin:${PATH}"
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ ./src/
+
+ARG EVOLVE_REPO
+ARG EVOLVE_REF
+RUN find src -name "*.egg-info" -o -name build -exec rm -rf {} + \
+    && uv sync --no-editable --no-dev --extra evolve \
+    && git clone --filter=blob:none "${EVOLVE_REPO}" /tmp/evolve \
+    && git -C /tmp/evolve checkout "${EVOLVE_REF}" \
+    && uv pip install --python /app/.venv/bin/python "/tmp/evolve[hooks,pii-regex]" \
+    && cp /tmp/evolve/examples/cuga_compliance_poc_hooks.yaml /tmp/evolve-hooks.yaml
+
+RUN rm -rf /app/.venv/lib/python3.12/site-packages/torch/test \
+           /app/.venv/lib/python3.12/site-packages/torch/include
+
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright \
+    uv run --no-sync playwright install --only-shell chromium
+
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
+    HF_HOME=/app/.cache/huggingface
+RUN uv run --no-sync python src/scripts/preload_models.py \
+    && find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+FROM registry.access.redhat.com/ubi9/ubi-init:latest
+
+ARG ACTIVEPIECES_IMAGE
+ARG EVOLVE_REF
+LABEL org.opencontainers.image.title="CUGA compliance PoC" \
+      org.opencontainers.image.description="CUGA, Evolve memory, and Activepieces in one stakeholder PoC image" \
+      io.cuga.activepieces.image="${ACTIVEPIECES_IMAGE}" \
+      io.cuga.evolve.revision="${EVOLVE_REF}"
+
+RUN dnf install -y \
+        alsa-lib \
+        at-spi2-atk \
+        at-spi2-core \
+        atk \
+        cairo \
+        dbus-libs \
+        expat \
+        findutils \
+        glib2 \
+        gzip \
+        libdrm \
+        libgbm \
+        libstdc++ \
+        libX11 \
+        libXcomposite \
+        libXdamage \
+        libXext \
+        libXfixes \
+        libXrandr \
+        libxcb \
+        libxkbcommon \
+        mesa-libgbm \
+        mesa-libGL \
+        nspr \
+        nss \
+        nss-util \
+        openssl \
+        pango \
+        procps-ng \
+        python3.12 \
+        shadow-utils \
+        tar \
+        unzip \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/.playwright /app/.playwright
+COPY --from=builder /app/.cache /app/.cache
+COPY --from=builder /app/src /app/src
+COPY --from=builder /tmp/evolve-hooks.yaml /etc/cuga-poc/evolve-hooks.yaml
+
+COPY --from=activepieces /usr/src/app /opt/activepieces
+COPY --from=activepieces /usr/local/bin/node /usr/local/bin/node
+COPY --from=activepieces /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=activepieces /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=activepieces /opt/yarn-v1.22.22 /opt/yarn-v1.22.22
+COPY --from=redis /usr/local/bin/redis-server /usr/local/bin/redis-server
+COPY --from=redis /usr/local/bin/redis-cli /usr/local/bin/redis-cli
+
+COPY scripts/ap_pieces.py /app/scripts/ap_pieces.py
+COPY deployment/compliance-poc/defaults.env /etc/cuga-poc/defaults.env
+COPY deployment/compliance-poc/bin/ /usr/local/bin/
+COPY deployment/compliance-poc/systemd/ /etc/systemd/system/
+
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
+    && ln -sf ../lib/node_modules/pm2/bin/pm2-runtime /usr/local/bin/pm2-runtime \
+    && ln -sf /opt/yarn-v1.22.22/bin/yarn /usr/local/bin/yarn \
+    && useradd --system --home-dir /data/cuga/home --shell /sbin/nologin cuga \
+    && useradd --system --home-dir /data/activepieces --shell /sbin/nologin activepieces \
+    && mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data \
+    && rm -rf /opt/activepieces/cache \
+    && ln -s /data/activepieces/cache /opt/activepieces/cache \
+    && chmod 0755 /usr/local/bin/cuga-poc-entrypoint \
+                  /usr/local/bin/cuga-poc-prepare \
+                  /usr/local/bin/cuga-poc-wait-evolve \
+                  /usr/local/bin/activepieces-bootstrap \
+                  /usr/local/bin/cuga-poc-health \
+    && systemctl enable cuga-poc-prepare.service \
+                        redis.service \
+                        activepieces.service \
+                        evolve.service \
+                        activepieces-bootstrap.service \
+                        cuga.service
+
+COPY \
+  src/cuga/demo_tools/huggingface/contacts.txt \
+  src/cuga/demo_tools/huggingface/cuga_knowledge.md \
+  src/cuga/demo_tools/huggingface/cuga_playbook.md \
+  src/cuga/demo_tools/huggingface/email_template.md \
+  src/cuga/demo_tools/huggingface/sovereign_core_overview.pdf \
+  /app/cuga_workspace/
+
+ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PLAYWRIGHT_BROWSERS_PATH=/app/.playwright \
+    FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1
+
+VOLUME ["/data"]
+EXPOSE 7860 8081 8201
+STOPSIGNAL SIGRTMIN+3
+HEALTHCHECK --interval=30s --timeout=8s --start-period=15m --retries=3 \
+  CMD ["/usr/local/bin/cuga-poc-health"]
+
+ENTRYPOINT ["/usr/local/bin/cuga-poc-entrypoint"]
+CMD ["/sbin/init"]

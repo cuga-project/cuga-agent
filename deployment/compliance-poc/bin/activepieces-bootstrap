@@ -1,0 +1,93 @@
+#!/usr/bin/python3.12
+"""Create the PoC Activepieces owner, then materialize required pieces."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+import urllib.error
+import urllib.request
+
+
+BASE = os.environ.get("AP_BASE_URL", "http://127.0.0.1:8081").rstrip("/")
+REQUIRED_PIECES = {
+    "@activepieces/piece-box",
+    "@activepieces/piece-gmail",
+    "@activepieces/piece-github",
+    "@activepieces/piece-google-calendar",
+    "@activepieces/piece-pinterest",
+    "@activepieces/piece-rss",
+    "@activepieces/piece-schedule",
+    "@activepieces/piece-telegram-bot",
+    "@activepieces/piece-youtube",
+}
+
+
+def request(path: str, method: str = "GET", body: dict | None = None) -> tuple[int, str]:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        f"{BASE}{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode()
+
+
+deadline = time.monotonic() + 300
+while time.monotonic() < deadline:
+    try:
+        status, _ = request("/api/v1/flags")
+        if status == 200:
+            break
+    except OSError:
+        pass
+    time.sleep(2)
+else:
+    raise SystemExit(f"Activepieces did not become ready at {BASE}")
+
+email = os.environ["AP_EMAIL"]
+password = os.environ["AP_PASSWORD"]
+status, response = request(
+    "/api/v1/authentication/sign-up",
+    "POST",
+    {
+        "email": email,
+        "password": password,
+        "firstName": "CUGA",
+        "lastName": "Administrator",
+        "trackEvents": False,
+        "newsLetter": False,
+    },
+)
+already_registered = status == 403 and "INVITATION_ONLY_SIGN_UP" in response
+if status not in {200, 201, 409} and not already_registered:
+    raise SystemExit(f"Activepieces owner bootstrap failed (HTTP {status}): {response[:300]}")
+
+# A fresh Activepieces catalog arrives incrementally. Running the shared
+# installer against a partial catalog makes it fall back to package pins that
+# can lag the pinned server image, so wait for authoritative live versions.
+catalog_deadline = time.monotonic() + 600
+while time.monotonic() < catalog_deadline:
+    status, response = request("/api/v1/pieces")
+    if status == 200:
+        names = {
+            item.get("name")
+            for item in json.loads(response)
+            if item.get("name") and item.get("version")
+        }
+        missing = REQUIRED_PIECES - names
+        if not missing:
+            break
+        print(f"Waiting for Activepieces catalog ({len(missing)} required pieces remaining)")
+    time.sleep(5)
+else:
+    raise SystemExit("Activepieces catalog did not publish all required piece versions")
+
+raise SystemExit(subprocess.call(["/app/.venv/bin/python", "/app/scripts/ap_pieces.py"]))

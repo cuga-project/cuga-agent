@@ -1,0 +1,16 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+redis-cli -h 127.0.0.1 ping | grep -q '^PONG$'
+curl --fail --silent --show-error --max-time 3 \
+  http://127.0.0.1:8081/api/v1/flags >/dev/null
+curl --fail --silent --show-error --max-time 3 \
+  http://127.0.0.1:7860/api/admin/memory/automation \
+  | /usr/bin/python3.12 -c '
+import json, sys
+status = json.load(sys.stdin)
+raise SystemExit(0 if status.get("scheduler_health") == "healthy" else 1)
+'
+
+response="$(curl --silent --no-buffer --max-time 2 http://127.0.0.1:8201/sse || true)"
+grep -q "event: endpoint" <<<"${response}"

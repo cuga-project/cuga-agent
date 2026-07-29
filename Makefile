@@ -6,6 +6,7 @@ SHELL := /bin/bash
 
 PY        := .venv/bin/python
 DOCKER    := $(shell command -v podman || command -v docker)
+IMAGE     ?= cuga-compliance-poc:dev
 DB        := events.db .events.db
 VOLS      := ap_pgdata ap_redis
 CUGA_PORT := 7860
@@ -18,7 +19,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync compliance-poc compliance-poc-stop compliance-poc-status
+.PHONY: help env-check preflight doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync compliance-poc compliance-poc-stop compliance-poc-status compliance-poc-image compliance-poc-image-multiarch compliance-poc-image-run
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -48,6 +49,18 @@ compliance-poc-stop: ## Stop CUGA and Evolve processes started by compliance-poc
 
 compliance-poc-status: ## Report local compliance PoC service status
 	scripts/compliance_poc.sh --status
+
+compliance-poc-image: ## Build the single-image UBI9 init compliance PoC
+	$(DOCKER) build -f Dockerfile.compliance-poc -t $(IMAGE) .
+
+compliance-poc-image-multiarch: ## Build and push amd64+arm64 PoC images as one manifest
+	$(DOCKER) buildx build --platform linux/amd64,linux/arm64 \
+	  -f Dockerfile.compliance-poc -t $(IMAGE) --push .
+
+compliance-poc-image-run: ## Run the single-image PoC locally with persistent data
+	$(DOCKER) run --rm --name cuga-compliance-poc --privileged --cgroupns=host \
+	  -p 7860:7860 -p 8081:8081 -p 8201:8201 \
+	  -v cuga-compliance-poc-data:/data --env-file .env $(IMAGE)
 
 stop: ## Stop everything (AP + CUGA + tunnels), keep data
 	-scripts/ap_up.sh --stop

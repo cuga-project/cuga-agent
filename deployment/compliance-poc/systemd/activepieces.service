@@ -1,0 +1,25 @@
+[Unit]
+Description=Activepieces event runtime
+After=network-online.target cuga-poc-prepare.service redis.service
+Wants=network-online.target
+Requires=cuga-poc-prepare.service redis.service
+
+[Service]
+Type=simple
+User=activepieces
+Group=activepieces
+WorkingDirectory=/opt/activepieces
+EnvironmentFile=/etc/cuga-poc/defaults.env
+EnvironmentFile=-/data/cuga-poc/secrets.env
+EnvironmentFile=-/etc/cuga-poc/container.env
+Environment=HOME=/data/activepieces/home
+Environment=AP_CACHE_PATH=/data/activepieces/cache
+Environment=AP_CONFIG_PATH=/data/activepieces
+Environment=AP_PIECES_CACHE_PATH=/data/activepieces/pieces
+ExecStart=/opt/activepieces/docker-entrypoint.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

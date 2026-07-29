@@ -1,0 +1,97 @@
+#!/usr/bin/python3.12
+"""Persist generated secrets, pass container env to systemd, then start PID 1."""
+
+from __future__ import annotations
+
+import os
+import secrets
+from pathlib import Path
+
+
+STATE_DIR = Path("/data/cuga-poc")
+SECRETS_FILE = STATE_DIR / "secrets.env"
+CONTAINER_ENV_FILE = Path("/etc/cuga-poc/container.env")
+GENERATED = {
+    "AP_ENCRYPTION_KEY": lambda: secrets.token_hex(16),
+    "AP_JWT_SECRET": lambda: secrets.token_hex(32),
+    "AP_PASSWORD": lambda: secrets.token_urlsafe(24),
+    "GATEWAY_TOKEN": lambda: secrets.token_urlsafe(32),
+}
+EXACT_KEYS = {
+    "AGENT_SETTING_CONFIG",
+    "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY",
+    "HOST_CALLBACK_URL",
+    "LLM_MODEL",
+    "LLM_PROVIDER",
+    "MODEL_NAME",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "SIL_API_KEY",
+    "WATSONX_APIKEY",
+    "WATSONX_PROJECT_ID",
+    "WATSONX_URL",
+}
+PREFIXES = ("AP_", "CUGA_", "DYNACONF_", "EVENTS_", "EVOLVE_")
+POC_WIRING = {
+    "AP_BASE_URL": "http://127.0.0.1:8081",
+    "CUGA_COMPLIANCE_POC_SEED_ENABLED": "1",
+    "DYNACONF_EVOLVE__ENABLED": "true",
+    "DYNACONF_EVOLVE__MODE": "direct",
+    "DYNACONF_EVOLVE__URL": "http://127.0.0.1:8201/sse",
+    "EVENTS_ENABLED": "1",
+}
+
+
+def read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value.strip().strip('"')
+    return values
+
+
+def quote(value: str) -> str:
+    if "\n" in value or "\r" in value:
+        raise ValueError("multiline environment values are not supported")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def write_env(path: Path, values: dict[str, str], mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "".join(f"{key}={quote(value)}\n" for key, value in sorted(values.items()))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(content)
+    temporary.chmod(mode)
+    temporary.replace(path)
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        raise SystemExit("cuga-poc-entrypoint must run as root")
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    persisted = read_env(SECRETS_FILE)
+    for key, factory in GENERATED.items():
+        persisted[key] = os.environ.get(key) or persisted.get(key) or factory()
+    write_env(SECRETS_FILE, persisted, 0o600)
+
+    forwarded = {
+        key: value
+        for key, value in os.environ.items()
+        if key in EXACT_KEYS or key.startswith(PREFIXES)
+    }
+    forwarded.update(POC_WIRING)
+    write_env(CONTAINER_ENV_FILE, forwarded, 0o600)
+
+    command = os.sys.argv[1:] or ["/sbin/init"]
+    os.execvpe(command[0], command, os.environ)
+
+
+if __name__ == "__main__":
+    main()

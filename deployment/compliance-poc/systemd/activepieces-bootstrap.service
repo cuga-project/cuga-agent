@@ -1,0 +1,21 @@
+[Unit]
+Description=Bootstrap Activepieces for the CUGA compliance PoC
+After=activepieces.service
+Requires=activepieces.service
+Before=cuga.service
+
+[Service]
+Type=oneshot
+User=activepieces
+Group=activepieces
+WorkingDirectory=/app
+EnvironmentFile=/etc/cuga-poc/defaults.env
+EnvironmentFile=-/data/cuga-poc/secrets.env
+EnvironmentFile=-/etc/cuga-poc/container.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/activepieces-bootstrap
+RemainAfterExit=yes
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target
