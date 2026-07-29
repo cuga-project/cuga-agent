@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import statistics
 import subprocess
 import sys
 
@@ -153,7 +154,7 @@ def _compute_cumulative(self_mb: dict[str, float]) -> dict[str, float]:
     Since we cannot observe the exact import tree from the outside, we use a
     heuristic: a module is a child of its longest matching prefix parent.
     E.g. ``cuga.sdk.tools`` is a child of ``cuga.sdk`` which is a child of ``cuga``.
-    cumulative = self + max(children's cumulatives)  (simplified; avoids double-count).
+    cumulative[parent] = self(parent) + sum of self() for all direct/indirect children.
     """
     mods = list(self_mb.keys())
     # Sort longest first so children are processed before parents.
@@ -279,11 +280,13 @@ def main() -> None:
     for run in run_results:
         all_mods.update(run.keys())
 
-    # Compute per-module median across the 3 subprocess runs.
+    # Compute per-module median across runs where the module actually appeared.
+    # Zero-padding absent runs would bias the median downward and can suppress
+    # modules that only appeared in 1 or 2 of the 3 runs.
     self_mb: dict[str, float] = {}
     for mod in all_mods:
-        vals = sorted(run.get(mod, 0.0) for run in run_results)
-        self_mb[mod] = vals[len(vals) // 2]
+        present_vals = [run[mod] for run in run_results if mod in run]
+        self_mb[mod] = statistics.median(present_vals) if present_vals else 0.0
 
     # Filter to modules ≥ MIN_SELF_MB.
     filtered = {m: v for m, v in self_mb.items() if v >= MIN_SELF_MB}
