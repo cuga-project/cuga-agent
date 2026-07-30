@@ -280,7 +280,7 @@ async def service_status(
 
 
 class AuthAppsRequest(BaseModel):
-    apps: List[str]
+    apps: List[str] = []  # empty = authenticate all configured apps
 
 
 @app.post("/api/authenticate_apps", tags=["APIs"])
@@ -357,9 +357,10 @@ async def call_mcp_function(
                             )
                             if isinstance(result_json, dict) and "access_token" in result_json:
                                 token = result_json["access_token"]
-                                # Update the auth manager's stored token
+                                # Update the auth manager's stored token (via _store so its
+                                # fetch time is recorded for the age-based refresh)
                                 if registry.auth_manager:
-                                    registry.auth_manager._tokens[request.app_name] = token
+                                    registry.auth_manager._store(request.app_name, token)
                                     logger.info(
                                         f"✅ Updated stored token for {request.app_name} from /auth/token endpoint"
                                     )

@@ -78,7 +78,7 @@ async def create_find_tools_tool(
             app_name: Name of a specific app to filter tools from. Only searches tools from that app.
 
         Returns:
-            Top 4 matching tools with their details
+            Relevant matching tools for the query (no fixed count)
         """
         if app_to_tools_map and app_name in app_to_tools_map:
             filtered_tools = app_to_tools_map[app_name]
