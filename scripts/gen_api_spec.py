@@ -316,9 +316,8 @@ ENDPOINTS = [
             "inside <code>concierge.run</code>, so they work identically from web chat and from every "
             "channel. There is no interception here.<br><br><b>To inspect what an utterance built</b>, "
             "use <code>?flow=1</code> (digest) or <code>?flow=full</code> (raw AP JSON). For a flow "
-            "armed earlier, <code>GET /api/events/subscriptions/&lt;id&gt;/flow</code>, or the "
-            "point-and-click console at <code>GET /api/events/flows/console</code> "
-            "(<code>make flows</code>)."),
+            "armed earlier, <code>GET /api/events/subscriptions/&lt;id&gt;/flow</code>, or the live "
+            "<code>GET /api/events/dashboard</code>."),
 
     E("GET", "/api/events/dry-run", "core",
       "Preview what an utterance WOULD do — with ZERO side effects (nothing armed, nothing persisted). "
@@ -525,13 +524,6 @@ ENDPOINTS = [
       notes="<b><code>ok</code> is <code>true</code> in both cases above.</b> Testing the truthiness "
             "of this response proves nothing; <code>ap_flow != null</code> is the only real signal. "
             "This is exactly the bug <code>flow_alive()</code> in the live harnesses exists to catch."),
-
-    E("GET", "/api/events/flows/console", "flows",
-      "A self-contained HTML console: list · pause/resume · delete · inspect.",
-      tier="ops", callers=["operator"], try_it=False,
-      responses=[(200, "&lt;html&gt;…&lt;/html&gt;",
-                  "A plain page with no build step, so it can't break the pre-built Studio bundle. "
-                  "<code>make flows</code> opens it.")]),
 
     E("GET", "/api/events/dashboard", "flows",
       "The LIVE Events Dashboard — a self-contained control-plane page: every watcher, run &amp; "

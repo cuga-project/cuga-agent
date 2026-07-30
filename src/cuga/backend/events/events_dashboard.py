@@ -81,7 +81,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     <div><h1><span class="dot"></span> Event Dashboard</h1>
       <div class="sub">every watcher, run &amp; channel — live · <span id="scope"></span></div></div>
     <div class="sub"><span class="live"></span> auto-refresh <span id="clock"></span>
-      · <a href="/api/events/flows/console">flows console</a> · <a href="/docs">API</a></div>
+      · <a href="/docs">API</a></div>
   </div>
 
   <div class="strip" id="strip"></div>

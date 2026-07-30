@@ -130,9 +130,9 @@ print(f\"      (each opens a browser OAuth consent; youtube/rss need nothing —
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
 	@scripts/events_up.sh --public-url
 
-flows: ## Open the Flows console (list · pause/resume · delete · rich flow view)
-	@echo "Flows console → http://localhost:$(CUGA_PORT)/api/events/flows/console"
-	@open "http://localhost:$(CUGA_PORT)/api/events/flows/console" 2>/dev/null || true
+flows: ## Open the Events Dashboard (watchers · runs · channels · pause/resume/delete/run · dry-run)
+	@echo "Events Dashboard → http://localhost:$(CUGA_PORT)/api/events/dashboard"
+	@open "http://localhost:$(CUGA_PORT)/api/events/dashboard" 2>/dev/null || true
 
 tunnels: ## Status of both public tunnel agents (AP cloudflared + CUGA ngrok/cloudflared)
 	@scripts/tunnels.sh --status

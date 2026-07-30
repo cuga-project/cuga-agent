@@ -154,6 +154,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             lambda app, key: oauth_store.get(
                 (resolve_principal(headers={}).tenant_id), app, key))
 
+    # ── THE THREE DOORS INTO THE CONCIERGE/AGENT (they are NOT duplicates) ───────────────────────────
+    #   POST /invoke        — the MACHINE seam. Envelope-in {agent,text,source,event,scope,thread},
+    #                         authed by X-Gateway-Token. Called by AP callbacks, the channel adapters
+    #                         (slack/discord/telegram), pollers, webhooks, and the native scheduler.
+    #                         Owns delivery + run-logging + poll-delta + bounded-run expiry. May target
+    #                         agent='concierge' (route/arm) OR a concrete agent (run it).
+    #   POST /api/concierge — the STUDIO/programmatic surface. NL {text}-in, header principal (no
+    #                         gateway token). ?dry_run=1 = deterministic plan; ?flow=1|full = armed flows.
+    #   POST /stream (main.py) — the HUMAN web-chat door. SSE; decides chat-vs-concierge and streams.
+    # All three converge on concierge.run; the difference is the caller, the envelope, and the auth model.
     @app.post("/invoke")
     async def invoke(request: Request):
         body = await request.json()
@@ -709,13 +719,6 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if engine is not None and sub.ap_flow_id:
             ap_flow = await engine.get_flow(sub.ap_flow_id)
         return {"ok": True, "subscription": _dc.asdict(sub), "ap_flow": ap_flow}
-
-    @app.get("/api/events/flows/console")
-    async def flows_console():
-        """Self-contained Flows console: list · pause/resume/delete · rich read-only flow view.
-        A plain HTML page (no build step) so it can't break the pre-built Studio bundle."""
-        from .flows_console import FLOWS_CONSOLE_HTML
-        return HTMLResponse(FLOWS_CONSOLE_HTML)
 
     @app.get("/api/events/dashboard")
     async def events_dashboard():

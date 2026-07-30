@@ -176,7 +176,7 @@
       (<code>/watch</code> = <code>/automate</code>, <code>/push</code>, <code>/schedule</code>, <code>/cron</code>,
       <code>/poll</code>). Manage the armed flows via the lifecycle endpoints below
       (<code>subscriptions/&lt;id&gt;/pause · /resume</code>, <code>DELETE subscriptions/&lt;id&gt;</code>,
-      <code>flows/console</code>).</p>
+      <code>dashboard</code>).</p>
       <div class="lbl">Request</div>
 <pre class="blk"><span class="k">{</span> <span class="k">"text"</span>: <span class="s">"every weekday 8am post a market brief to slack"</span>,
   <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"thread_id"</span>: <span class="s">"web:local"</span> <span class="k">}</span></pre>
@@ -204,7 +204,6 @@
       <tr><td><code>GET /api/events/subscriptions/&lt;id&gt;/flow</code></td><td>rich flow detail: the CUGA model + the live AP flow JSON (trigger + steps)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/run</code> <span class="tag">debug · real side effects</span></td><td><b>Fire an armed flow now</b>, out of band of its own trigger — so a 9am cron is testable at 3pm. Returns the run and the agent's <code>answer</code> (<code>?wait=0</code> to fire and forget). <b>Not a dry run:</b> it delivers to the flow's real sink. <code>409</code> if the flow is dangling; disable with <code>EVENTS_DEBUG_RUN=0</code></td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>POST /api/events/synth-fire</code> <span class="tag">debug · connection-free</span></td><td><b>Synthetically fire ANY AP trigger</b> with a piece-exact payload at the <code>/invoke</code> seam — no Activepieces flow, no connection, no real event. The way to test a polling/AP trigger (calendar · pinterest · youtube · rss · gmail · box) whose real fire needs a live connection. Body: <code>{source, event?, prompt?, agent?, payload?, deliver_to?, deliver_target?}</code>; <code>payload</code> defaults to the registry <code>synth</code> sample. Disable with <code>EVENTS_DEBUG_RUN=0</code></td><td><span class="pill p-live">Live</span></td></tr>
-      <tr><td><code>GET /api/events/flows/console</code></td><td>the self-contained <b>Flows console</b> page (list · pause/resume · delete · view)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/dashboard</code></td><td>the LIVE <b>Events Dashboard</b> — every watcher, run &amp; channel, pretty and readable, with pause/resume/delete/run + inline dry-run. No build step; reads only the <code>/api/events/*</code> APIs</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/channels</code></td><td><code>{channels:[{name,status}]}</code> — web/telegram/discord/slack connect state</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/integrations</code></td><td><code>{integrations:[{name,status,backend,auto_connect_pending}]}</code> — box/github/gmail/slack connection state; now also returns <code>backend</code> (via AP vs direct) and an <code>auto_connect_pending</code> status</td><td><span class="pill p-live">Live</span></td></tr>

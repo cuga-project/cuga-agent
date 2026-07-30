@@ -675,12 +675,6 @@ def test_debug_run_on_a_subscription_with_no_flow_is_409():
     assert r.status_code == 409 and "no AP flow" in r.json()["error"]
 
 
-def test_flows_console_serves_html():
-    c, _ = _client()
-    r = c.get("/api/events/flows/console")
-    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-
-
 # ── run log ───────────────────────────────────────────────────────────────────
 def test_runs_join_ap_runs_to_their_subscription():
     eng = _FakeEngine(runs=[{"id": "r1", "flowId": "flow-1", "status": "SUCCEEDED",
