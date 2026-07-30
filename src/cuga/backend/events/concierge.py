@@ -485,7 +485,10 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
 
     tools: list[BaseTool] = [list_capabilities, answer_now]
 
-    if engine is not None and store is not None:
+    # find_or_create_flow gates on the STORE, not the engine: NATIVE cron/poll (native_scheduler)
+    # need no Activepieces, so the arming tool must exist even when engine is None (the up-noap case).
+    # AP-only paths (push on an integration) self-decline inside the tool when engine is None.
+    if store is not None:
         try:
             from .subscriptions import Subscription, DuplicateSubscription
         except ImportError:                       # flat load (offline tests put events dir on path)
@@ -843,6 +846,24 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     _act_apps = [a["app"] for a in engine_actions] + \
                                 [s["app"] for b in engine_branches for s in b.get("actions", [])]
                     _gate_app = _act_apps[0] if _act_apps else None
+            # NATIVE-vs-AP routing (Phase 2): a PUSH on an AP integration needs Activepieces. Check it's
+            # REACHABLE with a SHORT timeout FIRST — otherwise the connect gate below retries with
+            # backoff and the chat hangs on "thinking…" before finally declining. Fail fast + clear.
+            # Probe THROUGH the engine (engine.reachable): a real APEngine does the HTTP check; a test
+            # FakeEngine lacks the method, so it's treated as up (the benchmark's simulated AP).
+            _ap_down = False
+            if engine is not None and hasattr(engine, "reachable"):
+                try:
+                    _ap_down = not await engine.reachable()
+                except Exception:  # noqa: BLE001
+                    _ap_down = True
+            if kind == "push" and trig_row is not None and trig_row.backend != "direct":
+                if engine is None or _ap_down:
+                    return (f"Watching **{source}** ({event or 'events'}) needs Activepieces, which "
+                            f"isn't reachable right now. Start it with `make up` to use {source} "
+                            f"triggers — or, for a schedule or to watch one of my own tools, just ask "
+                            f"(e.g. 'every 5 minutes …' or 'watch <tool> …') and I'll set it up "
+                            f"natively — no AP needed.")
             connect = await _connect_needed(spec, p, engine, only_app=_gate_app)
             if connect:
                 return f"CONNECT NEEDED — {connect[1]}"
@@ -1019,6 +1040,15 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 import hashlib
                 _disc = hashlib.sha1(dedup_key.encode()).hexdigest()[:8]
                 flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-{_disc}"
+                # NATIVE-vs-AP routing (Phase 2): a PUSH on an integration IS an AP piece. Without the
+                # AP engine we can't watch it — decline clearly, naming the integration, and point at
+                # what works AP-free, rather than failing with a cryptic connection error later.
+                if engine is None:
+                    return (f"Watching **{source}** ({event or 'events'}) needs the Activepieces "
+                            f"integration engine, which isn't running. Start it with `make up` to use "
+                            f"{source} triggers — or, for a schedule or to watch one of my own tools, "
+                            f"I can do that natively without AP (just say 'every N minutes …' or "
+                            f"'watch <tool> …').")
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     if engine_branches:                  # BRANCHED flow → ROUTER arming
@@ -1040,6 +1070,14 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                             deliver_connection=deliver_connection)
                 except Exception as e:  # noqa: BLE001
                     msg = str(e)
+                    # AP configured but UNREACHABLE (e.g. running up-noap with AP down): give the same
+                    # clear "start AP or go native" guidance as the engine-None case, not a raw error.
+                    if any(s in msg.lower() for s in ("connection refused", "max retries", "timed out",
+                                                      "nodename nor servname", "connect call failed",
+                                                      "cannot connect", "connection error")):
+                        return (f"Couldn't reach Activepieces to arm the **{source}** watcher. Start it "
+                                f"with `make up` — or, for a schedule or watching one of my own tools, "
+                                f"ask for that and I'll do it natively (no AP needed).")
                     # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
                     # the token can't manage webhooks (fine-grained PAT missing "Webhooks" permission,
                     # surfaced by AP as TRIGGER_UPDATE_STATUS / bad credentials). Make that actionable.
@@ -1122,6 +1160,41 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             ttl = _classify.ttl_of(_utterance.get("") or prompt)
             expires_at = (_time.time() + ttl) if ttl else None
             sub_id = f"{agent}-{uuid.uuid4().hex[:6]}"
+            until = (f" It stops itself after {ttl // 3600}h" if ttl and ttl % 3600 == 0 else
+                     f" It stops itself after {ttl // 60} min" if ttl else "")
+            until = until and until + f" (~{_time.strftime('%H:%M', _time.localtime(expires_at))})."
+            # ── NATIVE vs AP routing (Phase 2) ───────────────────────────────────────────────────
+            # cron/poll are TIMERS — no integration piece is involved — so by default they run on OUR
+            # in-process scheduler (native_scheduler), needing NO Activepieces. EVENTS_SCHEDULER=ap
+            # restores the legacy AP-schedule-piece path. This is the whole "schedules work without AP".
+            try:
+                from . import native_scheduler as _ns
+            except ImportError:  # flat load (offline tests)
+                import native_scheduler as _ns
+            if _ns.enabled():
+                _now = _time.time()
+                _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
+                sub = Subscription(
+                    id=sub_id, mode=kind.upper(), target_agent=agent, tenant=p.scope,
+                    backend="native", source_type="time",
+                    source_connector=("cron" if cron else "interval"), ap_flow_id=None,
+                    deliver_to=[sink], thread_id=p.thread(origin), prompt=run_prompt,
+                    dedup_key=dedup_key, flow_name=flow_name,
+                    interval_seconds=(interval or 0), cron_expr=(cron or ""),
+                    next_fire=_next, expires_at=(expires_at or 0.0),
+                    config=({"expires_at": expires_at} if expires_at else {}))
+                store.upsert(sub)
+                log.info("concierge armed NATIVE %s agent=%s next=%.0f tenant=%s",
+                         kind, agent, _next, p.scope)
+                _cad = (f"every {interval // 60} min" if interval and interval % 60 == 0
+                        else f"every {interval}s" if interval else f"on cron '{cron}'")
+                return (f"ARMED {kind} for {agent} → {sink} (native · no AP). Runs {_cad}. "
+                        f"Watch id {sub.id}.{until}")
+            # legacy AP-schedule path (EVENTS_SCHEDULER=ap)
+            if engine is None:
+                return ("Scheduled runs are pinned to Activepieces (EVENTS_SCHEDULER=ap) but AP "
+                        "isn't configured. Unset it (or EVENTS_SCHEDULER=native) to run schedules "
+                        "in-process — no AP needed.")
             try:
                 grain = getattr(engine, "project_grain", "tenant")
                 ap_flow_id = await engine.create_schedule_flow(
@@ -1145,9 +1218,6 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             store.upsert(sub)
             log.info("concierge armed %s agent=%s flow=%s tenant=%s expires=%s",
                      kind, agent, ap_flow_id, p.scope, expires_at or "-")
-            until = (f" It stops itself after {ttl // 3600}h" if ttl and ttl % 3600 == 0 else
-                     f" It stops itself after {ttl // 60} min" if ttl else "")
-            until = until and until + f" (~{_time.strftime('%H:%M', _time.localtime(expires_at))})."
             return (f"ARMED {kind} for {agent} → {sink}. "
                     f"Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
                     f"(subscription {sub.id}).{until}")

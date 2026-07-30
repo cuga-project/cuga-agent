@@ -50,6 +50,15 @@ class Subscription:
     # pattern/folder). Empty for legacy rows.
     event: str = ""
     config: dict = field(default_factory=dict)
+    # ── NATIVE scheduler fields (backend='native') — the AP-free cron/poll/tool-watch path. A native
+    # subscription carries its own schedule; native_scheduler fires it (no AP flow). All epoch seconds.
+    # First-class columns (not buried in config) so the Studio/visualization can sort & show them.
+    interval_seconds: int = 0      # cadence for interval schedules; 0 → use cron_expr
+    cron_expr: str = ""            # cron expression (named cron_expr to avoid clashing with source_connector='cron')
+    next_fire: float = 0.0         # scheduler: next epoch to fire; 0 → not natively scheduled
+    last_fire: float = 0.0         # scheduler: last epoch fired (for the timeline view)
+    fire_count: int = 0            # how many times it has fired (for the timeline view)
+    expires_at: float = 0.0        # bounded-run end epoch; 0 → never
 
 
 class SubscriptionStore:
@@ -91,6 +100,38 @@ class SubscriptionStore:
             self._db.execute("ALTER TABLE subscription ADD COLUMN event TEXT NOT NULL DEFAULT ''")
         if "config" not in cols:
             self._db.execute("ALTER TABLE subscription ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
+        # native scheduler columns (migrate-on-open; _row builds Subscription(**cols) so every column
+        # must be a dataclass field). Added together so a fresh or legacy DB both end up complete.
+        for _col, _decl in (("interval_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                            ("cron_expr", "TEXT NOT NULL DEFAULT ''"),
+                            ("next_fire", "REAL NOT NULL DEFAULT 0"),
+                            ("last_fire", "REAL NOT NULL DEFAULT 0"),
+                            ("fire_count", "INTEGER NOT NULL DEFAULT 0"),
+                            ("expires_at", "REAL NOT NULL DEFAULT 0")):
+            if _col not in cols:
+                self._db.execute(f"ALTER TABLE subscription ADD COLUMN {_col} {_decl}")
+        # index the scheduler's hot query (due native subscriptions)
+        self._db.execute("CREATE INDEX IF NOT EXISTS ix_subscription_next_fire "
+                         "ON subscription(next_fire) WHERE next_fire > 0")
+        # watch_state — per-subscription DELTA state for stateful native polls (Phase 3). Created now
+        # so the schema is complete for visualization; the deterministic Option-1 poller populates it.
+        #   kind         'identity' (seen-set of ids) | 'threshold' (scalar baseline)
+        #   seen_keys    JSON array of already-fired identities (identity watches)
+        #   baseline     last reference value (threshold watches)
+        #   reset_policy 'ratchet' (from last alert) | 'absolute' | 'per_tick'
+        #   value_path   JSONPath to the comparable value in the tool output
+        #   threshold    fractional move that fires (0.05 = 5%)
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS watch_state (
+                 subscription_id TEXT PRIMARY KEY,
+                 kind TEXT NOT NULL DEFAULT 'identity',
+                 seen_keys TEXT NOT NULL DEFAULT '[]',
+                 baseline REAL,
+                 reset_policy TEXT NOT NULL DEFAULT 'ratchet',
+                 value_path TEXT NOT NULL DEFAULT '',
+                 threshold REAL NOT NULL DEFAULT 0,
+                 updated_at REAL NOT NULL DEFAULT 0
+               )""")
         # Dedup used to be check-then-write with no constraint — two concurrent arms with the same
         # identity both missed the check and created duplicate AP flows. The partial UNIQUE index
         # makes the database the referee; upsert() surfaces the loser as a DuplicateSubscription.
@@ -114,19 +155,25 @@ class SubscriptionStore:
             self._db.execute(
                 """INSERT INTO subscription
                      (id,mode,target_agent,tenant,backend,source_type,source_connector,ap_flow_id,
-                      deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name,event,config)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name,event,config,
+                      interval_seconds,cron_expr,next_fire,last_fire,fire_count,expires_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      mode=excluded.mode, target_agent=excluded.target_agent, tenant=excluded.tenant,
                      backend=excluded.backend, source_type=excluded.source_type,
                      source_connector=excluded.source_connector, ap_flow_id=excluded.ap_flow_id,
                      deliver_to=excluded.deliver_to, thread_id=excluded.thread_id,
                      prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key,
-                     flow_name=excluded.flow_name, event=excluded.event, config=excluded.config""",
+                     flow_name=excluded.flow_name, event=excluded.event, config=excluded.config,
+                     interval_seconds=excluded.interval_seconds, cron_expr=excluded.cron_expr,
+                     next_fire=excluded.next_fire, last_fire=excluded.last_fire,
+                     fire_count=excluded.fire_count, expires_at=excluded.expires_at""",
                 (sub.id, sub.mode, sub.target_agent, sub.tenant, sub.backend, sub.source_type,
                  sub.source_connector, sub.ap_flow_id, json.dumps(sub.deliver_to),
                  sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key,
-                 sub.flow_name, sub.event, json.dumps(sub.config or {})))
+                 sub.flow_name, sub.event, json.dumps(sub.config or {}),
+                 sub.interval_seconds, sub.cron_expr, sub.next_fire, sub.last_fire,
+                 sub.fire_count, sub.expires_at))
         except sqlite3.IntegrityError as e:
             if "uq_subscription_dedup" in str(e) or "dedup" in str(e):
                 raise DuplicateSubscription(sub.dedup_key) from e
@@ -185,3 +232,20 @@ class SubscriptionStore:
 
     def as_dicts(self, *, scope: str | None = None) -> list[dict]:
         return [asdict(s) for s in self.list(scope=scope)]
+
+    # ---- native scheduler ------------------------------------------------
+    def due(self, now: float) -> list[Subscription]:
+        """Active NATIVE subscriptions whose next_fire has arrived — the scheduler's hot query.
+        Only backend='native' rows participate; AP-backed flows are fired by Activepieces, not us."""
+        rows = self._db.execute(
+            "SELECT * FROM subscription WHERE backend='native' AND status='active' "
+            "AND next_fire > 0 AND next_fire <= ? ORDER BY next_fire",
+            (now,)).fetchall()
+        return [self._row(r) for r in rows]
+
+    def mark_fired(self, sub_id: str, *, last_fire: float, next_fire: float) -> None:
+        """Record a fire and schedule the next one (next_fire=0 disables further firing)."""
+        self._db.execute(
+            "UPDATE subscription SET last_fire=?, next_fire=?, fire_count=fire_count+1 WHERE id=?",
+            (last_fire, next_fire, sub_id))
+        self._db.commit()

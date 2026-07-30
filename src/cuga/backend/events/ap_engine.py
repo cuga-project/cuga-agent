@@ -52,6 +52,18 @@ class APEngine:
                            or "http://host.docker.internal:8000/invoke")
         self.gateway_token = os.environ.get("GATEWAY_TOKEN", "")
         self._token = ""
+
+    async def reachable(self, timeout: float = 2.5) -> bool:
+        """Fast AP liveness probe (a SHORT GET) so a PUSH on an integration can decline QUICKLY when
+        AP is down, instead of the concierge hanging on the connect gate's retry/backoff. Any non-5xx
+        means up (4xx = up-but-unauthorized); connection error / 5xx / timeout → treat as down."""
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.get(f"{self.base}/api/v1/flags")
+                return r.status_code < 500
+        except Exception:  # noqa: BLE001
+            return False
         self._token_exp = 0.0                       # cached-JWT expiry (see _auth)
         self._auth_lock = asyncio.Lock()
         self._piece_cache: dict[str, str] = {}

@@ -117,10 +117,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     now_runs = NowRunStore(os.environ.get("EVENTS_DB", ":memory:"))
 
     def _log_now(*, scope, agent, channel, prompt, answer, status, ms=0, meta=None, trace_id="",
-                 thread_id="", kind="chat", subscription_id="", event_kind="", db=True):
+                 thread_id="", kind="chat", subscription_id="", event_kind="", db=True,
+                 mode="NOW", backend="direct"):
         """Record one execution: the in-DB log (Runs tab; ``db=False`` for AP-backed fires whose
         run history AP already keeps) + a DETAILED per-run file on disk for EVERY execution
-        (results/run_logs/<date>/…, see run_logger). Never let logging break the response."""
+        (results/run_logs/<date>/…, see run_logger). Never let logging break the response.
+        ``mode``/``backend`` tag the run's trigger type so the Runs API can filter (cron/poll/push/now
+        · native/ap)."""
         if db:
             try:
                 now_runs.add(scope=scope, agent=agent or "", channel=channel or "",
@@ -129,7 +132,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                              status=status, ms=ms or 0,
                              mcp=(meta or {}).get("mcp") or [],
                              tools=(meta or {}).get("tools") or [],
-                             trace_id=trace_id or "")
+                             trace_id=trace_id or "", mode=mode or "NOW",
+                             backend=backend or "direct", subscription_id=subscription_id or "",
+                             event_kind=event_kind or "")
             except Exception:  # noqa: BLE001
                 pass
         try:
@@ -353,8 +358,26 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     tr("deliver", via="capture", ok=True)
                 except Exception as e:  # noqa: BLE001
                     tr.error("deliver", via="capture", err=str(e))
-        # EVERY execution gets a detailed disk log (chat AND fires); the in-DB Runs row only for
-        # NOW answers (AP keeps its own run history for AP-backed fires).
+        # EVERY execution gets a detailed disk log (chat AND fires); the in-DB Runs row is for NOW
+        # answers AND for NATIVE scheduled fires. AP-backed fires stay db=False because AP keeps their
+        # own run history — but a NATIVE cron/poll has NO AP history, so without this its recurring
+        # output would be invisible in the Runs tab (the "I don't see the response" gap).
+        _native_fire = False
+        _run_mode = "NOW"
+        _run_backend = "direct"
+        _sub_id = str(body.get("subscription_id") or "")
+        if not is_now and _sub_id and store is not None:
+            try:
+                _s = store.get(_sub_id)
+                if _s is not None:
+                    _native_fire = _s.backend == "native"
+                    _run_mode = _s.mode or "NOW"           # CRON | POLL | PUSH
+                    _run_backend = _s.backend or "ap"      # native | react/ap
+            except Exception:  # noqa: BLE001
+                _native_fire = False
+        elif is_now:
+            _run_mode = "NOW"
+            _run_backend = "direct"
         _log_now(scope=scope,
                  agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
                  # log what the worker actually RAN ON (framing + [event] payload for a fire; the
@@ -362,11 +385,93 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                  channel=env.source.name, prompt=env.worker_input(), answer=base_answer,
                  status="ok", ms=ms, meta=meta, trace_id=tr.id,
                  thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
-                 event_kind=str(getattr(env.event, "kind", "") or ""), db=is_now)
+                 event_kind=str(getattr(env.event, "kind", "") or ""), db=(is_now or _native_fire),
+                 mode=_run_mode, backend=_run_backend, subscription_id=_sub_id)
         return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
                 "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
                          "backend": meta.get("backend"), "mcp": meta.get("mcp") or [],
                          "tools": meta.get("tools") or [], "ms": ms}}
+
+    @app.get("/api/events/dry-run")
+    @app.post("/api/events/dry-run")
+    async def dry_run_utterance(request: Request, text: str | None = None,
+                                utterance: str | None = None):
+        """DRY-RUN an utterance — see exactly what the concierge WOULD do, with ZERO side effects
+        (nothing armed, nothing persisted). Browser-friendly (just paste a URL):
+
+            GET /api/events/dry-run?text=every 5 minutes give me a productivity tip
+            GET /api/events/dry-run?text=when a new email arrives, summarize it
+
+        Also accepts POST {"text": "..."} — the same utterance the web UX sends. Returns the routed
+        decision: mode (CRON|POLL|PUSH|NOW), native-vs-AP backend, cadence + next-fire preview, the
+        resolved source/event for a push, and whether it would ARM, ASK, DECLINE, or ANSWER — and why."""
+        _utt = (text or utterance or "")
+        if not _utt and request.method == "POST":
+            _b = await _safe_json(request)
+            _utt = (_b or {}).get("text") or (_b or {}).get("utterance") or ""
+        text = (_utt or "").strip()
+        if not text:
+            return JSONResponse({"ok": False,
+                                 "error": "provide ?text=<utterance> (or POST {\"text\": ...})"}, 400)
+        try:
+            from . import classify, flowspec, native_scheduler
+        except ImportError:  # flat load
+            import classify, flowspec, native_scheduler  # type: ignore
+        import time as _t
+        mode = classify.classify(text)
+        out = {"ok": True, "utterance": text, "mode": mode, "side_effects": "none (dry run)"}
+        if mode in ("CRON", "POLL"):
+            cad = classify.cadence_of(text)
+            ttl = classify.ttl_of(text)
+            native = native_scheduler.enabled()
+            interval, cron = cad.get("interval_seconds"), cad.get("cron")
+            nxt = None
+            try:
+                _now = _t.time()
+                nxt = (_now + interval) if interval else (native_scheduler.next_cron(cron, _now)
+                                                          if cron else None)
+            except Exception:  # noqa: BLE001
+                nxt = None
+            out.update({
+                "backend": "native" if native else "ap",
+                "routing": ("native scheduler — runs in-process, no Activepieces" if native
+                            else "Activepieces schedule piece (EVENTS_SCHEDULER=ap)"),
+                "cadence": ({"interval_seconds": interval} if interval
+                            else {"cron": cron} if cron else {}),
+                "cadence_human": (f"every {interval // 60} min" if interval and interval % 60 == 0
+                                  else f"every {interval}s" if interval
+                                  else f"cron '{cron}'" if cron else "none detected — would ask"),
+                "bounded_run_seconds": ttl,
+                "next_fire_preview": (_iso(nxt) if nxt else None),
+                "would": "arm" if (interval or cron) else "ask (no cadence detected)",
+            })
+        elif mode == "PUSH":
+            spec = flowspec.resolve(text)
+            ap_up = False
+            if engine is not None:
+                try:
+                    ap_up = (await engine.reachable()) if hasattr(engine, "reachable") else True
+                except Exception:  # noqa: BLE001
+                    ap_up = False
+            would = ("arm (AP integration)" if (spec.confidence == "high" and ap_up)
+                     else "decline — Activepieces not reachable" if (spec.confidence == "high" and not ap_up)
+                     else "ask — ambiguous source" if spec.confidence == "ambiguous"
+                     else "unresolved — no integration matched (try 'when a new <app> …')")
+            out.update({
+                "backend": "ap",
+                "routing": "Activepieces (integration piece)",
+                "source": spec.source, "event": spec.event, "confidence": spec.confidence,
+                "candidates": [f"{a}/{e}" for a, e in (spec.candidates or [])],
+                "ask": spec.ask, "ap_reachable": ap_up,
+                "would": would,
+            })
+        else:  # NOW
+            out.update({
+                "backend": "—",
+                "routing": "answered by the agent now (no flow armed)",
+                "would": "answer",
+            })
+        return out
 
     @app.post("/api/concierge")
     async def api_concierge(request: Request):   # NOT 'concierge' — that name is the instance arg
@@ -473,10 +578,34 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return out
 
     @app.get("/api/events/subscriptions")
-    async def list_subscriptions(request: Request):
-        # only THIS principal's subscriptions (isolation)
+    async def list_subscriptions(request: Request,
+                                 mode: str | None = None, backend: str | None = None,
+                                 status: str | None = None):
+        """Every armed watcher for this caller (isolation), with a by-type summary.
+
+        Filter with ``?mode=CRON|POLL|PUSH|NOW`` · ``?backend=native|ap|react`` · ``?status=active|paused``.
+        The ``summary`` block counts watchers by trigger type and by AP vs no-AP so a dashboard can show
+        'N crons · N polls · N pushes · M native (no AP) · K AP flows' at a glance."""
         scope = resolve_principal(headers=request.headers).scope
-        return {"scope": scope, "subscriptions": store.as_dicts(scope=scope) if store else []}
+        subs = store.as_dicts(scope=scope) if store else []
+        f_mode = (mode or "").upper() or None
+        f_backend = (backend or "").lower() or None
+        f_status = (status or "").lower() or None
+        def _keep(s):
+            return ((not f_mode or str(s.get("mode") or "").upper() == f_mode)
+                    and (not f_backend or str(s.get("backend") or "").lower() == f_backend)
+                    and (not f_status or str(s.get("status") or "").lower() == f_status))
+        subs = [s for s in subs if _keep(s)]
+        summary = {
+            "total": len(subs),
+            "by_mode": {m: sum(1 for s in subs if str(s.get("mode") or "").upper() == m)
+                        for m in ("CRON", "POLL", "PUSH", "NOW")},
+            "native_no_ap": sum(1 for s in subs if s.get("backend") == "native"),
+            "ap_flows": sum(1 for s in subs if s.get("ap_flow_id")),
+            "active": sum(1 for s in subs if s.get("status") == "active"),
+            "paused": sum(1 for s in subs if s.get("status") == "paused"),
+        }
+        return {"scope": scope, "summary": summary, "subscriptions": subs}
 
     # --- flow lifecycle: pause / resume / delete from the CUGA UI (AP is driven internally) -------
     def _owned_sub(sub_id: str, request: Request):
@@ -540,15 +669,42 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     # --- execution log: which flows RAN, succeeded/failed, and their output -----------------------
     @app.get("/api/events/runs")
-    async def list_runs(request: Request):
-        """The execution log. Recent Activepieces flow-runs, each JOINED to its CUGA subscription so
-        the row carries agent / mode(trigger) / integration / channel — the Studio filters+sorts on
-        those. Isolation: only runs for THIS caller's own flows."""
+    async def list_runs(request: Request,
+                        mode: str | None = None, backend: str | None = None,
+                        agent: str | None = None, status: str | None = None,
+                        kind: str | None = None, source: str | None = None,
+                        subscription_id: str | None = None, limit: int = 150):
+        """The unified execution log — every run, tagged with its TRIGGER TYPE and rich metadata.
+
+        Each row carries: ``mode`` (CRON | POLL | PUSH | NOW), ``backend`` (native | ap | direct),
+        ``agent``, ``answer`` (the agent's reply), ``tools``/``mcp`` (what it invoked), ``ms``,
+        ``status``, timestamps, ``subscription_id``/``flow_id``. So you can see *what fired, how it
+        was triggered, what it answered, and which tools it used* — for AP-backed and native runs alike.
+
+        Filter with query params (all optional, AND-combined):
+          ``?mode=CRON|POLL|PUSH|NOW`` · ``?backend=native|ap|direct`` · ``?agent=<name>``
+          · ``?status=SUCCEEDED|FAILED`` · ``?kind=flow|now`` · ``?source=<connector>``
+          · ``?subscription_id=<id>`` (a single watcher's run history) · ``?limit=<n>``.
+        No params ⇒ ALL runs. Isolation: only THIS caller's runs.
+
+        NB: this is the log of runs that HAVE HAPPENED (status SUCCEEDED/FAILED). To see what is
+        SCHEDULED / upcoming (and each watcher's last_fire / fire_count / next_fire), use
+        ``GET /api/events/subscriptions`` — the schedule lives on the watcher, not here.
+        """
+        f_mode = (mode or "").upper() or None
+        f_backend = (backend or "").lower() or None
+        f_agent = agent or None
+        f_status = (status or "").upper() or None
+        f_kind = (kind or "").lower() or None
+        f_source = source or None
+        f_sub = subscription_id or None
+        limit = max(1, min(500, limit))
         scope = resolve_principal(headers=request.headers).scope
         subs = store.as_dicts(scope=scope) if store else []
         by_flow = {s.get("ap_flow_id"): s for s in subs if s.get("ap_flow_id")}
-        runs = await engine.list_runs(limit=80) if engine is not None else []
         out = []
+        # ── AP flow-runs (backend=ap): Activepieces keeps their run history ──
+        runs = await engine.list_runs(limit=120) if engine is not None else []
         for r in runs:
             sub = by_flow.get(r.get("flowId"))
             if sub is None:
@@ -557,28 +713,55 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 "id": r.get("id"), "status": r.get("status"),
                 "started_at": r.get("startTime"), "finished_at": r.get("finishTime"),
                 "agent": sub.get("target_agent"), "mode": sub.get("mode"),
+                "backend": "ap",
                 "integration": sub.get("source_connector"),
                 "channel": ", ".join(sub.get("deliver_to") or []),
-                "utterance": sub.get("prompt"),
+                "utterance": sub.get("prompt"), "answer": None, "tools": [], "mcp": [], "ms": None,
+                "event_kind": sub.get("event") or "",
                 "flow_name": sub.get("flow_name"), "subscription_id": sub.get("id"),
-                "flow_id": r.get("flowId"),
+                "flow_id": r.get("flowId"), "trace_id": "",
                 "kind": "flow",
             })
-        # NOW answers (Studio chat / channel DMs) — never AP flows, so without this they'd be
-        # invisible. Merged into the same list so Runs is the ONE execution log.
-        for nr in now_runs.list(scope=scope, limit=80):
+        # ── NOW answers + NATIVE fires (backend=native/direct): logged here, no AP history ──
+        for nr in now_runs.list(scope=scope, limit=200):
             out.append({
                 "id": nr["id"],
-                "status": "SUCCEEDED" if nr["status"] == "ok" else "FAILED",
+                "status": "SUCCEEDED" if nr.get("status") == "ok" else "FAILED",
                 "started_at": _iso(nr["ts"]), "finished_at": _iso(nr["ts"]),
-                "agent": nr["agent"] or "concierge", "mode": "NOW",
-                "integration": "—", "channel": nr["channel"],
-                "utterance": nr["prompt"], "flow_name": "", "subscription_id": None,
-                "flow_id": "",
-                "kind": "now",
+                "agent": nr.get("agent") or "concierge", "mode": nr.get("mode") or "NOW",
+                "backend": nr.get("backend") or "direct",
+                "integration": "—", "channel": nr.get("channel"),
+                "utterance": nr.get("prompt"),
+                "answer": nr.get("answer"),                       # the agent's actual reply
+                "tools": nr.get("tools") or [], "mcp": nr.get("mcp") or [],   # what it invoked
+                "ms": nr.get("ms"), "event_kind": nr.get("event_kind") or "",
+                "flow_name": "", "subscription_id": nr.get("subscription_id") or None,
+                "flow_id": "", "trace_id": nr.get("trace_id") or "",
+                "kind": "flow" if (nr.get("mode") or "NOW") != "NOW" else "now",
             })
+        # ── filters (AND) ──
+        def _keep(r):
+            if f_mode and str(r.get("mode") or "").upper() != f_mode:
+                return False
+            if f_backend and str(r.get("backend") or "").lower() != f_backend:
+                return False
+            if f_agent and r.get("agent") != f_agent:
+                return False
+            if f_status and str(r.get("status") or "").upper() != f_status:
+                return False
+            if f_kind and r.get("kind") != f_kind:
+                return False
+            if f_source and r.get("integration") != f_source:
+                return False
+            if f_sub and r.get("subscription_id") != f_sub:
+                return False
+            return True
+        out = [r for r in out if _keep(r)]
         out.sort(key=lambda r: r.get("started_at") or "", reverse=True)
-        return {"scope": scope, "runs": out[:120]}
+        return {"scope": scope, "count": len(out[:limit]),
+                "filters": {"mode": f_mode, "backend": f_backend, "agent": f_agent,
+                            "status": f_status, "kind": f_kind, "source": f_source},
+                "runs": out[:limit]}
 
     def _dissect_run(run: dict) -> tuple[str | None, object, str | None]:
         """(answer, trigger_payload, error) out of an AP run's step tree.
@@ -670,6 +853,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        # NATIVE watch (cron/poll, no AP flow): fire it the SAME way the native scheduler does — POST
+        # /invoke directly. So "run now" works for native watches too (there is no AP flow to trigger),
+        # returns the agent's answer inline, and the fire is logged to GET /api/events/runs. Gate on
+        # backend=='native' ONLY: an AP-backed sub that has LOST its flow id is dangling → still 409.
+        if sub.backend == "native":
+            import httpx
+            try:
+                from . import native_scheduler as _nsched
+            except ImportError:  # flat load
+                import native_scheduler as _nsched  # type: ignore
+            _port = os.environ.get("EVENTS_CUGA_PORT", "7860")
+            _gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+            try:
+                async with httpx.AsyncClient(timeout=200) as c:
+                    r = await c.post(f"http://127.0.0.1:{_port}/invoke",
+                                     headers={"X-Gateway-Token": _gw} if _gw else {},
+                                     json=_nsched._invoke_body(sub))
+                    ans = (r.json() or {}).get("answer") if r.status_code == 200 else None
+                return {"ok": True, "id": sub.id, "backend": "native", "fired": True, "answer": ans,
+                        "note": "native watch fired via /invoke (no AP) — also in GET /api/events/runs."}
+            except Exception as e:  # noqa: BLE001
+                return JSONResponse({"ok": False, "error": f"native fire failed: {e}"}, 500)
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         if not sub.ap_flow_id:
@@ -1621,6 +1826,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 await _tg.run_poller(_telegram_answer)
             _bg = list(getattr(app.state, "events_background", []) or [])
             _bg.append(_telegram_poller)
+            app.state.events_background = _bg
+
+    # --- NATIVE scheduler (AP-free cron/poll) — an in-process loop firing due native subscriptions.
+    # No AP, no tunnel. Gated by EVENTS_SCHEDULER (native default | ap keeps the legacy AP-schedule).
+    if store is not None:
+        from . import native_scheduler as _nsched
+        if _nsched.enabled():
+            async def _native_scheduler():
+                _port = os.environ.get("EVENTS_CUGA_PORT", "7860")
+                _gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+                await _nsched.run_scheduler(store, port=_port, token=_gw)
+            _bg = list(getattr(app.state, "events_background", []) or [])
+            _bg.append(_native_scheduler)
             app.state.events_background = _bg
 
     # Auto-connect .env USER tokens (single-operator convenience): a token set in .env becomes the

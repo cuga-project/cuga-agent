@@ -53,12 +53,22 @@ def report() -> list[str]:
     else:
         ok("supervisor: OFF — one plain CUGA agent (set EVENTS_SUPERVISOR=1 + a roster for specialists)")
 
+    # Native scheduler: cron/poll run in-process (no AP) unless EVENTS_SCHEDULER=ap.
+    _native_sched = os.environ.get("EVENTS_SCHEDULER", "native").split(" #", 1)[0].strip().lower() != "ap"
+    if _native_sched:
+        ok("native scheduler ON — cron/poll run in-process (no AP needed); AP is used only for "
+           "integration (piece) triggers")
+
     ap = os.environ.get("AP_BASE_URL", "").rstrip("/")
     if ap and _reachable(f"{ap}/api/v1/flags"):
-        ok(f"Activepieces reachable ({ap}) — cron/poll + Gmail/GitHub/Box-AP triggers available")
+        ok(f"Activepieces reachable ({ap}) — Gmail/GitHub/Box-AP integration triggers available"
+           + ("" if _native_sched else " + cron/poll via AP schedule"))
     else:
-        no("Activepieces not reachable → cron/poll + AP-backed integration triggers unavailable "
-           "(start it: `make ap`, or the full stack: `make up`)")
+        no("Activepieces not reachable → AP-backed integration triggers (Gmail/GitHub/Box push) "
+           "unavailable"
+           + ("  [cron/poll still work — native scheduler]" if _native_sched
+              else " and cron/poll unavailable (EVENTS_SCHEDULER=ap)")
+           + "  (start it: `make up`)")
 
     # Telegram-direct (long-poll) is OUTBOUND, so it does NOT need a public URL — only the AP
     # webhook backend (EVENTS_TELEGRAM_BACKEND=ap) does. Keep the message honest about that.

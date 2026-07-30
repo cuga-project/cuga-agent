@@ -22,7 +22,7 @@ log = logging.getLogger("events.delivery")
 # Per-channel default backend. Override at runtime with EVENTS_<CHANNEL>_BACKEND=direct|ap.
 _DEFAULT_BACKEND = {
     "slack": "direct",     # direct is the default (bot token); AP path behind EVENTS_SLACK_BACKEND=ap
-    "telegram": "ap",      # AP webhook round-trip verified live
+    "telegram": "direct",  # direct long-poll (getUpdates/sendMessage, no AP); AP webhook behind EVENTS_TELEGRAM_BACKEND=ap
     "discord": "direct",   # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
 }
 
@@ -58,5 +58,11 @@ async def send_direct(channel: str, target: str, text: str, locus: str = "") -> 
         res = await discord_direct.send_message(target, text, reply_to=locus)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"discord: {res.get('error') or res}")
+    if ch == "telegram":
+        from . import telegram_direct
+        # locus (a message id) → threaded reply; a scheduled fire has none, so it posts to the chat.
+        res = await telegram_direct.send_message(target, text, reply_to=(locus or None))
+        ok = bool(res.get("ok"))
+        return ok, ("ok" if ok else f"telegram: {res.get('error') or res}")
     log.warning("no direct sender for channel %s (target=%s) — dropping", channel, target)
     return False, f"no direct sender for '{channel}'"

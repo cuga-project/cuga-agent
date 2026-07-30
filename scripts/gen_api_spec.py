@@ -320,6 +320,48 @@ ENDPOINTS = [
             "point-and-click console at <code>GET /api/events/flows/console</code> "
             "(<code>make flows</code>)."),
 
+    E("GET", "/api/events/dry-run", "core",
+      "Preview what an utterance WOULD do — with ZERO side effects (nothing armed, nothing persisted). "
+      "Browser-friendly: paste a URL. The same routing the concierge uses (classify → resolve → "
+      "native-vs-AP → AP reachability), returned as a verdict.",
+      tier="ui", callers=["studio", "tests", "operator"],
+      query=[("text", "the utterance — the same one the web UX sends", "every 5 minutes give me a tip"),
+             ("utterance", "alias for <code>text</code>", "")],
+      responses=[
+          (200, {"ok": True, "utterance": "every 5 minutes give me a tip", "mode": "CRON",
+                 "backend": "native", "routing": "native scheduler — runs in-process, no Activepieces",
+                 "cadence": {"interval_seconds": 300}, "cadence_human": "every 5 min",
+                 "bounded_run_seconds": None, "next_fire_preview": "2026-07-30T01:24:58Z",
+                 "would": "arm", "side_effects": "none (dry run)"},
+           "A CRON/POLL routes to the native scheduler — no AP. <code>next_fire_preview</code> is the "
+           "real next fire time."),
+          (200, {"ok": True, "mode": "PUSH", "backend": "ap", "source": "github", "event": "new_pr",
+                 "confidence": "high", "ap_reachable": False,
+                 "would": "decline — Activepieces not reachable"},
+           "A push on an integration needs AP; it declines cleanly (and fast) when AP is down."),
+          (200, {"ok": True, "mode": "NOW", "backend": "—", "would": "answer",
+                 "routing": "answered by the agent now (no flow armed)"},
+           "A plain question — the agent answers, nothing is armed."),
+          (400, {"ok": False, "error": "provide ?text=<utterance> (or POST {\"text\": ...})"},
+           "No utterance given."),
+      ],
+      notes="Complements <code>POST /api/concierge?dry_run=1</code> (which returns the would-be flow "
+            "JSON) with a one-line, browser-friendly verdict. Purely read-only."),
+
+    E("POST", "/api/events/dry-run", "core",
+      "Same as <code>GET /api/events/dry-run</code>, for a JSON body — the exact payload the web UX "
+      "posts. ZERO side effects.",
+      tier="ui", callers=["studio", "tests"],
+      body=[("Preview an utterance",
+             {"text": "watch bitcoin every 2 minutes and ping me on a big move"},
+             "Returns the same verdict object as the GET form — mode, backend, cadence, would.")],
+      responses=[
+          (200, {"ok": True, "mode": "POLL", "backend": "native", "cadence_human": "every 2 min",
+                 "would": "arm", "side_effects": "none (dry run)"},
+           "POLL → native scheduler."),
+          (400, {"ok": False, "error": "provide ?text=<utterance> (or POST {\"text\": ...})"}, ""),
+      ]),
+
     # ── flows ─────────────────────────────────────────────────────────────────
     E("GET", "/api/events/subscriptions", "flows",
       "This principal's standing flows.", tier="ui", callers=["studio", "tests"],
@@ -493,17 +535,33 @@ ENDPOINTS = [
 
     # ── runs ──────────────────────────────────────────────────────────────────
     E("GET", "/api/events/runs", "runs",
-      "Recent Activepieces flow-runs, joined to the subscription that owns each.",
-      tier="ui", callers=["studio"],
-      responses=[(200, {"scope": "default/default/local", "runs": [
+      "The unified execution log — AP flow-runs + NOW answers + <b>native cron/poll fires</b>, each "
+      "tagged with its trigger type and rich metadata. No params ⇒ ALL runs.",
+      tier="ui", callers=["studio", "operator"],
+      query=[("mode", "CRON | POLL | PUSH | NOW", "CRON"),
+             ("backend", "native | ap | direct", "native"),
+             ("agent", "only this agent's runs", "pricebot"),
+             ("status", "SUCCEEDED | FAILED", "SUCCEEDED"),
+             ("kind", "flow | now", "flow"),
+             ("source", "the source connector (integration)", "github"),
+             ("subscription_id", "a single watcher's run history", "cuga-50993d"),
+             ("limit", "max rows (default 150, cap 500)", "50")],
+      responses=[(200, {"scope": "default/default/local", "count": 1,
+          "filters": {"mode": "CRON", "backend": "native"}, "runs": [
           {"id": "r1", "status": "SUCCEEDED", "started_at": "2026-07-09T09:00:00Z",
-           "finished_at": "2026-07-09T09:00:06Z", "agent": "papers", "mode": "CRON",
-           "integration": "cron", "channel": "telegram",
-           "utterance": "new arxiv papers on mixture of experts",
-           "flow_name": "cron-papers", "subscription_id": "s1"}]},
-        "The join is what makes the row useful — AP alone knows nothing about agents or channels.")],
-      notes="Runs whose flow isn't yours are skipped, not 403'd. With no AP configured this returns "
-            "an empty list, not an error."),
+           "finished_at": "2026-07-09T09:00:06Z", "agent": "pricebot", "mode": "CRON",
+           "backend": "native", "integration": "—", "channel": "telegram",
+           "utterance": "give me the bitcoin price",
+           "answer": "Bitcoin is about $64,010.", "tools": ["get_crypto_price"], "mcp": [],
+           "ms": 5200, "event_kind": "tick", "subscription_id": "cuga-50993d",
+           "flow_id": "", "kind": "flow"}]},
+        "Each row carries <code>backend</code> (native/ap), the agent's <code>answer</code>, the "
+        "<code>tools</code>/<code>mcp</code> it invoked, and <code>ms</code>. A native fire has no "
+        "AP flow — its history lives here, not in Activepieces.")],
+      notes="This is the log of runs that HAVE HAPPENED. For what is SCHEDULED / upcoming (each "
+            "watcher's <code>next_fire</code> / <code>last_fire</code> / <code>fire_count</code>), "
+            "use <code>GET /api/events/subscriptions</code> — the schedule lives on the watcher. "
+            "Runs whose flow isn't yours are skipped, not 403'd."),
 
     E("GET", "/api/events/runs/{run_id}", "runs",
       "One run, with the agent's answer lifted out of the AP step tree.",

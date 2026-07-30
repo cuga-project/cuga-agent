@@ -627,18 +627,18 @@ def test_slack_channel_wiring():
 
 
 def test_delivery_backend_selection():
-    """delivery.channel_backend: Slack + Discord default DIRECT (CUGA sends); telegram AP;
+    """delivery.channel_backend: Slack + Discord + Telegram all default DIRECT (CUGA sends);
     EVENTS_<CH>_BACKEND overrides. is_direct drives whether a flow gets an AP send step."""
     import delivery
     assert delivery.is_direct("slack") and delivery.channel_backend("slack") == "direct"
     assert delivery.is_direct("discord") and delivery.channel_backend("discord") == "direct"
-    assert not delivery.is_direct("telegram") and delivery.channel_backend("telegram") == "ap"
+    assert delivery.is_direct("telegram") and delivery.channel_backend("telegram") == "direct"
     assert delivery.channel_backend("unknown_ch") == "ap"          # unknown → AP
     os.environ["EVENTS_DISCORD_BACKEND"] = "ap"                    # env override → back to AP
-    os.environ["EVENTS_TELEGRAM_BACKEND"] = "direct"               # …and telegram → direct
+    os.environ["EVENTS_TELEGRAM_BACKEND"] = "ap"                   # …and telegram → AP
     try:
         assert not delivery.is_direct("discord")
-        assert delivery.is_direct("telegram")
+        assert not delivery.is_direct("telegram")
     finally:
         del os.environ["EVENTS_DISCORD_BACKEND"]
         del os.environ["EVENTS_TELEGRAM_BACKEND"]

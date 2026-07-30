@@ -2221,6 +2221,15 @@ async def stream(
     def _events_routes_to_concierge(q: str, tid: str) -> bool:
         if re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b", q, re.I):
             return True
+        # High-precision standing-intent markers: catch phrasings the heuristic classifier may read as
+        # NOW so they reach the CONCIERGE (which arms — or answers honestly) instead of the main agent,
+        # which has no arming tool and could falsely claim it set up a watch (the silent-failure trap).
+        # Deliberately unambiguous — these effectively never appear in ordinary one-shot chat.
+        if re.search(r"(\bevery\s+\d|\bremind me\b|\balert me\b|\bnotify me\b|\bping me\s+(when|if)\b|"
+                     r"\bkeep an eye\b|\bmonitor\b|\blet me know\s+(when|if)\b|"
+                     r"\beach\s+(morning|day|hour|week|weekday)\b|\bwatch\b.*\bfor\b.*"
+                     r"(change|update|error|new)\b)", q, re.I):
+            return True
         try:
             from cuga.backend.events import classify as _evc
             from cuga.backend.events import flowspec as _evf
