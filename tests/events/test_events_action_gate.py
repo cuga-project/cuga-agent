@@ -313,16 +313,6 @@ def test_branched_flow_arms():
     assert "trigger.message" in str(branches[0]["when"]["field"])
 
 
-def test_custom_api_call_actions_are_gated():
-    # archive/mark_read/delete are custom_api_call-backed → deferred (not armed), honest message
-    for utt in ("when I get an email, archive it",
-                "when I get an email, mark it as read",
-                "when I get an email, delete it"):
-        focf, store, engine = _mk()
-        msg = _run(focf.ainvoke({"agent": "cuga", "kind": "push", "prompt": utt,
-                                 "source": "gmail", "event": "new_email"}))
-        assert "raw Gmail API call" in msg and "reply" in msg
-        assert not engine.calls                          # nothing armed
 
 
 def test_subject_and_cc_from_nl():

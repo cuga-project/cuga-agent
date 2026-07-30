@@ -32,7 +32,7 @@ class AgentSpec:
     creates agents or picks tools (that's the builder's job)."""
     name: str
     prompt: str = ""
-    backend: str = "react"                 # react | cuga
+    backend: str = "cuga"                  # cuga | react (worker default is cuga; react is dev/test)
     mcp_servers: list = field(default_factory=list)   # server names (see mcp_catalog)
     builtin_tools: list = field(default_factory=list)
     channels: list = field(default_factory=list)       # converse-on: ["web","telegram",…]

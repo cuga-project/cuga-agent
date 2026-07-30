@@ -11,6 +11,7 @@ event into one envelope and POSTs it there. Learn that endpoint and the rest fol
 
 | Doc | What it is |
 |---|---|
+| **[features.md](features.md)** | what the events layer covers — channels, triggers, control plane, what's gated |
 | **[SETUP.md](SETUP.md)** + [setup/](setup/) | fresh machine → running stack, and a per-connector setup guide for each channel/integration (test-coupled: every trigger is documented here) |
 | **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) — all generated and test-coupled to the code |
 

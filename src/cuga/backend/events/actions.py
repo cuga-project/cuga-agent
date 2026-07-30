@@ -164,43 +164,6 @@ _GMAIL = [
 ]
 
 
-# ── Gmail capabilities the piece has NO native action for → custom_api_call over the Gmail REST API.
-# message id comes from the firing trigger (same_app_trigger). System labels (INBOX/UNREAD) need no
-# lookup, so archive/mark-read/trash work without resolving a label id. Add-label needs a label-id
-# lookup (a user slot) — deliberately left out of the golden set (documented). Base URL is the Gmail
-# API; AP attaches the gmail OAuth token as the step's connection auth (see ap_engine._action_op).
-_GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
-
-# custom_api_call needs EVERY prop present (like send_email). These bases carry them all.
-def _capi(url: str, body=None) -> dict:
-    d = {"url": url, "method": "POST", "headers": {}, "queryParams": {},
-         "response_is_binary": False, "failsafe": False, "timeout": "", "followRedirects": False}
-    if body is not None:
-        d["body_type"] = "json"
-        d["body"] = body
-    else:
-        d["body_type"] = "none"
-    return d
-
-
-_MID = "{{trigger.message.id}}"
-_GMAIL_RAW = [
-    _a(name="archive_email", title="Archive Email (remove from inbox)", ap_action="custom_api_call",
-       same_app_trigger=True,
-       raw_input=_capi(f"{_GMAIL_API}/{_MID}/modify", {"removeLabelIds": ["INBOX"]}),
-       phrases=(r"\barchive\b",),
-       notes="reversible (email kept, just out of inbox) — not flagged destructive.", **_GM),
-    _a(name="mark_read", title="Mark as Read", ap_action="custom_api_call", same_app_trigger=True,
-       raw_input=_capi(f"{_GMAIL_API}/{_MID}/modify", {"removeLabelIds": ["UNREAD"]}),
-       phrases=(r"\bmark(ed)?\b.{0,10}\bread\b",), **_GM),
-    _a(name="trash_email", title="Delete (move to Trash)", ap_action="custom_api_call",
-       destructive=True, same_app_trigger=True,
-       raw_input=_capi(f"{_GMAIL_API}/{_MID}/trash"),
-       phrases=(r"\b(delete|trash|bin)\b.{0,15}\b(e-?mail|it|message|them)\b",
-                r"\btrash it\b", r"\bmove.{0,10}trash\b"),
-       notes="DESTRUCTIVE — approval-gated at run time.", **_GM),
-]
-
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # GitHub — NATIVE actions (piece-github@0.8.5, probed live 2026-07-20). create_issue is cross-app
 # (a fresh issue — like send_email); create_comment keys off the FIRING PR/issue number, so it is
@@ -239,7 +202,7 @@ _GITHUB = [
        **_GH),
 ]
 
-ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in (_GMAIL + _GMAIL_RAW + _GITHUB)}
+ACTIONS: dict[tuple[str, str], Action] = {a.key: a for a in (_GMAIL + _GITHUB)}
 
 # Canonical-name aliases the LLM/classifier may emit for an action.
 ACTION_ALIASES = {
@@ -248,11 +211,6 @@ ACTION_ALIASES = {
     ("gmail", "reply"): "reply_to_email",
     ("gmail", "draft"): "create_draft_reply",
     ("gmail", "draft_reply"): "create_draft_reply",
-    ("gmail", "archive"): "archive_email",
-    ("gmail", "delete"): "trash_email",
-    ("gmail", "trash"): "trash_email",
-    ("gmail", "delete_email"): "trash_email",
-    ("gmail", "mark_as_read"): "mark_read",
     ("github", "issue"): "create_issue",
     ("github", "create_github_issue"): "create_issue",
     ("github", "file_issue"): "create_issue",
@@ -501,39 +459,6 @@ def extract_actions(utterance: str) -> list:
         out.append({"action": f"{app}/{name}",
                     "action_to": _send_recipient(text) if name == "send_email" else None})
     return out
-
-
-# ── resolve_action: tool-first, AP-fallback (design §3.3) ───────────────────────────────────────
-def resolve_action(app: str, name: str, agent_tool_names: list | None = None) -> tuple:
-    """Decide HOW an action runs: ('tool', tool_name) | ('ap', Action) | ('ask', problem).
-
-    Tool-first: if the target agent already carries a tool that performs this action, the agent does
-    it in-run (no flow step). Else fall back to the AP action step. Pure — the caller injects the
-    agent's bound tool names (from ``tools_bridge``), so this is unit-testable without a live agent."""
-    a = get(app, name)
-    if a is None:
-        known = ", ".join(x.name for x in actions_for((app or "").lower())) or "none"
-        return "ask", f"unknown action '{app}/{name}' — known: {known}"
-    tool = _match_tool(a, agent_tool_names or [])
-    if tool:
-        return "tool", tool
-    return "ap", a
-
-
-def _match_tool(action: "Action", tool_names: list) -> str:
-    """Match an action to an agent tool by name/alias. Generic (no per-piece code): compares the
-    action id, its app-qualified id, and its aliases against the agent's tool names."""
-    cands = {action.name, f"{action.app}_{action.name}", f"{action.app}.{action.name}",
-             action.ap_action}
-    for (a_app, alias), canon in ACTION_ALIASES.items():
-        if a_app == action.app and canon == action.name:
-            cands.add(alias)
-            cands.add(f"{action.app}_{alias}")
-    norm = {t.lower().replace("-", "_") for t in tool_names}
-    for c in cands:
-        if c and c.lower().replace("-", "_") in norm:
-            return c
-    return ""
 
 
 # ── ACTION EXECUTOR (Option A) — running an AP action for a DIRECT trigger ───────────────────────
