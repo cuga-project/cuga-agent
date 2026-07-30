@@ -154,10 +154,10 @@ _static_attrs_dict = {
 _existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
 os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(_existing, _static_attrs_dict)
 
-try:
-    import openlit  # type: ignore[import-untyped]
-except ImportError:
-    openlit = None  # type: ignore[assignment]
+# openlit is imported lazily inside init_openlit() — only when observability is enabled.
+# Importing it unconditionally at module level pulls in langchain_litellm → litellm (~270ms)
+# on every cold start, even when openlit is disabled (the default).
+_openlit_module = None  # populated by _get_openlit() on first call with observability enabled
 
 try:
     from opentelemetry import trace as otel_trace  # type: ignore[import-untyped]
@@ -169,6 +169,20 @@ except ImportError:
     SpanProcessor = type("BaseSpanProcessor", (object,), {})  # type: ignore[assignment,misc]
     ReadableSpan = None  # type: ignore[assignment]
     Context = None  # type: ignore[assignment]
+
+
+def _get_openlit():
+    """Return the openlit module, importing it lazily on first call."""
+    global _openlit_module
+    if _openlit_module is None:
+        try:
+            import openlit  # type: ignore[import-untyped]
+
+            _openlit_module = openlit
+        except ImportError:
+            _openlit_module = False  # sentinel: import attempted, not available
+    return _openlit_module if _openlit_module is not False else None
+
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
 _init_lock = threading.Lock()  # Protects initialization from race conditions
@@ -245,8 +259,9 @@ def init_openlit() -> None:
             logger.warning(f"OpenLit: could not read observability settings: {e}")
             return
 
-        # Graceful no-op if openlit is not installed
-        if openlit is None:
+        # Lazily import openlit — only when observability is actually enabled.
+        _openlit = _get_openlit()
+        if _openlit is None:
             logger.warning(
                 "OpenLit observability is enabled in settings but 'openlit' is not installed. "
                 "This should not happen as openlit is a core dependency. Please reinstall cuga."
@@ -295,7 +310,7 @@ def init_openlit() -> None:
             # is the OTel resource attribute that Tempo uses for the Service column.
             # pricing_json is always a local path (bundled or settings override) so startup
             # does not depend on public GitHub egress (see issue #475).
-            openlit.init(
+            _openlit.init(
                 application_name="cuga",
                 capture_message_content=False,
                 pricing_json=pricing_json,
