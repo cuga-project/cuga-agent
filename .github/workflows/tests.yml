@@ -100,6 +100,14 @@ jobs:
             tests/unit/test_knowledge_copy_source_files.py \
             tests/unit/test_knowledge_envelope_rank_fields.py
           uv run pytest tests/unit/test_cuga_lite_bind_tools.py
+          # LLM lazy-import seams introduced by startup-optimization (#486/#535)
+          uv run pytest \
+            tests/unit/test_llm_advanced_params.py \
+            tests/unit/test_llm_override.py \
+            tests/unit/test_llm_http_timeout.py \
+            tests/unit/test_llm_minimax_provider.py \
+            tests/unit/test_llm_watsonx_loop_rebind.py \
+            tests/unit/test_knowledge_init_failure_isolation.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \
