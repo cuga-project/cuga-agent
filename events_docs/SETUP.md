@@ -2,7 +2,7 @@
 
 Fresh machine → running events platform. The runtime is one command per service; the irreducible
 manual part is external accounts (bots, OAuth apps) a human must create. Per-connector guides are in
-[setup/](setup/); tests in [TESTING.md](TESTING.md); the public-URL details in [PUBLIC_URL.md](PUBLIC_URL.md).
+[setup/](setup/); the ngrok / public-URL setup is in [setup/NGROK.md](setup/NGROK.md).
 
 ## Step 0 — external accounts (the real pre-req, do this FIRST)
 
@@ -133,17 +133,24 @@ make up-noap          # boot events with NO AP, NO tunnel, then arm channels
 ```
 
 What's live in this mode: **web · Telegram · Discord** chat (a user asks → the concierge answers →
-the reply goes back). What's off until you add AP/a tunnel: **cron/poll/push triggers, Slack, and the
-SaaS integration triggers**. The server's boot **capability report** (also `GET /api/events/status`)
-says exactly what's available.
+the reply goes back) **and cron/poll triggers** — those run in-process via the **native scheduler**
+(`EVENTS_SCHEDULER=native`, the default), no AP required. What's off until you add AP: the **SaaS
+integration push triggers** (Gmail/GitHub/Box). Slack chat additionally needs a public URL (it's the
+one inbound channel). The server's boot **capability report** (also `GET /api/events/status`) says
+exactly what's available.
 
-Why it works: three of four channels use an **outbound** transport, so they need no public URL and no
-AP — Telegram (long-poll `getUpdates`), Discord (Gateway WebSocket), web (in-process). Slack is the
-only **inbound** channel (it POSTs to you), so it alone needs a public URL.
+Why chat works: three of four channels use an **outbound** transport, so they need no public URL and
+no AP — Telegram (long-poll `getUpdates`), Discord (Gateway WebSocket), web (in-process). Slack is the
+only **inbound** channel (it POSTs to you), so it alone needs a public URL. Cron/poll are timers/pollers
+CUGA runs itself, so they too need no AP.
 
 - **Telegram backend** is a flag, `direct` by default: `EVENTS_TELEGRAM_BACKEND=direct` (long-poll, no
-  AP) or `=ap` (the legacy AP webhook flow). Discord/Slack have the same `EVENTS_{DISCORD,SLACK}_BACKEND`
-  pair, also `direct` by default.
+  AP, no tunnel) or `=ap` (the legacy AP webhook flow). Discord/Slack have the same
+  `EVENTS_{DISCORD,SLACK}_BACKEND` pair, also `direct` by default.
+- **Scheduler backend** is `EVENTS_SCHEDULER`, `native` by default (cron/poll in-process, no AP); set
+  `=ap` only to route recurrence through an AP schedule instead.
+- The **action half** of the events layer is gated off by default (`EVENTS_ACTIONS` unset) — the
+  concierge builds watch/trigger flows, not action steps.
 - Full per-channel sequence diagrams + data envelopes: **[latest/channels_without_ap.html](latest/channels_without_ap.html)**.
 
 **On a real deployment (e.g. Code Engine) there's no tunnel at all** — the platform route *is* your
@@ -170,22 +177,24 @@ still needs infra, each with its one-line fix:
 
 ```
 events layer ENABLED — capability report:
-  ✓ web chat · webhooks · direct watchers (Slack/Discord/Box-direct) — no extra infra
+  ✓ web chat · webhooks (/api/events/hook/…) · direct watchers (Slack/Discord/Box-direct · Telegram-direct) — no extra infra (Telegram chat runs AP-free via long-poll)
   ✓ supervisor: ON — 27 sub-agent(s) from supervisor_agents.yaml
-  ✗ Activepieces not reachable → cron/poll + AP-backed triggers unavailable (`make ap`)
-  ✗ no EVENTS_PUBLIC_URL → Slack events / OAuth / Telegram unreachable (`make tunnels`)
+  ✓ native scheduler ON — cron/poll run in-process (no AP needed); AP is used only for integration (piece) triggers
+  ✗ Activepieces not reachable → AP-backed integration triggers (Gmail/GitHub/Box push) unavailable  [cron/poll still work — native scheduler]  (start it: `make up`)
+  ✗ no EVENTS_PUBLIC_URL → Slack events, OAuth callbacks unreachable (`make tunnels`, then `make channels`)  [Telegram chat still works — it's direct/outbound]
 ```
 
-The tiers are real: `--events` **alone** gives web chat, webhooks, and direct watchers with zero
-extra infrastructure. AP-backed triggers (cron/poll, Gmail/GitHub/Box) need Activepieces; Slack
-events / OAuth / Telegram need a public URL. `make up` provisions both.
+The tiers are real: `--events` **alone** gives web chat, webhooks, direct watchers, Telegram/Discord
+chat, **and cron/poll (native scheduler)** with zero extra infrastructure. Only the AP-backed
+integration push triggers (Gmail/GitHub/Box) need Activepieces; Slack events / OAuth callbacks need a
+public URL. `make up` provisions both.
 
 > **`make` commands are for INFRA and TESTS only** — `ap`, `tunnels`, `channels`, `test-*`,
 > `doctor`, `report`. Server startup is the CLI. There is no second server entry point to maintain.
 
 ## The agent model (one switch)
 
-There is exactly **one addressable agent — `cuga`** ([plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)):
+There is exactly **one addressable agent — `cuga`**:
 
 - **`EVENTS_SUPERVISOR=1`** (recommended): `cuga` is a **supervisor** whose sub-agents load from
   [`supervisor_agents.yaml`](../supervisor_agents.yaml) at the repo root — CUGA-main's canonical
@@ -291,10 +300,7 @@ make test-exhaustive  # 7. THE full matrix: every agent · every registry trigge
                       #    gate (~45-75 min; run right after step 5 while the Box token is fresh)
 ```
 
-8. **Other testing tools** — [checklist.html](checklist.html) is the interactive **manual**
-   checklist (80+ items, browser-saved statuses, *Copy report*; start at section **P** for triggers,
-   item **P0** is the new-pieces sweep); [checklist_actions.html](checklist_actions.html) is the
-   **action-half** checklist. **`make test-report`** runs the full ladder — `offline · live · flows ·
+8. **Other testing tools** — **`make test-report`** runs the full ladder — `offline · live · flows ·
    delegation · newpieces · exhaustive` (the fleet-era `now/matrix/fire` rungs auto-skip under
    `EVENTS_SUPERVISOR=1`, superseded by the arm+FIRE `exhaustive` rung) — and writes a persistent,
    timestamped report to `results/runs/<ts>/` + `results/index.html` + `results/LATEST.md`
@@ -302,7 +308,8 @@ make test-exhaustive  # 7. THE full matrix: every agent · every registry trigge
 
 ### Scheduled flows are single-shot (cadence stripping) — and can be bounded
 
-The AP schedule owns recurrence; the agent runs **once per tick**. At arm time the concierge
+The scheduler owns recurrence (the native in-process scheduler by default, or an AP schedule when
+`EVENTS_SCHEDULER=ap`); the agent runs **once per tick**. At arm time the concierge
 rewrites the utterance into its one-run task with an **LLM** (one call per flow, never per tick) —
 "watch bitcoin every 5 minutes and ping me on any move" is stored as "Check Bitcoin now and ping me
 on any move", wrapped in explicit "this is ONE run — do NOT loop" framing. A regex stripper is the
@@ -373,8 +380,8 @@ Different targets because "does it work?" is several questions at very different
 **`make test-report`** writes the timestamped report to `results/runs/<ts>/` and copies it to
 `results/index.html` + `results/LATEST.md` (open with `make report`). It's the one command that both
 runs everything **and saves the result**. `make doctor` isn't a test — it pings each service with its
-real `.env` cred and never fails, only reports. Full reference (verdict vocabulary, what each harness
-can and cannot prove, the live GitHub/Slack harnesses): [TESTING.md](TESTING.md).
+real `.env` cred and never fails, only reports. Each harness prints its own verdict vocabulary
+(REAL/SYNTH/BLOCKED) and what it can and cannot prove.
 
 > **Live-run gotcha:** the exhaustive/report harnesses need AP's public tunnel (`AP_FRONTEND_URL`)
 > alive — it's a **cloudflared tunnel baked into the AP container** and trycloudflare URLs *flap*.
@@ -409,7 +416,7 @@ is the everyday reset.
 - **The AP cloudflared tunnel is ephemeral** — when it dies, every flow RUN fails with
   `INTERNAL_ERROR` while arming still "works". `make doctor` now detects this exactly (it resolves
   the baked `AP_FRONTEND_URL` and prints the fix); recover with `make ap` then `make channels`.
-  This is the #1 "everything stopped firing" cause ([GAPS.md](GAPS.md)).
+  This is the #1 "everything stopped firing" cause.
 
 ## What can't be scripted (external, human)
 

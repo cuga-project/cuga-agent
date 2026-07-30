@@ -940,18 +940,6 @@ def test_examples_board_matches_the_catalog():
     assert p.returncode == 0, (p.stdout + p.stderr)
 
 
-def test_slides_deck_matches_the_registry():
-    """`events_docs/slides.html` (the event-driven-agents deck) is generated from triggers.py +
-    catalog.py. A trigger or example added without regenerating means the story we present disagrees
-    with what the product does. Fix: `python scripts/gen_slides.py` (or `make slides`)."""
-    import subprocess
-
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_slides.py"), "--check"],
-                       capture_output=True, text=True, cwd=root)
-    assert p.returncode == 0, (p.stdout + p.stderr)
-
-
 def test_every_trigger_appears_in_its_setup_guide():
     """Every registry trigger must be named (as `event`) in its app's events_docs/setup/<APP>.md —
     the setup guides are where a tester learns which scope/intent/subscription each trigger needs

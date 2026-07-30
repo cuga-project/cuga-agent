@@ -1,6 +1,6 @@
 # ngrok setup (the stable public URL — do this before any webhook connector)
 
-Some connectors receive events **over the internet** (Telegram and Slack webhooks, Gmail/GitHub OAuth
+Some connectors receive events **over the internet** (Slack webhooks, Gmail/GitHub OAuth
 callbacks), so CUGA needs a **public HTTPS URL**. Out of the box `events_up.sh` gives you a free
 cloudflared **quick tunnel** — but its URL is random and **flaps mid-session**, which silently breaks
 Slack and OAuth. ngrok fixes that: a **free reserved domain** that never changes, so you configure
@@ -11,8 +11,8 @@ internet ─▶ https://<you>.ngrok-free.app ─▶ ngrok agent ─▶ localhost
 ```
 
 > **This is a one-time setup and it is strongly recommended.** Skip it only for a throwaway local demo
-> that touches no webhook/OAuth connector (Discord + Box-direct need no public URL at all). For the
-> full mechanics of how the URL is wired, see [../PUBLIC_URL.md](../PUBLIC_URL.md).
+> that touches no webhook/OAuth connector (Telegram-direct, Discord, and Box-direct need no public
+> URL at all). Run `make public-url` to see the current URL.
 
 ## What you'll need
 - A free ngrok account — no domain to buy, no credit card.
@@ -61,11 +61,10 @@ guides give the exact paths). Because the URL never changes, you never touch tho
 
 ## What ngrok covers (and what it doesn't)
 The free tier is **one domain**, which we spend on the **CUGA** server — that's what Slack's Request
-URL and every OAuth callback point at. The separate **AP tunnel** (Activepieces `:8081`, which
-Telegram's webhook uses) stays on a cloudflared quick tunnel, so after an **AP** restart just re-run
-`make channels` to re-arm Telegram. If you want *both* stable, reserve a second ngrok domain (or a paid
-plan) and pass it to AP via `AP_TUNNEL_URL`, or use a Cloudflare named tunnel — see
-[../PUBLIC_URL.md](../PUBLIC_URL.md).
+URL and every OAuth callback point at. The separate **AP tunnel** (Activepieces `:8081`, used by the
+opt-in AP-backed triggers) stays on a cloudflared quick tunnel, so after an **AP** restart just re-run
+`make channels` to re-arm those. If you want *both* stable, reserve a second ngrok domain (or a paid
+plan) and pass it to AP via `AP_TUNNEL_URL`, or use a Cloudflare named tunnel.
 
 ## Troubleshooting
 - **`ERR_NGROK_105` / `ERR_NGROK_107` (auth)** — authtoken missing or wrong. Re-run

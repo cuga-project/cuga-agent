@@ -139,7 +139,7 @@ curl -s -X POST localhost:7860/api/events/slack/events -H "content-type: applica
 ## Troubleshooting
 - **No reply after posting** — the #1 cause: the **Request URL is stale** (pointing at an old tunnel).
   On a quick tunnel the URL changes every restart; set **`EVENTS_NGROK_DOMAIN`** for a stable URL you
-  paste **once** (see [PUBLIC_URL.md](../PUBLIC_URL.md)). Diagnose: `make public-url` shows the current
+  paste **once** (run `make public-url` for the current URL). Diagnose: `make public-url` shows the current
   URL — it must match your Slack app's Request URL. The endpoint itself is easy to test:
   `curl -s -X POST <url>/api/events/slack/events -d '{"type":"url_verification","challenge":"x"}'`
   should echo `x`. If that works but posts get no reply, Slack isn't delivering → **Request URL wrong/

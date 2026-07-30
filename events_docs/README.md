@@ -7,36 +7,33 @@ folders, repos and schedules, converse on chat channels, and deliver answers bac
 **The one idea:** `/invoke` is the single seam. Every trigger, channel, and integration normalises its
 event into one envelope and POSTs it there. Learn that endpoint and the rest follows.
 
-## The docs, in order
+## The docs kept in-repo (deliberately minimal)
 
-| # | Doc | What it is |
-|---|---|---|
-| 1 | **[ARCHITECTURE.md](ARCHITECTURE.md)** + [architecture/](architecture/) | how it works — the system diagram + a sequence diagram per flow shape |
-| 2 | **[TESTING.md](TESTING.md)** | the offline gate, the live harnesses, and the consolidated report |
-| 3 | **[PHASES.md](PHASES.md)** | Crawl · Walk · Run · Sprint · Fly — what each phase is, and where we are (P3 ~75%) |
-| 4 | **[decisions/](decisions/)** + **[GAPS.md](GAPS.md)** | the ADRs (why), and the honest known-gaps + sharp-edges list |
-| 5 | **[ROADMAP.md](ROADMAP.md)** | the sequenced "what's next" |
-| 6 | **[SETUP.md](SETUP.md)** + [setup/](setup/) | fresh machine → running stack; per-connector setup guides |
-| 7 | **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) |
-| 8 | **[slides.html](slides.html)** | the event-driven-agents deck — triggers, channels, integrations, all 33 triggers per app, with examples. Generated (`make slides`); good for a walkthrough or handoff |
-| 9 | **[nl_to_flow.html](nl_to_flow.html)** | the NL→Flow explainer — how a sentence becomes a flow: the pre-router, the confidence ladder, ask-till-legit, the benchmark gates, with the sequence diagram |
-| 9a | **[agent_hosting.html](agent_hosting.html)** | how agents are hosted, from the agent's perspective — the classic server, the (historical) fleet, and the shipped **single-agent world**: one `cuga` supervisor, sub-agents from `supervisor_agents.yaml` |
-| 9b | **[plans/SUPERVISOR_REFACTOR.md](plans/SUPERVISOR_REFACTOR.md)** | the single-agent refactor: decision, constraints, phases, live proof, and the progress log |
-| 10 | **[checklist.html](checklist.html)** | the exhaustive manual-test checklist (markable status, per integration) |
-| 11 | **[verification.html](verification.html)** | the evidence ledger — per integration × kind: ARMED / FIRED-synthetic / FIRED-real-event, dated, with the re-verify command per row |
+| Doc | What it is |
+|---|---|
+| **[SETUP.md](SETUP.md)** + [setup/](setup/) | fresh machine → running stack, and a per-connector setup guide for each channel/integration (test-coupled: every trigger is documented here) |
+| **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) — all generated and test-coupled to the code |
 
-## New here? Read in this order
+That's it. Prose that drifts (decks, roadmaps, status boards, ADR narrative, snapshots) is **not**
+kept here — it lived too far from the code to stay true. The source of truth is the code under
+`src/cuga/backend/events/`; when a doc and the code disagree, the code wins and the doc is a bug.
 
-1. This page, then **[ARCHITECTURE.md](ARCHITECTURE.md)** for the model + diagrams.
-2. **[SETUP.md](SETUP.md)** to get a stack running.
-3. **[TESTING.md](TESTING.md)** to prove it works (`make test`, then `make test-report`).
-4. **[PHASES.md](PHASES.md)** / **[ROADMAP.md](ROADMAP.md)** for where the project stands and heads.
+## Testing
+
+There is no prose test-guide (it drifted). Use the code:
+- **Offline suite:** `make test` (or `pytest tests/events -q`) — fast, no network.
+- **Live harnesses:** `tests/events/live_*.py` and the `make test-live` / `test-suite-now` targets.
+- The API reference and per-connector setup guides are **enforced by contract tests** in
+  `tests/events/test_events_api_contract.py` — add a route or trigger without documenting it and the
+  build fails.
+
+## Archived (moved out of the repo)
+
+Point-in-time material — the ADRs, decks, roadmaps, status boards, snapshot dashboards, rendered
+diagrams, and the (gated-off) action-half cluster — was moved to `~/Documents/GitHub/events_docs/`
+to keep the repo lean and drift-free. None of it is required to build, run, or test the events layer.
 
 ## Conventions
 
 - **Generated, don't hand-edit:** `api/api_spec.html` (`scripts/gen_api_spec.py`), the examples
-  board's data (`scripts/gen_examples.py`), `slides.html` (`scripts/gen_slides.py`), the diagrams
-  (`architecture/gen_diagrams.py`), `results/index.html` (`scripts/run_all_tests.py`). Offline tests
-  fail the build if the generated artifacts drift from the code.
-- **Source of truth is the code** under `src/cuga/backend/events/`. When a doc and the code disagree,
-  the code wins and the doc is a bug.
+  board's data (`scripts/gen_examples.py`). Offline tests fail the build if these drift from the code.
