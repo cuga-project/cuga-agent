@@ -878,8 +878,18 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # of the identity too — the same action armed from Slack vs Telegram vs web reports to
             # DIFFERENT places and must be distinct flows.
             _sink_tag = (f"{o_channel}:{o_native}" if (action_tag and o_channel) else sink)
+            # cron/poll have NO source/event to tell two same-cadence flows apart — the TASK is the
+            # identity. Without it, "every hour, India news" and "every hour, weather" (same agent +
+            # cadence + sink + owner) collide and the second silently REUSES the first (the bug). So
+            # fold a normalized task hash into the key for TIME-source flows ONLY. PUSH keeps its
+            # trigger-based identity, so a rephrased "when a PR opens on X" still reuses correctly.
+            _task_tag = ""
+            if kind in ("cron", "poll"):
+                import hashlib as _hl
+                _norm = " ".join((_utterance.get("") or prompt or "").lower().split())
+                _task_tag = _hl.sha1(_norm.encode()).hexdigest()[:10]
             dedup_key = (f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|{action_tag}|"
-                         f"{_owner_scope(spec, p)}")
+                         f"{_task_tag}|{_owner_scope(spec, p)}")
             existing = store.find_by_dedup_key(dedup_key)
             if existing:
                 nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""

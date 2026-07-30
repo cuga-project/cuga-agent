@@ -533,6 +533,14 @@ ENDPOINTS = [
                   "A plain page with no build step, so it can't break the pre-built Studio bundle. "
                   "<code>make flows</code> opens it.")]),
 
+    E("GET", "/api/events/dashboard", "flows",
+      "The LIVE Events Dashboard — a self-contained control-plane page: every watcher, run &amp; "
+      "channel, pretty and readable, with pause/resume/delete/run + an inline dry-run.",
+      tier="ops", callers=["operator"], try_it=False,
+      responses=[(200, "&lt;html&gt;…&lt;/html&gt;",
+                  "Reads only the /api/events/* APIs; auto-refreshes. Open it at "
+                  "<code>/api/events/dashboard</code>.")]),
+
     # ── runs ──────────────────────────────────────────────────────────────────
     E("GET", "/api/events/runs", "runs",
       "The unified execution log — AP flow-runs + NOW answers + <b>native cron/poll fires</b>, each "

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<!-- What shipped in the native-events push + the plan/pitch. Companion to slides.html. Hand-authored. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Native Events — what shipped &amp; what's next · CUGA</title>
+<style>
+  :root { --bg:#0f1117; --panel:#151822; --card:#171a23; --ink:#e8eaf0; --dim:#8b93a7; --line:#262b38;
+           --acc:#4f8cff; --native:#42be65; --ap:#a56eff; --push:#ff7eb6; --poll:#08bdba; --warn:#ff832b; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); max-width:1000px; margin:0 auto; padding:3rem 1.5rem 6rem;
+         font:16px/1.6 -apple-system,"IBM Plex Sans",Segoe UI,sans-serif; }
+  h1 { font-size:2.5rem; letter-spacing:-.02em; line-height:1.1; }
+  h2 { font-size:1.5rem; margin:2.6rem 0 .4rem; padding-top:1.6rem; border-top:1px solid var(--line); letter-spacing:-.01em; }
+  h3 { font-size:1.08rem; margin:1.3rem 0 .4rem; }
+  p { margin:.6em 0; color:#d4d8e2; } .lede { color:var(--dim); font-size:1.15rem; margin:.6rem 0 1.2rem; }
+  .kicker { color:var(--acc); text-transform:uppercase; letter-spacing:.18em; font-size:.78rem; margin-bottom:.8rem; }
+  code { background:var(--card); border:1px solid var(--line); border-radius:5px; padding:.05em .35em; font-size:.9em; }
+  table { border-collapse:collapse; width:100%; margin:.7rem 0; font-size:.93rem; }
+  th { text-align:left; color:var(--dim); font-weight:600; font-size:.76rem; text-transform:uppercase; letter-spacing:.06em; padding:.5em .7em; border-bottom:1px solid var(--line); }
+  td { padding:.5em .7em; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.k { font-weight:600; white-space:nowrap; }
+  .pill { display:inline-block; border-radius:99px; padding:.05em .55em; font-size:.72rem; border:1px solid var(--line); white-space:nowrap; }
+  .pill.done{color:var(--native);border-color:var(--native);} .pill.next{color:var(--acc);border-color:var(--acc);}
+  .pill.native{color:var(--native);border-color:var(--native);} .pill.ap{color:var(--ap);border-color:var(--ap);}
+  .pill.idea{color:var(--warn);border-color:var(--warn);}
+  ul{margin:.5em 0 .5em 1.3rem;} li{margin:.4em 0; color:#d4d8e2;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:.8rem 0;}
+  .col{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;}
+  .col.native{border-color:var(--native);} .col.ap{border-color:var(--ap);}
+  .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:8px;padding:.8rem 1.1rem;margin:1rem 0;color:#d4d8e2;}
+  .note.ok{border-left-color:var(--native);}
+  .toc{columns:2;gap:2rem;font-size:.95rem;margin:1rem 0;} .toc a{color:var(--acc);text-decoration:none;display:block;margin:.25em 0;}
+  @media(max-width:640px){.toc,.grid2{columns:1;grid-template-columns:1fr;}}
+</style></head>
+<body>
+
+<div class="kicker">CUGA · events · shipped &amp; next</div>
+<h1>Native Events — what shipped, what's next</h1>
+<p class="lede">A ~12–14h push that made CUGA event-driven <b>without Activepieces</b> — plus the plan,
+   the pitch, and the honest list of what's still pending.</p>
+
+<div class="toc">
+  <a href="#tldr">1 · TL;DR</a>
+  <a href="#shipped">2 · What shipped</a>
+  <a href="#arch">3 · The architecture now</a>
+  <a href="#creds">4 · Credentials — who holds what</a>
+  <a href="#pending">5 · What's pending (phases + your list)</a>
+  <a href="#ideas">6 · Ideas — agents where events are the point</a>
+  <a href="#pitch">7 · The pitch &amp; stopping point (PRs)</a>
+</div>
+
+<!-- 1 -->
+<h2 id="tldr">1 · TL;DR</h2>
+<p class="lede" style="color:var(--ink)">CUGA can now <b>watch, schedule, and act on its own — with zero
+   Activepieces.</b> A native in-process scheduler runs cron/poll; the concierge decides native-vs-AP
+   per utterance; Telegram/Discord/web run AP-free; and a set of rich, filterable APIs expose every
+   watcher and run. AP stays — but only where it earns it (the 754 managed integration triggers).</p>
+<div class="note ok"><b>The one-line shift:</b> Activepieces went from <em>the spine</em> to <em>one
+   backend</em>. The concierge routes a timer or a tool-watch to <b>our</b> scheduler (no AP), and an
+   integration event (gmail/github/box) to AP. One seam — <code>/invoke</code> — underneath both.</div>
+
+<!-- 2 -->
+<h2 id="shipped">2 · What shipped</h2>
+<table>
+  <tr><th>Area</th><th>What</th><th></th></tr>
+  <tr><td class="k">Native scheduler</td><td>In-process asyncio loop (<code>native_scheduler.py</code>): AP-free <b>cron + poll</b>, a dependency-free standard-cron parser, durable next-fire in <code>events.db</code>, <b>lazy catch-up</b> (a missed tick fires once), bounded-run retirement. Gated by <code>EVENTS_SCHEDULER</code>.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Concierge routing</td><td>Decides <b>native vs AP at arm time</b>: cron/poll → native; push on an integration → AP; and a <b>fast, clean AP-down decline</b> (no more "thinking…" hang). Registry-driven, not keyword-guessing.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Telegram direct</td><td><code>telegram_direct.py</code> — long-poll (getUpdates/sendMessage), <b>no AP, no tunnel</b>; auto-clears a stale webhook. + delivery fix so native fires reach Telegram.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Run &amp; watcher APIs</td><td><code>/api/events/runs</code> now unifies AP-runs + NOW + <b>native fires</b>, each tagged <code>mode·backend·agent·answer·tools·mcp·ms·status</code>. Filters: <code>mode·backend·agent·status·kind·source·subscription_id·limit</code>. <code>/subscriptions</code> gains a by-type <b>summary</b> + filters.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Sub-agent in runs</td><td>Runs now record the <b>delegated sub-agent</b> (pricebot/weatherbot…), not the flat "cuga".</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Dry-run</td><td><code>GET /api/events/dry-run?text=…</code> — preview an utterance's routing (mode, native-vs-AP, cadence, next-fire, would arm/ask/decline/answer) with <b>zero side effects</b>. Browser-friendly.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Fire-now for native</td><td><code>POST /subscriptions/{id}/run</code> now fires <b>native</b> watches too (via <code>/invoke</code>) and returns the answer — test any watch on demand.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Main-chat → concierge</td><td>Standing intents typed in the <b>main chat</b> route to the concierge (arm honestly) instead of the agent falsely claiming "armed" — the silent-failure trap, closed.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">No-AP run targets</td><td><code>make up-noap</code> (web·Telegram·Discord, no tunnel) · <code>make up-noap-slack</code> (+ Slack tunnel) · honest capability report.</td><td><span class="pill done">done</span></td></tr>
+  <tr><td class="k">Schema for viz</td><td>Native scheduling fields on the watcher (<code>next_fire·last_fire·fire_count·interval·cron·expires_at</code>) + a <code>watch_state</code> table ready for Phase-3 deltas.</td><td><span class="pill done">done</span></td></tr>
+</table>
+<p class="dim" style="color:var(--dim)">Throughout: purely additive + gated, offline suite green (242), and each capability verified live with AP off.</p>
+
+<!-- 3 -->
+<h2 id="arch">3 · The architecture now</h2>
+<p>Three ways the world reaches CUGA, all landing at one seam — <code>/invoke</code>:</p>
+<table>
+  <tr><th>Trigger</th><th>Owner</th><th>Needs AP?</th><th>Example</th></tr>
+  <tr><td class="k">cron / schedule</td><td><span class="pill native">native</span></td><td>❌</td><td>"every weekday at 9am, brief me"</td></tr>
+  <tr><td class="k">poll / watch-a-tool</td><td><span class="pill native">native</span></td><td>❌</td><td>"watch bitcoin every 2 min", "watch my error logs"</td></tr>
+  <tr><td class="k">webhook (inbound)</td><td><span class="pill native">native</span></td><td>❌</td><td>"POST to /api/events/hook/&lt;name&gt;"</td></tr>
+  <tr><td class="k">integration event</td><td><span class="pill ap">AP</span></td><td>✅</td><td>"when a new PR opens on my repo" (github piece)</td></tr>
+  <tr><td class="k">channels (converse)</td><td>web·Telegram·Discord = <span class="pill native">direct</span> · Slack = direct+URL · Telegram-AP = <span class="pill ap">opt-in</span></td><td>mostly ❌</td><td>chat from any surface</td></tr>
+</table>
+<div class="note"><b>Why keep AP at all?</b> It owns the one genuinely hard thing: <b>754 maintained
+   OAuth connectors + token lifecycle</b>, where the agent never sees a credential. We don't reinvent
+   that. Native owns timers, tool-watches, and webhooks — everything AP structurally can't reach (your
+   own tools) or shouldn't tax you a container for (a cron).</div>
+
+<!-- 4 -->
+<h2 id="creds">4 · Credentials — who holds what (confirmed)</h2>
+<div class="grid2">
+  <div class="col ap"><h3><span class="pill ap">Integrations</span> — AP holds them</h3>
+    <p>github / gmail / box / calendar / pinterest are <b>per-user</b> (<code>ownership: per-user</code>,
+       ADR 0003): each chatting user authorizes <b>their own</b> OAuth/token, and <b>Activepieces stores
+       it encrypted</b>. The agent <b>never sees the credential</b> — it gets event content, AP does the
+       authenticated call. Connections are keyed per principal (isolation).</p></div>
+  <div class="col native"><h3><span class="pill native">Tools</span> — CUGA manages them</h3>
+    <p>If a <b>tool</b> (an MCP tool the agent calls) needs a credential, that's <b>CUGA's</b> to manage
+       — AP has no piece for it. This is the deliberate trade of moving tool-watching/actions to CUGA:
+       the tool (or CUGA) owns the token. Same isolation model (per-user scope), different vault.</p></div>
+</div>
+<p class="dim" style="color:var(--dim)">So your instinct is right: integration creds live in AP (per-user,
+   safe); tool creds are CUGA's job. The line is exactly "is there an AP piece for it?"</p>
+
+<!-- 5 -->
+<h2 id="pending">5 · What's pending — phases + your list</h2>
+<table>
+  <tr><th>Item</th><th>What it is · my take</th><th></th></tr>
+  <tr><td class="k">Phase 3 — POLL state</td><td>The deterministic <b>Option-1</b> delta poller: agent authors a WatchSpec once (value_path/threshold/reset), the poller compares deterministically ("ping me if IBM moves 5%"). The <code>watch_state</code> table is already in place. <b>This is the next real build.</b></td><td><span class="pill next">next</span></td></tr>
+  <tr><td class="k">Phase 4 — Studio UX</td><td>A native-watch view + live runs feed + a dry-run "Preview" button. Mostly frontend. (See the UX audit + mock dashboard.)</td><td><span class="pill next">next</span></td></tr>
+  <tr><td class="k">SDK event support</td><td><b>Is it possible? Yes.</b> The SDK stays a pure callable (invoke); expose events as an <b>opt-in triggers layer</b> the host mounts — a <code>@cuga.on_schedule("*/5m")</code> / <code>@cuga.on_tool_change(tool, key)</code> decorator that registers a native subscription, plus an outbound callback/stream for delivery. Keep inbound triggers host-owned; the SDK ships the registration + the poller hook.</td><td><span class="pill idea">idea</span></td></tr>
+  <tr><td class="k">NL-unregister ("stop itself")</td><td>"stop watching bitcoin" → find + delete the subscription. Nice-to-have; the store + dedup key already make it a small concierge addition. Not a must.</td><td><span class="pill idea">idea</span></td></tr>
+  <tr><td class="k">UX updates</td><td>Audit says: mostly <b>docs + a Runs-tab enrichment</b> (surface the new mode/backend/agent/tools fields) + a native-watchers list. No deep rework.</td><td><span class="pill next">next</span></td></tr>
+  <tr><td class="k">Turn AP on + regression</td><td>Flip AP on and confirm no regression (integration push still arms; native cron/poll unchanged). A validation pass, low risk given the gating.</td><td><span class="pill next">next</span></td></tr>
+  <tr><td class="k">Microservice deploy</td><td>Deploy CUGA (+ optional AP) to Code Engine: native channels need no tunnel; pin the outbound-channel component to a single always-on instance. (See the cloud section of the channels doc.)</td><td><span class="pill idea">idea</span></td></tr>
+</table>
+
+<!-- 6 -->
+<h2 id="ideas">6 · Ideas — agents where events are the point</h2>
+<p>Grounded in the current roster (<code>supervisor_agents.yaml</code>) + tool-triggers. Slack/Telegram
+   are <b>channels</b>; the interesting part is <b>tools that trigger or can be watched</b>:</p>
+<table>
+  <tr><th>Agent</th><th>Watches</th><th>Trigger type</th></tr>
+  <tr><td class="k">incident_triage</td><td>a <code>logs.scan_errors</code> tool → a new ERROR</td><td><span class="pill native">tool-watch</span></td></tr>
+  <tr><td class="k">pricebot</td><td>a <code>finance.quote</code> tool → a ≥5% move</td><td><span class="pill native">threshold poll</span></td></tr>
+  <tr><td class="k">repo_watcher / pr_reviewer</td><td>github → a new PR</td><td><span class="pill ap">AP integration</span></td></tr>
+  <tr><td class="k">support_digest</td><td>a <code>tickets.search</code> tool → a new Sev-1</td><td><span class="pill native">tool-watch</span></td></tr>
+  <tr><td class="k">feed_watcher</td><td>RSS / Pinterest → a new item</td><td><span class="pill ap">AP integration</span></td></tr>
+  <tr><td class="k">"deploy_sentinel" (new)</td><td>a <code>deploy.status</code> tool → build finished/failed</td><td><span class="pill native">tool-watch</span></td></tr>
+  <tr><td class="k">mailbot / market_briefer</td><td>a clock → daily digest</td><td><span class="pill native">native cron</span></td></tr>
+</table>
+<p class="dim" style="color:var(--dim)">The pattern: any tool the agent already holds becomes watchable —
+   the LLM picks the tool, the poller detects change, the answer delivers to a channel. See the mock
+   dashboard for how this looks.</p>
+
+<!-- 7 -->
+<h2 id="pitch">7 · The pitch &amp; stopping point</h2>
+<p class="lede" style="color:var(--ink)">CUGA becomes a <b>platform</b>, not an integration list: it
+   watches anything (a tool, a clock, a webhook, or a SaaS event), reasons with the right sub-agent,
+   and delivers to any channel — running with or without Activepieces, on a laptop or in the cloud.</p>
+
+<h3>A good stopping point — three PRs</h3>
+<table>
+  <tr><th>PR</th><th>Contents</th></tr>
+  <tr><td class="k">① Native-events (no-AP route)</td><td>The native scheduler + routing + Telegram-direct + the run/watcher/dry-run APIs + no-AP make targets + docs. AP behind a feature flag. <b>This is the bulk of what shipped.</b></td></tr>
+  <tr><td class="k">② Channels</td><td>Telegram/Discord/Slack/web AP-free channels + delivery + the capability report. (Can fold into ①, or stand alone for review.)</td></tr>
+  <tr><td class="k">③ AP route + integrations</td><td>Keeps the AP path green (integration push), and we <b>keep adding integrations</b> here over time — AP is the extensible connector shelf. Pair with a cuga-apps demo.</td></tr>
+</table>
+<div class="note"><b>On "the AP thingie — we keep adding more, right?"</b> Yes. AP is the connector
+   shelf: each new SaaS trigger is a <b>data row</b> (registry), not engine code. Native handles
+   timers/tools/webhooks; AP grows sideways with more integrations. The two never collide — one owner
+   per subscription, decided at arm time.</div>
+<p>Recommended finish line for this chapter: land ① (+② folded in), keep ③ green with a regression
+   pass, ship the mock dashboard as the UX north-star, and open the SDK-events + Phase-3-poll as the
+   next chapter.</p>
+
+<p style="margin-top:2rem; color:var(--dim); font-size:.9rem">Companions: <a href="channels_without_ap.html" style="color:var(--acc)">channels_without_ap.html</a> ·
+   <a href="test_noap.html" style="color:var(--acc)">test_noap.html</a> ·
+   <a href="mock_dashboard.html" style="color:var(--acc)">mock_dashboard.html</a> ·
+   <a href="../slides.html" style="color:var(--acc)">slides.html</a></p>
+</body></html>

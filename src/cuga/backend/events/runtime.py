@@ -320,6 +320,18 @@ class SupervisorRuntime(AgentRuntime):
         # thread identity: per-conversation, NOT the delegation module's fixed per-agent thread —
         # scope+thread keeps users' contexts apart at the supervisor level.
         res = await sup.invoke(text, thread_id=f"{scope}:{thread_id}")
+        # OBSERVABILITY (fix #1): the supervisor picks the sub-agent INTERNALLY, so the run log would
+        # otherwise show the flat "cuga". Surface WHICH sub-agent actually handled the turn into
+        # runmeta.agent (mutates the same dict start()/add() set). Best-effort + fully guarded — this
+        # is events-scoped observability and must never break the run. Falls back to "cuga".
+        try:
+            _st = getattr(sup, "_supervisor_state", None)
+            _sel = (_st.get("selected_agents") if isinstance(_st, dict)
+                    else getattr(_st, "selected_agents", None))
+            if isinstance(_sel, (list, tuple)) and _sel:
+                runmeta.add(agent=str(_sel[-1]))       # the sub-agent that answered
+        except Exception:  # noqa: BLE001
+            pass
         return res.answer if hasattr(res, "answer") else str(res)
 
 

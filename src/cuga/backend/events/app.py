@@ -667,6 +667,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         from .flows_console import FLOWS_CONSOLE_HTML
         return HTMLResponse(FLOWS_CONSOLE_HTML)
 
+    @app.get("/api/events/dashboard")
+    async def events_dashboard():
+        """The Events Dashboard — a LIVE, self-contained control plane: every watcher, run, and
+        channel, pretty and readable, with pause/resume/delete/run + an inline dry-run. Reads only the
+        /api/events/* APIs; no build step, so it can't break the pre-built Studio bundle."""
+        from .events_dashboard import DASHBOARD_HTML
+        return HTMLResponse(DASHBOARD_HTML)
+
     # --- execution log: which flows RAN, succeeded/failed, and their output -----------------------
     @app.get("/api/events/runs")
     async def list_runs(request: Request,

@@ -25,7 +25,7 @@ import {
   TableBody,
   TableCell,
 } from "@carbon/react";
-import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity } from "@carbon/icons-react";
+import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity, Dashboard } from "@carbon/icons-react";
 import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
@@ -739,19 +739,148 @@ function RunDetail({ detail }: { detail: any }) {
   );
 }
 
+// The Dashboard — the events control plane at a glance: summary tiles, every watcher (with
+// pause/resume/delete), and recent runs (agent · type · tools · answer). Carbon-styled to match the
+// rest of the Studio; reads the same /api/events/* endpoints as the standalone dashboard page.
+const MODE_TAG_D: Record<string, string> = { CRON: "green", POLL: "teal", PUSH: "magenta", NOW: "gray" };
+function DashboardTab({ refresh }: { refresh: number }) {
+  const [tick, setTick] = useState(0);
+  const subsE = useEndpoint<any>(api.getEventsSubscriptions, (d) => d, refresh + tick);
+  const runsE = useEndpoint<any[]>(api.getEventsRuns, (d) => d.runs ?? [], refresh + tick);
+  useEffect(() => { const id = setInterval(() => setTick((t) => t + 1), 10000); return () => clearInterval(id); }, []);
+
+  const data = subsE.data || {};
+  const summary = data.summary || { by_mode: {} };
+  const watchers: any[] = data.subscriptions || [];
+  const runs: any[] = runsE.data || [];
+  const bkTag = (b: string) => (b === "native" ? "green" : b === "ap" ? "purple" : "cool-gray");
+
+  const act = async (id: string, what: "pause" | "resume" | "delete") => {
+    if (what === "delete" && !window.confirm("Delete watcher " + id + "?")) return;
+    if (what === "pause") await api.pauseFlow(id);
+    else if (what === "resume") await api.resumeFlow(id);
+    else await api.deleteFlow(id);
+    setTick((t) => t + 1);
+  };
+  const cadence = (s: any) =>
+    s.interval_seconds ? (s.interval_seconds % 60 === 0 ? `${s.interval_seconds / 60} min` : `${s.interval_seconds}s`)
+      : s.cron_expr ? `cron ${s.cron_expr}` : s.mode === "PUSH" ? "on event" : "—";
+  const watches = (s: any) =>
+    s.mode === "PUSH" ? `${s.source_connector || ""} · ${s.event || ""}`
+      : ["cron", "interval"].includes(s.source_connector) ? "the clock" : (s.source_connector || "—");
+  // the actual task/utterance, with the scheduler framing stripped so you see WHAT it watches for
+  const taskOf = (s: any) => {
+    let p: string = s.prompt || "";
+    const i = p.indexOf("report:\n");
+    if (i >= 0) p = p.slice(i + 8);
+    return p.split("\nThis is a POLL:")[0].replace(/^["“]|["”]$/g, "").trim() || watches(s);
+  };
+
+  const tiles: [string, number][] = [
+    ["watchers", summary.total], ["crons", summary.by_mode?.CRON], ["polls", summary.by_mode?.POLL],
+    ["pushes", summary.by_mode?.PUSH], ["native · no AP", summary.native_no_ap],
+    ["AP flows", summary.ap_flows], ["paused", summary.paused],
+  ];
+
+  return (
+    <div>
+      <Loader loading={subsE.loading} error={subsE.error} />
+      {!subsE.loading && !subsE.error && (
+        <>
+          <p className="studio-muted" style={{ margin: "0 0 12px", fontSize: 13 }}>
+            The events control plane — watchers, runs &amp; channels at a glance. Auto-refreshes.
+            <Button kind="ghost" size="sm" onClick={() => setTick((t) => t + 1)}>Refresh</Button>
+          </p>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+            {tiles.map(([l, v]) => (
+              <Tile key={l} className="studio-card" style={{ minWidth: 108, padding: "12px 16px" }}>
+                <div style={{ fontSize: "1.7rem", fontWeight: 600, lineHeight: 1.1 }}>{v ?? 0}</div>
+                <div className="studio-muted" style={{ fontSize: ".78rem", textTransform: "uppercase", letterSpacing: ".04em" }}>{l}</div>
+              </Tile>
+            ))}
+          </div>
+
+          <h4 style={{ margin: "0 0 .5rem" }}>Watchers</h4>
+          {watchers.length === 0 ? (
+            <InlineNotification kind="info" lowContrast hideCloseButton title="No watchers armed"
+              subtitle="Arm one from the Concierge tab — e.g. “every 5 minutes give me a tip” or “watch bitcoin every 2 min”." />
+          ) : (
+            <Table size="sm">
+              <TableHead><TableRow>
+                <TableHeader>Watching for</TableHeader><TableHeader>Agent</TableHeader><TableHeader>Source</TableHeader><TableHeader>Type</TableHeader>
+                <TableHeader>Cadence</TableHeader><TableHeader>Next fire</TableHeader><TableHeader>Status</TableHeader><TableHeader>&nbsp;</TableHeader>
+              </TableRow></TableHead>
+              <TableBody>
+                {watchers.map((s) => (
+                  <TableRow key={s.id}>
+                    <TableCell title={s.prompt || ""} style={{ maxWidth: 300 }}>
+                      <div>{taskOf(s).slice(0, 90)}</div>
+                      <div style={{ fontFamily: "monospace", fontSize: ".7rem", opacity: .5 }}>{s.id}</div></TableCell>
+                    <TableCell><b>{s.target_agent}</b></TableCell>
+                    <TableCell>{watches(s)}</TableCell>
+                    <TableCell><Tag type={(MODE_TAG_D[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>{" "}
+                      <Tag type={bkTag(s.backend) as any} size="sm">{s.backend === "native" ? "native" : "AP"}</Tag></TableCell>
+                    <TableCell>{cadence(s)}{s.fire_count ? ` · ×${s.fire_count}` : ""}</TableCell>
+                    <TableCell style={{ whiteSpace: "nowrap" }}>{s.next_fire ? new Date(s.next_fire * 1000).toLocaleString() : "—"}</TableCell>
+                    <TableCell><Tag type={(s.status === "paused" ? "warm-gray" : "green") as any} size="sm">{s.status}</Tag></TableCell>
+                    <TableCell><div style={{ display: "flex", gap: 2 }}>
+                      <Button kind="ghost" size="sm" hasIconOnly renderIcon={s.status === "paused" ? Play : Pause}
+                        iconDescription={s.status === "paused" ? "resume" : "pause"} tooltipPosition="left"
+                        onClick={() => act(s.id, s.status === "paused" ? "resume" : "pause")} />
+                      <Button kind="danger--ghost" size="sm" hasIconOnly renderIcon={TrashCan}
+                        iconDescription="delete" tooltipPosition="left" onClick={() => act(s.id, "delete")} />
+                    </div></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+
+          <h4 style={{ margin: "1.6rem 0 .5rem" }}>Recent runs</h4>
+          {runs.length === 0 ? (
+            <InlineNotification kind="info" lowContrast hideCloseButton title="No runs yet"
+              subtitle="Arm a watcher; each fire shows here with the sub-agent, tools, and the answer." />
+          ) : (
+            <Table size="sm">
+              <TableHead><TableRow>
+                <TableHeader>When</TableHeader><TableHeader>Agent</TableHeader><TableHeader>Type</TableHeader>
+                <TableHeader>Tools</TableHeader><TableHeader>Answer</TableHeader><TableHeader>Status</TableHeader>
+              </TableRow></TableHead>
+              <TableBody>
+                {runs.slice(0, 30).map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell style={{ whiteSpace: "nowrap" }}>{fmtTime(r.started_at)}</TableCell>
+                    <TableCell><b>{r.agent}</b></TableCell>
+                    <TableCell><Tag type={(MODE_TAG_D[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag>{" "}
+                      <Tag type={bkTag(r.backend) as any} size="sm">{r.backend}</Tag></TableCell>
+                    <TableCell style={{ fontFamily: "monospace", fontSize: ".76rem" }}>{(r.tools || []).join(", ") || "—"}</TableCell>
+                    <TableCell title={r.answer || r.utterance || ""} style={{ maxWidth: 320 }}>
+                      {((r.answer || r.utterance || "") as string).slice(0, 130)}</TableCell>
+                    <TableCell><Tag type={(r.status === "FAILED" ? "red" : "green") as any} size="sm">{r.status}</Tag></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function RunsTab({ refresh }: { refresh: number }) {
   const [tick, setTick] = useState(0);
   const { data, loading, error } = useEndpoint<any[]>(
     api.getEventsRuns, (d) => d.runs ?? [], refresh + tick);
   const [f, setF] = useState<Record<string, string>>(
-    { agent: "all", integration: "all", channel: "all", mode: "all", status: "all" });
+    { agent: "all", backend: "all", integration: "all", channel: "all", mode: "all", status: "all" });
   const [sort, setSort] = useState<{ col: string; dir: 1 | -1 }>({ col: "started_at", dir: -1 });
   const [detail, setDetail] = useState<any | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   const runs = data ?? [];
   const uniq = (k: string) => Array.from(new Set(runs.map((r) => r[k]).filter(Boolean))).sort();
-  const filtered = runs.filter((r) => ["agent", "integration", "channel", "mode", "status"]
+  const filtered = runs.filter((r) => ["agent", "backend", "integration", "channel", "mode", "status"]
     .every((k) => f[k] === "all" || String(r[k]) === f[k]));
   const sorted = [...filtered].sort((a, b) => {
     const av = a[sort.col] ?? "", bv = b[sort.col] ?? "";
@@ -799,6 +928,7 @@ function RunsTab({ refresh }: { refresh: number }) {
             {filterSel("integration", "Integration")}
             {filterSel("channel", "Channel")}
             {filterSel("mode", "Trigger")}
+            {filterSel("backend", "Backend")}
             {filterSel("status", "Status")}
           </div>
           {runs.length === 0 ? (
@@ -809,8 +939,8 @@ function RunsTab({ refresh }: { refresh: number }) {
               <TableHead>
                 <TableRow>
                   {th("started_at", "Time")}{th("agent", "Agent")}{th("utterance", "Flow (utterance)")}
-                  {th("mode", "Trigger")}{th("integration", "Integration")}{th("channel", "Channel")}
-                  {th("flow_id", "Flow ID")}{th("status", "Status")}<TableHeader>Output</TableHeader>
+                  {th("mode", "Trigger")}{th("backend", "Backend")}{th("integration", "Integration")}{th("channel", "Channel")}
+                  <TableHeader>Tools</TableHeader>{th("flow_id", "Flow ID")}{th("status", "Status")}<TableHeader>Output</TableHeader>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -821,8 +951,11 @@ function RunsTab({ refresh }: { refresh: number }) {
                     <TableCell title={r.utterance || ""} style={{ maxWidth: 260 }}>
                       {r.utterance ? (r.utterance.length > 52 ? r.utterance.slice(0, 52) + "…" : r.utterance) : "—"}</TableCell>
                     <TableCell><Tag type={(MODE_TAG[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag></TableCell>
+                    <TableCell><Tag type={(r.backend === "native" ? "green" : r.backend === "ap" ? "purple" : "cool-gray") as any} size="sm">{r.backend || "—"}</Tag></TableCell>
                     <TableCell>{r.integration}</TableCell>
                     <TableCell>{r.channel}</TableCell>
+                    <TableCell title={(r.tools || []).join(", ")} style={{ fontFamily: "monospace", fontSize: 12, maxWidth: 150 }}>
+                      {(r.tools && r.tools.length) ? r.tools.join(", ") : "—"}</TableCell>
                     <TableCell title={r.flow_id ? `AP flow ${r.flow_id}${r.flow_name ? ` · ${r.flow_name}` : ""} — click to copy` : ""}
                       style={{ fontFamily: "monospace", fontSize: 12, cursor: r.flow_id ? "copy" : "default", whiteSpace: "nowrap" }}
                       onClick={() => r.flow_id && navigator.clipboard?.writeText(r.flow_id)}>
@@ -1095,6 +1228,7 @@ export function StudioPage() {
 
         <Tabs selectedIndex={selected} onChange={(e: { selectedIndex: number }) => setSelected(e.selectedIndex)}>
           <TabList aria-label="Studio sections" contained>
+            <Tab renderIcon={Dashboard}>Dashboard</Tab>
             <Tab renderIcon={Chat}>Concierge</Tab>
             <Tab renderIcon={Bot}>Agents</Tab>
             <Tab renderIcon={Chat}>Channels</Tab>
@@ -1108,6 +1242,7 @@ export function StudioPage() {
             <Tab renderIcon={Settings}>Admin</Tab>
           </TabList>
           <TabPanels>
+            <TabPanel><DashboardTab refresh={refresh} /></TabPanel>
             <TabPanel><ConciergeChat draft={draft} setDraft={setDraft} /></TabPanel>
             <TabPanel><AgentsTab refresh={refresh} onTry={onTry} /></TabPanel>
             <TabPanel><ChannelsTab refresh={refresh} /></TabPanel>
