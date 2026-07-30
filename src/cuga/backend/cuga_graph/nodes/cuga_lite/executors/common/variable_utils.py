@@ -39,7 +39,7 @@ class VariableUtils:
         - Python datetime: datetime/date/time → ISO string, timedelta → seconds
         - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
         - complex: {"real": float, "imag": float}
-        - dict / list: recursive traversal
+        - dict / list / set / frozenset: recursive traversal
 
         DataFrame and Series are intentionally excluded; sanitize_value wraps
         those with metadata before delegating cell content here.
@@ -110,6 +110,10 @@ class VariableUtils:
             return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [VariableUtils._sanitize_recursive(v) for v in obj]
+        if isinstance(obj, set):
+            return {VariableUtils._sanitize_recursive(v) for v in obj}
+        if isinstance(obj, frozenset):
+            return frozenset(VariableUtils._sanitize_recursive(v) for v in obj)
 
         return obj
 
@@ -158,7 +162,7 @@ class VariableUtils:
         if isinstance(value, (str, int, float, bool, type(None))):
             return True
 
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, (list, tuple, set, frozenset)):
             return all(VariableUtils.is_serializable(item) for item in value)
 
         if isinstance(value, dict):
