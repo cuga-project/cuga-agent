@@ -763,7 +763,17 @@ async def lifespan(app: FastAPI):
         kb_config = KnowledgeConfig()
 
     if kb_config.enabled:
-        await initialize_knowledge_engine(app_state, kb_config)
+        try:
+            await initialize_knowledge_engine(app_state, kb_config)
+        except Exception as e:
+            logger.warning(f"Failed to initialize knowledge engine: {e}")
+            app_state.knowledge_engine = None
+            app_state.set_subsystem_status(
+                "knowledge",
+                "failed",
+                "Knowledge subsystem failed to initialize",
+                {"error": str(e)},
+            )
     else:
         app_state.knowledge_engine = None
         logger.info("Knowledge features disabled (knowledge.enabled=false)")
