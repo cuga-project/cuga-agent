@@ -73,7 +73,10 @@ if status not in {200, 201, 409} and not already_registered:
 # A fresh Activepieces catalog arrives incrementally. Running the shared
 # installer against a partial catalog makes it fall back to package pins that
 # can lag the pinned server image, so wait for authoritative live versions.
-catalog_deadline = time.monotonic() + 600
+catalog_timeout = float(
+    os.environ.get("CUGA_COMPLIANCE_POC_CATALOG_TIMEOUT_SECONDS", "780")
+)
+catalog_deadline = time.monotonic() + catalog_timeout
 while time.monotonic() < catalog_deadline:
     status, response = request("/api/v1/pieces")
     if status == 200:

@@ -58,6 +58,12 @@ docker exec cuga-compliance-poc \
 Pass explicit `AP_PASSWORD`, `AP_ENCRYPTION_KEY`, `AP_JWT_SECRET`, and
 `GATEWAY_TOKEN` values to use Kubernetes-managed secrets instead.
 
+A fresh volume can take 5–13 minutes to become healthy while Activepieces
+imports its official piece catalog. Warm starts normally become healthy in
+under a minute. Docker reports the container as `healthy` only after Evolve,
+CUGA, Redis, and the published retention schedule all pass the bundled
+`cuga-poc-health` check.
+
 ## Kubernetes contract
 
 - Run exactly one replica with a recreate deployment strategy.
