@@ -1,0 +1,13 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+for _ in $(seq 1 60); do
+  if curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:8001/applications >/dev/null; then
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "CUGA tool registry did not become ready" >&2
+exit 1

@@ -1,6 +1,6 @@
 [Unit]
 Description=Prepare durable state for the CUGA compliance PoC
-Before=activepieces.service evolve.service cuga.service
+Before=activepieces.service evolve.service registry.service cuga.service
 
 [Service]
 Type=oneshot

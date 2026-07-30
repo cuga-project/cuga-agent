@@ -1,8 +1,8 @@
 [Unit]
 Description=CUGA compliance PoC
-After=network-online.target evolve.service activepieces-bootstrap.service
+After=network-online.target evolve.service registry.service activepieces-bootstrap.service
 Wants=network-online.target
-Requires=evolve.service activepieces-bootstrap.service
+Requires=evolve.service registry.service activepieces-bootstrap.service
 
 [Service]
 Type=simple

@@ -1,0 +1,25 @@
+[Unit]
+Description=CUGA tool registry
+After=network-online.target cuga-poc-prepare.service
+Wants=network-online.target
+Requires=cuga-poc-prepare.service
+
+[Service]
+Type=simple
+User=cuga
+Group=cuga
+WorkingDirectory=/app
+EnvironmentFile=/etc/cuga-poc/defaults.env
+EnvironmentFile=-/data/cuga-poc/secrets.env
+EnvironmentFile=-/etc/cuga-poc/container.env
+Environment=HOME=/data/cuga/home
+Environment=MCP_SERVERS_FILE=/etc/cuga-poc/mcp_servers_cuga_apps.yaml
+ExecStart=/app/.venv/bin/uvicorn cuga.backend.tools_env.registry.registry.api_registry_server:app --host 127.0.0.1 --port 8001
+ExecStartPost=/usr/local/bin/cuga-poc-wait-registry
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=2min
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

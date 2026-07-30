@@ -107,6 +107,8 @@ COPY --from=redis /usr/local/bin/redis-server /usr/local/bin/redis-server
 COPY --from=redis /usr/local/bin/redis-cli /usr/local/bin/redis-cli
 
 COPY scripts/ap_pieces.py /app/scripts/ap_pieces.py
+COPY src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml \
+     /etc/cuga-poc/mcp_servers_cuga_apps.yaml
 COPY deployment/compliance-poc/defaults.env /etc/cuga-poc/defaults.env
 COPY deployment/compliance-poc/bin/ /usr/local/bin/
 COPY deployment/compliance-poc/systemd/ /etc/systemd/system/
@@ -121,12 +123,14 @@ RUN ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
     && chmod 0755 /usr/local/bin/cuga-poc-entrypoint \
                   /usr/local/bin/cuga-poc-prepare \
                   /usr/local/bin/cuga-poc-wait-evolve \
+                  /usr/local/bin/cuga-poc-wait-registry \
                   /usr/local/bin/activepieces-bootstrap \
                   /usr/local/bin/cuga-poc-health \
     && systemctl enable cuga-poc-prepare.service \
                         redis.service \
                         activepieces.service \
                         evolve.service \
+                        registry.service \
                         activepieces-bootstrap.service \
                         cuga.service
 

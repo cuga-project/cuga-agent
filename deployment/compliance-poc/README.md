@@ -1,8 +1,8 @@
 # Single-image compliance PoC
 
-`Dockerfile.compliance-poc` packages CUGA, Evolve MCP, and Activepieces on
-Red Hat UBI 9 init. It is intended for a stakeholder PoC deployed as one
-Kubernetes pod and one replica.
+`Dockerfile.compliance-poc` packages CUGA, its tool registry, Evolve MCP,
+and Activepieces on Red Hat UBI 9 init. It is intended for a stakeholder
+PoC deployed as one Kubernetes pod and one replica.
 
 Activepieces uses its supported PGLite database mode and a Redis process
 inside the same image. That keeps the PoC in one pod, but it is not the
@@ -45,6 +45,7 @@ docker run --rm --name cuga-compliance-poc \
 
 CUGA is available at `http://localhost:7860/chat`; the event studio is at
 `http://localhost:7860/studio`. Activepieces is at `http://localhost:8081`.
+The tool registry listens internally on port `8001`.
 
 Generated secrets are written once to `/data/cuga-poc/secrets.env`. The
 default Activepieces email is `admin@cuga.local`; retrieve its generated
@@ -60,9 +61,9 @@ Pass explicit `AP_PASSWORD`, `AP_ENCRYPTION_KEY`, `AP_JWT_SECRET`, and
 
 A fresh volume can take 5–13 minutes to become healthy while Activepieces
 imports its official piece catalog. Warm starts normally become healthy in
-under a minute. Docker reports the container as `healthy` only after Evolve,
-CUGA, Redis, and the published retention schedule all pass the bundled
-`cuga-poc-health` check.
+under a minute. Docker reports the container as `healthy` only after the tool
+registry, the tools-list API, Evolve, CUGA, Redis, and the published retention
+schedule all pass the bundled `cuga-poc-health` check.
 
 ## Kubernetes contract
 

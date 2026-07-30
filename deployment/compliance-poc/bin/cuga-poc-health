@@ -4,6 +4,10 @@ set -euo pipefail
 redis-cli -h 127.0.0.1 ping | grep -q '^PONG$'
 curl --fail --silent --show-error --max-time 3 \
   http://127.0.0.1:8081/api/v1/flags >/dev/null
+curl --fail --silent --show-error --max-time 15 \
+  http://127.0.0.1:8001/applications >/dev/null
+curl --fail --silent --show-error --max-time 15 \
+  http://127.0.0.1:7860/api/tools/list >/dev/null
 curl --fail --silent --show-error --max-time 3 \
   http://127.0.0.1:7860/api/admin/memory/automation \
   | /usr/bin/python3.12 -c '
