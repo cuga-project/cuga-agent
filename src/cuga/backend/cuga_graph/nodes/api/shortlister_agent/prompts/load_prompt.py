@@ -115,26 +115,24 @@ class Tool(BaseModel):
 class FindToolsOutput(BaseModel):
     """
     Output schema for the find_tools function.
-    Returns a list of top 4 matching tools based on a natural language query.
+    Returns relevant matching tools for a natural language query (no fixed count).
     """
 
     tools: List[Tool] = Field(
         ...,
-        max_length=4,
-        description="A list of up to 4 matching tools, ordered by relevance to the query.",
+        description="Matching tools ordered by relevance to the query. Include all tools needed for the workflow.",
     )
 
 
 def find_tools(query: str) -> FindToolsOutput:
     """
-    Find the top 4 matching tools based on a natural language query.
+    Find the relevant matching tools based on a natural language query.
 
     Args:
         query: A natural language query describing what tools are needed.
 
     Returns:
-        FindToolsOutput: A Pydantic model containing a list of up to 4 matching tools,
-                        each with a name and input schema.
+        FindToolsOutput: Matching tools (no fixed count), each with a name and input schema.
     """
     # Implementation logic goes here
     pass
