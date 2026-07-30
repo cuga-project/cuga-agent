@@ -67,6 +67,12 @@ class TestMinimaxBaseUrl:
         mgr = LLMManager()
         assert mgr._get_base_url({}, "minimax") == "https://env.minimax/v1"
 
+    def test_china_region_endpoint(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+        monkeypatch.setenv("MINIMAX_REGION", "cn_zh")
+        mgr = LLMManager()
+        assert mgr._get_base_url({}, "minimax") == "https://api.minimaxi.com/v1"
+
 
 class TestMinimaxCreateInstance:
     def test_client_receives_key_base_url_and_timeout(self, monkeypatch):

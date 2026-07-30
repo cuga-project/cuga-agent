@@ -1,6 +1,8 @@
+import asyncio
 import math
 import re
 import threading
+import weakref
 from datetime import date
 from typing import Dict, Any, Optional, Mapping
 import hashlib
@@ -20,6 +22,9 @@ from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_pro
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
+
+# weakref.ref(loop) on watsonx APIClient for the loop the async httpx client is for.
+_CUGA_ASYNC_LOOP_REF = "_cuga_async_loop_ref"
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
@@ -108,6 +113,104 @@ def _normalize_secret(val: Optional[str]) -> Optional[str]:
     return s
 
 
+# Keys that must never be injected via Manage ``extra_params`` (auth / transport).
+_BLOCKED_EXTRA_PARAM_KEYS = frozenset(
+    {
+        "api_key",
+        "openai_api_key",
+        "groq_api_key",
+        "api_base",
+        "openai_api_base",
+        "base_url",
+        "url",
+        "default_headers",
+        "http_client",
+        "http_async_client",
+        "client",
+        "async_client",
+        "headers",
+        "authorization",
+        "auth_type",
+        "auth_header_name",
+        "platform",
+        "model",
+        "model_name",
+        "apikey_name",
+    }
+)
+
+_OPTIONAL_SAMPLING_KEYS = (
+    "top_p",
+    "top_k",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+)
+
+
+def _is_blocked_extra_key(key: str) -> bool:
+    return key in _BLOCKED_EXTRA_PARAM_KEYS or key.lower() in _BLOCKED_EXTRA_PARAM_KEYS
+
+
+def _sanitize_extra_value(value: Any) -> Any:
+    """Recursively strip blocked auth/transport keys from nested extra_params values."""
+    if isinstance(value, dict):
+        return _safe_extra_params(value)
+    if isinstance(value, list):
+        return [_sanitize_extra_value(item) for item in value]
+    return value
+
+
+def _safe_extra_params(extra: Any) -> Dict[str, Any]:
+    if not isinstance(extra, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, value in extra.items():
+        if not isinstance(key, str):
+            continue
+        if _is_blocked_extra_key(key):
+            continue
+        out[key] = _sanitize_extra_value(value)
+    return out
+
+
+def _merge_optional_sampling(
+    target: Dict[str, Any],
+    model_settings: Mapping[str, Any],
+    *,
+    keys: tuple[str, ...] = ("top_p", "frequency_penalty", "presence_penalty", "stop"),
+    include_extra: bool = True,
+) -> None:
+    """Copy explicitly set sampling knobs into client kwargs. Unset keys are skipped."""
+    for key in keys:
+        if key in model_settings and model_settings[key] is not None:
+            target[key] = model_settings[key]
+    if include_extra and model_settings.get("extra_params") is not None:
+        target.update(_safe_extra_params(model_settings.get("extra_params")))
+
+
+def _coerce_settings_dict(model_settings: Any) -> Dict[str, Any]:
+    if isinstance(model_settings, dict):
+        return model_settings
+    to_dict = getattr(model_settings, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return dict(model_settings)
+
+
+def _resolve_max_tokens_from_llm_cfg(llm_cfg: Mapping[str, Any], toml_default: int) -> int:
+    """Prefer Manage ``max_tokens`` when set; otherwise keep TOML/provider default."""
+    if "max_tokens" not in llm_cfg or llm_cfg.get("max_tokens") is None:
+        return toml_default
+    try:
+        value = int(llm_cfg["max_tokens"])
+    except (TypeError, ValueError):
+        return toml_default
+    if value <= 0:
+        return toml_default
+    return value
+
+
 _current_llm_override: Optional[Dict[str, Any]] = None
 
 
@@ -129,6 +232,9 @@ class _ModelSettingsWrap:
 
     def to_dict(self) -> dict:
         return self._d.copy()
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._d
 
 
 try:
@@ -271,6 +377,151 @@ class LLMManager:
         """Clear the pre-instantiated model and return to normal model creation"""
         self._pre_instantiated_model = None
         logger.info("Pre-instantiated model cleared, returning to normal model creation")
+
+    @staticmethod
+    def _watsonx_api_client(model: Any) -> Any:
+        client = getattr(model, "watsonx_client", None)
+        if client is not None:
+            return client
+        watsonx_model = getattr(model, "watsonx_model", None)
+        return getattr(watsonx_model, "_client", None) if watsonx_model is not None else None
+
+    @classmethod
+    def _replace_watsonx_async_client(
+        cls,
+        client: Any,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        old_owning_loop: Optional[asyncio.AbstractEventLoop],
+    ) -> bool:
+        try:
+            from ibm_watsonx_ai._wrappers.httpx_wrapper import _get_async_httpx_client
+        except ImportError:
+            logger.debug("ibm_watsonx_ai httpx wrapper unavailable; cannot rebind async client")
+            return False
+
+        old_async = getattr(client, "_async_httpx_client", None)
+        # Assign directly — the property setter schedules aclose via create_task on
+        # the *current* loop, which fails when the previous pytest loop is closed.
+        client._async_httpx_client = _get_async_httpx_client(client)
+        setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+        cls._best_effort_aclose_async_client(old_async, old_owning_loop)
+        return True
+
+    @classmethod
+    def _rebind_watsonx_async_client(cls, model: Any, loop: asyncio.AbstractEventLoop) -> bool:
+        """Replace ChatWatsonx async httpx client if it was bound to another loop.
+
+        Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
+        a rebind happened.
+        """
+        if not isinstance(model, ChatWatsonx):
+            return False
+        client = cls._watsonx_api_client(model)
+        if client is None:
+            return False
+
+        async_client = getattr(client, "_async_httpx_client", None)
+        client_closed = async_client is None or getattr(async_client, "is_closed", False)
+        loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
+        bound_loop = loop_ref() if loop_ref is not None else None
+
+        if not client_closed and bound_loop is loop:
+            return False
+
+        if not client_closed and loop_ref is None:
+            # First sighting under a running loop — tag without recreating.
+            setattr(client, _CUGA_ASYNC_LOOP_REF, weakref.ref(loop))
+            return False
+
+        # Closed client (e.g. after fixture teardown aclose) or different/dead loop.
+        if cls._replace_watsonx_async_client(client, loop, old_owning_loop=bound_loop):
+            logger.debug("Rebound watsonx async httpx client for new event loop")
+            return True
+        return False
+
+    @staticmethod
+    def _best_effort_aclose_async_client(
+        async_client: Any, owning_loop: Optional[asyncio.AbstractEventLoop]
+    ) -> None:
+        """Close a displaced AsyncClient on its owning loop when that loop is still open."""
+        if async_client is None:
+            return
+        if owning_loop is None or owning_loop.is_closed():
+            return
+        try:
+            if owning_loop.is_running():
+                owning_loop.call_soon_threadsafe(lambda: owning_loop.create_task(async_client.aclose()))
+            else:
+                owning_loop.run_until_complete(async_client.aclose())
+        except Exception as exc:
+            logger.debug("Could not aclose displaced watsonx async httpx client: {}", exc)
+
+    async def aclose_watsonx_async_clients(self) -> int:
+        """Await-close cached watsonx async clients on the running loop (fixture teardown).
+
+        After close, installs a fresh open client and clears the loop tag so the next
+        test's rebind does not reuse a closed httpx client.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+
+        closed = 0
+        models = list(self._models.values())
+        if self._pre_instantiated_model is not None:
+            models.append(self._pre_instantiated_model)
+        for model in models:
+            if not isinstance(model, ChatWatsonx):
+                continue
+            client = self._watsonx_api_client(model)
+            if client is None:
+                continue
+            loop_ref = getattr(client, _CUGA_ASYNC_LOOP_REF, None)
+            bound = loop_ref() if loop_ref is not None else None
+            if bound is not None and bound is not loop:
+                continue
+            async_client = getattr(client, "_async_httpx_client", None)
+            if async_client is None:
+                continue
+            try:
+                if not getattr(async_client, "is_closed", False):
+                    await async_client.aclose()
+                    closed += 1
+            except Exception as exc:
+                logger.debug("Could not aclose watsonx async httpx client on teardown: {}", exc)
+            # Leave an open replacement; next test will tag it to its loop.
+            try:
+                from ibm_watsonx_ai._wrappers.httpx_wrapper import _get_async_httpx_client
+
+                client._async_httpx_client = _get_async_httpx_client(client)
+            except ImportError:
+                pass
+            if hasattr(client, _CUGA_ASYNC_LOOP_REF):
+                delattr(client, _CUGA_ASYNC_LOOP_REF)
+        return closed
+
+    def rebind_async_clients_to_running_loop(self) -> int:
+        """Rebind loop-bound async HTTP clients on cached models to the running loop.
+
+        ChatWatsonx / ibm_watsonx_ai keep an ``httpx.AsyncClient`` that must not be
+        reused across pytest-asyncio function-scoped loops. Prefer this over
+        :meth:`clear_models` so IAM tokens stay cached.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+
+        rebound = 0
+        for model in list(self._models.values()):
+            if self._rebind_watsonx_async_client(model, loop):
+                rebound += 1
+        if self._pre_instantiated_model is not None:
+            if self._rebind_watsonx_async_client(self._pre_instantiated_model, loop):
+                rebound += 1
+        return rebound
 
     def _create_cache_key(self, model_settings: Dict[str, Any]) -> str:
         """Create a unique cache key from model settings including resolved values"""
@@ -578,6 +829,14 @@ class LLMManager:
                 logger.info(f"Using MINIMAX_BASE_URL from environment: {env_base_url}")
                 return env_base_url
 
+            # MiniMax exposes separate OpenAI-compatible endpoints for the
+            # global English and China Chinese regions.  Keep the global
+            # endpoint as the default while allowing deployments to select
+            # the China endpoint explicitly.
+            region = os.environ.get("MINIMAX_REGION", "global_en").lower()
+            if region in {"cn", "cn_zh", "china"}:
+                return "https://api.minimaxi.com/v1"
+
             # Check TOML settings
             toml_url = model_settings.get('url')
             if toml_url:
@@ -677,17 +936,22 @@ class LLMManager:
         return _DEFAULT_LLM_HTTP_TIMEOUT
 
     def _is_reasoning_model(self, model_name: str) -> bool:
-        """Check if model is a reasoning model that doesn't support temperature
+        """Check if model is a reasoning model that doesn't support temperature.
 
-        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature parameter
+        OpenAI reasoning models (o1/o3/o4, gpt-5*) reject non-default temperature.
+        LiteLLM/Azure names often look like ``azure/gpt-5.6-terra`` — strip the
+        provider prefix before matching.
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
-        return model_name.startswith(reasoning_prefixes)
+        name = model_name.strip().lower()
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        return name.startswith(("o1", "o3", "o4", "gpt-5"))
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
         """Create LLM instance based on platform and settings"""
+        model_settings = _coerce_settings_dict(model_settings)
         platform = model_settings.get('platform')
         temperature = model_settings.get('temperature', 0.7)
         max_tokens = model_settings.get('max_tokens')
@@ -747,10 +1011,19 @@ class LLMManager:
                 # Only send top_p when explicitly configured. Some Bedrock Claude
                 # models (e.g. opus-4-5/4-6, sonnet-4-5) reject requests that
                 # specify both temperature and top_p.
-                if 'top_p' in model_settings:
-                    openai_params["top_p"] = model_settings['top_p']
+                _merge_optional_sampling(
+                    openai_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    openai_params,
+                    model_settings,
+                    keys=("stop",),
+                    include_extra=True,
+                )
 
             auth_headers = self._get_auth_headers(model_settings, platform)
             if auth_headers:
@@ -786,19 +1059,35 @@ class LLMManager:
             if not api_key:
                 api_key = _normalize_secret(resolve_secret("GROQ_API_KEY")) or os.environ.get("GROQ_API_KEY")
             logger.debug(f"Creating Groq model: {model_name}")
-            llm = ChatGroq(
-                groq_api_key=api_key,
-                max_tokens=max_tokens,
-                model=model_name,
-                temperature=temperature,
-            )
-        elif platform == "watsonx":
-            watsonx_params: Dict[str, Any] = {
-                "params": {
-                    "temperature": temperature,
-                    "max_completion_tokens": max_tokens,
-                },
+            if ChatGroq is None:
+                raise ValueError("Groq provider requested but langchain_groq is not installed")
+            groq_params: Dict[str, Any] = {
+                "groq_api_key": api_key,
+                "max_tokens": max_tokens,
+                "model": model_name,
+                "temperature": temperature,
             }
+            # Groq supports top_p; skip OpenAI-style penalties that it rejects.
+            _merge_optional_sampling(
+                groq_params,
+                model_settings,
+                keys=("top_p", "stop"),
+                include_extra=True,
+            )
+            llm = ChatGroq(**groq_params)
+        elif platform == "watsonx":
+            wx_gen_params: Dict[str, Any] = {
+                "temperature": temperature,
+                "max_completion_tokens": max_tokens,
+            }
+            # Watsonx generation params (not OpenAI penalty fields).
+            _merge_optional_sampling(
+                wx_gen_params,
+                model_settings,
+                keys=("top_p", "top_k", "stop"),
+                include_extra=True,
+            )
+            watsonx_params: Dict[str, Any] = {"params": wx_gen_params}
 
             watsonx_url = model_settings.get("url")
             if watsonx_url:
@@ -895,9 +1184,19 @@ class LLMManager:
 
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
-                openrouter_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
+                _merge_optional_sampling(
+                    openrouter_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    openrouter_params,
+                    model_settings,
+                    keys=("stop",),
+                )
 
             default_headers = {}
             site_url = model_settings.get("site_url") or os.environ.get("OPENROUTER_SITE_URL")
@@ -930,9 +1229,19 @@ class LLMManager:
 
             if not is_reasoning:
                 minimax_params["temperature"] = temperature
-                minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
+                _merge_optional_sampling(
+                    minimax_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    minimax_params,
+                    model_settings,
+                    keys=("stop",),
+                )
 
             llm = ReasoningChatOpenAI(**minimax_params)
         elif platform == "litellm" and ReasoningChatLiteLLM is not None:
@@ -953,9 +1262,19 @@ class LLMManager:
             }
             if not is_reasoning:
                 litellm_params["temperature"] = temperature
-                litellm_params["top_p"] = model_settings.get('top_p', 1.0)
+                # Only send top_p when explicitly set (Bedrock/Claude via OpenAI-compatible).
+                _merge_optional_sampling(
+                    litellm_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop", "top_k"),
+                )
             else:
                 logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
+                _merge_optional_sampling(
+                    litellm_params,
+                    model_settings,
+                    keys=("stop",),
+                )
             # Tell litellm to use the OpenAI-compatible code path without parsing
             # a provider from the model name (e.g. "ibm-granite/granite-4.0-1b"
             # would otherwise be misread as provider=ibm-granite).
@@ -1018,6 +1337,7 @@ class LLMManager:
         # Check if pre-instantiated model is available
         if self._pre_instantiated_model is not None:
             logger.debug(f"Using pre-instantiated model: {type(self._pre_instantiated_model).__name__}")
+            self.rebind_async_clients_to_running_loop()
             # Update parameters for the task
             updated_model = self._update_model_parameters(
                 self._pre_instantiated_model,
@@ -1038,8 +1358,8 @@ class LLMManager:
             logger.debug(
                 f"Returning cached model: {platform}/{model_name} (api_version={api_version}, base_url={base_url})"
             )
-            # Update parameters for the task
             cached_model = self._models[cache_key]
+            self.rebind_async_clients_to_running_loop()
             updated_model = self._update_model_parameters(
                 cached_model,
                 temperature=model_settings.get('temperature', 0.1),
@@ -1054,6 +1374,7 @@ class LLMManager:
         )
         model = self._create_llm_instance(model_settings)
         self._models[cache_key] = model
+        self.rebind_async_clients_to_running_loop()
 
         # Update parameters for the task
         updated_model = self._update_model_parameters(
@@ -1077,11 +1398,12 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         llm_cfg = {}
     mgr = LLMManager()
     try:
-        max_tokens = settings.agent.code.model.get("max_tokens", 16000)
+        toml_max_tokens = settings.agent.code.model.get("max_tokens", 16000)
     except Exception:
-        max_tokens = 16000
-    if not isinstance(max_tokens, int):
-        max_tokens = 16000
+        toml_max_tokens = 16000
+    if not isinstance(toml_max_tokens, int):
+        toml_max_tokens = 16000
+    max_tokens = _resolve_max_tokens_from_llm_cfg(llm_cfg, toml_max_tokens)
 
     if is_mock_llm_enabled():
         mock = clone_load_test_mock_chat_model()
@@ -1156,6 +1478,12 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "max_tokens": max_tokens,
         "streaming": False,
     }
+    for key in _OPTIONAL_SAMPLING_KEYS:
+        if key in llm_cfg and llm_cfg[key] is not None:
+            settings_dict[key] = llm_cfg[key]
+    extra = llm_cfg.get("extra_params")
+    if isinstance(extra, dict) and extra:
+        settings_dict["extra_params"] = extra
     wrap = _ModelSettingsWrap(settings_dict)
     model = mgr._create_llm_instance(wrap)
     return mgr._update_model_parameters(
