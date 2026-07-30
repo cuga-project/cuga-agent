@@ -105,3 +105,8 @@ demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+results/*
+.ap.env
+.box_since.json
+src/cuga/frontend/dist/main.24c0b283db32a5d4d7bd.js.map
+src/cuga/frontend/dist/vendors.5f114d53bb1c690e1694.js.map
