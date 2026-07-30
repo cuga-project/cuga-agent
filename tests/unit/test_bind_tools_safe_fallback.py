@@ -18,6 +18,20 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import (
 pytestmark = pytest.mark.unit
 
 
+# The cap is a *settings* key (advanced_features.cuga_lite_bind_tools_max_count), not a
+# `configurable` key, so it cannot be set per-test through the configurable dict. Pin it
+# where resolve_model_with_bind_tools reads it, otherwise an ambient
+# DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_MAX_COUNT=0 (documented for WatsonX /
+# LiteLLM) disables the cap and the over-cap tests below stop exercising the shortlister.
+@pytest.fixture(autouse=True)
+def _pin_bind_tools_cap():
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
+        return_value=128,
+    ):
+        yield
+
+
 class _NoBindModel(BaseChatModel):
     @property
     def _llm_type(self) -> str:
@@ -78,7 +92,7 @@ async def test_over_cap_degrades_when_model_cannot_bind():
     model = _NoBindModel()
     result = await resolve_model_with_bind_tools(
         model,
-        configurable={"cuga_lite_bind_tools_mode": "all", "cuga_lite_bind_tools_max_count": 128},
+        configurable={"cuga_lite_bind_tools_mode": "all"},
         tools_context_ref={},
         tool_provider=_provider([_stub_tool(f"t{i}") for i in range(200)]),
         query="do a task",
@@ -98,10 +112,7 @@ async def test_over_cap_genuine_shortlister_failure_still_raises():
         with pytest.raises(RuntimeError, match="shortlister failed"):
             await resolve_model_with_bind_tools(
                 model,
-                configurable={
-                    "cuga_lite_bind_tools_mode": "all",
-                    "cuga_lite_bind_tools_max_count": 128,
-                },
+                configurable={"cuga_lite_bind_tools_mode": "all"},
                 tools_context_ref={},
                 tool_provider=_provider([_stub_tool(f"t{i}") for i in range(200)]),
                 query="do a task",
@@ -119,7 +130,7 @@ async def test_degradation_leaves_a_machine_readable_trace():
     model = _NoBindModel()
     await resolve_model_with_bind_tools(
         model,
-        configurable={"cuga_lite_bind_tools_mode": "all", "cuga_lite_bind_tools_max_count": 128},
+        configurable={"cuga_lite_bind_tools_mode": "all"},
         tools_context_ref={},
         tool_provider=_provider([_stub_tool(f"t{i}") for i in range(200)]),
         query="do a task",
