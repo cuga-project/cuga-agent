@@ -15,9 +15,27 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     resolved_runtime_model_name,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
+    BindToolsUnsupportedError,
     apply_bind_tools_cap_and_merge,
     bind_tools_max_count_from_settings,
 )
+
+
+def _record_bind_tools_degraded(reason: str) -> None:
+    """Leave a machine-readable trace that native binding was requested and didn't happen.
+
+    The ``logger.warning`` alone is not actionable: ``resolve_bind_tools`` runs on
+    every ``call_model`` turn, and nothing downstream can branch on a log line. An
+    eval harness comparing native tool-calling vs text-mode can key off this step
+    to relabel or exclude the run instead of silently reporting text-mode numbers
+    under a native-FC label. Never raises — a trace failure must not kill the run.
+    """
+    try:
+        from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+
+        ActivityTracker().collect_step(step=Step(name="bind_tools_degraded", data=reason))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("could not record bind_tools_degraded step: {}", e)
 
 
 def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatModel:
@@ -33,10 +51,12 @@ def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatMod
     try:
         return model.bind_tools(tools)
     except NotImplementedError:
+        name = getattr(model, "model_name", type(model).__name__)
         logger.warning(
             "Model {} does not support bind_tools; falling back to unbound (code-act) model",
-            getattr(model, "model_name", type(model).__name__),
+            name,
         )
+        _record_bind_tools_degraded(f"{name} does not support bind_tools (bind step)")
         return model
 
 
@@ -384,6 +404,10 @@ async def resolve_model_with_bind_tools(
             "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",
             mode,
         )
+    except BindToolsUnsupportedError as e:
+        # Provider capability gap, not a cap/shortlist failure: degrade like _safe_bind does.
+        logger.warning("{}", e)
+        _record_bind_tools_degraded(str(e))
     except RuntimeError:
         # Actionable cap/shortlist errors from apply_bind_tools_cap_and_merge are intentional —
         # surfacing them is required so research/benchmark runs don't silently degrade.
