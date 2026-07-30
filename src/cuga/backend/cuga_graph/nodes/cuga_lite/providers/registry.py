@@ -42,7 +42,12 @@ async def call_api(
         The API response
     """
     import time
-    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+        BlockToolCallCounter,
+        ToolCallTracker,
+    )
+
+    BlockToolCallCounter.increment()
 
     if args is None:
         args = {}

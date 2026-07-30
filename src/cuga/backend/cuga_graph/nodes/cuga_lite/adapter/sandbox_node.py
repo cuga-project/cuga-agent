@@ -131,6 +131,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     _exec_plan.shell_backend,
                     _exec_plan.filesystem_backend,
                 )
+            logger.debug(f"\n\n------\n\n📝 Generated code:\n\n{state.script}\n\n------\n\n")
             output, new_vars = await CodeExecutor.eval_with_tools_async(
                 code=state.script,
                 _locals=context,
