@@ -1057,17 +1057,11 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
-
-    # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
-    try:
-        removed = await get_conversation_db().gc_ephemeral_stream_events()
-        if removed:
-            logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
-    except Exception:
-        logger.exception("ephemeral stream-events GC failed (non-fatal)")
-
     yield
     logger.info("Application is shutting down...")
+
+    for _t in _events_bg_tasks:            # stop the events background tasks
+        _t.cancel()
 
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
@@ -1989,6 +1983,93 @@ app.add_middleware(
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
+# ---- event-driven concierge layer (opt-in: EVENTS_ENABLED; off → CUGA unchanged) ----
+try:
+    from cuga.backend.events import enabled as _events_enabled
+
+    if _events_enabled():
+        import logging as _logging
+        import os as _os
+
+        from cuga.backend.events.agent_store import AgentStore
+        from cuga.backend.events.app import register_events_routes
+        from cuga.backend.events.concierge import Concierge, WORKER_BACKEND
+        from cuga.backend.events.llm import default_model_factory
+        from cuga.backend.events.runtime import make_runtime
+        from cuga.backend.events.subscriptions import SubscriptionStore
+
+        # EVENTS_DB=<path> → agents + subscriptions persist and are SHARED across replicas
+        # (fleet model). Default ":memory:" for dev. For shared conversation memory across
+        # replicas, also wire runtime.make_sqlite_checkpointer(EVENTS_MEMORY_DB) in startup.
+        _ev_db = _os.environ.get("EVENTS_DB", ":memory:")
+
+        # WORKERS do the hard work of answering → default backend = **cuga** (they get CUGA's
+        # policies/knowledge/supervisor/tools). The concierge (NL→flow) stays react — its own
+        # graph is built inside Concierge. The cuga worker runtime needs the running server's
+        # shared context (policy_system, langfuse_handler, tool includes); we hand it a LAZY
+        # getter because this mount runs before startup populates app_state. If startup hasn't
+        # built policy_system yet (or in a partial env), the getter returns None and the cuga
+        # runtime transparently falls back to react — so nothing ever breaks.
+        def _cuga_app_context():
+            if getattr(app_state, "policy_system", None) is None:
+                return None                      # startup not ready → react fallback
+            return {
+                "policy_system": app_state.policy_system,
+                "langfuse_handler": getattr(app_state, "langfuse_handler", None),
+                "get_include_by_app": lambda: (
+                    getattr(app_state, "tools_include_by_app", None),
+                    getattr(app_state, "tools_include_version", 0)),
+            }
+
+        _ev_runtime = make_runtime(WORKER_BACKEND, model_factory=default_model_factory,
+                                   agent_store=AgentStore(_ev_db),
+                                   app_context=_cuga_app_context)
+        _ev_store = SubscriptionStore(_ev_db)
+        _ev_engine = None
+        try:  # AP engine only if Activepieces is configured
+            if _os.environ.get("AP_BASE_URL"):
+                from cuga.backend.events.ap_engine import APEngine
+                _ev_engine = APEngine()
+        except Exception:  # noqa: BLE001
+            _ev_engine = None
+        # identity anchor (decision 0007): local users + the channel identity map (shared store)
+        from cuga.backend.events.users import UserStore
+        from cuga.backend.events.identity import IdentityMap
+        from cuga.backend.events.oauth import OAuthAppStore
+        _ev_users = UserStore(_ev_db)
+        _ev_identity = IdentityMap(_ev_db)
+        _ev_oauth_store = OAuthAppStore(_ev_db)
+        # SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): sub-agents live in
+        # supervisor_agents.yaml (canonical schema; EVENTS_SUPERVISOR=1) — the fleet seeding is
+        # retired. Demo USERS are still seeded (identity/permissions need them).
+        if _os.environ.get("EVENTS_SEED_AGENTS"):
+            try:
+                from cuga.backend.events.seed import seed_default_users
+                seed_default_users(_ev_users, tenant="default")
+            except Exception as _seed_err:  # noqa: BLE001
+                _logging.getLogger("cuga.events").warning("seed failed: %s", _seed_err)
+        _ev_concierge = Concierge(_ev_runtime, _ev_store, _ev_engine,
+                                  model_factory=default_model_factory, users=_ev_users)
+        # /stream needs it too: an events slash command typed in the MAIN web chat must reach the
+        # concierge — handed to the plain agent it tried to IMPLEMENT the schedule (loop+sleep).
+        app.state.ev_concierge = _ev_concierge
+        register_events_routes(app, runtime=_ev_runtime, store=_ev_store,
+                                concierge=_ev_concierge, engine=_ev_engine,
+                                users=_ev_users, identity=_ev_identity,
+                                oauth_store=_ev_oauth_store)
+        _logging.getLogger("cuga.events").info(
+            "event-driven concierge layer mounted: /invoke, /api/concierge, "
+            "/api/events/{subscriptions,status,channels,integrations,examples} "
+            "(concierge=react, worker_backend=%s, ap=%s)", WORKER_BACKEND, bool(_ev_engine))
+        try:                                    # honest tiered capability report at startup
+            from cuga.backend.events import capability as _cap
+            _cap.log_report(_logging.getLogger("cuga.events"))
+        except Exception:  # noqa: BLE001
+            pass
+except Exception as _ev_err:  # noqa: BLE001 - never block CUGA startup
+    import logging as _logging
+    _logging.getLogger("cuga.events").warning("events layer not mounted: %s", _ev_err)
+
 
 @app.get("/health")
 async def health():
@@ -2359,6 +2440,54 @@ async def stream(
 
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
+
+    # THE ROUTING RULE (same rule as the channels — concierge.run applies it on /invoke):
+    #   slash verb                          → concierge (deterministic arm)
+    #   classifier says CRON/POLL/PUSH      → concierge (NL arming; benchmarked classifier)
+    #   this thread has a parked question   → concierge (ask-till-legit continuation)
+    #   otherwise (NOW = conversation)      → the plain agent below, untouched.
+    # Without this the plain agent tried to IMPLEMENT "/automate … every 5 minutes" (loop+sleep).
+    def _events_routes_to_concierge(q: str, tid: str) -> bool:
+        if re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b", q, re.I):
+            return True
+        # High-precision standing-intent markers: catch phrasings the heuristic classifier may read as
+        # NOW so they reach the CONCIERGE (which arms — or answers honestly) instead of the main agent,
+        # which has no arming tool and could falsely claim it set up a watch (the silent-failure trap).
+        # Deliberately unambiguous — these effectively never appear in ordinary one-shot chat.
+        if re.search(r"(\bevery\s+\d|\bremind me\b|\balert me\b|\bnotify me\b|\bping me\s+(when|if)\b|"
+                     r"\bkeep an eye\b|\bmonitor\b|\blet me know\s+(when|if)\b|"
+                     r"\beach\s+(morning|day|hour|week|weekday)\b|\bwatch\b.*\bfor\b.*"
+                     r"(change|update|error|new)\b)", q, re.I):
+            return True
+        try:
+            from cuga.backend.events import classify as _evc
+            from cuga.backend.events import flowspec as _evf
+            from cuga.backend.events.principal import DEFAULT as _evp
+            return _evc.classify(q) != "NOW" or _evf.pending_for(_evp.thread(tid)) is not None
+        except Exception:  # noqa: BLE001 — routing must never take the chat down
+            return False
+
+    if (isinstance(query, str) and os.environ.get("EVENTS_ENABLED") == "1"
+            and _events_routes_to_concierge(query, thread_id)):
+        _conc = getattr(request.app.state, "ev_concierge", None)
+        if _conc is not None:
+            _q, _tid = query, thread_id
+            # Arm under the SAME principal the Studio + /api/concierge resolve (headers → EVENTS_USER_ID),
+            # NOT the concierge's DEFAULT_PRINCIPAL (user=local). Otherwise a flow armed here from the main
+            # web chat lands under scope default/default/local, while the Studio's flows page queries
+            # default/default/admin — so the flow is armed but invisible in the Studio.
+            from cuga.backend.events.principal import resolve as _resolve_principal
+            _princ = _resolve_principal(headers=request.headers)
+
+            async def _slash_stream():
+                try:
+                    reply = await _conc.run(_tid, _q, _princ)
+                except Exception as e:  # noqa: BLE001
+                    reply = f"error: couldn't arm the flow ({e})"
+                yield StreamEvent(name="Answer", data=reply).format(
+                    app_state.output_format, thread_id=_tid)
+
+            return StreamingResponse(_slash_stream(), media_type="text/event-stream")
 
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (

@@ -1,0 +1,198 @@
+"""Offline tests for the NATIVE scheduler (AP-free cron/poll) — Phases 0-2.
+
+Covers: the DB schema + scheduler queries, the cron parser + next-fire + lazy catch-up + bounded-run
+retirement (pure, no network), and the concierge routing (a cron arms NATIVE with no AP flow; a gmail
+push declines clearly when AP is absent). No integrations, no live server — API/logic level.
+"""
+import asyncio
+import os
+import sys
+import time
+
+_EVENTS = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                       "..", "..", "src", "cuga", "backend", "events"))
+if _EVENTS not in sys.path:
+    sys.path.insert(0, _EVENTS)
+
+os.environ.setdefault("EVENTS_VERIFY_ACTIONS", "0")     # deterministic (no LLM verifier)
+
+import native_scheduler as ns                            # noqa: E402
+from subscriptions import SubscriptionStore, Subscription  # noqa: E402
+
+
+# ── schema + store queries ──────────────────────────────────────────────────
+def test_native_fields_persist_and_due_query():
+    s = SubscriptionStore(":memory:")
+    now = 1_000_000.0
+    s.upsert(Subscription(id="c1", mode="CRON", target_agent="pricebot", backend="native",
+                          interval_seconds=300, next_fire=now, prompt="check"))
+    # an AP-backed row must NOT show up in due() — only native rows
+    s.upsert(Subscription(id="ap1", mode="CRON", target_agent="x", backend="react",
+                          ap_flow_id="flow-9", next_fire=now))
+    due = s.due(now + 1)
+    assert [d.id for d in due] == ["c1"]
+    assert due[0].interval_seconds == 300 and due[0].next_fire == now
+
+
+def test_mark_fired_advances_and_counts():
+    s = SubscriptionStore(":memory:")
+    now = 1_000_000.0
+    s.upsert(Subscription(id="c1", mode="POLL", target_agent="x", backend="native",
+                          interval_seconds=120, next_fire=now, prompt="p"))
+    s.mark_fired("c1", last_fire=now, next_fire=now + 120)
+    g = s.get("c1")
+    assert g.fire_count == 1 and g.next_fire == now + 120 and g.last_fire == now
+    assert s.due(now + 1) == []                 # no longer due until now+120
+    assert [d.id for d in s.due(now + 121)] == ["c1"]
+
+
+# ── cron parser + next-fire ──────────────────────────────────────────────────
+def test_cron_daily_and_step():
+    # next 08:00 daily
+    t = time.localtime(ns.next_cron("0 8 * * *", time.time()))
+    assert t.tm_hour == 8 and t.tm_min == 0
+    # */5 minutes: 10:02 → 10:05
+    base = time.mktime((2026, 1, 1, 10, 2, 0, 0, 0, -1))
+    assert time.localtime(ns.next_cron("*/5 * * * *", base)).tm_min == 5
+
+
+def test_cron_weekday_field():
+    # "0 9 * * 1-5" = weekdays 9am. From a Saturday, next must be Monday.
+    sat = time.mktime((2026, 1, 3, 12, 0, 0, 0, 0, -1))   # 2026-01-03 is a Saturday
+    nxt = time.localtime(ns.next_cron("0 9 * * 1-5", sat))
+    assert nxt.tm_wday == 0 and nxt.tm_hour == 9          # Monday 09:00
+
+
+def test_next_fire_after_interval_is_lazy():
+    sub = Subscription(id="x", mode="POLL", backend="native", target_agent="a",
+                       interval_seconds=300, next_fire=1.0)
+    assert ns.next_fire_after(sub, 1_000_000.0) == 1_000_300.0   # now+interval, not backlog
+
+
+# ── process_due: fire-once, reschedule, catch-up, bounded run ────────────────
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
+
+
+def test_process_due_fires_and_reschedules():
+    s = SubscriptionStore(":memory:")
+    now = time.time()
+    s.upsert(Subscription(id="c1", mode="CRON", target_agent="x", backend="native",
+                          interval_seconds=300, next_fire=now, prompt="p"))
+    fired = []
+    got = asyncio.run(ns.process_due(s, now + 1, lambda sub: _noop(fired, sub)))
+    assert got == ["c1"] and fired == ["c1"]
+    assert abs(s.get("c1").next_fire - (now + 1 + 300)) < 0.01
+
+
+async def _noop(acc, sub):
+    acc.append(sub.id)
+
+
+def test_process_due_lazy_catch_up_fires_once():
+    s = SubscriptionStore(":memory:")
+    now = time.time()
+    s.upsert(Subscription(id="c2", mode="POLL", target_agent="x", backend="native",
+                          interval_seconds=120, next_fire=now - 3600, prompt="p"))   # 1h overdue
+    fired = []
+    asyncio.run(ns.process_due(s, now, lambda sub: _noop(fired, sub)))
+    assert fired == ["c2"]                                # fired ONCE, not 30x
+    assert abs(s.get("c2").next_fire - (now + 120)) < 0.01
+
+
+def test_process_due_bounded_run_retires_after_deadline():
+    s = SubscriptionStore(":memory:")
+    now = time.time()
+    # next fire (now+300) is past expires_at (now+10) → delete after this fire
+    s.upsert(Subscription(id="c3", mode="CRON", target_agent="x", backend="native",
+                          interval_seconds=300, next_fire=now, prompt="p", expires_at=now + 10))
+    asyncio.run(ns.process_due(s, now + 1, lambda sub: _noop([], sub)))
+    assert s.get("c3") is None
+
+
+def test_scheduler_gate():
+    os.environ["EVENTS_SCHEDULER"] = "ap"
+    assert ns.enabled() is False
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    assert ns.enabled() is True
+    del os.environ["EVENTS_SCHEDULER"]
+    assert ns.enabled() is True                          # default native
+
+
+# ── concierge routing: cron arms NATIVE (no AP); gmail push declines w/o AP ──
+def _tools(engine):
+    from agent_store import AgentStore
+    from runtime import CugaRuntime, AgentSpec
+    from subscriptions import SubscriptionStore as _S
+    import concierge
+    import principal as _principal_mod
+    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt.upsert_agent(AgentSpec(name="cuga", prompt="x", integrations=[]), scope="default")
+    store = _S(":memory:")
+    tools = concierge.make_concierge_tools(rt, store=store, engine=engine, users=None)
+    focf = next(t for t in tools if t.name == "find_or_create_flow")
+    concierge._principal.set(_principal_mod.DEFAULT)
+    concierge._origin.set("web:local")
+    concierge._utterance.set("")
+    return focf, store
+
+
+def test_cron_arms_native_no_ap():
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    focf, store = _tools(engine=None)                    # engine=None → prove NO AP is needed
+    reply = asyncio.run(focf.ainvoke(
+        {"agent": "cuga", "kind": "cron", "prompt": "say hello", "every_minutes": 5}))
+    assert "native" in reply.lower() and "ARMED" in reply
+    subs = store.list()
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub.backend == "native" and sub.ap_flow_id is None
+    assert sub.interval_seconds == 300 and sub.next_fire > 0
+    del os.environ["EVENTS_SCHEDULER"]
+
+
+def test_poll_arms_native_no_ap():
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    focf, store = _tools(engine=None)
+    reply = asyncio.run(focf.ainvoke(
+        {"agent": "cuga", "kind": "poll", "prompt": "watch the value", "every_minutes": 2}))
+    assert "native" in reply.lower()
+    assert store.list()[0].backend == "native"
+    del os.environ["EVENTS_SCHEDULER"]
+
+
+def test_poll_arm_seeds_watch_state_threshold():
+    """A POLL seeds a watch_state row (stateful delta); a CRON does not (Tier-0 always report)."""
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    os.environ["EVENTS_POLL_LLM"] = "0"                   # heuristic spec (offline)
+    try:
+        focf, store = _tools(engine=None)
+        concierge_mod_utterance("ping me if IBM stock moves by 5%")
+        asyncio.run(focf.ainvoke(
+            {"agent": "cuga", "kind": "poll", "prompt": "check IBM stock", "every_minutes": 2}))
+        sid = store.list()[0].id
+        ws = store.get_watch_state(sid)
+        assert ws is not None and ws["kind"] == "threshold" and abs(ws["threshold"] - 0.05) < 1e-9
+        # a CRON seeds nothing
+        focf2, store2 = _tools(engine=None)
+        asyncio.run(focf2.ainvoke(
+            {"agent": "cuga", "kind": "cron", "prompt": "say hi", "every_minutes": 5}))
+        assert store2.get_watch_state(store2.list()[0].id) is None
+    finally:
+        del os.environ["EVENTS_SCHEDULER"]
+        del os.environ["EVENTS_POLL_LLM"]
+
+
+def concierge_mod_utterance(text):
+    import concierge
+    concierge._utterance.set(text)
+
+
+def test_gmail_push_declines_without_ap():
+    focf, store = _tools(engine=None)                    # no AP engine
+    reply = asyncio.run(focf.ainvoke(
+        {"agent": "cuga", "kind": "push", "prompt": "when a new email arrives, summarize it",
+         "source": "gmail", "event": "new_email"}))
+    low = reply.lower()
+    assert "gmail" in low and ("activepieces" in low or "make up" in low)
+    assert store.list() == []                            # nothing armed

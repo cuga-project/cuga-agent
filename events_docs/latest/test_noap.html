@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<!-- Hands-on runbook: bring CUGA up WITHOUT Activepieces and test every channel. Hand-authored.
+     Sources: Makefile (up-noap, test-live), app.py, live_e2e.py, the *_check.py harnesses. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test the channels without AP — CUGA</title>
+<style>
+  :root { --bg:#0f1117; --panel:#151822; --card:#171a23; --ink:#e8eaf0; --dim:#8b93a7; --line:#262b38;
+           --acc:#4f8cff; --tg:#26a5e4; --dc:#5865f2; --sl:#e01e5a; --web:#08bdba; --ok:#42be65; --warn:#ff832b; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink); max-width: 900px; margin: 0 auto;
+         padding: 3rem 1.5rem 6rem; font: 16px/1.6 -apple-system, "IBM Plex Sans", Segoe UI, sans-serif; }
+  h1 { font-size: 2.3rem; letter-spacing: -.02em; line-height: 1.1; }
+  h2 { font-size: 1.4rem; margin: 2.4rem 0 .3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.08rem; margin: 1.3rem 0 .4rem; }
+  p { margin: .6em 0; color: #d4d8e2; }
+  .lede { color: var(--dim); font-size: 1.15rem; margin: .6rem 0 1.4rem; }
+  .kicker { color: var(--acc); text-transform: uppercase; letter-spacing: .18em; font-size:.78rem; margin-bottom:.8rem; }
+  code { background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .06em .35em; font-size:.9em; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--acc);
+        border-radius: 8px; padding: .85rem 1.1rem; overflow-x: auto; font-size: .87rem; line-height: 1.5; margin: .5rem 0; }
+  pre .c { color: var(--dim); }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .93rem; }
+  th { text-align:left; color: var(--dim); font-weight:600; font-size:.76rem; text-transform:uppercase;
+       letter-spacing:.06em; padding:.5em .7em; border-bottom:1px solid var(--line); }
+  td { padding:.5em .7em; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.k { font-weight:600; white-space:nowrap; }
+  .pill { display:inline-block; border-radius:99px; padding:.08em .6em; font-size:.74rem; border:1px solid var(--line); white-space:nowrap; }
+  .pill.ok{color:var(--ok);border-color:var(--ok);} .pill.no{color:var(--warn);border-color:var(--warn);}
+  .pill.tg{color:var(--tg);border-color:var(--tg);} .pill.dc{color:var(--dc);border-color:var(--dc);}
+  .pill.sl{color:var(--sl);border-color:var(--sl);} .pill.web{color:var(--web);border-color:var(--web);}
+  .note { background: var(--panel); border:1px solid var(--line); border-left:3px solid var(--warn);
+          border-radius:8px; padding:.8rem 1.1rem; margin:1rem 0; color:#d4d8e2; }
+  .note.ok { border-left-color: var(--ok); }
+  ul { margin:.5em 0 .5em 1.3em; } li { margin:.35em 0; color:#d4d8e2; }
+  .step-h { display:flex; align-items:center; gap:.6rem; }
+  .step-h .n { width:1.8rem; height:1.8rem; border-radius:50%; background:var(--card); border:1px solid var(--acc);
+               color:var(--acc); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.85rem; }
+  .exp { color: var(--ok); }
+</style></head>
+<body>
+
+<div class="kicker">CUGA · events · runbook</div>
+<h1>Test the channels — without Activepieces</h1>
+<p class="lede">Bring CUGA up with <b>zero AP</b> and prove each chat channel works, end to end. ~10
+   minutes. You never start a container or a tunnel (unless you want to test Slack).</p>
+
+<div class="note ok"><b>What you're testing:</b> the <b>NOW / chat trigger</b> on
+   <span class="pill web">web</span> <span class="pill tg">telegram</span> <span class="pill dc">discord</span> —
+   a message in → the concierge answers → the reply comes back. <b>No AP, no tunnel.</b>
+   <span class="pill sl">slack</span> is optional and needs a public URL (see §5).</p>
+
+<!-- 0 -->
+<h2>0 · Prerequisites (2 min)</h2>
+<p>You only need Python deps and <b>at least one</b> bot token. Nothing else — no podman, no ngrok.</p>
+<pre><span class="c"># one-time, if not already done</span>
+uv sync --python 3.12          <span class="c"># builds .venv</span>
+cp .env.events.example .env    <span class="c"># then edit .env — see below</span></pre>
+<p>Minimal <code>.env</code> for the no-AP channel test:</p>
+<table>
+  <tr><th>Key</th><th>Needed for</th><th>Notes</th></tr>
+  <tr><td class="k"><code>EVENTS_ENABLED=1</code></td><td>all</td><td>turns the events layer on</td></tr>
+  <tr><td class="k"><code>GATEWAY_TOKEN=…</code></td><td>all channels</td><td>any string — guards the internal <code>/invoke</code> hop</td></tr>
+  <tr><td class="k"><code>LLM key</code></td><td>all</td><td><code>WATSONX_*</code> or <code>OPENAI_API_KEY</code> — the concierge needs a model to answer</td></tr>
+  <tr><td class="k"><code>TELEGRAM_BOT_TOKEN=…</code></td><td><span class="pill tg">telegram</span></td><td>from @BotFather. Optional if you only test web/discord.</td></tr>
+  <tr><td class="k"><code>DISCORD_BOT_TOKEN=…</code></td><td><span class="pill dc">discord</span></td><td>Developer Portal → Bot. <b>Enable Message Content Intent.</b></td></tr>
+</table>
+<p class="dim" style="color:var(--dim)">You do <b>not</b> set <code>EVENTS_TELEGRAM_BACKEND</code> — <code>direct</code>
+   is the default. <code>make up-noap</code> forces it anyway.</p>
+
+<!-- 1 -->
+<h2>1 · Bring CUGA up — no AP, no tunnel</h2>
+<pre>make preflight-noap     <span class="c"># checks uv + .venv only (fails loud if missing)</span>
+make up-noap            <span class="c"># boots the events layer, arms channels, prints what's live</span></pre>
+<p>Expect it to end with:</p>
+<pre class="exp">✓ CUGA up — NO Activepieces.   Chat channels live: web · Telegram · Discord.
+   NOW-trigger (chat) works fully. cron/poll/push + Slack + AP integrations are OFF …
+   → NEXT: make status</pre>
+
+<!-- 2 -->
+<h2>2 · Confirm the capability tier</h2>
+<pre>make status</pre>
+<p>In the output you should see the boot <b>capability report</b> confirm the no-AP tier:</p>
+<pre class="exp">✓ web chat · webhooks · direct watchers (Slack/Discord/Box-direct · Telegram-direct)
+   — no extra infra (Telegram chat runs AP-free via long-poll)
+✗ Activepieces not reachable → cron/poll + AP-backed integration triggers unavailable
+✗ no EVENTS_PUBLIC_URL → …  [Telegram chat still works — it's direct/outbound]</pre>
+<p>Those two <b>✗</b> lines are <b>expected and fine</b> — they're the AP/tunnel tiers you deliberately
+   skipped. The channels section of <code>make status</code> should show web/telegram/discord present.
+   In the logs (<code>make logs</code>) look for <code>telegram long-poll started as @yourbot</code>
+   and <code>discord gateway READY</code>.</p>
+
+<!-- 3 -->
+<h2>3 · Test each channel by hand</h2>
+
+<h3><span class="pill web">web</span> — the zero-dependency one</h3>
+<p>Open <b>http://localhost:7860</b> and chat, or curl it directly (no token needed):</p>
+<pre>curl -s localhost:7860/api/concierge \
+  -H 'content-type: application/json' \
+  -d '{"text":"say hello in 5 words","thread_id":"web:test"}' | python3 -m json.tool</pre>
+<pre class="exp">{ "ok": true, "reply": "Hello there, nice to meet!", "trace_id": "…" }</pre>
+<p class="dim" style="color:var(--dim)">Note: the browser-facing <code>/api/concierge</code> returns the
+   text under <code>reply</code> (the internal channel→<code>/invoke</code> hop uses <code>answer</code>).</p>
+
+<h3><span class="pill tg">telegram</span> — DM the bot</h3>
+<ul>
+  <li>Open Telegram, find your bot (the @username from BotFather), send <b>“what's the price of bitcoin?”</b></li>
+  <li><span class="exp">Expect</span> a reply within a few seconds, as a reply to your message.</li>
+  <li>Watch it fire: <code>make logs</code> → <code>telegram.reply chat=… ok=True</code>.</li>
+  <li>Group chat? By default (<code>EVENTS_TELEGRAM_CHAT=all</code>) it answers everything. Set
+      <code>=mention</code> to require <code>@yourbot</code> in groups (private DMs always answer).</li>
+</ul>
+
+<h3><span class="pill dc">discord</span> — @mention the bot</h3>
+<ul>
+  <li>Invite the bot to a server, then in a channel type <b>“@yourbot what's the price of bitcoin?”</b>
+      (or DM it).</li>
+  <li><span class="exp">Expect</span> a reply referencing your message.</li>
+  <li><b>If nothing happens:</b> the #1 cause is <b>Message Content Intent OFF</b> — Developer Portal →
+      Bot → Privileged Gateway Intents → enable it, then <code>make reload</code>. A disallowed-intents
+      gateway logs error <code>4014</code>.</li>
+</ul>
+
+<!-- 4 -->
+<h2>4 · Or run the automated channel check</h2>
+<p>One command drives the channels the same way — <b>without</b> the AP-dependent flow modes:</p>
+<pre>make test-live ARGS="--only channels"</pre>
+<p>This exercises web (full round trip), Telegram and Discord (drive + verify), and Slack (skipped
+   unless configured). Per-channel checks also exist if you want to isolate one:</p>
+<table>
+  <tr><th>Script</th><th>What it does</th></tr>
+  <tr><td class="k"><code>tests/events/live_telegram_check.py</code></td><td>sends via the bot + confirms the round trip</td></tr>
+  <tr><td class="k"><code>tests/events/live_discord_check.py</code></td><td>drives a Gateway message + checks the reply</td></tr>
+  <tr><td class="k"><code>tests/events/test_events_telegram_direct.py</code></td><td>offline unit test of the gating logic (no network)</td></tr>
+</table>
+<pre><span class="c"># run one directly (server must be up)</span>
+EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_telegram_check.py</pre>
+
+<!-- 5 -->
+<h2>5 · Slack (optional — the one that needs a URL)</h2>
+<p>Slack is <b>inbound</b> — it POSTs events to you — so it's the only channel that needs a public URL.
+   "No AP" ≠ "no tunnel" for Slack (it's still fully AP-free; it just needs to be <em>reachable</em>).</p>
+<ul>
+  <li><b>Local, still no AP — the clean way:</b>
+      <pre>make up-noap-slack</pre>
+      Boots the events layer with <b>no Activepieces</b> but <b>with the CUGA tunnel</b>, so all four
+      channels (web · Telegram · Discord · <b>Slack</b>) work. Then set the Slack app's <b>Event
+      Subscriptions Request URL</b> to <code>&lt;public&gt;/api/events/slack/events</code> —
+      <code>make status</code> prints the exact URL.</li>
+  <li><b>Deployed (Code Engine):</b> no tunnel needed — point Slack at the CE route. See the cloud
+      section of <a href="channels_without_ap.html#cloud" style="color:var(--acc)">channels_without_ap.html</a>.</li>
+</ul>
+<div class="note"><b>Reading the capability report:</b> after <code>make up-noap</code> (no tunnel),
+   <code>make status</code> honestly says <em>"public URL is CONFIGURED … but NO tunnel is running →
+   Slack won't arrive"</em>. After <code>make up-noap-slack</code> it flips to
+   <em>"public URL set … can reach you"</em>. That line now reflects a <b>running tunnel</b>, not just
+   a value in <code>.env</code>.</div>
+
+<!-- 6 -->
+<h2>6 · Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Fix</th></tr>
+  <tr><td class="k">Telegram silent</td><td>Is <code>TELEGRAM_BOT_TOKEN</code> set? <code>make logs</code> should show <code>telegram long-poll started</code>. Another process polling the same bot steals updates — only one poller per bot.</td></tr>
+  <tr><td class="k">Discord silent</td><td><b>Message Content Intent</b> off (error 4014) — enable it, <code>make reload</code>. Also confirm the bot is in the server + can read the channel.</td></tr>
+  <tr><td class="k">"no answer" in logs</td><td>The concierge has no LLM key — set <code>WATSONX_*</code>/<code>OPENAI_API_KEY</code>, <code>make reload</code>.</td></tr>
+  <tr><td class="k">Everything 401/invoke fails</td><td><code>GATEWAY_TOKEN</code> mismatch — it must be set in <code>.env</code> (the channel handler and <code>/invoke</code> read the same one).</td></tr>
+  <tr><td class="k">Want the AP path back</td><td>Set <code>EVENTS_TELEGRAM_BACKEND=ap</code> + <code>make reload</code> + <code>make channels</code> (needs AP + tunnel).</td></tr>
+</table>
+
+<div class="note ok"><b>Done.</b> If web + Telegram + Discord all answered, you've proven the events
+   layer serves the NOW/chat trigger on every direct channel with <b>zero Activepieces and zero
+   tunnel</b>. Reference (envelopes, sequences, cloud): <a href="channels_without_ap.html" style="color:var(--acc)">channels_without_ap.html</a>.</div>
+
+<p style="margin-top:2rem; color:var(--dim); font-size:.9rem">Sources: <code>Makefile</code> (up-noap,
+   test-live) · <code>app.py</code> · <code>live_e2e.py</code> · the <code>live_*_check.py</code> harnesses.</p>
+
+</body></html>

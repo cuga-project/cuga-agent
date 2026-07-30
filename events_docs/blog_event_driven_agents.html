@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Event-driven CUGA: agents that wait for the world</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a1a; --muted: #6b6b6b; --rule: #e6e4e0; --link: #2b6cb0;
+    --code-bg: #f4f3f0; --code-fg: #1a1a1a; --card-bg: #ffffff; --accent: #b45309;
+    --ok: #2f855a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --serif: Georgia, Cambria, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16171a; --fg:#e7e7e7; --muted:#9a9a9a; --rule:#2c2e33; --link:#7aa6d6;
+      --code-bg:#1d1f23; --code-fg:#e0e0e0; --card-bg:#1b1d21; --accent:#e0a55e; --ok:#68b98a; }
+  }
+  :root[data-theme="light"] { --bg:#fbfbfa; --fg:#1a1a1a; --muted:#6b6b6b; --rule:#e6e4e0; --link:#2b6cb0;
+    --code-bg:#f4f3f0; --code-fg:#1a1a1a; --card-bg:#fff; --accent:#b45309; --ok:#2f855a; }
+  :root[data-theme="dark"] { --bg:#16171a; --fg:#e7e7e7; --muted:#9a9a9a; --rule:#2c2e33; --link:#7aa6d6;
+    --code-bg:#1d1f23; --code-fg:#e0e0e0; --card-bg:#1b1d21; --accent:#e0a55e; --ok:#68b98a; }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--serif); font-size: 19px;
+    line-height: 1.65; margin: 0; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 740px; margin: 0 auto; padding: 3.5rem 1.4rem 6rem; }
+  .eyebrow { font-family: var(--sans); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; margin-bottom: 1rem; }
+  h1 { font-family: var(--sans); font-size: 2.4rem; line-height: 1.12; letter-spacing: -0.02em; margin: 0 0 1rem; font-weight: 700; }
+  h2 { font-family: var(--sans); font-size: 1.42rem; letter-spacing: -0.01em; margin: 3rem 0 0.8rem; font-weight: 650; scroll-margin-top: 1rem; }
+  h3 { font-family: var(--sans); font-size: 1.06rem; margin: 2rem 0 0.5rem; font-weight: 600; }
+  .lede { font-size: 1.22rem; color: var(--muted); line-height: 1.55; margin: 0 0 2rem; }
+  .byline { font-family: var(--sans); font-size: 0.85rem; color: var(--muted); margin-bottom: 2.5rem;
+    padding-bottom: 2rem; border-bottom: 1px solid var(--rule); }
+  .byline b { color: var(--fg); font-weight: 600; }
+  p { margin: 1.1rem 0; }
+  a { color: var(--link); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: var(--link); }
+  code { font-family: var(--mono); font-size: 0.82em; background: var(--code-bg); padding: 0.12em 0.38em; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 0.79rem; line-height: 1.6; background: var(--code-bg); color: var(--code-fg);
+    border: 1px solid var(--rule); border-radius: 8px; padding: 1rem 1.1rem; overflow-x: auto; margin: 1.3rem 0; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .comment { color: var(--muted); }
+  .prompt { color: var(--accent); }
+  blockquote { margin: 1.6rem 0; padding: 0.2rem 0 0.2rem 1.3rem; border-left: 3px solid var(--accent);
+    color: var(--muted); font-style: italic; }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 3rem 0; }
+  .aside { font-family: var(--sans); font-size: 0.92rem; background: var(--card-bg); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 1.1rem 1.3rem; margin: 2rem 0; color: var(--muted); line-height: 1.55; }
+  .aside b { color: var(--fg); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.86rem; margin: 1.4rem 0; }
+  th, td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td code { font-size: 0.8em; }
+  .tbl-scroll { overflow-x: auto; }
+  .footnote { font-family: var(--sans); font-size: 0.82rem; color: var(--muted); }
+  ol.steps { font-family: var(--sans); font-size: 0.98rem; padding-left: 1.3rem; }
+  ol.steps li { margin: 0.7rem 0; }
+  .tag { font-family: var(--mono); font-size: 0.72rem; background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 5px; padding: 0.1em 0.45em; color: var(--muted); }
+  .toc { font-family: var(--sans); font-size: 0.9rem; background: var(--card-bg); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 1rem 1.3rem; margin: 2rem 0; }
+  .toc b { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem; }
+  .toc a { display: inline-block; margin: 0.15rem 0.9rem 0.15rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">CUGA · Engineering</div>
+  <h1>Agents that wait for the world</h1>
+  <p class="lede">CUGA answers when you ask it. With one flag, it also answers when your inbox, your repo, a folder, or the clock changes — and delivers the result back to Slack, Discord, Telegram, or a webhook. Here's the model, and a walkthrough to arm your first standing agent in about fifteen minutes.</p>
+  <div class="byline">A hands-on guide to the <b>event-driven layer</b> for CUGA · <span class="tag">EVENTS_ENABLED=1</span></div>
+
+  <p>The default shape of an agent is a turn. You type, it reasons, it calls a few tools, it replies, and then it waits for you again. That's the right shape for a chat box and quietly the wrong one for most of what people actually want automated — because that work doesn't start with a human typing. It starts with the world moving:</p>
+
+  <blockquote>When a pull request opens, review it. When this email lands, draft the reply. Every morning at nine, check the Box folder and tell me what changed.</blockquote>
+
+  <p>None of those begin with a prompt. They begin with an event, and the agent's job is to have been waiting for it. This is the "ambient agent" idea — a process that runs in the background, wakes on a trigger instead of a message, and surfaces to a human only when it needs a decision. The event-driven layer in CUGA is that capability, built to sit on top of the agent you already run rather than replace it. Flip <code>EVENTS_ENABLED</code> off and CUGA is exactly what it was before; flip it on and the same agent gains triggers, channels, and standing flows.</p>
+
+  <div class="toc">
+    <b>In this post</b>
+    <a href="#model">The model</a>
+    <a href="#creds">The credential boundary</a>
+    <a href="#setup">Set it up</a>
+    <a href="#example">Arm your first flow</a>
+    <a href="#route">How a message routes</a>
+    <a href="#byo">Bring your own agents</a>
+  </div>
+
+  <h2 id="model">One envelope, one seam</h2>
+
+  <p>A Slack message, a GitHub webhook, a polled email, a cron tick, and a file in a folder share nothing at the wire level. The tempting design is a code path per source — and that's how you end up with fourteen slightly different agent invocations and a bug in the thirteenth. CUGA takes the opposite route: every source, however it arrived, is normalized into <em>one envelope</em> and POSTed to <em>one endpoint</em>, <code>/invoke</code>. Learn that shape and the whole runtime is legible.</p>
+
+  <pre><code><span class="comment"># the one shape every trigger arrives with, at POST /invoke</span>
+{
+  "source":  {"type": "channel|integration|time", "name": "gmail", "thread_id": "..."},
+  "event":   {"kind": "new_email", "payload": { ... }},
+  "text":    "&lt;utterance, if it came from a chat channel&gt;",
+  "agent":   "cuga",
+  "deliver": true
+}</code></pre>
+
+  <p>By the time the agent reasons, a Gmail event and a Slack event are the same object, and where the answer goes is read from the envelope's origin — which is why an email-triggered flow can reply into Slack without a single line of code that knows about that pairing. Adding a new source is writing the normalizer that produces this envelope; nothing downstream changes.</p>
+
+  <p>The other spine is the <b>trigger registry</b>: one row per <code>(app, event)</code> pair, carrying the trigger definition, payload map, required slots, and the phrases the classifier matches on. GitHub alone exposes fourteen triggers (PR, issue, star, push, release, …); across seven integrations there are 33. Adding one is a single row, and an unknown <code>(app, event)</code> is rejected at build time rather than arming a flow that can never fire.</p>
+
+  <h2 id="creds">The agent never sees a token</h2>
+
+  <p>An event-driven agent acts while you're away, which means it needs standing credentials to your accounts — and that is precisely what you don't want a language model holding in its context, where it can be logged or coaxed out. So the credential boundary is explicit and the agent sits on the far side of it. Tokens live in a separate connections engine; a flow only ever references a credential by a symbolic name:</p>
+
+  <pre><code>{{connections['ea::tenant::user::gmail']}}</code></pre>
+
+  <p>At fire time that reference is resolved to a real token <em>inside the engine's sandbox</em>, used to poll or receive, and never handed back. The agent gets the email's <em>contents</em> to reason about; it never gets the thing that could read your next thousand emails. If you sketch the sequence, the token's lifetime is a short segment that never touches the box labelled "LLM." That's the invariant worth protecting.</p>
+
+  <h2 id="setup">Set it up</h2>
+
+  <p>The runtime is one command per service. The only irreducibly manual part is external accounts — an LLM key and, for the connectors you want, a bot token or an OAuth app. There are three capability tiers, and you only pay for the infra you use.</p>
+
+  <div class="tbl-scroll">
+  <table>
+    <thead><tr><th>Tier</th><th>What lights up</th><th>Extra infra</th></tr></thead>
+    <tbody>
+      <tr><td><b>1 · bare</b></td><td>Web chat · webhooks · direct watchers (Slack / Discord / Box-direct)</td><td>none</td></tr>
+      <tr><td><b>2 · flows</b></td><td>Cron / poll + AP-backed triggers (Gmail / GitHub / Box)</td><td>Activepieces (<code>make ap</code>)</td></tr>
+      <tr><td><b>3 · public</b></td><td>Slack events · OAuth consent · Telegram</td><td>a public URL (<code>make tunnels</code>)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Bare tier — zero extra infrastructure</h3>
+
+  <p>This is enough to talk to a standing agent over web chat and fire it from a webhook. Clone <a href="https://github.com/cuga-project/cuga-agent">the repo</a>, then:</p>
+
+  <pre><code>uv sync --python 3.12                <span class="comment"># CUGA deps → .venv</span>
+cp .env.events.example .env          <span class="comment"># fill in one LLM key + EVENTS_ENABLED=1</span>
+
+<span class="prompt">$</span> cuga start demo --events           <span class="comment"># the normal CUGA server, events layer on</span></code></pre>
+
+  <p>On boot it prints a <b>capability report</b> (also at <code>GET /api/events/status</code>) telling you exactly what's live and, for anything that isn't, the one-line fix:</p>
+
+  <pre><code>events layer ENABLED — capability report:
+  <span style="color:var(--ok)">✓</span> web chat · webhooks · direct watchers — no extra infra
+  <span style="color:var(--ok)">✓</span> supervisor: ON — sub-agents from supervisor_agents.yaml
+  <span class="comment">✗ Activepieces not reachable → cron/poll + AP triggers unavailable (`make ap`)</span>
+  <span class="comment">✗ no public URL → Slack / OAuth / Telegram unreachable (`make tunnels`)</span></code></pre>
+
+  <p>Everything runs on CUGA's native port <code>7860</code>, with or without <code>--events</code>. Open <code>localhost:7860/studio</code> for the console — a deliberately thin UI that only renders backend state.</p>
+
+  <h3>Flows &amp; public tiers</h3>
+
+  <p>To arm real triggers you need the connections engine (Activepieces) and, for anything the outside world must reach — Slack events, OAuth callbacks, Telegram — a stable public URL. One wrapper provisions both and then starts the same server:</p>
+
+  <pre><code><span class="prompt">$</span> make up            <span class="comment"># provisions Activepieces + tunnels, then runs `cuga start demo --events`</span>
+<span class="prompt">$</span> make public-url     <span class="comment"># prints the URL + the exact strings to paste into Slack / OAuth consoles</span></code></pre>
+
+  <div class="aside"><b>One tip that saves a lot of grief.</b> Reserve a free ngrok domain and set <code>EVENTS_NGROK_DOMAIN</code>. It pins the public URL so you wire Slack and each OAuth redirect <b>once</b>, instead of re-pointing every console after each restart. Without it you get an ephemeral tunnel that changes every run — and flows that fail opaquely when it rotates.</p></div>
+
+  <h2 id="example">Arm your first flow, in English</h2>
+
+  <p>Here's the part that feels like the future. You don't write a flow definition — you describe it. Open the Studio chat (or POST to <code>/api/concierge</code>) and type:</p>
+
+  <pre><code><span class="prompt">you ▸</span> when I get an email, draft a reply summarizing my response</code></pre>
+
+  <p>A component called the <b>concierge</b> compiles that sentence into a standing flow. It isn't prompt-and-pray: a deterministic pre-router handles high-confidence utterances with no LLM call, a request missing a required slot ("watch <em>which</em> repo?") comes back as a question you answer in the next message, and only genuinely ambiguous input falls through to the model. Every path is validated against the trigger registry before anything arms. The sentence above compiles to:</p>
+
+  <pre><code>{ "source": "gmail", "event": "new_email",
+  "actions": ["gmail/create_draft_reply"], "outcome": "arm" }</code></pre>
+
+  <p>If you haven't connected Gmail yet, the concierge tells you so and hands you the consent link rather than arming a flow that can't fire. Once it's armed, it's a durable thing: send yourself an email and the agent wakes, reads it, drafts the reply, and — because Gmail is a polling trigger — does it on the connector's next poll. Want to act, not just watch? The same grammar chains actions:</p>
+
+  <pre><code><span class="prompt">you ▸</span> when I get an email, email me a summary AND reply to the sender</code></pre>
+
+  <p>That compiles to a validated two-action chain. Anything destructive routes through an approval step before it executes — the guardrail ships before the sharp actions do, not after.</p>
+
+  <p>You can force a mode explicitly when you don't want to leave it to the classifier:</p>
+
+  <pre><code><span class="prompt">you ▸</span> /watch    <span class="comment"># push/webhook triggers</span>
+<span class="prompt">you ▸</span> /schedule every weekday at 9am, summarize new files in my Box folder
+<span class="prompt">you ▸</span> /poll     <span class="comment"># polling triggers    /cron  /push  — all outrank the classifier</span></code></pre>
+
+  <h2 id="route">How a message routes</h2>
+
+  <p>Web, Slack, Discord, and Telegram all apply the same rule, in order, so behaviour is identical on every surface:</p>
+
+  <ol class="steps">
+    <li>A <b>slash command</b> (<code>/automate</code>, <code>/watch</code>, <code>/schedule</code>, <code>/cron</code>, <code>/poll</code>, <code>/push</code>) goes straight to the concierge — it outranks even an armed channel watcher.</li>
+    <li>An utterance the classifier reads as <b>standing intent</b> (cron/poll/push phrasing) takes the NL→Flow path.</li>
+    <li>A thread with an <b>open concierge question</b> stays with the concierge, so slot-filling works across messages.</li>
+    <li>Everything else — plain conversation — goes <b>straight to the agent</b>, no concierge hop.</li>
+  </ol>
+
+  <p>On Slack and Discord a mention gate runs first (<code>EVENTS_SLACK_CHAT=mention</code>): only @-mentions, DMs, and replies to the bot reach chat, while armed channel watchers still see everything. It's the difference between an agent that's present in a busy channel and one that's noisy in it.</p>
+
+  <h2 id="byo">Bring your own agents</h2>
+
+  <p>Nothing above is tied to a specific agent. There's exactly one addressable agent, <code>cuga</code>; with <code>EVENTS_SUPERVISOR=1</code> it becomes a supervisor that fans out to a roster of specialists and lets the answer bubble back up. The roster is a YAML file, and it's yours to replace:</p>
+
+  <pre><code>EVENTS_SUPERVISOR=1 \
+EVENTS_SUPERVISOR_ROSTER=/path/to/my_agents.yaml \
+  cuga start demo --events</code></pre>
+
+  <p>A specialist is a skill, not a deployment — a name, a prompt, its tools, and the triggers it handles:</p>
+
+  <pre><code>- name: invoice_checker
+  special_instructions: |
+    You verify invoices: amounts, due dates, duplicate detection. Be terse and factual.
+    HANDLES TRIGGERS: gmail/new_attachment (An email with an attachment)
+  mcp_servers:
+    - name: cuga-text</code></pre>
+
+  <p>Append the block, run <code>make reload</code>, and the supervisor routes matching events to it. The <code>HANDLES</code> line names <code>app/event</code> pairs from the registry verbatim — and an offline gate fails the build if a specialist claims a trigger that doesn't exist, or a registry trigger is claimed by nobody. Channels and credentials stay at the platform level; a sub-agent gets event <em>content</em> and the tools you scoped it to, never a token and never a channel of its own.</p>
+
+  <hr>
+
+  <h2>Where this goes</h2>
+
+  <p>If the last stretch of agent building was about making the single turn good — better tool use, better planning inside one request — the next one looks like making the agent a <em>standing participant</em> in systems that already exist. Not a chat box you visit, but a quiet process wired into your repo, your inbox, your queue, that mostly does its job and occasionally asks you a question. The pieces that make that trustworthy are unglamorous and durable: a normalized event envelope, a credential boundary the model sits outside of, a compiler from plain intent to a validated standing flow, and an approval gate in front of anything that writes. Prompts change every few months; those don't.</p>
+
+  <p>The nice part is that you don't start over to get there. It's one flag on the agent you already run. Clone <a href="https://github.com/cuga-project/cuga-agent">cuga-agent</a>, <code>cuga start demo --events</code>, and describe the first thing you'd like it to wait for.</p>
+
+  <p class="footnote">Architecture, per-connector setup guides, decision records, and an honest known-gaps list live under <code>events_docs/</code> in the repo. The events layer is additive and behind <code>EVENTS_ENABLED</code> — base CUGA is unchanged when it's off.</p>
+
+</div>
+</body>
+</html>

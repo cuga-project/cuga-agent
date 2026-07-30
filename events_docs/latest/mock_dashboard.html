@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<!-- MOCK UX — the CUGA Events control plane. Vision mockup (sample data), grounded in the real
+     supervisor roster + tool-triggers. Hand-authored, self-contained. Not wired to a live server. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUGA · Event Control Plane (mock)</title>
+<style>
+  :root{
+    --bg:#0d0f15; --panel:#141824; --card:#181d2b; --raise:#1e2434; --ink:#eef1f7;
+    --dim:#8b93a7; --faint:#5b6478; --line:#252c3d;
+    --acc:#5b8cff; --native:#3ad29f; --ap:#b07bff; --poll:#22c9c0; --push:#ff7eb6; --warn:#ffab5e; --bad:#ff6b7a;
+  }
+  *{box-sizing:border-box;margin:0;}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"IBM Plex Sans",Segoe UI,sans-serif;}
+  .app{display:grid;grid-template-columns:210px 1fr;min-height:100vh;}
+  /* sidebar */
+  .side{background:var(--panel);border-right:1px solid var(--line);padding:1.1rem .9rem;display:flex;flex-direction:column;gap:.2rem;position:sticky;top:0;height:100vh;}
+  .brand{display:flex;align-items:center;gap:.55rem;font-weight:700;font-size:1.05rem;margin:.2rem .3rem 1.3rem;}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--native);box-shadow:0 0 10px var(--native);}
+  .nav a{display:flex;align-items:center;gap:.6rem;padding:.5rem .6rem;border-radius:8px;color:var(--dim);text-decoration:none;font-weight:500;}
+  .nav a.on,.nav a:hover{background:var(--raise);color:var(--ink);}
+  .nav .ic{width:16px;text-align:center;opacity:.85;}
+  .side .foot{margin-top:auto;font-size:.75rem;color:var(--faint);padding:.6rem .3rem;border-top:1px solid var(--line);}
+  .side .foot b{color:var(--native);}
+  /* main */
+  .main{padding:1.4rem 1.8rem 4rem;max-width:1180px;}
+  .top{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1rem;}
+  h1{font-size:1.5rem;letter-spacing:-.01em;} .sub{color:var(--dim);font-size:.9rem;}
+  .strip{display:flex;gap:1.6rem;flex-wrap:wrap;margin:.2rem 0 1.4rem;}
+  .stat b{display:block;font-size:1.5rem;font-weight:700;} .stat span{color:var(--dim);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;}
+  .stat .n{color:var(--native);} .stat .a{color:var(--ap);}
+  /* cards */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.05rem 1.2rem;margin-bottom:1.1rem;}
+  .card h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:.7rem;display:flex;align-items:center;gap:.5rem;}
+  .card h2 .cnt{color:var(--faint);font-weight:600;}
+  .cols{display:grid;grid-template-columns:1.55fr 1fr;gap:1.1rem;align-items:start;}
+  @media(max-width:900px){.app{grid-template-columns:1fr;}.side{position:static;height:auto;flex-direction:row;overflow-x:auto;}.cols{grid-template-columns:1fr;}}
+  /* compose */
+  .compose{display:flex;gap:.6rem;align-items:center;}
+  .compose input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:.6rem .8rem;color:var(--ink);font-size:.92rem;}
+  .compose input:focus{outline:none;border-color:var(--acc);}
+  .btn{background:var(--acc);color:#fff;border:none;border-radius:9px;padding:.6rem 1rem;font-weight:600;cursor:pointer;font-size:.88rem;}
+  .verdict{margin-top:.7rem;font-size:.86rem;color:var(--dim);display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;}
+  /* pills / tags */
+  .pill{display:inline-block;border-radius:99px;padding:.08em .55em;font-size:.72rem;border:1px solid var(--line);white-space:nowrap;}
+  .pill.native{color:var(--native);border-color:var(--native);} .pill.ap{color:var(--ap);border-color:var(--ap);}
+  .pill.poll{color:var(--poll);border-color:var(--poll);} .pill.push{color:var(--push);border-color:var(--push);}
+  .pill.ok{color:var(--native);border-color:var(--native);} .pill.paused{color:var(--warn);border-color:var(--warn);}
+  .pill.arm{color:var(--native);border-color:var(--native);} .pill.decline{color:var(--warn);border-color:var(--warn);}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:.86rem;}
+  th{text-align:left;color:var(--faint);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;padding:.4em .6em;border-bottom:1px solid var(--line);}
+  td{padding:.55em .6em;border-bottom:1px solid var(--line);vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  .agent{font-weight:600;} .mono{font-family:ui-monospace,Menlo,monospace;font-size:.82rem;color:var(--dim);}
+  .next{color:var(--native);font-variant-numeric:tabular-nums;}
+  /* live feed */
+  .feed .row{display:flex;gap:.6rem;padding:.55rem 0;border-bottom:1px solid var(--line);}
+  .feed .row:last-child{border-bottom:none;}
+  .feed .tick{width:6px;height:6px;border-radius:50%;margin-top:.45rem;flex:none;background:var(--native);}
+  .feed .row.ap .tick{background:var(--ap);}
+  .feed .meta{font-size:.74rem;color:var(--faint);margin-bottom:.1rem;}
+  .feed .meta b{color:var(--ink);} .feed .meta .tool{color:var(--poll);}
+  .feed .ans{color:#d4d8e2;font-size:.85rem;}
+  .live{width:7px;height:7px;border-radius:50%;background:var(--native);display:inline-block;animation:pulse 1.6s infinite;}
+  @keyframes pulse{0%,100%{opacity:.4;}50%{opacity:1;box-shadow:0 0 8px var(--native);}}
+  /* tool-trigger tiles */
+  .tools{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;}
+  @media(max-width:620px){.tools{grid-template-columns:1fr;}}
+  .tool{background:var(--raise);border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;}
+  .tool .nm{font-family:ui-monospace,Menlo,monospace;color:var(--poll);font-size:.83rem;margin-bottom:.25rem;}
+  .tool .cfg{font-size:.75rem;color:var(--dim);} .tool .cfg code{color:var(--ink);}
+  /* channels */
+  .chan{display:flex;gap:.7rem;flex-wrap:wrap;}
+  .chan .c{display:flex;align-items:center;gap:.45rem;background:var(--raise);border:1px solid var(--line);border-radius:8px;padding:.4rem .7rem;font-size:.82rem;}
+  .chan .c .g{width:7px;height:7px;border-radius:50%;background:var(--native);}
+  .chan .c.off .g{background:var(--faint);}
+  .banner{background:linear-gradient(90deg,rgba(58,210,159,.12),transparent);border:1px solid var(--line);border-left:3px solid var(--native);border-radius:8px;padding:.6rem .9rem;font-size:.82rem;color:#d4d8e2;margin-bottom:1.1rem;}
+  .mockflag{position:fixed;bottom:12px;right:14px;font-size:.7rem;color:var(--faint);background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:.25rem .7rem;}
+</style></head>
+<body>
+<div class="app">
+
+  <!-- sidebar -->
+  <aside class="side">
+    <div class="brand"><span class="dot"></span> CUGA · Events</div>
+    <nav class="nav">
+      <a class="on"><span class="ic">◱</span> Watchers</a>
+      <a><span class="ic">≋</span> Runs</a>
+      <a><span class="ic">⚡</span> Tool-triggers</a>
+      <a><span class="ic">◈</span> Channels</a>
+      <a><span class="ic">▷</span> Dry-run</a>
+      <a><span class="ic">⌂</span> Integrations</a>
+    </nav>
+    <div class="foot">scheduler: <b>native ON</b><br>Activepieces: <span style="color:var(--faint)">off (optional)</span><br>tenant: acme / you</div>
+  </aside>
+
+  <!-- main -->
+  <main class="main">
+    <div class="top">
+      <div><h1>Event Control Plane</h1><div class="sub">Watch anything · schedule anything · with or without Activepieces</div></div>
+      <div class="sub"><span class="live"></span> live · updated just now</div>
+    </div>
+
+    <div class="strip">
+      <div class="stat"><b class="n">12</b><span>watchers</span></div>
+      <div class="stat"><b class="n">47</b><span>fires today</span></div>
+      <div class="stat"><b>4</b><span>channels</span></div>
+      <div class="stat"><b>9</b><span>sub-agents</span></div>
+      <div class="stat"><b class="a">3</b><span>AP integrations</span></div>
+    </div>
+
+    <div class="banner"><b>No Activepieces required.</b> 9 of 12 watchers run on the native scheduler
+      (cron · poll · tool-watch). The 3 AP ones are the maintained SaaS triggers (github · gmail · rss).</div>
+
+    <!-- compose / dry-run -->
+    <div class="card">
+      <h2>▷ Arm a watch <span class="cnt">— preview before you commit (dry-run)</span></h2>
+      <div class="compose">
+        <input id="utt" value="watch my error logs and alert me on new errors" />
+        <button class="btn" onclick="preview()">Preview</button>
+      </div>
+      <div class="verdict" id="verdict"></div>
+    </div>
+
+    <div class="cols">
+      <!-- watchers -->
+      <div>
+        <div class="card">
+          <h2>◱ Active watchers <span class="cnt">— 12</span></h2>
+          <table>
+            <tr><th>Agent</th><th>Watches</th><th>Type</th><th>Cadence</th><th>Next / status</th></tr>
+            <tr><td class="agent">incident_triage</td><td class="mono">logs.scan_errors</td><td><span class="pill native">tool-watch</span></td><td>2 min</td><td><span class="next">in 41s</span></td></tr>
+            <tr><td class="agent">pricebot</td><td class="mono">finance.quote · IBM</td><td><span class="pill poll">threshold</span></td><td>1 min · ≥5%</td><td><span class="next">in 12s</span></td></tr>
+            <tr><td class="agent">deploy_sentinel</td><td class="mono">deploy.status · staging</td><td><span class="pill native">tool-watch</span></td><td>30s</td><td><span class="next">in 8s</span></td></tr>
+            <tr><td class="agent">support_digest</td><td class="mono">tickets.search · sev1</td><td><span class="pill native">tool-watch</span></td><td>5 min</td><td><span class="next">in 3m</span></td></tr>
+            <tr><td class="agent">pr_reviewer</td><td>github · new_pr · <span class="mono">acme/api</span></td><td><span class="pill ap">AP</span></td><td>on event</td><td><span class="pill ok">watching</span></td></tr>
+            <tr><td class="agent">mailbot</td><td>gmail · new_email</td><td><span class="pill ap">AP</span></td><td>on event</td><td><span class="pill ok">watching</span></td></tr>
+            <tr><td class="agent">market_briefer</td><td>the clock</td><td><span class="pill native">cron</span></td><td>weekdays 8am</td><td><span class="next">tomorrow 08:00</span></td></tr>
+            <tr><td class="agent">feed_watcher</td><td>rss · new_item</td><td><span class="pill ap">AP</span></td><td>on event</td><td><span class="pill ok">watching</span></td></tr>
+            <tr><td class="agent">weatherbot</td><td class="mono">web.forecast · NYC</td><td><span class="pill poll">poll</span></td><td>hourly · if rain</td><td><span class="next">in 22m</span></td></tr>
+            <tr><td class="agent">repo_watcher</td><td class="mono">web.fetch · trending</td><td><span class="pill poll">poll</span></td><td>6h</td><td><span class="pill paused">paused</span></td></tr>
+          </table>
+        </div>
+
+        <!-- tool-triggers -->
+        <div class="card">
+          <h2>⚡ Tools being watched <span class="cnt">— the agent's own tools become triggers</span></h2>
+          <div class="tools">
+            <div class="tool"><div class="nm">logs.scan_errors(dir="/var/log/app")</div><div class="cfg">key <code>$.errors[*].id</code> · fire on new · every <code>2m</code></div></div>
+            <div class="tool"><div class="nm">finance.quote(symbol="IBM")</div><div class="cfg">value <code>$.price</code> · threshold <code>5%</code> · ratchet · every <code>1m</code></div></div>
+            <div class="tool"><div class="nm">deploy.status(env="staging")</div><div class="cfg">key <code>$.build_id</code> · fire when <code>state∈{done,failed}</code> · <code>30s</code></div></div>
+            <div class="tool"><div class="nm">tickets.search(severity="1")</div><div class="cfg">key <code>$.tickets[*].id</code> · fire on new · every <code>5m</code></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- live runs feed -->
+      <div>
+        <div class="card">
+          <h2><span class="live"></span> Live runs <span class="cnt">— agent · tool · answer</span></h2>
+          <div class="feed">
+            <div class="row"><span class="tick"></span><div><div class="meta"><b>pricebot</b> · <span class="tool">finance.quote</span> · CRON native · 4.2s · now</div><div class="ans">IBM +5.3% to $198.40 since the last alert — momentum up on earnings beat.</div></div></div>
+            <div class="row"><span class="tick"></span><div><div class="meta"><b>incident_triage</b> · <span class="tool">logs.scan_errors</span> · POLL native · 6.1s · 41s ago</div><div class="ans">2 new ERRORs in payments-svc — both <code>ConnectionTimeout</code> to the ledger. Likely the DB failover at 14:02.</div></div></div>
+            <div class="row"><span class="tick"></span><div><div class="meta"><b>deploy_sentinel</b> · <span class="tool">deploy.status</span> · POLL native · 1.8s · 1m ago</div><div class="ans">staging build <code>#4821</code> succeeded (3m12s). No failing checks. Ready to promote.</div></div></div>
+            <div class="row ap"><span class="tick"></span><div><div class="meta"><b>pr_reviewer</b> · <span class="tool">web.fetch</span> · PUSH · AP github · 22s · 4m ago</div><div class="ans">PR #7586 on acme/api — adds retry to the ledger client. Risk: low. One nit on the backoff cap.</div></div></div>
+            <div class="row"><span class="tick"></span><div><div class="meta"><b>support_digest</b> · <span class="tool">tickets.search</span> · POLL native · 5.0s · 6m ago</div><div class="ans">1 new Sev-1: "checkout 500s for EU users". Routed to on-call, summary posted to #incidents.</div></div></div>
+            <div class="row"><span class="tick"></span><div><div class="meta"><b>market_briefer</b> · CRON native · 12.4s · 8:00am</div><div class="ans">Morning brief: futures flat, CPI at 8:30, watchlist unchanged. Full note in Telegram.</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>◈ Channels</h2>
+          <div class="chan">
+            <div class="c"><span class="g"></span> web</div>
+            <div class="c"><span class="g"></span> Telegram <span class="pill native" style="margin-left:.2rem">direct</span></div>
+            <div class="c"><span class="g"></span> Discord <span class="pill native" style="margin-left:.2rem">direct</span></div>
+            <div class="c"><span class="g"></span> Slack</div>
+          </div>
+          <p style="color:var(--dim);font-size:.78rem;margin-top:.7rem">web · Telegram · Discord need no tunnel; Slack uses the app route. All AP-free.</p>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="mockflag">mock · sample data · not wired to a live server</div>
+
+<script>
+  // a tiny illustrative dry-run — mirrors the real /api/events/dry-run verdict shape
+  function classify(t){
+    t=t.toLowerCase();
+    if(/\bevery\b|\bdaily\b|\beach (morning|day|week)|at \d/.test(t) && !/watch|error|price|ticket|deploy|log/.test(t))
+      return {mode:'CRON',backend:'native',would:'arm',note:'native scheduler'};
+    if(/gmail|email|github|pull request|\bpr\b|box|rss|calendar/.test(t))
+      return {mode:'PUSH',backend:'ap',would:(/off|down/.test(t)?'decline':'arm'),note:'Activepieces integration'};
+    if(/watch|monitor|log|error|price|change|ticket|deploy|every \d/.test(t))
+      return {mode:'POLL',backend:'native',would:'arm',note:'native tool-watch / poll'};
+    return {mode:'NOW',backend:'—',would:'answer',note:'answered by the agent'};
+  }
+  function preview(){
+    const v=classify(document.getElementById('utt').value);
+    const pc = v.backend==='ap'?'ap':(v.mode==='POLL'?'poll':'native');
+    const wc = v.would==='decline'?'decline':'arm';
+    document.getElementById('verdict').innerHTML =
+      `<span class="pill ${pc}">${v.mode}</span>`+
+      `<span class="pill ${pc}">${v.backend}</span>`+
+      `<span class="pill ${wc}">would ${v.would}</span>`+
+      `<span style="color:var(--faint)">→ ${v.note} · zero side effects</span>`;
+  }
+  preview();
+</script>
+</body></html>

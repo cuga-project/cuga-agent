@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="950" height="876" viewBox="0 0 950 876" font-family="ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="950" height="876" fill="#ffffff"/>
+<text x="30" y="34" font-size="20" font-weight="700" fill="#1c1b1a">CREATE ②a — NL→Flow: fill the blanks, or ask till legit</text>
+<text x="30" y="58" font-size="13" fill="#8a8785">A deterministic FlowSpec resolver fronts the LLM. Both doors arm through the SAME tool + registry gate — a sentence becomes the right flow or a question, never the wrong flow.</text>
+<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1c1b1a"/></marker><marker id="arwo" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#1c1b1a" stroke-width="1.2"/></marker></defs>
+<line x1="119" y1="142" x2="119" y2="852" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="38" y="96" width="162" height="46" rx="9" fill="#6b6866"/>
+<text x="119" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">You</text>
+<line x1="297" y1="142" x2="297" y2="852" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="216" y="96" width="162" height="46" rx="9" fill="#2b5fd9"/>
+<text x="297" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Pre-router</text>
+<text x="297" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(flowspec.py)</text>
+<line x1="475" y1="142" x2="475" y2="852" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="394" y="96" width="162" height="46" rx="9" fill="#2b5fd9"/>
+<text x="475" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Concierge LLM</text>
+<text x="475" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(ReAct)</text>
+<line x1="653" y1="142" x2="653" y2="852" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="572" y="96" width="162" height="46" rx="9" fill="#2b5fd9"/>
+<text x="653" y="122" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Registry gate</text>
+<text x="653" y="137" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">(triggers.py)</text>
+<line x1="831" y1="142" x2="831" y2="852" stroke="#c9c6c1" stroke-width="1.4"/>
+<rect x="750" y="96" width="162" height="46" rx="9" fill="#b06f10"/>
+<text x="831" y="125" font-size="12.5" font-weight="600" fill="#fff" text-anchor="middle">Activepieces</text>
+<text x="208.0" y="152" font-size="12" fill="#1c1b1a" text-anchor="middle">"when a PR is opened, review it"</text>
+<line x1="119" y1="160" x2="290" y2="160" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<path d="M297,206 h34 v20 h-34" fill="none" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="337" y="212" font-size="12" fill="#1c1b1a">classify kind=PUSH · match trigger phrases · extract slots</text>
+<rect x="30" y="248" width="890" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="475" y="268" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">HIGH confidence needs: a standing-flow marker + ONE distinct app + no foreign vocabulary</text>
+<text x="475.0" y="300" font-size="12" fill="#1c1b1a" text-anchor="middle">validate(github, new_pr, {})</text>
+<line x1="297" y1="308" x2="646" y2="308" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="475.0" y="352" font-size="12" fill="#1c1b1a" text-anchor="middle">missing required slot: repo</text>
+<line x1="653" y1="360" x2="304" y2="360" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="208.0" y="404" font-size="12" fill="#1c1b1a" text-anchor="middle">"Which repository (owner/repo) should I watch?"  — spec PARKED on this thread</text>
+<line x1="297" y1="412" x2="126" y2="412" stroke="#1c1b1a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arwo)"/>
+<text x="208.0" y="456" font-size="12" fill="#1c1b1a" text-anchor="middle">"acme/api"   (the next message fills the blank)</text>
+<line x1="119" y1="464" x2="290" y2="464" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="475.0" y="508" font-size="12" fill="#1c1b1a" text-anchor="middle">validate(github, new_pr, {repo: acme/api}) → armable</text>
+<line x1="297" y1="516" x2="646" y2="516" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<text x="564.0" y="560" font-size="12" fill="#1c1b1a" text-anchor="middle">find_or_create_flow — the SAME tool the LLM calls (connect gate · dedup · build)</text>
+<line x1="297" y1="568" x2="824" y2="568" stroke="#1c1b1a" stroke-width="1.4" marker-end="url(#arw)"/>
+<rect x="30" y="604" width="890" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="475" y="624" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">AMBIGUOUS (several apps hit / no marker / NOW question) → falls to the LLM, which sees</text>
+<rect x="30" y="648" width="890" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="475" y="668" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">the full trigger vocabulary and calls the same tool; the gate disposes of every proposal</text>
+<rect x="30" y="692" width="890" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="475" y="712" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">a topic-change reply is never crammed into the slot — the parked spec is dropped</text>
+<rect x="30" y="736" width="890" height="30" rx="6" fill="#f4f3f1" stroke="#7a3fa8" stroke-opacity="0.55"/>
+<text x="475" y="756" font-size="12" fill="#7a3fa8" text-anchor="middle" font-style="italic">benchmarked: 47 labelled cases in CI, gated on ZERO wrong-at-high (test_flowspec_bench.py)</text>
+</svg>
