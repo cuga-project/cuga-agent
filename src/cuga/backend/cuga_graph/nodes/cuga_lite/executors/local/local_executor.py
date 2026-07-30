@@ -11,6 +11,7 @@ from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
 
 class LocalExecutor(BaseExecutor):
@@ -84,7 +85,29 @@ class LocalExecutor(BaseExecutor):
                 exec(wrapped_code, restricted_globals, exec_locals)
 
                 async_main = exec_locals['_async_main']
-                result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
+                BlockToolCallCounter.reset()
+                try:
+                    result_locals = await asyncio.wait_for(async_main(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # Preserve the evidence instead of discarding it: the agent
+                    # otherwise sees a bare timeout, learns nothing, and re-runs
+                    # the same loop until the step limit.
+                    partial_stdout = stdout_buf.getvalue()
+                    calls_made = BlockToolCallCounter.current_count()
+                    guidance = (
+                        f"Error during execution: Execution timed out after {timeout} seconds.\n"
+                        f"This code block started {calls_made} tool call(s) before it was killed; "
+                        "ALL variables from this block are LOST (nothing was saved).\n"
+                        "Do NOT rerun the same code — it will time out again. Restructure instead: "
+                        "use a bulk/aggregate tool (find_tools), or process a small batch of items "
+                        "per code block and store partial progress in a variable (variables persist "
+                        "across blocks only when the block finishes in time).\n"
+                    )
+                    if partial_stdout.strip():
+                        guidance += f"Partial stdout before the timeout:\n{partial_stdout}"
+                    else:
+                        guidance += "(no stdout was printed before the timeout)"
+                    return guidance
                 context_locals.update(result_locals)
         except Exception as e:
             # Preserve prints from earlier successful lines so the agent still
