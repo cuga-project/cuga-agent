@@ -1151,8 +1151,9 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 "This is ONE run of a scheduled task (the schedule handles recurrence — do NOT "
                 "loop, sleep, or wait). Do the check ONCE, right now, and report:\n" + task
                 + ("" if kind == "cron" else
-                   "\nThis is a POLL: report ONLY if the value changed since the last run; "
-                   "otherwise say nothing changed."))
+                   "\nThis is a POLL: just report the current value/state plainly. Do NOT decide "
+                   "whether to notify — a change gate downstream compares it to last time and only "
+                   "forwards it if it actually changed (via the SIGNAL line you'll be asked for)."))
             origin = _origin.get()
             interval = (every_minutes * 60) if every_minutes else None
             cadence_tag = cron.replace(" ", "_") if cron else (f"{every_minutes}m" if every_minutes else kind)
@@ -1194,6 +1195,22 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     next_fire=_next, expires_at=(expires_at or 0.0),
                     config=({"expires_at": expires_at} if expires_at else {}))
                 store.upsert(sub)
+                # STATEFUL POLL (Phase 3): a POLL reports only on a change, so seed its delta state
+                # (watch_state). CRON has none → Tier-0 'always report'. The spec (threshold/identity/
+                # fuzzy) is extracted smartly from the RAW utterance, not by keyword.
+                if kind == "poll":
+                    try:
+                        from . import poll_state as _ps
+                    except ImportError:  # flat load (offline tests)
+                        import poll_state as _ps
+                    try:
+                        _spec = await _ps.extract_spec(_utterance.get("") or prompt)
+                        store.set_watch_state(_ps.spec_to_state(sub.id, _spec))
+                        log.info("poll %s delta kind=%s thr=%s", sub.id, _spec.get("kind"),
+                                 _spec.get("threshold"))
+                    except Exception as e:  # noqa: BLE001 — a spec miss degrades to fuzzy, never blocks arm
+                        log.warning("poll-spec seed failed for %s (%s) — defaulting fuzzy", sub.id, e)
+                        store.set_watch_state(_ps.spec_to_state(sub.id, {"kind": "fuzzy"}))
                 log.info("concierge armed NATIVE %s agent=%s next=%.0f tenant=%s",
                          kind, agent, _next, p.scope)
                 _cad = (f"every {interval // 60} min" if interval and interval % 60 == 0

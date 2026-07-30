@@ -161,6 +161,33 @@ def test_poll_arms_native_no_ap():
     del os.environ["EVENTS_SCHEDULER"]
 
 
+def test_poll_arm_seeds_watch_state_threshold():
+    """A POLL seeds a watch_state row (stateful delta); a CRON does not (Tier-0 always report)."""
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    os.environ["EVENTS_POLL_LLM"] = "0"                   # heuristic spec (offline)
+    try:
+        focf, store = _tools(engine=None)
+        concierge_mod_utterance("ping me if IBM stock moves by 5%")
+        asyncio.run(focf.ainvoke(
+            {"agent": "cuga", "kind": "poll", "prompt": "check IBM stock", "every_minutes": 2}))
+        sid = store.list()[0].id
+        ws = store.get_watch_state(sid)
+        assert ws is not None and ws["kind"] == "threshold" and abs(ws["threshold"] - 0.05) < 1e-9
+        # a CRON seeds nothing
+        focf2, store2 = _tools(engine=None)
+        asyncio.run(focf2.ainvoke(
+            {"agent": "cuga", "kind": "cron", "prompt": "say hi", "every_minutes": 5}))
+        assert store2.get_watch_state(store2.list()[0].id) is None
+    finally:
+        del os.environ["EVENTS_SCHEDULER"]
+        del os.environ["EVENTS_POLL_LLM"]
+
+
+def concierge_mod_utterance(text):
+    import concierge
+    concierge._utterance.set(text)
+
+
 def test_gmail_push_declines_without_ap():
     focf, store = _tools(engine=None)                    # no AP engine
     reply = asyncio.run(focf.ainvoke(

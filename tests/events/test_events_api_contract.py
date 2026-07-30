@@ -189,6 +189,43 @@ def test_invoke_expiry_gate_ends_a_bounded_flow():
     assert st.get("pricebot-ttl001") is None
 
 
+def test_invoke_stateful_poll_gates_delivery_on_change():
+    """A native POLL with watch_state: the agent's <<SIGNAL>> is parsed, the delta decided, and the
+    reply delivered ONLY when it changed. First tick seeds the baseline (no alert); a big move fires;
+    the SIGNAL line is stripped from the human answer either way."""
+    class _SigRuntime:
+        def __init__(self):
+            self.value = 100.0
+        def get_agent(self, agent, scope=""):
+            return object()
+        async def run(self, agent, thread_id, worker_input, scope="", deliver_to=None):
+            return f"IBM is at {self.value}.\n<<SIGNAL {{\"value\": {self.value}}}>>"
+    rt = _SigRuntime()
+    sub = Subscription(id="pricebot-p1", mode="POLL", target_agent="pricebot", backend="native",
+                       source_connector="interval", ap_flow_id=None, thread_id="t",
+                       prompt="check IBM", interval_seconds=120, next_fire=1.0)
+    c, st = _client([sub], runtime=rt, gateway_token="")
+    st.set_watch_state({"subscription_id": "pricebot-p1", "kind": "threshold", "seen_keys": [],
+                        "baseline": None, "reset_policy": "ratchet", "value_path": "IBM price",
+                        "threshold": 0.05, "updated_at": 0.0})
+    tick = {"agent": "pricebot", "text": "check IBM",
+            "source": {"type": "time", "name": "poll"},
+            "event": {"kind": "tick", "payload": {}}, "subscription_id": "pricebot-p1"}
+    # first tick → baseline seeded, NOT reported
+    b = c.post("/invoke", json=tick).json()
+    assert b["poll"]["changed"] is False
+    assert "SIGNAL" not in b["answer"] and "IBM is at 100.0" in b["answer"]
+    assert st.get_watch_state("pricebot-p1")["baseline"] == 100.0
+    # small move (+3%) → still no report, baseline unchanged (ratchet)
+    rt.value = 103.0
+    assert c.post("/invoke", json=tick).json()["poll"]["changed"] is False
+    # big move (+10%) → reported, re-baselined to 110
+    rt.value = 110.0
+    b = c.post("/invoke", json=tick).json()
+    assert b["poll"]["changed"] is True
+    assert st.get_watch_state("pricebot-p1")["baseline"] == 110.0
+
+
 def test_invoke_direct_agent_call_shape():
     """The channel-less direct call: source.type=time + event.kind=runonce. The response must carry
     meta.mcp — that is what the NOW suite asserts on to prove the agent reached a real tool."""

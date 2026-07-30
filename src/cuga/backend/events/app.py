@@ -224,6 +224,21 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # a human DM on a channel is a NOW run (logged here); a time/integration source is an armed
         # flow whose run history already lives in Activepieces — don't double-count it.
         is_now = env.source.type == "channel"
+        # STATEFUL POLL delta gate (Phase 3): a native poll with watch_state reports only on a change.
+        # Load its state now and ask the agent to emit a comparable SIGNAL (augment the prompt); the
+        # change decision + delivery gate happen post-answer. No watch_state row → nothing changes
+        # (plain cron / channel / AP fire is entirely unaffected).
+        _poll_ws = None
+        _poll_sid = str(body.get("subscription_id") or "")
+        if not is_now and _poll_sid and store is not None:
+            try:
+                _poll_ws = store.get_watch_state(_poll_sid)
+            except Exception:  # noqa: BLE001
+                _poll_ws = None
+            if _poll_ws is not None:
+                from . import poll_state as _ps
+                env.text = (env.text or "") + _ps.augment_prompt(_poll_ws)
+                tr("poll.watch", subscription=_poll_sid, kind=_poll_ws.get("kind"))
         # 'concierge' is the runtime ROUTER (picks among pre-built agents / arms flows), not a
         # worker agent — inbound CHANNEL messages arm agent='concierge', so route those through
         # the router. A concrete agent id runs directly on the worker runtime.
@@ -310,6 +325,23 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # every channel (Telegram/Discord/…). Structured `meta` also rides in the API response.
         # Off with EVENTS_REPLY_METADATA=0.
         meta = runmeta.get() or {}
+        # STATEFUL POLL delta decision (Phase 3): pull the agent's SIGNAL out of the answer, decide
+        # whether anything CHANGED against the tiny durable state, and persist the next state. If
+        # nothing changed we suppress delivery (below) and log the run as 'nochange' so it's visible
+        # in the timeline without pinging the user. Tier 0/1/2 all resolve here.
+        _poll_changed = True
+        _poll_reason = ""
+        if _poll_ws is not None and isinstance(answer, str):
+            from . import poll_state as _ps
+            _clean, _signal = _ps.parse_signal(answer)
+            answer = _clean                       # strip the machine SIGNAL line from the human reply
+            _dec = _ps.decide(_poll_ws, _signal, time_module.time())
+            _poll_changed, _poll_reason = _dec.changed, _dec.reason
+            try:
+                store.set_watch_state(_dec.state)
+            except Exception as e:  # noqa: BLE001
+                tr.error("poll.state", err=str(e)[:120])
+            tr("poll.decide", subscription=_poll_sid, changed=_poll_changed, reason=_poll_reason)
         base_answer = answer if isinstance(answer, str) else str(answer)   # log the reply, sans footer
         if os.environ.get("EVENTS_REPLY_METADATA", "1") != "0" and isinstance(answer, str):
             foot = runmeta.footer(meta, ms=ms)
@@ -324,7 +356,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         #      channel's direct adapter (no AP connection). AP-backed sinks never reach here (they use
         #      an AP send step + deliver=False), so a deliver=True direct-send is unambiguous.
         #   2. capture sink: POST to EA_CAPTURE_URL when set (assertable real-HTTP target for e2e/web).
-        if env.deliver:
+        if env.deliver and _poll_changed:
             from . import delivery
             from .principal import channel_origin, channel_locus
             direct_done = False
@@ -378,16 +410,21 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         elif is_now:
             _run_mode = "NOW"
             _run_backend = "direct"
+        # a stateful poll that found no change is a real run (it executed) but delivered nothing —
+        # mark it 'nochange' so the timeline shows the tick without implying the user was pinged.
+        _run_status = "nochange" if (_poll_ws is not None and not _poll_changed) else "ok"
         _log_now(scope=scope,
                  agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
                  # log what the worker actually RAN ON (framing + [event] payload for a fire; the
                  # bare utterance for chat) — env.text alone hid the payload from the disk log
                  channel=env.source.name, prompt=env.worker_input(), answer=base_answer,
-                 status="ok", ms=ms, meta=meta, trace_id=tr.id,
+                 status=_run_status, ms=ms, meta=meta, trace_id=tr.id,
                  thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
                  event_kind=str(getattr(env.event, "kind", "") or ""), db=(is_now or _native_fire),
                  mode=_run_mode, backend=_run_backend, subscription_id=_sub_id)
         return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
+                # poll delta result: delivered? and why (absent for non-poll fires)
+                **({"poll": {"changed": _poll_changed, "reason": _poll_reason}} if _poll_ws is not None else {}),
                 "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
                          "backend": meta.get("backend"), "mcp": meta.get("mcp") or [],
                          "tools": meta.get("tools") or [], "ms": ms}}
@@ -596,6 +633,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     and (not f_backend or str(s.get("backend") or "").lower() == f_backend)
                     and (not f_status or str(s.get("status") or "").lower() == f_status))
         subs = [s for s in subs if _keep(s)]
+        # attach the stateful-poll delta state (kind/threshold + live baseline/seen-count) so the
+        # dashboard can show WHAT each poll watches and its current reference point.
+        if store is not None:
+            for s in subs:
+                if str(s.get("mode") or "").upper() == "POLL":
+                    try:
+                        ws = store.get_watch_state(s.get("subscription_id") or s.get("id"))
+                    except Exception:  # noqa: BLE001
+                        ws = None
+                    if ws:
+                        s["watch"] = {"kind": ws.get("kind"), "threshold": ws.get("threshold"),
+                                      "watching": ws.get("value_path"), "baseline": ws.get("baseline"),
+                                      "seen": len(ws.get("seen_keys") or [])}
         summary = {
             "total": len(subs),
             "by_mode": {m: sum(1 for s in subs if str(s.get("mode") or "").upper() == m)

@@ -196,6 +196,7 @@ class SubscriptionStore:
 
     def delete(self, sub_id: str) -> None:
         self._db.execute("DELETE FROM subscription WHERE id=?", (sub_id,))
+        self._db.execute("DELETE FROM watch_state WHERE subscription_id=?", (sub_id,))
         self._db.commit()
 
     # ---- reads -----------------------------------------------------------
@@ -248,4 +249,31 @@ class SubscriptionStore:
         self._db.execute(
             "UPDATE subscription SET last_fire=?, next_fire=?, fire_count=fire_count+1 WHERE id=?",
             (last_fire, next_fire, sub_id))
+        self._db.commit()
+
+    # ---- watch_state (stateful POLL delta, Phase 3) ----------------------
+    def get_watch_state(self, sub_id: str) -> dict | None:
+        """The delta state for a stateful poll, or None (→ Tier-0 'always report'). ``seen_keys`` is
+        decoded to a list; ``baseline`` stays float|None."""
+        r = self._db.execute("SELECT * FROM watch_state WHERE subscription_id=?", (sub_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["seen_keys"] = json.loads(d.get("seen_keys") or "[]")
+        return d
+
+    def set_watch_state(self, ws: dict) -> None:
+        """Upsert a watch_state row (arm-time seed and per-fire update both call this)."""
+        self._db.execute(
+            """INSERT INTO watch_state
+                 (subscription_id,kind,seen_keys,baseline,reset_policy,value_path,threshold,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(subscription_id) DO UPDATE SET
+                 kind=excluded.kind, seen_keys=excluded.seen_keys, baseline=excluded.baseline,
+                 reset_policy=excluded.reset_policy, value_path=excluded.value_path,
+                 threshold=excluded.threshold, updated_at=excluded.updated_at""",
+            (ws["subscription_id"], ws.get("kind") or "fuzzy",
+             json.dumps(ws.get("seen_keys") or []), ws.get("baseline"),
+             ws.get("reset_policy") or "ratchet", ws.get("value_path") or "",
+             float(ws.get("threshold") or 0), float(ws.get("updated_at") or 0)))
         self._db.commit()
