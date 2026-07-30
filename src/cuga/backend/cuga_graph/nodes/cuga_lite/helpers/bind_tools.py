@@ -197,6 +197,10 @@ async def resolve_model_with_bind_tools(
     - ``cuga_lite_bind_tools_apps``: list of app names (``mode=apps`` or ``apps_and_tools``)
     - ``cuga_lite_bind_tools_tool_names``: StructuredTool ``name`` values (``mode=tools`` or ``apps_and_tools``)
     - ``cuga_lite_bind_tools_include_find_tools``: merge ``find_tools`` into ``all`` / ``apps`` / ``tools`` / ``apps_and_tools``
+
+    Settings-only (``settings.advanced_features``, **not** readable from ``configurable`` —
+    setting these in ``configurable`` is silently ignored and the defaults apply):
+
     - ``cuga_lite_bind_tools_max_count``: provider-safe cap on the number of tools sent to
       ``bind_tools``. Default 128 (matches Groq/OpenAI). Set 0 to disable. When the
       candidate list exceeds the cap, the LLM shortlister picks the top-K most relevant
