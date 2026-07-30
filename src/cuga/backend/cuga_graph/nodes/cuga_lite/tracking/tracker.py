@@ -30,7 +30,45 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
     "tracking_enabled", default=False
 )
 
+# Holds a mutable counter dict so the count survives context copies:
+# ``asyncio.wait_for`` runs each code block in a new Task whose context is a
+# *copy* of the executor's, but the copy references the SAME dict, so
+# increments made inside the block are visible to the executor afterwards.
+_block_tool_calls_context: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "block_tool_calls", default=None
+)
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class BlockToolCallCounter:
+    """Counts the tool calls made by a single code block.
+
+    The executor calls :meth:`reset` at the start of every block; every tool
+    invocation path (registry ``call_api``, local ``call_api`` helper,
+    combined-provider tools) calls :meth:`increment` before doing any work.
+    When a block is killed at ``sandbox_execution_timeout`` the executor reads
+    :meth:`current_count` so it can tell the agent how far the block actually
+    got, instead of reporting a bare timeout.
+    """
+
+    @staticmethod
+    def reset() -> None:
+        _block_tool_calls_context.set({"n": 0})
+
+    @staticmethod
+    def current_count() -> int:
+        holder = _block_tool_calls_context.get()
+        return holder["n"] if holder else 0
+
+    @staticmethod
+    def increment() -> None:
+        holder = _block_tool_calls_context.get()
+        if holder is None:
+            # No block scope was opened (direct tool use outside the code
+            # executor) — nothing to count.
+            return
+        holder["n"] += 1
 
 
 class ToolCallTracker:

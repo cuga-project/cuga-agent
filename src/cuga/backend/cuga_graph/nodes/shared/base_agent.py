@@ -40,6 +40,21 @@ from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt imp
 )
 
 
+def _chat_openai_model_name(llm: BaseChatModel) -> str:
+    return str(getattr(llm, "model_name", None) or getattr(llm, "model", None) or "")
+
+
+def _chat_openai_skips_native_json_schema(llm: BaseChatModel) -> bool:
+    """ChatOpenAI models that reject OpenAI ``json_schema`` / Bedrock ``output_config``.
+
+    LiteLLM proxies often expose Bedrock Claude as ``aws/claude-...``. Native
+    ``with_structured_output(..., method="json_schema")`` becomes
+    ``output_config.format`` on Converse and Bedrock rejects it for Anthropic.
+    """
+    name = _chat_openai_model_name(llm).lower()
+    return "claude" in name or "gcp" in name
+
+
 def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
     """Detect langchain_openai json_schema parser failure (no parsed/refusal on AIMessage).
 
@@ -210,9 +225,16 @@ JSON schema:
 
             chain = chain.with_retry(stop_after_attempt=3)
             return chain
-        elif isinstance(llm, ChatOpenAI) and any(x in llm.model_name for x in ["GCP", "Claude"]):
-            logger.debug("Getting model for Claude")
-            return prompt_template | llm
+        elif isinstance(llm, ChatOpenAI) and _chat_openai_skips_native_json_schema(llm):
+            # Prompt + parser: avoid json_schema → Bedrock output_config.format 400.
+            logger.debug(
+                "Getting model for Claude/Bedrock via ChatOpenAI ({}); skipping native json_schema",
+                _chat_openai_model_name(llm),
+            )
+            if schema is None:
+                return prompt_template | llm
+            parser = PydanticOutputParser(pydantic_object=schema)
+            return (prompt_template | llm | parser).with_retry(stop_after_attempt=3)
         elif ChatLiteLLM is not None and isinstance(llm, ChatLiteLLM):
             logger.debug("Loading LLM for LiteLLM")
             parser = PydanticOutputParser(pydantic_object=schema)
