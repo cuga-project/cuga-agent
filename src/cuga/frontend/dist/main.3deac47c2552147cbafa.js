@@ -8800,6 +8800,24 @@ function RouteRoot({
     className: "route-root"
   }, children);
 }
+
+// Renders its children only when the events layer is mounted + enabled; otherwise redirects home.
+// The nav entries already hide when events is off (via getEventsStatus); this also blocks DIRECT
+// navigation to /studio so Studio can never appear in vanilla CUGA (EVENTS_ENABLED off, the default).
+function EventsGate({
+  children
+}) {
+  const [state, setState] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)("checking");
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    _api__WEBPACK_IMPORTED_MODULE_9__.getEventsStatus().then(s => setState(s ? "on" : "off")).catch(() => setState("off"));
+  }, []);
+  if (state === "checking") return null; // don't flash Studio before the check resolves
+  if (state === "off") return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(react_router_dom__WEBPACK_IMPORTED_MODULE_2__.Navigate, {
+    to: "/",
+    replace: true
+  });
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), null, children);
+}
 function AuthGate({
   children
 }) {
@@ -8904,7 +8922,7 @@ function renderApp() {
     path: "/studio",
     element: /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(RequireRole, {
       requiredRoles: ["ServiceOwner", "ServiceAdmin"]
-    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(RouteRoot, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_StudioPage__WEBPACK_IMPORTED_MODULE_6__.StudioPage, null)))
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(EventsGate, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(RouteRoot, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_StudioPage__WEBPACK_IMPORTED_MODULE_6__.StudioPage, null))))
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(react_router_dom__WEBPACK_IMPORTED_MODULE_2__.Route, {
     path: "/unauthorized",
     element: /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(RouteRoot, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_UnauthorizedPage__WEBPACK_IMPORTED_MODULE_7__.UnauthorizedPage, null))
@@ -17267,13 +17285,19 @@ async function deleteSecret(id) {
 // exactly what these return and never computes status itself.
 // ---------------------------------------------------------------------------
 
-// Returns null when the events layer is not mounted (vanilla CUGA) — callers
-// use that to hide the Studio entry point entirely.
+// Returns null unless the events layer is actually mounted AND enabled — callers
+// use that to hide the Studio entry point entirely. Robust against the SPA catch-all:
+// when EVENTS_ENABLED is off, /api/events/status is unrouted, so the server returns
+// index.html with HTTP 200. We therefore must NOT trust res.ok alone — we require a
+// JSON content-type AND an explicit enabled:true, or the Studio would leak into vanilla CUGA.
 async function getEventsStatus() {
   try {
     const res = await apiFetch("/api/events/status");
     if (!res.ok) return null;
-    return await res.json();
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) return null; // SPA fallback served HTML → events off
+    const data = await res.json();
+    return data && data.enabled === true ? data : null; // only when the backend says enabled
   } catch {
     return null;
   }
@@ -22482,4 +22506,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.9bf30d633d368f97aea3.js.map
+//# sourceMappingURL=main.3deac47c2552147cbafa.js.map

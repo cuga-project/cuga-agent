@@ -452,13 +452,19 @@ export interface EventsStatus {
   features: Record<string, boolean>;
 }
 
-// Returns null when the events layer is not mounted (vanilla CUGA) — callers
-// use that to hide the Studio entry point entirely.
+// Returns null unless the events layer is actually mounted AND enabled — callers
+// use that to hide the Studio entry point entirely. Robust against the SPA catch-all:
+// when EVENTS_ENABLED is off, /api/events/status is unrouted, so the server returns
+// index.html with HTTP 200. We therefore must NOT trust res.ok alone — we require a
+// JSON content-type AND an explicit enabled:true, or the Studio would leak into vanilla CUGA.
 export async function getEventsStatus(): Promise<EventsStatus | null> {
   try {
     const res = await apiFetch("/api/events/status");
     if (!res.ok) return null;
-    return (await res.json()) as EventsStatus;
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) return null; // SPA fallback served HTML → events off
+    const data = (await res.json()) as EventsStatus;
+    return data && data.enabled === true ? data : null;         // only when the backend says enabled
   } catch {
     return null;
   }
