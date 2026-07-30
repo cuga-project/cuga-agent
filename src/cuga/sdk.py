@@ -100,8 +100,10 @@ from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
     appworld_plain_post_llm_runnable,
+    is_appworld_action_label,
     load_appworld_final_answer_prompt,
     load_appworld_plain_final_answer_prompt,
+    load_appworld_task_classifier_prompt,
     parse_appworld_plain_completion,
 )
 from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
@@ -2682,35 +2684,60 @@ class CugaAgent:
         if settings.advanced_features.benchmark == "appworld":
             llm_model = llm_manager.get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
-            if appworld_plain:
-                pmt = load_appworld_plain_final_answer_prompt(model_config=settings.agent.final_answer.model)
-                chain = (
-                    BaseAgent.get_chain(pmt, llm_model, wx_json_mode="no_format")
-                    | appworld_plain_post_llm_runnable()
-                )
-            else:
-                pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
-                chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
             invoke_payload = {
                 "input": message if isinstance(message, str) else message[-1].content,
                 "last_planner_answer": final_answer,
             }
-            if appworld_plain:
-                final_answer_res = await ainvoke_with_retry_on_tool_choice_none(chain, invoke_payload)
-            else:
-                final_answer_res = await chain.ainvoke(invoke_payload)
-            if appworld_plain:
-                if isinstance(final_answer_res, FinalAnswerAppworldOutput):
-                    final_answer = final_answer_res.final_answer
-                elif isinstance(final_answer_res, AIMessage):
-                    raw = final_answer_res.content
-                    if isinstance(raw, list):
-                        raw = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw)
-                    final_answer = parse_appworld_plain_completion(str(raw))
+            # Same ACTION/QUERY gate as FinalAnswerAgent (plain mode): action tasks → N/A.
+            # Gate extraction on this decision, not on `final_answer == "N/A"` — a planner
+            # that legitimately answers the string "N/A" on a QUERY task must still be
+            # extracted, as it was before the classifier existed.
+            is_action = False
+            if appworld_plain and getattr(settings.advanced_features, "appworld_classify_action_tasks", True):
+                try:
+                    classifier = BaseAgent.get_chain(
+                        load_appworld_task_classifier_prompt(model_config=settings.agent.final_answer.model),
+                        llm_model,
+                        wx_json_mode="no_format",
+                    )
+                    clf_msg = await classifier.ainvoke(invoke_payload)
+                    clf_raw = (clf_msg.content if hasattr(clf_msg, "content") else str(clf_msg)) or ""
+                    if is_appworld_action_label(clf_raw):
+                        logger.info("SDK AppWorld classifier -> ACTION (answer=N/A)")
+                        is_action = True
+                        final_answer = "N/A"
+                    else:
+                        logger.info("SDK AppWorld classifier -> QUERY")
+                except Exception as e:
+                    logger.warning(f"SDK AppWorld action/query classifier failed, defaulting to QUERY: {e}")
+            if not is_action:
+                if appworld_plain:
+                    pmt = load_appworld_plain_final_answer_prompt(
+                        model_config=settings.agent.final_answer.model
+                    )
+                    chain = (
+                        BaseAgent.get_chain(pmt, llm_model, wx_json_mode="no_format")
+                        | appworld_plain_post_llm_runnable()
+                    )
                 else:
-                    final_answer = str(final_answer_res)
-            else:
-                final_answer = final_answer_res.final_answer
+                    pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
+                    chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
+                if appworld_plain:
+                    final_answer_res = await ainvoke_with_retry_on_tool_choice_none(chain, invoke_payload)
+                else:
+                    final_answer_res = await chain.ainvoke(invoke_payload)
+                if appworld_plain:
+                    if isinstance(final_answer_res, FinalAnswerAppworldOutput):
+                        final_answer = final_answer_res.final_answer
+                    elif isinstance(final_answer_res, AIMessage):
+                        raw = final_answer_res.content
+                        if isinstance(raw, list):
+                            raw = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw)
+                        final_answer = parse_appworld_plain_completion(str(raw))
+                    else:
+                        final_answer = str(final_answer_res)
+                else:
+                    final_answer = final_answer_res.final_answer
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,

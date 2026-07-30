@@ -287,15 +287,14 @@ class CodeExecutor:
         SecurityValidator.validate_syntax(code)
         indented_code = '\n'.join('    ' + line for line in code.split('\n'))
 
-        datetime_mock = CodeWrapper.create_datetime_mock(fake_datetime)
+        # Freeze time (datetime/date/time) like AppWorld's sandbox when in benchmark
+        # mode — scoped inside _async_main so it restores after the user code runs.
+        async_main = CodeWrapper.build_async_main(indented_code, fake_datetime)
 
         wrapped_code = f"""
 import asyncio
 import json
-{datetime_mock}
-async def _async_main():
-{indented_code}
-    return locals()
+{async_main}
 """
         SecurityValidator.validate_dangerous_modules(wrapped_code)
         return wrapped_code

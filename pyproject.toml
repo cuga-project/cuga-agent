@@ -24,7 +24,9 @@ dependencies = [
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
-    "mcp[cli]>=1.23.0",
+    # <2: mcp 2.0.0 removed mcp.server.fastmcp, which server/mcp_servers/cuga.py and
+    # registry/mcp_manager/adapter.py import. Lift once those move to the standalone fastmcp.
+    "mcp[cli]>=1.23.0,<2",
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
