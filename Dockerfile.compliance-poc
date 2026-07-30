@@ -5,6 +5,10 @@ ARG PYTHON_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
 ARG REDIS_IMAGE=redis:7.4-bookworm
 
 FROM ${ACTIVEPIECES_IMAGE} AS activepieces
+USER root
+RUN find /usr/src/app/node_modules /usr/src/app/packages -type f -name "*.map" -delete \
+    && rm -rf /usr/src/app/node_modules/.cache
+
 FROM ${REDIS_IMAGE} AS redis
 
 FROM ${PYTHON_IMAGE} AS builder
@@ -37,8 +41,10 @@ RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright \
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface
-RUN uv run --no-sync python src/scripts/preload_models.py \
-    && find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+RUN PYTHONPATH=/app/src uv run --no-sync python -c \
+      "from scripts.preload_models import preload_fastembed, preload_fastembed_tokenizer; preload_fastembed(); preload_fastembed_tokenizer()" \
+      || true; \
+    find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 FROM registry.access.redhat.com/ubi9/ubi-init:latest
 
@@ -91,14 +97,12 @@ COPY pyproject.toml uv.lock README.md ./
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/.playwright /app/.playwright
 COPY --from=builder /app/.cache /app/.cache
-COPY --from=builder /app/src /app/src
 COPY --from=builder /tmp/evolve-hooks.yaml /etc/cuga-poc/evolve-hooks.yaml
 
 COPY --from=activepieces /usr/src/app /opt/activepieces
 COPY --from=activepieces /usr/local/bin/node /usr/local/bin/node
 COPY --from=activepieces /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=activepieces /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=activepieces /opt/yarn-v1.22.22 /opt/yarn-v1.22.22
+COPY --from=activepieces /usr/local/lib/node_modules/pm2 /usr/local/lib/node_modules/pm2
 COPY --from=redis /usr/local/bin/redis-server /usr/local/bin/redis-server
 COPY --from=redis /usr/local/bin/redis-cli /usr/local/bin/redis-cli
 
@@ -107,11 +111,8 @@ COPY deployment/compliance-poc/defaults.env /etc/cuga-poc/defaults.env
 COPY deployment/compliance-poc/bin/ /usr/local/bin/
 COPY deployment/compliance-poc/systemd/ /etc/systemd/system/
 
-RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-    && ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
+RUN ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
     && ln -sf ../lib/node_modules/pm2/bin/pm2-runtime /usr/local/bin/pm2-runtime \
-    && ln -sf /opt/yarn-v1.22.22/bin/yarn /usr/local/bin/yarn \
     && useradd --system --home-dir /data/cuga/home --shell /sbin/nologin cuga \
     && useradd --system --home-dir /data/activepieces --shell /sbin/nologin activepieces \
     && mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data \

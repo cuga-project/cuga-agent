@@ -8,6 +8,10 @@ Activepieces uses its supported PGLite database mode and a Redis process
 inside the same image. That keeps the PoC in one pod, but it is not the
 production Activepieces topology and must not be scaled horizontally.
 
+The image preloads the FastEmbed model used by the compliance experience,
+but omits Docling's offline document-processing models. Document ingestion
+is outside this PoC's deployment profile.
+
 ## Build
 
 ```sh
