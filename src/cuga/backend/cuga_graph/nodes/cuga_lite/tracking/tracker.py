@@ -175,6 +175,10 @@ def make_recording_awaitable(
 
     @functools.wraps(awaitable_func)
     async def _recorded(*args, **kwargs):
+        # Direct tools bypass the registry/combined call paths, so without this
+        # they are missing from the per-block count the executor reports as
+        # timeout evidence.
+        BlockToolCallCounter.increment()
         start_time = time.time()
         result = None
         error_msg = None
@@ -182,6 +186,12 @@ def make_recording_awaitable(
         try:
             result = await awaitable_func(*args, **kwargs)
             return result
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so it would skip `except
+            # Exception` and be recorded in `finally` as a success with no
+            # error — a cancelled/timed-out call must not look like one.
+            error_msg = "cancelled"
+            raise
         except Exception as e:
             error_msg = str(e)
             raise
