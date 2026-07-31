@@ -201,10 +201,20 @@ def phase_preflight(r: Report) -> dict:
     ap_url = env("AP_BASE_URL", "http://localhost:8081").rstrip("/")
     ap_code, _ = http("GET", f"{ap_url}/api/v1/flags", timeout=8)
     ap_live = ap_code == 200
-    r.ok("preflight", "AP configured on the server", ap_cfg, fail_detail="ap_configured=false")
-    r.ok("preflight", "AP actually reachable", ap_live, ap_url,
-         fail_detail=f"{ap_url} → {ap_code or 'no response'}; CRON/POLL/PUSH cannot arm, and "
-                     f"CONNECT-NEEDED would be a false negative (DECISIONS_2026-07-09 §2)")
+    # NO-AP MODE: when the server itself reports ap_configured=false, Activepieces is INTENTIONALLY
+    # absent (make up-noap / Code Engine), so the AP-dependent checks SKIP instead of failing. If the
+    # server DOES configure AP but it's unreachable, they still FAIL — that's a real, actionable bug.
+    no_ap = not ap_cfg
+    if no_ap:
+        r.skip("preflight", "AP configured on the server",
+               "no-AP mode — Activepieces intentionally absent (make up-noap / Code Engine)")
+        r.skip("preflight", "AP actually reachable",
+               "no-AP mode — cron/poll run on the native scheduler; AP push triggers are off by design")
+    else:
+        r.ok("preflight", "AP configured on the server", ap_cfg, fail_detail="ap_configured=false")
+        r.ok("preflight", "AP actually reachable", ap_live, ap_url,
+             fail_detail=f"{ap_url} → {ap_code or 'no response'}; CRON/POLL/PUSH cannot arm, and "
+                         f"CONNECT-NEEDED would be a false negative (DECISIONS_2026-07-09 §2)")
 
     _, integ = srv("GET", "/api/events/integrations", timeout=20)
     conn = {i["name"]: i.get("status") for i in integ.get("integrations", [])}
@@ -213,7 +223,7 @@ def phase_preflight(r: Report) -> dict:
     _, ag = srv("GET", "/api/events/agents", timeout=20)
     agents = [a.get("name") for a in ag.get("agents", [])]
     r.ok("preflight", "agent fleet seeded", len(agents) >= 3, f"{len(agents)} agents")
-    return {"dead": False, "ap_live": ap_live, "conn": conn, "agents": agents}
+    return {"dead": False, "ap_live": ap_live, "no_ap": no_ap, "conn": conn, "agents": agents}
 
 
 # ── channels ──────────────────────────────────────────────────────────────────
@@ -507,8 +517,15 @@ def flow_alive(sub) -> tuple[bool, str]:
     NB the endpoint returns `{"ok": true, "ap_flow": null}` for a dangling flow — `ok` is true either
     way, and the response dict is always truthy. An earlier version tested `bool(flow)` on that dict
     and therefore verified nothing. Check `ap_flow` itself.
+
+    NO-AP: a NATIVE subscription (in-process scheduler, make up-noap / Code Engine) has NO ap_flow_id
+    — there is no Activepieces flow to validate, so it is "alive" by definition; the real proof is the
+    downstream tick landing in the run log (wait_for_run). DANGLING applies ONLY when a sub NAMES an
+    ap_flow_id that no longer exists in AP.
     """
-    fid = sub.get("ap_flow_id") or "—"
+    if not sub.get("ap_flow_id"):
+        return True, "native scheduler (no AP flow)"
+    fid = sub.get("ap_flow_id")
     code, body = srv("GET", f"/api/events/subscriptions/{sub['id']}/flow", timeout=60)
     if code != 200:
         return False, f"flow lookup HTTP {code} (flow {fid})"
@@ -577,7 +594,7 @@ def flow_poll(r: Report, ap_live: bool, created: list):
 
 def flow_push(r: Report, facts: dict, created: list):
     print("\n\033[1m[flow · PUSH]\033[0m  integration watchers (Box · GitHub · Gmail) through AP")
-    ap_live, conn = facts["ap_live"], facts["conn"]
+    ap_live, conn, no_ap = facts["ap_live"], facts["conn"], facts.get("no_ap", False)
     cases = [
         ("box", "when a resume lands in my Box, judge it against the JD and email me"),
         ("github", "when a pull request opens on my repo, summarize it and message me"),
@@ -621,10 +638,15 @@ def flow_push(r: Report, facts: dict, created: list):
         # app we asked about (resume_judge needs box AND gmail, and emails the verdict).
         want = connect_needed_app(reply)
         if want and not ap_live:
-            # The whole point of the preflight AP probe. Without it this branch is a silent false pass.
-            r.ok("PUSH", f"PUSH {app}: connect-needed is truthful", False,
-                 fail_detail="AP is DOWN — 'connect your credentials' here is a false negative, not a "
-                             "real connect prompt (concierge.py swallows the AP error)")
+            if no_ap:
+                # no-AP mode: "needs Activepieces" IS the truthful answer for an AP-only push trigger.
+                r.skip("PUSH", f"PUSH {app}: needs-AP prompt is truthful (no-AP mode)",
+                       "AP intentionally absent — 'needs Activepieces' is the correct response")
+            else:
+                # The whole point of the preflight AP probe. Without it this branch is a silent false pass.
+                r.ok("PUSH", f"PUSH {app}: connect-needed is truthful", False,
+                     fail_detail="AP is DOWN — 'connect your credentials' here is a false negative, not a "
+                                 "real connect prompt (concierge.py swallows the AP error)")
             continue
         if want:
             via = "" if want == app else f" (via {want}, which this agent also needs)"
@@ -697,10 +719,12 @@ def flow_webhook(r: Report):
     ans3 = str(rep3.get("answer") or "")
     print(f"     → routed={rep3.get('routed')}  agent={chosen!r}")
     # SINGLE-AGENT WORLD: routed mode = the ONE agent ('cuga') handles it; its supervisor picks a
-    # specialist internally. The check: routed worked, the executor is 'cuga', an answer came back.
+    # specialist internally, and runmeta SURFACES that sub-agent for observability (so `agent` is the
+    # handling specialist, e.g. pr_reviewer, not the literal 'cuga'). The check: routed worked, SOME
+    # agent (cuga or the surfaced sub-agent) handled it, an answer came back.
     routed_ok = (code3 == 200 and rep3.get("routed") is True
-                 and chosen == "cuga" and bool(ans3))
-    r.ok("WEBHOOK", "routed mode executes via the one agent ('cuga')", routed_ok,
+                 and bool(chosen) and bool(ans3))
+    r.ok("WEBHOOK", "routed mode executes (supervisor surfaces the handling sub-agent)", routed_ok,
          fail_detail=f"HTTP {code3}: routed={rep3.get('routed')} agent={chosen!r}")
     step(phase="flows", surface="webhook", actor="an external system (no agent named)",
          action='POSTs a PR-shaped payload to /api/events/hook/ci?route=1',

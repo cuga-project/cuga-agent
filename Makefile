@@ -10,6 +10,14 @@ DB        := events.db .events.db
 VOLS      := ap_pgdata ap_redis
 CUGA_PORT := 7860
 
+# ── Code Engine (deployed) — coordinates mirror deploy/ce/config.sh; override on the CLI ──
+CE_APP     ?= cuga-events
+CE_PROJECT ?= ce-project-routing
+CE_ROSTER  ?= supervisor_agents.yaml
+TAIL       ?= 60
+# The deployed public URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy_app.sh).
+CE_URL     := $(shell . deploy/ce/.ce_urls.env 2>/dev/null; echo $$CUGA_CE_URL)
+
 # env-check: required must be present+non-empty; optional just reported.
 REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
             WATSONX_APIKEY WATSONX_URL WATSONX_PROJECT_ID \
@@ -18,7 +26,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -245,3 +253,43 @@ test-exhaustive:
 
 test-new-pieces:
 	EVENTS_SERVER_URL=http://localhost:7860 $(PY) tests/events/live_new_pieces.py $(ARGS)
+
+# ============================================================================
+# Code Engine (DEPLOYED) — CE parallels of the local targets + ops.
+# These target the deployed app; the LOCAL targets above are unchanged. The CE
+# URL is read from deploy/ce/.ce_urls.env; channel creds + GATEWAY_TOKEN come
+# from .env (must match the deployed secret). Needs `ibmcloud login`.
+# ============================================================================
+
+ce-url: ## [CE] Print the deployed app URL
+	@echo "$(if $(CE_URL),$(CE_URL),not deployed — run: make ce-deploy)"
+
+ce-status: ## [CE] Deploy status + the live capability report (channels/scheduler/AP/public-url)
+	@ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || true
+	@ibmcloud ce app get -n $(CE_APP) 2>/dev/null | grep -iE "Status Summary|^URL:|Age|Minimum Scale|Maximum Scale" || { echo "app '$(CE_APP)' not found — make ce-deploy"; exit 1; }
+	@echo "── capability report ──"
+	@curl -s --max-time 15 "$(CE_URL)/api/events/status" | $(PY) -c "import sys,json;c=json.load(sys.stdin).get('capability');[print(' ',l) for l in (c if isinstance(c,list) else [c])]" 2>/dev/null || echo "  (server not reachable)"
+
+ce-logs: ## [CE] Container logs — FOLLOW=1 to stream · GREP=term to filter · TAIL=n (default 60)
+	@ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || true
+	@if [ -n "$(FOLLOW)" ]; then ibmcloud ce app logs -n $(CE_APP) --follow; \
+	elif [ -n "$(GREP)" ]; then ibmcloud ce app logs -n $(CE_APP) 2>/dev/null | grep -iE "$(GREP)" | tail -$(TAIL); \
+	else ibmcloud ce app logs -n $(CE_APP) 2>/dev/null | tail -$(TAIL); fi
+
+ce-smoke: ## [CE] Smoke-test the deployed app (capability + channels + a web-chat turn)
+	$(PY) deploy/ce/3_smoke.py
+
+test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e against the DEPLOYED app
+	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
+	@echo "── e2e against CE: $(CE_URL)   (creds + GATEWAY_TOKEN from .env; must match the deployed secret) ──"
+	EVENTS_SERVER_URL=$(CE_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
+	EVENTS_SERVER_URL=$(CE_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
+
+ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
+	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
+
+ce-deploy: ## [CE] Deploy/redeploy the app (supervisor + 27-agent roster; override CE_ROSTER=…)
+	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy_app.sh
+
+ce-teardown: ## [CE] Delete the app (keeps the image + registry secret)
+	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh

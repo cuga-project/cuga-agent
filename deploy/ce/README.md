@@ -16,7 +16,28 @@ VAKRA). Admin-gated; nothing runs without `CUGA_CE_ADMIN=1`.
   the cuga-apps-mcp servers deploy there. If not, `1_build_push_image.sh` prints how.
 - Your local `../../.env` with the LLM + channel creds (used to build the CE secret).
 
-## Sequence
+## Make targets (the easy path)
+
+Every deploy/ops/test step has a `make` target (run from the repo root). They mirror
+the scripts below and read the deployed URL from `deploy/ce/.ce_urls.env`. **Local
+targets are unchanged; these are the CE parallels — `[CE]` in `make help`.**
+
+| Target | Does |
+|---|---|
+| `make ce-build` | cloud buildrun → ICR (`1_build_push_image.sh`) |
+| `make ce-deploy` | deploy/redeploy (supervisor + 27-agent roster; `CE_ROSTER=…` to change) |
+| `make ce-smoke` | capability report + channels + a web-chat turn (`3_smoke.py`) |
+| **`make test-e2e-ce`** | **the CE parallel of `make test-e2e`** — real channel + fire e2e against the deployed app |
+| `make ce-status` | deploy status + the live capability report |
+| `make ce-logs` | container logs — `FOLLOW=1` to stream · `GREP=telegram` to filter · `TAIL=n` |
+| `make ce-url` | print the deployed URL |
+| `make ce-teardown` | delete the app (keeps image + registry secret) |
+
+`test-e2e-ce` runs the **same harness** as `test-e2e`, only with `EVENTS_SERVER_URL`
+pointed at the CE route; channel creds + `GATEWAY_TOKEN` come from your `.env` (they
+must match the deployed secret). First-time setup still needs `make_env_ce.sh` (below).
+
+## Sequence (the scripts underneath)
 ```bash
 cd deploy/ce
 ./make_env_ce.sh                        # .env.ce from ../../.env (gitignored, chmod 600)
