@@ -50,9 +50,11 @@ YouTube — AP holds the per-user OAuth token and pushes the event to CUGA.
 - **Runs / subscriptions APIs** — filterable by mode / backend (native vs AP) / status / agent.
 - **Capability report** — on startup, states exactly what's live (channels, scheduler, AP or not).
 
-## Gated off by default (parked, reversible)
-- **Action half** (`EVENTS_ACTIONS`) — running a connector *action* (e.g. Gmail reply/draft) after
-  the agent answers. Off by default; the agent just delivers text.
+## Triggers-only (a deliberate boundary)
+- **No connector actions in the events layer.** It arms triggers and delivers the agent's answer;
+  it does not run connector *actions* (e.g. Gmail reply/draft). Anything the agent should *do* it
+  does through its own tools — that keeps credentials and side-effects inside the agent, not the
+  event plumbing.
 - **Legacy backends** — the AP-schedule path (`EVENTS_SCHEDULER=ap`) and AP channel backends
   (`EVENTS_<CHANNEL>_BACKEND=ap`) remain as escape hatches; native/direct are the defaults.
 

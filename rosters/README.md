@@ -29,6 +29,25 @@ Together they cover every trigger the flat roster did, but each sub-agent now si
 where its siblings share tools, payload conventions, and a supervisor whose routing instruction is
 domain-specific (e.g. "route a resume to resume_reviewer, a recording to recording_summarizer").
 
+## Enterprise test-bed rosters — split by AP dependency
+
+A second, orthogonal cut for demoing "the teams an enterprise would deploy." These are named
+`no_ap_*` / `ap_*` so the Activepieces dependency is legible from the filename alone. **AP-dependency
+is a property of the *triggers*, not the agents** — an `ap_*` roster fields SaaS push events
+(Gmail/GitHub/Box/Calendar) that CUGA can't watch directly, so it needs AP; a `no_ap_*` roster's
+triggers are all direct channels (Slack/Discord/Telegram) + native cron/poll/RSS, so it runs with
+**zero AP infra**. All agents are pulled verbatim from `/supervisor_agents.yaml` — regrouped, not
+rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim its
+`HANDLES TRIGGERS` lines down to only the AP-free triggers so the file is honestly no-AP.
+
+| File | Persona | Sub-agents | AP |
+|---|---|---|---|
+| `no_ap_research_desk.yaml` | Research & Strategy | research_compass · papers · ai_labs_news · wiki_dive · webpage_summarizer | none |
+| `no_ap_markets_desk.yaml` | Markets / Finance | pricebot · market_briefer · competitive_analyst · feed_watcher (RSS) | none |
+| `no_ap_it_helpdesk.yaml` | IT Helpdesk / Support | ibm_docs_qa · code_auditor · incident_triage · support_digest | none (Slack/Discord direct) |
+| `ap_exec_office.yaml` | Executive Office | mailbot · resume_judge | **AP** — Gmail/Calendar/Box |
+| `ap_devops.yaml` | Engineering / DevOps | pr_reviewer · repo_watcher · incident_triage · github_trending · code_auditor | **AP** — GitHub push |
+
 ## The organizing principle
 
 - **One domain = one file = one supervisor.** A domain is a *source of events + a purpose*, not a

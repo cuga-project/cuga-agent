@@ -149,9 +149,10 @@ CUGA runs itself, so they too need no AP.
   `EVENTS_{DISCORD,SLACK}_BACKEND` pair, also `direct` by default.
 - **Scheduler backend** is `EVENTS_SCHEDULER`, `native` by default (cron/poll in-process, no AP); set
   `=ap` only to route recurrence through an AP schedule instead.
-- The **action half** of the events layer is gated off by default (`EVENTS_ACTIONS` unset) — the
-  concierge builds watch/trigger flows, not action steps.
-- Full per-channel sequence diagrams + data envelopes: **[latest/channels_without_ap.html](latest/channels_without_ap.html)**.
+- The events layer is **triggers-only**: the concierge builds watch/trigger flows and delivers the
+  agent's answer — it never runs connector *actions*. Anything the agent should *do* it does through
+  its own tools, so no extra credentials live in the event plumbing.
+- Per-channel details (tokens, wiring, the inbound-vs-outbound split): the guides in [setup/](setup/).
 
 **On a real deployment (e.g. Code Engine) there's no tunnel at all** — the platform route *is* your
 public URL, so even Slack/OAuth work by pointing at the app's route. Two caveats for the outbound
@@ -211,11 +212,19 @@ platform assumes nothing about it. Point `EVENTS_SUPERVISOR_ROSTER` at *your* ro
 CUGA-main supervisor schema) and the same event-driven layer serves *your* agents:
 
 ```bash
-EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=/path/to/my_agents.yaml  cuga start demo --events
+EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=rosters/ap_devops.yaml  cuga start demo --events
 ```
 
 Nothing in the channels, triggers, flows, or NL→Flow compiler is tied to the demo agents — they
 route to whatever your roster's HANDLES lines declare.
+
+**Ready-made rosters ship in [`rosters/`](../rosters/README.md)** — drop-in alternatives to the flat
+27-agent default, so you can `EVENTS_SUPERVISOR_ROSTER=rosters/<file>.yaml` without authoring one.
+Two cuts: **domain families** (`box_document_intelligence`, `repository_intelligence`,
+`market_research_intelligence`, …) and an **enterprise test bed split by AP dependency** —
+`no_ap_*` rosters (research desk, markets desk, IT helpdesk) run with **zero Activepieces**, `ap_*`
+rosters (exec office, DevOps) need AP for their SaaS push triggers. See
+[rosters/README.md](../rosters/README.md) for the full table; then `make reload`.
 
 ### Adding a sub-agent (builder guide)
 
@@ -293,18 +302,19 @@ make test          # 4. the full offline suite (no stack or creds needed — mus
    `https://<domain>/api/events/connect/<app>` directly — but the Studio is the intended path.)*
 
 ```bash
-make test-live        # 6. live smoke — 4 channels + 4 flow modes (green even before step 5,
-                      #    since an unconnected integration correctly reports 'connect-needed')
-make test-exhaustive  # 7. THE full matrix: every agent · every registry trigger armed AND fired ·
-                      #    answer QUALITY gates · REAL/SYNTH/BLOCKED marking · zero-leak cleanup
-                      #    gate (~45-75 min; run right after step 5 while the Box token is fresh)
+make test-ap          # 6. e2e WITH AP — the SaaS integration path (Box/GitHub/Gmail + webhook)
+                      #    armed AND FIRED. Green even before step 5: an unconnected integration
+                      #    is SKIPPED and named, never a false fail.
+make test-report      # 7. THE whole ladder → one persistent, timestamped HTML+MD report (offline ·
+                      #    live · flows · matrix · fire · delegation · new-pieces · exhaustive;
+                      #    fleet-era rungs auto-skip under EVENTS_SUPERVISOR=1). ~40 min; run right
+                      #    after step 5 while the Box token is fresh. Open with make report.
 ```
 
-8. **Other testing tools** — **`make test-report`** runs the full ladder — `offline · live · flows ·
-   delegation · newpieces · exhaustive` (the fleet-era `now/matrix/fire` rungs auto-skip under
-   `EVENTS_SUPERVISOR=1`, superseded by the arm+FIRE `exhaustive` rung) — and writes a persistent,
-   timestamped report to `results/runs/<ts>/` + `results/index.html` + `results/LATEST.md`
-   (open with `make report`).
+To debug a single layer instead of the whole ladder, call a granular rung directly (e.g.
+`make test-delegation` for routing, `make test-suite-flows` for NL→Flow, `make test-exhaustive` for
+the full agent × trigger matrix) — see [Which test do I run](#which-test-do-i-run-and-when) for the
+full map.
 
 ### Scheduled flows are single-shot (cadence stripping) — and can be bounded
 
@@ -357,37 +367,36 @@ ngrok agent, so the domain is free when `up` re-binds it. `make restart` (= stop
 
 ## Which test do I run, and when?
 
-Different targets because "does it work?" is several questions at very different costs — one
-40-minute monolith would just mean nobody runs tests. **The three you actually reach for:**
+"Does it work?" is several questions at very different costs — one 40-minute monolith would just
+mean nobody runs tests. **The four blessed targets** (exactly what `make help` surfaces):
 
-- **`make test`** — the **fast unit-like gate** (offline, no stack, no creds). Run after every change.
-- **`make test-exhaustive`** — the **true e2e suite**: every agent + every trigger **armed AND fired**, answer-quality gated, zero-leak cleanup. Run before a demo/handoff.
-- **`make test-report`** — the **one-command super-exhaustive**: runs the whole ladder (incl. the two above + the matrix + new pieces) and writes a persistent, timestamped HTML+MD report.
+| Target | The question it answers | Needs | Cost | Run it when |
+|---|---|---|---|---|
+| `make test` | **Unit gate** — every endpoint + invariant via TestClient. Code internally correct? | nothing (no stack/creds/AP) | ~15 s | **after every change** — the CI gate |
+| `make test-e2e` | **e2e WITHOUT AP** — chat + arm + **FIRE** across channels & native cron/poll | `make up-noap` | ~3–6 min | after touching channels / scheduler / concierge |
+| `make test-ap` | **e2e WITH AP** — the SaaS integration path (Box/GitHub/Gmail + webhook): arm + fire | `make up` + `make doctor` | ~3–5 min | after touching the AP / integration path |
+| `make test-report` | **The whole ladder → one persistent, timestamped HTML+MD report** | `make up` (full stack) | ~40 min | before a demo/handoff, or a citable "all green" |
 
-| Target | The question it answers | Cost | Run it when |
-|---|---|---|---|
-| `make test` | **Unit gate** — is the code internally correct? (no stack, no creds) | 30–60 s | **after every change** |
-| `make test-live` | Is the running stack plumbed? one probe per channel + flow mode | 2 min | after touching the stack / `.env` / a reload |
-| `make test-suite-flows` | Does an English sentence become the *right* AP flow? | 6 min | after touching the concierge / classifier / registry |
-| `make test-matrix` | **Matrix** — is every trigger × sink combination wired? | 6 min | *fleet-era*: run standalone, or covered by `test-exhaustive` under `EVENTS_SUPERVISOR=1` |
-| `make test-delegation` | Does the supervisor pick the right sub-agent? (≥90% gate) | 10 min | supervisor mode only; after editing `supervisor_agents.yaml` |
-| `make test-new-pieces` | Do the newer pieces (Calendar/Pinterest/YouTube/RSS/Discord) arm + synth-fire? | 3 min | after touching the trigger registry / a new piece |
-| `make test-exhaustive` | **True e2e** — every agent + every trigger armed AND fired, answer-quality gated, REAL/SYNTH/BLOCKED marked, zero-leak cleanup | 45–75 min | before a demo/handoff; after big refactors (plans/EXHAUSTIVE_MATRIX.md) |
-| `make test-report` | **Super-exhaustive** — the whole ladder (`offline → live → flows → delegation → new-pieces → exhaustive`) in one run, into a persistent report | ~90–120 min | for a handoff or a citable "all is well" result |
+A channel or integration **missing its creds is SKIPPED and named** — never a silent pass — so both
+e2e targets are safe to run with only a subset connected. `test-e2e` and `test-ap` need *different*
+stacks (no-AP vs full-AP), so run each against the matching `make up-noap` / `make up`.
 
-*(Also present but auto-skipped under `EVENTS_SUPERVISOR=1` because they assert per-agent names, superseded by `test-exhaustive`: `test-suite-now`, `test-fire`. Run them standalone in fleet mode.)*
+**Under the hood, `make test-report`** runs the granular rungs and saves the result — `offline ·
+live · flows · matrix · fire · delegation · new-pieces · exhaustive` (the fleet-era `now/matrix/fire`
+rungs auto-skip under `EVENTS_SUPERVISOR=1`). Call any one directly to debug a single layer:
+`make test-delegation` (routing quality — ≥90% gate, supervisor mode, after editing the roster),
+`make test-suite-flows` (does an English sentence become the *right* flow?), or `make test-exhaustive`
+(every agent × every registry trigger, armed **and** fired, answer-quality gated). `make help` lists
+them all. The report lands in `results/runs/<ts>/` + `results/index.html` + `results/LATEST.md` (open
+with `make report`). `make doctor` isn't a test — it pings each service with its real `.env` cred and
+never fails, only reports.
 
-**`make test-report`** writes the timestamped report to `results/runs/<ts>/` and copies it to
-`results/index.html` + `results/LATEST.md` (open with `make report`). It's the one command that both
-runs everything **and saves the result**. `make doctor` isn't a test — it pings each service with its
-real `.env` cred and never fails, only reports. Each harness prints its own verdict vocabulary
-(REAL/SYNTH/BLOCKED) and what it can and cannot prove.
-
-> **Live-run gotcha:** the exhaustive/report harnesses need AP's public tunnel (`AP_FRONTEND_URL`)
-> alive — it's a **cloudflared tunnel baked into the AP container** and trycloudflare URLs *flap*.
-> If a run aborts at preflight with `AP_FRONTEND_URL is DEAD`, run **`make ap`** to re-bake a fresh
-> tunnel (recreates the AP app container; your flows + OAuth connections persist in the DB), then
-> re-run. A dead tunnel also surfaces mid-run as `[Errno 8] nodename nor servname` DNS errors.
+> **Live-run gotcha:** the AP-backed harnesses (`test-ap`, `test-report`) need AP's public tunnel
+> (`AP_FRONTEND_URL`) alive — it's a **cloudflared tunnel baked into the AP container** and
+> trycloudflare URLs *flap*. If a run aborts at preflight with `AP_FRONTEND_URL is DEAD`, run
+> **`make ap`** to re-bake a fresh tunnel (recreates the AP app container; your flows + OAuth
+> connections persist in the DB), then re-run. A dead tunnel also surfaces mid-run as
+> `[Errno 8] nodename nor servname` DNS errors.
 
 ## Resets — know the difference
 
@@ -406,8 +415,8 @@ from `.env` via `make channels`. So reach for `nuke` only for a true from-zero r
 is the everyday reset.
 
 > The whole setup chain self-navigates: **every command ends by printing its `→ NEXT:` step** —
-> `preflight → up → status → doctor → test → (connect in Studio) → test-live → test-exhaustive`, and
-> `make fresh` prints the full ordered 1-6 map. You never have to guess what to run next.
+> `preflight → up → status → doctor → test → (connect in Studio) → test-ap → test-report`, and
+> `make fresh` prints the full ordered map. You never have to guess what to run next.
 
 ## Perishable creds
 

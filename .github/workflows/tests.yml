@@ -103,14 +103,12 @@ jobs:
 
       # Event-driven agents layer — the OFFLINE suite. Every test uses a TestClient
       # with fake creds + engine=None (Activepieces off), so it needs NO secrets and
-      # is safe in CI. First pass is the default (action half gated off); second pass
-      # flips EVENTS_ACTIONS=1 to cover the gated connector-action half too. The live
-      # channel/AP integration harnesses (tests/events/live_*.py) are LOCAL-only and
-      # are never run here — they require real Slack/Telegram/Discord/AP credentials.
+      # is safe in CI. The events layer is triggers-only; the live channel/AP
+      # integration harnesses (tests/events/live_*.py) are LOCAL-only and are never
+      # run here — they require real Slack/Telegram/Discord/AP credentials.
       - name: Run events tests (offline, no creds)
         run: |
           uv run pytest tests/events -q
-          EVENTS_ACTIONS=1 uv run pytest tests/events -q
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \
