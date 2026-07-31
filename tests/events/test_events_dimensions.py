@@ -14,25 +14,26 @@ fallback gating).
 import os
 import sys
 
-_EVENTS = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                       "..", "..", "src", "cuga", "backend", "events"))
+_EVENTS = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events")
+)
 if _EVENTS not in sys.path:
     sys.path.insert(0, _EVENTS)
 
-import connectors        # noqa: E402
-import catalog           # noqa: E402
-import credentials       # noqa: E402
-import principal         # noqa: E402
-import flows             # noqa: E402
-import runtime           # noqa: E402
-import mcp_catalog       # noqa: E402
+import connectors  # noqa: E402
+import catalog  # noqa: E402
+import credentials  # noqa: E402
+import principal  # noqa: E402
+import flows  # noqa: E402
+import runtime  # noqa: E402
+import mcp_catalog  # noqa: E402
 
 
 # ---- connectors: channels (env-driven status) ----------------------------
 def test_channels_status_env_driven():
     os.environ.pop("TELEGRAM_BOT_TOKEN", None)
     ch = {c["name"]: c for c in connectors.channels_status()}
-    assert ch["web"]["status"] == "connected"          # built-in, always on
+    assert ch["web"]["status"] == "connected"  # built-in, always on
     assert ch["telegram"]["status"] == "not_configured"  # no token
     os.environ["TELEGRAM_BOT_TOKEN"] = "x"
     try:
@@ -105,14 +106,13 @@ def test_principal_scope_and_grains():
 
 # ---- flows: a builder per mode, all valid shapes -------------------------
 def test_flow_builders_per_mode():
-    cron = flows.build_cron_flow(agent="papers", cron="0 8 * * 1-5",
-                                 thread_id="sub:1", prompt="brief")
+    cron = flows.build_cron_flow(agent="papers", cron="0 8 * * 1-5", thread_id="sub:1", prompt="brief")
     assert cron["trigger"] and cron["valid"]
-    poll = flows.build_poll_flow(agent="pricebot", interval_seconds=120,
-                                 thread_id="sub:2", prompt="watch")
+    poll = flows.build_poll_flow(agent="pricebot", interval_seconds=120, thread_id="sub:2", prompt="watch")
     assert poll["trigger"]
-    push = flows.build_push_flow(agent="resume_judge", source="box",
-                                 event_kind="new_file", thread_id="sub:3", prompt="judge")
+    push = flows.build_push_flow(
+        agent="resume_judge", source="box", event_kind="new_file", thread_id="sub:3", prompt="judge"
+    )
     assert push["trigger"]
     # dispatcher covers each mode (with each mode's required kwargs)
     assert flows.build_flow("NOW", agent="a", thread_id="t", prompt="p")["trigger"]
@@ -128,22 +128,22 @@ def test_runtime_selection_single_agent_world():
     EVENTS_SUPERVISOR=1 → SupervisorRuntime (sub-agents from the canonical YAML roster).
     Neither accepts registrations — the fleet-routing runtime is retired."""
     import pytest
+
     os.environ.pop("EVENTS_SUPERVISOR", None)
     rt = runtime.make_runtime("cuga", app_context=lambda: None)
     assert isinstance(rt, runtime.ClassicRuntime)
     assert [a.name for a in rt.list_agents()] == ["cuga"]
-    assert rt.get_agent("anything").name == "cuga"       # every id resolves to THE agent
-    with pytest.raises(RuntimeError):                    # no registrations in classic mode
+    assert rt.get_agent("anything").name == "cuga"  # every id resolves to THE agent
+    with pytest.raises(RuntimeError):  # no registrations in classic mode
         rt.upsert_agent(runtime.AgentSpec(name="x"))
     # explicit react (dev/test) unchanged
-    assert isinstance(runtime.make_runtime("react", model_factory=lambda s: None),
-                      runtime.ReactRuntime)
+    assert isinstance(runtime.make_runtime("react", model_factory=lambda s: None), runtime.ReactRuntime)
     os.environ["EVENTS_SUPERVISOR"] = "1"
     try:
         rt2 = runtime.make_runtime("cuga")
         assert isinstance(rt2, runtime.SupervisorRuntime)
         assert rt2.get_agent("cuga") is not None
-        with pytest.raises(RuntimeError):                # sub-agents come from the YAML only
+        with pytest.raises(RuntimeError):  # sub-agents come from the YAML only
             rt2.upsert_agent(runtime.AgentSpec(name="x"))
     finally:
         os.environ.pop("EVENTS_SUPERVISOR", None)
@@ -152,18 +152,21 @@ def test_runtime_selection_single_agent_world():
 def test_cuga_storage_isolation_via_agentstore():
     from agent_store import AgentStore
     from runtime import CugaRuntime, AgentSpec
+
     rt = CugaRuntime(agent_store=AgentStore(":memory:"))
-    rt.upsert_agent(AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance"]),
-                    scope="acme/·/alice")
+    rt.upsert_agent(
+        AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance"]), scope="acme/·/alice"
+    )
     got = rt.get_agent("pricebot", scope="acme/·/alice")
-    assert got is not None and got.backend == "cuga"     # tagged cuga
-    assert rt.get_agent("pricebot", scope="acme/·/bob") is None   # isolated by scope
+    assert got is not None and got.backend == "cuga"  # tagged cuga
+    assert rt.get_agent("pricebot", scope="acme/·/bob") is None  # isolated by scope
 
 
 def test_cuga_run_raises_without_stack_and_no_fallback():
     import asyncio
     from agent_store import AgentStore
     from runtime import CugaRuntime, AgentSpec
+
     rt = CugaRuntime(agent_store=AgentStore(":memory:"), app_context=lambda: None)  # no ctx, no fb
     rt.upsert_agent(AgentSpec(name="w", prompt="x"), scope="s")
     raised = None
@@ -171,15 +174,16 @@ def test_cuga_run_raises_without_stack_and_no_fallback():
         asyncio.run(rt.run("w", "t", "hi", scope="s"))
     except RuntimeError as e:
         raised = str(e)
-    assert raised and "CUGA worker backend requires" in raised, \
+    assert raised and "CUGA worker backend requires" in raised, (
         f"expected the no-fallback RuntimeError, got: {raised!r}"
+    )
 
 
 # ---- mcp catalog: the full event-agent-ap set ----------------------------
 def test_mcp_catalog_full_set():
     names = mcp_catalog.known_names()
     for app in ("web", "knowledge", "geo", "finance", "code", "local", "text"):
-        assert f"cuga-{app}" in names                     # all 7 event-agent-ap servers
+        assert f"cuga-{app}" in names  # all 7 event-agent-ap servers
     assert mcp_catalog.known_mcp_url("cuga-finance").endswith("/mcp")
 
 
@@ -188,6 +192,7 @@ def test_seed_agents_carry_connectors():
     import seed
     from agent_store import AgentStore
     from runtime import CugaRuntime
+
     rt = CugaRuntime(agent_store=AgentStore(":memory:"))
     names = seed.seed_default_agents(rt, scope="acme/·/alice", backend="cuga")
     assert "pricebot" in names and "mailbot" in names
@@ -197,24 +202,22 @@ def test_seed_agents_carry_connectors():
     # a different scope sees nothing (isolation preserved through seeding)
     assert rt.get_agent("mailbot", scope="acme/·/bob") is None
     # the three full-AP integrations each have a driving agent (drives per-user connect)
-    assert "pr_reviewer" in names                                   # GitHub agent
+    assert "pr_reviewer" in names  # GitHub agent
     pr = rt.get_agent("pr_reviewer", scope="acme/·/alice")
     assert any(i["app"] == "github" for i in pr.integrations)
-    assert "incident_triage" in names                               # the generic webhook worker
+    assert "incident_triage" in names  # the generic webhook worker
     it = rt.get_agent("incident_triage", scope="acme/·/alice")
     # triage now ALSO owns trigger-grain watcher events (github issues, :bug: reactions, box
     # comments) — declarations carry a "triggers" list naming WHICH events of the app they handle.
     assert "slack" in it.channels
-    assert any(i["app"] == "github" and "new_issue" in i.get("triggers", [])
-               for i in it.integrations)
+    assert any(i["app"] == "github" and "new_issue" in i.get("triggers", []) for i in it.integrations)
     # trigger-grain on pr_reviewer: PR-shaped events only (repo lifecycle lives on repo_watcher)
     assert any("new_pr" in i.get("triggers", []) for i in pr.integrations)
-    assert "repo_watcher" in names                                  # github lifecycle watcher
+    assert "repo_watcher" in names  # github lifecycle watcher
     rw = rt.get_agent("repo_watcher", scope="acme/·/alice")
-    assert any(i["app"] == "github" and "new_release" in i.get("triggers", [])
-               for i in rw.integrations)
+    assert any(i["app"] == "github" and "new_release" in i.get("triggers", []) for i in rw.integrations)
     rj = rt.get_agent("resume_judge", scope="acme/·/alice")
-    assert {i["app"] for i in rj.integrations} >= {"box", "gmail"}   # Box + Gmail watcher
+    assert {i["app"] for i in rj.integrations} >= {"box", "gmail"}  # Box + Gmail watcher
 
 
 def test_integrations_full_ap_wiring():
@@ -222,6 +225,7 @@ def test_integrations_full_ap_wiring():
     a setup guide, and a status row. This is the 'integrations = AP' contract."""
     import oauth
     import setup_guides
+
     # oauth providers (Box/Gmail = OAuth; GitHub = token PAT)
     assert oauth.connect_kind("box") == "oauth" and oauth.connect_kind("gmail") == "oauth"
     # github is an OAUTH app: `@activepieces/piece-github` accepts only OAUTH2/CUSTOM_AUTH, never
@@ -244,12 +248,21 @@ def test_integrations_full_ap_wiring():
 # ---- flow dedup: reuse-or-create by identity -----------------------------
 def test_flow_dedup_find_by_key():
     from subscriptions import SubscriptionStore, Subscription
+
     st = SubscriptionStore(":memory:")
     key = "papers|time|1m|telegram|acme"
-    st.upsert(Subscription(id="s1", mode="CRON", target_agent="papers", tenant="acme/·/alice",
-                           deliver_to=["telegram"], dedup_key=key))
-    assert st.find_by_dedup_key(key).id == "s1"           # matching identity → reuse
-    assert st.find_by_dedup_key("papers|time|5m|telegram|acme") is None   # different cadence → new
+    st.upsert(
+        Subscription(
+            id="s1",
+            mode="CRON",
+            target_agent="papers",
+            tenant="acme/·/alice",
+            deliver_to=["telegram"],
+            dedup_key=key,
+        )
+    )
+    assert st.find_by_dedup_key(key).id == "s1"  # matching identity → reuse
+    assert st.find_by_dedup_key("papers|time|5m|telegram|acme") is None  # different cadence → new
     assert st.find_by_dedup_key("") is None
 
 
@@ -257,13 +270,14 @@ def test_flow_dedup_find_by_key():
 def test_owner_scope_grain_follows_credentials():
     import concierge
     from runtime import AgentSpec
+
     p = principal.Principal(tenant_id="acme", instance_id="inst", user_id="alice")
     shared = AgentSpec(name="digest", integrations=[{"app": "slack", "ownership": "shared"}])
     peruser = AgentSpec(name="mailbot", integrations=[{"app": "gmail", "ownership": "per-user"}])
     none = AgentSpec(name="pricebot")
-    assert concierge._owner_scope(shared, p) == p.tenant_id   # all shared → tenant-wide flow
-    assert concierge._owner_scope(none, p) == p.tenant_id     # no integrations → tenant-wide
-    assert concierge._owner_scope(peruser, p) == p.scope      # any per-user → per-user flow
+    assert concierge._owner_scope(shared, p) == p.tenant_id  # all shared → tenant-wide flow
+    assert concierge._owner_scope(none, p) == p.tenant_id  # no integrations → tenant-wide
+    assert concierge._owner_scope(peruser, p) == p.scope  # any per-user → per-user flow
 
 
 # ---- cron/poll prompts are SINGLE-SHOT (the schedule owns recurrence) -----
@@ -272,6 +286,7 @@ def test_cron_poll_prompt_strips_cadence():
     made the agent try to loop+sleep and hit the execution timeout. _strip_cadence removes the
     recurrence phrasing so each fire is a clean single check."""
     import concierge
+
     s = concierge._strip_cadence
     assert "every" not in s("monitor bitcoin every 5 minutes and notify me when it changes").lower()
     assert "monitor" not in s("monitor the bitcoin price every 5 minutes").lower()  # → "check"
@@ -287,12 +302,16 @@ def test_strip_cadence_covers_the_whole_example_corpus():
     HERE, not in a user's timed-out agent run."""
     import re
     import concierge
-    import catalog                      # flat import (events dir on sys.path, suite convention)
-    cad = re.compile(r"\bevery\b|\bhourly\b|\bdaily\b|\bmonitor|\bkeep (an eye|watching|checking)",
-                     re.I)
-    leaks = [e["utterance"] for e in catalog.EXAMPLES
-             if e.get("trigger") in ("cron", "poll") and e.get("utterance")
-             and cad.search(concierge._strip_cadence(e["utterance"]))]
+    import catalog  # flat import (events dir on sys.path, suite convention)
+
+    cad = re.compile(r"\bevery\b|\bhourly\b|\bdaily\b|\bmonitor|\bkeep (an eye|watching|checking)", re.I)
+    leaks = [
+        e["utterance"]
+        for e in catalog.EXAMPLES
+        if e.get("trigger") in ("cron", "poll")
+        and e.get("utterance")
+        and cad.search(concierge._strip_cadence(e["utterance"]))
+    ]
     assert not leaks, f"cadence survives stripping in: {leaks}"
 
 
@@ -306,8 +325,9 @@ def test_concierge_now_fastpath_skips_the_llm():
 
     rt = rt_mod.StubRuntime()
     # register under the DEFAULT principal's agent scope (what the fast-path runs with)
-    rt.upsert_agent(rt_mod.AgentSpec(name="cuga", prompt="the one agent"),
-                    scope=principal.DEFAULT.agent_scope)
+    rt.upsert_agent(
+        rt_mod.AgentSpec(name="cuga", prompt="the one agent"), scope=principal.DEFAULT.agent_scope
+    )
     poisoned = {"called": False}
 
     def factory(_):
@@ -350,12 +370,15 @@ def test_single_shot_task_llm_rewrite_with_regex_fallback():
     class _Fake:
         def __init__(self, reply=None, err=None):
             self.reply, self.err, self.calls = reply, err, 0
+
         async def ainvoke(self, _msgs):
             self.calls += 1
             if self.err:
                 raise self.err
+
             class R:  # noqa: D401 - minimal AIMessage stand-in
                 content = self.reply
+
             return R()
 
     utt = "watch bitcoin every 5 minutes and ping me on any move"
@@ -389,10 +412,11 @@ def test_single_shot_task_llm_rewrite_with_regex_fallback():
 # ---- oauth connect registry (CUGA hosts connect) -------------------------
 def test_oauth_registry_and_authorize_url():
     import oauth
+
     assert oauth.connect_kind("gmail") == "oauth" and oauth.connect_kind("github") == "oauth"
-    assert oauth.connect_kind("telegram") == "token"         # piece-telegram-bot: SECRET_TEXT
+    assert oauth.connect_kind("telegram") == "token"  # piece-telegram-bot: SECRET_TEXT
     assert oauth.connect_kind("nope") is None
-    assert oauth.is_configured("telegram") is True           # token apps always connectable
+    assert oauth.is_configured("telegram") is True  # token apps always connectable
     # the PR/issue trigger creates a repository webhook, which needs admin:repo_hook
     assert set(oauth.provider("github")["scopes"]) == {"repo", "admin:repo_hook"}
     assert oauth.provider("github")["auth"].startswith("https://github.com/login/oauth/")
@@ -417,6 +441,7 @@ def test_oauth_registry_and_authorize_url():
 # ---- users: local store + roles + auth -----------------------------------
 def test_user_store():
     from users import UserStore
+
     us = UserStore(":memory:")
     us.add("alice", email="alice@acme.test", roles=["user"], password="pw1", tenant="acme")
     us.add("admin", email="admin@acme.test", roles=["admin", "builder", "user"], tenant="acme")
@@ -425,23 +450,24 @@ def test_user_store():
     assert us.authenticate("alice@acme.test", "pw1", "acme").user_id == "alice"
     assert us.authenticate("alice@acme.test", "wrong", "acme") is None
     assert {u.user_id for u in us.list("acme")} == {"alice", "admin"}
-    assert us.get("alice", "other-tenant") is None            # tenant-isolated
+    assert us.get("alice", "other-tenant") is None  # tenant-isolated
 
 
 # ---- identity map: channel native id → user, + link tokens ---------------
 def test_identity_map_and_link_tokens():
     from identity import IdentityMap
+
     im = IdentityMap(":memory:")
     im.link("acme", "telegram", "12345", "alice")
     assert im.resolve("acme", "telegram", "12345") == "alice"
     assert im.resolve("acme", "telegram", "99999") is None
-    assert im.resolve("other", "telegram", "12345") is None   # tenant-isolated
+    assert im.resolve("other", "telegram", "12345") is None  # tenant-isolated
     assert im.links_for_user("acme", "alice") == [{"channel": "telegram", "native_id": "12345"}]
     # link-token handshake (issued from the authenticated profile)
     tok = im.issue_token("acme", "bob", "telegram")
-    assert im.redeem_token(tok, "67890") == "bob"             # binds bob's telegram id
+    assert im.redeem_token(tok, "67890") == "bob"  # binds bob's telegram id
     assert im.resolve("acme", "telegram", "67890") == "bob"
-    assert im.redeem_token(tok, "67890") is None              # single-use
+    assert im.redeem_token(tok, "67890") is None  # single-use
     assert im.redeem_token("garbage", "1") is None
 
 
@@ -449,23 +475,25 @@ def test_identity_map_and_link_tokens():
 def test_perms_can_use_and_visible():
     import perms
     from runtime import AgentSpec
-    open_agent = AgentSpec(name="pricebot")                    # access [] → everyone
+
+    open_agent = AgentSpec(name="pricebot")  # access [] → everyone
     restricted = AgentSpec(name="market_briefer", access=["builder", "admin", "alice"])
     assert perms.can_use(open_agent, roles=["user"]) is True
     assert perms.can_use(restricted, roles=["user"]) is False  # plain user denied
     assert perms.can_use(restricted, roles=["builder"]) is True
     assert perms.can_use(restricted, roles=["user"], user_id="alice") is True  # allow by user_id
     vis = perms.visible_agents([open_agent, restricted], roles=["user"])
-    assert [a.name for a in vis] == ["pricebot"]               # user sees only the open one
+    assert [a.name for a in vis] == ["pricebot"]  # user sees only the open one
 
 
 # ---- principal: tenant agent_scope vs per-user scope + channel resolve ----
 def test_principal_agent_scope_and_channel_resolve():
     from identity import IdentityMap
+
     a = principal.Principal(tenant_id="acme", instance_id="inst", user_id="alice")
     b = principal.Principal(tenant_id="acme", instance_id="inst", user_id="bob")
-    assert a.agent_scope == "acme/inst" == b.agent_scope       # agents shared across users
-    assert a.scope != b.scope                                  # run-state per user
+    assert a.agent_scope == "acme/inst" == b.agent_scope  # agents shared across users
+    assert a.scope != b.scope  # run-state per user
     im = IdentityMap(":memory:")
     im.link("acme", "telegram", "12345", "alice")
     p = principal.resolve_channel("telegram", "12345", im, tenant_id="acme", instance_id="inst")
@@ -478,8 +506,11 @@ def test_channel_inbound_flows_and_box_watcher():
     # every channel builds from the CHANNELS descriptor — no per-channel code
     # action names VERIFIED against live AP piece metadata (telegram-bot@0.6.4, discord@0.5.3,
     # slack@0.17.2) — keep in sync with flows.CHANNELS.
-    for ch, send in (("telegram", "send_text_message"), ("discord", "sendMessageWithBot"),
-                     ("slack", "send_channel_message")):
+    for ch, send in (
+        ("telegram", "send_text_message"),
+        ("discord", "sendMessageWithBot"),
+        ("slack", "send_channel_message"),
+    ):
         f = flows.build_inbound_flow(channel=ch, agent="concierge")
         trig = f["trigger"]
         assert trig["settings"]["pieceName"] == flows.PIECE[ch]
@@ -488,18 +519,13 @@ def test_channel_inbound_flows_and_box_watcher():
         assert send_step["settings"]["actionName"] == send
         # the sender's native id rides in the /invoke thread_id (gw:<ch>:<native>)
         assert f"gw:{ch}:" in trig["nextAction"]["settings"]["input"]["body"]["source"]["thread_id"]
-    # Box resume watcher: box·new_file → /invoke(resume_judge) → Router(MATCH→gmail / skip)
-    rw = flows.build_resume_watcher_flow(thread_id="sub:1")
-    assert rw["trigger"]["settings"]["pieceName"] == flows.PIECE["box"]
-    router = rw["trigger"]["nextAction"]["nextAction"]
-    branches = [b["branchName"] for b in router["settings"]["branches"]]
-    assert "MATCH" in branches and router["type"] == "ROUTER"
 
 
 def test_discord_channel_wiring():
     """Discord specifics (verified vs discord@0.5.3): POLLING trigger over ONE channel, replies go
     to the message's channel_id (so THREAD messages reply in-thread), DROPDOWNs are DYNAMIC."""
     import oauth
+
     d = flows.CHANNELS["discord"]
     # reply target = the channel the message came from (NOT the author) → thread-safe
     assert d["native_ref"] == "{{trigger.channel_id}}"
@@ -522,11 +548,14 @@ def test_discord_channel_wiring():
 def test_slack_direct_module():
     """The DEFAULT Slack backend is direct (no AP): filter bot/edit messages, verify signatures."""
     import slack_direct
+
     # should_process: answer real human messages; skip bot posts, edits/joins (subtype), empties
     assert slack_direct.should_process({"type": "message", "text": "hi", "channel": "C1"})
     assert not slack_direct.should_process({"type": "message", "text": "hi", "channel": "C1", "bot_id": "B1"})
-    assert not slack_direct.should_process({"type": "message", "text": "x", "channel": "C1", "subtype": "message_changed"})
-    assert not slack_direct.should_process({"type": "message", "channel": "C1"})          # no text
+    assert not slack_direct.should_process(
+        {"type": "message", "text": "x", "channel": "C1", "subtype": "message_changed"}
+    )
+    assert not slack_direct.should_process({"type": "message", "channel": "C1"})  # no text
     assert not slack_direct.should_process({"type": "reaction_added"})
     # signature: no secret → allowed-but-flagged; wrong sig with a secret → rejected
     ok, why = slack_direct.verify_signature({}, "body")
@@ -534,7 +563,8 @@ def test_slack_direct_module():
     os.environ["SLACK_SIGNING_SECRET"] = "shh"
     try:
         bad, _ = slack_direct.verify_signature(
-            {"x-slack-request-timestamp": "1", "x-slack-signature": "v0=deadbeef"}, "body")
+            {"x-slack-request-timestamp": "1", "x-slack-signature": "v0=deadbeef"}, "body"
+        )
         assert bad is False
     finally:
         del os.environ["SLACK_SIGNING_SECRET"]
@@ -547,6 +577,7 @@ def test_slack_thread_scoping():
     import asyncio
     import slack_direct
     from envelope import Source
+
     # native id strips the #<ts> memory suffix; plain ids (Discord/Telegram) untouched
     assert principal.channel_native_id(Source(name="slack", thread_id="gw:slack:C1#1699.9")) == "C1"
     assert principal.channel_native_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"
@@ -554,10 +585,10 @@ def test_slack_thread_scoping():
 
     # channel_origin resolves the DELIVERY sink (channel, native) from a thread_id — tolerating a
     # scope prefix, which a PUSH flow always has (its source is the integration, not the channel).
-    assert principal.channel_origin("gw:slack:C1#1699.9") == ("slack", "C1")           # channel reply
+    assert principal.channel_origin("gw:slack:C1#1699.9") == ("slack", "C1")  # channel reply
     assert principal.channel_origin("default/default/admin::gw:slack:C1#9.9") == ("slack", "C1")  # push
     assert principal.channel_origin("scope::gw:discord:42") == ("discord", "42")
-    assert principal.channel_origin("web:studio") is None                              # not a gw thread
+    assert principal.channel_origin("web:studio") is None  # not a gw thread
 
     sent = {}
 
@@ -575,17 +606,20 @@ def test_slack_thread_scoping():
             return False
 
         async def post(self, url, headers=None, json=None):
-            sent.clear(); sent.update(json or {}); return _Resp()
+            sent.clear()
+            sent.update(json or {})
+            return _Resp()
 
     import httpx
+
     orig = httpx.AsyncClient
     httpx.AsyncClient = lambda *a, **k: _C()
     os.environ["SLACK_BOT_TOKEN"] = "xoxb-test"
     try:
         asyncio.run(slack_direct.send_message("C1", "hi", thread_ts="1699.9"))
-        assert sent.get("channel") == "C1" and sent.get("thread_ts") == "1699.9"   # reply in-thread
+        assert sent.get("channel") == "C1" and sent.get("thread_ts") == "1699.9"  # reply in-thread
         asyncio.run(slack_direct.send_message("C1", "hi"))
-        assert "thread_ts" not in sent                                              # root → no thread
+        assert "thread_ts" not in sent  # root → no thread
     finally:
         httpx.AsyncClient = orig
         os.environ.pop("SLACK_BOT_TOKEN", None)
@@ -595,9 +629,12 @@ def test_channel_author_identity():
     """Per-user identity through a SHARED bot: source.user (the author) drives identity, falling back
     to the thread-native id. Discord/Slack inbound flows forward the author; Telegram keeps chat.id."""
     from envelope import Source
+
     # channel_user_id prefers the explicit author over the thread-native id
-    assert principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1", user="U_ALICE")) == "U_ALICE"
-    assert principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"   # fallback
+    assert (
+        principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1", user="U_ALICE")) == "U_ALICE"
+    )
+    assert principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"  # fallback
     assert principal.channel_user_id(Source(name="telegram", thread_id="gw:telegram:555")) == "555"
     # inbound flow templates forward the author: discord author id, slack user; telegram has none
     assert flows.CHANNELS["discord"]["user_ref"] == "{{trigger.author.id}}"
@@ -614,12 +651,12 @@ def test_slack_channel_wiring():
     """Slack specifics (verified vs slack@0.17.2): APP_WEBHOOK trigger (Events API → instant),
     replies to the message's channel, requires ignoreBots + sendAsBot, channel DROPDOWN → DYNAMIC."""
     d = flows.CHANNELS["slack"]
-    assert d["native_ref"] == "{{trigger.channel}}"          # reply to the channel, not the user
+    assert d["native_ref"] == "{{trigger.channel}}"  # reply to the channel, not the user
     assert d["send_action"] == "send_channel_message" and d["target_arg"] == "channel"
     assert d["text_arg"] == "text"
-    assert d["const"].get("sendAsBot") is True               # required by send_channel_message
-    assert d["trigger_const"].get("ignoreBots") is True      # required by new-message; skips bots
-    assert "channel" in d["dynamic_props"]                   # DROPDOWN fed a template
+    assert d["const"].get("sendAsBot") is True  # required by send_channel_message
+    assert d["trigger_const"].get("ignoreBots") is True  # required by new-message; skips bots
+    assert "channel" in d["dynamic_props"]  # DROPDOWN fed a template
     f = flows.build_inbound_flow(channel="slack", agent="concierge")
     step1 = f["trigger"]["nextAction"]
     assert step1["settings"]["input"]["body"]["source"]["thread_id"] == "gw:slack:{{trigger.channel}}"
@@ -630,12 +667,13 @@ def test_delivery_backend_selection():
     """delivery.channel_backend: Slack + Discord + Telegram all default DIRECT (CUGA sends);
     EVENTS_<CH>_BACKEND overrides. is_direct drives whether a flow gets an AP send step."""
     import delivery
+
     assert delivery.is_direct("slack") and delivery.channel_backend("slack") == "direct"
     assert delivery.is_direct("discord") and delivery.channel_backend("discord") == "direct"
     assert delivery.is_direct("telegram") and delivery.channel_backend("telegram") == "direct"
-    assert delivery.channel_backend("unknown_ch") == "ap"          # unknown → AP
-    os.environ["EVENTS_DISCORD_BACKEND"] = "ap"                    # env override → back to AP
-    os.environ["EVENTS_TELEGRAM_BACKEND"] = "ap"                   # …and telegram → AP
+    assert delivery.channel_backend("unknown_ch") == "ap"  # unknown → AP
+    os.environ["EVENTS_DISCORD_BACKEND"] = "ap"  # env override → back to AP
+    os.environ["EVENTS_TELEGRAM_BACKEND"] = "ap"  # …and telegram → AP
     try:
         assert not delivery.is_direct("discord")
         assert not delivery.is_direct("telegram")
@@ -647,10 +685,15 @@ def test_delivery_backend_selection():
 def test_discord_direct_module():
     """Direct Discord (Gateway) filtering: answer real human messages; skip bot/empty."""
     import discord_direct
-    assert discord_direct.should_process({"content": "hi", "channel_id": "C", "author": {"id": "U", "bot": False}})
-    assert not discord_direct.should_process({"content": "hi", "channel_id": "C", "author": {"id": "B", "bot": True}})
-    assert not discord_direct.should_process({"channel_id": "C", "author": {"id": "U"}})   # no content
-    assert not discord_direct.should_process({"content": "hi", "author": {"id": "U"}})       # no channel
+
+    assert discord_direct.should_process(
+        {"content": "hi", "channel_id": "C", "author": {"id": "U", "bot": False}}
+    )
+    assert not discord_direct.should_process(
+        {"content": "hi", "channel_id": "C", "author": {"id": "B", "bot": True}}
+    )
+    assert not discord_direct.should_process({"channel_id": "C", "author": {"id": "U"}})  # no content
+    assert not discord_direct.should_process({"content": "hi", "author": {"id": "U"}})  # no channel
     # intents bitmask includes MESSAGE_CONTENT (1<<15)
     assert discord_direct.INTENTS & (1 << 15)
 
@@ -659,28 +702,32 @@ def test_discord_mention_gate():
     """EVENTS_DISCORD_CHAT=mention: only @bot messages, DMs, and replies-to-the-bot reach CHAT
     (mirrors the Slack gate; watchers are dispatched by the caller on gated traffic)."""
     import discord_direct as dd
+
     old_id, old_env = dd._BOT_ID["id"], os.environ.get("EVENTS_DISCORD_CHAT")
     try:
         dd._BOT_ID["id"] = "BOT1"
         os.environ["EVENTS_DISCORD_CHAT"] = "mention"
         guild = {"guild_id": "G", "content": "hello there", "channel_id": "C"}
-        assert dd.mention_gate(guild) == (False, "hello there")           # plain channel msg → gated
-        ok, txt = dd.mention_gate({**guild, "content": "<@BOT1> price of btc",
-                                   "mentions": [{"id": "BOT1"}]})
-        assert ok and txt == "price of btc"                                # mention → chat, stripped
-        assert dd.mention_gate({**guild, "content": "<@!BOT1> hi"})[0]     # nickname-mention form
-        assert dd.mention_gate({"content": "dm text", "channel_id": "D"})[0]   # DM (no guild_id)
-        assert dd.mention_gate({**guild, "referenced_message":
-                                {"author": {"id": "BOT1"}}})[0]            # reply to the bot
+        assert dd.mention_gate(guild) == (False, "hello there")  # plain channel msg → gated
+        ok, txt = dd.mention_gate({**guild, "content": "<@BOT1> price of btc", "mentions": [{"id": "BOT1"}]})
+        assert ok and txt == "price of btc"  # mention → chat, stripped
+        assert dd.mention_gate({**guild, "content": "<@!BOT1> hi"})[0]  # nickname-mention form
+        assert dd.mention_gate({"content": "dm text", "channel_id": "D"})[0]  # DM (no guild_id)
+        assert dd.mention_gate({**guild, "referenced_message": {"author": {"id": "BOT1"}}})[
+            0
+        ]  # reply to the bot
         os.environ["EVENTS_DISCORD_CHAT"] = "all"
-        assert dd.mention_gate(guild)[0]                                   # default mode: everything
+        assert dd.mention_gate(guild)[0]  # default mode: everything
         dd._BOT_ID["id"] = ""
         os.environ["EVENTS_DISCORD_CHAT"] = "mention"
-        assert dd.mention_gate(guild)[0]                                   # no READY yet → fail open
+        assert dd.mention_gate(guild)[0]  # no READY yet → fail open
     finally:
         dd._BOT_ID["id"] = old_id
-        (os.environ.__setitem__ if old_env is not None else
-         lambda *a: os.environ.pop("EVENTS_DISCORD_CHAT", None))("EVENTS_DISCORD_CHAT", old_env)
+        (
+            os.environ.__setitem__
+            if old_env is not None
+            else lambda *a: os.environ.pop("EVENTS_DISCORD_CHAT", None)
+        )("EVENTS_DISCORD_CHAT", old_env)
 
 
 # ---- runner --------------------------------------------------------------

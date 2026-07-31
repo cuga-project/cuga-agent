@@ -20,7 +20,7 @@ from __future__ import annotations
 
 
 def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integration="none",
-        phase="run", live=False, note="", star=False, ap_trigger="", action=""):
+        phase="run", live=False, note="", star=False, ap_trigger=""):
     outcome = {"now": "answer-now", "cron": "flow-cron", "poll": "flow-poll",
                "push": "flow-push", "connect": "connect", "decline": "decline"}[trigger]
     return {"id": id, "title": title, "trigger": trigger, "outcome": outcome,
@@ -30,11 +30,7 @@ def _ex(id, title, trigger, utterance, *, agent="—", channel="web", integratio
             # ap_trigger = the SPECIFIC Activepieces piece trigger this example maps to
             # (e.g. "new_labeled_email"). Set → this is an ADVANCED, trigger-tied example: it is
             # rendered in the collapsible "Advanced" section grouped by integration, NOT the main list.
-            "ap_trigger": ap_trigger,
-            # action = the post-agent ACTION this example arms (e.g. "gmail/reply_to_email"). ANY
-            # example that touches an ACTION must set this — the Studio + board render an "ACTIONS"
-            # label from it (the action half: trigger ▸ agent ▸ ACTION). "" = a plain trigger/answer.
-            "action": action}
+            "ap_trigger": ap_trigger}
 
 
 EXAMPLES = [
@@ -201,66 +197,6 @@ EXAMPLES = [
         agent="incident_triage", channel="discord", integration="discord", phase="sprint", live=True,
         note="Discord MESSAGE_REACTION_ADD (direct Gateway) → incident_triage; reactions intent is "
              "on by default, so this is live now"),
-    # ── trigger + ACTION examples (the post-agent action path — design TRIGGERS_ACTIONS_DESIGN.md)
-    _ex("act-gmail-reply", "Email → auto-reply", "push",
-        "when I get an email, draft a reply summarizing my response",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
-        ap_trigger="gmail_new_email_received", action="gmail/create_draft_reply",
-        note="ACTION: gmail/create_draft_reply — the agent writes, AP drafts the reply (no send)"),
-    _ex("act-gmail-reply-sender", "Email → reply to sender", "push",
-        "when an email arrives, reply to the sender with a short acknowledgement",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
-        ap_trigger="gmail_new_email_received", action="gmail/reply_to_email",
-        note="ACTION: gmail/reply_to_email — keys off the firing message id"),
-    _ex("act-gmail-send", "Email → email me a summary", "push",
-        "when I get an email, email me a summary at me@example.com",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
-        ap_trigger="gmail_new_email_received", action="gmail/send_email",
-        note="ACTION: gmail/send_email — needs a recipient (address, or 'the sender')"),
-    _ex("act-gmail-multi", "Email → email me AND reply", "push",
-        "when I get an email, email me a summary at me@example.com and reply to the sender",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
-        ap_trigger="gmail_new_email_received", action="gmail/send_email+gmail/reply_to_email",
-        note="MULTI-ACTION: two Gmail actions chained after the agent (send + reply)"),
-    _ex("act-gmail-branch", "⭐ Inbox autopilot — triage & draft/reply", "push",
-        "when an email arrives, if it mentions urgent reply to the sender, otherwise draft a reply",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True, star=True,
-        ap_trigger="gmail_new_email_received", action="gmail/reply_to_email + gmail/create_draft_reply",
-        note="WOW: it triages your real inbox and writes a real draft/reply — a 2-way ROUTER on the email "
-             "content (urgent → reply, else → draft). Send yourself an email and watch a draft appear."),
-    _ex("act-github-email", "⭐ PR risk radar — review & email me", "push",
-        "when a PR opens on my repo, review the diff and email me a one-line risk summary at me@example.com",
-        agent="pr_reviewer", channel="web", integration="github", phase="run", live=True, star=True,
-        action="gmail/send_email",
-        note="WOW: two apps wired by one sentence — GitHub PR → agent reads the real diff → Gmail sends you "
-             "an AI risk review. Cross-app; needs github + gmail connected. Swap for 'comment on the PR' to post back."),
-    _ex("act-github-comment", "PR opens → review &amp; comment on it", "push",
-        "when a PR opens on my repo, review it and comment on the PR",
-        agent="pr_reviewer", channel="web", integration="github", phase="run", live=False,
-        action="github/create_comment",
-        note="ACTION: github/create_comment — same-app; issue_number from the firing PR. Validates live in AP"),
-    _ex("act-github-issue", "Email → file a GitHub issue", "push",
-        "when an email arrives, file a github issue on my repo summarizing it",
-        agent="mailbot", channel="web", integration="github", phase="run", live=False,
-        action="github/create_issue",
-        note="ACTION: github/create_issue — cross-app (any trigger can file an issue). Validates live in AP"),
-    _ex("act-slack-email", "Slack message → email me", "push",
-        "when a message is posted in #alerts, email me a summary at me@example.com",
-        agent="mailbot", channel="slack", integration="slack", phase="run", live=False,
-        action="gmail/send_email",
-        note="DIRECT trigger → action (Option A): slack owns no AP flow, so the gmail action runs via a "
-             "reusable executor flow CUGA fires after the agent answers. Offline-verified; live fire pending"),
-    _ex("act-discord-email", "Discord message → email me", "push",
-        "when someone posts in #general on discord, email me a summary at me@example.com",
-        agent="mailbot", channel="discord", integration="discord", phase="run", live=False,
-        action="gmail/send_email",
-        note="DIRECT trigger → action (Option A): same executor path as slack. Offline-verified; live fire pending"),
-    _ex("act-telegram-email", "Telegram message → email me", "push",
-        "when the telegram bot gets a link, email me a summary at me@example.com",
-        agent="mailbot", channel="telegram", integration="none", phase="run", live=False,
-        action="gmail/send_email",
-        note="DIRECT trigger → action (Option A): the action fires; return-to-caller back to telegram is a "
-             "known nuance. Offline-verified; live fire pending"),
     _ex("push-webhook-in", "Generic inbound webhook", "push",
         "when my system POSTs to my webhook, run the triage agent and reply",
         agent="incident_triage", channel="slack", integration="webhook", phase="run", live=True,

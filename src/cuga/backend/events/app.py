@@ -274,29 +274,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 tr("direct.watch", channel=env.source.name, matched=len(_watchers),
                    agent=_watchers[0].target_agent)
                 _wpay = {"text": env.text, "channel": _org[1]}
-                # A watcher carrying an action_plan (DIRECT trigger → action, Option A) ALWAYS runs in
-                # the background via dispatch_all — that's where run_action_plan fires its action after
-                # the agent answers (engine passed so an executor step can fire its AP flow). Plain
-                # watchers keep the inline-first behavior (first match becomes the foreground worker).
-                _act_w = [w for w in _watchers if (w.config or {}).get("action_plan")]
-                _plain = [w for w in _watchers if not (w.config or {}).get("action_plan")]
-                if _act_w:
+                # The first matched watcher becomes the foreground worker; extras fire in the background.
+                if len(_watchers) > 1:
                     _aio.create_task(direct_events.dispatch_all(
-                        _act_w, app=env.source.name, event="new_channel_message",
+                        _watchers[1:], app=env.source.name, event="new_channel_message",
                         payload=_wpay, engine=engine))
-                if _plain:
-                    if len(_plain) > 1:
-                        _aio.create_task(direct_events.dispatch_all(
-                            _plain[1:], app=env.source.name, event="new_channel_message",
-                            payload=_wpay, engine=engine))
-                    agent = _plain[0].target_agent
-                    env.agent = agent
-                    env.text = (f"{_plain[0].prompt}\n\nThe watched message just arrived: "
-                                f"{env.text}")
-                elif _act_w:
-                    # consumed ONLY by action watchers (handled in the background) → don't also run the
-                    # converse path, which would post a second, unrelated chat reply to the same message.
-                    return JSONResponse({"ok": True, "consumed": "watcher-action"}, 200)
+                agent = _watchers[0].target_agent
+                env.agent = agent
+                env.text = (f"{_watchers[0].prompt}\n\nThe watched message just arrived: "
+                            f"{env.text}")
         if agent == "concierge":
             if concierge is None:
                 tr.error("error", reason="concierge not configured")

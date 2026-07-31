@@ -18,11 +18,11 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 ## ---- start / stop ---------------------------------------------------------
@@ -48,10 +48,10 @@ up-noap: preflight-noap ## Boot the events layer WITHOUT Activepieces & WITHOUT 
 	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh --no-tunnel
 	@$(MAKE) --no-print-directory channels
 	@echo
-	@echo "✓ CUGA up — NO Activepieces.   Chat channels live: web · Telegram · Discord."
-	@echo "   NOW-trigger (chat) works fully. cron/poll/push + Slack + AP integrations are OFF (need AP/tunnel)."
-	@echo "   Want Slack too (still no AP)? use: make up-noap-slack"
-	@echo "   → NEXT: make status   ·   test: DM your Telegram bot, or open http://localhost:7860"
+	@echo "✓ CUGA up — NO Activepieces.   Chat channels (a channel with no token in .env is SKIPPED):"
+	@$(MAKE) --no-print-directory channels-status 2>/dev/null || echo "  (run 'make channels-status' once the server is reachable)"
+	@echo "   Every LIVE channel does NOW-chat; cron/poll run natively. Slack (needs a tunnel) + AP integrations are OFF."
+	@echo "   Want Slack too (still no AP)? make up-noap-slack   ·   → NEXT: make status"
 
 up-noap-slack: preflight-noap ## Boot events WITHOUT Activepieces but WITH the CUGA tunnel — so Slack works too (web · Telegram · Discord · Slack)
 	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh
@@ -98,8 +98,8 @@ fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels 
 	  echo "   3. make test                # offline gate — all green"; \
 	  echo "   4. CONNECT integrations     # open http://localhost:7860/studio → Integrations → Connect"; \
 	  echo "                               #   gmail · github · box · google_calendar · pinterest  (youtube/rss = ready)"; \
-	  echo "   5. make test-live           # 4 channels + 4 flow modes"; \
-	  echo "   6. make test-exhaustive     # full arm+FIRE matrix → results/exhaustive_<ts>.html"; \
+	  echo "   5. make test-e2e            # channels + native flows (no AP)"; \
+	  echo "   6. make test-ap             # SaaS integrations (with AP)"; \
 	  echo; echo "   → NEXT: make status"
 
 ## ---- inspect --------------------------------------------------------------
@@ -153,33 +153,39 @@ channels: ## Connect + arm every inbound chat channel that has a token in .env (
 channels-status: ## Show inbound-channel state without changing anything
 	@scripts/arm_channels.sh --status
 
-## ---- tests / env ----------------------------------------------------------
-test: ## Offline events suite — the fast green gate (~60, no stack/creds)
+## ---- TESTS — 4 focused targets ---------------------------------------------
+##   test       quick unit, no creds, CI-safe   ·   test-e2e   e2e WITHOUT AP (channels + native)
+##   test-ap    e2e WITH AP (integrations)       ·   test-report  everything → one HTML report
+test: ## Quick unit — every endpoint + invariant via TestClient. NO creds / stack / AP. The CI gate (~15s).
 	$(PY) -m pytest tests/events -q
 
-test-all: ## All OFFLINE tests (events + unit; no live stack). NB: some tests/unit are pre-existing product failures.
+test-e2e: ## e2e WITHOUT AP — chat + arm + FIRE across channels & native cron/poll; a channel with no token is SKIPPED and named. Needs: make up-noap
+	@echo "── e2e (no Activepieces) — any channel missing its token in .env is SKIPPED and called out ──"
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
+
+test-ap: ## e2e WITH AP — the SaaS integration path (Box/GitHub/Gmail + webhook: arm + fire). Needs: make up + make doctor
+	@echo "── e2e WITH Activepieces — integration push triggers; an unconnected integration is SKIPPED ──"
+	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py $(ARGS)
+
+# ── individual harnesses (hidden from `make help`; run by `make test-report`, or directly for a focused check) ──
+test-all:
 	$(PY) -m pytest tests/events tests/unit -q
-
-bench: ## NL→Flow benchmark scorecard (offline, deterministic; gates CORRECT_AT_ARM==100%)
+bench:
 	$(PY) -m pytest tests/events/test_nl_to_flow_bench.py tests/events/test_flowspec_bench.py -q -s
-
-test-live: ## Live e2e — 4 channels + 4 flow modes. Needs the stack up (make up) + creds (make doctor)
+test-live:
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_e2e.py $(ARGS)
-	@echo "   → NEXT: make test-exhaustive   (the full arm+FIRE matrix → HTML report)"
 
-test-suite-now: ## Live suite — every seeded agent, invoked directly (asserts on meta.mcp)
+test-suite-now:
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only now $(ARGS)
-
-test-suite-flows: ## Live suite — cron + poll + push (English sentence → the right AP flow)
+test-suite-flows:
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only flows $(ARGS)
-
-test-matrix: ## Live matrix — every trigger mode × every channel sink × every integration (~5 min)
+test-matrix:
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_matrix.py $(ARGS)
-
-test-fire: ## Live FIRE — arm a 1-min schedule, WAIT for a real tick, read back the answer (~9 min)
+test-fire:
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_fire.py $(ARGS)
 
-test-report: ## Run EVERY harness in order → one timestamped, commit-stamped report, md + html (~40 min)
+test-report: ## Everything → one HTML report — runs test + test-e2e + test-ap + every matrix, timestamped (~40 min)
 	$(PY) scripts/run_all_tests.py $(ARGS)
 
 report: ## Open the latest HTML report (results/index.html) — does not run anything
@@ -192,7 +198,7 @@ api-spec: ## Regenerate events_docs/api/api_spec.html and SERVE it (Try-it needs
 	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
 	@$(PY) -m http.server 8123 --directory events_docs/api
 
-test-delegation: ## LIVE: the supervisor's routing accuracy over the real 27-agent roster (~10 min)
+test-delegation:
 	$(PY) tests/events/live_delegation_bench.py
 
 
@@ -200,7 +206,7 @@ doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py
 	@echo; echo "--- Activepieces pieces (integration Connect needs these) ---"; \
 	  $(PY) scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
-	@echo; echo "   → NEXT (setup): make test  (then CONNECT integrations in the Studio → make test-live)"
+	@echo; echo "   → NEXT (setup): make test  (then: make up-noap → make test-e2e, or make up → make test-ap)"
 
 sync: ## uv sync the venv
 	uv sync --python 3.12
@@ -234,8 +240,8 @@ preflight: ## Check the TOOLS `make up` needs are installed & running — fails 
 	command -v node >/dev/null 2>&1 || echo "· node missing — only needed to build the Studio UI (scripts/frontend_build.sh), NOT to run the stack"; \
 	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events_docs/SETUP.md → Prerequisites.)"; exit 1; fi
 
-test-exhaustive: ## EXHAUSTIVE live matrix — every agent/trigger/channel, arm+FIRE+answer-verified (~45-75 min)
+test-exhaustive:
 	$(PY) tests/events/live_exhaustive.py $(ARGS)
 
-test-new-pieces: ## Live sweep of the newer pieces — Calendar/Pinterest/YouTube/RSS/Discord (arm + synth-fire, ~3 min)
+test-new-pieces:
 	EVENTS_SERVER_URL=http://localhost:7860 $(PY) tests/events/live_new_pieces.py $(ARGS)

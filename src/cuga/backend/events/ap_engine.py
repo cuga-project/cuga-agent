@@ -215,28 +215,6 @@ class APEngine:
                                        "valid": True, "displayName": display,
                                        "settings": settings}}}
 
-    def _action_op(self, *, piece: str, ap_action: str, inp: dict, ver: str, parent: str,
-                   name: str, connection: str = "", display: str = "") -> dict:
-        """A post-agent ACTION step (design §3.2), added after the /invoke step. ``connection`` wires
-        the acting app's AP connection as ``auth`` (a gmail send needs the user's gmail connection,
-        exactly like a trigger). ``inp`` is the resolved native-template input from
-        ``actions.render_params``."""
-        inp = dict(inp)
-        if connection:
-            inp["auth"] = f"{{{{connections['{connection}']}}}}"
-        # PLAIN prop settings — NOT _prop_settings, which forces a `body` field to a JSON schema
-        # (correct for the HTTP piece, wrong for a gmail action whose `body` is text). custom_api_call
-        # needs its `body` as JSON, so honor an explicit body_type=json.
-        ps = {k: {"type": "MANUAL"} for k in inp}
-        if ap_action == "custom_api_call" and inp.get("body_type") == "json" and "body" in ps:
-            ps["body"] = {"type": "MANUAL", "schema": {
-                "data": {"type": "JSON", "required": True, "displayName": "JSON Body"}}}
-        settings = {"propertySettings": ps, "pieceName": piece,
-                    "pieceVersion": ver, "actionName": ap_action, "input": inp}
-        return {"type": "ADD_ACTION",
-                "request": {"parentStep": parent,
-                            "action": {"name": name, "skip": False, "type": "PIECE", "valid": True,
-                                       "displayName": display or ap_action, "settings": settings}}}
 
     async def create_box_poll_flow(self, *, name: str, agent: str, folder_id: str,
                                    deliver_to: str | None, deliver_target: str | None = None,
@@ -266,82 +244,6 @@ class APEngine:
                  folder_id, interval_seconds)
         return flow_id
 
-    def _router_op(self, parent: str, name: str, branches: list) -> dict:
-        """A ROUTER step (design: live branching). Each branch: {name, when:{field,op,value}|None}.
-        A branch with when=None is the FALLBACK. AP requires ``executionType`` (probed 2026-07-20 —
-        without it the op 400s) and one ``children`` slot per branch."""
-        from . import flows
-        ap_branches = []
-        for b in branches:
-            if b.get("when") is None:
-                ap_branches.append({"branchName": b.get("name", "else"), "branchType": "FALLBACK"})
-            else:
-                w = b["when"]
-                ap_branches.append({"branchName": b.get("name") or str(w.get("value", "match")),
-                                    "branchType": "CONDITION",
-                                    "conditions": [[flows._ap_condition(w.get("field", "answer"),
-                                                                        w.get("op", "CONTAINS"),
-                                                                        w.get("value"))]]})
-        return {"type": "ADD_ACTION", "request": {"parentStep": parent, "action": {
-            "name": name, "skip": False, "type": "ROUTER", "valid": True, "displayName": "Router",
-            "settings": {"branches": ap_branches, "executionType": "EXECUTE_FIRST_MATCH"},
-            "children": [None] * len(branches)}}}
-
-    async def create_branched_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
-                                        prompt: str, branches: list, connection: str = "",
-                                        source_input: dict | None = None, name: str | None = None,
-                                        project_name: str | None = None, scope: str = "") -> str:
-        """Arm a BRANCHED push flow: <source>·<event> ▸ /invoke ▸ ROUTER⟨branch→actions⟩. Each branch:
-        {name, when:{field,op,value}|None (fallback), actions:[{app,ap_action,params,connection}]}.
-        Branch children are added with stepLocationRelativeToParent=INSIDE_BRANCH + branchIndex
-        (probed 2026-07-20). The arm-time validity gate refuses to publish an invalid flow."""
-        from . import flows
-        row = _reg = None  # noqa
-        piece_key = flows.resolve_trigger(source, event)
-        piece_key = (piece_key.piece if piece_key is not None
-                     else flows._LEGACY_SOURCE_TRIGGER[source][0])
-        piece = flows.PIECE.get(piece_key, f"@activepieces/piece-{piece_key}")
-        trig = flows.resolve_trigger(source, event)
-        trig = trig.ap_trigger if trig is not None else flows._LEGACY_SOURCE_TRIGGER[source][1]
-        default_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-branched"
-        async with httpx.AsyncClient(timeout=40) as c:
-            hdrs = await self._auth(c)
-            pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            flow_id = await self._new_flow(c, hdrs, name or default_name, pid, scope)
-            tver = await self._piece_version(c, piece)
-            hver = await self._piece_version(c, flows.PIECE["http"])
-            tinp = dict(source_input or {})
-            if connection:
-                tinp["auth"] = f"{{{{connections['{connection}']}}}}"
-            await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
-            payload = {**flows.push_payload(source, event), "_raw": "{{trigger}}"}
-            body = {"agent": agent, "text": prompt, "deliver": False, "scope": scope,
-                    "source": {"type": "integration", "name": source, "thread_id": thread_id},
-                    "event": {"kind": event, "payload": payload}}
-            await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
-            await self._post_op(c, flow_id, self._router_op("step_1", "step_2", branches), hdrs)
-            # add each branch's action(s) INSIDE its branch
-            sidx = 3
-            for bi, b in enumerate(branches):
-                parent = "step_2"
-                for act in (b.get("actions") or []):
-                    a_piece = flows.PIECE.get(act["app"], f"@activepieces/piece-{act['app']}")
-                    a_ver = await self._piece_version(c, a_piece)
-                    op = self._action_op(piece=a_piece, ap_action=act["ap_action"],
-                                         inp=act.get("params", {}), ver=a_ver, parent=parent,
-                                         name=f"step_{sidx}", connection=act.get("connection", ""),
-                                         display=act.get("display", ""))
-                    if parent == "step_2":          # first action in the branch → INSIDE it
-                        op["request"]["stepLocationRelativeToParent"] = "INSIDE_BRANCH"
-                        op["request"]["branchIndex"] = bi
-                    await self._post_op(c, flow_id, op, hdrs)
-                    parent = f"step_{sidx}"
-                    sidx += 1
-            await self._assert_steps_valid(c, flow_id, hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
-        log.info("armed BRANCHED push flow source=%s/%s agent=%s flow=%s branches=%d",
-                 source, event, agent, flow_id, len(branches))
         return flow_id
 
     async def _assert_steps_valid(self, c: httpx.AsyncClient, flow_id: str, hdrs: dict) -> None:
@@ -588,62 +490,19 @@ class APEngine:
         log.info("armed inbound flow channel=%s agent=%s flow=%s", channel, agent, flow_id)
         return flow_id
 
-    async def ensure_action_executor(self, *, app: str, ap_action: str, action_input: dict,
-                                     connection: str = "", project_name: str | None = None,
-                                     scope: str = "", name: str | None = None) -> str:
-        """Create (or replace, idempotently by name) a REUSABLE action-executor flow:
-        ``catch_webhook ▸ <app>/<ap_action>``. The action's params read from the webhook body
-        (``action_input`` = actions.executor_input(...)). Returns the AP flow id; fire it later with
-        ``trigger_flow(flow_id, body)`` where body = actions.executor_body(...) + the resolved answer.
-
-        This is Option A: it lets a DIRECT trigger (which owns no AP flow) still run an AP-only action
-        (e.g. gmail/send_email). AP keeps the credential (wired as the action ``auth``); CUGA only
-        POSTs plain values. Published through the same validity gate as every other flow — an invalid
-        action step deletes + raises instead of a false success."""
-        from . import flows
-        piece = flows.PIECE.get(app, f"@activepieces/piece-{app}")
-        wh_piece = flows.PIECE["webhook"]
-        default_name = f"exec-{app}-{ap_action.replace('_', '-')}"
-        async with httpx.AsyncClient(timeout=30) as c:
-            hdrs = await self._auth(c)
-            pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            if not pid:
-                raise APError("AP project unresolved for action-executor flow")
-            flow_id = await self._new_flow(c, hdrs, name or default_name, pid, scope)
-            wh_ver = await self._piece_version(c, wh_piece)
-            a_ver = await self._piece_version(c, piece)
-            # catch_webhook trigger — the POST body lands under {{trigger.body.*}}. `authType` is a
-            # REQUIRED prop on the webhook piece (probed live 2026-07-20 — an empty input makes AP mark
-            # the trigger invalid, and the validity gate refuses to arm). "none" = an open webhook
-            # (CUGA's POST is already gateway-token-guarded upstream; the executor URL isn't public).
-            await self._post_op(c, flow_id, self._piece_trigger_op(
-                wh_piece, "catch_webhook", {"authType": "none", "authFields": {}}, wh_ver), hdrs)
-            await self._post_op(c, flow_id, self._action_op(
-                piece=piece, ap_action=ap_action, inp=dict(action_input), ver=a_ver,
-                parent="trigger", name="step_1", connection=connection,
-                display=f"{app} · {ap_action}"), hdrs)
-            await self._assert_steps_valid(c, flow_id, hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
-        log.info("ensured action-executor flow=%s app=%s action=%s", flow_id, app, ap_action)
         return flow_id
 
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
                                prompt: str, project_name: str | None = None, scope: str = "",
                                connection: str = "", source_input: dict | None = None,
-                               name: str | None = None, actions: list | None = None,
+                               name: str | None = None,
                                deliver_channel: str | None = None, deliver_target: str | None = None,
                                deliver_connection: str | None = None) -> str:
-        """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent) ▸ [actions…]. Powers the
-        Box resume watcher and now the post-agent ACTION path. ``connection`` = the trigger app's AP
-        connection externalId (wired as auth on the trigger — REQUIRED to publish). ``source_input``
-        supplies trigger-specific inputs (github ``repository``, box a ``folder``).
-
-        ``actions`` is a SEQUENTIAL list of resolved action steps to run after the agent answers:
-        each ``{app, ap_action, params, connection, display}`` (build with ``actions.render_params``).
-        When actions are present the /invoke step does NOT deliver (deliver=False) — the action step
-        IS the delivery. Branched action flows are built offline (flows.build_push_flow) and armed
-        via the same op mechanism in a follow-up; the concierge only passes sequential actions here."""
+        """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent) ▸ deliver. ``connection`` =
+        the trigger app's AP connection externalId (wired as auth on the trigger — REQUIRED to
+        publish). ``source_input`` supplies trigger-specific inputs (github ``repository``, box a
+        ``folder``). The agent's answer returns to the origin channel (deliver=True), or via an AP
+        send step for an AP-backed channel (deliver_channel/deliver_target)."""
         from . import flows
         # Registry-resolved: (source, event) selects the SPECIFIC piece trigger. The old lookup
         # keyed on source alone and IGNORED `event` for known apps — gmail/new_attachment armed the
@@ -692,17 +551,8 @@ class APEngine:
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": payload}}
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
-            # post-agent ACTION steps — sequential chain after step_1 (the /invoke)
             parent, idx = "step_1", 2
-            for act in (actions or []):
-                a_piece = flows.PIECE.get(act["app"], f"@activepieces/piece-{act['app']}")
-                a_ver = await self._piece_version(c, a_piece)
-                await self._post_op(c, flow_id, self._action_op(
-                    piece=a_piece, ap_action=act["ap_action"], inp=act.get("params", {}),
-                    ver=a_ver, parent=parent, name=f"step_{idx}",
-                    connection=act.get("connection", ""), display=act.get("display", "")), hdrs)
-                parent, idx = f"step_{idx}", idx + 1
-            if has_send:                              # AP-channel report, AFTER the action(s)
+            if has_send:                              # AP-channel report (deliver=False path)
                 piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
                 sver = await self._piece_version(c, piece)
                 await self._post_op(c, flow_id, self._channel_send_op(

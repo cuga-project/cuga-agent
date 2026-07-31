@@ -13,27 +13,33 @@ import asyncio
 import os
 import sys
 
-_EVENTS = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                       "..", "..", "src", "cuga", "backend", "events"))
+_EVENTS = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events")
+)
 if _EVENTS not in sys.path:
     sys.path.insert(0, _EVENTS)
 
-import classify          # noqa: E402
-import concierge_plan    # noqa: E402
-import envelope          # noqa: E402
-import flows             # noqa: E402
-import mcp_catalog       # noqa: E402
-import principal        # noqa: E402
-import subscriptions     # noqa: E402
-import trace             # noqa: E402
-import runtime           # noqa: E402
+import classify  # noqa: E402
+import concierge_plan  # noqa: E402
+import envelope  # noqa: E402
+import flows  # noqa: E402
+import mcp_catalog  # noqa: E402
+import principal  # noqa: E402
+import subscriptions  # noqa: E402
+import trace  # noqa: E402
+import runtime  # noqa: E402
 
 
 # ---- envelope ------------------------------------------------------------
 def test_envelope_roundtrip():
-    d = {"source": {"type": "integration", "name": "box", "thread_id": "sub:1"},
-         "event": {"kind": "new_file", "payload": {"name": "resume.pdf"}},
-         "text": "", "agent": "resume_judge", "deliver": True, "trace_id": "abc"}
+    d = {
+        "source": {"type": "integration", "name": "box", "thread_id": "sub:1"},
+        "event": {"kind": "new_file", "payload": {"name": "resume.pdf"}},
+        "text": "",
+        "agent": "resume_judge",
+        "deliver": True,
+        "trace_id": "abc",
+    }
     e = envelope.Envelope.from_dict(d)
     assert e.source.name == "box" and e.agent == "resume_judge" and e.deliver is True
     assert e.thread_id == "sub:1"
@@ -44,8 +50,11 @@ def test_envelope_worker_input():
     ch = envelope.Envelope.from_dict({"source": {"type": "channel"}, "text": "capital of Japan?"})
     assert ch.worker_input() == "capital of Japan?"
     ig = envelope.Envelope.from_dict(
-        {"source": {"type": "integration", "name": "box"},
-         "event": {"kind": "new_file", "payload": {"name": "cv.pdf"}}})
+        {
+            "source": {"type": "integration", "name": "box"},
+            "event": {"kind": "new_file", "payload": {"name": "cv.pdf"}},
+        }
+    )
     assert "cv.pdf" in ig.worker_input()
 
 
@@ -54,8 +63,8 @@ def test_channel_locus_extraction():
     strips — a flow armed in a thread must deliver INTO the thread, not the channel root."""
     assert principal.channel_locus("scope::gw:slack:C123#1784.9") == "1784.9"
     assert principal.channel_locus("gw:discord:555#8888") == "8888"
-    assert principal.channel_locus("gw:slack:C123") == ""          # no locus → channel root
-    assert principal.channel_locus("web:local") == ""              # not a gw thread
+    assert principal.channel_locus("gw:slack:C123") == ""  # no locus → channel root
+    assert principal.channel_locus("web:local") == ""  # not a gw thread
     # origin still strips it (unchanged contract)
     assert principal.channel_origin("scope::gw:slack:C123#1784.9") == ("slack", "C123")
 
@@ -66,30 +75,45 @@ def test_envelope_push_fire_is_framed_one_shot():
     the deliverable content itself (live probe: "I've sent you the message" would have been what
     the sink delivered). Channel messages stay bare — no framing on chat."""
     fire = envelope.Envelope.from_dict(
-        {"source": {"type": "integration", "name": "github"},
-         "text": "whenever a PR is opened, summarize it and message me",
-         "event": {"kind": "new_pr", "payload": {"number": "7", "title": "fix flaky test"}}})
+        {
+            "source": {"type": "integration", "name": "github"},
+            "text": "whenever a PR is opened, summarize it and message me",
+            "event": {"kind": "new_pr", "payload": {"number": "7", "title": "fix flaky test"}},
+        }
+    )
     w = fire.worker_input()
     assert "watched event just occurred" in w and "[event]" in w
     assert "title=fix flaky test" in w
-    assert w.index("watched event") < w.index("whenever a PR")   # framing comes FIRST
+    assert w.index("watched event") < w.index("whenever a PR")  # framing comes FIRST
     ch = envelope.Envelope.from_dict({"source": {"type": "channel"}, "text": "hi"})
     assert "watched event" not in ch.worker_input()
     # a payload-less integration fire stays unframed (nothing authoritative to point at)
     bare = envelope.Envelope.from_dict(
-        {"source": {"type": "integration", "name": "github"}, "text": "do the thing",
-         "event": {"kind": "new_pr", "payload": {}}})
+        {
+            "source": {"type": "integration", "name": "github"},
+            "text": "do the thing",
+            "event": {"kind": "new_pr", "payload": {}},
+        }
+    )
     assert "watched event" not in bare.worker_input()
     # webhook fires stay unframed too — the hook endpoint composes its own instruction text
     hook = envelope.Envelope.from_dict(
-        {"source": {"type": "integration", "name": "webhook"}, "text": "Triage this payload: …",
-         "event": {"kind": "message", "payload": {"alert": "HighCPU"}}})
+        {
+            "source": {"type": "integration", "name": "webhook"},
+            "text": "Triage this payload: …",
+            "event": {"kind": "message", "payload": {"alert": "HighCPU"}},
+        }
+    )
     assert "watched event" not in hook.worker_input()
     # each payload field is capped — a full forwarded-email body blew up the delegate exchange
     # and the supervisor's raw deliberation got delivered as the answer (Slack, 2026-07-16)
     big = envelope.Envelope.from_dict(
-        {"source": {"type": "integration", "name": "gmail"}, "text": "summarize it",
-         "event": {"kind": "new_email", "payload": {"subject": "hi", "body": "x" * 50_000}}})
+        {
+            "source": {"type": "integration", "name": "gmail"},
+            "text": "summarize it",
+            "event": {"kind": "new_email", "payload": {"subject": "hi", "body": "x" * 50_000}},
+        }
+    )
     w = big.worker_input()
     assert len(w) < 5_000 and "subject=hi" in w
 
@@ -97,15 +121,14 @@ def test_envelope_push_fire_is_framed_one_shot():
 def test_envelope_validate():
     assert envelope.validate({"source": {"type": "bogus"}})  # non-empty problems
     assert envelope.validate({"source": {"type": "channel"}, "text": ""})  # empty channel text
-    assert not envelope.validate(
-        {"source": {"type": "channel"}, "text": "hi", "event": {"kind": "message"}})
+    assert not envelope.validate({"source": {"type": "channel"}, "text": "hi", "event": {"kind": "message"}})
 
 
 # ---- mcp_catalog ---------------------------------------------------------
 def test_mcp_catalog():
-    assert mcp_catalog.known_mcp_url("cuga-finance").endswith("mcp-finance"
-                                                              ".1gxwxi8kos9y.us-east"
-                                                              ".codeengine.appdomain.cloud/mcp")
+    assert mcp_catalog.known_mcp_url("cuga-finance").endswith(
+        "mcp-finance.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
+    )
     assert mcp_catalog.known_mcp_url("not-a-cuga") is None
     cfg = mcp_catalog.resolve(["cuga-geo", "cuga-nope"])
     assert list(cfg) == ["cuga-geo"] and cfg["cuga-geo"]["transport"] == "streamable_http"
@@ -123,9 +146,13 @@ def test_trace():
 
 # ---- flows ---------------------------------------------------------------
 def test_flow_cron():
-    f = flows.build_cron_flow(agent="papers", thread_id="gw:telegram:42", prompt="top arxiv",
-                              interval_seconds=120,
-                              sink=flows.send_step("telegram", "42", "{{step_1.body.answer}}"))
+    f = flows.build_cron_flow(
+        agent="papers",
+        thread_id="gw:telegram:42",
+        prompt="top arxiv",
+        interval_seconds=120,
+        sink=flows.send_step("telegram", "42", "{{step_1.body.answer}}"),
+    )
     trig = f["trigger"]
     assert trig["settings"]["pieceName"] == flows.PIECE["schedule"]
     assert trig["settings"]["input"]["minutes"] == 2
@@ -136,27 +163,28 @@ def test_flow_cron():
     assert step1["nextAction"]["settings"]["pieceName"] == flows.PIECE["telegram"]
 
 
-def test_flow_push_router():
-    branches = [
-        {"name": "MATCH", "match": "MATCH",
-         "action": flows.send_step("gmail", "me@x.com", "{{step_1.body.answer}}")},
-        {"name": "SKIP", "match": None, "action": None},
-    ]
-    f = flows.build_push_flow(agent="resume_judge", thread_id="sub:1", prompt="judge",
-                              source="box", source_input={"folderId": "1"}, branches=branches)
+def test_flow_push_delivers_to_sink():
+    sink = flows.send_step("telegram", "123", "{{step_1.body.answer}}")
+    f = flows.build_push_flow(
+        agent="pr_reviewer",
+        thread_id="sub:1",
+        prompt="review",
+        source="github",
+        event_kind="new_pr",
+        source_input={"repository": "o/r"},
+        sink=sink,
+    )
     trig = f["trigger"]
-    assert trig["settings"]["pieceName"] == flows.PIECE["box"]
-    assert trig["settings"]["triggerName"] == "new_file"
-    router = trig["nextAction"]["nextAction"]
-    assert router["type"] == "ROUTER"
-    assert [b["branchName"] for b in router["settings"]["branches"]] == ["MATCH", "SKIP"]
-    assert router["children"][0]["settings"]["pieceName"] == flows.PIECE["gmail"]
-    assert router["children"][1] is None
+    assert trig["settings"]["pieceName"] == flows.PIECE["github"]
+    # trigger → /invoke → send (no router, no action tail)
+    assert trig["nextAction"]["nextAction"]["settings"]["pieceName"] == flows.PIECE["telegram"]
 
 
 def test_flow_dispatcher_and_inbound():
-    assert flows.build_flow("POLL", agent="p", thread_id="t", prompt="x",
-                            interval_seconds=60).get("__mode") == "poll"
+    assert (
+        flows.build_flow("POLL", agent="p", thread_id="t", prompt="x", interval_seconds=60).get("__mode")
+        == "poll"
+    )
     inb = flows.build_inbound_flow(channel="telegram", agent="concierge")
     # the CHANNELS descriptor's trigger — the SAME one the live path (ap_engine.create_inbound_flow)
     # arms. This used to assert "new_message", a name that had silently drifted from the live flow.
@@ -172,14 +200,23 @@ def test_flow_dispatcher_and_inbound():
 # ---- subscriptions -------------------------------------------------------
 def test_subscription_store():
     st = subscriptions.SubscriptionStore(":memory:")
-    sub = subscriptions.Subscription(id="s1", mode="CRON", target_agent="papers",
-                                     backend="react", source_type="time", source_connector="cron",
-                                     ap_flow_id="f1", deliver_to=["telegram"], thread_id="sub:1",
-                                     prompt="arxiv", flow_name="ea:cron-papers-daily-ab12")
+    sub = subscriptions.Subscription(
+        id="s1",
+        mode="CRON",
+        target_agent="papers",
+        backend="react",
+        source_type="time",
+        source_connector="cron",
+        ap_flow_id="f1",
+        deliver_to=["telegram"],
+        thread_id="sub:1",
+        prompt="arxiv",
+        flow_name="ea:cron-papers-daily-ab12",
+    )
     st.upsert(sub)
     got = st.get("s1")
     assert got and got.mode == "CRON" and got.deliver_to == ["telegram"] and got.created_at > 0
-    assert got.flow_name == "ea:cron-papers-daily-ab12"            # the readable AP flow name
+    assert got.flow_name == "ea:cron-papers-daily-ab12"  # the readable AP flow name
     assert st.as_dicts()[0]["flow_name"] == "ea:cron-papers-daily-ab12"  # surfaced to the UI
     assert len(st.list()) == 1 and st.by_agent("papers")[0].id == "s1"
     st.set_status("s1", "paused")
@@ -217,7 +254,7 @@ def test_classify_cadence_and_source():
 
 
 def test_classify_ttl_bounded_runs():
-    """"… for one hour" is a BOUNDED run: ttl_of feeds expires_at at arm time and /invoke's
+    """ "… for one hour" is a BOUNDED run: ttl_of feeds expires_at at arm time and /invoke's
     expiry gate ends the flow. A cadence's own phrase ("every hour") must not read as a TTL."""
     assert classify.ttl_of("every five minutes post about IBM stock for one hour") == 3600
     assert classify.ttl_of("every 5 minutes check bitcoin for the next 2 hours") == 7200
@@ -244,7 +281,7 @@ def test_stub_runtime_memory_and_reuse():
     a1 = asyncio.run(r.run("geobot", "t1", "capital of Japan?"))
     a2 = asyncio.run(r.run("geobot", "t1", "and its population?"))
     a3 = asyncio.run(r.run("geobot", "t2", "capital of Peru?"))
-    assert "turn#1" in a1 and "turn#2" in a2 and "turn#1" in a3   # per-thread memory
+    assert "turn#1" in a1 and "turn#2" in a2 and "turn#1" in a3  # per-thread memory
     try:
         asyncio.run(r.run("nope", "t", "x"))
         assert False, "expected KeyError"
@@ -257,14 +294,14 @@ def test_concierge_plan():
     now = concierge_plan.plan("what's the bitcoin price right now?", agent="pricebot")
     assert now["decision"]["mode"] == "NOW" and now["flow"] is None
 
-    cron = concierge_plan.plan("every 2 minutes send me the time", agent="clockbot",
-                               thread_id="gw:telegram:42")
+    cron = concierge_plan.plan(
+        "every 2 minutes send me the time", agent="clockbot", thread_id="gw:telegram:42"
+    )
     assert cron["decision"]["mode"] == "CRON"
     assert cron["flow"]["trigger"]["settings"]["input"]["minutes"] == 2
     assert cron["flow"]["trigger"]["nextAction"]["settings"]["input"]["body"]["agent"] == "clockbot"
 
-    push = concierge_plan.plan("when a resume lands in my Box folder, email me the fit",
-                               agent="resume_judge")
+    push = concierge_plan.plan("when a resume lands in my Box folder, email me the fit", agent="resume_judge")
     assert push["decision"]["mode"] == "PUSH" and push["decision"]["source"] == "box"
     assert push["flow"]["trigger"]["settings"]["pieceName"] == flows.PIECE["box"]
 
