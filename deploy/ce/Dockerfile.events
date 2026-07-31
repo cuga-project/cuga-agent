@@ -1,0 +1,54 @@
+# CUGA event-driven layer (NO Activepieces) for IBM Code Engine.
+# Extends the working root Dockerfile: same base + `uv sync`, but the entrypoint is
+# `cuga start demo --events` and the registry is pointed at the remote cuga-apps-mcp
+# servers. One self-contained image — only the LLM + those (already-deployed) MCP
+# routes are external.
+#
+# Built cloud-side by deploy/ce/1_build_push_image.sh (no local docker needed).
+
+FROM python:3.12-slim-trixie
+
+# curl + certs for the uv installer and outbound HTTPS to watsonx + the MCP routes.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin/:$PATH"
+
+WORKDIR /app
+
+# Dependencies first (layer cache), then source.
+COPY pyproject.toml uv.lock ./
+COPY src/ ./src/
+COPY docs/ ./docs/
+
+# The event-driven layer's agent model + rosters live at the repo root.
+COPY supervisor_agents.yaml ./
+COPY rosters/ ./rosters/
+
+RUN uv sync
+
+RUN mkdir -p /app/cuga_workspace
+COPY src/cuga/demo_tools/huggingface/contacts.txt       /app/cuga_workspace/contacts.txt
+COPY src/cuga/demo_tools/huggingface/cuga_knowledge.md  /app/cuga_workspace/cuga_knowledge.md
+COPY src/cuga/demo_tools/huggingface/cuga_playbook.md   /app/cuga_workspace/cuga_playbook.md
+COPY src/cuga/demo_tools/huggingface/email_template.md  /app/cuga_workspace/email_template.md
+
+EXPOSE 7860
+
+# Bind externally + pin the demo port to the CE-exposed port.
+ENV CUGA_HOST=0.0.0.0
+ENV DYNACONF_SERVER_PORTS__DEMO=7860
+
+# Events (no-AP) defaults baked in; deploy-time --env can still override these.
+ENV MCP_SERVERS_FILE=/app/src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml
+ENV EVENTS_SCHEDULER=native
+ENV EVENTS_TELEGRAM_BACKEND=direct
+ENV EVENTS_DISCORD_BACKEND=direct
+ENV EVENTS_SLACK_BACKEND=direct
+
+# THE one entry point — identical to `make up-noap`, minus the tunnel (the CE route
+# is the public URL). Registry (8001) + agent (7860) boot as children; Telegram
+# long-poll + Discord Gateway auto-connect from the tokens in the environment.
+CMD ["uv", "run", "cuga", "start", "demo", "--events"]

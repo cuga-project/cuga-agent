@@ -1057,6 +1057,21 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # Launch the events-layer background loops (direct Telegram long-poll, Discord Gateway, and the
+    # native cron/poll scheduler) that register_events_routes queued into app.state.events_background.
+    # RESTORED: this launcher was dropped in the event_support merge (main.py conflict), leaving the
+    # loops registered but never started — the shutdown-cancel below still referenced _events_bg_tasks.
+    _events_bg_tasks = []
+    try:
+        for _factory in getattr(app.state, "events_background", []) or []:
+            _events_bg_tasks.append(asyncio.create_task(_factory()))
+        if _events_bg_tasks:
+            logger.info(f"events: launched {len(_events_bg_tasks)} background task(s) "
+                        "(direct channel loops + native scheduler)")
+    except Exception as _bg_err:  # noqa: BLE001
+        logger.warning(f"events background launch failed: {_bg_err}")
+
     yield
     logger.info("Application is shutting down...")
 
