@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from loguru import logger
 
@@ -38,7 +39,7 @@ def _record_bind_tools_degraded(reason: str) -> None:
         logger.debug("could not record bind_tools_degraded step: {}", e)
 
 
-def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> BaseChatModel:
+def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> Runnable:
     """Bind ``tools`` to ``model``, falling back to the unbound model if the
     provider does not support ``bind_tools``.
 

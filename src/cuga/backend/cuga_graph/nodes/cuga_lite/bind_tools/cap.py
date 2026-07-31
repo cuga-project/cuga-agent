@@ -147,8 +147,15 @@ async def _run_shortlister(
 ) -> List[str]:
     """Run :meth:`PromptUtils.shortlist_tool_names` and validate the result.
 
-    Raises ``RuntimeError`` on shortlister failure or empty ranking — silent
-    truncation would corrupt benchmark results comparing native vs text mode.
+    Raises:
+        BindToolsUnsupportedError: the active model cannot do native structured
+            output / tool binding. The shortlister runs on that same model, so
+            this fires before any bind is attempted. Deliberately not a
+            ``RuntimeError``, so ``resolve_model_with_bind_tools`` degrades to
+            the unbound (code-act) model instead of re-raising.
+        RuntimeError: genuine shortlister failure or an empty ranking — silent
+            truncation would corrupt benchmark results comparing native vs
+            text mode, so these stay loud.
     """
     all_apps: List[Any] = []
     if tool_provider is not None:

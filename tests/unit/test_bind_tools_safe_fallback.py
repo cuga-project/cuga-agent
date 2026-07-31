@@ -51,13 +51,23 @@ class _BindModel(_NoBindModel):
 
 
 def test_safe_bind_returns_unbound_model_when_unsupported():
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+
     model = _NoBindModel()
     # sanity: NotImplementedError IS a RuntimeError subclass — without _safe_bind
     # it would hit the cap's deliberate `except RuntimeError: raise` and crash
     # call_model instead of degrading.
     assert issubclass(NotImplementedError, RuntimeError)
+
+    tracker = ActivityTracker()
+    before = len(tracker.steps or [])
     result = _safe_bind(model, ["tool_a"])
     assert result is model  # degraded, not crashed
+
+    # the direct _safe_bind path must leave the same machine-readable trace
+    # as the shortlister path, so an eval harness can spot either degradation
+    steps = [s for s in (tracker.steps or [])[before:] if s.name == "bind_tools_degraded"]
+    assert steps, "expected a bind_tools_degraded step from the _safe_bind path"
 
 
 def test_safe_bind_binds_when_supported():
