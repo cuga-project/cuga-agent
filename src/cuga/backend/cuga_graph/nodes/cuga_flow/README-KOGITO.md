@@ -152,7 +152,7 @@ curl -s -X POST http://localhost:8081/graphql -H 'Content-Type: application/json
   -d '{"query":"{ ProcessInstances { id state start end nodes { name type enter exit } variables } }"}'
 ```
 
-A completed loan approval returns its full node trail, in execution order:
+A completed loan approval returns its full node trail:
 
 ```
 84522e81  COMPLETED  10 nodes
@@ -171,6 +171,35 @@ A completed loan approval returns its full node trail, in execution order:
 `variables` carries the terminal state (`credit_score`, `gatewayDecision`, `decision`),
 which makes this the practical way to see what a hook or gateway actually decided.
 Filter with `ProcessInstances(where: {state: {equal: ERROR}})`.
+
+#### Reading the timeline
+
+Two properties of this data surprise people, and both are visible above — note `Start`
+listed last.
+
+**`enter` has millisecond granularity, and adjacent deterministic nodes tie.** In a real
+run, `give loan`, `merge`, and `complete process` all recorded `enter=12:11:05.849`. Nodes
+sharing a timestamp cannot be ordered from the data, so any display order among them —
+in the console or anywhere else — is arbitrary. `merge` appearing before `give loan` is
+this, not a routing anomaly. `Start` ties with the first node for the same reason.
+
+**`exit` is the process end time on every node**, not each node's own. It is the same value
+for all ten. Per-node duration therefore cannot be read from `exit`.
+
+Real durations come from the gaps between consecutive `enter` values:
+
+```
+hook: pre credit check    →  4.0s   LLM
+check credit              →  9.0s   LLM
+route gateway decision    →  4.0s   LLM
+credit decision (gateway) →  0ms    deterministic
+hook: approval intercept  →  3.1s   LLM
+give loan → merge → end   →  4ms    deterministic
+```
+
+20.1s total, of which all but ~4ms is the four LLM control points. The engine's own work is
+below the resolution of the timestamps — which is the expected shape here, and precisely
+why three consecutive nodes collapse into a single millisecond.
 
 Four things worth knowing:
 
@@ -246,6 +275,7 @@ hooks and the gateway split.
 | *"Could not communicate with runtime"* | CORS. Rebuild so `quarkus.http.cors=true` is in `application.properties`, and restart the app. Confirm with a preflight (below). |
 | *"missing the kogito.service.url property"*, or *"Error fetching data"* on opening an instance | `kogito.service.url` unset, so instances record `serviceUrl: null` and the console has no base URL to call back on. Rebuild and restart. |
 | Connects, but no instances | Data Index is per-service-lifetime — a restart clears history. Run a process, then reload. |
+| Timeline order looks wrong | Deterministic nodes tie at millisecond `enter` granularity and cannot be ordered — see [Reading the timeline](#reading-the-timeline). |
 | Console very slow | The image is amd64 only; on Apple Silicon it runs under emulation. |
 
 Listing instances only needs `/graphql`; opening one, and every action on it, goes back to
