@@ -51,6 +51,31 @@ class TestFilterNewVariables:
         assert result['my_tuple'] == (1, 2, 3)
         assert result['nested'] == {'list': [1, 2], 'dict': {'x': 10}}
 
+    @pytest.mark.unit
+    def test_filter_sets_and_frozensets(self):
+        """Sets/frozensets with serializable elements must persist across steps."""
+        original_keys = set()
+        all_locals = {
+            'my_set': {1, 2, 3},
+            'my_frozenset': frozenset({4, 5}),
+            'nested_set': {1, (2, 3)},
+            'set_of_unserializable': {object()},
+        }
+
+        result = VariableUtils.filter_new_variables(all_locals, original_keys)
+
+        assert result['my_set'] == {1, 2, 3}
+        assert result['my_frozenset'] == frozenset({4, 5})
+        assert result['nested_set'] == {1, (2, 3)}
+        assert 'set_of_unserializable' not in result
+
+    @pytest.mark.unit
+    def test_is_serializable_accepts_sets(self):
+        assert VariableUtils.is_serializable({1, 2, 3}) is True
+        assert VariableUtils.is_serializable(frozenset({"a", "b"})) is True
+        assert VariableUtils.is_serializable(set()) is True
+        assert VariableUtils.is_serializable({object()}) is False
+
     def test_filter_excludes_internal_variables(self):
         """Test that internal variables (starting with _) are filtered out."""
         original_keys = set()
@@ -100,6 +125,38 @@ class TestFilterNewVariables:
         result = VariableUtils.filter_new_variables(all_locals, original_keys)
 
         assert result == {}
+
+
+class TestLocalSandboxSetPersistence:
+    """Regression: set/frozenset vars must survive across local CodeExecutor steps (#550)."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_set_persists_across_two_steps(self):
+        state = AgentState(input="test", url="")
+
+        code1 = """
+nums = [3, 4, 5, 6]
+product_set = {a * b for a in nums for b in nums}
+print(len(product_set))
+"""
+        _, new_vars1 = await CodeExecutor.eval_with_tools_async(
+            code=code1, _locals={}, state=state, mode="local"
+        )
+        assert "product_set" in new_vars1
+        assert isinstance(new_vars1["product_set"], set)
+
+        _locals = {
+            name: state.variables_manager.get_variable(name)
+            for name in state.variables_manager.get_variable_names()
+        }
+
+        code2 = "print(len(nums), len(product_set))"
+        result2, _ = await CodeExecutor.eval_with_tools_async(
+            code=code2, _locals=_locals, state=state, mode="local"
+        )
+        assert "NameError" not in result2
+        assert "4 10" in result2
 
 
 class TestExecuteInE2BSandbox:
