@@ -13,7 +13,17 @@ import yaml
 import httpx
 import json
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Union, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Union, Optional
+
+if TYPE_CHECKING:
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
+    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
@@ -29,30 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # The module also calls init_openlit() at import time to set up instrumentation.
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
 
-from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
-
-from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.configurations.instructions_manager import InstructionsManager
-from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
-from cuga.cli import start_extension_browser_if_configured
-from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
-from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
-    ChromeExtensionCommunicatorHTTP,
-    ChromeExtensionCommunicatorProtocol,
-)
-from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
-from cuga.backend.cuga_graph.graph import DynamicAgentGraph
-from cuga.backend.cuga_graph.utils.controller import AgentRunner
-from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
-    ActionAgentEventProcessor,
-)
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
-from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
-from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
-from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
-from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent, OutputFormat
-from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 from cuga.config import (
     get_app_name_from_url,
     get_user_data_path,
@@ -92,7 +79,6 @@ from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
     generate_tool_guards_for_policy,
 )
-from cuga.backend.cuga_graph.policy.models import ToolGuide
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -341,6 +327,8 @@ class AppState:
     """A class to hold and manage all application state variables."""
 
     def __init__(self):
+        from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+
         # Initializing all state variables to None or default values.
         self.tracker: Optional[ActivityTracker] = None
         self.env: Optional[BrowserEnvGymAsync | ExtensionEnv] = None
@@ -533,6 +521,8 @@ async def lifespan(app: FastAPI):
         try:
             policies_content = os.getenv("CUGA_POLICIES_CONTENT", "")
             if policies_content:
+                from cuga.configurations.instructions_manager import InstructionsManager
+
                 logger.info("Loading hardcoded policies")
                 instructions_manager = InstructionsManager()
                 instructions_manager.set_instructions_from_one_file(policies_content)
@@ -540,86 +530,87 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to load policies: {e}")
 
-    # Initialize policy system (only if enabled)
-    if settings.policy.enabled:
-        try:
-            from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-            from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-            from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
+    async def _init_policy() -> None:
+        # Initialize policy system (only if enabled)
+        if settings.policy.enabled:
+            try:
+                from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+                from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
+                from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
 
-            app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
-            app_state.policy_system = PolicyConfigurable.get_instance()
-            await app_state.policy_system.initialize()
-            logger.info("✅ Policy system initialized")
+                app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
+                app_state.policy_system = PolicyConfigurable.get_instance()
+                await app_state.policy_system.initialize()
+                logger.info("✅ Policy system initialized")
 
-            # Get .cuga folder path from environment or settings
-            cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+                # Get .cuga folder path from environment or settings
+                cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
 
-            # Check if filesystem sync is enabled (can be disabled globally in settings)
-            filesystem_sync_enabled = settings.policy.filesystem_sync
-            auto_load_enabled = settings.policy.auto_load_policies
+                # Check if filesystem sync is enabled (can be disabled globally in settings)
+                filesystem_sync_enabled = settings.policy.filesystem_sync
+                auto_load_enabled = settings.policy.auto_load_policies
 
-            if not filesystem_sync_enabled:
-                logger.info("Filesystem sync disabled in settings")
-                app_state.policy_filesystem_sync = None
-            elif not auto_load_enabled:
-                logger.info("Auto-load policies disabled in settings")
-                # Initialize sync but don't load
-                app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-            # Load policies from filesystem if folder exists and auto-load is enabled
-            elif os.path.exists(cuga_folder):
-                logger.info(f"Loading policies from {cuga_folder}...")
-                try:
-                    result = await load_policies_from_folder(
-                        folder_path=cuga_folder,
-                        storage=app_state.policy_system.storage,
-                        clear_existing=False,
-                    )
-                    await app_state.policy_system.initialize()  # Reinitialize after loading
-                    logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                    # Initialize filesystem sync for automatic saving
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                    # Validate and sync: ensure filesystem and storage are in sync
-                    try:
-                        sync_result = await validate_and_sync_policies(
-                            app_state.policy_system.storage, app_state.policy_filesystem_sync
-                        )
-                        if sync_result['removed'] or sync_result['added_to_filesystem']:
-                            logger.info(
-                                f"📊 Sync validation: "
-                                f"removed from storage={sync_result['removed']}, "
-                                f"added to filesystem={sync_result['added_to_filesystem']}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to validate and sync policies: {e}")
-                except Exception as e:
-                    logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                if not filesystem_sync_enabled:
+                    logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-            else:
-                logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                elif not auto_load_enabled:
+                    logger.info("Auto-load policies disabled in settings")
+                    # Initialize sync but don't load
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
+                # Load policies from filesystem if folder exists and auto-load is enabled
+                elif os.path.exists(cuga_folder):
+                    logger.info(f"Loading policies from {cuga_folder}...")
+                    try:
+                        result = await load_policies_from_folder(
+                            folder_path=cuga_folder,
+                            storage=app_state.policy_system.storage,
+                            clear_existing=False,
+                        )
+                        await app_state.policy_system.initialize()  # Reinitialize after loading
+                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                        # Initialize filesystem sync for automatic saving
+                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                        # Validate and sync: ensure filesystem and storage are in sync
+                        try:
+                            sync_result = await validate_and_sync_policies(
+                                app_state.policy_system.storage, app_state.policy_filesystem_sync
+                            )
+                            if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                logger.info(
+                                    f"📊 Sync validation: "
+                                    f"removed from storage={sync_result['removed']}, "
+                                    f"added to filesystem={sync_result['added_to_filesystem']}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to validate and sync policies: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                        app_state.policy_filesystem_sync = None
+                else:
+                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                    app_state.policy_filesystem_sync = None
+
+                app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
+
+            except Exception as e:
+                logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.policy_system = None
                 app_state.policy_filesystem_sync = None
-
-            app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.set_subsystem_status(
+                    "policy",
+                    "failed",
+                    "Policy subsystem failed to initialize",
+                    {"error": str(e)},
+                )
+        else:
+            logger.info("Policy system disabled in settings")
             app_state.policy_system = None
             app_state.policy_filesystem_sync = None
-            app_state.set_subsystem_status(
-                "policy",
-                "failed",
-                "Policy subsystem failed to initialize",
-                {"error": str(e)},
-            )
-    else:
-        logger.info("Policy system disabled in settings")
-        app_state.policy_system = None
-        app_state.policy_filesystem_sync = None
-        app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
+            app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
 
     # -------------------------------------------------------------------
     # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
@@ -762,12 +753,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         kb_config = KnowledgeConfig()
 
-    if kb_config.enabled:
-        await initialize_knowledge_engine(app_state, kb_config)
-    else:
-        app_state.knowledge_engine = None
-        logger.info("Knowledge features disabled (knowledge.enabled=false)")
-        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+    async def _init_knowledge() -> None:
+        if kb_config.enabled:
+            await initialize_knowledge_engine(app_state, kb_config)
+        else:
+            app_state.knowledge_engine = None
+            logger.info("Knowledge features disabled (knowledge.enabled=false)")
+            app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+
+    await asyncio.gather(_init_policy(), _init_knowledge())
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
@@ -801,6 +795,8 @@ async def lifespan(app: FastAPI):
                 )
                 await app_state.policy_system.initialize()
                 logger.info(f"Manager mode: applied {len(policies_list)} policies from config")
+            from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
             registry_url = get_registry_base_url()
             async with httpx.AsyncClient() as client:
                 r = await client.post(f"{registry_url}/reload", timeout=10.0)
@@ -814,6 +810,20 @@ async def lifespan(app: FastAPI):
     # Start the save_reuse server if configured
 
     await manage_save_reuse_server()
+
+    # Deferred imports — kept here intentionally to avoid loading the browser stack
+    # and graph modules before lifespan starts.  Moving these to module-top would
+    # re-introduce the startup latency that was removed by this optimisation.
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
+        ChromeExtensionCommunicatorHTTP,
+    )
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
+    from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
+    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.cli import start_extension_browser_if_configured
+
     app_state.tracker = ActivityTracker()
     if settings.advanced_features.use_extension:
         app_state.env = ExtensionEnv(
@@ -1112,6 +1122,10 @@ async def lifespan(app: FastAPI):
 
 def get_element_names(tool_calls, elements):
     """Extracts element names from tool calls."""
+    from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+        ActionAgentEventProcessor,
+    )
+
     elements_map = {}
     for tool in tool_calls:
         element_bid = tool.get("args", {}).get("bid", None)
@@ -1306,6 +1320,8 @@ async def save_conversation_to_db(
         user_id: The user identifier (defaults to DEFAULT_USER_ID)
     """
     try:
+        from langchain_core.messages import AIMessage, HumanMessage
+
         if not thread_id or not state:
             return
 
@@ -1468,6 +1484,13 @@ async def event_stream(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
+    from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
+    from cuga.backend.cuga_graph.utils.controller import AgentRunner
+    from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
+    from langchain_core.messages import AIMessage
+
     run_agent = agent if agent is not None else app_state.agent
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
@@ -1937,6 +1960,8 @@ async def event_stream(
                         # WXO mode wraps each event as a Chat Completions
                         # chunk; DEFAULT mode emits the already-formatted SSE
                         # block verbatim to avoid double-wrapping.
+                        from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+
                         if app_state.output_format == OutputFormat.WXO:
                             yield StreamEvent(name=name, data=event).format(
                                 app_state.output_format, thread_id=thread_id
@@ -2258,7 +2283,11 @@ async def auth_userinfo(request: Request):
 if getattr(settings.advanced_features, "use_extension", False):
     print(settings.advanced_features.use_extension)
 
-    def get_communicator() -> ChromeExtensionCommunicatorProtocol:
+    def get_communicator():
+        from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
+            ChromeExtensionCommunicatorProtocol,
+        )
+
         comm: ChromeExtensionCommunicatorProtocol | None = getattr(
             app_state.env, "extension_communicator", None
         )
@@ -2288,6 +2317,8 @@ if getattr(settings.advanced_features, "use_extension", False):
 
     @app.post("/extension/agent_query")
     async def extension_agent_query(request: Request):
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
         body = await request.json()
         query = body.get("query", "")
         request_id = body.get("request_id", None)
@@ -2347,6 +2378,8 @@ async def stream(
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
     user_attachments = await get_attachment_snapshot(request)
@@ -3023,6 +3056,8 @@ async def generate_tool_guard_for_policy(
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Generate and persist ToolGuards for a saved Tool Guide policy."""
+    from cuga.backend.cuga_graph.policy.models import ToolGuide
+
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},
@@ -3166,6 +3201,7 @@ _CUGA_LITE_FILESYSTEM_TOOLS: tuple[tuple[str, str], ...] = (
 async def _runtime_tools_flags(agent_id: Optional[str], use_draft: bool) -> tuple[bool, bool]:
     """Return (shell_enabled, filesystem_enabled) from agent config or settings fallback."""
     from cuga.backend.server.config_store import _parse_agent_id, load_config, load_draft
+    from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id
 
     base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
     try:
@@ -3201,6 +3237,8 @@ async def get_tools_list(
     """
     try:
         # Check for draft mode from query parameter or header
+        from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+
         use_draft = False
         if draft is not None:
             use_draft = str(draft).lower() in ("1", "true", "yes", "on")
@@ -3299,6 +3337,8 @@ async def get_tools_list(
 async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve tools connection status."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+
         # Get available apps and their tools
         apps = await get_apps()
         tools = []
@@ -3396,6 +3436,8 @@ async def get_agent_state(
                         "message": "No state found for this thread_id",
                     }
                 )
+
+            from cuga.backend.cuga_graph.state.agent_state import AgentState
 
             local_state = AgentState(**state_snapshot.values)
             variables_metadata = local_state.variables_manager.get_all_variables_metadata(
@@ -3559,6 +3601,8 @@ async def get_subagents_config(current_user: Optional[UserInfo] = Depends(requir
 async def get_apps_endpoint(current_user: Optional[UserInfo] = Depends(require_auth)):
     """Endpoint to retrieve available apps."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apps
+
         apps = await get_apps()
         apps_data = [
             {
@@ -3582,6 +3626,8 @@ async def get_app_tools(
 ):
     """Endpoint to retrieve tools for a specific app."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apis
+
         apis = await get_apis(app_name)
         tools_data = [
             {
@@ -3631,6 +3677,8 @@ async def save_agent_mode_config(
 async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_manage_access)):
     """List configured agents (dashboard)."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+
         tools_count = 0
         try:
             apps = await get_apps()
@@ -4118,6 +4166,8 @@ async def proxy_function_call(
     Exposes the registry's /functions/call endpoint through the main HuggingFace Space URL.
     """
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
         registry_url = f"{get_registry_base_url()}/functions/call"
 
         body = await request.body()
@@ -4175,6 +4225,8 @@ def validate_input_length(text: str) -> None:
 
 async def get_query(request: Request) -> Union[str, ActionResponse]:
     """Parses the incoming request to extract the user query or action."""
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     try:
         data = await request.json()
     except json.JSONDecodeError:
