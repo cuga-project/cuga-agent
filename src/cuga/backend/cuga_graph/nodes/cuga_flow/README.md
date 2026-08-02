@@ -305,3 +305,20 @@ See **[README-FLOWABLE.md](README-FLOWABLE.md)** for the full description of:
 
 - The two components that enable the integration: the **FlowableProxy** (REST client mediating communication with Flowable) and the **augmented BPMN model** (the Flowable-deployed process file extended with callbacks to CUGA FLO and hook-action handling)
 - The three BPMN extensions required for each control-point type: task agent (ScriptTask), decision agent (ScriptTask + adapted gateway), and hook (ScriptTask + boundary event + `Task_DynamicSkip`)
+
+---
+
+## Integration with Apache KIE (Kogito)
+
+CUGA FLO also runs against **Apache KIE (Kogito)** as a third engine, selected with
+`workflow_engine: {type: kogito}`. Kogito compiles BPMN into a Quarkus service at build
+time, so apps are authored under `docs/examples/flow_agent_app_inline/<app-name>/` and
+turned into a runnable service by `scripts/build_kogito_app.sh <app-name>`.
+
+The hook mechanism is simpler than Flowable's — one script task, no boundary event and no
+shared `Task_DynamicSkip` — because Kogito rejects boundary events on script tasks and the
+script can perform the redirect itself.
+
+See **[README-KOGITO.md](README-KOGITO.md)** for the components (`KogitoProxy` plus the
+`CugaFlo` / `FlowRedirect` Java runtime), the app lifecycle, the constraints on writing a
+Kogito model, and the known gaps.
