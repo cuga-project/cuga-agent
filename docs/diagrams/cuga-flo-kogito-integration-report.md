@@ -27,7 +27,93 @@ It now raises.
 
 ---
 
-## 2. Round trip at a control point
+## 2. Prerequisites and setup
+
+Only two things are strictly required to build and run a Kogito app: **JDK 17+** and
+**Maven**. Everything else below is optional tooling.
+
+### JDK 17+ (required)
+
+Kogito 10.2.0 targets Java 17. A system JDK 11 fails with
+`UnsupportedClassVersionError: class file version 61.0`.
+
+```bash
+brew install openjdk@17
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export PATH="$JAVA_HOME/bin:$PATH"     # add to ~/.zshrc to make it stick
+```
+
+The Homebrew formula is **keg-only**: it is not symlinked into
+`/Library/Java/JavaVirtualMachines`, so `/usr/libexec/java_home` cannot see it and
+`JAVA_HOME` must be set explicitly. The `temurin@17` cask registers properly instead, but its
+installer needs interactive `sudo`.
+
+`scripts/build_kogito_app.sh` probes the usual locations if `JAVA_HOME` is unset, and bakes
+whatever it finds into the generated `run.sh` — so the service always starts on the JDK it
+was built with, regardless of the shell's `PATH`.
+
+### Maven 3.9+ (required)
+
+```bash
+brew install maven
+```
+
+The build script drives `mvn` directly. First build downloads the Quarkus and Kogito
+dependency trees and takes a few minutes; later builds are seconds.
+
+### Quarkus CLI (optional)
+
+```bash
+brew install quarkusio/tap/quarkus
+```
+
+Convenient for `quarkus dev` and extension queries, but **not used by the build script**.
+Note it is itself a Java 17+ program, so it fails the same way on a system JDK 11. Also note
+Kogito is absent from the Quarkus platform catalog — `quarkus create app
+--extension=kogito-quarkus` does not work; the BOM has to be imported by hand, which
+`pom.xml.template` already does.
+
+### Docker (optional)
+
+Needed only for the Kogito Management Console UI, and for the Flowable container if
+comparing engines. Not needed to build or run a Kogito app.
+
+### KIE BPMN Editor for VS Code (recommended)
+
+Graphical editing of BPMN models, from the
+[Apache KIE™ Kogito Bundle](https://marketplace.visualstudio.com/items?itemName=kie-group.vscode-extension-kogito-bundle)
+extension:
+
+```bash
+code --install-extension kie-group.vscode-extension-kogito-bundle
+```
+
+It renders `.bpmn` / `.bpmn2` as diagrams and `.dmn` as decision models, replacing the raw
+XML view. This is an **authoring** extension only — it has no runtime view, so it cannot show
+process instances or execution traces (see §6).
+
+Two cautions when using it on CUGA FLO models:
+
+- The `*-kogito.bpmn` models here are **hand-written** and carry script tasks, `drools:import`
+  declarations and typed `<bpmn2:property>` blocks. Whether the editor round-trips all of
+  that unchanged on save has not been verified — commit before opening one, so a rewrite is
+  visible in the diff.
+- Edit the model in the app's `config/` directory, never the copy the build script places
+  under `src/main/resources/org/cuga/generated/`, which is overwritten every build.
+
+### Verify the toolchain
+
+```bash
+java -version     # 17 or higher
+mvn -v            # 3.9 or higher
+./scripts/build_kogito_app.sh loan_approval_kogito
+```
+
+A successful build ends by printing the `run.sh` path to start the service.
+
+---
+
+## 3. Round trip at a control point
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +151,7 @@ the call never returns.
 
 ---
 
-## 3. What was built
+## 4. What was built
 
 | Component | Path | Role |
 |---|---|---|
@@ -85,17 +171,17 @@ through the arguments their BPMN script tasks pass, so a per-app copy would be i
 
 ---
 
-## 4. Structural findings
+## 5. Structural findings
 
 Four discoveries shaped the design. The first two were anticipated risks; the rest were not.
 
-### 4.1 No runtime BPMN deploy — by design, scoped out
+### 5.1 No runtime BPMN deploy — by design, scoped out
 
 Kogito compiles BPMN into the Quarkus service at build time. There is no counterpart to
 `FlowableProxy.deploy()`. `KogitoProxy` ships without one, and apps are scoped to
 statically-known processes. This drives the whole build-then-run lifecycle.
 
-### 4.2 In-process redirect — the top risk, resolved
+### 5.2 In-process redirect — the top risk, resolved
 
 Flowable's hook redirect works only because `Task_DynamicSkip` calls
 `ChangeActivityStateBuilder` inside the same JVM and transaction; the REST equivalent exists
@@ -122,18 +208,18 @@ The race that forced Flowable's redirect in-process **cannot arise here by const
 `FlowRedirect` runs synchronously on the script task's own thread after the HTTP call
 returns, leaving no window for a competing token.
 
-### 4.3 Boundary events are illegal on script tasks
+### 5.3 Boundary events are illegal on script tasks
 
 *"Boundary events are supported only on StateBasedNode, found node: ActionNode."* Flowable's
 hook shape — scriptTask + boundaryEvent + shared `Task_DynamicSkip` — **cannot be ported
 literally**. Preserving it would mean making every hook a service task purely to satisfy the
 restriction.
 
-Given 4.2 it is unnecessary: the hook is **one script task**, and all three actions collapse
+Given 5.2 it is unnecessary: the hook is **one script task**, and all three actions collapse
 into a single `FlowRedirect.to` call, since a blank target is a no-op. The Kogito hook has
 fewer moving parts than the Flowable one.
 
-### 4.4 Kogito's script validator rejects Java FQNs
+### 5.4 Kogito's script validator rejects Java FQNs
 
 `org.jbpm.Foo` inside `<bpmn2:script>` fails the build with *"uses unknown variable in the
 script: org"*. Every script is therefore a one-liner delegating to a class declared via
@@ -142,40 +228,6 @@ than inline script. This is an improvement over Flowable's 30-line inline Nashor
 
 ---
 
-## 5. Verification
-
-### 5.1 Engine parity
-
-Three scenarios, identical inputs, both engines. **Semantic parity on all three.**
-
-| Scenario | Engine | credit_score | gateway | decision | outcome |
-|---|---|---|---|---|---|
-| approve | kogito | 0.905 | `Flow_0ybszcv` | give loan | complete |
-| approve | flowable | 0.887 | — | give loan | complete |
-| reject | kogito | 0.38 | `Flow_1jgea85` | reject loan | complete |
-| reject | flowable | 0.1875 | — | reject loan | complete |
-| terminate | kogito | 0.0 | — | undecided | halted |
-| terminate | flowable | 0.0 | — | undecided | halted |
-
-`credit_score` differs through LLM nondeterminism, not engine behaviour — both land the same
-side of the gateway's 0.6 threshold every time, which is what routing depends on.
-`gatewayDecision` is absent under Flowable because its `complete_process` service task
-hardcodes two fields in the EL body; a Flowable-model limitation, not a Kogito gain.
-
-The pass caught one real defect: the ported model set `decision` to `"reject"` where Flowable
-sets `"reject loan"`. Fixed.
-
-### 5.2 Other checks
-
-- **Regression:** `trip_planner` and `receive_order` (LangGraph) both complete after the
-  dispatch change.
-- **Unit:** `tests/unit/test_flow_config_engine_dispatch.py` — all three engines dispatch
-  correctly and an unknown type raises.
-- **Build script:** app regenerated from scratch and re-verified against the parity set.
-- **Not verified:** the supervisor → `loan_flow_agent` delegation leg through the web UI, and
-  the Management Console's rendered pages.
-
----
 
 ## 6. Monitoring
 
@@ -214,22 +266,10 @@ control points.
 
 ---
 
-## 7. Known gaps and constraints
 
-| Item | Detail |
-|---|---|
-| Thin `FlowState` audit trail | `execution_path`, `gateway_decisions`, `task_results` come back empty — `complete_process` ships only `process_variables`. Flowable has the same gap; Data Index covers it. |
-| One FlowAgent per process | Two in one Python process collide on MCP callback port 8090 — `_ensure_http_server` guards per-bridge, not per-port. |
-| Port collisions | Quarkus and the Flowable container both default to 8080; Kogito apps are pinned to 8081. A Tomcat-styled 404 means a request reached Flowable. |
-| JDK discovery | Homebrew's `openjdk@17` is keg-only and invisible to `/usr/libexec/java_home`; the build script probes for it and bakes the result into the generated `run.sh`. |
-| Source path coupling | Data Index reads the BPMN source at its build-time absolute path on startup and fails hard if it moved — the meaning of the `Not source found for process id` warning. |
-| Console prerequisites | Needs CORS enabled and `kogito.service.url` set, or it reports "Could not communicate with runtime" / "Error fetching data". |
-| Kogito examples repo | `main` is pinned to `999-SNAPSHOT` and tags stop at 1.44.x, so it will not build; the project was hand-rolled instead. |
-| Artifact renaming in 10.x | `org.kie.kogito:kogito-quarkus` ends at 1.44.x; the 10.x engine extension is `org.jbpm:jbpm-quarkus`. The BOM kept its old coordinates, making this easy to miss. |
+## 7. Lifecycle
 
----
-
-## 8. Lifecycle
+With the toolchain from §2 in place:
 
 ```bash
 ./scripts/build_kogito_app.sh <app-name>     # app dir -> build/kogito/<app-name>
@@ -240,9 +280,13 @@ cuga start flow_agent_inline <app-name>      # then http://127.0.0.1:8001
 
 Only the build step repeats after a BPMN change; yaml and policies are read live.
 
+Two ports to keep straight: Quarkus and the Flowable demo container both default to **8080**,
+so Kogito apps are pinned to **8081**. A Tomcat-styled 404 means a request reached Flowable
+instead of Kogito.
+
 ---
 
-## 9. References
+## 8. References
 
 | Document | Covers |
 |---|---|
