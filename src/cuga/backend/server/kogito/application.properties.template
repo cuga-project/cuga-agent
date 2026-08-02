@@ -11,3 +11,12 @@ quarkus.http.port=@HTTP_PORT@
 # even when unused. Disable the tenant and give the URL a value it will never dial.
 quarkus.oidc.tenant-enabled=false
 quarkus.oidc.auth-server-url=http://localhost/disabled
+
+# The Kogito Management Console is a browser app served from its own port, so its calls to
+# this service's /graphql are cross-origin — without CORS the browser drops the response
+# and the console reports "Could not communicate with runtime". Any localhost port is
+# allowed; tighten this before exposing a service beyond a dev machine.
+quarkus.http.cors=true
+quarkus.http.cors.origins=/https?://localhost(:[0-9]+)?/
+quarkus.http.cors.methods=GET,POST,OPTIONS
+quarkus.http.cors.headers=content-type,authorization

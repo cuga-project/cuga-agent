@@ -186,8 +186,33 @@ it, and it drags in reactive-messaging whose metric decorator fails on a missing
 out — it serves a `.svg` exported from the KIE BPMN editor rather than rendering from the
 BPMNDI, so it does nothing until a model ships one.
 
-The Kogito **Management Console** container can be pointed at this service's Data Index for
-a UI, but it is not required for the queries above.
+### Management Console UI
+
+The Kogito Management Console renders the same data as a UI. It is not required — the
+queries above are the source of truth — but it is a browser view of runs and node paths.
+
+```bash
+docker run -d --name kogito-mc -p 8280:8080 \
+  apache/incubator-kie-kogito-management-console:10.2.0
+```
+
+Open http://localhost:8280 and give it the runtime URL `http://localhost:8081`. The 10.x
+console takes that through the UI as a route param — there is **no** env var for it;
+`KOGITO_DATAINDEX_HTTP_URL` is silently ignored, and the only supported vars are
+`RUNTIME_TOOLS_MANAGEMENT_CONSOLE_APP_NAME` and two OIDC client settings.
+
+The console is a browser app on its own port, so its calls to `/graphql` are cross-origin.
+`quarkus.http.cors` is enabled in the generated `application.properties` for exactly this
+reason; without it the browser drops the response and the console reports *"Could not
+communicate with runtime"*. The generated config allows any `localhost` port — tighten it
+before exposing a service beyond a dev machine.
+
+On Apple Silicon the console image is amd64 only and runs under emulation, so it is slow.
+
+**No VS Code extension shows runtime traces.** The Apache KIE Kogito Bundle is an authoring
+extension (BPMN/DMN/scesim editors) only. For an in-editor view, point a generic GraphQL
+client at `/graphql` — the *GraphQL: Language Feature Support* extension, or *REST Client*
+with a `.http` file.
 
 ---
 
