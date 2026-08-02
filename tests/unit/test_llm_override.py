@@ -24,6 +24,16 @@ BASE_MODEL_SETTINGS = {
 }
 
 
+class _FakeChatWatsonx:
+    """Real class stand-in so isinstance(..., ChatWatsonx) works under patch."""
+
+    last_kwargs: dict | None = None
+
+    def __init__(self, **kwargs):
+        type(self).last_kwargs = kwargs
+        self.params = dict(kwargs.get("params") or {})
+
+
 @pytest.fixture(autouse=True)
 def reset_llm_state():
     """Clear singleton cache and override before/after each test."""
@@ -217,9 +227,9 @@ class TestLLMOverrideMechanism:
             "WATSONX_PROJECT_ID": "project-123",
         }
 
+        _FakeChatWatsonx.last_kwargs = None
         with patch.dict(os.environ, env, clear=True):
-            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
-                mock_chat_watsonx.return_value = object()
+            with patch("langchain_ibm.ChatWatsonx", _FakeChatWatsonx):
                 mgr = LLMManager()
                 settings_for_watsonx = {
                     **BASE_MODEL_SETTINGS,
@@ -229,7 +239,8 @@ class TestLLMOverrideMechanism:
 
                 mgr.get_model(settings_for_watsonx)
 
-        kwargs = mock_chat_watsonx.call_args.kwargs
+        kwargs = _FakeChatWatsonx.last_kwargs
+        assert kwargs is not None
         assert "url" not in kwargs
         assert kwargs["model_id"] == "configured-model-name"
         assert kwargs["project_id"] == "project-123"
@@ -244,9 +255,9 @@ class TestLLMOverrideMechanism:
             "WATSONX_PROJECT_ID": "project-123",
         }
 
+        _FakeChatWatsonx.last_kwargs = None
         with patch.dict(os.environ, env, clear=True):
-            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
-                mock_chat_watsonx.return_value = object()
+            with patch("langchain_ibm.ChatWatsonx", _FakeChatWatsonx):
                 mgr = LLMManager()
                 settings_for_watsonx = {
                     **BASE_MODEL_SETTINGS,
@@ -256,7 +267,8 @@ class TestLLMOverrideMechanism:
 
                 mgr.get_model(settings_for_watsonx)
 
-        kwargs = mock_chat_watsonx.call_args.kwargs
+        kwargs = _FakeChatWatsonx.last_kwargs
+        assert kwargs is not None
         assert "url" not in kwargs
         assert kwargs["model_id"] == "configured-model-name"
         assert kwargs["project_id"] == "project-123"
@@ -269,9 +281,9 @@ class TestLLMOverrideMechanism:
             "WATSONX_PROJECT_ID": "project-123",
         }
 
+        _FakeChatWatsonx.last_kwargs = None
         with patch.dict(os.environ, env, clear=True):
-            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
-                mock_chat_watsonx.return_value = object()
+            with patch("langchain_ibm.ChatWatsonx", _FakeChatWatsonx):
                 mgr = LLMManager()
                 settings_for_watsonx = {
                     **BASE_MODEL_SETTINGS,
@@ -282,7 +294,8 @@ class TestLLMOverrideMechanism:
 
                 mgr.get_model(settings_for_watsonx)
 
-        kwargs = mock_chat_watsonx.call_args.kwargs
+        kwargs = _FakeChatWatsonx.last_kwargs
+        assert kwargs is not None
         assert kwargs["url"] == "https://model-settings.watsonx.ai"
         assert kwargs["model_id"] == "configured-model-name"
         assert kwargs["project_id"] == "project-123"
@@ -295,9 +308,9 @@ class TestLLMOverrideMechanism:
             "WATSONX_PROJECT_ID": "project-123",
         }
 
+        _FakeChatWatsonx.last_kwargs = None
         with patch.dict(os.environ, env, clear=True):
-            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
-                mock_chat_watsonx.return_value = object()
+            with patch("langchain_ibm.ChatWatsonx", _FakeChatWatsonx):
                 mgr = LLMManager()
                 settings_for_watsonx = {
                     **BASE_MODEL_SETTINGS,
@@ -308,7 +321,8 @@ class TestLLMOverrideMechanism:
 
                 mgr.get_model(settings_for_watsonx)
 
-        kwargs = mock_chat_watsonx.call_args.kwargs
+        kwargs = _FakeChatWatsonx.last_kwargs
+        assert kwargs is not None
         assert "url" not in kwargs
         assert kwargs["deployment_id"] == "deployment-123"
         assert "model_id" not in kwargs
