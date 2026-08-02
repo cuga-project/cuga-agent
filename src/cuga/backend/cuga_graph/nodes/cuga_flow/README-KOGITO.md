@@ -142,6 +142,11 @@ records every instance and exposes it over GraphQL at `/graphql`. Without it the
 nothing to inspect: a bare Kogito service finishes an automated process inside the start
 call and then 404s the instance.
 
+Two ways to read it — [GraphQL directly](#graphql-directly) for scripting and CI, or the
+[Management Console UI](#management-console-ui) for browsing. Both read the same store.
+
+### GraphQL directly
+
 ```bash
 curl -s -X POST http://localhost:8081/graphql -H 'Content-Type: application/json' \
   -d '{"query":"{ ProcessInstances { id state start end nodes { name type enter exit } variables } }"}'
@@ -188,31 +193,81 @@ BPMNDI, so it does nothing until a model ships one.
 
 ### Management Console UI
 
-The Kogito Management Console renders the same data as a UI. It is not required — the
-queries above are the source of truth — but it is a browser view of runs and node paths.
+The Kogito Management Console is a browser UI over the **same** embedded Data Index — it
+adds no data, it renders what `/graphql` already returns. Optional: the queries above stay
+the source of truth, and the console is the convenient view of them.
+
+There is no separate Data Index service to deploy. The console talks straight to the app.
+
+```
+browser ──▶ Management Console (:8280)  ──▶  /graphql on the Kogito app (:8081)
+                  static React app              embedded Data Index
+```
+
+Because the console is a static app, **the browser makes the GraphQL calls, not the
+container** — which is why the runtime URL is `localhost:8081` (as the browser sees it) and
+why CORS matters.
+
+**Prerequisites** — all three are already handled by `build_kogito_app.sh`, but they are
+what makes it work:
+
+1. `kogito-addons-quarkus-data-index-inmemory` in the build, or there is no history at all.
+2. `quarkus.http.cors=true` in `application.properties`, or the browser silently drops
+   every response.
+3. The app running and having executed at least one process.
+
+**Steps**
 
 ```bash
+# 1. app running, with at least one process executed
+./scripts/build_kogito_app.sh loan_approval_kogito
+build/kogito/loan_approval_kogito/run.sh
+
+# 2. console
 docker run -d --name kogito-mc -p 8280:8080 \
   apache/incubator-kie-kogito-management-console:10.2.0
 ```
 
-Open http://localhost:8280 and give it the runtime URL `http://localhost:8081`. The 10.x
-console takes that through the UI as a route param — there is **no** env var for it;
-`KOGITO_DATAINDEX_HTTP_URL` is silently ignored, and the only supported vars are
+Open http://localhost:8280 and enter the runtime URL `http://localhost:8081`.
+
+The 10.x console takes that **through the UI**, as a route param — there is no env var for
+it. `KOGITO_DATAINDEX_HTTP_URL` is silently ignored; the only supported variables are
 `RUNTIME_TOOLS_MANAGEMENT_CONSOLE_APP_NAME` and two OIDC client settings.
 
-The console is a browser app on its own port, so its calls to `/graphql` are cross-origin.
-`quarkus.http.cors` is enabled in the generated `application.properties` for exactly this
-reason; without it the browser drops the response and the console reports *"Could not
-communicate with runtime"*. The generated config allows any `localhost` port — tighten it
-before exposing a service beyond a dev machine.
+From there it lists process instances with their state and timings, and drills into one to
+show the node path — the same trail the `nodes { }` query returns, including both CUGA FLO
+hooks and the gateway split.
 
-On Apple Silicon the console image is amd64 only and runs under emulation, so it is slow.
+**Troubleshooting**
 
-**No VS Code extension shows runtime traces.** The Apache KIE Kogito Bundle is an authoring
-extension (BPMN/DMN/scesim editors) only. For an in-editor view, point a generic GraphQL
-client at `/graphql` — the *GraphQL: Language Feature Support* extension, or *REST Client*
-with a `.http` file.
+| Symptom | Cause |
+|---|---|
+| *"Could not communicate with runtime"* | CORS. Rebuild so `quarkus.http.cors=true` is in `application.properties`, and restart the app. Confirm with a preflight (below). |
+| Connects, but no instances | Data Index is per-service-lifetime — a restart clears history. Run a process, then reload. |
+| Console very slow | The image is amd64 only; on Apple Silicon it runs under emulation. |
+
+```bash
+# a working runtime answers a preflight with an allow-origin header
+curl -s -i -X OPTIONS http://localhost:8081/graphql \
+  -H "Origin: http://localhost:8280" \
+  -H "Access-Control-Request-Method: POST" | grep -i access-control
+```
+
+> Verified from the shell: the image runs, the embedded Data Index answers the console's own
+> query shape, and CORS preflight succeeds. The rendered UI itself has not been checked in a
+> browser.
+
+```bash
+docker logs -f kogito-mc     # if the UI looks empty
+docker rm -f kogito-mc       # stop it
+```
+
+### No VS Code extension does this
+
+The Apache KIE Kogito Bundle is an **authoring** extension — BPMN/DMN/scesim editors — with
+no runtime view. For an in-editor alternative to the console, point a generic GraphQL client
+at `/graphql`: the *GraphQL: Language Feature Support* extension, or *REST Client* with a
+`.http` file holding the queries above.
 
 ---
 
