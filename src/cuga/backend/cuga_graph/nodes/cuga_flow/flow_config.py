@@ -511,9 +511,23 @@ class FlowConfig:
                 process_definition_key=engine_cfg.get("process_definition_key"),
                 callback_port=engine_cfg.get("callback_port", 8090),
             )
-        else:
+        elif engine_type == "kogito":
+            from cuga.backend.server.kogito.kogito_proxy import KogitoProxy
+            proxy = KogitoProxy(base_url=engine_cfg.get("url"))
+            bridge.register_kogito_engine(
+                proxy,
+                process_id=engine_cfg.get("process_id"),
+                callback_port=engine_cfg.get("callback_port", 8090),
+                callback_host=engine_cfg.get("callback_host", "host.docker.internal"),
+            )
+        elif engine_type == "langgraph":
             from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
             LangGraphWorkflowEngine(bridge=bridge)
+        else:
+            raise ValueError(
+                f"Unknown workflow_engine type {engine_type!r} in {self.config_path}. "
+                f"Expected one of: langgraph, flowable, kogito."
+            )
 
         return flow_agent
 

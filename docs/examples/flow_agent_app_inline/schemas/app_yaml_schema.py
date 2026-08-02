@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-WorkflowEngineType = Literal["langgraph", "flowable"]
+WorkflowEngineType = Literal["langgraph", "flowable", "kogito"]
 
 TaskMode = Literal["task_agent", "native"]
 GatewayMode = Literal["decision_agent", "native"]
@@ -31,7 +31,11 @@ class WorkflowEngineConfig(BaseModel):
     password: Optional[str] = None
     deploy: bool = False
     process_definition_key: Optional[str] = None
+    # kogito only — Kogito compiles BPMN in at build time, so there is no `deploy`
+    # equivalent; process_id names an already-built process in the running service.
+    process_id: Optional[str] = None
     callback_port: int = 8090
+    callback_host: str = "host.docker.internal"
 
 
 class FlowBlock(BaseModel):

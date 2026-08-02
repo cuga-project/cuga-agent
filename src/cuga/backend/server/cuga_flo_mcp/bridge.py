@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
     from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import ProcessRegistry
     from cuga.backend.server.flowable.flowable_proxy import FlowableProxy
+    from cuga.backend.server.kogito.kogito_proxy import KogitoProxy
 
 
 class MCPFlowBridge:
@@ -47,6 +48,10 @@ class MCPFlowBridge:
         self._registry: "ProcessRegistry | None" = None
         self._engine: "LangGraphWorkflowEngine | None" = None
         self._proxy: "FlowableProxy | None" = None
+        # Kept separate from _proxy: that one gates the Flowable-only
+        # _realize_hook_action path, which Kogito must not be dragged into.
+        self._kogito_proxy: "KogitoProxy | None" = None
+        self._http_started = False
         logger.debug(f"MCPFlowBridge created: {name!r}")
 
     # ──────────────────────────────────────────────────────────────
@@ -181,6 +186,86 @@ class MCPFlowBridge:
             ),
         )
 
+    async def _ensure_http_server(self, callback_port: int) -> None:
+        """
+        Start the MCP HTTP listener once, lazily, on first run_process.
+
+        External engines (Flowable, Kogito) run out-of-process and call back into
+        CUGA FLO over HTTP, so the in-process FastMCPTransport is not enough.
+        """
+        if self._http_started:
+            return
+        self._http_started = True
+
+        import uvicorn
+
+        server = uvicorn.Server(
+            uvicorn.Config(
+                self._mcp.http_app(stateless_http=True),
+                host="0.0.0.0",
+                port=callback_port,
+                log_level="warning",
+            )
+        )
+        asyncio.create_task(server.serve())
+        while not server.started:
+            await asyncio.sleep(0.05)
+        logger.info(f"MCPFlowBridge: MCP HTTP server listening on port {callback_port}")
+
+    def register_kogito_engine(
+        self,
+        proxy: "KogitoProxy",
+        process_id: "str | None" = None,
+        callback_port: int = 8090,
+        callback_host: str = "host.docker.internal",
+    ) -> None:
+        """
+        Register a KogitoProxy as the run_process MCP tool and expose the MCP server
+        over HTTP so the Kogito service can call complete_process when the process ends.
+
+        No `deploy` parameter: Kogito compiles BPMN into the service at build time, so
+        the process must already exist in the running service (external precondition,
+        the same way the Flowable container must already be up).
+
+        Args:
+            proxy: KogitoProxy client.
+            process_id: Kogito process id to start; defaults to the BPMN process id.
+            callback_port: Port the MCP HTTP server listens on for Kogito callbacks.
+            callback_host: Host the Kogito service uses to reach back. Default suits a
+                containerised Kogito; use "localhost" when running `mvn quarkus:dev`
+                directly on the host.
+
+        Tool registered:
+          run_process(process_key, initial_inputs) → dict
+        """
+        self._kogito_proxy = proxy
+
+        async def run_process(process_key: str, initial_inputs: dict) -> dict:
+            """Start Kogito process; Kogito calls complete_process via MCP HTTP on completion."""
+            await self._ensure_http_server(callback_port)
+
+            bpmn = self._registry.get_bpmn_process(process_key)
+            kogito_id = process_id or bpmn.id
+
+            start_vars = {
+                **initial_inputs,
+                "cugaProcessKey": process_key,
+                # The BPMN script tasks read this instead of hardcoding a host, so the
+                # same model works under `mvn quarkus:dev` and inside a container.
+                "cugaMcpUrl": f"http://{callback_host}:{callback_port}/mcp",
+            }
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, lambda: proxy.start_process(kogito_id, variables=start_vars)
+            )
+            return {}
+
+        self._mcp.tool(name="run_process")(run_process)
+        logger.info(
+            f"MCPFlowBridge: registered KogitoProxy run_process tool "
+            f"(MCP HTTP callback on port {callback_port})"
+        )
+
     def register_flowable_engine(
         self,
         proxy: "FlowableProxy",
@@ -204,26 +289,10 @@ class MCPFlowBridge:
         """
         self._proxy = proxy
         _deployed: set = set()
-        _http_started = False
 
         async def run_process(process_key: str, initial_inputs: dict) -> dict:
             """Start Flowable process; Flowable calls complete_process via MCP HTTP on completion."""
-            nonlocal _http_started
-            if not _http_started:
-                _http_started = True
-                import uvicorn
-                _server = uvicorn.Server(
-                    uvicorn.Config(
-                        self._mcp.http_app(stateless_http=True),
-                        host="0.0.0.0",
-                        port=callback_port,
-                        log_level="warning",
-                    )
-                )
-                asyncio.create_task(_server.serve())
-                while not _server.started:
-                    await asyncio.sleep(0.05)
-                logger.info(f"MCPFlowBridge: MCP HTTP server listening on port {callback_port}")
+            await self._ensure_http_server(callback_port)
 
             bpmn = self._registry.get_bpmn_process(process_key)
             loop = asyncio.get_running_loop()
