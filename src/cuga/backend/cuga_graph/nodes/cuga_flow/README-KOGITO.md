@@ -117,7 +117,20 @@ from `--port`, else the app's `workflow_engine.url`, else 8081.
 
 ## Writing the Kogito model
 
-Four constraints, each found by hitting it:
+The full transformation procedure — clean `BPMNdiagram.bpmn` to `*-kogito.bpmn`, element by
+element — is in
+`docs/examples/flow_agent_app_inline/model_transform_knowledge/kogito/`:
+
+| Know-how | Covers |
+|---|---|
+| `kogito_transform_know_how.md` | End-to-end procedure; document shell and namespaces; variable declaration; transformation order; `complete_process`; build-error reference |
+| `task_transform_know_how.md` | Task Agent script task; why no output-variable setters are needed; type coercion |
+| `gateway_transform_know_how.md` | Decision Agent routing script task; Java condition rewrite; `available_flows` payload |
+| `hook_transform_know_how.md` | Hook script task and the in-process redirect; why no boundary event or `Task_DynamicSkip` |
+
+The `flowable/` folder beside it is the equivalent set for the Flowable engine.
+
+The constraints those procedures work around, each found by hitting it:
 
 - **No Java FQNs inside `<bpmn2:script>`.** The validator reads the leading package segment
   as an undeclared variable (*"uses unknown variable in the script: org"*). Declare

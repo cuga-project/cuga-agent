@@ -97,7 +97,7 @@ python -m cuga.backend.server.flowable.flowable_proxy result <instance_id>
 A legacy BPMN model cannot drive CUGA FLO out of the box. The process file deployed to
 Flowable must be extended with three types of control-point callbacks and a terminal
 callback. The transformation procedure is described in the know-how files under
-`docs/examples/flow_agent_app_inline/model_transform_knowledge/`; the loan approval
+`docs/examples/flow_agent_app_inline/model_transform_knowledge/flowable/`; the loan approval
 process (`docs/examples/flow_agent_app_inline/loan_approval/config/Loan-Approval-Process.bpmn20.xml`)
 is the reference implementation.
 
@@ -293,7 +293,7 @@ waiting on, builds the final `FlowState`, and returns it to the caller.
 
 The full procedure for transforming a legacy BPMN into a Flowable-ready model is documented
 in the know-how files at
-`docs/examples/flow_agent_app_inline/model_transform_knowledge/`:
+`docs/examples/flow_agent_app_inline/model_transform_knowledge/flowable/`:
 
 | Know-how | Covers |
 |---|---|
