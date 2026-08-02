@@ -214,7 +214,8 @@ what makes it work:
 1. `kogito-addons-quarkus-data-index-inmemory` in the build, or there is no history at all.
 2. `quarkus.http.cors=true` in `application.properties`, or the browser silently drops
    every response.
-3. The app running and having executed at least one process.
+3. `kogito.service.url` set, or the console can list instances but cannot open one.
+4. The app running and having executed at least one process.
 
 **Steps**
 
@@ -243,8 +244,19 @@ hooks and the gateway split.
 | Symptom | Cause |
 |---|---|
 | *"Could not communicate with runtime"* | CORS. Rebuild so `quarkus.http.cors=true` is in `application.properties`, and restart the app. Confirm with a preflight (below). |
+| *"missing the kogito.service.url property"*, or *"Error fetching data"* on opening an instance | `kogito.service.url` unset, so instances record `serviceUrl: null` and the console has no base URL to call back on. Rebuild and restart. |
 | Connects, but no instances | Data Index is per-service-lifetime — a restart clears history. Run a process, then reload. |
 | Console very slow | The image is amd64 only; on Apple Silicon it runs under emulation. |
+
+Listing instances only needs `/graphql`; opening one, and every action on it, goes back to
+the runtime at its recorded `serviceUrl`. That is why the list can work while the detail
+view fails. Check it with:
+
+```bash
+curl -s -X POST http://localhost:8081/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ ProcessInstances { id serviceUrl endpoint } }"}'
+# serviceUrl must not be null
+```
 
 ```bash
 # a working runtime answers a preflight with an allow-origin header

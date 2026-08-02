@@ -20,3 +20,9 @@ quarkus.http.cors=true
 quarkus.http.cors.origins=/https?://localhost(:[0-9]+)?/
 quarkus.http.cors.methods=GET,POST,OPTIONS
 quarkus.http.cors.headers=content-type,authorization
+
+# Recorded on every instance as `serviceUrl` and used by the Management Console to call
+# back into this service — for the instance detail view and for actions like abort and
+# retry. Left unset it is null, and the console fails with "Error fetching data" and
+# "missing the kogito.service.url property". This is the URL as the *browser* resolves it.
+kogito.service.url=http://localhost:@HTTP_PORT@
