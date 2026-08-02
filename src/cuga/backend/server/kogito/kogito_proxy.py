@@ -3,7 +3,12 @@ KogitoProxy - thin client over a Kogito/Quarkus process service's generated REST
 
 Targets a Kogito process service built from a BPMN model, e.g.:
 
-    cd <kogito-project> && mvn quarkus:dev      # serves on :8080, Swagger at /q/swagger-ui
+    cd <kogito-project> && mvn quarkus:dev      # Swagger at /q/swagger-ui
+
+Quarkus defaults to port 8080, which is also where the Flowable demo container listens,
+so the CUGA FLO Kogito project pins itself to 8081 instead (see its
+application.properties). A 404 carrying a Tomcat error page means this proxy reached
+Flowable rather than Kogito.
 
 Kogito generates one REST resource per process id:
 
@@ -27,6 +32,11 @@ Quick CLI (against a running Kogito service):
 
     python -m cuga.backend.server.kogito.kogito_proxy ping
     python -m cuga.backend.server.kogito.kogito_proxy start loan_approval
+
+`start` / `run` drive Kogito directly, with no CUGA FLO bridge behind them, so a
+CUGA-instrumented process fails at its first control point with "cugaMcpUrl process
+variable is not set". That is expected — use `cuga start flow_agent_inline <app>` to
+exercise those; the CLI here is for connectivity checks and uninstrumented processes.
     python -m cuga.backend.server.kogito.kogito_proxy instances loan_approval
     python -m cuga.backend.server.kogito.kogito_proxy run loan_approval
     python -m cuga.backend.server.kogito.kogito_proxy result loan_approval <instance_id>
@@ -46,8 +56,9 @@ from loguru import logger
 # Load .env so config (base URL) lives there, not in code.
 load_dotenv(find_dotenv(usecwd=True))
 
-# Fallback matches `mvn quarkus:dev`; real values belong in .env (KOGITO_* keys).
-_FALLBACK_BASE_URL = "http://localhost:8080"
+# 8081, not Quarkus's default 8080 — that port belongs to the Flowable demo container.
+# Real values belong in .env (KOGITO_* keys) or the app's workflow_engine.url.
+_FALLBACK_BASE_URL = "http://localhost:8081"
 _FALLBACK_TIMEOUT = 30.0
 
 
