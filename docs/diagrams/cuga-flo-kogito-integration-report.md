@@ -75,7 +75,7 @@ Kogito is absent from the Quarkus platform catalog — `quarkus create app
 
 ### Docker (optional)
 
-Needed only for the Kogito Management Console UI, and for the Flowable container if
+Needed only for the Kogito Management Console UI (§6) and for the Flowable container if
 comparing engines. Not needed to build or run a Kogito app.
 
 ### KIE BPMN Editor for VS Code (recommended)
@@ -251,7 +251,47 @@ GraphQL at `/graphql`:
 ```
 
 `variables` carries the terminal state, making this the practical way to see what a hook or
-gateway decided. The Kogito Management Console renders the same data as a UI.
+gateway decided.
+
+### Management Console UI
+
+The Kogito Management Console is a browser view over the **same** embedded Data Index — it
+adds no data and needs no separate Data Index service. It talks straight to the app:
+
+```
+browser ──▶ Management Console (:8280)  ──▶  /graphql on the Kogito app (:8081)
+                  static React app              embedded Data Index
+```
+
+With the app already running and having executed at least one process:
+
+```bash
+docker run -d --name kogito-mc -p 8280:8080 \
+  apache/incubator-kie-kogito-management-console:10.2.0
+
+docker rm -f kogito-mc          # stop it
+```
+
+Open http://localhost:8280 and enter the runtime URL `http://localhost:8081`. The 10.x
+console takes that **through the UI**, as a route param — there is no environment variable
+for it, and `KOGITO_DATAINDEX_HTTP_URL` is silently ignored.
+
+Because the console is a static app, the **browser** makes the GraphQL calls, not the
+container. Two consequences, both already handled in the generated
+`application.properties`:
+
+| Setting | Without it |
+|---|---|
+| `quarkus.http.cors=true` | The browser drops every response; the console reports *"Could not communicate with runtime"*. |
+| `kogito.service.url` | Instances record `serviceUrl: null`; the console lists them but cannot open one — *"Error fetching data"*. |
+
+Listing instances only reads `/graphql`, whereas opening one — and every action on it — calls
+back into the runtime at its recorded `serviceUrl`. That is why the list can work while the
+detail view fails.
+
+Note the console image is amd64-only, so it runs under emulation on Apple Silicon and is
+slow. Data Index is per-service-lifetime, so restarting the app clears history — run a fresh
+process before reconnecting. Full troubleshooting is in `README-KOGITO.md`.
 
 Two addons were evaluated and rejected: `kie-addons-quarkus-events-process` (Data Index needs
 no help from it, and it drags in reactive-messaging whose metric decorator fails on a missing
