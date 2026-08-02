@@ -62,7 +62,7 @@ def test_init_openlit_passes_local_pricing_json(monkeypatch):
     )
 
     monkeypatch.setattr(openlit_init, "_initialized", False)
-    monkeypatch.setattr(openlit_init, "openlit", fake_openlit)
+    monkeypatch.setattr(openlit_init, "_openlit_module", fake_openlit)
 
     with patch("cuga.config.settings", settings):
         openlit_init.init_openlit()
@@ -90,7 +90,7 @@ def test_init_openlit_uses_settings_pricing_json(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(openlit_init, "_initialized", False)
-    monkeypatch.setattr(openlit_init, "openlit", fake_openlit)
+    monkeypatch.setattr(openlit_init, "_openlit_module", fake_openlit)
 
     with patch("cuga.config.settings", settings):
         openlit_init.init_openlit()
