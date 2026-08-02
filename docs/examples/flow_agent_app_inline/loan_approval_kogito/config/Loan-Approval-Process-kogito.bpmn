@@ -3,8 +3,8 @@
   Loan Approval Process — Kogito port of the CUGA FLO Flowable model.
 
   The Kogito counterpart of Loan-Approval-Process.bpmn20.xml in loan_approval/config/.
-  Compiled into the Kogito service at ~/Documents/cuga-kogito, which references this file
-  directly as a Maven resource — this is the single source of truth, not a copy.
+  This file is the source of truth: scripts/build_kogito_app.sh picks up *-kogito.bpmn
+  from this directory and compiles it into a Quarkus service under build/kogito/.
   BPMNdiagram.bpmn beside it stays the clean model that CUGA FLO parses for its own
   process knowledge.
 

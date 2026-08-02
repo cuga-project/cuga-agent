@@ -95,7 +95,7 @@ An app is authored **entirely** under `docs/examples/flow_agent_app_inline/<app-
 ├── config/
 │   ├── <app-name>_config.yaml          workflow_engine.type: kogito
 │   ├── BPMNdiagram.bpmn                clean model — CUGA FLO parses this itself
-│   └── *.kogito.bpmn                   Kogito model — script tasks calling CugaFlo
+│   └── *-kogito.bpmn                   Kogito model — script tasks calling CugaFlo
 └── policies/                           engine-independent markdown
 ```
 
@@ -107,7 +107,7 @@ build/kogito/<app-name>/run.sh                    # generated; pins JAVA_HOME
 python docs/examples/flow_agent_app_inline/run.py <app-name>
 ```
 
-The script combines the app's `*.kogito.bpmn` with the shared runtime and the
+The script combines the app's `*-kogito.bpmn` with the shared runtime and the
 `pom.xml` / `application.properties` templates from `backend/server/kogito/`. Port comes
 from `--port`, else the app's `workflow_engine.url`, else 8081.
 

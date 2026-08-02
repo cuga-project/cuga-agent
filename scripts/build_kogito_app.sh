@@ -3,7 +3,7 @@
 # Generate and build a Kogito/Quarkus service for a CUGA FLO app.
 #
 # An app is authored entirely under docs/examples/flow_agent_app_inline/<app-name>/:
-# config/ holds its yaml, the clean BPMN, and one or more *.kogito.bpmn models;
+# config/ holds its yaml, the clean BPMN, and one or more *-kogito.bpmn models;
 # policies/ holds the markdown. This script turns that into a runnable Quarkus service
 # by combining the app's Kogito models with the shared CUGA FLO Kogito runtime
 # (CugaFlo.java, FlowRedirect.java) and project scaffolding from
@@ -60,11 +60,11 @@ OUT_DIR="${OUT_DIR:-$REPO_ROOT/build/kogito/$APP_NAME}"
 # ── locate the app's Kogito models ───────────────────────────────────────────
 
 shopt -s nullglob
-MODELS=("$APP_DIR"/config/*.kogito.bpmn)
+MODELS=("$APP_DIR"/config/*-kogito.bpmn)
 shopt -u nullglob
 
 if [[ ${#MODELS[@]} -eq 0 ]]; then
-    die "no *.kogito.bpmn in $APP_DIR/config
+    die "no *-kogito.bpmn in $APP_DIR/config
      The clean BPMN alone is not enough: a Kogito model needs script tasks calling
      CugaFlo/FlowRedirect. See loan_approval_kogito for a worked example."
 fi
