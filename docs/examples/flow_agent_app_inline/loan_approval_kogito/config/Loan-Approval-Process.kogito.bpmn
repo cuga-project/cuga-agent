@@ -101,7 +101,7 @@
     <bpmn2:scriptTask id="Activity_131ar38" name="send a rejection letter" scriptFormat="http://www.java.com/java">
       <bpmn2:incoming>Flow_1jgea85</bpmn2:incoming>
       <bpmn2:outgoing>Flow_1ow7aj3</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "reject");]]></bpmn2:script>
+      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "reject loan");]]></bpmn2:script>
     </bpmn2:scriptTask>
 
     <bpmn2:exclusiveGateway id="Gateway_15y9k7z" name="merge" gatewayDirection="Converging">
