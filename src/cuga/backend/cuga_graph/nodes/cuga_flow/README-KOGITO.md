@@ -135,11 +135,68 @@ on its future forever.
 
 ---
 
+## Monitoring a run
+
+Generated services embed **Data Index** (`kogito-addons-quarkus-data-index-inmemory`), which
+records every instance and exposes it over GraphQL at `/graphql`. Without it there is
+nothing to inspect: a bare Kogito service finishes an automated process inside the start
+call and then 404s the instance.
+
+```bash
+curl -s -X POST http://localhost:8081/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ ProcessInstances { id state start end nodes { name type enter exit } variables } }"}'
+```
+
+A completed loan approval returns its full node trail, in execution order:
+
+```
+84522e81  COMPLETED  10 nodes
+    ActionNode  CUGA FLO hook: pre credit check
+    ActionNode  check credit
+    ActionNode  route gateway decision
+    Split       credit decision
+    ActionNode  CUGA FLO hook: approval intercept
+    ActionNode  give loan of 1000 USD
+    Join        merge
+    ActionNode  CUGA FLO complete process
+    EndNode     End
+    StartNode   Start
+```
+
+`variables` carries the terminal state (`credit_score`, `gatewayDecision`, `decision`),
+which makes this the practical way to see what a hook or gateway actually decided.
+Filter with `ProcessInstances(where: {state: {equal: ERROR}})`.
+
+Four things worth knowing:
+
+- **The BPMN source must stay readable at its build-time absolute path.** Data Index reads
+  it at startup to register the definition and fails hard if it has moved — which is what
+  the otherwise-harmless `Not source found for process id` warning is about. Building
+  under `build/kogito/` keeps this true; building into `/tmp` broke it.
+- **An embedded PostgreSQL starts with the service**, adding a few seconds to boot. The
+  addon is "in-memory" in the sense of needing no external Data Index, not no database.
+- **`ERROR` instances record zero nodes** when they fail on the first node, so a failed run
+  tells you its state but not always where it stopped.
+- **OIDC has to be disabled explicitly** — Data Index pulls it in and refuses to start
+  without an auth server URL. The generated `application.properties` does this.
+
+`kie-addons-quarkus-events-process` is deliberately absent: Data Index needs no help from
+it, and it drags in reactive-messaging whose metric decorator fails on a missing
+`org.eclipse.microprofile.metrics.MetricRegistry`. `kie-addons-quarkus-process-svg` is also
+out — it serves a `.svg` exported from the KIE BPMN editor rather than rendering from the
+BPMNDI, so it does nothing until a model ships one.
+
+The Kogito **Management Console** container can be pointed at this service's Data Index for
+a UI, but it is not required for the queries above.
+
+---
+
 ## Known gaps
 
-- `execution_path`, `gateway_decisions`, and `task_results` come back empty:
-  `complete_process` only ships `process_variables`. Flowable has the same gap, so this is
-  parity rather than a regression, but the audit trail is thinner than LangGraph's.
+- `execution_path`, `gateway_decisions`, and `task_results` come back empty in the
+  `FlowState`: `complete_process` only ships `process_variables`. Flowable has the same gap,
+  so this is parity rather than a regression — and the Data Index trace above covers what
+  the audit log does not.
 - **Two `FlowAgent`s in one Python process collide on MCP callback port 8090** —
   `_ensure_http_server` guards per-bridge, not per-port. Fine for one flow per process;
   consecutive runs need a few seconds for the port to be released.

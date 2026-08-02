@@ -6,3 +6,8 @@
 # Quarkus defaults to 8080, which the Flowable demo container also uses. Keep Kogito
 # apps off it, and make sure the app's workflow_engine.url matches whatever is set here.
 quarkus.http.port=@HTTP_PORT@
+
+# The embedded Data Index pulls in OIDC and refuses to start without an auth server URL,
+# even when unused. Disable the tenant and give the URL a value it will never dial.
+quarkus.oidc.tenant-enabled=false
+quarkus.oidc.auth-server-url=http://localhost/disabled

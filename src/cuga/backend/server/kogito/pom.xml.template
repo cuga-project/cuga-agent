@@ -49,6 +49,18 @@
       <groupId>org.kie</groupId>
       <artifactId>kie-addons-quarkus-process-management</artifactId>
     </dependency>
+
+    <!-- Execution history. A bare Kogito service keeps none: it finishes an automated
+         process inside the start call and then 404s the instance, so there is nothing
+         to inspect afterwards. These three make runs queryable without standing up a
+         separate Data Index service. -->
+    <dependency>
+      <groupId>org.kie</groupId>
+      <artifactId>kogito-addons-quarkus-data-index-inmemory</artifactId>
+    </dependency>
+    <!-- kie-addons-quarkus-process-svg would add a rendered diagram of the executed path,
+         but it only serves a .svg exported from the KIE BPMN editor next to the model —
+         it does not render from the BPMNDI. Left out until a model ships one. -->
   </dependencies>
 
   <build>
