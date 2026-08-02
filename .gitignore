@@ -106,3 +106,6 @@ docs/paper/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+
+# Quarkus CLI cache (created when running the quarkus CLI from the repo root)
+.quarkus/
