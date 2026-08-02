@@ -81,57 +81,38 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
-    pass
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
-from cuga.backend.llm.models import LLMManager
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-    create_cuga_lite_graph,
-)
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
-    DirectLangChainToolsProvider,
-)
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
-    configure_toolguard_provider,
-    ensure_toolguard_provider,
-    invalidate_toolguard_provider,
-    unwrap_tool_provider,
-)
-from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
-    FinalAnswerAppworldOutput,
-    appworld_plain_post_llm_runnable,
-    is_appworld_action_label,
-    load_appworld_final_answer_prompt,
-    load_appworld_plain_final_answer_prompt,
-    load_appworld_task_classifier_prompt,
-    parse_appworld_plain_completion,
-)
-from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from langchain_core.messages import BaseMessage
+
+# Eager by necessity, unlike the lazy imports elsewhere in this module: pydantic
+# resolves ``InvokeResult.receipt``'s annotation when the model class is built,
+# and this module has no postponed annotations. Importing the module for
+# ``RunReceipt`` also brings its siblings, so deferring those would buy nothing.
+# Its own deps (langchain_core, pydantic, loguru) are already imported above.
 from cuga.backend.cuga_graph.utils.run_receipt import (
     RunMetricsCollector,
     RunReceipt,
     build_run_receipt,
 )
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
-from cuga.backend.cuga_graph.policy.models import (
-    IntentGuard,
-    Playbook,
-    ToolGuide,
-    ToolApproval,
-    OutputFormatter,
-    KeywordTrigger,
-    NaturalLanguageTrigger,
-    IntentGuardResponse,
-    AlwaysTrigger,
-)
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
-from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+_llm_manager_instance = None
 
-llm_manager = LLMManager()
+
+def _get_llm_manager():
+    global _llm_manager_instance
+    if _llm_manager_instance is None:
+        from cuga.backend.llm.models import LLMManager
+
+        _llm_manager_instance = LLMManager()
+    return _llm_manager_instance
+
+
+def __getattr__(name: str):
+    if name == "llm_manager":
+        return _get_llm_manager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class InvokeResult(BaseModel):
@@ -201,18 +182,22 @@ class PoliciesManager:
         self._agent = agent
         self._fs_sync = None
 
-    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+    def _agent_tool_provider(self) -> "Optional[ToolProviderInterface]":
         """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
         return getattr(self._agent, "tool_provider", None)
 
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is not None:
             invalidate_toolguard_provider(provider)
 
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import configure_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is None:
             return
@@ -226,13 +211,14 @@ class PoliciesManager:
                 policy_storage=self._agent._policy_system.storage,
             )
 
-    async def _ensure_policy_system(self) -> Optional[PolicyConfigurable]:
+    async def _ensure_policy_system(self) -> "Optional[PolicyConfigurable]":
         """Ensure policy system is initialized if enabled.
 
         Returns:
             PolicyConfigurable if enabled, None if disabled via settings.policy.enabled
         """
         from cuga.config import settings
+        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
         if not settings.policy.enabled:
             return None
@@ -354,6 +340,13 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            IntentGuard,
+            IntentGuardResponse,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_intent_guard")
@@ -448,6 +441,12 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            Playbook,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_playbook")
@@ -547,6 +546,12 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            ToolGuide,
+            KeywordTrigger,
+            AlwaysTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_guide")
@@ -625,6 +630,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guide")
@@ -706,6 +713,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guard")
@@ -798,6 +807,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolApproval
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_approval")
@@ -871,6 +882,13 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            OutputFormatter,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+            AlwaysTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_output_format")
@@ -1728,10 +1746,10 @@ class CugaAgent:
     def __init__(
         self,
         tools: Optional[List[BaseTool]] = None,
-        tool_provider: Optional[ToolProviderInterface] = None,
+        tool_provider: "Optional[ToolProviderInterface]" = None,
         model: Optional[BaseChatModel] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
-        policy_system: Optional[PolicyConfigurable] = None,
+        policy_system: "Optional[PolicyConfigurable]" = None,
         special_instructions: Optional[str] = None,
         cuga_folder: Optional[str] = None,
         auto_load_policies: Optional[bool] = None,
@@ -1813,6 +1831,9 @@ class CugaAgent:
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
         policy_storage = self._policy_system.storage if self._policy_system is not None else None
         if tool_provider:
             base_provider = tool_provider
@@ -1837,6 +1858,8 @@ class CugaAgent:
         # Initialize model
         if not self._model:
             from cuga.config import settings
+
+            from cuga.backend.llm.models import LLMManager
 
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
@@ -1993,6 +2016,11 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
+                    DirectLangChainToolsProvider,
+                )
+
                 provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
@@ -2049,6 +2077,10 @@ class CugaAgent:
         # callbacks) as base_callbacks so direct `agent.graph.ainvoke(...)` is also
         # instrumented. invoke()/stream() override these via configurable["callbacks"],
         # which the node prefers when present (no double-counting).
+        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
+        from cuga.backend.cuga_graph.state.agent_state import AgentState
+        from langgraph.graph import StateGraph, START, END
+
         cuga_lite_subgraph = create_cuga_lite_graph(
             model=self._model,
             tool_provider=self.tool_provider,
@@ -2293,6 +2325,8 @@ class CugaAgent:
             ```
         """
         if self._compiled_graph is None:
+            from langgraph.checkpoint.memory import MemorySaver
+
             graph = self._create_graph()
 
             # Always compile with checkpointer and interrupt for HITL support
@@ -2569,6 +2603,8 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
+            from langchain_core.messages import HumanMessage
+
             # If dispatch resolved a skill, soft-dispatch: the planner input
             # becomes the translated suggestion ("use the skill named '<name>'
             # to: <args>") and the planner decides to call ``load_skill``
@@ -2597,6 +2633,8 @@ class CugaAgent:
             begin_ledger_turn(thread_id)
         except Exception:
             pass
+
+        from cuga.backend.cuga_graph.state.agent_state import AgentState
 
         # Try to get existing state for this thread_id
         existing_state = None
@@ -2753,7 +2791,20 @@ class CugaAgent:
         _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
         if settings.advanced_features.benchmark == "appworld":
-            llm_model = llm_manager.get_model(settings.agent.final_answer.model)
+            from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
+                FinalAnswerAppworldOutput,
+                appworld_plain_post_llm_runnable,
+                is_appworld_action_label,
+                load_appworld_final_answer_prompt,
+                load_appworld_plain_final_answer_prompt,
+                load_appworld_task_classifier_prompt,
+                parse_appworld_plain_completion,
+            )
+            from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
+            from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+            from langchain_core.messages import AIMessage
+
+            llm_model = _get_llm_manager().get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
             invoke_payload = {
                 "input": message if isinstance(message, str) else message[-1].content,
@@ -2920,6 +2971,8 @@ class CugaAgent:
         # Normal streaming case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
+            from langchain_core.messages import HumanMessage
+
             messages = [HumanMessage(content=message)]
         else:
             messages = message
@@ -2986,12 +3039,18 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+            unwrap_tool_provider,
+            invalidate_toolguard_provider,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+
         base_provider = unwrap_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
             self.tool_provider.add_tool(tool)
-            invalidate_toolguard_provider(self.tool_provider)
+            invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
             self._graph = None
             self._compiled_graph = None
@@ -3079,8 +3138,8 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
-        tool_provider: Optional[ToolProviderInterface] = None,
-        policy_system: Optional[PolicyConfigurable] = None,
+        tool_provider: "Optional[ToolProviderInterface]" = None,
+        policy_system: "Optional[PolicyConfigurable]" = None,
         cuga_folder: Optional[str] = None,
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
@@ -3132,6 +3191,8 @@ class CugaSupervisor:
         self._reset_policy_storage = reset_policy_storage
 
         if tool_provider is not None:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
             policy_storage = self._policy_system.storage if self._policy_system is not None else None
             self.tool_provider = ensure_toolguard_provider(
                 tool_provider,
@@ -3145,6 +3206,8 @@ class CugaSupervisor:
         # Initialize model from settings if not provided
         if not self._model:
             from cuga.config import settings
+
+            from cuga.backend.llm.models import LLMManager
 
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
