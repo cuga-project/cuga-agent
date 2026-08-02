@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Loan Approval Process — Kogito port of the CUGA FLO Flowable model.
+
+  The Kogito counterpart of Loan-Approval-Process.bpmn20.xml in loan_approval/config/.
+  Compiled into the Kogito service at ~/Documents/cuga-kogito, which references this file
+  directly as a Maven resource — this is the single source of truth, not a copy.
+  BPMNdiagram.bpmn beside it stays the clean model that CUGA FLO parses for its own
+  process knowledge.
+
+  Start
+    -> Task_Hook_Flow_1e5ztf6    hook: screen before credit check
+    -> Activity_0oydey5          task agent: check credit  -> credit_score
+    -> Activity_RouteGateway     decision agent            -> gatewayDecision
+    -> Gateway_09ad5fc
+         gatewayDecision == Flow_0ybszcv -> Task_Hook_Flow_0ybszcv -> Activity_1h9ix55 (give loan)
+         gatewayDecision == Flow_1jgea85 ->                          Activity_131ar38 (reject)
+    -> Gateway_15y9k7z (merge)
+    -> Task_CompleteProcess      hands terminal state back to FlowAgent
+    -> End
+
+  Two differences from the Flowable model, both forced by Kogito (see the cuga-kogito README):
+    * Hooks are plain script tasks. No boundary error event, no BpmnError, no shared
+      Task_DynamicSkip — Kogito rejects boundary events on script tasks, and FlowRedirect
+      performs the jump directly, so that machinery is unnecessary.
+    * Scripts are one-liners delegating to org.cuga.CugaFlo / org.cuga.FlowRedirect,
+      because Kogito's validator rejects Java FQNs inside <bpmn2:script>.
+-->
+<bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.omg.org/bpmn20" xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:drools="http://www.jboss.org/drools" id="_loanApproval" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd http://www.jboss.org/drools drools.xsd http://www.omg.org/spec/DD/20100524/DC DC.xsd http://www.omg.org/spec/DD/20100524/DI DI.xsd " exporter="hand-written" exporterVersion="1.0" targetNamespace="http://www.omg.org/bpmn20">
+  <bpmn2:itemDefinition id="_stringItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_floatItem" structureRef="Float"/>
+  <bpmn2:itemDefinition id="_integerItem" structureRef="Integer"/>
+
+  <bpmn2:process id="loan_approval" drools:packageName="org.cuga" drools:version="1.0" drools:adHoc="false" name="loan_approval" isExecutable="true">
+    <bpmn2:extensionElements>
+      <drools:import name="org.cuga.CugaFlo"/>
+      <drools:import name="org.cuga.FlowRedirect"/>
+    </bpmn2:extensionElements>
+
+    <!-- Inputs -->
+    <bpmn2:property id="applicant_name" itemSubjectRef="_stringItem" name="applicant_name"/>
+    <bpmn2:property id="applicant_id" itemSubjectRef="_stringItem" name="applicant_id"/>
+    <bpmn2:property id="loan_amount" itemSubjectRef="_integerItem" name="loan_amount"/>
+    <bpmn2:property id="credit_history" itemSubjectRef="_stringItem" name="credit_history"/>
+    <bpmn2:property id="income" itemSubjectRef="_integerItem" name="income"/>
+    <bpmn2:property id="employment_years" itemSubjectRef="_integerItem" name="employment_years"/>
+    <!-- Outputs -->
+    <bpmn2:property id="credit_score" itemSubjectRef="_floatItem" name="credit_score"/>
+    <bpmn2:property id="decision" itemSubjectRef="_stringItem" name="decision"/>
+    <!-- CUGA FLO control variables. Every variable must be declared: Kogito's process
+         model is generated and strongly typed, so undeclared names cannot be written. -->
+    <bpmn2:property id="cugaProcessKey" itemSubjectRef="_stringItem" name="cugaProcessKey"/>
+    <bpmn2:property id="cugaMcpUrl" itemSubjectRef="_stringItem" name="cugaMcpUrl"/>
+    <bpmn2:property id="gatewayDecision" itemSubjectRef="_stringItem" name="gatewayDecision"/>
+    <bpmn2:property id="_user_message" itemSubjectRef="_stringItem" name="_user_message"/>
+    <bpmn2:property id="_hookAction" itemSubjectRef="_stringItem" name="_hookAction"/>
+    <bpmn2:property id="_haltReason" itemSubjectRef="_stringItem" name="_haltReason"/>
+
+    <bpmn2:startEvent id="StartEvent_0bpt8wp" name="Start">
+      <bpmn2:outgoing>Flow_StartToHook</bpmn2:outgoing>
+    </bpmn2:startEvent>
+
+    <!-- Hook on Flow_1e5ztf6: screen the application before the credit check runs. -->
+    <bpmn2:scriptTask id="Task_Hook_Flow_1e5ztf6" name="CUGA FLO hook: pre credit check" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_StartToHook</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1e5ztf6</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_1e5ztf6", "pre credit check", "Task_CompleteProcess"));]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Activity_0oydey5" name="check credit" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_1e5ztf6</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1ji6b0i</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[CugaFlo.executeTask(kcontext, "Activity_0oydey5", "check credit");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Activity_RouteGateway" name="route gateway decision" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_1ji6b0i</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_RouteToGateway</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[CugaFlo.routeGateway(kcontext, "Gateway_09ad5fc", "credit decision", "[{\"id\":\"Flow_0ybszcv\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_1h9ix55\",\"name\":\"yes\",\"condition\":null},{\"id\":\"Flow_1jgea85\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_131ar38\",\"name\":\"no\",\"condition\":null}]", "gatewayDecision");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:exclusiveGateway id="Gateway_09ad5fc" name="credit decision" gatewayDirection="Diverging">
+      <bpmn2:incoming>Flow_RouteToGateway</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_0ybszcv</bpmn2:outgoing>
+      <bpmn2:outgoing>Flow_1jgea85</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+
+    <!-- Hook on Flow_0ybszcv: intercept the approval branch before the loan is granted. -->
+    <bpmn2:scriptTask id="Task_Hook_Flow_0ybszcv" name="CUGA FLO hook: approval intercept" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_0ybszcv</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_HookToLoan</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_0ybszcv", "approval intercept", "Task_CompleteProcess"));]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_HookToLoan</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_0uwnw59</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "give loan");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Activity_131ar38" name="send a rejection letter" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_1jgea85</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1ow7aj3</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "reject");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:exclusiveGateway id="Gateway_15y9k7z" name="merge" gatewayDirection="Converging">
+      <bpmn2:incoming>Flow_0uwnw59</bpmn2:incoming>
+      <bpmn2:incoming>Flow_1ow7aj3</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_MergeToComplete</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+
+    <!-- Terminal callback. Also the TERMINATE target for both hooks, so a halted process
+         still reports back and FlowAgent.invoke() is never left awaiting its future. -->
+    <bpmn2:scriptTask id="Task_CompleteProcess" name="CUGA FLO complete process" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_MergeToComplete</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_0g1hmhe</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[CugaFlo.completeProcess(kcontext);]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:endEvent id="Event_13axbio" name="End">
+      <bpmn2:incoming>Flow_0g1hmhe</bpmn2:incoming>
+    </bpmn2:endEvent>
+
+    <bpmn2:sequenceFlow id="Flow_StartToHook" sourceRef="StartEvent_0bpt8wp" targetRef="Task_Hook_Flow_1e5ztf6"/>
+    <bpmn2:sequenceFlow id="Flow_1e5ztf6" sourceRef="Task_Hook_Flow_1e5ztf6" targetRef="Activity_0oydey5"/>
+    <bpmn2:sequenceFlow id="Flow_1ji6b0i" sourceRef="Activity_0oydey5" targetRef="Activity_RouteGateway"/>
+    <bpmn2:sequenceFlow id="Flow_RouteToGateway" sourceRef="Activity_RouteGateway" targetRef="Gateway_09ad5fc"/>
+    <bpmn2:sequenceFlow id="Flow_0ybszcv" name="yes" sourceRef="Gateway_09ad5fc" targetRef="Task_Hook_Flow_0ybszcv">
+      <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[return "Flow_0ybszcv".equals(gatewayDecision);]]></bpmn2:conditionExpression>
+    </bpmn2:sequenceFlow>
+    <bpmn2:sequenceFlow id="Flow_1jgea85" name="no" sourceRef="Gateway_09ad5fc" targetRef="Activity_131ar38">
+      <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[return "Flow_1jgea85".equals(gatewayDecision);]]></bpmn2:conditionExpression>
+    </bpmn2:sequenceFlow>
+    <bpmn2:sequenceFlow id="Flow_HookToLoan" sourceRef="Task_Hook_Flow_0ybszcv" targetRef="Activity_1h9ix55"/>
+    <bpmn2:sequenceFlow id="Flow_0uwnw59" sourceRef="Activity_1h9ix55" targetRef="Gateway_15y9k7z"/>
+    <bpmn2:sequenceFlow id="Flow_1ow7aj3" sourceRef="Activity_131ar38" targetRef="Gateway_15y9k7z"/>
+    <bpmn2:sequenceFlow id="Flow_MergeToComplete" sourceRef="Gateway_15y9k7z" targetRef="Task_CompleteProcess"/>
+    <bpmn2:sequenceFlow id="Flow_0g1hmhe" sourceRef="Task_CompleteProcess" targetRef="Event_13axbio"/>
+  </bpmn2:process>
+
+  <bpmndi:BPMNDiagram id="_loanApprovalDiagram">
+    <bpmndi:BPMNPlane id="_loanApprovalPlane" bpmnElement="loan_approval">
+      <bpmndi:BPMNShape id="shape_StartEvent_0bpt8wp" bpmnElement="StartEvent_0bpt8wp">
+        <dc:Bounds height="56.0" width="56.0" x="80.0" y="200.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_1e5ztf6" bpmnElement="Task_Hook_Flow_1e5ztf6">
+        <dc:Bounds height="102.0" width="154.0" x="180.0" y="177.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_0oydey5" bpmnElement="Activity_0oydey5">
+        <dc:Bounds height="102.0" width="154.0" x="380.0" y="177.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_RouteGateway" bpmnElement="Activity_RouteGateway">
+        <dc:Bounds height="102.0" width="154.0" x="580.0" y="177.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Gateway_09ad5fc" bpmnElement="Gateway_09ad5fc">
+        <dc:Bounds height="56.0" width="56.0" x="780.0" y="200.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_0ybszcv" bpmnElement="Task_Hook_Flow_0ybszcv">
+        <dc:Bounds height="102.0" width="154.0" x="880.0" y="80.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_1h9ix55" bpmnElement="Activity_1h9ix55">
+        <dc:Bounds height="102.0" width="154.0" x="1080.0" y="80.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_131ar38" bpmnElement="Activity_131ar38">
+        <dc:Bounds height="102.0" width="154.0" x="1080.0" y="300.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Gateway_15y9k7z" bpmnElement="Gateway_15y9k7z">
+        <dc:Bounds height="56.0" width="56.0" x="1300.0" y="200.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_CompleteProcess" bpmnElement="Task_CompleteProcess">
+        <dc:Bounds height="102.0" width="154.0" x="1400.0" y="177.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Event_13axbio" bpmnElement="Event_13axbio">
+        <dc:Bounds height="56.0" width="56.0" x="1600.0" y="200.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="edge_Flow_StartToHook" bpmnElement="Flow_StartToHook">
+        <di:waypoint xsi:type="dc:Point" x="136.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="180.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_1e5ztf6" bpmnElement="Flow_1e5ztf6">
+        <di:waypoint xsi:type="dc:Point" x="334.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="380.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_1ji6b0i" bpmnElement="Flow_1ji6b0i">
+        <di:waypoint xsi:type="dc:Point" x="534.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="580.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_RouteToGateway" bpmnElement="Flow_RouteToGateway">
+        <di:waypoint xsi:type="dc:Point" x="734.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="780.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_0ybszcv" bpmnElement="Flow_0ybszcv">
+        <di:waypoint xsi:type="dc:Point" x="836.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="880.0" y="131.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_1jgea85" bpmnElement="Flow_1jgea85">
+        <di:waypoint xsi:type="dc:Point" x="836.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1080.0" y="351.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_HookToLoan" bpmnElement="Flow_HookToLoan">
+        <di:waypoint xsi:type="dc:Point" x="1034.0" y="131.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1080.0" y="131.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_0uwnw59" bpmnElement="Flow_0uwnw59">
+        <di:waypoint xsi:type="dc:Point" x="1234.0" y="131.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1300.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_1ow7aj3" bpmnElement="Flow_1ow7aj3">
+        <di:waypoint xsi:type="dc:Point" x="1234.0" y="351.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1300.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_MergeToComplete" bpmnElement="Flow_MergeToComplete">
+        <di:waypoint xsi:type="dc:Point" x="1356.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1400.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_0g1hmhe" bpmnElement="Flow_0g1hmhe">
+        <di:waypoint xsi:type="dc:Point" x="1554.0" y="228.0"/>
+        <di:waypoint xsi:type="dc:Point" x="1600.0" y="228.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn2:definitions>

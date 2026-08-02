@@ -1,0 +1,86 @@
+# Loan Approval Process — Apache KIE (Kogito) engine
+#
+# Same process, same policies, different execution engine. Everything under
+# `tasks:` / `gateways:` / `hooks:` is byte-identical to loan_approval's Flowable
+# config — the policies are engine-independent, which is the point of the exercise.
+#
+# Self-contained, following the loan_approval layout: config/ holds the BPMN and
+# this file, policies/ holds the per-task/gateway/hook markdown.
+#
+# PRECONDITION: a Kogito/Quarkus service with the `loan_approval` process already
+# built into it must be running at `url` below. This config does not build or start
+# it — the same division of responsibility as the Flowable config, which does not
+# start the Flowable container. Kogito compiles BPMN at build time, so there is no
+# `deploy:` option here.
+#
+#     cd <kogito-project> && mvn quarkus:dev -Dquarkus.http.port=8081
+#
+# PORT COLLISION: Flowable UI and Quarkus dev mode both default to 8080. If you run
+# the Flowable demo too, move one of them — the `url` below must match whichever
+# port Kogito ended up on.
+
+flow:
+  name: "Loan Approval Process (Kogito)"
+  id: "loan_approval_kogito_v1"
+  version: "1.0"
+  # The clean model CUGA FLO parses for its own process knowledge. The Kogito-ported
+  # model (script-task callbacks + boundary events) is built into the Kogito project;
+  # a copy belongs here next to this file once Phase 2 lands, mirroring how
+  # loan_approval/config/ holds both BPMNdiagram.bpmn and the augmented
+  # Loan-Approval-Process.bpmn20.xml deployed to Flowable.
+  bpmn_file: "BPMNdiagram.bpmn"
+
+workflow_engine:
+  type: kogito
+  url: http://localhost:8081
+  process_id: loan_approval
+  # `mvn quarkus:dev` runs on the host, so it reaches CUGA FLO on localhost.
+  # Use host.docker.internal (the default) when Kogito runs in a container.
+  callback_host: localhost
+  callback_port: 8090
+
+variables:
+  credit_score: 0.0
+  decision: "undecided"
+  applicant_id: ""
+
+tasks:
+  - id: "Activity_0oydey5"
+    mode: task_agent
+    output_mapping:
+      credit_score: credit_score
+    agent:
+      name: "credit_checker"
+      system_instruction: "Analyses applicant information and returns a credit score 0.0–1.0"
+      tools: []
+      policy: "../policies/task-credit_check.md"
+
+gateways:
+  Gateway_09ad5fc:
+    mode: decision_agent
+    condition: "${credit_score} > 0.6"
+    policy: "../policies/decision-credit_decision.md"
+    flows:
+      Flow_0ybszcv:
+        decision: "Approve — credit score sufficient"
+      Flow_1jgea85:
+        decision: "Reject — credit score insufficient"
+
+action_permissions:
+  permitted_actions:
+    - continue
+    - skip_to
+    - terminate
+  prohibited_actions:
+    - skip_node
+    - swap_nodes
+
+hooks:
+  - id: "Flow_1e5ztf6"
+    type: "edge"
+    location: "Flow_1e5ztf6"
+    policy: "../policies/hook-screen-before-credit-check.md"
+  - id: "Flow_0ybszcv"
+    type: "edge"
+    location: "Flow_0ybszcv"
+    policy: "../policies/hook-approval_intercept.md"

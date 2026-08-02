@@ -24,6 +24,16 @@ DEFAULT_INPUTS = {
         "income": 75000,
         "employment_years": 5,
     },
+    # Same inputs as loan_approval — the Kogito app is the same process on a different
+    # engine, so identical inputs make the two directly comparable.
+    "loan_approval_kogito": {
+        "applicant_name": "John Doe",
+        "applicant_id": "A12345",
+        "loan_amount": 1000,
+        "credit_history": "Excellent payment history, no defaults",
+        "income": 75000,
+        "employment_years": 5,
+    },
     "receive_order": {
         "order_id": "ORD-001",
         "customer_name": "Acme Corp",
