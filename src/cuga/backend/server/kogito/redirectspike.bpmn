@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Phase 1 spike: can a script task redirect its own running instance to an arbitrary
+  node, the way Flowable's Task_DynamicSkip does via ChangeActivityStateBuilder?
+
+  Start -> Task_A -> Task_B -> Task_D -> End
+                \
+                 (error boundary) -> Task_C  [redirects to Task_D, skipping Task_B]
+
+  Task_A throws. The boundary event catches it and routes to Task_C, which performs the
+  redirect. `trail` records which tasks actually ran.
+
+    redirect works  -> trail == "A,D"    (B skipped)
+    redirect failed -> trail == "A"      (stuck at C) or "A,B,D" (no interception)
+-->
+<bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.omg.org/bpmn20" xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:drools="http://www.jboss.org/drools" id="_redirectSpike" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd http://www.jboss.org/drools drools.xsd http://www.omg.org/spec/DD/20100524/DC DC.xsd http://www.omg.org/spec/DD/20100524/DI DI.xsd " exporter="hand-written" exporterVersion="1.0" targetNamespace="http://www.omg.org/bpmn20">
+  <bpmn2:itemDefinition id="_trailItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_skipTargetItem" structureRef="String"/>
+  <bpmn2:error id="java.lang.Throwable" errorCode="java.lang.Throwable"/>
+  <bpmn2:process id="redirectspike" drools:packageName="org.cuga" drools:version="1.0" drools:adHoc="false" name="redirectspike" isExecutable="true">
+    <bpmn2:extensionElements>
+      <drools:import name="org.cuga.FlowRedirect"/>
+    </bpmn2:extensionElements>
+    <bpmn2:property id="trail" itemSubjectRef="_trailItem" name="trail"/>
+    <bpmn2:property id="skipTarget" itemSubjectRef="_skipTargetItem" name="skipTarget"/>
+
+    <bpmn2:startEvent id="Start_1" name="Start">
+      <bpmn2:outgoing>Flow_StartToA</bpmn2:outgoing>
+    </bpmn2:startEvent>
+
+    <bpmn2:scriptTask id="Task_A" name="A redirects" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_StartToA</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_AToB</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[kcontext.setVariable("trail", "A");
+FlowRedirect.to(kcontext, (String) kcontext.getVariable("skipTarget"));]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Task_B" name="B should be skipped" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_AToB</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_BToD</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[kcontext.setVariable("trail", kcontext.getVariable("trail") + ",B");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:scriptTask id="Task_D" name="D redirect target" scriptFormat="http://www.java.com/java">
+      <bpmn2:incoming>Flow_BToD</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_DToEnd</bpmn2:outgoing>
+      <bpmn2:script><![CDATA[kcontext.setVariable("trail", kcontext.getVariable("trail") + ",D");]]></bpmn2:script>
+    </bpmn2:scriptTask>
+
+    <bpmn2:endEvent id="End_1" name="End">
+      <bpmn2:incoming>Flow_DToEnd</bpmn2:incoming>
+    </bpmn2:endEvent>
+
+
+
+    <bpmn2:sequenceFlow id="Flow_StartToA" sourceRef="Start_1" targetRef="Task_A"/>
+    <bpmn2:sequenceFlow id="Flow_AToB" sourceRef="Task_A" targetRef="Task_B"/>
+    <bpmn2:sequenceFlow id="Flow_BToD" sourceRef="Task_B" targetRef="Task_D"/>
+    <bpmn2:sequenceFlow id="Flow_DToEnd" sourceRef="Task_D" targetRef="End_1"/>
+  </bpmn2:process>
+
+  <bpmndi:BPMNDiagram id="_redirectSpikeDiagram">
+    <bpmndi:BPMNPlane id="_redirectSpikePlane" bpmnElement="redirectspike">
+      <bpmndi:BPMNShape id="shape_Start_1" bpmnElement="Start_1">
+        <dc:Bounds height="56.0" width="56.0" x="100.0" y="100.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_A" bpmnElement="Task_A">
+        <dc:Bounds height="102.0" width="154.0" x="200.0" y="77.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_B" bpmnElement="Task_B">
+        <dc:Bounds height="102.0" width="154.0" x="400.0" y="77.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_D" bpmnElement="Task_D">
+        <dc:Bounds height="102.0" width="154.0" x="600.0" y="77.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_End_1" bpmnElement="End_1">
+        <dc:Bounds height="56.0" width="56.0" x="800.0" y="100.0"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="edge_Flow_StartToA" bpmnElement="Flow_StartToA">
+        <di:waypoint xsi:type="dc:Point" x="156.0" y="128.0"/>
+        <di:waypoint xsi:type="dc:Point" x="200.0" y="128.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_AToB" bpmnElement="Flow_AToB">
+        <di:waypoint xsi:type="dc:Point" x="354.0" y="128.0"/>
+        <di:waypoint xsi:type="dc:Point" x="400.0" y="128.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_BToD" bpmnElement="Flow_BToD">
+        <di:waypoint xsi:type="dc:Point" x="554.0" y="128.0"/>
+        <di:waypoint xsi:type="dc:Point" x="600.0" y="128.0"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_Flow_DToEnd" bpmnElement="Flow_DToEnd">
+        <di:waypoint xsi:type="dc:Point" x="754.0" y="128.0"/>
+        <di:waypoint xsi:type="dc:Point" x="800.0" y="128.0"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn2:definitions>
