@@ -65,30 +65,26 @@ class TestFilterNewVariables:
         }
 
         result = VariableUtils.filter_new_variables(all_locals, original_keys)
+        round_tripped = json.loads(json.dumps(result))
 
-        json.dumps(result)
-        assert VariableUtils.hydrate_value(result['my_set']) == {1, 2, 3}
-        assert VariableUtils.hydrate_value(result['my_frozenset']) == frozenset({4, 5})
-        assert VariableUtils.hydrate_value(result['nested_set']) == {1, (2, 3)}
+        assert VariableUtils.hydrate_value(round_tripped['my_set']) == {1, 2, 3}
+        assert VariableUtils.hydrate_value(round_tripped['my_frozenset']) == frozenset({4, 5})
+        assert VariableUtils.hydrate_value(round_tripped['nested_set']) == {1, (2, 3)}
         assert 'set_of_unserializable' not in result
 
     @pytest.mark.unit
-    def test_sanitize_sets_are_json_dumpsable(self):
-        """Stream path json.dumps(variables_storage) must not fail on sets (#572 regression)."""
-        sanitized = VariableUtils.sanitize_value({"emails": {"a@x.com", "b@y.com"}})
-        payload = {
-            "code": "",
-            "execution_output": "ok",
-            "variables": {
-                "emails": {
-                    "value": sanitized["emails"],
-                    "type": "set",
-                    "description": "Created during code execution",
-                }
-            },
+    def test_sanitize_sets_survive_json_loads_round_trip(self):
+        """Stream/checkpoint path must dump and reload sets including nested tuples."""
+        original = {
+            "emails": {"a@x.com", "b@y.com"},
+            "nested": {((1, 2), (3, 4)), (1, (2, 3))},
+            "frozen": frozenset({"x", "y"}),
         }
-        encoded = json.dumps(payload)
-        assert "a@x.com" in encoded
+        sanitized = VariableUtils.sanitize_value(original)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert restored["emails"] == original["emails"]
+        assert restored["nested"] == original["nested"]
+        assert restored["frozen"] == original["frozen"]
 
     @pytest.mark.unit
     def test_is_serializable_accepts_sets(self):
@@ -165,12 +161,15 @@ print(len(product_set))
             code=code1, _locals={}, state=state, mode="local"
         )
         assert "product_set" in new_vars1
-        json.dumps({"variables": state.variables_storage})
+        reloaded = json.loads(json.dumps({"variables": state.variables_storage}))
         assert isinstance(
-            VariableUtils.hydrate_value(new_vars1["product_set"]),
+            VariableUtils.hydrate_value(reloaded["variables"]["product_set"]["value"]),
             set,
         )
         assert isinstance(state.variables_manager.get_variable("product_set"), set)
+        summary = state.variables_manager.get_variables_summary(variable_names=["product_set"])
+        assert "Type: set" in summary
+        assert "__set_type__" not in summary
 
         _locals = {
             name: state.variables_manager.get_variable(name)

@@ -129,11 +129,11 @@ class VariableUtils:
 
     @staticmethod
     def _sanitize_set_element(obj: Any) -> Any:
-        """Sanitize a set/frozenset element; tag tuples so JSON round-trips."""
+        """Sanitize a set/frozenset element; recursively tag nested tuples."""
         if isinstance(obj, tuple):
             return {
                 _TUPLE_TYPE_KEY: "tuple",
-                "items": [VariableUtils._sanitize_recursive(v) for v in obj],
+                "items": [VariableUtils._sanitize_set_element(v) for v in obj],
             }
         return VariableUtils._sanitize_recursive(obj)
 
@@ -141,11 +141,12 @@ class VariableUtils:
     def hydrate_value(value: Any) -> Any:
         """Restore set/frozenset/tuple tags produced by sanitize_value."""
         if isinstance(value, dict):
+            keys = set(value.keys())
             set_kind = value.get(_SET_TYPE_KEY)
-            if set_kind in ("set", "frozenset") and "items" in value:
+            if set_kind in ("set", "frozenset") and keys == {_SET_TYPE_KEY, "items"}:
                 items = [VariableUtils.hydrate_value(v) for v in value["items"]]
                 return set(items) if set_kind == "set" else frozenset(items)
-            if value.get(_TUPLE_TYPE_KEY) == "tuple" and "items" in value:
+            if value.get(_TUPLE_TYPE_KEY) == "tuple" and keys == {_TUPLE_TYPE_KEY, "items"}:
                 return tuple(VariableUtils.hydrate_value(v) for v in value["items"])
             return {k: VariableUtils.hydrate_value(v) for k, v in value.items()}
         if isinstance(value, list):
