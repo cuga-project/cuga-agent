@@ -39,10 +39,22 @@ workflow_engine:
   callback_host: localhost
   callback_port: 8090
 
+# Doubles as the extraction schema. On a free-text invocation (a supervisor delegating a
+# chat message) FlowAgent promotes anything the message states into these variables, using
+# each default's type as the target type. Names listed here MUST also be declared as
+# <bpmn2:property> in the Kogito model, or the engine drops the value on arrival.
+# Anything not listed stays readable in _user_message but never becomes a typed variable.
 variables:
+  # Outputs, written during the run
   credit_score: 0.0
   decision: "undecided"
+  # Inputs, extractable from the request
+  applicant_name: ""
   applicant_id: ""
+  loan_amount: 0
+  credit_history: ""
+  income: 0
+  employment_years: 0
 
 tasks:
   - id: "Activity_0oydey5"

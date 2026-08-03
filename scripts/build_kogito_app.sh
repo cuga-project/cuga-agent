@@ -69,6 +69,27 @@ if [[ ${#MODELS[@]} -eq 0 ]]; then
      CugaFlo/FlowRedirect. See loan_approval_kogito for a worked example."
 fi
 
+# ── config / model consistency ───────────────────────────────────────────────
+# Every name in the YAML `variables:` block must be declared as a <bpmn2:property> in the
+# Kogito model. Kogito's generated model is a closed typed class, so a value sent for an
+# undeclared name is discarded on arrival — silently, with no error anywhere.
+
+declared_props=$(grep -hoE '<bpmn2:property id="[^"]+"' "${MODELS[@]}" | sed 's/.*id="//; s/"$//' | sort -u)
+yaml_vars=$(awk '
+    /^variables:/ { inblock = 1; next }
+    /^[a-zA-Z]/   { inblock = 0 }
+    inblock && /^[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*:/ {
+        sub(/^[[:space:]]+/, ""); sub(/:.*/, ""); print
+    }
+' "$APP_DIR"/config/*.yaml | sort -u)
+
+missing=$(comm -23 <(echo "$yaml_vars") <(echo "$declared_props") | tr '\n' ' ' | sed 's/ *$//')
+if [[ -n "$missing" ]]; then
+    echo "  warning no <bpmn2:property> for YAML variable(s): $missing" >&2
+    echo "          values for these are dropped by Kogito on arrival; declare them in" >&2
+    echo "          the model or remove them from the app's variables: block" >&2
+fi
+
 # Port: --port wins, else the app's workflow_engine.url, else 8081.
 if [[ -z "$HTTP_PORT" ]]; then
     HTTP_PORT="$(grep -hoE '^[[:space:]]*url:[[:space:]]*https?://[^:]+:[0-9]+' "$APP_DIR"/config/*.yaml 2>/dev/null \

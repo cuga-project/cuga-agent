@@ -344,6 +344,85 @@ Respond ONLY with a JSON object:
     # Invocation
     # ──────────────────────────────────────────────────────────────
 
+    async def _extract_initial_variables(self, user_message: str) -> Dict[str, Any]:
+        """
+        Promote values stated in a free-text invocation into typed process variables.
+
+        A string invocation (a supervisor delegating a chat message) otherwise sets only
+        `_user_message`, leaving every declared variable at its YAML default. Agents can
+        still read the message, but a gateway `condition:` or a task `input_mapping`
+        cannot — those need real variables. This fills them in once, at start.
+
+        The YAML `variables:` block is the schema: only those names are extracted, and
+        each default supplies the expected type. Anything else the message mentions stays
+        in `_user_message`, which every control point receives anyway.
+
+        Returns only the keys the message actually states, so callers can layer this over
+        the defaults. Never raises — extraction failing must not block the process.
+        """
+        schema = {name: type(default).__name__ for name, default in self.initial_variables.items()}
+        if not schema:
+            return {}
+
+        prompt = f"""Extract process variable values from a user's request.
+
+## Variables to look for
+Each entry is `name: expected_type`. Extract a value ONLY if the message states it,
+explicitly or unambiguously.
+
+{json.dumps(schema, indent=2)}
+
+## User message
+{user_message}
+
+## Rules
+- Omit any variable the message does not state. Do not guess, infer or default.
+- Strip formatting from numbers: "$55,000" -> 55000, "3 years" -> 3.
+- Match the expected type: int -> integer, float -> number, str -> string, bool -> boolean.
+- Never invent variable names; only those listed above.
+
+Respond ONLY with a JSON object of the variables you found, e.g. {{"loan_amount": 55000}}.
+Respond with {{}} if the message states none of them.
+"""
+        try:
+            agent_result = await self._get_hook_agent().invoke(message=prompt)
+            raw = agent_result.answer.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
+            if not raw.startswith("{"):
+                start, end = raw.find("{"), raw.rfind("}")
+                if start != -1 and end > start:
+                    raw = raw[start : end + 1]
+
+            extracted = json.loads(raw)
+            if not isinstance(extracted, dict):
+                return {}
+
+            # Keep only known names, and coerce to the type the default implies — the
+            # engine's process model is typed, so a string where an int is declared fails.
+            clean: Dict[str, Any] = {}
+            for name, value in extracted.items():
+                if name not in self.initial_variables or value is None:
+                    continue
+                expected = type(self.initial_variables[name])
+                try:
+                    clean[name] = expected(value) if expected in (int, float, str, bool) else value
+                except (TypeError, ValueError):
+                    logger.warning(f"  Extracted {name}={value!r} is not {expected.__name__}; skipping")
+
+            if clean:
+                logger.info(f"  Extracted initial variables from user message: {clean}")
+                tracker.collect_step(
+                    Step(name="Initial variables: extracted from message", data=json.dumps(clean))
+                )
+            return clean
+        except Exception as e:
+            logger.warning(f"  Initial variable extraction failed: {e}; using YAML defaults")
+            return {}
+
     async def _handle_complete(self, process_key: str, state: dict, bpmn: dict) -> dict:
         """Called by the engine via the complete_process MCP tool when the process ends."""
         future = self._pending_completions.get(process_key)
@@ -374,11 +453,15 @@ Respond ONLY with a JSON object:
         from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
 
         initial_inputs: Dict[str, Any] = dict(self.initial_variables)
-        initial_inputs.update(process_variables or {})
         if isinstance(input_data, str):
             initial_inputs["_user_message"] = input_data
+            # Free-text invocation: promote anything the message states into the declared
+            # variables, so gateways and input mappings see real values rather than defaults.
+            initial_inputs.update(await self._extract_initial_variables(input_data))
         elif isinstance(input_data, dict):
             initial_inputs.update(input_data)
+        # Explicit arguments win over both defaults and extraction.
+        initial_inputs.update(process_variables or {})
         # Ensure hook-control variables always exist in Flowable so EL expressions are safe
         initial_inputs.setdefault("_hookAction", "")
         initial_inputs.setdefault("_haltReason", "")

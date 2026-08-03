@@ -138,7 +138,9 @@ The constraints those procedures work around, each found by hitting it:
   scripts to one-liners delegating to the runtime classes.
 - **Declare every process variable** as a `<bpmn2:property>`. The model is generated and
   strongly typed, so undeclared names are silently dropped and JSON numbers must be coerced
-  to the declared type (`CugaFlo.coerce`).
+  to the declared type (`CugaFlo.coerce`). Keep the app YAML's `variables:` block a subset
+  of these — `build_kogito_app.sh` warns if it is not, since values for an undeclared name
+  are discarded on arrival with no error.
 - **`kcontext` is `KogitoProcessContext`**, not `org.kie.api.runtime.process.ProcessContext`.
 - **Gateway conditions** are equality checks against the routing variable the
   DecisionAgent wrote, exactly as in the Flowable model.
