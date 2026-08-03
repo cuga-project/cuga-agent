@@ -43,13 +43,28 @@ class VariableMetadata:
     def __init__(self, value: Any, description: Optional[str] = None, created_at: Optional[datetime] = None):
         self.value = value
         self.description = description or ""
-        self.type = type(value).__name__
+        self.type, self.count_items = self._type_and_count(value)
         self.created_at = created_at if created_at is not None else datetime.now()
-        self.count_items = self._calculate_count(value)
 
-    def _calculate_count(self, value: Any) -> int:
+    @staticmethod
+    def _tagged_set_kind(value: Any) -> Optional[str]:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
+        if VariableUtils._is_set_tag(value):
+            return value["__set_type__"]
+        return None
+
+    @classmethod
+    def _type_and_count(cls, value: Any) -> tuple[str, int]:
+        tagged = cls._tagged_set_kind(value)
+        if tagged is not None:
+            return tagged, len(value.get("items") or [])
+        return type(value).__name__, cls._calculate_count(value)
+
+    @staticmethod
+    def _calculate_count(value: Any) -> int:
         """Calculate the count of items in the value based on its type."""
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, (list, tuple, set, frozenset)):
             return len(value)
         elif isinstance(value, dict):
             return len(value)
@@ -218,8 +233,12 @@ class VariablesManager(object):
         Returns:
             Any: The value of the variable, or None if not found
         """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
         metadata = self.variables.get(name)
-        return metadata.value if metadata else None
+        if not metadata:
+            return None
+        return VariableUtils.hydrate_value(metadata.value)
 
     def get_variable_metadata(self, name: str) -> Optional[VariableMetadata]:
         """
@@ -333,6 +352,9 @@ class VariablesManager(object):
 
     def _get_value_preview(self, value: Any, max_length: int = 5000) -> str:
         """Get a structured preview of the value, truncating nested content when large."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
+        value = VariableUtils.hydrate_value(value)
 
         try:
             full_repr = repr(value)
@@ -340,7 +362,6 @@ class VariablesManager(object):
                 return full_repr
         except Exception:
             pass
-
         max_string_chars = max(50, min(200, max_length // 4))
         max_list_items = 10
         max_depth = 6
