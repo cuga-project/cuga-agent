@@ -31,6 +31,7 @@ logs/
 .bob
 !.bob/commands/
 !.bob/commands/cuga-*.md
+!.bob/commands/github_commands.md
 test_workspace/
 *.logs
 
@@ -84,6 +85,7 @@ cuga.egg-info
 .cursor/
 !.cursor/commands/
 !.cursor/commands/cuga-*.md
+!.cursor/commands/github_commands.md
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
@@ -108,3 +110,6 @@ demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+
+# Roo AI assistant
+.roo/

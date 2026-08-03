@@ -4,19 +4,18 @@ import re
 import threading
 import weakref
 from datetime import date
-from typing import Dict, Any, Optional, Mapping
+from typing import Dict, Any, Optional, Mapping, TYPE_CHECKING
 import hashlib
 import json
 import os
 
 import httpx
 import openai
-from langchain_openai import ChatOpenAI, AzureChatOpenAI
-from langchain_ibm import ChatWatsonx
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatResult
 from loguru import logger
+
+if TYPE_CHECKING:
+    from langchain_core.outputs import ChatResult
 
 from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
@@ -27,48 +26,37 @@ from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 _CUGA_ASYNC_LOOP_REF = "_cuga_async_loop_ref"
 
 
-class ReasoningChatOpenAI(ChatOpenAI):
-    """ChatOpenAI subclass that preserves non-standard reasoning fields.
+def _get_reasoning_chat_openai():
+    """Lazy-load and return the ReasoningChatOpenAI class (cached after first call).
 
-    LangChain's _convert_dict_to_message only forwards function_call, tool_calls,
-    and audio into additional_kwargs. Models that return reasoning_content (e.g.
-    DeepSeek-style or self-hosted reasoning models) have that field silently
-    dropped. This subclass rescues it by post-processing the raw response dict.
+    No lock is needed: all callers run on the asyncio event loop (no OS threads
+    reach ``_create_llm_instance``). The cooperative scheduler cannot context-switch
+    in the middle of the synchronous ``class`` statement, so the double-checked
+    cache read/write is safe.
     """
+    if _get_reasoning_chat_openai._cls is not None:
+        return _get_reasoning_chat_openai._cls
 
-    def _create_chat_result(
-        self,
-        response: "dict | openai.BaseModel",
-        generation_info: "dict | None" = None,
-    ) -> ChatResult:
-        result = super()._create_chat_result(response, generation_info)
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import AIMessage
 
-        response_dict = response if isinstance(response, dict) else response.model_dump()
-        choices = response_dict.get("choices") or []
-        for i, res in enumerate(choices):
-            if i >= len(result.generations):
-                break
-            raw_msg = res.get("message") or {}
-            reasoning = raw_msg.get("reasoning_content")
-            if reasoning and isinstance(result.generations[i].message, AIMessage):
-                result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
+    class ReasoningChatOpenAI(ChatOpenAI):
+        """ChatOpenAI subclass that preserves non-standard reasoning fields.
 
-        return result
-
-
-try:
-    from langchain_litellm import ChatLiteLLM as _ChatLiteLLMBase
-
-    class ReasoningChatLiteLLM(_ChatLiteLLMBase):
-        """LiteLLM chat model that preserves ``reasoning_content`` on AIMessage.
-
-        Mirrors :class:`ReasoningChatOpenAI` for backends where the raw completion
-        includes ``choices[].message.reasoning_content`` but conversion drops it.
+        LangChain's _convert_dict_to_message only forwards function_call, tool_calls,
+        and audio into additional_kwargs. Models that return reasoning_content (e.g.
+        DeepSeek-style or self-hosted reasoning models) have that field silently
+        dropped. This subclass rescues it by post-processing the raw response dict.
         """
 
-        def _create_chat_result(self, response: Mapping[str, Any]) -> ChatResult:
-            result = super()._create_chat_result(response)
-            choices = response.get("choices") or []
+        def _create_chat_result(
+            self,
+            response: "dict | openai.BaseModel",
+            generation_info: "dict | None" = None,
+        ) -> "ChatResult":
+            result = super()._create_chat_result(response, generation_info)
+            response_dict = response if isinstance(response, dict) else response.model_dump()
+            choices = response_dict.get("choices") or []
             for i, res in enumerate(choices):
                 if i >= len(result.generations):
                     break
@@ -78,8 +66,57 @@ try:
                     result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
             return result
 
-except ImportError:
-    ReasoningChatLiteLLM = None  # type: ignore[misc, assignment]
+    _get_reasoning_chat_openai._cls = ReasoningChatOpenAI
+    return ReasoningChatOpenAI
+
+
+_get_reasoning_chat_openai._cls = None  # type: ignore[attr-defined]
+
+
+def _get_reasoning_chat_litellm():
+    """Lazy-load and return the ReasoningChatLiteLLM class, or None if langchain_litellm is missing.
+
+    No lock is needed: same reasoning as ``_get_reasoning_chat_openai`` — all callers
+    are on the asyncio event loop with no OS-thread exposure to this path.
+    """
+    if _get_reasoning_chat_litellm._loaded:
+        return _get_reasoning_chat_litellm._cls
+
+    try:
+        from langchain_litellm import ChatLiteLLM as _ChatLiteLLMBase
+        from langchain_core.messages import AIMessage
+
+        class ReasoningChatLiteLLM(_ChatLiteLLMBase):
+            """LiteLLM chat model that preserves ``reasoning_content`` on AIMessage.
+
+            Mirrors ReasoningChatOpenAI for backends where the raw completion
+            includes ``choices[].message.reasoning_content`` but conversion drops it.
+            """
+
+            def _create_chat_result(self, response: Mapping[str, Any]) -> "ChatResult":
+                result = super()._create_chat_result(response)
+                choices = response.get("choices") or []
+                for i, res in enumerate(choices):
+                    if i >= len(result.generations):
+                        break
+                    raw_msg = res.get("message") or {}
+                    reasoning = raw_msg.get("reasoning_content")
+                    if reasoning and isinstance(result.generations[i].message, AIMessage):
+                        result.generations[i].message.additional_kwargs.setdefault(
+                            "reasoning_content", reasoning
+                        )
+                return result
+
+        _get_reasoning_chat_litellm._cls = ReasoningChatLiteLLM
+    except ImportError:
+        _get_reasoning_chat_litellm._cls = None
+
+    _get_reasoning_chat_litellm._loaded = True
+    return _get_reasoning_chat_litellm._cls
+
+
+_get_reasoning_chat_litellm._loaded = False  # type: ignore[attr-defined]
+_get_reasoning_chat_litellm._cls = None  # type: ignore[attr-defined]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
@@ -230,24 +267,14 @@ class _ModelSettingsWrap:
     def get(self, k: str, default: Any = None) -> Any:
         return self._d.get(k, default)
 
+    def __contains__(self, k: object) -> bool:
+        return k in self._d
+
+    def __getitem__(self, k: str) -> Any:
+        return self._d[k]
+
     def to_dict(self) -> dict:
         return self._d.copy()
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._d
-
-
-try:
-    from langchain_groq import ChatGroq
-except ImportError:
-    logger.warning("Langchain Groq not installed, using OpenAI instead")
-    ChatGroq = None
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
-    ChatGoogleGenerativeAI = None
 
 
 class LLMManager:
@@ -415,6 +442,10 @@ class LLMManager:
         Keeps the authenticated APIClient (avoids IAM re-auth). Returns True when
         a rebind happened.
         """
+        try:
+            from langchain_ibm import ChatWatsonx
+        except ImportError:
+            return False
         if not isinstance(model, ChatWatsonx):
             return False
         client = cls._watsonx_api_client(model)
@@ -472,6 +503,10 @@ class LLMManager:
         models = list(self._models.values())
         if self._pre_instantiated_model is not None:
             models.append(self._pre_instantiated_model)
+        try:
+            from langchain_ibm import ChatWatsonx
+        except ImportError:
+            return 0
         for model in models:
             if not isinstance(model, ChatWatsonx):
                 continue
@@ -936,14 +971,18 @@ class LLMManager:
         return _DEFAULT_LLM_HTTP_TIMEOUT
 
     def _is_reasoning_model(self, model_name: str) -> bool:
-        """Check if model is a reasoning model that doesn't support temperature
+        """Check if model is a reasoning model that doesn't support temperature.
 
-        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature parameter
+        OpenAI reasoning models (o1/o3/o4, gpt-5*) reject non-default temperature.
+        LiteLLM/Azure names often look like ``azure/gpt-5.6-terra`` — strip the
+        provider prefix before matching.
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
-        return model_name.startswith(reasoning_prefixes)
+        name = model_name.strip().lower()
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        return name.startswith(("o1", "o3", "o4", "gpt-5"))
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
         """Create LLM instance based on platform and settings"""
@@ -972,6 +1011,8 @@ class LLMManager:
             f"max_tokens={max_tokens}"
         )
         if platform == "azure":
+            from langchain_openai import AzureChatOpenAI
+
             api_version = str(model_settings.get('api_version'))
             is_reasoning = self._is_reasoning_model(model_name)
 
@@ -1046,8 +1087,10 @@ class LLMManager:
                 openai_params["http_client"] = httpx.Client(verify=ssl_verify)
                 openai_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
 
-            llm = ReasoningChatOpenAI(**openai_params)
+            llm = _get_reasoning_chat_openai()(**openai_params)
         elif platform == "groq":
+            from langchain_groq import ChatGroq
+
             api_key = None
             apikey_ref = model_settings.get("api_key")
             if apikey_ref:
@@ -1055,8 +1098,6 @@ class LLMManager:
             if not api_key:
                 api_key = _normalize_secret(resolve_secret("GROQ_API_KEY")) or os.environ.get("GROQ_API_KEY")
             logger.debug(f"Creating Groq model: {model_name}")
-            if ChatGroq is None:
-                raise ValueError("Groq provider requested but langchain_groq is not installed")
             groq_params: Dict[str, Any] = {
                 "groq_api_key": api_key,
                 "max_tokens": max_tokens,
@@ -1072,6 +1113,8 @@ class LLMManager:
             )
             llm = ChatGroq(**groq_params)
         elif platform == "watsonx":
+            from langchain_ibm import ChatWatsonx
+
             wx_gen_params: Dict[str, Any] = {
                 "temperature": temperature,
                 "max_completion_tokens": max_tokens,
@@ -1111,6 +1154,8 @@ class LLMManager:
             llm = ChatWatsonx(**watsonx_params)
             ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
+            from langchain_openai import ChatOpenAI
+
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
@@ -1132,6 +1177,8 @@ class LLMManager:
                 rits_params["top_p"] = model_settings.get('top_p', 1.0)
             llm = ChatOpenAI(**rits_params)
         elif platform == "rits-restricted":
+            from langchain_openai import ChatOpenAI
+
             api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
                 "RITS_API_KEY_RESTRICT"
             )
@@ -1145,6 +1192,8 @@ class LLMManager:
                 seed=42,
             )
         elif platform == "google-genai":
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
             logger.debug(f"Creating Google GenAI model: {model_name}")
             # Build ChatGoogleGenerativeAI parameters
 
@@ -1204,7 +1253,7 @@ class LLMManager:
             if default_headers:
                 openrouter_params["default_headers"] = default_headers
 
-            llm = ReasoningChatOpenAI(**openrouter_params)
+            llm = _get_reasoning_chat_openai()(**openrouter_params)
         elif platform == "minimax":
             logger.debug(f"Creating MiniMax model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
@@ -1239,8 +1288,8 @@ class LLMManager:
                     keys=("stop",),
                 )
 
-            llm = ReasoningChatOpenAI(**minimax_params)
-        elif platform == "litellm" and ReasoningChatLiteLLM is not None:
+            llm = _get_reasoning_chat_openai()(**minimax_params)
+        elif platform == "litellm" and _get_reasoning_chat_litellm() is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
             ssl_verify = self._get_ssl_verify(model_settings)
 
@@ -1299,7 +1348,7 @@ class LLMManager:
                         api_key = os.environ.get(apikey_name)
                 if api_key:
                     litellm_params["api_key"] = api_key
-            llm = ReasoningChatLiteLLM(**litellm_params)
+            llm = _get_reasoning_chat_litellm()(**litellm_params)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 

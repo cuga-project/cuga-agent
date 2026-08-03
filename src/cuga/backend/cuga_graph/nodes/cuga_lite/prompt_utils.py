@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
     "\n    \n    ⚠️ No declared output schema for this tool. Call it ALONE in its own "
@@ -96,13 +97,12 @@ class Tool(BaseModel):
 class FindToolsOutput(BaseModel):
     """
     Output schema for the find_tools function.
-    Returns a list of top 4 matching tools based on a natural language query.
+    Returns relevant matching tools for a natural language query (no fixed count).
     """
 
     tools: List[Tool] = Field(
         ...,
-        max_length=6,
-        description="A list of up to 4 matching tools, ordered by relevance to the query.",
+        description="Matching tools ordered by relevance to the query. Include all tools needed for the workflow.",
     )
 
 
@@ -224,7 +224,7 @@ class PromptUtils:
 
                 params_list = []
                 for name, prop in properties.items():
-                    param_type = prop.get('type', 'string')
+                    param_type = json_schema_type(prop)
                     type_mapping = {
                         'string': 'str',
                         'integer': 'int',
@@ -303,12 +303,11 @@ class PromptUtils:
         run_config: Optional[Any] = None,
     ) -> str:
         """
-        Search tools from given applications and return the top 4 matching tools with reasoning.
+        Search tools from given applications and return the relevant matching tools with reasoning.
 
         This method uses an LLM to analyze available tools from all loaded applications and
-        select the most relevant ones based on a natural language query. Each returned tool
-        includes detailed reasoning explaining why it was selected, along with parameter
-        and response documentation.
+        select the ones needed for the query (including chaining). No fixed result count.
+        Each returned tool includes reasoning plus parameter and response documentation.
 
         Args:
             query: A natural language query describing what tools are needed.
@@ -316,7 +315,7 @@ class PromptUtils:
             all_apps: List of all available app definitions
 
         Returns:
-            str: A markdown-formatted string containing up to 4 matching tools, each with:
+            str: A markdown-formatted string of matching tools, each with:
                  - name: The tool name
                  - reasoning: Explanation of why this tool is relevant
                  - parameters: Formatted parameter documentation

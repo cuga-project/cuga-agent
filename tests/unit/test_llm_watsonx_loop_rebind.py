@@ -65,7 +65,7 @@ def test_rebind_tags_then_replaces_async_client_across_loops():
     async def first_loop():
         loops_seen.append(asyncio.get_running_loop())
         with (
-            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch("langchain_ibm.ChatWatsonx", _DummyWatsonx),
             patch(
                 "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
                 return_value=new_client,
@@ -82,7 +82,7 @@ def test_rebind_tags_then_replaces_async_client_across_loops():
     async def second_loop():
         loops_seen.append(asyncio.get_running_loop())
         with (
-            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch("langchain_ibm.ChatWatsonx", _DummyWatsonx),
             patch(
                 "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
                 return_value=new_client,
@@ -140,7 +140,7 @@ def test_aclose_watsonx_async_clients_on_owning_loop():
 
     async def _run():
         with (
-            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch("langchain_ibm.ChatWatsonx", _DummyWatsonx),
             patch(
                 "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
                 return_value=fresh,
@@ -168,7 +168,7 @@ def test_rebind_replaces_closed_client_even_on_same_loop():
 
     async def _run():
         with (
-            patch("cuga.backend.llm.models.ChatWatsonx", _DummyWatsonx),
+            patch("langchain_ibm.ChatWatsonx", _DummyWatsonx),
             patch(
                 "ibm_watsonx_ai._wrappers.httpx_wrapper._get_async_httpx_client",
                 return_value=fresh,

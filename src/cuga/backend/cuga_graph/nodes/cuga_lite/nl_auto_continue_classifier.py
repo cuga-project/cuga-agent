@@ -17,20 +17,34 @@ You receive one transcript that concatenates:
 1) Assistant content — user-visible reply (may be empty)
 2) Reasoning — internal chain-of-thought when the platform provides it (may be empty)
 
-Read the full transcript. Do not decide from reasoning alone: if the visible content is already a complete, substantive answer, use auto_continue false even when reasoning mentions extra steps. Do not ignore reasoning when visible content is empty or a vague one-liner.
+Read the FULL transcript end-to-end (not only the opening sentence). Do not decide from reasoning alone. Do not ignore reasoning when visible content is empty or a vague one-liner.
 
 Return ONLY JSON, no markdown, no prose: {"auto_continue": true} or {"auto_continue": false}
 
-Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution (interim status, incompleteness, upcoming tool calls in reasoning).
+Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution:
+- interim status / incompleteness
+- phase-complete narration that then announces the next phase the agent will do itself
+- upcoming tool calls, searches, listings, discoveries, or inspections (even if phrased as “I will / I’ll …”)
+- multi-step plans where the announced work has not been executed yet in this turn (no code ran)
 
-Use auto_continue false when the combined picture is an appropriate completed turn: final answer, user question, refusal, error explanation, or clear stop. Also false when the turn needs something from the user — a question, missing input, or a choice — regardless of how much future work it mentions.
+Important: a completed *sub-step* plus “next I will / proceed to / mark that phase complete and …” is still interim → true. Do NOT finalize just because an earlier clause reports counts or “X is complete” if later text clearly continues the overall task.
+
+Use auto_continue false when the combined picture is an appropriate completed turn OR a hard stop:
+- final answer / result with no further agent-owned work announced
+- user question, missing input, or a choice the user must make
+- refusal, fatal error, or explicit inability to continue (tools missing, environment unavailable, blocked)
+- if ANY clause says the agent cannot / is unable to continue (or tools are not available), prefer false even when earlier sentences described a plan
 
 Examples (visible content → decision):
 - "We need to search student_loan app." → {"auto_continue": true} — interim plan; the work it announces has not happened.
 - "Let me perform the second phase." → {"auto_continue": true} — interim status before more execution.
+- "The export is complete: 12 saved tracks, 6 saved albums, and 6 ordered playlists. I’ll mark that phase complete and proceed to account setup discovery." → {"auto_continue": true} — sub-phase done, but the agent announces the next phase it will run itself.
+- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads, using the supplied current date as the search boundary. The directory listing and email-thread search are independent, so I’ll retrieve both and retain every matching thread page for detailed inspection." → {"auto_continue": true} — pure forward plan; no code yet.
+- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable.
 - "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan.
 - "I could not find any matching loans." → {"auto_continue": false} — a result, not a plan.
-- "Which account should I use?" → {"auto_continue": false} — clarifying question."""
+- "Which account should I use?" → {"auto_continue": false} — clarifying question.
+- "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
