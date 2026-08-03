@@ -50,8 +50,10 @@ class VariableMetadata:
     def _tagged_set_kind(value: Any) -> Optional[str]:
         if not isinstance(value, dict):
             return None
+        if value.get("__cuga_enc__") is not True:
+            return None
         kind = value.get("__set_type__")
-        if kind in ("set", "frozenset") and set(value.keys()) == {"__set_type__", "items"}:
+        if kind in ("set", "frozenset") and set(value.keys()) == {"__set_type__", "items", "__cuga_enc__"}:
             return kind
         return None
 

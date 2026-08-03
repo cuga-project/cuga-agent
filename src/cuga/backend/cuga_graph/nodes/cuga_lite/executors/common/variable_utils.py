@@ -6,10 +6,30 @@ from loguru import logger
 _TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
 _SET_TYPE_KEY = "__set_type__"
 _TUPLE_TYPE_KEY = "__tuple_type__"
+# Marks envelopes we created so ordinary user dicts with the same keys stay dicts.
+_ENC_KEY = "__cuga_enc__"
 
 
 class VariableUtils:
     """Utilities for managing variables during code execution."""
+
+    @staticmethod
+    def _is_set_tag(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_SET_TYPE_KEY) in ("set", "frozenset")
+            and set(value.keys()) == {_SET_TYPE_KEY, "items", _ENC_KEY}
+        )
+
+    @staticmethod
+    def _is_tuple_tag(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_TUPLE_TYPE_KEY) == "tuple"
+            and set(value.keys()) == {_TUPLE_TYPE_KEY, "items", _ENC_KEY}
+        )
 
     @staticmethod
     def strip_todo_confirmation_only_vars(new_vars: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +131,9 @@ class VariableUtils:
 
         # --- containers ---
         if isinstance(obj, dict):
+            # Already-encoded envelopes from a prior sanitize — leave intact.
+            if VariableUtils._is_set_tag(obj) or VariableUtils._is_tuple_tag(obj):
+                return obj
             return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [VariableUtils._sanitize_recursive(v) for v in obj]
@@ -118,11 +141,13 @@ class VariableUtils:
             return {
                 _SET_TYPE_KEY: "set",
                 "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
             }
         if isinstance(obj, frozenset):
             return {
                 _SET_TYPE_KEY: "frozenset",
                 "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
             }
 
         return obj
@@ -134,23 +159,46 @@ class VariableUtils:
             return {
                 _TUPLE_TYPE_KEY: "tuple",
                 "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
             }
         return VariableUtils._sanitize_recursive(obj)
+
+    @staticmethod
+    def _hydrate_mapping(value: dict) -> Any:
+        """Hydrate dict values; preserve identity when nothing changes."""
+        out = {}
+        changed = False
+        for k, v in value.items():
+            hv = VariableUtils.hydrate_value(v)
+            if hv is not v:
+                changed = True
+            out[k] = hv
+        return out if changed else value
+
+    @staticmethod
+    def _hydrate_sequence(value: list) -> Any:
+        """Hydrate list values; preserve identity when nothing changes."""
+        out = []
+        changed = False
+        for v in value:
+            hv = VariableUtils.hydrate_value(v)
+            if hv is not v:
+                changed = True
+            out.append(hv)
+        return out if changed else value
 
     @staticmethod
     def hydrate_value(value: Any) -> Any:
         """Restore set/frozenset/tuple tags produced by sanitize_value."""
         if isinstance(value, dict):
-            keys = set(value.keys())
-            set_kind = value.get(_SET_TYPE_KEY)
-            if set_kind in ("set", "frozenset") and keys == {_SET_TYPE_KEY, "items"}:
+            if VariableUtils._is_set_tag(value):
                 items = [VariableUtils.hydrate_value(v) for v in value["items"]]
-                return set(items) if set_kind == "set" else frozenset(items)
-            if value.get(_TUPLE_TYPE_KEY) == "tuple" and keys == {_TUPLE_TYPE_KEY, "items"}:
+                return set(items) if value[_SET_TYPE_KEY] == "set" else frozenset(items)
+            if VariableUtils._is_tuple_tag(value):
                 return tuple(VariableUtils.hydrate_value(v) for v in value["items"])
-            return {k: VariableUtils.hydrate_value(v) for k, v in value.items()}
+            return VariableUtils._hydrate_mapping(value)
         if isinstance(value, list):
-            return [VariableUtils.hydrate_value(v) for v in value]
+            return VariableUtils._hydrate_sequence(value)
         return value
 
     @staticmethod

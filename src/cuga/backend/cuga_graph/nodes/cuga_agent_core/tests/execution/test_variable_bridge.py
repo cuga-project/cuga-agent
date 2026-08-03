@@ -58,7 +58,7 @@ def test_extract_values_hydrates_tagged_sets():
 
     storage = {
         "emails": {
-            "value": {"__set_type__": "set", "items": ["a@x.com", "b@y.com"]},
+            "value": {"__set_type__": "set", "items": ["a@x.com", "b@y.com"], "__cuga_enc__": True},
             "type": "set",
             "created_at": "...",
             "count_items": 2,

@@ -61,6 +61,7 @@ class TestFilterNewVariables:
             'my_set': {1, 2, 3},
             'my_frozenset': frozenset({4, 5}),
             'nested_set': {1, (2, 3)},
+            'deep_nested_set': {((1, 2), 3)},
             'set_of_unserializable': {object()},
         }
 
@@ -70,6 +71,7 @@ class TestFilterNewVariables:
         assert VariableUtils.hydrate_value(round_tripped['my_set']) == {1, 2, 3}
         assert VariableUtils.hydrate_value(round_tripped['my_frozenset']) == frozenset({4, 5})
         assert VariableUtils.hydrate_value(round_tripped['nested_set']) == {1, (2, 3)}
+        assert VariableUtils.hydrate_value(round_tripped['deep_nested_set']) == {((1, 2), 3)}
         assert 'set_of_unserializable' not in result
 
     @pytest.mark.unit
@@ -85,6 +87,34 @@ class TestFilterNewVariables:
         assert restored["emails"] == original["emails"]
         assert restored["nested"] == original["nested"]
         assert restored["frozen"] == original["frozen"]
+
+    @pytest.mark.unit
+    def test_tag_shaped_user_dicts_round_trip_as_dicts(self):
+        """Ordinary dicts matching reserved tag shapes must not become sets/tuples."""
+        originals = {
+            "looks_like_set": {"__set_type__": "set", "items": [1, 2, 3]},
+            "looks_like_frozenset": {"__set_type__": "frozenset", "items": ["a"]},
+            "looks_like_tuple": {"__tuple_type__": "tuple", "items": [1, 2]},
+        }
+        sanitized = VariableUtils.sanitize_value(originals)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert restored == originals
+        assert isinstance(restored["looks_like_set"], dict)
+
+    @pytest.mark.unit
+    def test_hydrate_preserves_plain_container_identity(self):
+        """In-place mutations must hit the stored object when no tags are present."""
+        state = AgentState(input="test", url="")
+        state.variables_manager.add_variable([1], name="lst")
+        state.variables_manager.add_variable({"a": 1}, name="d")
+        got_list = state.variables_manager.get_variable("lst")
+        got_dict = state.variables_manager.get_variable("d")
+        assert got_list is state.variables_storage["lst"]["value"]
+        assert got_dict is state.variables_storage["d"]["value"]
+        got_list.append(2)
+        got_dict["b"] = 2
+        assert state.variables_manager.get_variable("lst") == [1, 2]
+        assert state.variables_manager.get_variable("d") == {"a": 1, "b": 2}
 
     @pytest.mark.unit
     def test_is_serializable_accepts_sets(self):
