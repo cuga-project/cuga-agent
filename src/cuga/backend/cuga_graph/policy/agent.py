@@ -515,6 +515,18 @@ Which policy (if any) best matches the context above?"""
 
 Which policy (if any) best matches the user's intent?"""
 
+    @staticmethod
+    def _fallback_confidence(nl_triggers: List[NaturalLanguageTrigger]) -> float:
+        """Confidence for non-LLM fallback selection.
+
+        Must be >= the policy's NL threshold, otherwise
+        ``_evaluate_natural_language_policies`` discards the fallback match.
+        """
+        thresholds = [t.threshold for t in nl_triggers if hasattr(t, "threshold")]
+        if thresholds:
+            return min(thresholds)
+        return 0.5
+
     async def _resolve_nl_trigger_conflicts(
         self,
         policies_with_nl_triggers: List[tuple[Policy, List[NaturalLanguageTrigger]]],
@@ -559,10 +571,13 @@ Which policy (if any) best matches the user's intent?"""
             logger.warning(f"    - Query text available: {query_text is not None}")
             if policies_with_nl_triggers:
                 policy, triggers = policies_with_nl_triggers[0]
-                logger.debug(f"  - Falling back to first policy: '{policy.name}'")
+                confidence = self._fallback_confidence(triggers)
+                logger.debug(
+                    f"  - Falling back to first policy: '{policy.name}' (confidence={confidence:.2f})"
+                )
                 return (
                     policy,
-                    0.5,
+                    confidence,
                     "No LLM or query text available for conflict resolution, using first policy",
                 )
             logger.debug("  - No policies to resolve, returning None")
@@ -625,8 +640,26 @@ Provide:
             # server-side by IBM Watsonx. The default (function_calling) returns None on
             # gpt-oss-120b when it emits no tool call, which raised AttributeError below and
             # silently dropped the policy match.
+            # Retry once on parse failures — intermittent empty/invalid JSON is a known flake.
             structured_llm = self.llm.with_structured_output(PolicyConflictResolution, method="json_schema")
-            result: PolicyConflictResolution = await structured_llm.ainvoke(messages)
+            result: Optional[PolicyConflictResolution] = None
+            last_error: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    result = await structured_llm.ainvoke(messages)
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt == 0:
+                        logger.warning(
+                            f"⚠️  LLM conflict resolution attempt {attempt + 1} failed "
+                            f"({type(e).__name__}: {e}); retrying once"
+                        )
+                        continue
+                    raise
+
+            if result is None:
+                raise last_error or RuntimeError("LLM conflict resolution returned no result")
 
             logger.debug("  - Received structured LLM response:")
             logger.debug(f"    - matched_policy_index: {result.matched_policy_index}")
@@ -674,11 +707,13 @@ Provide:
             import traceback
 
             logger.debug(f"    - Traceback: {traceback.format_exc()}")
-            # Fallback: return first policy
+            # Fallback: return first policy with confidence that still clears its threshold.
+            # Hardcoded 0.5 previously caused matches to be discarded when threshold is 0.7 (#577).
             if policies_with_nl_triggers:
-                policy, _ = policies_with_nl_triggers[0]
-                logger.debug(f"    - Falling back to first policy: '{policy.name}'")
-                return policy, 0.5, f"Error in conflict resolution, using first policy: {e}"
+                policy, triggers = policies_with_nl_triggers[0]
+                confidence = self._fallback_confidence(triggers)
+                logger.warning(f"Falling back to first policy: '{policy.name}' (confidence={confidence:.2f})")
+                return policy, confidence, f"Error in conflict resolution, using first policy: {e}"
             logger.debug("    - No policies available for fallback, returning None")
             return None
 
