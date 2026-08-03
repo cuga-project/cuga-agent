@@ -6,9 +6,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.policy.models import (
     AlwaysTrigger,
     AppTrigger,
@@ -626,40 +628,22 @@ Provide:
                 policy_types=policy_types,
             )
 
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
-
             logger.debug("  - Sending request to LLM for conflict resolution")
             logger.debug(f"    User prompt length: {len(user_prompt)} chars")
             logger.debug(f"    Number of policies in prompt: {len(policies_with_nl_triggers)}")
 
-            # Use structured output for reliable JSON parsing.
-            # method="json_schema" (matching OutputFormatter in enactment.py) is enforced
-            # server-side by IBM Watsonx. The default (function_calling) returns None on
-            # gpt-oss-120b when it emits no tool call, which raised AttributeError below and
-            # silently dropped the policy match.
-            # Retry once on parse failures — intermittent empty/invalid JSON is a known flake.
-            structured_llm = self.llm.with_structured_output(PolicyConflictResolution, method="json_schema")
-            result: Optional[PolicyConflictResolution] = None
-            last_error: Optional[Exception] = None
-            for attempt in range(2):
-                try:
-                    result = await structured_llm.ainvoke(messages)
-                    break
-                except Exception as e:
-                    last_error = e
-                    if attempt == 0:
-                        logger.warning(
-                            f"⚠️  LLM conflict resolution attempt {attempt + 1} failed "
-                            f"({type(e).__name__}: {e}); retrying once"
-                        )
-                        continue
-                    raise
-
-            if result is None:
-                raise last_error or RuntimeError("LLM conflict resolution returned no result")
+            # Reuse BaseAgent structured-output chain: json_schema with json_mode
+            # fallback on missing parsed/refusal, plus with_retry(stop_after_attempt=3).
+            prompt_template = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_prompt),
+                    ("human", "{user_prompt}"),
+                ]
+            )
+            chain = BaseAgent.get_chain(prompt_template, self.llm, PolicyConflictResolution)
+            result = await chain.ainvoke({"user_prompt": user_prompt})
+            if isinstance(result, dict):
+                result = PolicyConflictResolution(**result)
 
             logger.debug("  - Received structured LLM response:")
             logger.debug(f"    - matched_policy_index: {result.matched_policy_index}")

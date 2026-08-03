@@ -1,8 +1,9 @@
 """Unit tests: NL conflict-resolution fallback must still produce a policy match."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from langchain_core.exceptions import OutputParserException
-from unittest.mock import AsyncMock, MagicMock
 
 from cuga.backend.cuga_graph.policy.agent import (
     PolicyAgent,
@@ -31,12 +32,13 @@ def _playbook() -> Playbook:
     )
 
 
-def _llm_with_structured(side_effect_or_result):
-    structured = MagicMock()
-    structured.ainvoke = AsyncMock(side_effect=side_effect_or_result)
-    llm = MagicMock()
-    llm.with_structured_output = MagicMock(return_value=structured)
-    return llm, structured
+def _chain_mock(*, return_value=None, side_effect=None):
+    chain = MagicMock()
+    if side_effect is not None:
+        chain.ainvoke = AsyncMock(side_effect=side_effect)
+    else:
+        chain.ainvoke = AsyncMock(return_value=return_value)
+    return chain
 
 
 @pytest.mark.unit
@@ -54,23 +56,28 @@ async def test_conflict_resolution_error_fallback_meets_threshold():
         playbook = _playbook()
         await storage.add_policy(playbook)
 
-        llm, structured = _llm_with_structured(
-            OutputParserException("Invalid json output:\nOUTPUT_PARSING_FAILURE")
-        )
-        agent = PolicyAgent(storage=storage, llm=llm, embedding_function=None)
+        agent = PolicyAgent(storage=storage, llm=MagicMock(), embedding_function=None)
         context = PolicyContext(
             user_input="get my daughter's claims",
             chat_messages=[],
             sub_task="",
             agent_response="",
         )
+        chain = _chain_mock(side_effect=OutputParserException("Invalid json output:\nOUTPUT_PARSING_FAILURE"))
 
-        resolution = await agent._resolve_nl_trigger_conflicts(
-            [(playbook, playbook.triggers)],
-            context,
-            target="intent",
-            target_text=context.user_input,
-        )
+        with patch(
+            "cuga.backend.cuga_graph.policy.agent.BaseAgent.get_chain",
+            return_value=chain,
+        ) as get_chain:
+            resolution = await agent._resolve_nl_trigger_conflicts(
+                [(playbook, playbook.triggers)],
+                context,
+                target="intent",
+                target_text=context.user_input,
+            )
+            get_chain.assert_called_once()
+            assert get_chain.call_args.args[2] is PolicyConflictResolution
+
         assert resolution is not None, "Fallback should select first policy on LLM parse error"
         resolved_policy, confidence, reasoning = resolution
         assert resolved_policy.name == "Family Healthcare Plan Navigation"
@@ -78,9 +85,12 @@ async def test_conflict_resolution_error_fallback_meets_threshold():
             f"Fallback confidence {confidence} must meet trigger threshold 0.7 "
             f"(otherwise evaluate path rejects the match). Reasoning: {reasoning}"
         )
-        assert structured.ainvoke.await_count == 2, "Should retry once before falling back"
 
-        evaluated = await agent._evaluate_natural_language_policies("intent", context)
+        with patch(
+            "cuga.backend.cuga_graph.policy.agent.BaseAgent.get_chain",
+            return_value=chain,
+        ):
+            evaluated = await agent._evaluate_natural_language_policies("intent", context)
         assert evaluated is not None, (
             "NL evaluation must match after conflict-resolution parse failure "
             "(fallback was discarding matches with confidence 0.5 < threshold 0.7)"
@@ -94,9 +104,9 @@ async def test_conflict_resolution_error_fallback_meets_threshold():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_conflict_resolution_retries_then_succeeds():
-    """Parse failure on first attempt should retry and accept a valid second response."""
-    storage = PolicyStorage(collection_name="test_nl_conflict_retry")
+async def test_conflict_resolution_uses_base_agent_chain_result():
+    """Successful BaseAgent.get_chain structured output is used as the match."""
+    storage = PolicyStorage(collection_name="test_nl_conflict_chain_ok")
     await storage.initialize_async()
 
     try:
@@ -108,31 +118,33 @@ async def test_conflict_resolution_retries_then_succeeds():
             confidence=0.9,
             reasoning="Matches family claims playbook",
         )
-        llm, structured = _llm_with_structured(
-            [
-                OutputParserException("Invalid json output:\nOUTPUT_PARSING_FAILURE"),
-                success,
-            ]
-        )
-        agent = PolicyAgent(storage=storage, llm=llm, embedding_function=None)
+        agent = PolicyAgent(storage=storage, llm=MagicMock(), embedding_function=None)
         context = PolicyContext(
             user_input="get my daughter's claims",
             chat_messages=[],
             sub_task="",
             agent_response="",
         )
+        chain = _chain_mock(return_value=success)
 
-        resolution = await agent._resolve_nl_trigger_conflicts(
-            [(playbook, playbook.triggers)],
-            context,
-            target="intent",
-            target_text=context.user_input,
-        )
+        with patch(
+            "cuga.backend.cuga_graph.policy.agent.BaseAgent.get_chain",
+            return_value=chain,
+        ) as get_chain:
+            resolution = await agent._resolve_nl_trigger_conflicts(
+                [(playbook, playbook.triggers)],
+                context,
+                target="intent",
+                target_text=context.user_input,
+            )
+            get_chain.assert_called_once()
+            assert get_chain.call_args.args[2] is PolicyConflictResolution
+
         assert resolution is not None
         resolved_policy, confidence, reasoning = resolution
         assert resolved_policy.name == "Family Healthcare Plan Navigation"
         assert confidence == 0.9
         assert "LLM conflict resolution" in reasoning
-        assert structured.ainvoke.await_count == 2
+        chain.ainvoke.assert_awaited_once()
     finally:
         await storage.disconnect()
