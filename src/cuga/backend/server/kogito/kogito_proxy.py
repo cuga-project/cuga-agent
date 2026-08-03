@@ -59,7 +59,14 @@ load_dotenv(find_dotenv(usecwd=True))
 # 8081, not Quarkus's default 8080 — that port belongs to the Flowable demo container.
 # Real values belong in .env (KOGITO_* keys) or the app's workflow_engine.url.
 _FALLBACK_BASE_URL = "http://localhost:8081"
-_FALLBACK_TIMEOUT = 30.0
+# `POST /{processId}` is SYNCHRONOUS for an automated process: Kogito does not answer until
+# the whole process has finished. Every CUGA FLO control point on the way is an LLM call of
+# 10-60s, so a modest process routinely needs minutes end to end.
+#
+# A timeout here does not cancel anything — Kogito runs the instance to completion regardless,
+# while CUGA sees a failure and a supervisor may retry, producing two concurrent instances for
+# one invocation. Keep this well above the worst-case sum of the control points.
+_FALLBACK_TIMEOUT = 600.0
 
 
 class KogitoError(RuntimeError):
@@ -166,6 +173,11 @@ class KogitoProxy:
 
         For a fully-automated process (script/service tasks only) Kogito runs it to
         completion inside this call and the response body holds the terminal variables.
+
+        That makes this call as long as the whole process. Timing out here does **not**
+        cancel the instance — Kogito finishes it regardless, so a caller that treats the
+        timeout as a failure and retries ends up with two concurrent instances for one
+        invocation. See ``_FALLBACK_TIMEOUT``.
         """
         params = {"businessKey": business_key} if business_key else None
         result = self._request("POST", f"/{process_id}", json=variables or {}, params=params)

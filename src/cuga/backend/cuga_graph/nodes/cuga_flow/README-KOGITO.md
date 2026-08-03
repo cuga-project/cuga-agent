@@ -288,6 +288,7 @@ hooks and the gateway split.
 | *"Could not communicate with runtime"* | CORS. Rebuild so `quarkus.http.cors=true` is in `application.properties`, and restart the app. Confirm with a preflight (below). |
 | *"missing the kogito.service.url property"*, or *"Error fetching data"* on opening an instance | `kogito.service.url` unset, so instances record `serviceUrl: null` and the console has no base URL to call back on. Rebuild and restart. |
 | Connects, but no instances | Data Index is per-service-lifetime — a restart clears history. Run a process, then reload. |
+| Two instances for one invocation | `KOGITO_TIMEOUT` shorter than the process. `POST /{processId}` is synchronous, and timing out does not cancel the instance — CUGA sees a failure, a supervisor retries, and both run. Default is 600s; raise it further for long processes. |
 | Timeline order looks wrong | Deterministic nodes tie at millisecond `enter` granularity and cannot be ordered — see [Reading the timeline](#reading-the-timeline). |
 | Console very slow | The image is amd64 only; on Apple Silicon it runs under emulation. |
 
