@@ -1,223 +1,456 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Loan Approval Process — Kogito port of the CUGA FLO Flowable model.
-
-  The Kogito counterpart of Loan-Approval-Process.bpmn20.xml in loan_approval/config/.
-  This file is the source of truth: scripts/build_kogito_app.sh picks up *-kogito.bpmn
-  from this directory and compiles it into a Quarkus service under build/kogito/.
-  BPMNdiagram.bpmn beside it stays the clean model that CUGA FLO parses for its own
-  process knowledge.
-
-  Start
-    -> Task_Hook_Flow_1e5ztf6    hook: screen before credit check
-    -> Activity_0oydey5          task agent: check credit  -> credit_score
-    -> Activity_RouteGateway     decision agent            -> gatewayDecision
-    -> Gateway_09ad5fc
-         gatewayDecision == Flow_0ybszcv -> Task_Hook_Flow_0ybszcv -> Activity_1h9ix55 (give loan)
-         gatewayDecision == Flow_1jgea85 ->                          Activity_131ar38 (reject)
-    -> Gateway_15y9k7z (merge)
-    -> Task_CompleteProcess      hands terminal state back to FlowAgent
-    -> End
-
-  Two differences from the Flowable model, both forced by Kogito (see the cuga-kogito README):
-    * Hooks are plain script tasks. No boundary error event, no BpmnError, no shared
-      Task_DynamicSkip — Kogito rejects boundary events on script tasks, and FlowRedirect
-      performs the jump directly, so that machinery is unnecessary.
-    * Scripts are one-liners delegating to org.cuga.CugaFlo / org.cuga.FlowRedirect,
-      because Kogito's validator rejects Java FQNs inside <bpmn2:script>.
--->
-<bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.omg.org/bpmn20" xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:drools="http://www.jboss.org/drools" id="_loanApproval" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd http://www.jboss.org/drools drools.xsd http://www.omg.org/spec/DD/20100524/DC DC.xsd http://www.omg.org/spec/DD/20100524/DI DI.xsd " exporter="hand-written" exporterVersion="1.0" targetNamespace="http://www.omg.org/bpmn20">
-  <bpmn2:itemDefinition id="_stringItem" structureRef="String"/>
-  <bpmn2:itemDefinition id="_floatItem" structureRef="Float"/>
-  <bpmn2:itemDefinition id="_integerItem" structureRef="Integer"/>
-
-  <bpmn2:process id="loan_approval" drools:packageName="org.cuga" drools:version="1.0" drools:adHoc="false" name="loan_approval" isExecutable="true">
+<bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:bpsim="http://www.bpsim.org/schemas/1.0" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:drools="http://www.jboss.org/drools" id="_TFg80HFDED-RmaOPyUuH8Q" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd http://www.jboss.org/drools drools.xsd http://www.bpsim.org/schemas/1.0 bpsim.xsd http://www.omg.org/spec/DD/20100524/DC DC.xsd http://www.omg.org/spec/DD/20100524/DI DI.xsd " exporter="jBPM Process Modeler" exporterVersion="2.0" targetNamespace="http://www.omg.org/bpmn20">
+  <bpmn2:itemDefinition id="_applicant_nameItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_applicant_idItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_loan_amountItem" structureRef="Integer"/>
+  <bpmn2:itemDefinition id="_credit_historyItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_incomeItem" structureRef="Integer"/>
+  <bpmn2:itemDefinition id="_employment_yearsItem" structureRef="Integer"/>
+  <bpmn2:itemDefinition id="_credit_scoreItem" structureRef="Float"/>
+  <bpmn2:itemDefinition id="_decisionItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_manager_informedItem" structureRef="Boolean"/>
+  <bpmn2:itemDefinition id="_cugaProcessKeyItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_cugaMcpUrlItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="_gatewayDecisionItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="__user_messageItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="__hookActionItem" structureRef="String"/>
+  <bpmn2:itemDefinition id="__haltReasonItem" structureRef="String"/>
+  <bpmn2:collaboration id="_95D5356F-786A-4F98-BD71-CE6A5EA546CB" name="Default Collaboration">
+    <bpmn2:participant id="_F50C7B0D-E04E-46C1-94B9-EAA0E70B973C" name="Pool Participant" processRef="loan_approval"/>
+  </bpmn2:collaboration>
+  <bpmn2:process id="loan_approval" drools:packageName="org.cuga" drools:version="1.0" drools:adHoc="false" name="loan_approval" isExecutable="true" processType="Public">
     <bpmn2:extensionElements>
       <drools:import name="org.cuga.CugaFlo"/>
       <drools:import name="org.cuga.FlowRedirect"/>
     </bpmn2:extensionElements>
-
-    <!-- Inputs -->
-    <bpmn2:property id="applicant_name" itemSubjectRef="_stringItem" name="applicant_name"/>
-    <bpmn2:property id="applicant_id" itemSubjectRef="_stringItem" name="applicant_id"/>
-    <bpmn2:property id="loan_amount" itemSubjectRef="_integerItem" name="loan_amount"/>
-    <bpmn2:property id="credit_history" itemSubjectRef="_stringItem" name="credit_history"/>
-    <bpmn2:property id="income" itemSubjectRef="_integerItem" name="income"/>
-    <bpmn2:property id="employment_years" itemSubjectRef="_integerItem" name="employment_years"/>
-    <!-- Outputs -->
-    <bpmn2:property id="credit_score" itemSubjectRef="_floatItem" name="credit_score"/>
-    <bpmn2:property id="decision" itemSubjectRef="_stringItem" name="decision"/>
-    <!-- CUGA FLO control variables. Every variable must be declared: Kogito's process
-         model is generated and strongly typed, so undeclared names cannot be written. -->
-    <bpmn2:property id="cugaProcessKey" itemSubjectRef="_stringItem" name="cugaProcessKey"/>
-    <bpmn2:property id="cugaMcpUrl" itemSubjectRef="_stringItem" name="cugaMcpUrl"/>
-    <bpmn2:property id="gatewayDecision" itemSubjectRef="_stringItem" name="gatewayDecision"/>
-    <bpmn2:property id="_user_message" itemSubjectRef="_stringItem" name="_user_message"/>
-    <bpmn2:property id="_hookAction" itemSubjectRef="_stringItem" name="_hookAction"/>
-    <bpmn2:property id="_haltReason" itemSubjectRef="_stringItem" name="_haltReason"/>
-
-    <bpmn2:startEvent id="StartEvent_0bpt8wp" name="Start">
-      <bpmn2:outgoing>Flow_StartToHook</bpmn2:outgoing>
-    </bpmn2:startEvent>
-
-    <!-- Hook on Flow_1e5ztf6: screen the application before the credit check runs. -->
-    <bpmn2:scriptTask id="Task_Hook_Flow_1e5ztf6" name="CUGA FLO hook: pre credit check" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_StartToHook</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_1e5ztf6</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_1e5ztf6", "pre credit check", "Task_CompleteProcess"));]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:scriptTask id="Activity_0oydey5" name="check credit" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_1e5ztf6</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_1ji6b0i</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[CugaFlo.executeTask(kcontext, "Activity_0oydey5", "check credit");]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:scriptTask id="Activity_RouteGateway" name="route gateway decision" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_1ji6b0i</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_RouteToGateway</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[CugaFlo.routeGateway(kcontext, "Gateway_09ad5fc", "credit decision", "[{\"id\":\"Flow_0ybszcv\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_1h9ix55\",\"name\":\"yes\",\"condition\":null},{\"id\":\"Flow_1jgea85\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_131ar38\",\"name\":\"no\",\"condition\":null}]", "gatewayDecision");]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:exclusiveGateway id="Gateway_09ad5fc" name="credit decision" gatewayDirection="Diverging">
-      <bpmn2:incoming>Flow_RouteToGateway</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_0ybszcv</bpmn2:outgoing>
-      <bpmn2:outgoing>Flow_1jgea85</bpmn2:outgoing>
-    </bpmn2:exclusiveGateway>
-
-    <!-- Hook on Flow_0ybszcv: intercept the approval branch before the loan is granted. -->
-    <bpmn2:scriptTask id="Task_Hook_Flow_0ybszcv" name="CUGA FLO hook: approval intercept" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_0ybszcv</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_HookToLoan</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_0ybszcv", "approval intercept", "Task_CompleteProcess"));]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_HookToLoan</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_0uwnw59</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "give loan");]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:scriptTask id="Activity_131ar38" name="send a rejection letter" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_1jgea85</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_1ow7aj3</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[kcontext.setVariable("decision", "reject loan");]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:exclusiveGateway id="Gateway_15y9k7z" name="merge" gatewayDirection="Converging">
-      <bpmn2:incoming>Flow_0uwnw59</bpmn2:incoming>
-      <bpmn2:incoming>Flow_1ow7aj3</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_MergeToComplete</bpmn2:outgoing>
-    </bpmn2:exclusiveGateway>
-
-    <!-- Terminal callback. Also the TERMINATE target for both hooks, so a halted process
-         still reports back and FlowAgent.invoke() is never left awaiting its future. -->
-    <bpmn2:scriptTask id="Task_CompleteProcess" name="CUGA FLO complete process" scriptFormat="http://www.java.com/java">
-      <bpmn2:incoming>Flow_MergeToComplete</bpmn2:incoming>
-      <bpmn2:outgoing>Flow_0g1hmhe</bpmn2:outgoing>
-      <bpmn2:script><![CDATA[CugaFlo.completeProcess(kcontext);]]></bpmn2:script>
-    </bpmn2:scriptTask>
-
-    <bpmn2:endEvent id="Event_13axbio" name="End">
-      <bpmn2:incoming>Flow_0g1hmhe</bpmn2:incoming>
-    </bpmn2:endEvent>
-
+    <bpmn2:property id="applicant_name" itemSubjectRef="_applicant_nameItem" name="applicant_name"/>
+    <bpmn2:property id="applicant_id" itemSubjectRef="_applicant_idItem" name="applicant_id"/>
+    <bpmn2:property id="loan_amount" itemSubjectRef="_loan_amountItem" name="loan_amount"/>
+    <bpmn2:property id="credit_history" itemSubjectRef="_credit_historyItem" name="credit_history"/>
+    <bpmn2:property id="income" itemSubjectRef="_incomeItem" name="income"/>
+    <bpmn2:property id="employment_years" itemSubjectRef="_employment_yearsItem" name="employment_years"/>
+    <bpmn2:property id="credit_score" itemSubjectRef="_credit_scoreItem" name="credit_score"/>
+    <bpmn2:property id="decision" itemSubjectRef="_decisionItem" name="decision"/>
+    <bpmn2:property id="manager_informed" itemSubjectRef="_manager_informedItem" name="manager_informed"/>
+    <bpmn2:property id="cugaProcessKey" itemSubjectRef="_cugaProcessKeyItem" name="cugaProcessKey"/>
+    <bpmn2:property id="cugaMcpUrl" itemSubjectRef="_cugaMcpUrlItem" name="cugaMcpUrl"/>
+    <bpmn2:property id="gatewayDecision" itemSubjectRef="_gatewayDecisionItem" name="gatewayDecision"/>
+    <bpmn2:property id="_user_message" itemSubjectRef="__user_messageItem" name="_user_message"/>
+    <bpmn2:property id="_hookAction" itemSubjectRef="__hookActionItem" name="_hookAction"/>
+    <bpmn2:property id="_haltReason" itemSubjectRef="__haltReasonItem" name="_haltReason"/>
     <bpmn2:sequenceFlow id="Flow_StartToHook" sourceRef="StartEvent_0bpt8wp" targetRef="Task_Hook_Flow_1e5ztf6"/>
     <bpmn2:sequenceFlow id="Flow_1e5ztf6" sourceRef="Task_Hook_Flow_1e5ztf6" targetRef="Activity_0oydey5"/>
     <bpmn2:sequenceFlow id="Flow_1ji6b0i" sourceRef="Activity_0oydey5" targetRef="Activity_RouteGateway"/>
     <bpmn2:sequenceFlow id="Flow_RouteToGateway" sourceRef="Activity_RouteGateway" targetRef="Gateway_09ad5fc"/>
     <bpmn2:sequenceFlow id="Flow_0ybszcv" name="yes" sourceRef="Gateway_09ad5fc" targetRef="Task_Hook_Flow_0ybszcv">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[yes]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
       <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[return "Flow_0ybszcv".equals(gatewayDecision);]]></bpmn2:conditionExpression>
     </bpmn2:sequenceFlow>
+    <bpmn2:sequenceFlow id="Flow_HookToLoan" sourceRef="Task_Hook_Flow_0ybszcv" targetRef="Activity_1h9ix55"/>
     <bpmn2:sequenceFlow id="Flow_1jgea85" name="no" sourceRef="Gateway_09ad5fc" targetRef="Activity_131ar38">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[no]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
       <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[return "Flow_1jgea85".equals(gatewayDecision);]]></bpmn2:conditionExpression>
     </bpmn2:sequenceFlow>
-    <bpmn2:sequenceFlow id="Flow_HookToLoan" sourceRef="Task_Hook_Flow_0ybszcv" targetRef="Activity_1h9ix55"/>
-    <bpmn2:sequenceFlow id="Flow_0uwnw59" sourceRef="Activity_1h9ix55" targetRef="Gateway_15y9k7z"/>
+    <bpmn2:sequenceFlow id="_FCC6B7F7-73B7-475F-8F3B-403749D52F96" sourceRef="Gateway_15y9k7z" targetRef="_EB7CA632-93CC-4D44-A50A-4ADDF0B8C300"/>
     <bpmn2:sequenceFlow id="Flow_1ow7aj3" sourceRef="Activity_131ar38" targetRef="Gateway_15y9k7z"/>
-    <bpmn2:sequenceFlow id="Flow_MergeToComplete" sourceRef="Gateway_15y9k7z" targetRef="Task_CompleteProcess"/>
+    <bpmn2:sequenceFlow id="Flow_0uwnw59" sourceRef="Activity_1h9ix55" targetRef="Gateway_15y9k7z"/>
+    <bpmn2:sequenceFlow id="_15B90017-5BCB-4C3F-AF74-9AD0FFBA3179" sourceRef="_EB7CA632-93CC-4D44-A50A-4ADDF0B8C300" targetRef="Task_CompleteProcess">
+      <bpmn2:extensionElements>
+        <drools:metaData name="isAutoConnection.target">
+          <drools:metaValue><![CDATA[true]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+    </bpmn2:sequenceFlow>
     <bpmn2:sequenceFlow id="Flow_0g1hmhe" sourceRef="Task_CompleteProcess" targetRef="Event_13axbio"/>
+    <bpmn2:scriptTask id="_EB7CA632-93CC-4D44-A50A-4ADDF0B8C300" name="inform account manager" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[inform account manager]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>_FCC6B7F7-73B7-475F-8F3B-403749D52F96</bpmn2:incoming>
+      <bpmn2:outgoing>_15B90017-5BCB-4C3F-AF74-9AD0FFBA3179</bpmn2:outgoing>
+      <bpmn2:script>kcontext.setVariable("manager_informed", true);</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:startEvent id="StartEvent_0bpt8wp" name="Start">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Start]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:outgoing>Flow_StartToHook</bpmn2:outgoing>
+    </bpmn2:startEvent>
+    <bpmn2:scriptTask id="Task_Hook_Flow_1e5ztf6" name="CUGA FLO hook: pre credit check" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[CUGA FLO hook: pre credit check]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_StartToHook</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1e5ztf6</bpmn2:outgoing>
+      <bpmn2:script>FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_1e5ztf6", "pre credit check", "Task_CompleteProcess"));</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:scriptTask id="Activity_0oydey5" name="check credit" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[check credit]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_1e5ztf6</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1ji6b0i</bpmn2:outgoing>
+      <bpmn2:script>CugaFlo.executeTask(kcontext, "Activity_0oydey5", "check credit");</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:scriptTask id="Activity_RouteGateway" name="route gateway decision" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[route gateway decision]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_1ji6b0i</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_RouteToGateway</bpmn2:outgoing>
+      <bpmn2:script>CugaFlo.routeGateway(kcontext, "Gateway_09ad5fc", "credit decision", "[{\"id\":\"Flow_0ybszcv\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_1h9ix55\",\"name\":\"yes\",\"condition\":null},{\"id\":\"Flow_1jgea85\",\"source_ref\":\"Gateway_09ad5fc\",\"target_ref\":\"Activity_131ar38\",\"name\":\"no\",\"condition\":null}]", "gatewayDecision");</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:exclusiveGateway id="Gateway_09ad5fc" name="credit decision" gatewayDirection="Diverging">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[credit decision]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_RouteToGateway</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1jgea85</bpmn2:outgoing>
+      <bpmn2:outgoing>Flow_0ybszcv</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+    <bpmn2:scriptTask id="Task_Hook_Flow_0ybszcv" name="CUGA FLO hook: approval intercept" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[CUGA FLO hook: approval intercept]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_0ybszcv</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_HookToLoan</bpmn2:outgoing>
+      <bpmn2:script>FlowRedirect.to(kcontext, CugaFlo.evaluateHook(kcontext, "Flow_0ybszcv", "approval intercept", "Task_CompleteProcess"));</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[give loan of 1000 USD]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_HookToLoan</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_0uwnw59</bpmn2:outgoing>
+      <bpmn2:script>kcontext.setVariable("decision", "give loan");</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:scriptTask id="Activity_131ar38" name="send a rejection letter" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[send a rejection letter]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_1jgea85</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_1ow7aj3</bpmn2:outgoing>
+      <bpmn2:script>kcontext.setVariable("decision", "reject loan");</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:exclusiveGateway id="Gateway_15y9k7z" name="merge" gatewayDirection="Converging">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[merge]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_0uwnw59</bpmn2:incoming>
+      <bpmn2:incoming>Flow_1ow7aj3</bpmn2:incoming>
+      <bpmn2:outgoing>_FCC6B7F7-73B7-475F-8F3B-403749D52F96</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+    <bpmn2:scriptTask id="Task_CompleteProcess" name="CUGA FLO complete process" scriptFormat="http://www.java.com/java">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[CUGA FLO complete process]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>_15B90017-5BCB-4C3F-AF74-9AD0FFBA3179</bpmn2:incoming>
+      <bpmn2:outgoing>Flow_0g1hmhe</bpmn2:outgoing>
+      <bpmn2:script>CugaFlo.completeProcess(kcontext);</bpmn2:script>
+    </bpmn2:scriptTask>
+    <bpmn2:endEvent id="Event_13axbio" name="End">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[End]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>Flow_0g1hmhe</bpmn2:incoming>
+    </bpmn2:endEvent>
   </bpmn2:process>
-
-  <bpmndi:BPMNDiagram id="_loanApprovalDiagram">
-    <bpmndi:BPMNPlane id="_loanApprovalPlane" bpmnElement="loan_approval">
-      <bpmndi:BPMNShape id="shape_StartEvent_0bpt8wp" bpmnElement="StartEvent_0bpt8wp">
-        <dc:Bounds height="56.0" width="56.0" x="80.0" y="200.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_1e5ztf6" bpmnElement="Task_Hook_Flow_1e5ztf6">
-        <dc:Bounds height="102.0" width="154.0" x="180.0" y="177.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Activity_0oydey5" bpmnElement="Activity_0oydey5">
-        <dc:Bounds height="102.0" width="154.0" x="380.0" y="177.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Activity_RouteGateway" bpmnElement="Activity_RouteGateway">
-        <dc:Bounds height="102.0" width="154.0" x="580.0" y="177.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Gateway_09ad5fc" bpmnElement="Gateway_09ad5fc">
-        <dc:Bounds height="56.0" width="56.0" x="780.0" y="200.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_0ybszcv" bpmnElement="Task_Hook_Flow_0ybszcv">
-        <dc:Bounds height="102.0" width="154.0" x="880.0" y="80.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Activity_1h9ix55" bpmnElement="Activity_1h9ix55">
-        <dc:Bounds height="102.0" width="154.0" x="1080.0" y="80.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Activity_131ar38" bpmnElement="Activity_131ar38">
-        <dc:Bounds height="102.0" width="154.0" x="1080.0" y="300.0"/>
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Gateway_15y9k7z" bpmnElement="Gateway_15y9k7z">
-        <dc:Bounds height="56.0" width="56.0" x="1300.0" y="200.0"/>
+  <bpmndi:BPMNDiagram>
+    <bpmndi:BPMNPlane bpmnElement="loan_approval">
+      <bpmndi:BPMNShape id="shape_Event_13axbio" bpmnElement="Event_13axbio">
+        <dc:Bounds height="56" width="56" x="1820" y="200"/>
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="shape_Task_CompleteProcess" bpmnElement="Task_CompleteProcess">
-        <dc:Bounds height="102.0" width="154.0" x="1400.0" y="177.0"/>
+        <dc:Bounds height="102" width="154" x="1622" y="177"/>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="shape_Event_13axbio" bpmnElement="Event_13axbio">
-        <dc:Bounds height="56.0" width="56.0" x="1600.0" y="200.0"/>
+      <bpmndi:BPMNShape id="shape_Gateway_15y9k7z" bpmnElement="Gateway_15y9k7z">
+        <dc:Bounds height="56" width="56" x="1300" y="200"/>
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNEdge id="edge_Flow_StartToHook" bpmnElement="Flow_StartToHook">
-        <di:waypoint xsi:type="dc:Point" x="136.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="180.0" y="228.0"/>
+      <bpmndi:BPMNShape id="shape_Activity_131ar38" bpmnElement="Activity_131ar38">
+        <dc:Bounds height="102" width="154" x="1080" y="300"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_1h9ix55" bpmnElement="Activity_1h9ix55">
+        <dc:Bounds height="102" width="154" x="1080" y="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_0ybszcv" bpmnElement="Task_Hook_Flow_0ybszcv">
+        <dc:Bounds height="102" width="154" x="880" y="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Gateway_09ad5fc" bpmnElement="Gateway_09ad5fc">
+        <dc:Bounds height="56" width="56" x="780" y="200"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_RouteGateway" bpmnElement="Activity_RouteGateway">
+        <dc:Bounds height="102" width="154" x="580" y="177"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Activity_0oydey5" bpmnElement="Activity_0oydey5">
+        <dc:Bounds height="102" width="154" x="380" y="177"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_Task_Hook_Flow_1e5ztf6" bpmnElement="Task_Hook_Flow_1e5ztf6">
+        <dc:Bounds height="102" width="154" x="180" y="177"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_StartEvent_0bpt8wp" bpmnElement="StartEvent_0bpt8wp">
+        <dc:Bounds height="56" width="56" x="80" y="200"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape__EB7CA632-93CC-4D44-A50A-4ADDF0B8C300" bpmnElement="_EB7CA632-93CC-4D44-A50A-4ADDF0B8C300">
+        <dc:Bounds height="101.99999999999997" width="154" x="1403" y="177.29300640600096"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="edge_shape_Task_CompleteProcess_to_shape_Event_13axbio" bpmnElement="Flow_0g1hmhe">
+        <di:waypoint x="1776" y="228"/>
+        <di:waypoint x="1820" y="228"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_1e5ztf6" bpmnElement="Flow_1e5ztf6">
-        <di:waypoint xsi:type="dc:Point" x="334.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="380.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape__EB7CA632-93CC-4D44-A50A-4ADDF0B8C300_to_shape_Task_CompleteProcess" bpmnElement="_15B90017-5BCB-4C3F-AF74-9AD0FFBA3179">
+        <di:waypoint x="1480" y="228.29300640600096"/>
+        <di:waypoint x="1699" y="177"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_1ji6b0i" bpmnElement="Flow_1ji6b0i">
-        <di:waypoint xsi:type="dc:Point" x="534.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="580.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Activity_1h9ix55_to_shape_Gateway_15y9k7z" bpmnElement="Flow_0uwnw59">
+        <di:waypoint x="1234" y="131"/>
+        <di:waypoint x="1300" y="228"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_RouteToGateway" bpmnElement="Flow_RouteToGateway">
-        <di:waypoint xsi:type="dc:Point" x="734.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="780.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Activity_131ar38_to_shape_Gateway_15y9k7z" bpmnElement="Flow_1ow7aj3">
+        <di:waypoint x="1234" y="351"/>
+        <di:waypoint x="1300" y="228"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_0ybszcv" bpmnElement="Flow_0ybszcv">
-        <di:waypoint xsi:type="dc:Point" x="836.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="880.0" y="131.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Gateway_15y9k7z_to_shape__EB7CA632-93CC-4D44-A50A-4ADDF0B8C300" bpmnElement="_FCC6B7F7-73B7-475F-8F3B-403749D52F96">
+        <di:waypoint x="1328" y="228"/>
+        <di:waypoint x="1480" y="228.29300640600096"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_1jgea85" bpmnElement="Flow_1jgea85">
-        <di:waypoint xsi:type="dc:Point" x="836.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1080.0" y="351.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Gateway_09ad5fc_to_shape_Activity_131ar38" bpmnElement="Flow_1jgea85">
+        <di:waypoint x="836" y="228"/>
+        <di:waypoint x="1080" y="351"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_HookToLoan" bpmnElement="Flow_HookToLoan">
-        <di:waypoint xsi:type="dc:Point" x="1034.0" y="131.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1080.0" y="131.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Task_Hook_Flow_0ybszcv_to_shape_Activity_1h9ix55" bpmnElement="Flow_HookToLoan">
+        <di:waypoint x="1034" y="131"/>
+        <di:waypoint x="1080" y="131"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_0uwnw59" bpmnElement="Flow_0uwnw59">
-        <di:waypoint xsi:type="dc:Point" x="1234.0" y="131.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1300.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Gateway_09ad5fc_to_shape_Task_Hook_Flow_0ybszcv" bpmnElement="Flow_0ybszcv">
+        <di:waypoint x="836" y="228"/>
+        <di:waypoint x="880" y="131"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_1ow7aj3" bpmnElement="Flow_1ow7aj3">
-        <di:waypoint xsi:type="dc:Point" x="1234.0" y="351.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1300.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Activity_RouteGateway_to_shape_Gateway_09ad5fc" bpmnElement="Flow_RouteToGateway">
+        <di:waypoint x="734" y="228"/>
+        <di:waypoint x="780" y="228"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_MergeToComplete" bpmnElement="Flow_MergeToComplete">
-        <di:waypoint xsi:type="dc:Point" x="1356.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1400.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Activity_0oydey5_to_shape_Activity_RouteGateway" bpmnElement="Flow_1ji6b0i">
+        <di:waypoint x="534" y="228"/>
+        <di:waypoint x="580" y="228"/>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="edge_Flow_0g1hmhe" bpmnElement="Flow_0g1hmhe">
-        <di:waypoint xsi:type="dc:Point" x="1554.0" y="228.0"/>
-        <di:waypoint xsi:type="dc:Point" x="1600.0" y="228.0"/>
+      <bpmndi:BPMNEdge id="edge_shape_Task_Hook_Flow_1e5ztf6_to_shape_Activity_0oydey5" bpmnElement="Flow_1e5ztf6">
+        <di:waypoint x="334" y="228"/>
+        <di:waypoint x="380" y="228"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_StartEvent_0bpt8wp_to_shape_Task_Hook_Flow_1e5ztf6" bpmnElement="Flow_StartToHook">
+        <di:waypoint x="136" y="228"/>
+        <di:waypoint x="180" y="228"/>
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
+  <bpmn2:relationship type="BPSimData">
+    <bpmn2:extensionElements>
+      <bpsim:BPSimData>
+        <bpsim:Scenario id="default" name="Simulationscenario">
+          <bpsim:ScenarioParameters/>
+          <bpsim:ElementParameters elementRef="Task_CompleteProcess">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Activity_131ar38">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Activity_1h9ix55">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Task_Hook_Flow_0ybszcv">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Activity_RouteGateway">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Activity_0oydey5">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="Task_Hook_Flow_1e5ztf6">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="StartEvent_0bpt8wp">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="_EB7CA632-93CC-4D44-A50A-4ADDF0B8C300">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+        </bpsim:Scenario>
+      </bpsim:BPSimData>
+    </bpmn2:extensionElements>
+    <bpmn2:source>_TFg80HFDED-RmaOPyUuH8Q</bpmn2:source>
+    <bpmn2:target>_TFg80HFDED-RmaOPyUuH8Q</bpmn2:target>
+  </bpmn2:relationship>
 </bpmn2:definitions>

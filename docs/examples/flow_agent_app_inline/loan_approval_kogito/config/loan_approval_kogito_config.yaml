@@ -48,6 +48,8 @@ variables:
   # Outputs, written during the run
   credit_score: 0.0
   decision: "undecided"
+  # Set by the 'inform account manager' script task once the manager is notified.
+  manager_informed: false
   # Inputs, extractable from the request
   applicant_name: ""
   applicant_id: ""
