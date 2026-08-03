@@ -201,7 +201,7 @@ class SecurityValidator:
                 "f-strings or triple-quoted strings. Build reports with '\\n'.join([...]), "
                 "json.dumps() for dict sections, or await write_file('./output/report.md', content). "
                 "For spawn_agent follow-ups: "
-                'task = ".... Inputs JSON: " + json.dumps({"a": a_out, "b": b_out}).'
+                'task = ".... Inputs JSON: " + json.dumps({"a": a_out, "b": b_out})'
             )
         elif "unexpected indent" in lower:
             msg += (

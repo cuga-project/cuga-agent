@@ -151,7 +151,9 @@ def _track_task(thread_id: str, future_id: str, task: asyncio.Task) -> None:
     def _done(t: asyncio.Task) -> None:
         bucket.discard(t)
         _task_by_future.pop(future_id, None)
-        if not bucket:
+        # Only pop if this callback's bucket is still the live map entry — a
+        # reused thread_id may have a fresher bucket after clear_runtime_caches.
+        if not bucket and _tasks_by_thread.get(key) is bucket:
             _tasks_by_thread.pop(key, None)
 
     task.add_done_callback(_done)
@@ -218,9 +220,14 @@ class SpawnAgentRuntime:
         if self._parent_config:
             sync_langfuse_callbacks_from_config(self._parent_config)
         cfg = get_langfuse_invoke_config()
+        configurable = dict(cfg.get("configurable") or {})
+        parent_cfg = dict((self._parent_config or {}).get("configurable") or {})
+        for key in ("skills_enabled", "skills_folder"):
+            if key in parent_cfg:
+                configurable[key] = parent_cfg[key]
         if workspace_thread_id:
-            configurable = dict(cfg.get("configurable") or {})
             configurable["workspace_thread_id"] = workspace_thread_id
+        if configurable:
             cfg = {**cfg, "configurable": configurable}
         return cfg
 

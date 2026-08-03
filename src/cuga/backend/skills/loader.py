@@ -166,14 +166,6 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
         return None
 
 
-_discover_skills_cache: dict[tuple, List[SkillEntry]] = {}
-
-
-def clear_skills_cache() -> None:
-    """Clear the process-level discover_skills cache (use in tests or after hot-reloading skills)."""
-    _discover_skills_cache.clear()
-
-
 def discover_skills(
     cuga_folder: str | None,
     global_skills_root: str | None = None,

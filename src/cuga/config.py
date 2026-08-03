@@ -229,7 +229,7 @@ validators = [
     Validator("connections.llm_http_timeout", default=DEFAULT_LLM_HTTP_TIMEOUT),
     # Agent spawning
     Validator("agent_spawn.enabled", default=False),
-    Validator("agent_spawn.max_spawn_depth", default=2),
+    Validator("agent_spawn.max_spawn_depth", default=2, is_type_of=int, gt=0),
     Validator("agent_spawn.forward_sync_subagent_events", default=True),
     Validator(
         "advanced_features.sandbox_execution_timeout",

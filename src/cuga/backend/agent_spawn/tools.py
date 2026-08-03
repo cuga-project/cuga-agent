@@ -23,6 +23,11 @@ class SpawnAgentInput(BaseModel):
     mode: Literal["sync", "async"] = Field(
         default="sync", description="'sync' waits for result; 'async' returns a future_id"
     )
+    timeout: float = Field(
+        default=300.0,
+        description="Seconds to wait for sync-mode completion (ignored for async)",
+        gt=0,
+    )
     share_workspace: bool = Field(
         default=False,
         description=(
@@ -49,7 +54,10 @@ def create_spawn_tools(
     parent_thread_id = (parent_config or {}).get("configurable", {}).get("thread_id", "") or ""
 
     async def spawn_agent(
-        task: str = "", mode: Literal["sync", "async"] = "sync", share_workspace: bool = False
+        task: str = "",
+        mode: Literal["sync", "async"] = "sync",
+        share_workspace: bool = False,
+        timeout: float = 300.0,
     ) -> str:
         rt = SpawnAgentRuntime.from_parent(
             parent_config,
@@ -59,7 +67,13 @@ def create_spawn_tools(
 
         if mode == "async":
             return await rt.execute_async(task, share_workspace=share_workspace)
-        return await rt.execute(task, share_workspace=share_workspace)
+        try:
+            return await asyncio.wait_for(
+                rt.execute(task, share_workspace=share_workspace),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return f"[SpawnTimeout] sync spawn_agent did not complete within {timeout}s"
 
     async def get_agent_result(future_id: str, timeout: float = 60.0) -> str:
         if future_id not in spawn_futures:

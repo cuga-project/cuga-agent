@@ -33,7 +33,8 @@ def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
         name="load_skill",
         description=(
             "Fetch the full instructions for a named skill. "
-            "Call this first, print the output, then follow the instructions."
+            "Call this first; instructions are emitted automatically — "
+            "do not print the returned value again. Then follow the instructions."
         ),
         args_schema=LoadSkillInput,
     )

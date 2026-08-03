@@ -635,6 +635,89 @@ def test_build_invoke_config_syncs_langfuse_callbacks(monkeypatch):
     assert sync_calls[0] is parent_cfg
 
 
+def test_build_invoke_config_preserves_parent_skills(monkeypatch):
+    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
+    monkeypatch.setattr(
+        "cuga.backend.agent_spawn.runtime.sync_langfuse_callbacks_from_config",
+        lambda cfg: None,
+    )
+    monkeypatch.setattr(
+        "cuga.backend.agent_spawn.runtime.get_langfuse_invoke_config",
+        lambda: {"configurable": {"thread_id": "child-fresh"}},
+    )
+
+    parent_cfg = {
+        "configurable": {
+            "thread_id": "parent-thread",
+            "skills_enabled": True,
+            "skills_folder": "/tmp/skills-root",
+        }
+    }
+    rt = SpawnAgentRuntime([], parent_config=parent_cfg)
+    cfg = rt._build_invoke_config(workspace_thread_id="ws-1")
+
+    assert cfg["configurable"]["skills_enabled"] is True
+    assert cfg["configurable"]["skills_folder"] == "/tmp/skills-root"
+    assert cfg["configurable"]["workspace_thread_id"] == "ws-1"
+
+
+@pytest.mark.asyncio
+async def test_sync_spawn_agent_timeout(monkeypatch):
+    import asyncio
+
+    from cuga.backend.agent_spawn.tools import create_spawn_tools
+
+    async def _hang(self, task, spawn_id="", share_workspace=False):
+        await asyncio.sleep(60)
+        return "never"
+
+    monkeypatch.setattr(
+        "cuga.backend.agent_spawn.runtime.SpawnAgentRuntime.execute",
+        _hang,
+    )
+
+    tools = create_spawn_tools({})
+    spawn = next(t for t in tools if t.name == "spawn_agent")
+    result = await spawn.coroutine(task="slow", mode="sync", timeout=0.05)
+    assert result.startswith("[SpawnTimeout]")
+
+
+@pytest.mark.asyncio
+async def test_track_task_done_does_not_evict_fresh_bucket():
+    import asyncio
+
+    from cuga.backend.agent_spawn import runtime as rt
+
+    rt.clear_runtime_caches()
+    try:
+        parent = "thr-reuse"
+
+        async def _hang():
+            await asyncio.sleep(60)
+
+        old_task = asyncio.create_task(_hang())
+        rt._track_task(parent, "future_old", old_task)
+
+        # Cancel/pop the old bucket, then track a fresh task under the same key
+        # before the old task's done callback runs.
+        rt.clear_runtime_caches(parent)
+        new_task = asyncio.create_task(_hang())
+        rt._track_task(parent, "future_new", new_task)
+
+        with pytest.raises(asyncio.CancelledError):
+            await old_task
+        await asyncio.sleep(0)
+
+        assert parent in rt._tasks_by_thread
+        assert new_task in rt._tasks_by_thread[parent]
+        new_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await new_task
+    finally:
+        rt.clear_runtime_caches()
+
+
 @pytest.mark.asyncio
 async def test_execute_calls_set_session_attribute(monkeypatch):
     from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
