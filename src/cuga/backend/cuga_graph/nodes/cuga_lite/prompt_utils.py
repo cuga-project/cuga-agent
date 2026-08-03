@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
 _WEAK_SCHEMA_PROBE_DIRECTIVE = (
     "\n    \n    ⚠️ No declared output schema for this tool. Call it ALONE in its own "
@@ -96,13 +97,12 @@ class Tool(BaseModel):
 class FindToolsOutput(BaseModel):
     """
     Output schema for the find_tools function.
-    Returns a list of top 4 matching tools based on a natural language query.
+    Returns relevant matching tools for a natural language query (no fixed count).
     """
 
     tools: List[Tool] = Field(
         ...,
-        max_length=6,
-        description="A list of up to 4 matching tools, ordered by relevance to the query.",
+        description="Matching tools ordered by relevance to the query. Include all tools needed for the workflow.",
     )
 
 
@@ -179,8 +179,9 @@ class PromptUtils:
         from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         instructions = base_instructions or ""
-        last_valid: List[Any] = []
-        last_invalid: List[str] = []
+        accumulated: dict[str, Any] = {}
+        seen_invalid: List[str] = []
+        seen_invalid_set: set[str] = set()
         for attempt in range(max_retries + 1):
             response = await chain.ainvoke(
                 {
@@ -191,25 +192,33 @@ class PromptUtils:
                 },
                 config=nested_langgraph_invoke_config(run_config),
             )
-            last_valid, last_invalid = PromptUtils._partition_shortlist_details(
+            valid, invalid = PromptUtils._partition_shortlist_details(
                 getattr(response, "result", None) or [],
                 valid_names,
             )
-            if not last_invalid:
-                return last_valid, []
+            for detail in valid:
+                accumulated.setdefault(getattr(detail, "name", None), detail)
+            for name in invalid:
+                if name not in seen_invalid_set:
+                    seen_invalid_set.add(name)
+                    seen_invalid.append(name)
+            if not invalid:
+                return list(accumulated.values()), []
             logger.warning(
                 "Shortlister returned unrecognized tool names (attempt {}/{}): {}",
                 attempt + 1,
                 max_retries + 1,
-                last_invalid,
+                invalid,
             )
-            if attempt >= max_retries:
+            # Retry only when the shortlist is unusable — avoid 3x cost when
+            # mostly-valid results already have names we can keep.
+            if accumulated or attempt >= max_retries:
                 break
             instructions = PromptUtils._shortlist_retry_instructions(
                 base_instructions or "",
-                last_invalid,
+                seen_invalid,
             )
-        return last_valid, last_invalid
+        return list(accumulated.values()), seen_invalid
 
     @staticmethod
     def get_tool_params_str(tool: StructuredTool) -> str:
@@ -326,7 +335,7 @@ class PromptUtils:
 
                 params_list = []
                 for name, prop in properties.items():
-                    param_type = prop.get('type', 'string')
+                    param_type = json_schema_type(prop)
                     type_mapping = {
                         'string': 'str',
                         'integer': 'int',
@@ -405,12 +414,11 @@ class PromptUtils:
         run_config: Optional[Any] = None,
     ) -> str:
         """
-        Search tools from given applications and return the top 4 matching tools with reasoning.
+        Search tools from given applications and return the relevant matching tools with reasoning.
 
         This method uses an LLM to analyze available tools from all loaded applications and
-        select the most relevant ones based on a natural language query. Each returned tool
-        includes detailed reasoning explaining why it was selected, along with parameter
-        and response documentation.
+        select the ones needed for the query (including chaining). No fixed result count.
+        Each returned tool includes reasoning plus parameter and response documentation.
 
         Args:
             query: A natural language query describing what tools are needed.
@@ -418,7 +426,7 @@ class PromptUtils:
             all_apps: List of all available app definitions
 
         Returns:
-            str: A markdown-formatted string containing up to 4 matching tools, each with:
+            str: A markdown-formatted string of matching tools, each with:
                  - name: The tool name
                  - reasoning: Explanation of why this tool is relevant
                  - parameters: Formatted parameter documentation

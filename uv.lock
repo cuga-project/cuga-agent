@@ -1139,7 +1139,7 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.84.0" },
     { name = "loguru" },
     { name = "markdownify" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.23.0,<2" },
     { name = "openlit", marker = "extra == 'observability'", specifier = ">=1.40.3" },
     { name = "opensandbox", marker = "extra == 'opensandbox'" },
     { name = "opensandbox-code-interpreter", marker = "extra == 'opensandbox'" },

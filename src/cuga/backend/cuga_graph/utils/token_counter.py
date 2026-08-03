@@ -199,6 +199,17 @@ MODEL_CONTEXT_SIZES = {
     "google/gemini-pro": 32768,
     "google/gemini-exp": 2000000,
     # ============================================================================
+    # Google Gemma 4 Models
+    # ============================================================================
+    # Deployment cap, not the 262,144 native window: the RITS vLLM deployment serves
+    # max_model_len=131072 (probed via GET .../v1/models, 2026-07-28). Registering the
+    # native window put the 70% summarization trigger (~183k) beyond the deployment's
+    # 131k cliff, so summarization could never engage on Gemma (issue #563).
+    "gemma-4-31B-it": 131072,
+    "gemma-4-31b-it": 131072,
+    "google/gemma-4-31B-it": 131072,
+    "google/gemma-4-31b-it": 131072,
+    # ============================================================================
     # Meta Llama Models
     # ============================================================================
     "llama-4-maverick-17b-128e-instruct-fp8": 128000,

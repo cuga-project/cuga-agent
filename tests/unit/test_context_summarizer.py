@@ -12,6 +12,8 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(scope="function", autouse=True)
 def ensure_settings_validated():
@@ -380,6 +382,12 @@ class TestEdgeCases:
                 # Should return last 10 messages as fallback
                 assert len(result_messages) == 10
                 assert 'error' in metrics or 'fallback' in metrics
+                # Hard truncation must be loudly reported with counts (issue #563)
+                assert metrics['hard_truncation'] is True
+                assert metrics['messages_kept'] == 10
+                assert metrics['messages_dropped'] == len(sample_messages) - 10
+                assert metrics['message_count_before'] == len(sample_messages)
+                assert metrics['token_count_before'] > 0
 
     async def test_empty_summary_response(self, mock_model, mock_settings, mock_middleware, sample_messages):
         """Test handling when middleware returns result."""

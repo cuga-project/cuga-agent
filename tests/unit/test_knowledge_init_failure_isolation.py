@@ -1,11 +1,10 @@
 """Unit tests: knowledge-init failure is isolated — lifespan does not abort.
 
-PR #535 wrapped ``await initialize_knowledge_engine(app_state, kb_config)``
-in a try/except so that a failure during knowledge setup (engine construction,
-session-provider I/O, token file creation, …) degrades to subsystem status
-"failed" instead of propagating out of lifespan and killing the server.
+PR #535 / #549 wrap knowledge startup so a failure during knowledge setup
+degrades to subsystem status "failed" instead of propagating out of lifespan
+and killing the server.
 
-These tests exercise the wrapping logic directly, without starting FastAPI.
+These tests exercise the production ``run_knowledge_startup`` helper directly.
 """
 
 from __future__ import annotations
@@ -15,10 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Minimal AppState stand-in (only the fields the call-site code touches)
-# ---------------------------------------------------------------------------
+from cuga.backend.server.main import run_knowledge_startup
 
 
 class _FakeAppState:
@@ -42,11 +38,6 @@ class _FakeAppState:
         return self.subsystem_statuses.get(name, {"state": "unknown"})
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_kb_config(enabled: bool = True) -> MagicMock:
     cfg = MagicMock()
     cfg.enabled = enabled
@@ -54,36 +45,6 @@ def _make_kb_config(enabled: bool = True) -> MagicMock:
     cfg.mcp_port = 7861
     cfg.persist_dir = "/tmp/kb"
     return cfg
-
-
-async def _run_call_site(app_state: _FakeAppState, kb_config, init_fn) -> None:
-    """Replicate the lifespan call-site logic under test.
-
-    This mirrors exactly the code in server/main.py lifespan() after commit
-    170d8ccf — only the call-site wrapper, not the full lifespan.
-    """
-    if kb_config.enabled:
-        try:
-            await init_fn(app_state, kb_config)
-        except Exception as e:
-            from loguru import logger
-
-            logger.warning(f"Failed to initialize knowledge engine: {e}")
-            app_state.knowledge_engine = None
-            app_state.set_subsystem_status(
-                "knowledge",
-                "failed",
-                "Knowledge subsystem failed to initialize",
-                {"error": str(e)},
-            )
-    else:
-        app_state.knowledge_engine = None
-        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -98,8 +59,7 @@ class TestKnowledgeInitFailureIsolation:
         async def _boom(app_state, kb_config):
             raise RuntimeError("KnowledgeEngine constructor exploded")
 
-        # Must not raise
-        asyncio.run(_run_call_site(app_state, kb_config, _boom))
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=_boom))
 
     def test_subsystem_status_set_to_failed_on_error(self):
         """Subsystem status must be 'failed' with the error message after a failure."""
@@ -110,7 +70,7 @@ class TestKnowledgeInitFailureIsolation:
         async def _boom(app_state, kb_config):
             raise ConnectionError(error_msg)
 
-        asyncio.run(_run_call_site(app_state, kb_config, _boom))
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=_boom))
 
         status = app_state.get_subsystem_status("knowledge")
         assert status["state"] == "failed"
@@ -119,24 +79,42 @@ class TestKnowledgeInitFailureIsolation:
     def test_knowledge_engine_is_none_on_error(self):
         """app_state.knowledge_engine must be None after a failure (not a partial object)."""
         app_state = _FakeAppState()
-        # Simulate a partial assignment before the failure
         app_state.knowledge_engine = object()
         kb_config = _make_kb_config(enabled=True)
 
         async def _boom(app_state, kb_config):
             raise OSError("token file write failed")
 
-        asyncio.run(_run_call_site(app_state, kb_config, _boom))
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=_boom))
 
         assert app_state.knowledge_engine is None
+
+    def test_partial_engine_is_torn_down_on_error(self):
+        """Failures after engine assignment must aclose/shutdown before clearing."""
+        app_state = _FakeAppState()
+        kb_config = _make_kb_config(enabled=True)
+        engine = MagicMock()
+        engine.aclose = AsyncMock()
+        engine.shutdown = MagicMock()
+
+        async def _boom_after_start(app_state, kb_config):
+            app_state.knowledge_engine = engine
+            raise RuntimeError("failed after background start")
+
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=_boom_after_start))
+
+        engine.aclose.assert_awaited_once()
+        engine.shutdown.assert_called_once()
+        assert app_state.knowledge_engine is None
+        assert app_state.get_subsystem_status("knowledge")["state"] == "failed"
 
     def test_disabled_knowledge_sets_disabled_status(self):
         """When knowledge is disabled the status is 'disabled', not 'failed'."""
         app_state = _FakeAppState()
         kb_config = _make_kb_config(enabled=False)
 
-        init_fn = AsyncMock()  # should never be called
-        asyncio.run(_run_call_site(app_state, kb_config, init_fn))
+        init_fn = AsyncMock()
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=init_fn))
 
         init_fn.assert_not_called()
         assert app_state.get_subsystem_status("knowledge")["state"] == "disabled"
@@ -151,7 +129,7 @@ class TestKnowledgeInitFailureIsolation:
             app_state.knowledge_engine = MagicMock()
             app_state.set_subsystem_status("knowledge", "ready", "Knowledge subsystem ready")
 
-        asyncio.run(_run_call_site(app_state, kb_config, _ok))
+        asyncio.run(run_knowledge_startup(app_state, kb_config, init_fn=_ok))
 
         assert app_state.get_subsystem_status("knowledge")["state"] == "ready"
         assert app_state.knowledge_engine is not None

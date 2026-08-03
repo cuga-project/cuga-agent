@@ -76,8 +76,10 @@ class TestGetHttpTimeout:
 
 class TestHttpTimeoutPassedToClients:
     def test_openai_client_receives_timeout(self):
-        with patch("cuga.backend.llm.models.ReasoningChatOpenAI") as mock_openai:
+        mock_cls = patch("cuga.backend.llm.models._get_reasoning_chat_openai")
+        with mock_cls as mock_factory:
             with patch.object(LLMManager, "_get_auth_headers", return_value={"Authorization": "Bearer x"}):
+                mock_openai = mock_factory.return_value
                 mock_openai.return_value = object()
                 mgr = LLMManager()
                 mgr._create_llm_instance({**BASE_MODEL_SETTINGS, "timeout": 120})
@@ -86,7 +88,8 @@ class TestHttpTimeoutPassedToClients:
 
     def test_openrouter_client_receives_timeout(self):
         with patch("cuga.backend.llm.models.resolve_secret", return_value="dummy"):
-            with patch("cuga.backend.llm.models.ReasoningChatOpenAI") as mock_openai:
+            with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
+                mock_openai = mock_factory.return_value
                 mock_openai.return_value = object()
                 mgr = LLMManager()
                 mgr._create_llm_instance(
@@ -101,7 +104,7 @@ class TestHttpTimeoutPassedToClients:
         assert mock_openai.call_args.kwargs["timeout"] == 200.0
 
     def test_azure_client_receives_timeout(self):
-        with patch("cuga.backend.llm.models.AzureChatOpenAI") as mock_azure:
+        with patch("langchain_openai.AzureChatOpenAI") as mock_azure:
             mock_azure.return_value = object()
             mgr = LLMManager()
             mgr._create_llm_instance(
