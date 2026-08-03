@@ -218,8 +218,12 @@ class VariablesManager(object):
         Returns:
             Any: The value of the variable, or None if not found
         """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
         metadata = self.variables.get(name)
-        return metadata.value if metadata else None
+        if not metadata:
+            return None
+        return VariableUtils.hydrate_value(metadata.value)
 
     def get_variable_metadata(self, name: str) -> Optional[VariableMetadata]:
         """

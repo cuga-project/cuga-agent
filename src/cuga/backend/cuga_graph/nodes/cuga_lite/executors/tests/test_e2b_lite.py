@@ -1,5 +1,7 @@
 """Unit tests for E2B sandbox integration in CUGA Lite mode."""
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -53,7 +55,7 @@ class TestFilterNewVariables:
 
     @pytest.mark.unit
     def test_filter_sets_and_frozensets(self):
-        """Sets/frozensets with serializable elements must persist across steps."""
+        """Sets/frozensets persist as JSON-safe tagged forms that hydrate back."""
         original_keys = set()
         all_locals = {
             'my_set': {1, 2, 3},
@@ -64,10 +66,29 @@ class TestFilterNewVariables:
 
         result = VariableUtils.filter_new_variables(all_locals, original_keys)
 
-        assert result['my_set'] == {1, 2, 3}
-        assert result['my_frozenset'] == frozenset({4, 5})
-        assert result['nested_set'] == {1, (2, 3)}
+        json.dumps(result)
+        assert VariableUtils.hydrate_value(result['my_set']) == {1, 2, 3}
+        assert VariableUtils.hydrate_value(result['my_frozenset']) == frozenset({4, 5})
+        assert VariableUtils.hydrate_value(result['nested_set']) == {1, (2, 3)}
         assert 'set_of_unserializable' not in result
+
+    @pytest.mark.unit
+    def test_sanitize_sets_are_json_dumpsable(self):
+        """Stream path json.dumps(variables_storage) must not fail on sets (#572 regression)."""
+        sanitized = VariableUtils.sanitize_value({"emails": {"a@x.com", "b@y.com"}})
+        payload = {
+            "code": "",
+            "execution_output": "ok",
+            "variables": {
+                "emails": {
+                    "value": sanitized["emails"],
+                    "type": "set",
+                    "description": "Created during code execution",
+                }
+            },
+        }
+        encoded = json.dumps(payload)
+        assert "a@x.com" in encoded
 
     @pytest.mark.unit
     def test_is_serializable_accepts_sets(self):
@@ -144,7 +165,12 @@ print(len(product_set))
             code=code1, _locals={}, state=state, mode="local"
         )
         assert "product_set" in new_vars1
-        assert isinstance(new_vars1["product_set"], set)
+        json.dumps({"variables": state.variables_storage})
+        assert isinstance(
+            VariableUtils.hydrate_value(new_vars1["product_set"]),
+            set,
+        )
+        assert isinstance(state.variables_manager.get_variable("product_set"), set)
 
         _locals = {
             name: state.variables_manager.get_variable(name)
