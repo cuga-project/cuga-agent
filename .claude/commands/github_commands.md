@@ -220,17 +220,18 @@ mutation {
 
 ## Create an issue
 
-### Standard (no parent)
+Agent filing commands require a parent epic (see Related), except small self-contained bugs. After create, link with `addSubIssue` (above). Creating a sub-issue with parent in one step is not supported by `gh issue create` for this CLI version.
 
 ```bash
 gh issue create \
   --title "[Feature]: Example title" \
-  --body "## Summary\n..." \
+  --body "Part of #<epic>.\n\n## Summary\n..." \
   --label "enhancement" \
+  --label "needs-triage" \
   --label "component: agent"
 ```
 
-### With issue type (REST — supports `type` field)
+### Create an epic (REST — supports `type` field)
 
 ```bash
 gh api repos/cuga-project/cuga-agent/issues \
@@ -242,8 +243,6 @@ gh api repos/cuga-project/cuga-agent/issues \
   -f labels[]="component: agent" \
   --jq '{number, html_url}'
 ```
-
-Then link children with `addSubIssue` (above). Creating a sub-issue with parent in one step is not documented in `gh issue create` for this CLI version.
 
 ---
 
@@ -270,28 +269,11 @@ gh api repos/cuga-project/cuga-agent/issues/168 \
 
 **When to parent an issue**
 
-- **Must:** Clear scope match to epic title (e.g. multi-provider work → models epic #238).
-- **Should:** Reasonable fit; alternate epic possible.
-- **Skip:** One-off chores (#78-style cleanup) unless using a Platform Health epic.
+- **Must:** Features, designs, and non-trivial bugs — clear scope match to an open epic.
+- **Ask:** Two or more epics could fit; do not auto-pick.
+- **Skip:** Small self-contained bugs only (narrow repro, no design change). Not chores/features.
 
 **Epics with no children** are planning placeholders until sub-issues are linked.
-
----
-
-## Example: models epic (#238)
-
-Children linked under [#238 Open Source Models](https://github.com/cuga-project/cuga-agent/issues/238):
-
-- #168, #161, #104, #202, #137, #110
-
-Re-list:
-
-```bash
-gh api graphql -f query='
-{ repository(owner:"cuga-project", name:"cuga-agent") {
-  issue(number:238) { subIssues(first:20) { nodes { number title } } }
-}}' --jq '.data.repository.issue.subIssues.nodes[] | "#\(.number): \(.title)"'
-```
 
 ---
 
@@ -311,7 +293,4 @@ gh api graphql -f query='
 
 - `cuga-new-feature.md` — create feature issues; must pick a parent epic and link via `addSubIssue`
 - `cuga-report-bug.md` — create bug issues; same epic link flow except small self-contained bugs
-- `.agents/skills/github-issues/SKILL.md` — create/update issues, templates, labels
-- `.agents/skills/github-pr-comments/SKILL.md` — PR comments, inline review, batch feedback
-- `.claude/commands/cuga-create-pr.md` — create PRs, then comment with the PR-comments skill
-- User rule: conventional commits; do not commit unless asked
+- `cuga-create-pr.md` — create pull requests against upstream
