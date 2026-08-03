@@ -117,6 +117,16 @@ class TestFilterNewVariables:
         assert state.variables_manager.get_variable("d") == {"a": 1, "b": 2}
 
     @pytest.mark.unit
+    def test_set_with_complex_members_round_trips_without_crash(self):
+        """Unhandled set members (complex→dict) stringify so hydrate stays hashable."""
+        original = {1 + 2j, (3 + 4j, 5)}
+        sanitized = VariableUtils.sanitize_value(original)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert isinstance(restored, set)
+        assert repr(1 + 2j) in restored
+        assert any(isinstance(x, tuple) for x in restored)
+
+    @pytest.mark.unit
     def test_is_serializable_accepts_sets(self):
         assert VariableUtils.is_serializable({1, 2, 3}) is True
         assert VariableUtils.is_serializable(frozenset({"a", "b"})) is True

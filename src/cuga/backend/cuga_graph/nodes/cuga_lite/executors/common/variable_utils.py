@@ -154,14 +154,22 @@ class VariableUtils:
 
     @staticmethod
     def _sanitize_set_element(obj: Any) -> Any:
-        """Sanitize a set/frozenset element; recursively tag nested tuples."""
+        """Sanitize a set/frozenset element; recursively tag nested tuples.
+
+        Values that sanitize to unhashable containers (e.g. complex → dict) are
+        stored as ``repr(obj)`` so the set remains constructible after JSON
+        round-trip. We do not attempt full type coverage for every scalar.
+        """
         if isinstance(obj, tuple):
             return {
                 _TUPLE_TYPE_KEY: "tuple",
                 "items": [VariableUtils._sanitize_set_element(v) for v in obj],
                 _ENC_KEY: True,
             }
-        return VariableUtils._sanitize_recursive(obj)
+        sanitized = VariableUtils._sanitize_recursive(obj)
+        if isinstance(sanitized, (dict, list)):
+            return repr(obj)
+        return sanitized
 
     @staticmethod
     def _hydrate_mapping(value: dict) -> Any:

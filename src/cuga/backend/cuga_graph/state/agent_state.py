@@ -48,13 +48,10 @@ class VariableMetadata:
 
     @staticmethod
     def _tagged_set_kind(value: Any) -> Optional[str]:
-        if not isinstance(value, dict):
-            return None
-        if value.get("__cuga_enc__") is not True:
-            return None
-        kind = value.get("__set_type__")
-        if kind in ("set", "frozenset") and set(value.keys()) == {"__set_type__", "items", "__cuga_enc__"}:
-            return kind
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
+        if VariableUtils._is_set_tag(value):
+            return value["__set_type__"]
         return None
 
     @classmethod

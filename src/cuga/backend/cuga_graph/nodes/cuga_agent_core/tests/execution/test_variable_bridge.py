@@ -62,10 +62,19 @@ def test_extract_values_hydrates_tagged_sets():
             "type": "set",
             "created_at": "...",
             "count_items": 2,
-        }
+        },
+        "frozen": {
+            "value": {"__set_type__": "frozenset", "items": ["x", "y"], "__cuga_enc__": True},
+            "type": "frozenset",
+            "created_at": "...",
+            "count_items": 2,
+        },
     }
     result = VariableBridge.extract_values(storage)
+    assert type(result["emails"]) is set
     assert result["emails"] == {"a@x.com", "b@y.com"}
+    assert type(result["frozen"]) is frozenset
+    assert result["frozen"] == frozenset({"x", "y"})
 
 
 def test_bridge_copies_values_into_target_manager():
