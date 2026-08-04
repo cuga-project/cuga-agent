@@ -75,6 +75,9 @@ jobs:
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
           uv run pytest \
+            tests/unit/test_variables_manager.py \
+            tests/unit/test_variables_manager_value_preview.py
+          uv run pytest \
             tests/unit/test_knowledge_engine.py \
             tests/unit/test_session_knowledge.py \
             tests/unit/test_knowledge_routes.py \
