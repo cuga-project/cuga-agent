@@ -58,3 +58,14 @@ def test_unexpected_names_empty_when_dict_is_nested_payload():
     param_names = ["product_id"]
     d = {"not_a_schema_field": 1}
     assert unexpected_tool_arg_names((d,), {}, param_names) == []
+
+
+@pytest.mark.unit
+def test_unexpected_names_empty_when_schema_has_no_params():
+    assert unexpected_tool_arg_names(({"x": 1},), {"y": 2}, []) == []
+
+
+@pytest.mark.unit
+def test_unexpected_names_from_surplus_positionals():
+    param_names = ["a", "b"]
+    assert unexpected_tool_arg_names((1, 2, 3), {}, param_names) == ["arg2"]

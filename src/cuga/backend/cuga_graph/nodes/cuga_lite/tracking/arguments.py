@@ -26,6 +26,9 @@ def unexpected_tool_arg_names(
         d: Dict[str, Any] = args[0]
         if any(k in known for k in d):
             unexpected.update(k for k in d if k not in known)
+    else:
+        for i in range(len(param_names), len(args)):
+            unexpected.add(f"arg{i}")
     unexpected.update(k for k in kwargs if k not in known)
     return sorted(unexpected)
 
