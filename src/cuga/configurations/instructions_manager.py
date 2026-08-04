@@ -4,7 +4,6 @@ from loguru import logger
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from cuga.configurations.set_from_one_file import parse_markdown_sections
-from cuga.config import settings
 
 root_dir = Path(__file__).parent.parent.absolute()
 

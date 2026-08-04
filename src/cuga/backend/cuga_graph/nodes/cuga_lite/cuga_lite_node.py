@@ -10,10 +10,8 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
-from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
+from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.action_names import ActionName
-from cuga.backend.cuga_graph.state.api_planner_history import CoderAgentHistoricalOutput
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 from langchain_core.messages import HumanMessage
 from cuga.backend.llm.utils.helpers import load_one_prompt

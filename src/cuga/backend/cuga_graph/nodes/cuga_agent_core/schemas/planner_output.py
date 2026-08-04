@@ -1,8 +1,7 @@
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Optional
 
-from pydantic import BaseModel, Field
-from typing_extensions import Annotated
+from pydantic import BaseModel
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
 

@@ -12,9 +12,8 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import
 from cuga.backend.cuga_graph.nodes.browser.qa_agent.prompts.load_prompt import QaAgentOutput
 from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
-from pydantic import TypeAdapter
 import logging
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, List, Optional
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall

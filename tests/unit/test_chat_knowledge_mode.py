@@ -3,7 +3,6 @@ import json
 import pytest
 from langchain_core.messages import AIMessage
 
-from cuga.backend.cuga_graph.nodes.chat import chat as chat_module
 from cuga.backend.cuga_graph.nodes.chat.chat import ChatNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames

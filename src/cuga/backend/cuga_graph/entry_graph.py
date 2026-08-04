@@ -239,6 +239,7 @@ class CugaEntryGraph:
                     logger.error(f"Failed to load supervisor config: {e}", exc_info=True)
 
         if not agents:
+
             @tool
             def get_customers() -> str:
                 """Get customer data from CRM"""

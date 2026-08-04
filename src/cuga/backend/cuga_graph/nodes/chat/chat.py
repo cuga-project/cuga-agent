@@ -18,6 +18,7 @@ from cuga.config import settings
 
 tracker = ActivityTracker()
 
+
 class ChatHumanInTheLoopHandler:
     """Handler for chat-specific human-in-the-loop interactions"""
 
@@ -183,11 +184,7 @@ class ChatNode(BaseNode):
         if res.tool_calls:
             res = await ChatNode._execute_direct_tool_calls(state, agent, res)
 
-        if (
-            res.tool_calls
-            and len(res.tool_calls) > 0
-            and res.tool_calls[0].get("name") == "execute_task"
-        ):
+        if res.tool_calls and len(res.tool_calls) > 0 and res.tool_calls[0].get("name") == "execute_task":
             logger.debug(f"tool call in chat node {res.tool_calls[0]}")
             variables_rel = res.tool_calls[0].get("args").get("relevant_variables")
             if variables_rel and len(variables_rel) > 0:

@@ -15,8 +15,7 @@ class TaskDecompositionPlan(BaseModel):
 
     def format_as_list(self):
         return [
-            "{} (type = '{}', app='{}')".format(p.task, p.type, p.app[:30])
-            for p in self.task_decomposition
+            "{} (type = '{}', app='{}')".format(p.task, p.type, p.app[:30]) for p in self.task_decomposition
         ]
 
 

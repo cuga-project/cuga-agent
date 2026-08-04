@@ -20,9 +20,7 @@ class CugaBrowserNode(BaseNode):
         logger.info("Routing to CugaBrowserSubgraph")
         return Command(update=state.model_dump(), goto="CugaBrowserSubgraph")
 
-    async def callback_node(
-        self, state: AgentState, config: Optional[RunnableConfig] = None
-    ) -> Command:
+    async def callback_node(self, state: AgentState, config: Optional[RunnableConfig] = None) -> Command:
         if not state.final_answer and state.last_planner_answer:
             state.final_answer = state.last_planner_answer
         state.sender = self.name
