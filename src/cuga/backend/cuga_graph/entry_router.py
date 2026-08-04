@@ -29,7 +29,10 @@ class EntryRouter(BaseNode):
     async def node_handler(state: AgentState, name: str) -> Command:
         await state.manage_message_context()
 
-        if not settings.features.chat:
+        # Non-chat mode treats each *thread* as the conversation scope. Only
+        # reset variables at the start of a thread; follow-up turns must keep
+        # sandbox variables created on earlier turns (load tests, demo UI).
+        if not settings.features.chat and not state.variables_storage:
             state.variables_manager.reset()
 
         if getattr(settings.supervisor, "enabled", False):
