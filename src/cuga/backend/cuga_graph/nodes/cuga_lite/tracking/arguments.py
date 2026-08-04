@@ -5,6 +5,31 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+def unexpected_tool_arg_names(
+    args: tuple,
+    kwargs: Dict[str, Any],
+    param_names: List[str],
+) -> List[str]:
+    """Return unexpected argument names for schema-backed tool calls.
+
+    When a single positional dict mixes known and unknown keys, the unknown names
+    are reported. A dict with *no* known keys is treated as a nested payload for
+    the first parameter (same as ``merge_tool_call_args``) and is not unexpected.
+    """
+    if not param_names:
+        return []
+
+    known = set(param_names)
+    unexpected: set[str] = set()
+
+    if len(args) == 1 and isinstance(args[0], dict):
+        d: Dict[str, Any] = args[0]
+        if any(k in known for k in d):
+            unexpected.update(k for k in d if k not in known)
+    unexpected.update(k for k in kwargs if k not in known)
+    return sorted(unexpected)
+
+
 def merge_tool_call_args(
     args: tuple,
     kwargs: Dict[str, Any],

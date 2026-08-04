@@ -7,13 +7,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, List, Optional
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
 from pydantic import Field, create_model
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import (
+    merge_tool_call_args,
+    unexpected_tool_arg_names,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    BlockToolCallCounter,
+    ToolCallTracker,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
@@ -41,12 +49,6 @@ async def call_api(
     Returns:
         The API response
     """
-    import time
-    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-        BlockToolCallCounter,
-        ToolCallTracker,
-    )
-
     BlockToolCallCounter.increment()
 
     if args is None:
@@ -224,6 +226,22 @@ def create_tool_from_api_dict(
     async def tool_func(*args, **kwargs):
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
+            unexpected = unexpected_tool_arg_names(args, kwargs, param_names)
+            if unexpected:
+                error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
+                raw_args = merge_tool_call_args(args, kwargs, [])
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=raw_args,
+                    result=None,
+                    app_name=app_name,
+                    operation_id=_operation_id,
+                    duration_ms=0.0,
+                    error=error_msg,
+                )
+                logger.error(error_msg)
+                return {"error": error_msg}
+
             all_kwargs = merge_tool_call_args(args, kwargs, param_names)
 
             # Call API with timeout (timeout is handled inside call_api)
@@ -259,6 +277,7 @@ def create_tool_from_api_dict(
         name=tool_name,
         description=description,
         args_schema=InputModel,
+        handle_validation_error=True,
     )
 
     if not hasattr(tool.func, "_response_schemas"):
