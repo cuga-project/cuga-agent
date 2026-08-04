@@ -32,7 +32,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import PydanticOutputParser
 
-from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.planner_output import (
     APIPlannerOutput,
     APIPlannerOutputLite,
     APIPlannerOutputLiteNoHITL,

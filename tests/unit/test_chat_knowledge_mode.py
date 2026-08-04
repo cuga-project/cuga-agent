@@ -53,7 +53,6 @@ class DummyHitlHandler:
 
 @pytest.mark.asyncio
 async def test_chat_node_auto_executes_knowledge_tools_without_hitl(monkeypatch):
-    monkeypatch.setattr(chat_module, "ENABLE_SAVE_REUSE", True)
     monkeypatch.setattr(settings.features, "chat", True)
 
     agent = FakeChatAgent()

@@ -10,15 +10,17 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
 from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.browser_planner_agent import (
     BrowserPlannerAgent,
 )
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
+from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from loguru import logger
+from langgraph.constants import END
 from langgraph.types import Command
 
 tracker = ActivityTracker()
 
 
 PLANNER_ROUTER_MAP = {
-    "ConcludeTaskAgent": "PlanControllerAgent",
+    "ConcludeTaskAgent": NodeNames.FINAL_ANSWER_AGENT,
     "QaAgent": "QaAgent",
     "MemorizeAgent": "BrowserPlannerAgent",
     "ActionAgent": "ActionAgent",
@@ -38,7 +40,7 @@ class PlannerNode(BaseNode):
     @staticmethod
     async def node_handler(
         state: AgentState, agent: BrowserPlannerAgent, name: str
-    ) -> Command[Literal["ActionAgent", "QaAgent", "PlanControllerAgent", "BrowserPlannerAgent"]]:
+    ) -> Command[Literal["ActionAgent", "QaAgent", END, "BrowserPlannerAgent"]]:
         if tracker.actions_count >= 4:
             logger.debug("Resetting navigation paths")
             state.task_analyzer_output.navigation_paths = None
@@ -74,8 +76,9 @@ class PlannerNode(BaseNode):
                 )
             )
             state.last_planner_answer = next_instruction
+            state.final_answer = next_instruction
             state.stm_steps_history.append(next_instruction)
-            return Command(update=state.model_dump(), goto="PlanControllerAgent")
+            return Command(update=state.model_dump(), goto=END)
         elif next_step_plan.next_agent == "QaAgent":
             state.last_question = next_instruction
             state.stm_steps_history.append("(QaAgent): " + next_instruction)

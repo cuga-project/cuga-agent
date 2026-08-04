@@ -27,12 +27,10 @@ src/cuga/backend/cuga_graph/nodes/
 ├── cuga_supervisor/       # Orchestrator subgraph that delegates tasks to downstream agents
 │   └── a2a_protocol.py    # Actor-to-Agent protocol & sub-task dispatching
 │
-├── api/                   # Specialized API-interaction code and planning agents
-├── browser/               # Specialized UI/browser automation and planning agents
+├── cuga_browser/          # Standalone browser runtime graph factory
+├── browser/               # Browser planner, action, and QA agents
 ├── chat/                  # Conversational agents
-├── task_decomposition_planning/  # Pre-flight request analyzer and breakdown planning
 ├── answer/                # Synthesis agents producing clean user-visible answers
-├── save_reuse/            # Skill recording and reuse agents
 └── shared/                # Base agent abstractions
 ```
 

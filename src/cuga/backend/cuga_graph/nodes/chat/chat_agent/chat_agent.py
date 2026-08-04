@@ -104,12 +104,10 @@ class ChatAgent(BaseAgent):
         self.sse_available = await check_sse_availability(self.sse_url)
         self.use_regular_chat = os.getenv('USE_LEGACY_EXECUTION', 'false').lower() == 'true'
 
-        # If SSE is not available, force regular chat mode
         if not self.sse_available:
             logger.info(
                 f"SSE endpoint at {self.sse_url} is not available. Falling back to regular chat mode."
             )
-        if not settings.features.save_reuse:
             self.use_regular_chat = True
 
         if self.use_regular_chat:

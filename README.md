@@ -34,7 +34,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | Feature | How |
 > |---------|-----|
 > | **MCP, OpenAPI & LangChain tools** | [`mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) · `CugaAgent(tools=[...])` |
-> | **Reasoning modes** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
+> | **Code generation profiles** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
@@ -45,7 +45,6 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
-> | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
 > [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#quick-start)
 
@@ -861,35 +860,18 @@ E2B will automatically execute code in cloud sandboxes. You'll see logs indicati
 </details>
 
 <details>
-<summary> Reasoning modes - Switch between Fast/Balanced/Accurate modes</summary>
+<summary> Code generation profiles - fast / balanced / accurate</summary>
 
-## Available Modes under `./src/cuga`
+## Available profiles under `./src/cuga/configurations/modes`
 
-| Mode       | File                                   | Description                                     |
+| Profile    | File                                   | Description                                     |
 | ---------- | -------------------------------------- | ----------------------------------------------- |
 | `fast`     | `./configurations/modes/fast.toml`     | Optimized for speed                             |
 | `balanced` | `./configurations/modes/balanced.toml` | Balance between speed and precision _(default)_ |
 | `accurate` | `./configurations/modes/accurate.toml` | Optimized for precision                         |
 | `custom`   | `./configurations/modes/custom.toml`   | User-defined settings                           |
 
-## Configuration
-
-```
-configurations/
-├── modes/fast.toml
-├── modes/balanced.toml
-├── modes/accurate.toml
-└── modes/custom.toml
-```
-
-Edit `settings.toml`:
-
-```toml
-[features]
-cuga_mode = "fast"  # or "balanced" or "accurate" or "custom"
-```
-
-**Documentation:** [./docs/flags.html](./docs/flags.html)
+These profiles tune code generation, reflection, and related feature flags. Graph routing is handled by the entry graph (CugaLite, CugaSupervisor, or CugaBrowser).
 
 </details>
 
@@ -1070,34 +1052,6 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 </details>
 
 ## Advanced Usage
-
-<details>
-<summary><b> Save & Reuse</b></summary>
-
-## Setup
-
-• Change `./src/cuga/settings.toml`: `cuga_mode = "save_reuse_fast"`
-• Run: `cuga start demo`
-
-## Demo Steps
-
-• **First run**: `get top account by revenue`
-
-- This is a new flow (first time)
-- Wait for task to finish
-- Approve to save the workflow
-- Provide another example to help generalization of flow e.g. `get top 2 accounts by revenue`
-
-• **Flow now will be saved**:
-
-- May take some time
-- Flow will be successfully saved
-
-• **Verify reuse**: `get top 4 accounts by revenue`
-
-- Should run faster using saved workflow
-
-</details>
 
 <details>
 <summary><b> Adding Tools: Comprehensive Examples</b></summary>

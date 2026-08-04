@@ -9,17 +9,15 @@ from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import BaseModel, Field
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ApiDescription
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.task_models import (
+    AnalyzeTaskOutput,
+    TaskDecompositionPlan,
+)
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import FollowUpAction, ActionResponse
 from cuga.backend.cuga_graph.state.api_planner_history import (
     HistoricalAction,
-)
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.prompts.load_prompt import (
-    AnalyzeTaskOutput,
-)
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decomposition_agent.prompts.load_prompt import (
-    TaskDecompositionPlan,
 )
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
@@ -957,7 +955,7 @@ class AgentState(BaseModel):
         description="Tenant and instance context for multi-tenant/prod DB scoping",
     )
     current_datetime: Optional[str] = ""
-    lite_mode: Optional[bool] = None  # If set, overrides settings.advanced_features.lite_mode
+    lite_mode: Optional[bool] = None  # Deprecated; ignored (kept for persisted state compatibility)
     variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     variable_counter_state: int = 0
     variable_creation_order: List[str] = Field(default_factory=list)

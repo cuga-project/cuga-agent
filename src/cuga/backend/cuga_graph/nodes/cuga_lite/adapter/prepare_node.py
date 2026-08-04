@@ -40,7 +40,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     normalize_mcp_few_shot_examples,
     resolve_cuga_lite_few_shots_enabled,
 )
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.app_auth import call_authenticate_apps
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.skills import (
     SkillRegistry,
@@ -155,14 +155,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # Specific app selected - filter tools to only this app
             all_apps = await adapter._base_tool_provider.get_apps()
             # add here the implementation of force_
-            force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
+            force_lite_apps = list(getattr(settings.advanced_features, "builtin_tools", []) or [])
             if force_lite_apps:
                 allowed_apps_names = list(set([state.sub_task_app] + force_lite_apps))
                 if _web_search_enabled():
                     allowed_apps_names.append("web")
                 # call authenticate_apps for the allowed apps
                 if settings.advanced_features.benchmark == "appworld":
-                    await TaskAnalyzer.call_authenticate_apps(force_lite_apps)
+                    await call_authenticate_apps(force_lite_apps)
                 apps_for_prompt = [app for app in all_apps if app.name in allowed_apps_names]
             else:
                 apps_for_prompt = [app for app in all_apps if app.name == state.sub_task_app]

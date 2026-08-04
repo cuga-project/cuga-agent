@@ -8,15 +8,8 @@ from langgraph.types import Command
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.plan_controller_agent.prompts.load_prompt import (
-    PlanControllerOutput,
-)
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from cuga.backend.cuga_graph.nodes.browser.qa_agent.prompts.load_prompt import QaAgentOutput
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decomposition_agent.prompts.load_prompt import (
-    TaskDecompositionPlan,
-    TaskDecompositionMultiOutput,
-)
 from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
 from pydantic import TypeAdapter
@@ -467,9 +460,6 @@ class AgentLoop:
             event_val = json.dumps(state_obj.previous_steps[-1].model_dump())
         if first_key == "ActionAgent":
             event_val = json.dumps(messages[-1].tool_calls)
-        if first_key == 'ReuseAgent':
-            event_val = messages[-1].content
-        # Override CugaLite to display as CodeAgent for consistency
         if first_key == "CugaLite":
             first_key = "CodeAgent"
         logger.debug("Current Agent: {}".format(list(event.keys())))
@@ -560,16 +550,6 @@ class AgentLoop:
                 )
             else:
                 return AgentLoopAnswer(end=True, interrupt=True, has_tools=False, answer=answer, tools=[])
-
-        if "ReuseAgent" in event_keys:
-            logger.debug("Detected ReuseAgent in event_keys")
-            return AgentLoopAnswer(
-                end=True,
-                has_tools=False,
-                answer=f"Done!\n---\n [Click here for an explained walkthrough of the flow](http://localhost:{settings.server_ports.demo}/flows/flow.html)",
-                flow_generalized=True,
-                tools=msg.tool_calls,
-            )
 
         if "FinalAnswerAgent" in event_keys or "CodeAgent" in event_keys:
             logger.debug(
@@ -711,15 +691,6 @@ class AgentLoop:
 
     async def show_chat_even(self, event: StreamEvent):
         if self.env_pointer and self.env_pointer.chat:
-            if event.name == "TaskDecompositionAgent":
-                msg = "TaskDecompositionAgent\n:"
-                DataType = TypeAdapter(Union[TaskDecompositionPlan, TaskDecompositionMultiOutput])
-                task_decomposition_plan = DataType.validate_json(event.data)
-                msg += self.get_output_of_obj(task_decomposition_plan.model_dump())
-                await self.env_pointer.send_chat_message(
-                    role="assistant",
-                    content=msg,
-                )
             if event.name == "BrowserPlannerAgent":
                 msg = "PlannerAgent:\n"
                 p = NextAgentPlan(**json.loads(event.data))
@@ -737,11 +708,6 @@ class AgentLoop:
                 p = QaAgentOutput(**json.loads(event.data))
                 await self.env_pointer.send_chat_message(
                     role="assistant", content="{} - {}".format(p.name, p.answer)
-                )
-            if event.name == "PlanControllerAgent":
-                p = PlanControllerOutput(**json.loads(event.data))
-                await self.env_pointer.send_chat_message(
-                    role="assistant", content="Plan Controller - next subtask is: {}".format(p.next_subtask)
                 )
 
     async def run(self, state: Optional[AgentState] = None, resume=None):

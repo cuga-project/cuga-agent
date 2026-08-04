@@ -23,29 +23,11 @@ class TestIsEnabled:
     @patch("cuga.backend.evolve.integration.settings")
     def test_disabled_when_evolve_not_enabled(self, mock_settings):
         mock_settings.evolve.enabled = False
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = True
         assert EvolveIntegration.is_enabled() is False
 
     @patch("cuga.backend.evolve.integration.settings")
-    def test_enabled_when_evolve_enabled_and_lite_mode(self, mock_settings):
+    def test_enabled_when_evolve_enabled(self, mock_settings):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = True
-        assert EvolveIntegration.is_enabled() is True
-
-    @patch("cuga.backend.evolve.integration.settings")
-    def test_disabled_when_lite_mode_only_but_not_in_lite_mode(self, mock_settings):
-        mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = False
-        assert EvolveIntegration.is_enabled() is False
-
-    @patch("cuga.backend.evolve.integration.settings")
-    def test_enabled_when_lite_mode_only_is_false(self, mock_settings):
-        mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
-        mock_settings.advanced_features.lite_mode = False
         assert EvolveIntegration.is_enabled() is True
 
 

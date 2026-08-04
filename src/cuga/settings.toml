@@ -26,16 +26,11 @@ mode = 'api'
 use_extension = false
 code_planner_enabled = true
 api_planner_hitl = false
-lite_mode = true  # Enable CugaLite for simple API tasks (faster execution)
-lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this many tools
-force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
-save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
-decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
@@ -240,7 +235,6 @@ enabled = true             # Master toggle for Evolve integration
 url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint
 mode = "auto"               # "auto" = registry first, then direct SSE fallback; "registry" = registry only; "direct" = direct SSE only
 app_name = "evolve"         # MCP app/server name to use when Evolve is managed by the CUGA registry
-lite_mode_only = true        # Only activate Evolve for CugaLite mode
 save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)

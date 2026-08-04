@@ -112,7 +112,7 @@ def test_mock_bind_tools_does_not_raise():
 
 
 def test_mock_with_structured_output_returns_valid_model():
-    from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decomposition_agent.prompts.load_prompt import (
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.task_models import (
         TaskDecompositionPlan,
     )
 

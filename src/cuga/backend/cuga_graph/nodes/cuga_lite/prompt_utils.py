@@ -337,7 +337,7 @@ class PromptUtils:
         )
         tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
         from cuga.backend.llm.models import LLMManager
-        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.shortlister import (
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
@@ -482,7 +482,7 @@ class PromptUtils:
             return []
 
         from cuga.backend.llm.models import LLMManager
-        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.shortlister import (
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent

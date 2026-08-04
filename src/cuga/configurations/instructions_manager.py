@@ -34,14 +34,13 @@ class InstructionsManager:
         """Setup hard-coded key mappings for alternative access"""
         # Hard-coded mapping from alternative names to actual keys
         self._key_mappings = {
-            # Example mappings - replace with your actual mappings
-            NodeNames.API_CODE_PLANNER_AGENT: "api_code_planner",
-            NodeNames.PLAN_CONTROLLER_AGENT: "plan_controller",
-            NodeNames.DECOMPOSITION_AGENT: "task_decomposition",
-            NodeNames.API_PLANNER_AGENT: "api_planner",
             NodeNames.FINAL_ANSWER_AGENT: "answer",
-            NodeNames.SHORTLISTER_AGENT: "shortlister",
-            NodeNames.CODE_AGENT: "code_agent",
+            "api_code_planner": "api_code_planner",
+            "plan_controller": "plan_controller",
+            "task_decomposition": "task_decomposition",
+            "api_planner": "api_planner",
+            "shortlister": "shortlister",
+            "code_agent": "code_agent",
         }
 
         # You can also create reverse mappings if needed
@@ -249,14 +248,6 @@ class InstructionsManager:
                 self._in_memory_cache[resolved_key.upper()] = res.answer
         if res.plan:
             resolved_key = self._resolve_key('api_planner')
-            # Normalize to uppercase to match get_all_instruction_keys() output
-            if resolved_key:
-                self._in_memory_cache[resolved_key.upper()] = res.plan
-        if not settings.advanced_features.lite_mode:
-            resolved_key = self._resolve_key('code_agent')
-            if resolved_key:
-                self._in_memory_cache[resolved_key.upper()] = res.plan
-            resolved_key = self._resolve_key('api_code_planner')
             if resolved_key:
                 self._in_memory_cache[resolved_key.upper()] = res.plan
 

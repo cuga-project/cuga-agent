@@ -1,11 +1,9 @@
 [features]
 chat = false
-task_decomposition = true
 local_sandbox = true
 thoughts = false
 code_output_summary = false
 code_generation = "fast"
 code_output_reflection = true
-save_reuse = false
 forced_apps = []
 final_answer = true
