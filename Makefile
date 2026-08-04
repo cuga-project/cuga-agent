@@ -13,6 +13,8 @@ CUGA_PORT := 7860
 # ── Code Engine (deployed) — coordinates mirror deploy/ce/config.sh; override on the CLI ──
 CE_APP     ?= cuga-events
 CE_PROJECT ?= ce-project-routing
+CE_REGION  ?= us-east
+CE_GROUP   ?= routing
 CE_ROSTER  ?= supervisor_agents.yaml
 TAIL       ?= 60
 # The deployed public URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy_app.sh).
@@ -265,13 +267,13 @@ ce-url: ## [CE] Print the deployed app URL
 	@echo "$(if $(CE_URL),$(CE_URL),not deployed — run: make ce-deploy)"
 
 ce-status: ## [CE] Deploy status + the live capability report (channels/scheduler/AP/public-url)
-	@ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || true
+	@ibmcloud target -r $(CE_REGION) -g $(CE_GROUP) >/dev/null 2>&1 && ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || { echo "not logged in / project unreachable — run: ibmcloud login --sso  (region $(CE_REGION)), then retry"; exit 1; }
 	@ibmcloud ce app get -n $(CE_APP) 2>/dev/null | grep -iE "Status Summary|^URL:|Age|Minimum Scale|Maximum Scale" || { echo "app '$(CE_APP)' not found — make ce-deploy"; exit 1; }
 	@echo "── capability report ──"
 	@curl -s --max-time 15 "$(CE_URL)/api/events/status" | $(PY) -c "import sys,json;c=json.load(sys.stdin).get('capability');[print(' ',l) for l in (c if isinstance(c,list) else [c])]" 2>/dev/null || echo "  (server not reachable)"
 
 ce-logs: ## [CE] Container logs — FOLLOW=1 to stream · GREP=term to filter · TAIL=n (default 60)
-	@ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || true
+	@ibmcloud target -r $(CE_REGION) -g $(CE_GROUP) >/dev/null 2>&1 && ibmcloud ce project select --name $(CE_PROJECT) >/dev/null 2>&1 || { echo "not logged in / project unreachable — run: ibmcloud login --sso  (region $(CE_REGION)), then retry"; exit 1; }
 	@if [ -n "$(FOLLOW)" ]; then ibmcloud ce app logs -n $(CE_APP) --follow; \
 	elif [ -n "$(GREP)" ]; then ibmcloud ce app logs -n $(CE_APP) 2>/dev/null | grep -iE "$(GREP)" | tail -$(TAIL); \
 	else ibmcloud ce app logs -n $(CE_APP) 2>/dev/null | tail -$(TAIL); fi

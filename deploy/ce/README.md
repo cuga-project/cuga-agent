@@ -37,6 +37,23 @@ targets are unchanged; these are the CE parallels — `[CE]` in `make help`.**
 pointed at the CE route; channel creds + `GATEWAY_TOKEN` come from your `.env` (they
 must match the deployed secret). First-time setup still needs `make_env_ce.sh` (below).
 
+**Login vs public-route.** `ce-smoke` and `test-e2e-ce` hit the app's **public route** — no
+`ibmcloud` login needed. `ce-status` and `ce-logs` use the CE **control plane**, so they need
+`ibmcloud login` first (region/group are `CE_REGION`/`CE_GROUP`, default `us-east`/`routing` — the
+targets run `ibmcloud target -r … -g …` before selecting the project; override on the CLI). If you're
+not logged in, `ce-status` says so plainly.
+
+**What `test-e2e-ce` proves.** Arm **and FIRE** for real: all four channels round-trip, and native
+cron/poll actually fire on the in-process scheduler and return a live agent answer (answer *content*
+is not graded — the fire is what's tested). A channel with no token is SKIPPED and named; the harness
+is no-AP-aware (AP-only checks skip, never fail). A synthetic-web delivery failure does not count
+against a fire.
+
+**Verify the background loops.** The direct channel loops (Telegram long-poll, Discord Gateway) and
+the native scheduler only run if the events-background launcher fires at boot — confirm with
+`make ce-logs GREP=launched` → `events: launched N background task(s)`. (That launcher was once
+dropped in a merge, silently breaking Telegram/Discord + cron/poll; it's restored in `server/main.py`.)
+
 ## Sequence (the scripts underneath)
 ```bash
 cd deploy/ce

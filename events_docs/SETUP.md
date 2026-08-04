@@ -381,6 +381,13 @@ A channel or integration **missing its creds is SKIPPED and named** — never a 
 e2e targets are safe to run with only a subset connected. `test-e2e` and `test-ap` need *different*
 stacks (no-AP vs full-AP), so run each against the matching `make up-noap` / `make up`.
 
+**Testing a deployed app (Code Engine).** Each local target has a CE parallel that points at the
+deployed route instead of localhost — **`make test-e2e-ce`** (the channel + native-fire e2e against
+the live app), plus ops targets **`make ce-status` · `ce-logs` · `ce-smoke` · `ce-url`**.
+`test-e2e-ce` and `ce-smoke` hit the app's public route (no login); `ce-status`/`ce-logs` use the CE
+control plane (`ibmcloud login` first). The full deploy + test story is in
+[../deploy/ce/README.md](../deploy/ce/README.md).
+
 **Under the hood, `make test-report`** runs the granular rungs and saves the result — `offline ·
 live · flows · matrix · fire · delegation · new-pieces · exhaustive` (the fleet-era `now/matrix/fire`
 rungs auto-skip under `EVENTS_SUPERVISOR=1`). Call any one directly to debug a single layer:

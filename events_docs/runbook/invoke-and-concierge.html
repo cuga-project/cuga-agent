@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<!-- CUGA events runbook — /invoke & concierge. Hand-authored, no-AP scope.
+     Sources: events/app.py (/invoke handler ~167-426), events/envelope.py, events/concierge.py,
+     events/delivery.py, events/runmeta.py, server/main.py (/stream). -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>/invoke &amp; the Concierge — CUGA events runbook</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+
+<div class="kicker">CUGA · events · the seam</div>
+<h1>The <code>/invoke</code> seam &amp; the concierge</h1>
+<p class="lede">The one internal contract every trigger goes through, the envelope it carries, how the
+   concierge decides "chat or arm a flow", and why the agent that answers is <b>the same one brain</b>
+   whether you came from Slack, a cron tick, or the browser.</p>
+
+<div class="nav">
+  <a href="index.html">Overview</a>
+  <a href="channels.html">Channels</a>
+  <a href="invoke-and-concierge.html" class="here">/invoke &amp; Concierge</a>
+  <a href="nl-to-flow.html">NL&rarr;Flow</a>
+  <a href="scheduler-and-polling.html">Scheduler &amp; Polling</a>
+  <a href="apis.html">API Reference</a>
+  <a href="agents.html">Agents</a>
+  <a href="examples.html">Examples</a>
+</div>
+
+<h2 id="envelope">The Envelope — the one data contract</h2>
+<p>Every inbound trigger is normalized into an <code>Envelope</code> (three stable string fields +
+   <code>source</code> + <code>event</code>). <code>validate()</code> rejects a malformed one with 400
+   before anything runs.</p>
+<div class="wrap"><table>
+  <tr><th>Field</th><th>Type · default</th><th>Meaning</th></tr>
+  <tr><td class="k">source.type</td><td><code>str</code> · <code>"channel"</code></td><td>one of <code>channel</code> · <code>integration</code> · <code>time</code> (validated)</td></tr>
+  <tr><td class="k">source.name</td><td><code>str</code> · <code>"web"</code></td><td>the concrete connector: <code>telegram</code>/<code>slack</code>/<code>discord</code>, or <code>cron</code>/<code>poll</code> for a tick</td></tr>
+  <tr><td class="k">source.thread_id</td><td><code>str</code> · <code>"web:local"</code></td><td>keys per-conversation memory; channels use <code>gw:&lt;channel&gt;:&lt;native&gt;</code></td></tr>
+  <tr><td class="k">source.user</td><td><code>str</code> · <code>""</code></td><td>the channel-native <b>author</b> id &rarr; per-user identity/scope (empty &rarr; falls back to the thread-native id)</td></tr>
+  <tr><td class="k">event.kind</td><td><code>str</code> · <code>"message"</code></td><td>normalized (hyphens&rarr;underscores, lowercased); must be a registry kind &mdash; <code>message</code>, <code>tick</code>, <code>new_pr</code>&hellip;</td></tr>
+  <tr><td class="k">event.payload</td><td><code>dict</code> · <code>{}</code></td><td>the trigger's data (for a channel: <code>{telegram_user: …}</code>; for a push: the event body, with a <code>_raw</code> fallback)</td></tr>
+  <tr><td class="k">text</td><td><code>str</code> · <code>""</code></td><td>the utterance (required non-empty for a <code>channel</code>+<code>message</code> envelope)</td></tr>
+  <tr><td class="k">agent</td><td><code>str|None</code> · <code>None</code></td><td>the target: <code>"concierge"</code> (the router) or a concrete agent id</td></tr>
+  <tr><td class="k">deliver</td><td><code>bool</code> · <code>false</code></td><td><code>true</code> &rarr; the seam delivers the answer over the origin transport; <code>false</code> &rarr; the caller (channel handler) delivers it</td></tr>
+  <tr><td class="k">scope</td><td><code>str</code> · <code>""</code></td><td>the isolation scope (<code>tenant/instance/user</code>); empty &rarr; <code>/invoke</code> resolves it (identity map or headers)</td></tr>
+  <tr><td class="k">trace_id</td><td><code>str</code> · <code>""</code></td><td>end-to-end correlation id</td></tr>
+</table></div>
+<p class="dim"><b>Not envelope fields:</b> <code>subscription_id</code> and <code>expires_at</code> are top-level
+   keys the <em>scheduler</em> adds to the raw <code>/invoke</code> body and the handler reads directly
+   (bounded-run expiry, poll-state lookup) &mdash; <code>from_dict</code> ignores them.</p>
+
+<h3 id="worker-input">What the agent actually receives — <code>worker_input()</code></h3>
+<p>The agent doesn't see the raw envelope; it sees a rendered prompt. For a channel <b>message</b> that's
+   just <code>text</code>. For a non-chat event (a push, a tick) the payload is rendered into an
+   <code>[event]</code> line and framed as a one-shot instruction:</p>
+<pre><span class="c"># worker_input() — envelope.py</span>
+channel message        ─▶  returns <span class="k">self.text</span> verbatim
+integration event      ─▶  <span class="s">"&lt;text&gt;\n\n[event] k1=v1  k2=v2 …"</span>   <span class="c"># each value capped 1500 chars</span>
+                            <span class="c"># if curated payload empty but payload._raw present → "raw=&lt;json&gt;" (capped 4000)  [Tier-0 net]</span>
+                            <span class="c"># PUSH framing prepends: "A watched event just occurred — the [event] line is</span>
+                            <span class="c">#   its authoritative data … Handle THIS event now, once … reply with the content."</span></pre>
+
+<h2 id="pipeline">Inside <code>/invoke</code> — the pipeline</h2>
+<p>One handler, every trigger. The order is load-bearing (auth first; scope before routing; expiry before
+   running the agent).</p>
+<div class="seq">
+  <div class="hd"><b>POST /invoke</b> <span class="arrow">·</span> header <code>X-Gateway-Token</code> <span class="arrow">·</span> app.py ~167&ndash;426</div>
+  <div class="step"><div class="num">1</div><div><div class="flow"><b>authenticate</b></div>
+    <div class="api">if token and X-Gateway-Token != token → 401</div>
+    <div class="desc">Empty <code>GATEWAY_TOKEN</code> leaves the seam open (a startup warning fires). The channel handlers, the scheduler, and webhooks all send this header.</div></div></div>
+  <div class="step"><div class="num">2</div><div><div class="flow"><b>validate + parse</b></div>
+    <div class="api">envelope.validate(body) → 400 on problems · env = Envelope.from_dict(body)</div>
+    <div class="desc">Rejects unknown <code>source.type</code>/<code>event.kind</code> and an empty-text channel message.</div></div></div>
+  <div class="step"><div class="num">3</div><div><div class="flow"><b>resolve scope (isolation)</b></div>
+    <div class="api">scope = env.scope  ·  else channel author → identity map (resolve_channel)  ·  else resolve_principal(headers)</div>
+    <div class="desc">Everything downstream keys off scope: memory, agent lookup, subscriptions.</div></div></div>
+  <div class="step"><div class="num">4</div><div><div class="flow"><b>bounded-run expiry gate</b></div>
+    <div class="api">if body.expires_at and now &gt; expires_at → delete the subscription, return {expired:true} — do NOT run</div>
+    <div class="desc">Lazy enforcement of "&hellip; for one hour": a flow never outlives its deadline by more than one tick, even if the server was down. See <a href="nl-to-flow.html#bounded">NL&rarr;Flow &sect;bounded</a>.</div></div></div>
+  <div class="step"><div class="num">5</div><div><div class="flow"><b>account-link · poll augment</b></div>
+    <div class="api">"/start &lt;token&gt;" | "/link &lt;token&gt;" → bind channel id → user  ·  POLL: env.text += augment_prompt(watch_state)</div>
+    <div class="desc">The link handshake makes a sender's native id map to a profile. For a POLL tick, the change-detection instruction is appended (see <a href="scheduler-and-polling.html#poll">Scheduler &sect;poll</a>).</div></div></div>
+  <div class="step"><div class="num">6</div><div><div class="flow"><b>direct-watcher interception</b></div>
+    <div class="api">if agent=="concierge" and channel message and a direct_events watcher matches → agent = watcher.target_agent</div>
+    <div class="desc">An armed "when someone reacts :bug: in #incidents&hellip;" reassigns the target from the router to the specialist. Only for channel messages, never for a slash.</div></div></div>
+  <div class="step"><div class="num">7</div><div><div class="flow"><b>fork on <code>agent</code></b> (below)</div>
+    <div class="api">agent=="concierge" → concierge.run(…)  ·  concrete id → runtime.run(…)  ·  else 404</div>
+    <div class="desc">This is the whole branch.</div></div></div>
+  <div class="step"><div class="num">8</div><div><div class="flow"><b>footer · poll-gate · deliver · log</b></div>
+    <div class="api">runmeta.footer → poll_state.decide → if deliver and changed: delivery.send_direct → log run</div>
+    <div class="desc">Appends "&mdash; agent · tools · ms" (if <code>EVENTS_REPLY_METADATA</code>), gates delivery on real change (poll), and delivers back over the origin transport. Returns <code>{ok, agent, answer, trace_id, meta}</code>.</div></div></div>
+</div>
+<h3>The fork (verbatim shape)</h3>
+<pre><span class="c"># app.py — the routing branch</span>
+if agent == <span class="s">"concierge"</span>:                        <span class="c"># every channel message; the router</span>
+    answer = await concierge.run(env.thread_id, env.text, principal)
+else:                                          <span class="c"># a concrete agent id (a tick, a push, a watcher)</span>
+    if not agent or runtime.get_agent(agent, scope=agent_scope) is None:
+        return <span class="v">404</span> { <span class="k">"ok"</span>: <span class="v">false</span>, <span class="k">"error"</span>: <span class="s">"unknown agent '&lt;agent&gt;'"</span> }
+    answer = await runtime.run(agent, env.thread_id, env.worker_input(),
+                               scope=agent_scope,
+                               deliver_to=[env.source.name] if env.deliver else None)</pre>
+<p class="dim">A channel chat carries <code>agent:"concierge"</code> &rarr; the router. A scheduler tick or a webhook
+   carries a concrete id (or the router, with <code>?route=1</code>). A falsy/unknown <code>agent</code>
+   returns 404 &mdash; there is no silent default.</p>
+
+<h2 id="concierge">The concierge — chat, or arm a flow?</h2>
+<p>The concierge is <b>not</b> an LLM wrapper around every message. A plain question skips the LLM entirely.
+   <code>run()</code> decides in this order &mdash; first match wins:</p>
+<pre><span class="c"># concierge.py — run(thread_id, text, principal)</span>
+<span class="v">1.</span> parsed = _slash_parse(text)              <span class="c"># /automate /watch /schedule /cron /poll /push /start /link</span>
+   if parsed: return _arm_slash(…)          <span class="c">#   → deterministic arm, NO LLM</span>
+
+<span class="v">2.</span> pre = await _pre_route(…)                <span class="c"># flowspec: a parked-answer to a prior question,</span>
+   if pre is not None: return pre           <span class="c">#   or a high-confidence "watch X" → arm it (or ask ONE question)</span>
+
+<span class="v">3.</span> if EVENTS_NOW_FASTPATH and classify.classify(text) == <span class="s">"NOW"</span>:   <span class="c"># heuristic regex</span>
+       return await runtime.run(<span class="s">"cuga"</span>, thread(f<span class="s">"{tid}:cuga"</span>), text, scope=…)  <span class="c"># STRAIGHT to the agent</span>
+
+<span class="v">4.</span> res = await self._graph.ainvoke({<span class="s">"messages"</span>: [HumanMessage(text)]}, …)     <span class="c"># the LLM react-agent</span>
+   return res["messages"][-1].content       <span class="c">#   standing intent (cron/poll/push phrasing) → tool-calling</span></pre>
+<p>So a chat ("what's IBM's stock price?") is classified <code>NOW</code> by a <b>dependency-free regex</b>
+   and runs the agent directly &mdash; <b>no concierge-LLM hop</b>. Only standing phrasing
+   ("<em>every</em> weekday&hellip;", "<em>when</em> a PR opens&hellip;") engages the concierge's own LLM
+   react-agent, whose tools then answer or arm. The full NL&rarr;Flow path &mdash; the tools, cadence-stripping,
+   how a native subscription is written &mdash; is <a href="nl-to-flow.html">its own page</a>.</p>
+
+<h2 id="brain">One brain, three doors</h2>
+<p><code>runtime.run("cuga", …)</code> builds/reuses the agent's <b>DynamicAgentGraph</b> and drives it with
+   CUGA's <code>AgentLoop</code> &mdash; the identical path the browser's <code>/stream</code> uses. In
+   supervisor mode the one agent <code>cuga</code> routes to a specialist <em>internally</em> and the answer
+   bubbles up. The three entry points differ only in the door; the agent is never forked:</p>
+<div class="wrap"><table>
+  <tr><th>Door</th><th>Entry</th><th>How it reaches the agent</th></tr>
+  <tr><td class="k">Channels</td><td><code>/invoke</code> (agent="concierge")</td><td>concierge &rarr; NOW fast-path or <code>answer_now</code> tool &rarr; <code>runtime.run("cuga")</code></td></tr>
+  <tr><td class="k">Web chat</td><td><code>/stream</code> · <code>/api/concierge</code></td><td>plain question streams the agent directly; standing intent &rarr; concierge &rarr; same <code>runtime.run</code></td></tr>
+  <tr><td class="k">Flows</td><td><code>/invoke</code> (concrete agent)</td><td>a tick/webhook &rarr; <code>runtime.run(agent)</code> directly on the payload</td></tr>
+</table></div>
+<div class="note"><b>The whole path, one line:</b> envelope &rarr; <code>/invoke</code> (auth &middot; scope &middot;
+   expiry &middot; link &middot; poll-augment) &rarr; fork on <code>agent</code> &rarr; { concierge: slash &middot;
+   pre-route &middot; <b>NOW&rarr;agent</b> &middot; LLM-router | concrete: agent } &rarr;
+   <code>runtime.run("cuga")</code> &rarr; <code>DynamicAgentGraph</code> via <code>AgentLoop</code> &rarr;
+   answer &rarr; metadata footer &rarr; poll-gate &rarr; deliver.</div>
+
+<h2 id="delivery">Delivery &amp; the metadata footer</h2>
+<p>When <code>deliver:true</code> (scheduler ticks, webhooks that name a sink), the seam sends the answer
+   itself via <code>delivery.send_direct</code>, decoding the <code>gw:&lt;channel&gt;:&lt;native&gt;</code>
+   origin from <code>thread_id</code> &mdash; the same direct transports the channels use (no AP send step).
+   When <code>deliver:false</code> (channel chats), the channel handler owns the round-trip. If
+   <code>EVENTS_REPLY_METADATA</code> is on, a compact footer is appended: <code>&mdash; &lt;sub-agent&gt; ·
+   &lt;tools&gt; · &lt;ms&gt;</code>, surfacing which specialist actually answered.</p>
+
+<h2 id="auth">Auth &amp; scope — two different things</h2>
+<div class="wrap"><table>
+  <tr><th>Mechanism</th><th>What it is</th><th>Where</th></tr>
+  <tr><td class="k">X-Gateway-Token</td><td><b>authentication</b> of the machine seam &mdash; must equal <code>GATEWAY_TOKEN</code></td><td><code>/invoke</code>, <code>/synth-fire</code>, <code>/box/poll</code>, <code>{sub}/run</code></td></tr>
+  <tr><td class="k">header-principal</td><td><b>isolation/scoping</b> (not auth) &mdash; <code>X-Tenant-Id</code>/<code>X-User-Id</code> (default <code>local</code>) &rarr; scope</td><td>the read endpoints &amp; <code>/api/concierge</code></td></tr>
+  <tr><td class="k">identity map</td><td>a channel author's native id &rarr; a linked user &rarr; scope (via <code>/start &lt;token&gt;</code>)</td><td>resolved inside <code>/invoke</code> for channel messages</td></tr>
+</table></div>
+
+<p class="src">Sources: <code>events/app.py</code> (the <code>/invoke</code> handler, ~167&ndash;426) ·
+   <code>events/envelope.py</code> (<code>Source</code>/<code>Event</code>/<code>Envelope</code>,
+   <code>validate</code>, <code>worker_input</code>) · <code>events/concierge.py</code> (<code>run</code>) ·
+   <code>events/delivery.py</code> · <code>events/runmeta.py</code> · <code>server/main.py</code> (<code>/stream</code>).
+   Verified 2026-07-31.</p>
+
+</body></html>

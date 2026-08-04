@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<!-- CUGA events runbook — EXAMPLES. Hand-authored, no-AP scope.
+     Sources: events/catalog.py (EXAMPLES), events/app.py (/invoke, /api/events/hook), deploy/ce. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples — CUGA events runbook</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+
+<div class="kicker">CUGA · events · examples</div>
+<h1>Things to try &mdash; from the deployed app</h1>
+<p class="lede">A long, categorized list you can run against a live CUGA deployment with <b>no Activepieces</b>:
+   ask-anything per channel, scheduled digests, stateful polls, inbound webhooks, and direct reactions.
+   Every one uses only the native/direct path.</p>
+
+<div class="nav">
+  <a href="index.html">Overview</a>
+  <a href="channels.html">Channels</a>
+  <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>
+  <a href="nl-to-flow.html">NL&rarr;Flow</a>
+  <a href="scheduler-and-polling.html">Scheduler &amp; Polling</a>
+  <a href="apis.html">API Reference</a>
+  <a href="agents.html">Agents</a>
+  <a href="examples.html" class="here">Examples</a>
+</div>
+
+<h2 id="how">Three ways to run any of these</h2>
+<p>Everything below is an <b>utterance</b>. You send it one of three ways. Set <code>$APP</code> to your
+   deployment's public URL (on Code Engine, its route) and <code>$GW</code> to <code>GATEWAY_TOKEN</code>.</p>
+<div class="wrap"><table>
+  <tr><th>Way</th><th>How</th><th>Best for</th></tr>
+  <tr><td class="k">Chat a channel</td><td>DM the Telegram bot · @mention/DM the Discord bot · post in a Slack channel the bot is in · open <code>$APP/manage</code> &rarr; Studio</td><td>the real experience &mdash; the reply comes back over that channel</td></tr>
+  <tr><td class="k">Web (sync)</td><td><code>curl -s $APP/api/concierge -H 'content-type: application/json' -d '{"text":"&lt;utterance&gt;","thread_id":"web:demo"}'</code></td><td>scripting a one-shot answer, no channel needed</td></tr>
+  <tr><td class="k">The seam</td><td><code>curl -s $APP/invoke -H "X-Gateway-Token: $GW" -H 'content-type: application/json' -d '{"agent":"cuga","text":"&lt;utterance&gt;","source":{"type":"channel","name":"web","thread_id":"demo"},"event":{"kind":"message"}}'</code></td><td>testing the machine contract directly</td></tr>
+</table></div>
+<div class="note acc"><b>Ask-anything is instant, zero setup.</b> The <code>NOW</code> examples answer in one turn.
+   The <code>CRON</code>/<code>POLL</code> examples <em>arm</em> a flow (you'll get an "ARMED &hellip; Watch id"
+   reply), then fire on their own schedule &mdash; watch them in <code>$APP/api/events/subscriptions</code>
+   and <code>$APP/api/events/runs</code>, or <code>$APP/api/events/dashboard</code>.</div>
+
+<h2 id="now">NOW &mdash; ask anything (instant)</h2>
+<p>A plain question runs the agent directly (the NOW fast-path). The price/news/weather are <b>live tool
+   calls</b>, so they can't be memorized. Try these from any channel.</p>
+<h4>Live data &amp; markets</h4>
+<ul>
+  <li>what's the current price of bitcoin, and what's new from OpenAI and Anthropic this week?  <span class="dim">&mdash; the best opener: live finance + live web in one</span></li>
+  <li>what is the current price of bitcoin in usd?</li>
+  <li>what's the weather in Tokyo right now?</li>
+  <li>give me a market brief on the S&amp;P 500 today</li>
+</ul>
+<h4>Knowledge, geography, memory</h4>
+<ul>
+  <li>what is the capital of Japan?  <span class="dim">&mdash; then follow with "and its population?" to see per-thread memory hold</span></li>
+  <li>brief me on Lisbon &mdash; weather, key facts, things to do</li>
+  <li>give me a deep dive on the history of the transistor &mdash; key sections + related topics</li>
+</ul>
+<h4>Research &amp; media</h4>
+<ul>
+  <li>research parameter-efficient fine-tuning (LoRA) &mdash; papers + web, with citations</li>
+  <li>3 latest arXiv papers on mixture-of-experts</li>
+  <li>summarize https://arxiv.org/abs/1706.03762</li>
+  <li>what does this talk say about attention? https://www.youtube.com/watch?v=iDulhoQ2pro</li>
+  <li>what do top YouTube creators say about RAG vs fine-tuning?</li>
+  <li>what's new from OpenAI and Anthropic this week?</li>
+</ul>
+<h4>Code &amp; everyday</h4>
+<ul>
+  <li>check this Python function for syntax and complexity: <code>def f(x): return x*2</code></li>
+  <li>recommend movies like Arrival and Interstellar but a bit lighter</li>
+  <li>a quick vegetarian dinner with chickpeas, spinach and no dairy</li>
+  <li>AI/ML meetups in San Francisco in the next two weeks</li>
+</ul>
+
+<h2 id="cron">CRON &mdash; scheduled digests (native scheduler)</h2>
+<p>These arm a fixed-clock flow on the in-process scheduler &mdash; no AP. The reply is delivered back to the
+   channel you armed it from. (For a fast demo, phrase it as "every minute&hellip;".)</p>
+<ul>
+  <li>every day at 9am send me new arXiv papers on mixture-of-experts</li>
+  <li>every weekday at 8am send me a market brief</li>
+  <li>every morning at 8am tell me what's new on https://hnrss.org/frontpage</li>
+  <li>every hour post the top trending GitHub repos in this channel</li>
+  <li>every day at 9am send me the price of bitcoin</li>
+  <li>every morning at 7am send me the weather in New York</li>
+  <li>every Monday at 9am send me a research digest on parameter-efficient fine-tuning</li>
+  <li><code>/automate</code> the market brief every weekday at 8am  <span class="dim">&mdash; the slash form skips the LLM router</span></li>
+  <li>every minute send me the price of bitcoin  <span class="dim">&mdash; demo cadence: fires within ~1&ndash;2 min</span></li>
+</ul>
+
+<h2 id="poll">POLL &mdash; watch &amp; report only on change (stateful)</h2>
+<p>A poll re-checks on an interval but <b>only speaks when something changed</b> &mdash; the poll-state gate
+   (threshold / identity / fuzzy). Arm one, then let it tick.</p>
+<ul>
+  <li>watch bitcoin every 2 minutes and ping me on any move  <span class="dim">&mdash; threshold</span></li>
+  <li>every 5 minutes check for new MoE papers and tell me only if there are new ones  <span class="dim">&mdash; identity (new items)</span></li>
+  <li>every 15 minutes check this RSS feed and message me new items  <span class="dim">&mdash; identity</span></li>
+  <li>check the New York weather every hour and ping me only if rain is forecast  <span class="dim">&mdash; fuzzy</span></li>
+  <li>watch bitcoin every 5 minutes and ping me on a 5% move  <span class="dim">&mdash; explicit threshold</span></li>
+  <li>watch IBM stock for the next hour and tell me if it moves  <span class="dim">&mdash; a bounded poll (ends itself)</span></li>
+</ul>
+
+<h2 id="webhook">WEBHOOK &mdash; POST an event in (no channel needed)</h2>
+<p>Any external system can POST JSON to <code>/api/events/hook/&lt;name&gt;</code>. Two modes: <b>pinned</b>
+   (an agent you name) or <b>routed</b> (<code>?route=1</code>, the concierge picks the agent like a chat).</p>
+<pre><span class="c"># pinned — the incident_triage agent triages an alert</span>
+curl -s <span class="k">$APP</span>/api/events/hook/alerts<span class="s">?key=$WEBHOOK_KEY</span> \
+  -H <span class="s">'content-type: application/json'</span> \
+  -d <span class="s">'{"alert":"HighCPU","service":"checkout-api","value":97,"threshold":85}'</span>
+<span class="c"># → { ok, agent:"incident_triage", answer:"P2 · checkout-api CPU 97% > 85% …", trace_id }</span>
+
+<span class="c"># routed — CUGA picks the agent, like a chat message</span>
+curl -s <span class="k">$APP</span>/api/events/hook/ci<span class="s">?route=1&amp;key=$WEBHOOK_KEY</span> \
+  -H <span class="s">'content-type: application/json'</span> \
+  -d <span class="s">'{"pull_request":{"title":"Refactor auth","additions":40,"deletions":12},"repo":"acme/api"}'</span>
+<span class="c"># → { ok, routed:true, agent:"pr_reviewer", answer:"…" }</span></pre>
+<p class="dim">Utterance forms of the same idea: "when my system POSTs to my webhook, run the triage agent and
+   reply" · "when my CI posts a failed build, triage it and tell me what broke" · "when a lead form is
+   submitted, summarize it and post to our channel".</p>
+
+<h2 id="reactions">DIRECT reactions &amp; channel watchers (no AP)</h2>
+<p>Because Slack/Discord/Telegram arrive over their own streams, "when someone reacts&hellip;" and "when a
+   message is posted&hellip;" watchers are <b>direct</b> &mdash; no Activepieces. Arm one from that channel,
+   then trigger it there.</p>
+<ul>
+  <li>when someone reacts with <code>:bug:</code> in #incidents on discord, triage the message</li>
+  <li>when a message gets a <code>:bug:</code> reaction, triage it as an incident and thread the summary</li>
+  <li>when a message is posted in #incidents, triage it and thread a severity</li>
+  <li>when someone DMs the bot, route it to the right agent and reply</li>
+  <li>when I react <code>:bookmark:</code> to a message with a link, research the topic and DM me</li>
+  <li>when a new member joins the server, greet them and point to the resources</li>
+  <li>when a new channel is created, post a welcome and suggest a charter</li>
+  <li>when I send the bot a link, summarize the page and reply</li>
+</ul>
+
+<h2 id="dryrun">Preview without arming (dry-run)</h2>
+<pre>curl -s <span class="s">"$APP/api/events/dry-run?text=watch%20bitcoin%20every%202%20minutes%20and%20ping%20me"</span>
+<span class="c"># → { mode:"POLL", backend:"native", cadence:"every 2 minutes", would:"…", side_effects:"none (dry run)" }</span></pre>
+
+<h2 id="verify">Watch it work</h2>
+<div class="wrap"><table>
+  <tr><th>See</th><th>Call</th></tr>
+  <tr><td class="k">what's live (capability)</td><td><code>curl -s $APP/api/events/status</code></td></tr>
+  <tr><td class="k">armed watchers</td><td><code>curl -s $APP/api/events/subscriptions</code></td></tr>
+  <tr><td class="k">every run (fired flows + chats)</td><td><code>curl -s $APP/api/events/runs</code></td></tr>
+  <tr><td class="k">the live dashboard</td><td>open <code>$APP/api/events/dashboard</code></td></tr>
+  <tr><td class="k">channels connected</td><td><code>curl -s $APP/api/events/channels</code></td></tr>
+</table></div>
+
+<div class="note"><b>Not in this list (needs Activepieces):</b> the SaaS push triggers &mdash; Gmail
+   ("when an email from my boss arrives&hellip;"), GitHub ("when a PR opens on psf/requests&hellip;"), Box,
+   Google Calendar, Pinterest, RSS-via-AP, YouTube. Those route through AP as the OAuth token custodian and
+   are deliberately out of scope for this no-AP runbook.</div>
+
+<p class="src">Sources: <code>events/catalog.py</code> (<code>EXAMPLES</code>) · <code>events/app.py</code>
+   (<code>/invoke</code>, <code>/api/events/hook</code>, <code>/api/events/dry-run</code>) · the deployed
+   app's public URL. Utterances are real catalog entries, filtered to the no-AP triggers. Verified 2026-07-31.</p>
+
+</body></html>
