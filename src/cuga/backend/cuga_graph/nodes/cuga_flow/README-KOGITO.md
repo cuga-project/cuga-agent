@@ -402,15 +402,85 @@ reverse — so `afterNodeLeft(A)` fires *after* the whole downstream chain, not 
 `beforeNodeTriggered(X)` does fire before X's action, so timing was never the obstacle; the
 missing veto was.
 
-### Two viable routes
+### Recommended direction — runtime `NodeInstanceFactory` override
 
-**1. Wired sentry** — a real node in front of each skippable task:
+**Try this first.** It is the only route that meets every constraint — no model change, no
+new process variables, no YAML additions, any node type — and it turns out to rest on a
+single unresolved question rather than several.
+
+The insight is that a skip needs no redirect at all. For a node whose behaviour is an
+action, *not running the action* **is** the skip: the node completes and its normal outgoing
+flow carries execution to the successor.
+
+Three pieces, all ordinary application code alongside `CugaFlo.java`:
+
+**1. A node-instance subclass** that checks the mark before acting:
+
+```java
+public class GuardedActionNodeInstance extends ActionNodeInstance {
+    @Override
+    public void internalTrigger(KogitoNodeInstance from, String type) {
+        String id = String.valueOf(getNode().getMetaData().get("UniqueId"));
+        if (SkipRegistry.isMarked(getProcessInstance().getStringId(), id)) {
+            triggerCompleted();      // hand straight on to the successor
+            return;                  // the action never runs
+        }
+        super.internalTrigger(from, type);
+    }
+}
+```
+
+**2. A factory** — the interface is two methods:
+
+```java
+public interface NodeInstanceFactory {
+    Class<? extends Node> forClass();
+    NodeInstance getNodeInstance(Node, WorkflowProcessInstance, NodeInstanceContainer);
+}
+```
+
+It receives the `Node` *and* the `WorkflowProcessInstance`, so it has everything needed to
+decide per instance.
+
+**3. Registration at startup:**
+
+```java
+NodeInstanceFactoryRegistry.getInstance(environment)
+    .register(ActionNode.class, new GuardedActionNodeInstanceFactory());
+```
+
+Plus a `SkipRegistry` (a `ConcurrentHashMap` keyed by process-instance id) and one line in
+`CugaFlo.evaluateHook` to mark a node when a hook returns `skip_node`.
+
+**Why this route and not the others:**
+
+- `register()` is a plain `Map.put`, so it **overwrites** jBPM's built-in entry for a type.
+  Overriding a built-in is permitted here — and forbidden in the codegen route, where
+  `Collectors.toMap` throws on a duplicate key. This is the decisive difference between them.
+- `getProcessNodeInstanceFactory(Node)` walks the class hierarchy (verified in bytecode:
+  `get(cls)`, then climb `Class.getSuperclass()` on a miss). Concrete registrations shadow a
+  base-class one, so covering several node types means one subclass and factory per type —
+  mechanical, but not a single class.
+
+**The one open question, and it is where this most likely dies:** where to obtain the
+runtime `Environment` for `getInstance(Environment)` inside a Kogito-generated Quarkus app,
+and whether registration can land before the first process executes. A CDI `@Startup`
+observer reaching the `Application` / `Processes` bean is the obvious candidate, unverified.
+**Spike that in isolation** — register a no-op factory for `ActionNode` and confirm from a
+log line that it is consulted — before building anything on top.
+
+Remaining caveat: `org.jbpm.workflow.instance.impl` is internal API with no cross-version
+guarantee, and this integration is already pinned to 10.2.0.
+
+### Fallback — wired sentry
+
+The only currently *proven* option, if the registration point cannot be resolved:
 
 ```
 A ──▶ Sentry(B) ──▶ B ──▶ …
 ```
 
-The sentry's script consults a JVM-side skip registry and, if B is marked, calls
+The sentry's script consults the same skip registry and, if B is marked, calls
 `FlowRedirect.to(kcontext, successorOf(B))`; otherwise it passes a blank target, which is a
 no-op. The redirect runs from a script task's own action — the one context already proven to
 work — and B's node type is irrelevant because it is never entered.
@@ -418,28 +488,21 @@ work — and B's node type is irrelevant because it is never entered.
 *Public API, proven mechanism, no new process variables or YAML. Costs one node per
 skippable task, which the transform know-how would have to generate.*
 
-**2. `NodeInstanceFactory` override** — no model change at all:
+### Considered and rejected — build-time visitor extension
 
-```java
-NodeInstanceFactoryRegistry.getInstance(env)
-    .register(SomeNode.class, () -> new SomeNodeInstance() {
-        @Override public void triggerCompleted(String type, boolean remove) { … }   // transition
-        // or internalTrigger(...) to make the target itself inert
-    });
-```
+`org.jbpm.compiler.canonical.node.NodeVisitorBuilder` is a real, ServiceLoader-discovered
+codegen extension point (`type()` / `visitor()`, registered via
+`META-INF/services/…NodeVisitorBuilder`), and a `GuardedActionNodeVisitor` decorating
+`ActionNodeVisitor` output is structurally sound. It was rejected on economics, not
+mechanism:
 
-Overriding `triggerCompleted` is the transition-level intervention: the *predecessor*
-decides where to hand off, so the skipped node is never entered.
-
-`getProcessNodeInstanceFactory(Node)` **does walk the class hierarchy** — verified in
-bytecode: it calls `get(cls)`, and on a miss climbs `Class.getSuperclass()` until a factory
-is found. So a base-class registration is reachable in principle. But jBPM registers its own
-factories against *concrete* types (`ActionNode`, `WorkItemNode`, …), and the loop returns
-the first hit while climbing, so those shadow a `NodeImpl`-level registration — in practice
-it likely means one registration per concrete node type.
-
-*No model change and semantically the right seam, but internal API
-(`org.jbpm.workflow.instance.impl`), tied to jBPM version, and the registration point is
-**unproven** — `getInstance(Environment)` needs the runtime `Environment`, and where to
-reach it inside a Kogito-generated Quarkus app is unresolved. That is where this most likely
-dies, so prove it before building anything on it.*
+- **Built-in types cannot be overridden.** `NodeVisitorBuilderService` collects with
+  two-argument `Collectors.toMap`, so a second builder for `ActionNode.class` fails the build
+  on a duplicate key. A *new* node class is therefore mandatory, which needs a further
+  parse-time hook to mint it — BPMN parsing yields plain `ActionNode`.
+- **It must ship as a separate pre-built Maven artifact**, since codegen runs at
+  `generate-sources`, before the project's own sources compile.
+- **It buys script-task coverage only.** "Skip = don't run the action" is action-node
+  specific; a `userTask` has no action to suppress. So it costs a released artifact, a parse
+  hook and AST surgery to deliver the same coverage as a one-line guard in the generated
+  script.
