@@ -957,8 +957,10 @@ Provide:
             elif policy_types:
                 logger.debug(f"  - Filtering by policy types: {policy_types}")
 
-            logger.debug(f"  - user_input: {context.user_input}")
-            logger.debug(f"  - chat_messages: {context.chat_messages}")
+            logger.debug(
+                f"  - user_input_len={len(context.user_input or '')}, "
+                f"chat_messages={len(context.chat_messages or [])}"
+            )
 
             # For intent target, use get_query_text() which prioritizes last chat message
             # For other targets, use get_target_text() to get the specific field

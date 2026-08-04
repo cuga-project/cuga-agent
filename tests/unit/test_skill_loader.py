@@ -5,6 +5,9 @@ import pytest
 
 from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
+from cuga.backend.skills.tools import create_skill_tools
+
+pytestmark = pytest.mark.unit
 
 pytestmark = pytest.mark.unit
 
@@ -140,6 +143,33 @@ def test_skill_registry_load_skill_without_requirements_skips_install_step() -> 
     assert "Analyze uploads." in loaded
 
 
+def test_load_skill_tool_prints_instructions_even_if_agent_discards_return(capsys) -> None:
+    """The code-agent's stdout capture is the only guaranteed path for skill
+    instructions to reach the agent's context. If the agent's own code discards
+    `load_skill`'s return value instead of printing it, the tool must still
+    surface the instructions via a print side-effect, or the agent never sees
+    them and improvises instead of following the skill.
+    """
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="deck",
+                description="Deck skill",
+                body="## Body\n\nDistinctive skill instructions marker.",
+                source="/skills/deck/SKILL.md",
+            )
+        ]
+    )
+    load_tool = create_skill_tools(registry)[0]
+    assert load_tool.name == "load_skill"
+
+    result = load_tool.func(name="deck")
+
+    printed = capsys.readouterr().out
+    assert "Distinctive skill instructions marker." in printed
+    assert result == printed.rstrip("\n") or "Distinctive skill instructions marker." in result
+
+
 # ---------------------------------------------------------------------------
 # Sandbox skill-copy path
 # ---------------------------------------------------------------------------
@@ -230,12 +260,7 @@ def test_skill_name_with_path_traversal_is_rejected(tmp_path: Path) -> None:
 
 
 def test_jinja_expression_in_description_is_stripped(tmp_path: Path) -> None:
-    """A description containing {{ }} Jinja2 expression syntax is sanitized at parse time.
-
-    Without sanitization, a malicious SKILL.md can inject arbitrary text into
-    the system prompt by placing Jinja2 template expressions in the description
-    field, which is rendered by the mcp_prompt.jinja2 template without escaping.
-    """
+    """A description containing {{ }} Jinja2 expression syntax is sanitized at parse time."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
@@ -254,12 +279,7 @@ def test_jinja_expression_in_description_is_stripped(tmp_path: Path) -> None:
 
 
 def test_jinja_block_in_description_is_stripped(tmp_path: Path) -> None:
-    """A description containing {% %} Jinja2 block syntax has the delimiters stripped.
-
-    The sanitizer removes Jinja delimiter sequences ({% %}) to prevent the
-    template engine from evaluating them.  Literal text between the delimiters
-    may remain; what matters is that no {% or %} tokens reach the renderer.
-    """
+    """A description containing {% %} Jinja2 block syntax has the delimiters stripped."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
@@ -278,7 +298,7 @@ def test_jinja_block_in_description_is_stripped(tmp_path: Path) -> None:
 
 
 def test_jinja_expression_in_name_is_stripped(tmp_path: Path) -> None:
-    """A name field containing Jinja2 syntax is sanitized (name is also rendered into the prompt)."""
+    """A name field containing Jinja2 syntax is sanitized."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
