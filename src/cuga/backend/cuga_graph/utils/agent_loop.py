@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 import time
@@ -243,6 +244,52 @@ class StreamEvent(BaseModel):
         data_lines = self.data.split("\n")
         data_block = "\n".join(f"data: {line}" for line in data_lines)
         return f"event: {self.name}\n{data_block}\n\n"
+
+
+def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
+    """Convert a runtime spawn event to an SSE StreamEvent for the UI."""
+    if name == "SpawnAgent":
+        payload = json.dumps(
+            {
+                "type": "start",
+                "agent_name": data.get("agent_name", ""),
+                "task": data.get("task", ""),
+                "spawn_id": data.get("spawn_id", ""),
+            }
+        )
+        return StreamEvent(name="SubAgent", data=payload)
+    if name == "SpawnAgentResult":
+        payload = json.dumps(
+            {
+                "type": "result",
+                "agent_name": data.get("agent_name", ""),
+                "status": data.get("status", ""),
+                "answer": data.get("answer", ""),
+                "spawn_id": data.get("spawn_id", ""),
+            }
+        )
+        return StreamEvent(name="SubAgent", data=payload)
+    if name == "CodeAgent":
+        agent_name = data.get("subagent", "sub-agent")
+        safe_data: dict = {}
+        # CugaLite state uses 'script'; the frontend CodeAgent renderer expects 'code'
+        script = data.get("script")
+        if script and isinstance(script, str):
+            safe_data["code"] = script
+        for key in ("execution_output", "summary"):
+            val = data.get(key)
+            if val and isinstance(val, str):
+                safe_data[key] = val
+        payload = json.dumps(
+            {
+                "type": "step",
+                "agent_name": agent_name,
+                "spawn_id": data.get("spawn_id", ""),
+                **safe_data,
+            }
+        )
+        return StreamEvent(name="SubAgent", data=payload)
+    return None
 
 
 class AgentLoop:
@@ -657,26 +704,97 @@ class AgentLoop:
             return AgentLoopAnswer(end=False, has_tools=True, answer=msg.content, tools=msg.tool_calls)
 
     async def run_stream(self, state: Optional[AgentState] = None, resume=None):
-        event_stream = self.get_stream(state, resume)
+        from cuga.backend.agent_spawn import runtime as _spawn_runtime
+
+        _SPAWN_TAG = "spawn"
+        _GRAPH_TAG = "graph"
+        _DONE_TAG = "done"
+
+        unified_queue: asyncio.Queue = asyncio.Queue()
+        agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
+        cb_token = None
+
+        def _on_spawn_event(name: str, data: dict) -> None:
+            unified_queue.put_nowait((_SPAWN_TAG, name, data))
+
+        if agent_spawn_enabled:
+            cb_token = _spawn_runtime.set_event_callback(_on_spawn_event)
+
+        async def _feed_graph():
+            exc_to_raise = None
+            try:
+                async for graph_event in self.get_stream(state, resume):
+                    await unified_queue.put((_GRAPH_TAG, graph_event))
+            except Exception as exc:
+                exc_to_raise = exc
+            finally:
+                await unified_queue.put((_DONE_TAG, exc_to_raise))
+
+        graph_task = asyncio.create_task(_feed_graph())
         event = {}
-        session_tagged = False  # Track if we've set session.id yet
+        session_tagged = False
 
-        async for event in event_stream:
-            # Tag session.id on the first event (when spans are active)
-            if not session_tagged:
-                set_session_attribute(self.thread_id)
-                session_tagged = True
+        try:
+            while True:
+                item = await unified_queue.get()
+                tag = item[0]
 
-            event_msg = self.get_event_message(event)
-            # Skip empty events (events with no name or no data)
-            if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
-                logger.debug(
-                    f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
-                )
-                continue
-            # logger.debug(f"current event: {event_msg.format()}")
-            yield event_msg.format()
-        yield self.get_output(event)
+                if tag == _DONE_TAG:
+                    _, exc = item
+                    if exc is not None:
+                        raise exc
+                    break
+
+                if tag == _SPAWN_TAG:
+                    _, sname, sdata = item
+                    spawn_evt = _spawn_to_stream_event(sname, sdata)
+                    if spawn_evt:
+                        yield spawn_evt.format()
+                    continue
+
+                # _GRAPH_TAG
+                _, graph_event = item
+                event = graph_event
+
+                if not session_tagged:
+                    set_session_attribute(self.thread_id)
+                    session_tagged = True
+
+                event_msg = self.get_event_message(event)
+                if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
+                    logger.debug(
+                        f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
+                    )
+                    continue
+                yield event_msg.format()
+
+            # Wait for fire-and-forget async spawns so late SubAgent events still
+            # reach this stream, then drain whatever is left (get_nowait, not empty()).
+            # Residual tasks are cancelled so the stream can end cleanly.
+            if agent_spawn_enabled:
+                await _spawn_runtime.wait_pending_spawns(self.thread_id, timeout=5.0)
+
+            while True:
+                try:
+                    item = unified_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item[0] == _SPAWN_TAG:
+                    _, sname, sdata = item
+                    spawn_evt = _spawn_to_stream_event(sname, sdata)
+                    if spawn_evt:
+                        yield spawn_evt.format()
+
+            yield self.get_output(event)
+        finally:
+            if cb_token is not None:
+                _spawn_runtime.reset_event_callback(cb_token)
+            if not graph_task.done():
+                graph_task.cancel()
+                try:
+                    await graph_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     def get_output_of_obj(self, dict):
         msg = ""

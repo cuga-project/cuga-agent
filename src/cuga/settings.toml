@@ -40,7 +40,7 @@ e2b_sandbox_ttl_buffer = 60  # Safety buffer in seconds before E2B timeout (defa
 e2b_cleanup_on_create = true  # Run periodic cleanup when creating new sandboxes
 e2b_cleanup_frequency = 0  # Check all sandboxes every N get_or_create calls (0 = only on create)
 message_window_limit = 500  # Maximum number of messages to keep in history (sliding window)
-max_input_length = 5000  # Maximum characters allowed in user input (prevents abuse)
+max_input_length = 20000  # Maximum characters allowed in user input (prevents abuse)
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
@@ -70,6 +70,13 @@ enable_shell_tool = false
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
+
+[agent_spawn]
+# When false, sub-agent spawning via spawn_agent / get_agent_result is fully disabled.
+# Zero overhead in prompt, tools, and timing when disabled (NFR-1).
+enabled = true
+max_spawn_depth = 2
+forward_sync_subagent_events = true
 
 [skills]
 # When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.

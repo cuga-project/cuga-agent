@@ -342,12 +342,13 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
     if "/" in normalized_name:
         normalized_name = normalized_name.split("/", 1)[1]
 
-    if normalized_name in MODEL_CONTEXT_SIZES:
-        return MODEL_CONTEXT_SIZES[normalized_name]
+    # Case-insensitive exact + longest-prefix match (model ids vary in casing).
+    normalized_lower = normalized_name.lower()
+    if normalized_lower in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[normalized_lower]
 
-    sorted_keys = _SORTED_MODEL_CONTEXT_KEYS
-    for key in sorted_keys:
-        if normalized_name.startswith(key):
+    for key in _SORTED_MODEL_CONTEXT_KEYS:
+        if normalized_lower.startswith(key.lower()):
             return MODEL_CONTEXT_SIZES[key]
 
     return None
