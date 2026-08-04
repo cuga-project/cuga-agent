@@ -210,11 +210,9 @@ class TestTokenUsageTrackerIntegration:
         agent = CugaAgent(tools=[simple_calculator])
 
         with pytest.MonkeyPatch.context() as mp:
+            # sdk.py now imports create_cuga_lite_graph lazily (function-local import),
+            # so patching the source module is sufficient — no sdk_module patch needed.
             mp.setattr(glg, "create_cuga_lite_graph", spy)
-            # Also patch the symbol that sdk.py imported at module load time.
-            from cuga import sdk as sdk_module
-
-            mp.setattr(sdk_module, "create_cuga_lite_graph", spy)
             # Trigger graph construction
             _ = agent.graph
 

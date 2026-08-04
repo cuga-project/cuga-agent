@@ -4,10 +4,32 @@ from typing import Any, Optional, Set
 from loguru import logger
 
 _TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
+_SET_TYPE_KEY = "__set_type__"
+_TUPLE_TYPE_KEY = "__tuple_type__"
+# Marks envelopes we created so ordinary user dicts with the same keys stay dicts.
+_ENC_KEY = "__cuga_enc__"
 
 
 class VariableUtils:
     """Utilities for managing variables during code execution."""
+
+    @staticmethod
+    def _is_set_tag(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_SET_TYPE_KEY) in ("set", "frozenset")
+            and set(value.keys()) == {_SET_TYPE_KEY, "items", _ENC_KEY}
+        )
+
+    @staticmethod
+    def _is_tuple_tag(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and value.get(_ENC_KEY) is True
+            and value.get(_TUPLE_TYPE_KEY) == "tuple"
+            and set(value.keys()) == {_TUPLE_TYPE_KEY, "items", _ENC_KEY}
+        )
 
     @staticmethod
     def strip_todo_confirmation_only_vars(new_vars: dict[str, Any]) -> dict[str, Any]:
@@ -40,6 +62,8 @@ class VariableUtils:
         - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
         - complex: {"real": float, "imag": float}
         - dict / list: recursive traversal
+        - set / frozenset: tagged JSON-safe dicts (see hydrate_value)
+        - tuples inside sets: tagged so nested hashables round-trip
 
         DataFrame and Series are intentionally excluded; sanitize_value wraps
         those with metadata before delegating cell content here.
@@ -107,11 +131,83 @@ class VariableUtils:
 
         # --- containers ---
         if isinstance(obj, dict):
+            # Already-encoded envelopes from a prior sanitize — leave intact.
+            if VariableUtils._is_set_tag(obj) or VariableUtils._is_tuple_tag(obj):
+                return obj
             return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [VariableUtils._sanitize_recursive(v) for v in obj]
+        if isinstance(obj, set):
+            return {
+                _SET_TYPE_KEY: "set",
+                "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
+            }
+        if isinstance(obj, frozenset):
+            return {
+                _SET_TYPE_KEY: "frozenset",
+                "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
+            }
 
         return obj
+
+    @staticmethod
+    def _sanitize_set_element(obj: Any) -> Any:
+        """Sanitize a set/frozenset element; recursively tag nested tuples.
+
+        Values that sanitize to unhashable containers (e.g. complex → dict) are
+        stored as ``repr(obj)`` so the set remains constructible after JSON
+        round-trip. We do not attempt full type coverage for every scalar.
+        """
+        if isinstance(obj, tuple):
+            return {
+                _TUPLE_TYPE_KEY: "tuple",
+                "items": [VariableUtils._sanitize_set_element(v) for v in obj],
+                _ENC_KEY: True,
+            }
+        sanitized = VariableUtils._sanitize_recursive(obj)
+        if isinstance(sanitized, (dict, list)):
+            return repr(obj)
+        return sanitized
+
+    @staticmethod
+    def _hydrate_mapping(value: dict) -> Any:
+        """Hydrate dict values; preserve identity when nothing changes."""
+        out = {}
+        changed = False
+        for k, v in value.items():
+            hv = VariableUtils.hydrate_value(v)
+            if hv is not v:
+                changed = True
+            out[k] = hv
+        return out if changed else value
+
+    @staticmethod
+    def _hydrate_sequence(value: list) -> Any:
+        """Hydrate list values; preserve identity when nothing changes."""
+        out = []
+        changed = False
+        for v in value:
+            hv = VariableUtils.hydrate_value(v)
+            if hv is not v:
+                changed = True
+            out.append(hv)
+        return out if changed else value
+
+    @staticmethod
+    def hydrate_value(value: Any) -> Any:
+        """Restore set/frozenset/tuple tags produced by sanitize_value."""
+        if isinstance(value, dict):
+            if VariableUtils._is_set_tag(value):
+                items = [VariableUtils.hydrate_value(v) for v in value["items"]]
+                return set(items) if value[_SET_TYPE_KEY] == "set" else frozenset(items)
+            if VariableUtils._is_tuple_tag(value):
+                return tuple(VariableUtils.hydrate_value(v) for v in value["items"])
+            return VariableUtils._hydrate_mapping(value)
+        if isinstance(value, list):
+            return VariableUtils._hydrate_sequence(value)
+        return value
 
     @staticmethod
     def sanitize_value(value: Any) -> Any:
@@ -119,6 +215,7 @@ class VariableUtils:
 
         - pd.DataFrame → dict with records (cells recursively sanitized)
         - pd.Series    → dict with data list (values recursively sanitized)
+        - set / frozenset → tagged dicts for stream/checkpoint JSON
         - All other types → delegated to _sanitize_recursive
 
         All other values are returned unchanged.
@@ -158,7 +255,7 @@ class VariableUtils:
         if isinstance(value, (str, int, float, bool, type(None))):
             return True
 
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, (list, tuple, set, frozenset)):
             return all(VariableUtils.is_serializable(item) for item in value)
 
         if isinstance(value, dict):

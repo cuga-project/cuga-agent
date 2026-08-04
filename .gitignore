@@ -28,6 +28,7 @@ logs/
 .bob
 !.bob/commands/
 !.bob/commands/cuga-*.md
+!.bob/commands/github_commands.md
 test_workspace/
 *.logs
 
@@ -81,6 +82,7 @@ cuga.egg-info
 .cursor/
 !.cursor/commands/
 !.cursor/commands/cuga-*.md
+!.cursor/commands/github_commands.md
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
@@ -122,3 +124,6 @@ events_docs/**/.DS_Store
 # Code Engine deploy secrets / generated URLs
 deploy/ce/.env.ce
 deploy/ce/.ce_urls.env
+
+# Roo AI assistant
+.roo/

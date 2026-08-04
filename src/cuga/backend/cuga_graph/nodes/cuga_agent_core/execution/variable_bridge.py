@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
 
 class VariableBridge:
     """Utility for copying variables between agents."""
@@ -23,9 +25,14 @@ class VariableBridge:
         """Convert ``variables_storage`` serialised format → ``{name: raw_value}``.
 
         Entries that lack a ``'value'`` key are silently skipped so callers
-        never need to guard against malformed storage.
+        never need to guard against malformed storage. Tagged set/frozenset
+        values are hydrated back to Python containers.
         """
-        return {name: meta["value"] for name, meta in variables_storage.items() if "value" in meta}
+        return {
+            name: VariableUtils.hydrate_value(meta["value"])
+            for name, meta in variables_storage.items()
+            if "value" in meta
+        }
 
     @staticmethod
     def bridge(
