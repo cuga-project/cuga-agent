@@ -165,7 +165,6 @@ async def test_tool_approval_approve_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -302,7 +301,6 @@ async def test_tool_approval_deny_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -418,7 +416,6 @@ async def test_tool_approval_modification_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -476,7 +473,6 @@ async def test_tool_approval_modification_flow():
             user_input="Get my top account from digital sales and show the account name",
             thread_id=thread_id_2,
             user_id="test_user",
-            lite_mode=True,
         )
 
         # Run until second interrupt
