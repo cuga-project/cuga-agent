@@ -218,7 +218,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         task_loaded_from_file = False  # Not used in current flow
 
         # Prepare tools for prompt - if find_tools enabled, only expose find_tools
-        tools_for_prompt = tools_for_execution
+        tools_for_prompt = list(tools_for_execution)
         if enable_find_tools:
             active_model = configurable.get("llm")
             find_tool = await create_find_tools_tool(
