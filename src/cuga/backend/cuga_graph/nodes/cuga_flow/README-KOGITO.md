@@ -343,3 +343,92 @@ at `/graphql`: the *GraphQL: Language Feature Support* extension, or *REST Clien
 - **JDK 17+ is required.** The Homebrew `openjdk@17` formula is keg-only and invisible to
   `/usr/libexec/java_home`, so `JAVA_HOME` must be set explicitly — the build script probes
   the usual locations and bakes the result into the generated `run.sh`.
+
+---
+
+## Not implemented — `SKIP_NODE`
+
+CONTINUE, SKIP_TO and TERMINATE all work. `SKIP_NODE` is declared in `HookAction` but is
+unimplemented here, and the demo app lists it under `prohibited_actions`.
+
+The wanted semantics are **"carry on normally, but no-op a named node if and when execution
+later reaches it"** — as though removed. That is distinct from SKIP_TO, which moves the
+token immediately, and which already means the same on all three engines (LangGraph
+`Command(goto=target)`, Flowable `moveActivityIdTo`, Kogito `FlowRedirect.to`).
+
+Either route below also needs a shared change: `HookResult` has **no target field for
+SKIP_NODE** today (it means "the immediate next node"), so it would gain an optional
+`skip_node_target`, plus a hook-prompt update. Additive and optional, so LangGraph and
+Flowable are unaffected.
+
+### The constraint
+
+Kogito offers **exactly one point of per-instance control: inside a node's own execution.**
+The process definition is `@ApplicationScoped` — one shared object for the whole service —
+and the engine's callbacks are observational. Every design that tries to intervene from
+outside a node runs into one of those two facts.
+
+### Ruled out — measured, do not retry
+
+Each was spiked against `redirectspike.bpmn` (Start → A → B → D → End, `trail` recording
+what ran). Expected `A,D`:
+
+| Approach | Result |
+|---|---|
+| Listener cancels the node in `beforeNodeTriggered` | `A,D,B` — the redirect ran cleanly, B still executed. `NodeInstance.cancel()` does not abort an in-flight trigger. |
+| Listener redirects in `beforeNodeLeft` (the transition) | Stack overflow — `cancel()` re-fires the same callback. With a re-entrancy guard: `A,D,B,D`. |
+| Listener triggers a **detached** sentry task | Build fails: *"Node 'sentry' has no incoming connection … no connection to the start node"*. Kogito rejects unconnected nodes. |
+| Mutate the topology at the hook | `NodeImpl.removeOutgoingConnection` etc. exist, but the definition is shared across instances — an edit corrupts every concurrent and future run. |
+| Manual orchestration from the hook | `trigger()` is transitive: triggering a node runs it *and everything downstream*, to completion, before returning. There is no single-step hand-off. |
+| Clone the model at runtime and migrate | `Processes` is lookup-only (`processById`, `processIds`) — no runtime registration. `jbpm-flow-migration` is plan-file driven, read from disk at startup, between already-deployed versions. |
+
+Incidental finding, relevant to any future listener work: Kogito requires
+`org.kie.kogito.internal.process.event.DefaultKogitoProcessEventListener`. Producing the KIE
+`DefaultProcessEventListener` instead fails at startup with a `ClassCastException`.
+
+Event ordering is depth-first — `before*` descends into successors, `after*` unwinds in
+reverse — so `afterNodeLeft(A)` fires *after* the whole downstream chain, not before B.
+`beforeNodeTriggered(X)` does fire before X's action, so timing was never the obstacle; the
+missing veto was.
+
+### Two viable routes
+
+**1. Wired sentry** — a real node in front of each skippable task:
+
+```
+A ──▶ Sentry(B) ──▶ B ──▶ …
+```
+
+The sentry's script consults a JVM-side skip registry and, if B is marked, calls
+`FlowRedirect.to(kcontext, successorOf(B))`; otherwise it passes a blank target, which is a
+no-op. The redirect runs from a script task's own action — the one context already proven to
+work — and B's node type is irrelevant because it is never entered.
+
+*Public API, proven mechanism, no new process variables or YAML. Costs one node per
+skippable task, which the transform know-how would have to generate.*
+
+**2. `NodeInstanceFactory` override** — no model change at all:
+
+```java
+NodeInstanceFactoryRegistry.getInstance(env)
+    .register(SomeNode.class, () -> new SomeNodeInstance() {
+        @Override public void triggerCompleted(String type, boolean remove) { … }   // transition
+        // or internalTrigger(...) to make the target itself inert
+    });
+```
+
+Overriding `triggerCompleted` is the transition-level intervention: the *predecessor*
+decides where to hand off, so the skipped node is never entered.
+
+`getProcessNodeInstanceFactory(Node)` **does walk the class hierarchy** — verified in
+bytecode: it calls `get(cls)`, and on a miss climbs `Class.getSuperclass()` until a factory
+is found. So a base-class registration is reachable in principle. But jBPM registers its own
+factories against *concrete* types (`ActionNode`, `WorkItemNode`, …), and the loop returns
+the first hit while climbing, so those shadow a `NodeImpl`-level registration — in practice
+it likely means one registration per concrete node type.
+
+*No model change and semantically the right seam, but internal API
+(`org.jbpm.workflow.instance.impl`), tied to jBPM version, and the registration point is
+**unproven** — `getInstance(Environment)` needs the runtime `Environment`, and where to
+reach it inside a Kogito-generated Quarkus app is unresolved. That is where this most likely
+dies, so prove it before building anything on it.*
