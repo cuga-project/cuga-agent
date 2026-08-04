@@ -381,6 +381,17 @@ what ran). Expected `A,D`:
 | Mutate the topology at the hook | `NodeImpl.removeOutgoingConnection` etc. exist, but the definition is shared across instances — an edit corrupts every concurrent and future run. |
 | Manual orchestration from the hook | `trigger()` is transitive: triggering a node runs it *and everything downstream*, to completion, before returning. There is no single-step hand-off. |
 | Clone the model at runtime and migrate | `Processes` is lookup-only (`processById`, `processIds`) — no runtime registration. `jbpm-flow-migration` is plan-file driven, read from disk at startup, between already-deployed versions. |
+| Subclass `ConnectionImpl` to guard the transition | Nothing to override: it is pure data (`getFrom`/`getTo`/types/metadata), with no method the engine invokes to *run* a connection. Transition behaviour lives in the source node's `triggerCompleted()`, so this collapses into the node-instance seam. |
+
+On the connection idea specifically, since it looks plausible and will be proposed again:
+there is **no injection point**. Connections are built at build time by generated code
+(`factory.connection(fromId, toId, flowId)`), `RuleFlowProcessFactory` picks the concrete
+class internally, and `jbpm-flow` has no `ConnectionFactory` registry — unlike nodes, which
+have `NodeInstanceFactoryRegistry`. Getting a subclass in would mean patching Kogito's code
+generator or swapping connections at runtime, and the latter is shared-model mutation again.
+A dynamic `getTo()` would also misreport the topology to validation, traversal and Data
+Index, which read it outside execution. Note `setTo()` exists, so a connection can be
+retargeted without subclassing at all — it just lands on the same shared-definition problem.
 
 Incidental finding, relevant to any future listener work: Kogito requires
 `org.kie.kogito.internal.process.event.DefaultKogitoProcessEventListener`. Producing the KIE
