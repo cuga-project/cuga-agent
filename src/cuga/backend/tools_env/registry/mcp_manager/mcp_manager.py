@@ -1319,7 +1319,7 @@ class MCPManager:
             else:
                 # Fallback for FunctionTool with parameters attribute
                 input_schema = getattr(tool, 'parameters', {})
-            
+
             tool_dict = {
                 "type": "function",
                 "function": {
@@ -1343,8 +1343,11 @@ class MCPManager:
             self.mcp_clients[name] = f"http://localhost:{port}/sse"
             # Create SSE transport for this server so _call_mcp_server_tool can use FastMCP client
             from fastmcp.client.transports import SSETransport
+
             self.mcp_transports[name] = SSETransport(f"http://localhost:{port}/sse")
-            thread = threading.Thread(target=server.run, kwargs={"transport": "sse", "port": port}, daemon=True)
+            thread = threading.Thread(
+                target=server.run, kwargs={"transport": "sse", "port": port}, daemon=True
+            )
             thread.start()
             self.threads[name] = thread
             print(f"Started MCP SSE server for {name} on port {port}")
