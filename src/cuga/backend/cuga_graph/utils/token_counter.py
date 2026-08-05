@@ -368,6 +368,12 @@ def clamp_completion_tokens(
     return max(1, remaining)
 
 
+# Attribute stashing the first-seen completion budget on the client itself, so
+# repeated clamps never compound and the value's lifetime matches the client's
+# (an id()-keyed module cache could outlive the client and collide on id reuse).
+_ORIGINAL_BUDGET_ATTR = "_cuga_original_completion_budget"
+
+
 def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     """Prevent negative max_completion_tokens when prompt size nears the context window."""
     try:
@@ -401,12 +407,18 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
 
     params = dict(llm.params or {})
-    requested = (
-        getattr(llm, "max_completion_tokens", None)
-        or getattr(llm, "max_tokens", None)
-        or params.get("max_completion_tokens")
-        or 16000
-    )
+    # Resolve from the first-seen budget: params["max_completion_tokens"] is the key
+    # this function writes below, so re-reading it would make any clamp sticky for
+    # the client's lifetime (object.__setattr__ bypasses pydantic's field guard).
+    requested = getattr(llm, _ORIGINAL_BUDGET_ATTR, None)
+    if requested is None:
+        requested = (
+            getattr(llm, "max_completion_tokens", None)
+            or getattr(llm, "max_tokens", None)
+            or params.get("max_completion_tokens")
+            or 16000
+        )
+        object.__setattr__(llm, _ORIGINAL_BUDGET_ATTR, requested)
     requested = int(requested)
 
     clamped = clamp_completion_tokens(
