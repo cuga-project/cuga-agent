@@ -42,9 +42,21 @@ def is_tool_choice_none_tool_use_failed(err: Any) -> bool:
     True when the provider rejected the request because the model emitted a tool call
     while tool_choice was none (e.g. Groq 400 tool_use_failed).
     Safe to retry the same plain-text completion call.
+
+    Detects both forms: the stringified error, and a structured provider ``body``
+    dict on the exception (whose ``str()`` may only be the status code).
     """
     err_str = err if isinstance(err, str) else str(err)
-    return "tool_use_failed" in err_str and "Tool choice is none" in err_str
+    if "tool_use_failed" in err_str and "Tool choice is none" in err_str:
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            code_matches = error.get("code") == "tool_use_failed" or "tool_use_failed" in str(error)
+            if code_matches and "Tool choice is none" in str(error.get("message") or ""):
+                return True
+    return False
 
 
 def is_ollama_tool_call_parse_error(err: Any) -> bool:

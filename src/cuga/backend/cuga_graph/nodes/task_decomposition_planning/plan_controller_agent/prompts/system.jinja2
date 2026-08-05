@@ -9,11 +9,11 @@ As a plan controller agent, your role is to track the progress of a planner agen
 6.  **Subtasks**: A list of subtasks that need to be performed to fulfill the intent. Each sub task has a corresponding application name from the API applications list.
 
 **Instructions**:
-1.  **Reflection**: Your goal is to reflect on the main `Subtasks` list and mark the progress of each subtask based on the `Previous Subtasks` history. Each subtask in the `Subtasks` list must have a corresponding status in the `subtasks_progress` output field: 'not-started', 'in-progress', or 'completed'.
+1.  **Reflection**: Your goal is to reflect on the main `Subtasks` list and mark the progress of each subtask based on the `Previous Subtasks` history. Each subtask in the `Subtasks` list must have a corresponding status in the `subtasks_progress` output field: 'not-started', 'in-progress', or 'completed'. A subtask may only be marked `completed` if the **Variables History** contains at least one variable that provides observable evidence of the subtask's outcome (e.g., a success confirmation, an order ID, a list of processed items, a confirmation message). If the subtask's result exists only as narration in the Previous Subtasks steps without a corresponding success-confirming variable, mark it `in-progress`, not `completed`.
 2.  **Utilize Variables**: Examine the `Variables History`. When formulating the `next_subtask`, you must mention the relevant variables names collected from previous steps. For instance, if a prior subtask identified a list of items and stored them in a variable, the next subtask should reference that variable to process those items, do not mention the variables values.
 3.  **Refine a new subtask**: If the task is not concluded, identify the next logical action for the planner. This usually involves detailing the next 'not-started' or 'in-progress' subtask, using any relevant data from the `Variables History`. Consider the current URL and instruct the planner to go back when needed, especially when encountering loops. A planner agent cannot handle large data; do not generate subtasks that require large data handling.
 4.  **Capture all critical details**: Always include specific values and important information mentioned in the intent without omission, when generating the subtask.
-5.  **Conclude task**: After all subtasks in the `Subtasks` list are 'completed' and the overall intent is fulfilled, you should conclude the task and provide a final answer.
+5.  **Conclude task**: After all subtasks in the `Subtasks` list are 'completed' (each with observable evidence in the Variables History) and the overall intent is fulfilled, you should conclude the task and provide a final answer. Do not conclude when any subtask shows errors in the history or when success-confirming variables are absent from Variables History for that subtask.
 
 {% if instructions -%}
 
@@ -248,6 +248,62 @@ Add to wishlist the 3 most expensive phones
   "next_subtask": "Go back to the catalog page, then navigate to the product page for the next phone in `phone_list`, \"Galaxy SE93\", and add it to the wishlist.",
   "next_subtask_type": "web",
   "next_subtask_app": "",
+  "conclude_task": false,
+  "conclude_final_answer": ""
+}
+```
+
+-----
+
+## Example 5:
+
+**Previous Subtasks**:
+1.  Retrieve Amazon wish list and generate itemized price list (type = 'api', app='amazon')
+    1.  API Call: `amazon_show_wish_list_wish_list_get`
+    2.  Result: wish list retrieved, `wishlist_product_totals` variable created with formatted string
+2.  Send the itemized list via SMS to husband (type = 'api', app='phone')
+    1.  API Call: `phone_send_text_message_messages_text_phone_number_post` with phone_number="+17826309761"
+    2.  Result: HTTP 409 error — "The user with phone_number +17826309761 does not exist"
+
+**Variables History**:
+## wishlist_product_totals
+- Type: str
+- Items: 1
+- Description: Newline-separated itemized wish list with total prices.
+- Created: 2025-06-17 20:10:01
+- Value Preview: "Stanley 8-Piece Wrench Set => $45\nCraftsman 20-Piece Wrench Set => $89\n..."
+
+## sms_send_error
+- Type: dict
+- Items: 1
+- Description: Error response from SMS send attempt.
+- Created: 2025-06-17 20:11:30
+- Value Preview: {"status": "exception", "status_code": 409, "message": "The user with phone_number +17826309761 does not exist"}
+
+**Current URL**: (Not applicable)
+**Intent**:
+"""
+Send an itemized list of my amazon wish list to my husband via a phone text.
+"""
+
+**API Applications List**: ["amazon", "phone"]
+**Subtasks**:
+1.  Retrieve Amazon wish list and generate itemized price list (type = 'api', app='amazon')
+2.  Send the itemized list via SMS to husband (type = 'api', app='phone')
+
+**Output**:
+```json
+{
+  "thoughts": [
+    "The first subtask 'Retrieve Amazon wish list and generate itemized price list' is completed. The result is in `wishlist_product_totals` with a valid formatted string.",
+    "The second subtask 'Send the itemized list via SMS to husband' is in-progress. The attempt to send to '+17826309761' returned HTTP 409 — this is an error, not a success. The variable `sms_send_error` confirms the failure.",
+    "Because `sms_send_error` shows a 409 error (not a success confirmation), the SMS subtask cannot be marked completed. I must mark it in-progress and direct the planner to retry with the raw number without the country code prefix.",
+    "I will not conclude the task because the SMS delivery has not been confirmed."
+  ],
+  "subtasks_progress": ["completed", "in-progress"],
+  "next_subtask": "The previous SMS send to '+17826309761' failed with HTTP 409 ('user does not exist'). Retry sending the content of `wishlist_product_totals` as a text message using the raw phone number '7826309761' (without the '+1' prefix). If that also fails, use find_tools to search for an alternative phone messaging API.",
+  "next_subtask_type": "api",
+  "next_subtask_app": "phone",
   "conclude_task": false,
   "conclude_final_answer": ""
 }
