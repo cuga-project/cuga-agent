@@ -52,6 +52,7 @@ from cuga.backend.skills import (
     discover_skills,
     format_available_skills_block,
 )
+from cuga.backend.server.workspace_sandbox import get_sandbox_env_description
 from cuga.config import settings
 
 
@@ -235,7 +236,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         task_loaded_from_file = False  # Not used in current flow
 
         # Prepare tools for prompt - if find_tools enabled, only expose find_tools
-        tools_for_prompt = tools_for_execution
+        tools_for_prompt = list(tools_for_execution)
         if enable_find_tools:
             active_model = configurable.get("llm")
             find_tool = await create_find_tools_tool(
@@ -326,6 +327,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 logger.debug("No tool guides found in metadata")
 
         skill_tools = []
+        skill_entries = []
         skills_prompt_section = ""
         skills_enabled = False
         _cfg = config.get("configurable", {}) if config else {}
@@ -338,17 +340,31 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         cuga_folder_for_skills = _cfg.get("skills_folder") or os.getenv(
             "CUGA_FOLDER", settings.policy.cuga_folder
         )
+        from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
+
+        _spawn_depth_now = _agent_spawn_depth.get()
+        _skill_callable_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
             if skill_entries:
                 skill_registry = SkillRegistry(skill_entries)
                 skill_tools = create_skill_tools(skill_registry)
+                _skill_callable_tools = [t for t in skill_tools if t.name != "load_skill"]
                 tools_for_prompt.extend(skill_tools)
+                for _sk_tool in skill_tools:
+                    _sk_fn = (
+                        _sk_tool.coroutine
+                        if (hasattr(_sk_tool, "coroutine") and _sk_tool.coroutine)
+                        else _sk_tool.func
+                    )
+                    if _sk_fn:
+                        adapter._tools_context[_sk_tool.name] = make_tool_awaitable(_sk_fn)
                 skills_prompt_section = format_available_skills_block(skill_registry)
                 skills_enabled = True
 
-        # Resolve thread_id early for per-thread workspace selection.
-        _runtime_thread_id_for_fs = _cfg.get("thread_id") or state.thread_id or adapter._thread_id
+        agent_spawn_tools = []
+        agents_prompt_section = ""
+        agents_enabled = False
 
         # Update tools context with all execution tools.
         # Wrap to make awaitable (agent always uses await). Filesystem path
@@ -437,7 +453,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
             cfg = config.get("configurable", {}) if config else {}
-            runtime_thread_id = (
+            # Spawn may set workspace_thread_id to the parent thread while keeping a
+            # fresh conversation thread_id for checkpointer/chat isolation.
+            runtime_thread_id = cfg.get("workspace_thread_id") or (
                 cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or adapter._thread_id)
             )
         else:
@@ -448,6 +466,47 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
+
+        # ── agent_spawn: tool injection ────────────────────────────────────────────
+        # Inject spawn_agent + get_agent_result when nesting is still allowed.
+        # Done AFTER all tools are registered so children always inherit the parent set.
+        _agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
+        _max_spawn_depth = getattr(settings.agent_spawn, "max_spawn_depth", 2)
+        if _agent_spawn_enabled and _spawn_depth_now < _max_spawn_depth:
+            from cuga.backend.agent_spawn import (
+                create_spawn_tools,
+                format_available_agents_block,
+                thread_spawn_futures,
+            )
+
+            _parent_structured_tools_for_subagent = (
+                list(tools_for_execution) + _skill_callable_tools + list(_runtime_bundle.prompt_tools)
+            )
+
+            _spawn_thread_id = (
+                (config or {}).get("configurable", {}).get("thread_id")
+                or getattr(state, "thread_id", None)
+                or adapter._thread_id
+                or ""
+            )
+            agent_spawn_tools = create_spawn_tools(
+                spawn_futures=thread_spawn_futures(_spawn_thread_id),
+                parent_config=config,
+                parent_structured_tools=_parent_structured_tools_for_subagent,
+            )
+            tools_for_prompt.extend(agent_spawn_tools)
+            for _st in agent_spawn_tools:
+                _stfn = _st.coroutine if (hasattr(_st, "coroutine") and _st.coroutine) else _st.func
+                if _stfn:
+                    adapter._tools_context[_st.name] = make_tool_awaitable(_stfn)
+
+            agents_prompt_section = format_available_agents_block()
+            agents_enabled = True
+            logger.info(
+                f"agent_spawn: injected spawn_agent + get_agent_result "
+                f"(depth={_spawn_depth_now}, max={_max_spawn_depth})"
+            )
+        # ── end agent_spawn ────────────────────────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
@@ -685,9 +744,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 skills_enabled=skills_enabled,
                 skills_prompt_section=skills_prompt_section,
                 enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                sandbox_env_info=get_sandbox_env_description(),
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
+                agents_enabled=agents_enabled,
+                agents_prompt_section=agents_prompt_section,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "

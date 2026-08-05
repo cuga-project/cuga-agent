@@ -21,6 +21,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import paths as _paths
 
+pytestmark = pytest.mark.unit
+
 
 def _fs(thread_id: str | None) -> WorkspaceFilesystem:
     return WorkspaceFilesystem(backend=HostWorkspaceBackend(thread_id), thread_id=thread_id)
@@ -213,6 +215,9 @@ def test_search_files_and_get_file_info(tmp_path: Path, monkeypatch: pytest.Monk
 
     found = asyncio.run(fs.search_files(".", "**/*.py", None))
     assert "mod.py" in found and "data.txt" not in found
+
+    none_found = asyncio.run(fs.search_files(".", "**/*.nonexistent", None))
+    assert none_found == "" and not none_found
 
     info = asyncio.run(fs.get_file_info("pkg/mod.py"))
     assert "isFile: True" in info and "size:" in info
