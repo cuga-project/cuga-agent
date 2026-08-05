@@ -1,6 +1,6 @@
 """Per-request run metadata — who answered and with what.
 
-The worker (CugaRuntime → _cuga_bridge.run_graph) records the agent, its MCP servers, and the
+The worker (HttpRuntime.run → CUGA POST /run) records the agent, its MCP servers, and the
 tools it actually called into a contextvar; the ``/invoke`` handler reads it after the run to build
 a one-line footer on the reply (and a structured ``meta`` block in the API response). Contextvar,
 so it flows through the single awaited call chain (/invoke → runtime.run → run_graph, or via the

@@ -6,7 +6,7 @@ HTTPS call the bot makes in a loop). We use long-polling here, the same "go dire
 ``discord_direct``'s Gateway: it's an outbound connection, so it needs **no public URL and no AP** —
 which is exactly what lets Telegram chat work in a zero-AP, no-tunnel setup.
 
-Flow:  getUpdates loop ▸ /invoke(concierge) ▸ sendMessage back to the chat.
+Flow:  getUpdates loop ▸ CUGA POST /run ▸ sendMessage back to the chat.
 
 This is the DEFAULT Telegram backend. The AP webhook path stays behind ``EVENTS_TELEGRAM_BACKEND=ap``
 (kept for the case where you want Telegram armed as an AP flow alongside the SaaS integrations).

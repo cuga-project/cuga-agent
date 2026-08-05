@@ -13,14 +13,14 @@ from cuga.backend.events.app import register_events_routes
 from cuga.backend.events.arming import (ARMED, CANCELLED, CONFIRM, NEEDS_INPUT, compose_prompt,
                                         read_reply, validate)
 from cuga.backend.events.concierge import Concierge
-from cuga.backend.events.runtime import AgentSpec, CugaRuntime, StubRuntime
+from cuga.backend.events.runtime import AgentSpec, AgentStoreRuntime, StubRuntime
 from cuga.backend.events.subscriptions import SubscriptionStore
 
 
 def _client(db=":memory:", stub=False):
     """stub=True swaps in the deterministic runtime — used by the tests that send PLAIN CHAT,
     which would otherwise build the real CUGA worker graph (slow, needs a live model)."""
-    rt = StubRuntime() if stub else CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = StubRuntime() if stub else AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope="default")
     store = SubscriptionStore(db)
     cg = Concierge(rt, store=store, engine=None)
@@ -191,3 +191,64 @@ def test_channel_arm_records_the_originating_conversation(monkeypatch):
     assert "slack" in out["summary"]["delivery"]
     _channel_say(c, "yes")
     assert "gw:slack:C42" in (store.list()[0].thread_id or "")
+
+
+def _door_pattern():
+    """CUGA's _SLASH_VERBS, read from source rather than imported.
+
+    Importing cuga.backend.server.main pulls the whole CUGA server in — module-level side effects
+    that leak into every other test in this session (17 unrelated failures when it was imported
+    here). The events suite must stay light; lift the literal out instead.
+    """
+    import pathlib
+    import re
+
+    src = (pathlib.Path(__file__).resolve().parents[2]
+           / "src" / "cuga" / "backend" / "server" / "main.py").read_text()
+    m = re.search(r"_SLASH_VERBS = re\.compile\(\s*(r\"[^\"]+\")", src)
+    assert m, "could not find _SLASH_VERBS in server/main.py — did it move or get renamed?"
+    return re.compile(eval(m.group(1)), re.I)
+
+
+def test_the_door_and_the_concierge_agree_on_what_a_slash_command_is():
+    """THE GATE LEAK. CUGA's door decides "is this arming?" and the concierge decides "which arming
+    verb is it?". If the door is MORE permissive than the parser, the extra utterances are forwarded
+    here, missed by _slash_parse, and handled by the NL path — which ARMS DIRECTLY, with no
+    confirmation card. Observed on Code Engine: "a subscription was armed BEFORE the human
+    confirmed — the gate leaked", after the door learned to tolerate a leading @mention and this
+    parser had not.
+
+    They must recognise exactly the same shapes. This test fails if either side drifts."""
+    from cuga.backend.events.concierge import _slash_parse
+
+    _SLASH_VERBS = _door_pattern()
+
+    forwarded_by_the_door = [
+        "/automate every 5 mins check ibm",
+        "  /schedule daily briefing",
+        "<@U0BFR0NS7ME> /automate every minute send me the price of bitcoin",
+        "<@U1> <@U2> /poll watch the repo",
+        "/watch box for new files",
+        "/push github",
+    ]
+    for text in forwarded_by_the_door:
+        assert _SLASH_VERBS.match(text), f"door should forward: {text!r}"
+        assert _slash_parse(text) is not None, (
+            f"door forwards {text!r} but _slash_parse misses it → the NL path arms it with no "
+            f"confirmation. The gate leaks.")
+
+    # and neither side may claim ordinary chat
+    for text in ("what is /automate?", "hello", "tell me about /cron jobs"):
+        assert not _SLASH_VERBS.match(text), text
+        assert _slash_parse(text) is None, text
+
+
+def test_cancel_is_the_doors_verb_only():
+    """/cancel is handled by the arming GATE (it drops a parked draft), not by _slash_parse — so
+    the door must forward it even though the parser returns None. Documented so the lockstep test
+    above is not 'fixed' by adding /cancel to the parser."""
+    from cuga.backend.events.concierge import _slash_parse
+
+    _SLASH_VERBS = _door_pattern()
+    assert _SLASH_VERBS.match("/cancel")
+    assert _slash_parse("/cancel") is None

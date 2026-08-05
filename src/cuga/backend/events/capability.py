@@ -1,4 +1,4 @@
-"""The events CAPABILITY REPORT — printed at startup so ``cuga start … --events`` tells you exactly
+"""The events CAPABILITY REPORT — printed at startup so the eventing service tells you exactly
 what is live and what still needs infrastructure, each with its one-line fix.
 
 The event layer is TIERED: some capabilities need nothing beyond this process (web chat, webhooks,
@@ -41,31 +41,21 @@ def report(remote_agents: list[str] | None = None) -> list[str]:
        + (" · Telegram-direct" if _tg_direct else "") + ") — no extra infra"
        + (" (Telegram chat runs AP-free via long-poll)" if _tg_direct else ""))
 
-    sup = os.environ.get("EVENTS_SUPERVISOR", "").split(" #", 1)[0].strip() in ("1", "true", "yes")
-    roster = (os.environ.get("EVENTS_SUPERVISOR_ROSTER", "").strip()
-              or os.path.join(os.getcwd(), "supervisor_agents.yaml"))
-    # SPLIT: execution — and therefore the roster — lives on the CUGA side. Reading THIS process's
-    # EVENTS_SUPERVISOR here reported "supervisor: OFF — one plain CUGA agent" while CUGA was
-    # serving nine specialists. Ask the side that actually runs them.
-    if remote_agents is not None:
+    # THE ROSTER BELONGS TO CUGA. This service executes nothing itself — it calls CUGA's /run — so
+    # the only honest answer to "which specialists are available?" is the one CUGA gives. Reading a
+    # local EVENTS_SUPERVISOR here (as this did while the combined topology existed) reported
+    # "supervisor: OFF — one plain CUGA agent" while CUGA was serving nine.
+    cuga_url = (os.environ.get("CUGA_URL", "") or "").rstrip("/") or "http://127.0.0.1:7860"
+    if remote_agents is None:
+        no(f"could not read CUGA's roster from {cuga_url}/run/agents — check CUGA is up and "
+           f"GATEWAY_TOKEN matches; fires will fail until it answers")
+    else:
         n = len([a for a in remote_agents if a != "cuga"])
         (ok if n else no)(
-            f"supervisor: ON (on CUGA, over /run) — {n} sub-agent(s): {', '.join(remote_agents[:6])}"
+            f"supervisor on CUGA ({cuga_url}) — {n} sub-agent(s): {', '.join(remote_agents[:6])}"
             f"{'…' if len(remote_agents) > 6 else ''}"
-            if n else "supervisor: OFF on CUGA — one plain agent (set CUGA_SUPERVISOR_ROSTER there)")
-    elif sup:
-        n = 0
-        try:
-            import yaml
-            n = len((yaml.safe_load(open(roster)) or {}).get("agents") or [])
-        except Exception:  # noqa: BLE001
-            pass
-        (ok if n else no)(
-            f"supervisor: ON — {n} sub-agent(s) from {os.path.basename(roster)}"
-            if n else f"supervisor: ON but roster {roster} missing/empty "
-                      f"(set EVENTS_SUPERVISOR_ROSTER or add supervisor_agents.yaml)")
-    else:
-        ok("supervisor: OFF — one plain CUGA agent (set EVENTS_SUPERVISOR=1 + a roster for specialists)")
+            if n else f"CUGA at {cuga_url} has NO roster — one plain agent "
+                      f"(set CUGA_SUPERVISOR_ROSTER there for specialists)")
 
     # Native scheduler: cron/poll run in-process (no AP) unless EVENTS_SCHEDULER=ap.
     _native_sched = os.environ.get("EVENTS_SCHEDULER", "native").split(" #", 1)[0].strip().lower() != "ap"

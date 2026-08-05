@@ -12,7 +12,9 @@
 #   scripts/arm_channels.sh --status   # show inbound-channel state without changing anything
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CUGA="${EVENTS_CUGA_URL:-http://localhost:7860}"
+# The EVENTING SERVICE, not CUGA — /api/events/* lives there now (CUGA :7860 serves the agent and
+# the UI only). Pointing this at 7860 made every channel report "✗ None": the route 404s.
+CUGA="${EVENTS_SERVER_URL:-${EVENTS_CUGA_URL:-http://localhost:${EVENTS_SERVICE_PORT:-8100}}}"
 SCOPE="${EVENTS_SCOPE:-default/default/admin}"
 
 # NB: trailing `|| true` — grep exits 1 when the key is ABSENT, which under `set -o pipefail` would

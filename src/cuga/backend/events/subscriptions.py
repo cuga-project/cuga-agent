@@ -192,13 +192,26 @@ class SubscriptionStore:
         self._db.commit()
         return sub
 
-    def find_by_dedup_key(self, dedup_key: str) -> Subscription | None:
-        """Reuse-or-create: an active flow with this identity already exists?"""
+    def find_by_dedup_key(self, dedup_key: str, *, scope: str | None = None) -> Subscription | None:
+        """Reuse-or-create: an active flow with this identity already exists **for this tenant**?
+
+        ISOLATION. This used to search every tenant, so an arm could be answered "REUSING existing
+        flow (subscription X)" where X belonged to somebody else — invisible in the caller's Flows
+        list, undeletable by them, and delivering to the other tenant's channel. Observed live: a
+        flow owned by `default/default/local` was handed to `default/default/admin`, which saw zero
+        subscriptions and was told one had been reused.
+
+        `scope=None` keeps the old cross-tenant behaviour for callers that genuinely have no
+        principal; every concierge path passes one.
+        """
         if not dedup_key:
             return None
-        r = self._db.execute(
-            "SELECT * FROM subscription WHERE dedup_key=? AND status!='deleted' LIMIT 1",
-            (dedup_key,)).fetchone()
+        sql = "SELECT * FROM subscription WHERE dedup_key=? AND status!='deleted'"
+        params: list = [dedup_key]
+        if scope is not None:
+            sql += " AND tenant=?"
+            params.append(scope)
+        r = self._db.execute(sql + " LIMIT 1", params).fetchone()
         return self._row(r) if r else None
 
     def set_status(self, sub_id: str, status: str) -> None:

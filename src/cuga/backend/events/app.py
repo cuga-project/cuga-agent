@@ -1,4 +1,4 @@
-"""FastAPI wiring for the events layer — mounted on CUGA's app, behind ``EVENTS_ENABLED``.
+"""FastAPI wiring for the events layer — registered onto the eventing service's own app.
 
 Two new endpoints (events_docs/ARCHITECTURE.md):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
@@ -547,7 +547,20 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 {"ok": False, "reason": "concierge not configured; use ?dry_run=1 for the plan",
                  "plan": planned, "trace_id": tr.id}, 501)
         thread_id = (body or {}).get("thread_id", "web:local")
+        # CHANNEL-ORIGINATED ARMING. CUGA is the door now: a Slack/Telegram/Discord "/automate …"
+        # reaches /run first and is forwarded here with the originating channel attached. Resolve
+        # the SENDER's identity from it, exactly as /invoke does for a channel envelope — otherwise
+        # the flow arms as the fallback user while the Studio lists another scope, and it is armed,
+        # firing, delivering, and invisible.
         principal = resolve_principal(headers=request.headers)
+        _ch = (body or {}).get("channel")
+        if isinstance(_ch, dict) and _ch.get("name") and identity is not None:
+            from .principal import resolve_channel
+            _cp = resolve_channel(str(_ch["name"]), str(_ch.get("user") or ""), identity)
+            if _cp is not None:
+                principal = _cp
+            else:
+                tr("channel.unlinked", channel=_ch.get("name"), native=_ch.get("user"))
         # `?flow=1` → also return the flow(s) this utterance armed, so a caller can check the pieces
         # are right without a second round trip to /subscriptions/<id>/flow. `?flow=full` adds the
         # raw Activepieces flow JSON. Off by default: it costs one AP call per new subscription.
@@ -1341,6 +1354,29 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return {"public_url": pub, "guides": out}
 
     # --- DIRECT Slack (default backend; no AP) — Slack Events API → /invoke → chat.postMessage -----
+    @app.get("/api/events/slack/events")
+    async def slack_events_probe():
+        """A human opened this URL in a browser. Say so, instead of a bare 405.
+
+        Slack only ever POSTs here, so GET is genuinely Not Allowed — but "405 Method Not Allowed"
+        in a browser reads exactly like a broken endpoint, and costs an afternoon of debugging the
+        wrong thing. Answer the question the person is actually asking: is this the right URL, and
+        is it alive?
+        """
+        return {
+            "ok": True,
+            "endpoint": "slack events",
+            "note": ("This endpoint is healthy. Slack delivers events by POST — a GET from a "
+                     "browser cannot exercise it. Paste this exact URL into Slack → your app → "
+                     "Event Subscriptions → Request URL and it will verify."),
+            "self_test": ("curl -X POST <this-url> -H 'Content-Type: application/json' "
+                          "-d '{\"type\":\"url_verification\",\"challenge\":\"probe\"}'  "
+                          "# should print: probe"),
+            "wrong_host_hint": ("Slack points at the EVENTING SERVICE (cuga-events-svc), never at "
+                                "CUGA (cuga-core) — CUGA answers 405 here and Slack reports "
+                                "'your request URL returned an HTTP error'."),
+        }
+
     @app.post("/api/events/slack/events")
     async def slack_events(request: Request):
         """Slack Events API receiver. Handles the url_verification handshake, verifies the request
@@ -1426,31 +1462,24 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return {"ok": True}
 
     async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
-        """Route a Slack message through /invoke (concierge + metadata footer) and post the reply
-        BACK INTO THE THREAD. The thread_id keys the conversation memory per-thread — one Slack
-        thread = one topic. The native id (for identity/delivery) stays the channel: the ``#<ts>``
-        suffix is stripped by ``channel_native_id``, so only memory is thread-scoped."""
-        from . import slack_direct
-        import httpx
+        """Route a Slack message through CUGA's /run and post the reply BACK INTO THE THREAD.
+
+        CUGA IS THE DOOR: this adapter makes no routing decision — it owns the Slack token and the
+        thread bookkeeping, nothing more. /run decides chat-vs-arming and calls the eventing layer
+        only when the utterance is a slash verb or continues an open arming dialogue.
+
+        thread_ts keys conversation memory per-thread (one Slack thread = one topic); the native id
+        for identity/delivery stays the channel — ``channel_native_id`` strips the ``#<ts>``."""
+        from . import cuga_door, slack_direct
         tr = Trace(new_trace_id())
         try:
-            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
-            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
-            # gw:slack:<channel>#<thread_ts> → per-thread memory; native id = channel (suffix stripped).
-            # source.user = the Slack author id → per-user identity (whose creds/perms) once linked.
-            tid = f"gw:slack:{channel}#{thread_ts}" if thread_ts else f"gw:slack:{channel}"
-            payload = {"text": text, "agent": "concierge", "deliver": False,
-                       "source": {"type": "channel", "name": "slack", "thread_id": tid, "user": user},
-                       "event": {"kind": "message", "payload": {"slack_user": user}}}
-            async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=payload)
-                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            answer = await cuga_door.ask(text, channel="slack", native_id=channel,
+                                         user=user, locus=thread_ts or "")
             if answer:
                 res = await slack_direct.send_message(channel, answer, thread_ts=thread_ts)
                 tr("slack.reply", channel=channel, thread=thread_ts, ok=res.get("ok"))
             else:
-                tr.error("slack", reason="no answer", status=r.status_code)
+                tr.error("slack", reason="no answer from CUGA /run")
         except Exception as e:  # noqa: BLE001
             tr.error("slack", err=str(e))
 
@@ -1780,8 +1809,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     # --- DIRECT Discord (default backend; a Gateway WebSocket bot — no AP, no public URL) ----------
     async def _discord_answer(msg: dict) -> None:
-        """A Discord Gateway MESSAGE_CREATE → /invoke(concierge) → reply back to the channel.
-        thread_id keys memory per channel/thread; source.user = the author (per-user identity).
+        """A Discord Gateway MESSAGE_CREATE → CUGA /run → reply back to the channel.
+        CUGA IS THE DOOR: this adapter only owns the token and the reply; /run decides whether the
+        utterance is chat or arming. thread_id keys memory per channel; user = the author.
 
         EVENTS_DISCORD_CHAT=mention: only @bot messages / DMs / replies-to-the-bot reach CHAT —
         a gated-out message still feeds the channel-message WATCHERS (mirrors the Slack gate)."""
@@ -1805,23 +1835,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                         engine=engine)
             return
         try:
-            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
-            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
-            payload = {"text": text, "agent": "concierge", "deliver": False,
-                       "source": {"type": "channel", "name": "discord",
-                                  "thread_id": f"gw:discord:{channel_id}", "user": author},
-                       "event": {"kind": "message", "payload": {"discord_user": author}}}
-            async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=payload)
-                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            from . import cuga_door
+            answer = await cuga_door.ask(text, channel="discord", native_id=channel_id, user=author)
             if answer:
                 # reply-to the asking message: the answer visibly attaches to its question
                 res = await discord_direct.send_message(channel_id, answer,
                                                         reply_to=str(msg.get("id") or ""))
                 tr("discord.reply", channel=channel_id, ok=res.get("ok"))
             else:
-                tr.error("discord", reason="no answer", status=r.status_code)
+                tr.error("discord", reason="no answer from CUGA /run")
         except Exception as e:  # noqa: BLE001
             tr.error("discord", err=str(e))
 
@@ -1855,7 +1877,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     # --- DIRECT Telegram (default backend; long-poll — no AP, no public URL) -----------------------
     async def _telegram_answer(msg: dict) -> None:
-        """A Telegram getUpdates message → /invoke(concierge) → reply back to the chat. Mirrors
+        """A Telegram getUpdates message → CUGA /run → reply back to the chat. Mirrors
         _discord_answer: thread_id keys memory per chat; source.user = the sender (per-user identity).
 
         EVENTS_TELEGRAM_CHAT=mention: in a GROUP, only @bot messages reach CHAT (a private chat always
@@ -1878,22 +1900,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                         payload={"text": msg.get("text") or "", "channel": chat_id}, engine=engine)
             return
         try:
-            port = os.environ.get("EVENTS_CUGA_PORT", "7860")
-            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
-            payload = {"text": text, "agent": "concierge", "deliver": False,
-                       "source": {"type": "channel", "name": "telegram",
-                                  "thread_id": f"gw:telegram:{chat_id}", "user": sender},
-                       "event": {"kind": "message", "payload": {"telegram_user": sender}}}
-            async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=payload)
-                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            from . import cuga_door
+            answer = await cuga_door.ask(text, channel="telegram", native_id=chat_id, user=sender)
             if answer:
                 res = await telegram_direct.send_message(chat_id, answer,
                                                          reply_to=msg.get("message_id"))
                 tr("telegram.reply", chat=chat_id, ok=res.get("ok"))
             else:
-                tr.error("telegram", reason="no answer", status=r.status_code)
+                tr.error("telegram", reason="no answer from CUGA /run")
         except Exception as e:  # noqa: BLE001
             tr.error("telegram", err=str(e))
 

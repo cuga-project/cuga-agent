@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import re
 import os
 import sys
 import time
@@ -383,14 +384,26 @@ def phase_channel_arm(r: Report, created: list):
     _, yes_msg = http("POST", "https://slack.com/api/chat.postMessage",
                       {"channel": chan, "text": "yes", "thread_ts": ts}, sh, timeout=20)
     _slack_deliver_event(chan, sh, "yes", yes_msg.get("ts", ts), thread_ts=ts)
-    confirm, seen = _slack_wait(chan, sh, ts, seen=seen)
+    # seen+1: we just posted "yes" with the BOT token, so Slack attributes it to the bot and
+    # _slack_wait would count it as "the bot replied" and return immediately — before the arm has
+    # finished. Then subs() shows nothing new and this reports a failure that never happened.
+    confirm, seen = _slack_wait(chan, sh, ts, seen=seen + 1, budget=180)
+    # "Armed" does NOT have to mean "a brand-new subscription". The concierge DEDUPS: an equivalent
+    # flow (same agent, same cadence, same delivery channel) is REUSED — "REUSING existing flow …
+    # (subscription cuga-xxxx)". Asserting strictly on newness failed the moment a matching flow
+    # already existed, reporting "nothing armed" about a run that had armed correctly. Take the id
+    # out of the confirmation, and fall back to new-subscription detection.
     new = [s for s in subs() if s["id"] not in before]
-    if not new:
+    m_id = re.search(r"\b(cuga-[0-9a-f]{6})\b", confirm or "")
+    if new:
+        sub = new[0]
+        created.append(sub["id"])            # ours: clean it up
+    elif m_id and any(s["id"] == m_id.group(1) for s in subs()):
+        sub = next(s for s in subs() if s["id"] == m_id.group(1))   # reused: leave it as we found it
+    else:
         return r.add(case=case, verdict=FAIL, utterance=utter, channel="slack", integration="",
                      trigger="CRON", response=confirm[:200],
                      why='replied "yes" in-thread but nothing armed (is the thread follow-up gated?)')
-    sub = new[0]
-    created.append(sub["id"])
     step(phase="fire", surface="slack", actor="you", utterance="yes", channel="slack", trigger="CRON",
          action='reply "yes" in the thread (no new @mention)',
          expect="the flow arms, and the reply is reachable because the bot rooted the thread",

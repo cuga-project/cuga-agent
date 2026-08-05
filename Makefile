@@ -8,27 +8,32 @@ PY        := .venv/bin/python
 DOCKER    := $(shell command -v podman || command -v docker)
 DB        := events.db .events.db
 VOLS      := ap_pgdata ap_redis
-CUGA_PORT := 7860
+CUGA_PORT   := 7860
+EVENTS_PORT ?= 8100
+# THE eventing front door. CUGA (:7860) serves the agent + the UI; the eventing service (:8100)
+# owns /invoke, /api/events/* and /api/concierge. Every harness targets the eventing service.
+EVENTS_URL  := http://localhost:$(EVENTS_PORT)
 
 # ── Code Engine (deployed) — coordinates mirror deploy/ce/config.sh; override on the CLI ──
-CE_APP     ?= cuga-events
+CE_APP     ?= cuga-events-svc      # the eventing service = the front door
+CE_CORE_APP ?= cuga-core           # vanilla CUGA (agent + UI)
 CE_PROJECT ?= ce-project-routing
 CE_REGION  ?= us-east
 CE_GROUP   ?= routing
 CE_ROSTER  ?= supervisor_agents.yaml
 TAIL       ?= 60
-# The deployed public URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy_app.sh).
+# The deployed events URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy.sh).
 CE_URL     := $(shell . deploy/ce/.ce_urls.env 2>/dev/null; echo $$CUGA_CE_URL)
 
 # env-check: required must be present+non-empty; optional just reported.
 REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
             WATSONX_APIKEY WATSONX_URL WATSONX_PROJECT_ID \
             AP_BASE_URL AP_EMAIL AP_PASSWORD \
-            EVENTS_DB EVENTS_ENABLED GATEWAY_TOKEN
+            EVENTS_DB GATEWAY_TOKEN
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown ce-deploy-split run-events test-e2e-split
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown run-events
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -42,10 +47,10 @@ ap: ## Start Activepieces (app + postgres + redis + tunnel)
 ap-pieces: ## Ensure AP has the integration pieces installed (fixes fresh-DB "piece_metadata_not_found")
 	@$(PY) scripts/ap_pieces.py
 
-cuga: ## Provision infra (MCP registry + tunnels) then boot `cuga start … --events`
+cuga: ## Provision infra (MCP registry + tunnels) then boot BOTH services (CUGA :7860 + eventing :8100)
 	scripts/events_up.sh
 
-up: preflight ap cuga ## Full dev stack: Activepieces + infra + `cuga start … --events` (one server)
+up: preflight ap cuga ## Full dev stack: Activepieces + infra + CUGA (:7860) + eventing service (:8100)
 	@echo "✓ stack up.   → NEXT: make status"
 
 ## ---- NO-AP path: run the events layer with ZERO Activepieces (web + Telegram + Discord chat) -----
@@ -54,7 +59,7 @@ preflight-noap: ## Check the MINIMAL tools the no-AP path needs (uv + .venv only
 	@test -d .venv || { echo "✗ no .venv — run: uv sync --python 3.12"; exit 1; }
 	@echo "✓ minimal tools present.   → NEXT: make up-noap"
 
-up-noap: preflight-noap ## Boot the events layer WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
+up-noap: preflight-noap ## Boot BOTH services WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
 	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh --no-tunnel
 	@$(MAKE) --no-print-directory channels
 	@echo
@@ -72,7 +77,7 @@ up-noap-slack: preflight-noap ## Boot events WITHOUT Activepieces but WITH the C
 	@echo "   cron/poll/push + AP integrations are still OFF (need AP)."
 	@echo "   → NEXT: make status"
 
-start: up ## Alias for `up`. Bare server (no AP/tunnels): `cuga start demo --events`
+start: up ## Alias for `up`. Bare pair (no AP/tunnels): `make up-noap`
 
 stop: ## Stop everything (AP + CUGA + tunnels), keep data
 	-scripts/ap_up.sh --stop
@@ -80,7 +85,7 @@ stop: ## Stop everything (AP + CUGA + tunnels), keep data
 
 restart: stop up ## Stop then start both (NB: new tunnel URLs — re-point EVENTS_PUBLIC_URL after)
 
-reload: ## Bounce ONLY the CUGA server (pick up .env/code) — keeps AP + tunnels, URLs unchanged
+reload: ## Bounce BOTH servers (pick up .env/code) — keeps AP + tunnels, URLs unchanged
 	scripts/events_up.sh --reload
 
 nuke: stop ## Stop everything AND wipe all data (AP volumes + events.db)
@@ -124,10 +129,10 @@ status: ## Show what's running + tunnel URLs + every channel & integration
 	@$(PY) scripts/ap_pieces.py --status 2>/dev/null | sed 's/^/  /' \
 	  || echo "  (AP not reachable — run: make ap-pieces)"
 	@echo "--- integrations (watch/act) ---"
-	@curl -s --max-time 5 localhost:$(CUGA_PORT)/api/events/integrations 2>/dev/null \
-	  | CUGA_PORT=$(CUGA_PORT) python3 -c "import sys,json,os;\
+	@curl -s --max-time 5 localhost:$(EVENTS_PORT)/api/events/integrations 2>/dev/null \
+	  | EVENTS_PORT=$(EVENTS_PORT) python3 -c "import sys,json,os;\
 rows=json.load(sys.stdin).get('integrations',[]);\
-port=os.environ.get('CUGA_PORT','7860');\
+port=os.environ.get('EVENTS_PORT','8100');\
 mark=lambda i: '✓ connected' if i.get('connected') else ('· ready' if not i.get('needs_connection') else '✗ connect needed');\
 [print(f\"  {i['name']:<17} {mark(i):<15} {i.get('auth','?'):<6} {i.get('backend','?')}\") for i in rows];\
 need=[i['name'] for i in rows if i.get('needs_connection') and not i.get('connected')];\
@@ -141,8 +146,8 @@ public-url: ## Print the current public URL + the exact Slack/Gmail strings to u
 	@scripts/events_up.sh --public-url
 
 flows: ## Open the Events Dashboard (watchers · runs · channels · pause/resume/delete/run · dry-run)
-	@echo "Events Dashboard → http://localhost:$(CUGA_PORT)/api/events/dashboard"
-	@open "http://localhost:$(CUGA_PORT)/api/events/dashboard" 2>/dev/null || true
+	@echo "Events Dashboard → http://localhost:$(EVENTS_PORT)/api/events/dashboard"
+	@open "http://localhost:$(EVENTS_PORT)/api/events/dashboard" 2>/dev/null || true
 
 tunnels: ## Status of both public tunnel agents (AP cloudflared + CUGA ngrok/cloudflared)
 	@scripts/tunnels.sh --status
@@ -171,31 +176,17 @@ test: ## Quick unit — every endpoint + invariant via TestClient. NO creds / st
 
 test-e2e: ## e2e WITHOUT AP — chat + arm + FIRE across channels & native cron/poll; a channel with no token is SKIPPED and named. Needs: make up-noap
 	@echo "── e2e (no Activepieces) — any channel missing its token in .env is SKIPPED and called out ──"
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
 
 test-ap: ## e2e WITH AP — the SaaS integration path (Box/GitHub/Gmail + webhook: arm + fire). Needs: make up + make doctor
 	@echo "── e2e WITH Activepieces — integration push triggers; an unconnected integration is SKIPPED ──"
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_integrations_e2e.py $(ARGS)
 
-## ---- SPLIT MODE — eventing as its own service, CUGA reached over /run --------
-##   Same wire contract as the mounted deployment, so every target above still applies —
-##   just point EVENTS_SERVER_URL at the eventing service instead of CUGA.
-EVENTS_PORT ?= 8100
-
-run-events: ## [split] Run the eventing service alone (needs CUGA up separately; CUGA_URL=…)
+## ---- run the eventing service alone (CUGA must already be up) ---------------
+run-events: ## Run ONLY the eventing service on :$(EVENTS_PORT) (needs CUGA up; override CUGA_URL=…)
 	CUGA_URL=$${CUGA_URL:-http://localhost:$(CUGA_PORT)} EVENTS_SERVICE_PORT=$(EVENTS_PORT) \
 	  $(PY) -m cuga.backend.events.service
-
-test-e2e-split: ## [split] The SAME no-AP e2e, driven against the eventing service on :$(EVENTS_PORT)
-	@echo "── e2e (split topology) — eventing on :$(EVENTS_PORT), CUGA on :$(CUGA_PORT) ──"
-	EVENTS_SERVER_URL=http://localhost:$(EVENTS_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
-	@# A split fire crosses the wire (events → CUGA /run) and CUGA's tool servers scale to zero, so
-	@# the first tick legitimately takes longer than in-process. Give it room rather than call a
-	@# slower-but-working fire a failure.
-	EVENTS_SERVER_URL=http://localhost:$(EVENTS_PORT) EVENTS_SCHEDULER=native \
-	  FIRE_TICK_WAIT_SECS=$${FIRE_TICK_WAIT_SECS:-300} \
-	  $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
 
 # ── individual harnesses (hidden from `make help`; run by `make test-report`, or directly for a focused check) ──
 test-all:
@@ -203,16 +194,16 @@ test-all:
 bench:
 	$(PY) -m pytest tests/events/test_nl_to_flow_bench.py tests/events/test_flowspec_bench.py -q -s
 test-live:
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_e2e.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_e2e.py $(ARGS)
 
 test-suite-now:
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only now $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_suite.py --only now $(ARGS)
 test-suite-flows:
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_suite.py --only flows $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_suite.py --only flows $(ARGS)
 test-matrix:
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_matrix.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_matrix.py $(ARGS)
 test-fire:
-	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_fire.py $(ARGS)
+	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_fire.py $(ARGS)
 
 test-report: ## Everything → one HTML report — runs test + test-e2e + test-ap + every matrix, timestamped (~40 min)
 	$(PY) scripts/run_all_tests.py $(ARGS)
@@ -309,11 +300,9 @@ test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e agains
 ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
 	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
 
-ce-deploy: ## [CE] Deploy/redeploy the app (supervisor + $(CE_ROSTER); override CE_ROSTER=rosters/…)
-	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy_app.sh
+ce-deploy: ## [CE] Deploy/redeploy BOTH services — cuga-core + cuga-events-svc (roster: $(CE_ROSTER))
+	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy.sh
 
 ce-teardown: ## [CE] Delete the app (keeps the image + registry secret)
 	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh
 
-ce-deploy-split: ## [CE] Deploy the SPLIT topology — two apps (cuga-core + cuga-events-svc), one image
-	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./3_deploy_split.sh

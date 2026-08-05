@@ -39,7 +39,7 @@ sys.path.insert(0, str(_ROOT / "src"))
 from cuga.backend.events import concierge, triggers as _tr          # noqa: E402
 from cuga.backend.events.ap_engine import APEngine                  # noqa: E402
 from cuga.backend.events.agent_store import AgentStore              # noqa: E402
-from cuga.backend.events.runtime import CugaRuntime, AgentSpec      # noqa: E402
+from cuga.backend.events.runtime import AgentStoreRuntime, AgentSpec      # noqa: E402
 from cuga.backend.events.subscriptions import SubscriptionStore     # noqa: E402
 from cuga.backend.events.principal import Principal                 # noqa: E402
 
@@ -72,7 +72,7 @@ async def _latest_run_status(eng: APEngine, flow_id: str) -> str:
 
 
 def _mk_tools(engine):
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="cuga", prompt="triage",
                               integrations=[{"app": a, "ownership": "per-user"}
                                             for a in ("gmail", "github", "box", "slack")]),

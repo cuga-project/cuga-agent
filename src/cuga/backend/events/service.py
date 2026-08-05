@@ -68,6 +68,21 @@ def _load_env() -> None:
     if path and os.path.isfile(path):
         load_dotenv(path, override=bool(forced))
         log.info("events service: loaded env from %s", path)
+    _apply_defaults()
+
+
+def _apply_defaults() -> None:
+    """The events layer's own defaults. These used to live in ``cuga start … --events``; when that
+    flag was deleted with combined mode they went with it, and the service inherited none of them.
+
+    ``EVENTS_USER_ID`` is the one that bites: with it unset every unlinked channel message resolves
+    to user ``local``, while the Studio and the harnesses browse as ``admin`` — so a flow armed from
+    Slack was stored under one scope and listed under another. Armed, fired, delivered, and
+    completely invisible in the Flows tab. ``setdefault`` throughout, so .env and real env still win.
+    """
+    os.environ.setdefault("EVENTS_USER_ID", "admin")     # Studio + channels share one scope
+    os.environ.setdefault("EVENTS_WORKER_BACKEND", "http")
+    os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
 
 
 def create_app():

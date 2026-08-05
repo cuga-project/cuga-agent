@@ -4,8 +4,8 @@
 # App names use UNDERSCORES (cuga_finance, not cuga-finance) because CUGA's code-execution agent
 # composes `<app>_<tool>` as a Python identifier — a hyphen (`cuga-finance_get_crypto_price`)
 # parses as subtraction → NameError. The events layer maps its hyphenated names to these:
-# a worker provisioned with mcp_server_names=['cuga-finance'] → CugaRuntime passes
-# app_names=['cuga_finance'] to CombinedToolProvider (hyphens → underscores in _cuga_bridge).
+# a worker provisioned with mcp_server_names=['cuga-finance'] → the roster passes
+# app_names=['cuga_finance'] to CombinedToolProvider (hyphens → underscores at load time).
 # NOTE: these Code Engine servers scale to zero — warm them before a demo/test.
 mcpServers:
   cuga_web:

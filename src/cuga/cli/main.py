@@ -865,15 +865,6 @@ def start(
         "--host",
         help="Host to bind to (default: 127.0.0.1). Use 0.0.0.0 to allow external connections.",
     ),
-    events: bool = typer.Option(
-        False,
-        "--events",
-        help="Enable the EVENT-DRIVEN layer on this server: channels (Slack/Discord/Telegram), "
-             "webhooks, standing flows (cron/poll/push), the concierge and the Studio events tabs. "
-             "Sets EVENTS_ENABLED=1. Pair with EVENTS_SUPERVISOR=1 + a supervisor_agents.yaml "
-             "roster (yours — see events_docs/SETUP.md) for the one-supervisor agent model. "
-             "AP-backed triggers additionally need Activepieces + tunnels (make ap / make tunnels).",
-    ),
     sandbox: bool = typer.Option(
         False,
         "--sandbox",
@@ -1146,32 +1137,11 @@ def start(
     """
     validate_service(service)
 
-    if events:
-        # THE unified entry point for the event-driven layer (events_docs/SETUP.md).
-        # Same server, events routes mounted; the startup capability report says what's live
-        # vs what needs infra (Activepieces/tunnels). `make up` provisions that infra and boots
-        # this SAME app — one code path, two levels of ceremony.
-        os.environ["EVENTS_ENABLED"] = "1"
-        os.environ.setdefault("EVENTS_DB", os.path.join(os.getcwd(), "events.db"))
-        # events defaults shared by BOTH invocations (`make up` execs THIS command — one execution
-        # path; the wrapper only provisions infra first). .env wins: config.py load_dotenv ran at
-        # import, so setdefault only fills what .env left unset.
-        os.environ.setdefault("EVENTS_WORKER_BACKEND", "cuga")
-        os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
-        os.environ.setdefault("EVENTS_USER_ID", "admin")   # the web Studio browses as admin
-        # slow external APIs (arXiv ~5.5s/call + retries) blow the 30s sandbox default
-        os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
-        # ONE port everywhere: CUGA's native 7860, with or without --events — all events infra
-        # (tunnels, channels, tests, docs, AP callbacks) targets it too. EVENTS_CUGA_PORT moves
-        # everything at once for the rare case that 7860 is taken.
-        if os.environ.get("EVENTS_CUGA_PORT"):
-            os.environ.setdefault("DYNACONF_SERVER_PORTS__DEMO", os.environ["EVENTS_CUGA_PORT"])
-        logger.info(
-            "EVENTS layer ON — channels/webhooks/standing flows mount on this server. "
-            "Supervisor agent model: EVENTS_SUPERVISOR=1 + a supervisor_agents.yaml roster "
-            "(bring your own — events_docs/SETUP.md). AP-backed triggers need Activepieces "
-            "(`make ap`) + a public URL (`make tunnels`); the startup report says what's missing."
-        )
+    # NB: there is no --events flag. The event-driven layer is a SEPARATE SERVICE
+    # (`uv run python -m cuga.backend.events.service`, or `make run-events`) that calls this server
+    # over HTTP. `make up` starts both. This command starts CUGA and nothing else.
+    # slow external APIs (arXiv ~5.5s/call + retries) blow the 30s sandbox default
+    os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
 
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
@@ -1381,17 +1351,15 @@ def start(
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
         # The registry needs FILE mode (serving cuga-finance/geo/web/…) whenever a roster of
         # sub-agents is in play; "none" means managed-config-db mode, which serves only the demo
-        # app. Three ways to be in that world:
-        #   • --events                     the events layer's supervisor roster
-        #   • CUGA_SUPERVISOR_ROSTER=…     this server preloaded AS a supervisor (split topology)
+        # app. Two ways to be in that world:
+        #   • CUGA_SUPERVISOR_ROSTER=…     this server preloaded AS a supervisor
         #   • an explicitly exported MCP_SERVERS_FILE  (make up, a container env, …)
-        # The last one used to be silently overwritten with "none" here, which is why a split
-        # cuga-core started with `cuga start demo` served only `digital_sales` and every roster
-        # agent answered "the available toolset does not include…" despite the env being set.
+        # The latter used to be silently overwritten with "none" here, which is why a cuga-core
+        # started with `cuga start demo` served only `digital_sales` and every roster agent
+        # answered "the available toolset does not include…" despite the env being set.
         _explicit_mcp = (os.environ.get("MCP_SERVERS_FILE", "") or "").strip()
         _wants_roster = bool(
-            events
-            or (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
+            (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
             or (_explicit_mcp and _explicit_mcp != "none")
         )
         if _wants_roster:

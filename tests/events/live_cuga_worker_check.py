@@ -2,7 +2,7 @@
 
 Runs inside the FULL CUGA venv (`.venv`, after `uv sync`). Proves the piece CUGA lacked:
 a per-agent `DynamicAgentGraph` built on demand from an AgentSpec and run to an answer, through
-`CugaRuntime` (the default worker backend). If the CUGA graph can't build, `CugaRuntime` falls
+`AgentStoreRuntime` (the default worker backend). If the CUGA graph can't build, `AgentStoreRuntime` falls
 back to react — this test FORCES the cuga path (real app_context) and asserts the answer came
 from the CUGA graph.
 
@@ -34,7 +34,7 @@ async def main() -> int:
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _load_dotenv(os.path.join(repo, ".env"))
 
-    from cuga.backend.events.runtime import CugaRuntime, AgentSpec, DEFAULT_SCOPE
+    from cuga.backend.events.runtime import AgentStoreRuntime, AgentSpec, DEFAULT_SCOPE
     from cuga.backend.events.agent_store import AgentStore
 
     # real app_context → forces the CUGA path (policy_system present). langfuse off; no tool
@@ -51,7 +51,7 @@ async def main() -> int:
                 "get_include_by_app": None}
 
     # cuga executes the work; no react fallback here — a failure must surface, not be masked.
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
 
     # provision a plain worker (no MCP) — the point is to prove the CUGA graph builds + answers
     rt.upsert_agent(AgentSpec(name="helper", prompt="You are a concise, helpful assistant."),

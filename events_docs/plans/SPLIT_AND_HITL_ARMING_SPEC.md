@@ -725,3 +725,214 @@ One genuine wart, unresolved and non-deterministic: one CE combined poll answere
 `Current weather in Tokyo: {weather_info}` — the sub-agent emitted an unsubstituted template
 placeholder instead of the value. The tick fired and delivered; only that answer's content was
 junk. The same agent returned real values on every other run (local and CE split included).
+
+## 21. Combined mode REMOVED (2026-08-05) — there is one topology
+
+The eventing layer is a separate service. Full stop. The "combined" topology — events routes mounted
+onto CUGA's own FastAPI app — is deleted, not deprecated.
+
+It was never a design choice; it was where the feature started, before the split existed. Keeping
+both meant two code paths, two deploy scripts, two sets of instructions, and a class of bug that
+only ever appeared in one of them (§20: every split defect was invisible in combined, because
+sharing a process hides the seam).
+
+### What was removed
+
+| | |
+|---|---|
+| `server/main.py` events mount (`register_events_routes`, stores, engine, concierge wiring) | −104 |
+| `server/main.py` background-loop launcher | −14 |
+| `runtime.py` `SupervisorRuntime` + `ClassicRuntime` | −131 |
+| `cli/main.py` `--events` flag and its branch | −33 |
+| `scripts/run_events_server.py` (combined debug entrypoint) | deleted |
+| `deploy/ce/2_deploy_app.sh` (combined deploy) | deleted |
+| `EVENTS_ENABLED` / `events.enabled()` | gone — running the service IS enabling it |
+
+**CUGA core now imports nothing from `cuga.backend.events`.** It carries no triggers, no scheduler,
+no channel loops and no bot tokens. What it still owes the eventing service is exactly three things,
+all plain HTTP: `POST /run`, `GET /run/agents`, and `events_api_url` on `/api/ui/config`.
+
+### The one thing that needed replacing: main-chat arming
+
+`/stream` used to call the concierge in-process, so `/automate …` typed in CUGA's MAIN chat box
+armed a flow. Standalone, core has no concierge — and handing that utterance to the plain agent is
+the silent-failure trap this whole feature exists to close (it tries to *implement* the schedule
+with a loop and sleeps).
+
+So core keeps a **forwarder**, not a concierge: `_forward_slash_to_events` POSTs to the eventing
+service's `/api/concierge` and streams the reply back as a single SSE `Answer` frame. No events
+import, no shared DB. Open dialogues are tracked in an in-memory set keyed off the `state` field the
+service already returns, so a bare `yes` still routes there — deliberately a routing HINT, not
+state: the service holds the real parked entry (10-minute TTL) and is the only thing that can arm.
+Lost on restart, which costs one retype at worst.
+
+If `EVENTS_API_URL` is unset, `_forwards_to_events` returns False and `/stream` behaves exactly as
+upstream CUGA does. Vanilla CUGA with no eventing service is a supported configuration.
+
+### One runtime
+
+`make_runtime` always returns `HttpRuntime`. `"cuga"` survives as a legacy alias (an existing
+`EVENTS_WORKER_BACKEND=cuga` in a `.env` keeps working — it means the same thing now), and an
+unknown backend raises instead of silently falling back to something that quietly does nothing.
+
+A test written for this caught a real fragility: `CugaRuntime.get_agent` called `self._store.get(…)`
+unguarded, so a missing store raised *before* `HttpRuntime`'s `or AgentSpec("cuga")` fallback could
+run — breaking the "the one agent is always addressable" guarantee every scheduled tick depends on.
+
+### Deploy
+
+`make ce-deploy` → `deploy/ce/2_deploy.sh` → both apps from one image. There is no `ce-deploy-split`
+because there is nothing to distinguish it from. `make up` / `make up-noap` start both processes
+locally; every harness targets the eventing service on `:8100`.
+
+## 22. CUGA IS THE DOOR (2026-08-05) — channels enter at /run, not at the eventing layer
+
+Every channel utterance now goes to CUGA's **`POST /run`**. CUGA decides whether it is chat or
+eventing, and calls the eventing service only for the latter.
+
+```
+BEFORE                                  NOW
+slack ──▶ events /invoke                slack ────┐
+          └─ concierge decides          telegram ─┤
+             └──▶ CUGA /run             discord ──┼──▶ CUGA /run ── decides
+                                        web ──────┘        ├─ chat      → the agent
+                                                           └─ /automate → events /api/concierge
+```
+
+The eventing layer was the front door for *chat*, which is backwards: chat is CUGA's job and
+eventing is the exception. Inverting it means the default path never consults the eventing layer at
+all, and CUGA — the thing a user thinks they are talking to — owns the decision.
+
+### The adapters stayed put, and that is the point
+
+The Slack webhook handler, the Telegram long-poll and the Discord gateway still live in the eventing
+service: they own the sockets and the bot tokens, and moving them into CUGA would re-acquire exactly
+the coupling §21 removed (bot tokens, process-wide loops, singleton scaling). They are now **pure
+transport** — normalise a message, hand it to `/run`, post the answer back. Zero routing logic.
+
+`events/cuga_door.py` is the whole client: `ask(text, channel=…, native_id=…, user=…, locus=…)`.
+**Slack's Request URL is unchanged** — the receivers did not move, only the decision did.
+
+### The rule, in one place
+
+```
+slash verb (/automate /watch /schedule /cron /poll /push /cancel)   → eventing
+this thread already has an arming dialogue open                     → eventing
+everything else                                                     → the agent
+```
+
+The second line carries the multi-turn arming conversation. A bare `yes`, or
+`change the prompt to …`, means nothing on its own — so CUGA remembers which threads are mid-dialogue
+in an in-memory set, updated from the `state` the eventing service returns (`confirm`/`needs_input`
+→ open; `armed`/`cancelled` → closed). Deliberately a routing HINT, not state: the eventing service
+holds the real parked entry with its 10-minute TTL and is the only thing that can arm. Lost on a CUGA
+restart, which costs one retype.
+
+`thread_id` (`gw:<channel>:<native>#<locus>`) carries both the memory locus and the delivery
+address, so a flow armed from a Slack thread fires back into that thread with nobody passing a
+"reply-to" anywhere. Verified: `ARMED cron for cuga → slack`.
+
+Fires do NOT come through this door: a tick is already-decided work aimed at a known agent and needs
+delivery + run-logging, so the scheduler keeps calling `/invoke`.
+
+### Two bugs found while building it
+
+**`EVENTS_USER_ID` died with the `--events` flag.** Deleting the CLI branch (§21) took the events
+layer's defaults with it. Without `EVENTS_USER_ID=admin`, an unlinked channel sender resolved to user
+`local` while the Studio and every harness browse as `admin`: a Slack-armed flow was stored in one
+scope and listed from another. It armed, fired, delivered — and was invisible in the Flows tab. The
+defaults now live in `service._apply_defaults()`, with tests.
+
+**The offline suite was never hermetic.** Its inner calls target
+`127.0.0.1:$EVENTS_CUGA_PORT/invoke`; with a dev stack listening, they reached a real server and made
+real LLM calls, so a 50-second suite took 25+ minutes and looked like a hang in whatever you had just
+changed. `tests/events/conftest.py` now points every loopback seam at a closed port for the session.
+Proof: **339 passed in 75s with the stack up on both ports.**
+
+
+### 22.1 Three defects found by chasing one "failing" channel-arm test
+
+The Slack channel-arm harness kept reporting `replied "yes" in-thread but nothing armed`. The
+product was arming correctly the whole time — but chasing it turned up three real problems, only
+one of which the test was written to catch.
+
+**1. The harness raced itself.** It posts the human's `yes` with the *bot* token, so Slack
+attributes that message to the bot; `_slack_wait` counted it as "the bot replied" and returned
+before the arm finished. It only surfaced now because the extra HTTP hop made arming slower.
+Fixed with `seen + 1`.
+
+**2. The harness demanded a NEW subscription.** Arming legitimately REUSES an equivalent flow
+(same agent, cadence, sink, owner) — `REUSING existing flow … (subscription cuga-xxxx)`. The
+harness now takes the id out of the confirmation and accepts a reused flow.
+
+**3. `find_by_dedup_key` ignored the tenant — a real isolation leak.** The reuse lookup searched
+every tenant, so arming could answer *"REUSING existing flow (subscription X)"* where X belonged to
+somebody else: invisible in the caller's Flows list, undeletable by them, still delivering to the
+other tenant's channel. Observed live — a flow owned by `default/default/local` was handed to
+`default/default/admin`, which had zero flows and was told one had been reused. Now scoped at all
+three call sites (`scope=p.scope`), with an unscoped fallback for callers that have no principal.
+
+Also hardened: `_SLASH_VERBS` tolerates a leading `<@mention>`. Slack and Discord normally strip it
+before we see the text, but that depends on a bot-id lookup succeeding — and if it ever fails,
+`<@U123> /automate …` silently becomes ordinary chat and the agent tries to *implement* the
+schedule. That is precisely the silent failure this feature exists to prevent.
+
+### 22.2 CUGA stands alone — proven, not asserted
+
+| Scenario | Behaviour | Test |
+|---|---|---|
+| eventing never deployed (`EVENTS_API_URL` unset) | forward disabled; `/run` + `/stream` behave exactly as upstream CUGA — a slash verb is just text | `test_cuga_is_standalone_when_no_eventing_service_is_configured` |
+| eventing configured but DOWN | chat unaffected (never calls out); arming returns an honest sentence naming the unreachable URL | `test_cuga_degrades_gracefully_when_the_eventing_service_is_down` |
+| the arming gate | releases on `armed`/`cancelled` — a thread is never hijacked permanently | `test_an_open_dialogue_closes_when_the_flow_arms` |
+
+The coupling is one variable and one direction: CUGA imports nothing from `cuga.backend.events`
+(enforced by `test_the_events_package_no_longer_imports_cugas_graph`'s sibling check), and the only
+link out is an HTTP POST guarded by `EVENTS_API_URL`. The dependency runs the other way — the
+eventing service needs CUGA, because CUGA executes every agent call.
+
+`/stream` is unchanged for chat and returns the arming card as a single SSE `Answer` frame, so the
+UI cannot tell the two apart.
+
+
+### 22.3 The gate leaked — two matchers, one rule (2026-08-05)
+
+Code Engine caught the most serious defect of the day, and it was self-inflicted:
+
+```
+✗ channel-arm/slack — a subscription was armed BEFORE the human confirmed — the gate leaked
+  response: "Armed poll for cuga → runs every 1 minute, sending you the Bitcoin price"
+```
+
+A flow armed that **no human had approved** — the one safety property this feature exists to
+provide.
+
+**Cause.** The decision is made in two places: CUGA's door (`_SLASH_VERBS`, "is this arming?") and
+the concierge (`_slash_parse`, "which verb is it?"). Hardening the door to tolerate a leading
+`<@mention>` — without doing the same to the parser — made the door strictly MORE permissive.
+Mention-prefixed slashes were forwarded, missed by `_slash_parse`, and fell through to the NL
+pre-router, **which arms directly, with no confirmation card**.
+
+It only appeared on CE because Slack's mention-strip depends on a bot-id lookup that behaved
+differently there — exactly the condition the hardening was meant to survive.
+
+**Fix.** Both matchers tolerate the same shapes, and a test fails if either drifts:
+
+```python
+for text in forwarded_by_the_door:
+    assert _SLASH_VERBS.match(text)         # the door forwards it
+    assert _slash_parse(text) is not None   # …so the parser must claim it
+```
+
+The one legitimate asymmetry is documented in its own test so nobody "fixes" the lockstep by
+breaking it: `/cancel` is the door's verb only — the arming GATE handles it (it drops a parked
+draft), not the parser.
+
+**A second lesson, cheaper but sharper.** The first version of that test did
+`from cuga.backend.server.main import _SLASH_VERBS`. That import pulls the entire CUGA server in,
+and its module-level side effects broke **17 unrelated tests** in the same session while passing in
+isolation. The test now lifts the pattern out of the source file. Nothing in `tests/events/` should
+import CUGA's server.
+
+**Design note.** Two copies of one rule is the actual smell here; the lockstep test is a guard, not
+a cure. The rule cannot live in `events/` (CUGA must not import it) so a shared home would need a
+third, dependency-free module. Worth doing if a third matcher ever appears.

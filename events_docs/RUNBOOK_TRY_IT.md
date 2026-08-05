@@ -1,24 +1,42 @@
 # Try it — local and deployed
 
 Everything below is what actually shipped in this branch: HITL arming (nothing arms until you
-approve the exact prompt), CUGA preloaded with a supervisor roster, and the optional split into two
-services. Full design record: `events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md`.
+approve the exact prompt), CUGA preloaded with a supervisor roster, and the eventing layer as its own
+service. Full design record: `events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md`.
 
 **Want the picture first?** Open **[`DECK.html`](DECK.html)** in a browser — architecture diagram,
 the NL→Flow lifecycle, why Activepieces is in but off, the blast-radius numbers, and the roadmap.
 
 ---
 
-## The three deployments
+## The topology
 
-| | URL / command | What it is |
+**There is exactly one topology: two services, and CUGA is the front door.**
+
+Every channel utterance — Slack, Discord, Telegram, web — lands on **CUGA's `POST /run`**. CUGA
+applies one rule and calls the eventing service only when the message is actually about eventing:
+
+```
+slash verb (/automate /watch /schedule /cron /poll /push /cancel)   → eventing
+this thread already has an arming dialogue open ("yes", "change …") → eventing
+everything else                                                     → the agent
+```
+
+The channel adapters live in the eventing service because they own the sockets and the bot tokens,
+but they make no routing decision — they normalise a message, hand it to `/run`, and post the answer
+back. The eventing service also owns triggers, the scheduler and the concierge, and executes every
+fire by calling `/run`.
+
+The old "combined" mode (events mounted onto CUGA's FastAPI app) is removed: CUGA carries no events
+code, no scheduler, no channel loops and no bot tokens.
+
+| | CUGA (agent + UI) | eventing service (the front door for events) |
 |---|---|---|
-| **Local (combined)** | `make up-noap` → http://localhost:7860 | one process: CUGA + eventing. **Start here.** |
-| **CE (combined)** | https://cuga-events.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud | the supported deployment |
-| **CE (split)** | core: https://cuga-core.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud · events: https://cuga-events-svc.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud | two services, see §5 |
+| **Local** | http://localhost:7860 | http://localhost:8100 |
+| **Code Engine** | https://cuga-core.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud | https://cuga-events-svc.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud |
 
-**UI lives at `/studio`** on the combined apps, and on **cuga-core** in the split (it calls the
-events service cross-origin via `EVENTS_API_URL`).
+`make up-noap` starts **both**. **UI lives at `/studio` on CUGA**; it calls the eventing service
+cross-origin via `EVENTS_API_URL`.
 
 ### One caveat worth knowing before you start
 
@@ -36,20 +54,20 @@ run shows one webhook failure, re-run before believing it.
 ## 1. Local — the 10-minute pass
 
 ```bash
-make up-noap                 # CUGA + eventing on :7860, no Activepieces
+make up-noap                 # BOTH services: CUGA :7860 + eventing :8100, no Activepieces
 make test                    # offline suite — run it with the stack DOWN (see below)
 make test-e2e                # REAL channels + native cron/poll fire
 ```
 
-⚠️ **Run `make test` with nothing listening on :7860.** The offline tests fire webhooks at
-`127.0.0.1:$EVENTS_CUGA_PORT` (default 7860). With the stack up, those requests reach the live
-server, and a suite that should take a couple of minutes spends them on real LLM calls.
+`make test` is hermetic — `tests/events/conftest.py` points every loopback seam at a closed port
+for the session, so it behaves identically whether or not a dev stack is running. (It did not use
+to: with the stack up those inner calls hit a real server and a 50-second suite took 25+ minutes.)
 
 Confirm you got the roster and its tools before testing anything else:
 ```bash
 curl -s localhost:7860/api/apps | jq '.apps[].name'          # seven cuga_* servers
-curl -s localhost:7860/api/events/status -H "X-Gateway-Token: $TOK" \
-  | jq -r '.capability[1]'                                   # supervisor: ON — 8 sub-agent(s)
+curl -s localhost:8100/api/events/status -H "X-Gateway-Token: $TOK" \
+  | jq -r '.capability[1]'      # supervisor on CUGA (…) — 8 sub-agent(s): pricebot, …
 ```
 
 **Try HITL by hand** — open http://localhost:7860/studio → Concierge tab, and type:
@@ -78,7 +96,7 @@ Automated version of exactly that:
 .venv/bin/python tests/events/live_fire.py --only channel-arm
 ```
 
-**Local split** (two processes — CUGA *without* `--events`, eventing beside it):
+**Starting them by hand** (what `make up-noap` does for you):
 ```bash
 # 1. CUGA as the supervisor. The roster must be here: this is where execution happens.
 CUGA_SUPERVISOR_ROSTER=supervisor_agents.yaml \
@@ -88,7 +106,7 @@ MCP_SERVERS_FILE=src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_app
 # 2. The eventing service beside it
 CUGA_URL=http://localhost:7860 make run-events # :8100
 
-make test-e2e-split
+make test-e2e
 ```
 Check the seam before running anything else — it should list `cuga` plus every sub-agent:
 ```bash
@@ -107,12 +125,12 @@ ibmcloud login --sso          # region us-east, group routing
 make ce-status                # revision, env, capability report
 make ce-smoke                 # status + channels + one authenticated web-chat turn
 make test-e2e-ce              # the SAME channel + fire e2e against the deployed app
-make ce-logs GREP=launched    # expect: "events: launched N background task(s)"
+make ce-logs GREP=launched    # expect: "events service: launched N background task(s)"
 ```
 
 **HITL against the deployed app** (`$TOK` = `GATEWAY_TOKEN` from `.env`):
 ```bash
-URL=https://cuga-events.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud
+URL=https://cuga-events-svc.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud
 curl -s -X POST $URL/api/concierge -H 'Content-Type: application/json' \
      -H "X-Gateway-Token: $TOK" \
      -d '{"text":"/automate every 5 minutes send IBM stock price","thread_id":"t1"}'
@@ -126,13 +144,31 @@ curl -s -X POST $URL/api/concierge ... -d '{"text":"yes","thread_id":"t1"}'
 **Rebuild / redeploy:**
 ```bash
 make ce-build          # cloud buildrun → ICR   (needed after ANY code or roster change)
-make ce-deploy         # combined
-make ce-deploy-split   # two apps (cuga-core + cuga-events-svc)
+make ce-deploy         # both apps (cuga-core + cuga-events-svc), one image
 ```
 
 ---
 
 ## 3. Redirect / callback URLs — what to update, and when
+
+> ⚠️ **Slack's Request URL points at the EVENTING SERVICE (`cuga-events-svc`), never at CUGA.**
+> "CUGA is the door" describes where the *decision* happens, one hop later and invisible to Slack.
+> The *receiver* — the webhook route, the bot token, the signature check — lives in the eventing
+> service and did not move. Point Slack at `cuga-core` and it answers **405** for that path (its SPA
+> catch-all takes GET, not POST), which Slack reports as *"Your request URL returned an HTTP error"*.
+>
+> ```
+> https://cuga-events-svc.…/api/events/slack/events     ← correct (note the -svc)
+> https://cuga-core.…/api/events/slack/events           ← 405, verification fails
+> ```
+>
+> To check the endpoint yourself before blaming Slack — it must echo the challenge:
+> ```bash
+> curl -s -X POST "$EVENTS/api/events/slack/events" -H 'Content-Type: application/json' \
+>      -d '{"type":"url_verification","challenge":"probe"}'
+> # → probe
+> ```
+
 
 Only **inbound push** channels need a URL. They point at whichever app serves `/api/events/*`.
 
@@ -146,7 +182,7 @@ Only **inbound push** channels need a URL. They point at whichever app serves `/
 
 **When to change it:**
 - local → CE, or CE → local: yes
-- combined → **split**: **yes** — the events app changes from `cuga-events` to `cuga-events-svc`
+- the events app is `cuga-events-svc` — CUGA (`cuga-core`) never serves a channel callback
 - redeploying the same app: no, CE URLs are stable across delete/recreate
 
 The app prints the exact URL at the end of every deploy, and `make ce-status` shows it.
@@ -171,8 +207,7 @@ slack/discord/box/gmail/calendar, and `webpage_summarizer` the URL-shaped ones (
 pinterest). An unclaimed trigger is not a crash — it is the supervisor guessing, silently.
 
 ```bash
-CUGA_SUPERVISOR_ROSTER=rosters/supervisor_agents_full.yaml    # CUGA preloaded (split / /run)
-EVENTS_SUPERVISOR_ROSTER=rosters/supervisor_agents_full.yaml  # events runtime (combined)
+CUGA_SUPERVISOR_ROSTER=rosters/supervisor_agents_full.yaml    # set on CUGA — that is where execution happens
 ```
 `CUGA_SUPERVISOR_ROSTER` also switches the tool registry into FILE mode, so the roster's MCP
 servers are actually served. A roster that fails to load returns a 500 naming the file rather than
@@ -180,38 +215,53 @@ silently falling back to a tool-less default agent.
 
 ---
 
-## 5. Split status — verified, not experimental
+## 5. Where it stands
 
-| | e2e / flows | fire |
-|---|---|---|
-| Local combined | 30 ✓ · 2 ✗ (AP down) · 2 – | 2/2 |
-| Local split | 30 ✓ · 2 ✗ (AP down) · 2 – | 2/2 |
-| CE combined | 16 ✓ · **0 ✗** · 5 – | 2/2 |
-| CE split | 29 ✓ · **0 ✗** · 5 – | **2/2** |
+| | e2e / flows | fire | notes |
+|---|---|---|---|
+| **Local** | 30 ✓ · 2 ✗ · 2 – | **2/2** cron+poll · **Slack round trip PASS** | both ✗ = "Activepieces is not running" |
+| **Code Engine** | 28 ✓ · 1 ✗ · 5 – | cron ✓ · poll ✓ | the ✗ is a cold start — re-run and it passes |
 
-Offline suite: **330 passed in 46s** (stack down).
+Offline suite: **347 passed in ~70s**, and hermetic — it no longer matters whether a dev stack is
+running.
 
-Every remaining local failure is *"Activepieces is not running"*. CE reports those as **skips**
-rather than failures because AP is deliberately unconfigured there, versus configured-but-down
-locally — same condition, different honest label. Green across the board: transport, UI wiring,
-CORS, the preloaded supervisor, sub-agent tools, all three webhook modes, and cron/poll ticks
-across the HTTP hop.
+### One safety property worth knowing how to check
 
-The two topologies now describe the roster identically because they ask the same question. CUGA
-publishes what it has loaded at **`GET /run/agents`** (the machine sibling of `/run`, same shared
-secret), and the eventing service resolves every agent against it:
+Nothing may arm without a human confirming. The gate is enforced in two places — CUGA's door
+(`_SLASH_VERBS`, "is this arming?") and the concierge (`_slash_parse`, "which verb?") — and if the
+door is ever MORE permissive than the parser, the extra utterances fall through to the NL path,
+**which arms directly with no card**. That happened once (a mention-prefixed `/automate`), and is
+now pinned by `test_the_door_and_the_concierge_agree_on_what_a_slash_command_is`.
+
+To check it by hand, send the awkward shape and look for the card, not an "Armed" line:
 
 ```bash
-curl -s $CUGA/run/agents -H "X-Gateway-Token: $TOK"     # cuga + its sub-agents, with mcp_servers
+curl -s -X POST $CUGA/run -H "X-Gateway-Token: $TOK" -H 'Content-Type: application/json' \
+  -d '{"query":"<@U0BFR0NS7ME> /automate every minute send me the price of bitcoin",
+       "thread_id":"gw:slack:CTEST#1",
+       "channel":{"name":"slack","native_id":"CTEST","user":"U1"}}' | jq -r .answer | head -2
+# → **Ready to arm — check this first.**      ← correct
+# → Armed poll for cuga …                      ← THE GATE LEAKED
 ```
 
-If the events side ever reports one agent while CUGA has a roster loaded, that call is failing —
-check the token first.
+**The two remaining local failures are both "AP is down"**, which is the state you asked for. CE
+reports the same condition as *skips* because AP is deliberately unconfigured there rather than
+configured-but-unreachable.
 
-**Combined remains the default and the one to reach for.** Split earns its keep when you want CUGA
-and the eventing layer to scale, deploy or hold secrets separately.
+**CE cold start.** CE tool servers scale to zero. The first call that needs a cold `cuga-*` server
+can exceed the webhook's internal timeout and return `502`. Warm, the same routed webhook answers in
+~28s with a real review. If a first run shows one webhook failure, re-run before believing it.
 
-Both split apps run at `min-scale 1` (always warm, always billing):
+### Proving the door, deployed
+
 ```bash
-ibmcloud ce app delete -n cuga-core -n cuga-events-svc
+C=https://cuga-core.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud
+run(){ curl -s -X POST $C/run -H "X-Gateway-Token: $TOK" -H 'Content-Type: application/json' \
+        -d "{\"query\":\"$1\",\"thread_id\":\"gw:slack:CDEMO#1\",\"channel\":{\"name\":\"slack\",\"native_id\":\"CDEMO\",\"user\":\"U1\"}}"; }
+run "what is the capital of France?"                  # routed_to absent  → the agent
+run "/automate every 5 mins check ibm stock price"    # routed_to: events → confirm card
+run "yes"                                             # routed_to: events → ARMED … → slack
+run "what is 2+2?"                                    # routed_to absent  → the agent
 ```
+
+**Delete anything you arm** — it fires forever.

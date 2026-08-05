@@ -6,7 +6,7 @@ as ``slack_direct``. Bonus: the Gateway is an **outbound** connection, so it nee
 (unlike Slack's Events API). This is the DEFAULT Discord backend; the AP polling path stays behind
 ``EVENTS_DISCORD_BACKEND=ap``.
 
-Flow:  Discord Gateway (MESSAGE_CREATE) ▸ /invoke(concierge) ▸ REST create-message back to the channel.
+Flow:  Discord Gateway (MESSAGE_CREATE) ▸ CUGA POST /run ▸ REST create-message back to the channel.
 
 ⚠️ Requires **MESSAGE CONTENT INTENT** enabled in the Discord Developer Portal (Bot → Privileged
 Gateway Intents). Without it the Gateway closes with code 4014 (disallowed intents) or delivers empty

@@ -5,7 +5,8 @@
 #   • AP tunnel   (cloudflared → :8081) — its URL is baked into the AP container as AP_FRONTEND_URL at
 #     AP start, so it CANNOT be hot-swapped: a URL change needs `make ap` (recreates AP). Used by
 #     Telegram/GitHub/Gmail webhooks.
-#   • CUGA tunnel (ngrok or cloudflared → :7860) — feeds EVENTS_PUBLIC_URL (Slack Request URL + OAuth).
+#   • events tunnel (ngrok or cloudflared → :8100) — feeds EVENTS_PUBLIC_URL (Slack Request URL + OAuth).
+#     It must reach the EVENTING SERVICE: CUGA (:7860) does not serve /api/events/* any more.
 #     ngrok (EVENTS_NGROK_DOMAIN set) = a STABLE domain you can restart freely; cloudflared = random.
 #
 #   scripts/tunnels.sh            # status of both
@@ -15,7 +16,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 RUN=/tmp/events_up; mkdir -p "$RUN"
-AP_PORT=8081; CUGA_PORT=7860
+AP_PORT=8081
+# The public tunnel fronts the EVENTING SERVICE (:8100), not CUGA (:7860) — Slack's Request URL and
+# every OAuth callback hit /api/events/*, which only that service serves.
+EVENTS_PORT="${EVENTS_SERVICE_PORT:-8100}"
 DOCKER="$(command -v podman || command -v docker || true)"
 env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- \
   | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
@@ -27,7 +31,7 @@ cuga_url() { [ -n "$NGROK_DOMAIN" ] && { echo "https://$NGROK_DOMAIN"; return; }
 reach()    { curl -s -o /dev/null -w '%{http_code}' --max-time 6 "$1" 2>/dev/null || echo 000; }
 up_or()    { pgrep -f "$1" >/dev/null 2>&1 && echo "up  " || echo "DOWN"; }
 ap_pat="cloudflared tunnel --url http://localhost:$AP_PORT"
-cuga_pat="$([ -n "$NGROK_DOMAIN" ] && echo "ngrok http $CUGA_PORT" || echo "cloudflared tunnel --url http://localhost:$CUGA_PORT")"
+cuga_pat="$([ -n "$NGROK_DOMAIN" ] && echo "ngrok http $EVENTS_PORT" || echo "cloudflared tunnel --url http://localhost:$EVENTS_PORT")"
 
 status() {
   local au cu fe
@@ -39,7 +43,7 @@ status() {
   if [ -n "$fe" ] && [ -n "$au" ] && [ "$fe" != "$au" ]; then
     echo "   ⚠ AP is baked to $fe but the live tunnel is $au → run 'make ap' to re-bake"
   fi
-  echo "CUGA tunnel ($([ -n "$NGROK_DOMAIN" ] && echo "ngrok STATIC" || echo "cloudflared") → :$CUGA_PORT)   agent: $(up_or "$cuga_pat")"
+  echo "events tunnel ($([ -n "$NGROK_DOMAIN" ] && echo "ngrok STATIC" || echo "cloudflared") → :$EVENTS_PORT)   agent: $(up_or "$cuga_pat")"
   echo "   url     : ${cu:-none}$([ -n "$NGROK_DOMAIN" ] && echo '   (stable)')"
   [ -n "$cu" ] && echo "   reachable: $(reach "$cu/api/events/status")   (200 = ok)"
 }
@@ -58,10 +62,10 @@ up() {
     echo "CUGA tunnel already up: $(cuga_url)"
   elif [ -n "$NGROK_DOMAIN" ]; then
     command -v ngrok >/dev/null || { echo "MISSING ngrok — brew install ngrok"; exit 1; }
-    ngrok http "$CUGA_PORT" --domain="$NGROK_DOMAIN" --log=stdout > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
+    ngrok http "$EVENTS_PORT" --domain="$NGROK_DOMAIN" --log=stdout > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
     sleep 3; echo "started ngrok → https://$NGROK_DOMAIN (stable; EVENTS_PUBLIC_URL still valid)"
   else
-    cloudflared tunnel --url "http://localhost:$CUGA_PORT" --no-autoupdate > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
+    cloudflared tunnel --url "http://localhost:$EVENTS_PORT" --no-autoupdate > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
     sleep 4; echo "started cloudflared → $(cuga_url) (NEW url — run 'make reload' to sync EVENTS_PUBLIC_URL)"
   fi
   # AP tunnel — cannot be hot-restarted (URL is baked into AP); tell the user the right lever.

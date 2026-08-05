@@ -1,14 +1,16 @@
 """The ``AgentRuntime`` port — the single seam between the event plane and "an agent".
 
 Everything agent-related (concierge, /invoke, channels) goes through this interface, so
-swapping frameworks = writing one adapter (events_docs/ARCHITECTURE.md). Three implementations:
+swapping frameworks = writing one adapter (events_docs/ARCHITECTURE.md). Implementations:
 
-  - ``StubRuntime``  — deterministic, in-memory, **no deps** → tests & dry-run.
-  - ``ReactRuntime`` — LangGraph ``create_react_agent`` + ``MemorySaver`` (backend="react").
-  - ``CugaRuntime``  — CUGA ``DynamicAgentGraph`` via ``get_or_build_agent_graph`` (backend="cuga").
+  - ``HttpRuntime``       — **the production one.** Executes by calling CUGA's ``POST /run``.
+  - ``AgentStoreRuntime`` — its base: scope-keyed storage on the shared AgentStore, no execution.
+  - ``ReactRuntime``      — LangGraph ``create_react_agent`` + ``MemorySaver`` (dev/test).
+  - ``StubRuntime``       — deterministic, in-memory, **no deps** → tests & dry-run.
 
-The two real adapters import langgraph/cuga **lazily inside methods**, so importing this
-module never drags in the heavy runtime — keeping the port and StubRuntime unit-testable.
+There is no in-process CUGA adapter any more: the eventing layer is a separate service, so the
+worker call always crosses the wire. ReactRuntime imports langgraph **lazily inside methods**, so
+importing this module never drags in a heavy runtime.
 """
 
 from __future__ import annotations
@@ -147,92 +149,43 @@ class ReactRuntime(AgentRuntime):
         return result["messages"][-1].content or ""
 
 
-# ---- CugaRuntime (backend="cuga") — the DEFAULT worker backend ----------
-class CugaRuntime(AgentRuntime):
-    """Runs workers as CUGA agents (a per-``agent_id`` ``DynamicAgentGraph``) so **CUGA does the
-    hard work of reasoning/answering** (policies / knowledge / supervisor / tools; events_docs/ARCHITECTURE.md).
-    Default backend for concierge-provisioned workers (the concierge itself stays react).
+# ---- AgentStoreRuntime — storage + isolation, no execution ----------------
+class AgentStoreRuntime(AgentRuntime):
+    """Scope-keyed agent storage on the shared ``AgentStore``. Execution is somebody else's job.
 
-    - **Storage + isolation** use the shared ``AgentStore`` directly (scope-keyed) — the single
-      source of truth for both backends. No react involved in storage.
-    - **Execution is CUGA, full stop.** There is **NO silent react fallback**. If the CUGA stack
-      isn't present (``app_context`` → None) or a build/run raises, ``run`` **raises** — so a
-      misconfiguration is loud, never masked by react quietly doing the work. A react fallback is
-      available **only** when explicitly opted in via ``EVENTS_CUGA_FALLBACK_REACT=1`` (a
-      ``react_fallback`` runtime is then injected), for dev / partial environments.
+    This used to be ``CugaRuntime``: it also EXECUTED, by building a per-agent ``DynamicAgentGraph``
+    in-process through ``_cuga_bridge``. That only worked when the events layer was mounted inside
+    CUGA's own process — the retired "combined" topology — because it needed CUGA's live
+    ``app_state``. With the eventing layer standalone, execution always crosses the wire
+    (``HttpRuntime.run`` → ``POST /run``), so the in-process half was unreachable and is deleted
+    along with ``_cuga_bridge``.
 
-    ``app_context`` is a zero-arg callable → the running server's shared context
-    ({policy_system, langfuse_handler, get_include_by_app}) or None. Resolved **lazily at run
-    time** because the events layer mounts before CUGA's startup populates ``app_state``.
+    That deletion is why this package no longer imports ``cuga.backend.cuga_graph`` at all — the
+    only remaining tie to CUGA core is ``secret_seam`` → ``cuga.backend.secrets.resolve_secret``.
     """
 
-    def __init__(self, *, agent_store, app_context=None, react_fallback=None,
-                 cache_size: int = 32) -> None:
+    def __init__(self, *, agent_store, **_ignored) -> None:
+        # **_ignored swallows app_context / react_fallback / cache_size from older call sites.
         self._store = agent_store              # AgentStore — storage + isolation (shared)
-        self._app_context = app_context        # callable -> ctx dict | None
-        self._react = react_fallback           # ONLY set when EVENTS_CUGA_FALLBACK_REACT (opt-in)
-        self._cache_size = cache_size
-        self._graphs: dict[tuple, object] = {}    # (scope, name) -> DynamicAgentGraph (FIFO)
 
-    # storage / isolation → the shared AgentStore (scope-keyed)
     def upsert_agent(self, spec: AgentSpec, *, scope: str = DEFAULT_SCOPE) -> str:
-        spec.backend = "cuga"
-        self._graphs.pop((scope, spec.name), None)   # force rebuild on next run
         self._store.upsert(scope, spec)
         return spec.name
 
     def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
-        return self._store.get(scope, agent_id)
+        # A missing store is "no local agents", not a crash. HttpRuntime relies on this: its
+        # `super().get_agent(…) or AgentSpec("cuga")` fallback — the guarantee that the one agent
+        # is ALWAYS addressable — never ran if this raised first.
+        return self._store.get(scope, agent_id) if self._store is not None else None
 
     def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
-        return self._store.list(scope)
-
-    def _ctx(self):
-        try:
-            return self._app_context() if self._app_context else None
-        except Exception:  # noqa: BLE001
-            return None
-
-    async def _get_or_build(self, spec: AgentSpec, scope: str, ctx: dict):
-        key = (scope, spec.name)
-        if key in self._graphs:
-            return self._graphs[key]
-        from ._cuga_bridge import build_worker_graph
-        graph = await build_worker_graph(spec, scope=scope, ctx=ctx)
-        if len(self._graphs) >= self._cache_size:
-            self._graphs.pop(next(iter(self._graphs)))            # simple FIFO eviction
-        self._graphs[key] = graph
-        return graph
+        return self._store.list(scope) if self._store is not None else []
 
     async def run(self, agent_id: str, thread_id: str, text: str,
                   *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
-        spec = self.get_agent(agent_id, scope=scope)
-        if spec is None:
-            raise KeyError(f"unknown agent {agent_id!r} in scope {scope!r}")
-        ctx = self._ctx()
-        if ctx is None:
-            if self._react is not None:          # explicit opt-in only
-                logging_warn("cuga stack unavailable; EVENTS_CUGA_FALLBACK_REACT on → react")
-                return await self._react.run(agent_id, thread_id, text,
-                                             scope=scope, deliver_to=deliver_to)
-            raise RuntimeError(
-                "CUGA worker backend requires the full CUGA stack (app_context is None — start "
-                "via the CUGA server so app_state is populated). No react fallback (set "
-                "EVENTS_CUGA_FALLBACK_REACT=1 to allow one).")
-        try:
-            from ._cuga_bridge import run_graph
-            from . import runmeta
-            runmeta.add(agent=agent_id.split("::")[-1], backend="cuga",
-                        mcp=list(getattr(spec, "mcp_servers", []) or []))
-            graph = await self._get_or_build(spec, scope, ctx)
-            return await run_graph(graph, thread_id, text)
-        except Exception as e:
-            if self._react is not None:          # explicit opt-in only
-                logging_warn(f"cuga worker failed for {agent_id} ({e}); "
-                             "EVENTS_CUGA_FALLBACK_REACT on → react")
-                return await self._react.run(agent_id, thread_id, text,
-                                             scope=scope, deliver_to=deliver_to)
-            raise                                # CUGA does the work — surface the failure
+        raise NotImplementedError(
+            "AgentStoreRuntime stores agents; it does not run them. Use HttpRuntime (the eventing "
+            "service's runtime), which executes by calling CUGA's POST /run.")
 
 
 def logging_warn(msg: str) -> None:
@@ -241,7 +194,7 @@ def logging_warn(msg: str) -> None:
 
 
 # ---- HttpRuntime (backend="http") — CUGA as a SEPARATE SERVICE ------------
-class HttpRuntime(CugaRuntime):
+class HttpRuntime(AgentStoreRuntime):
     """Run the worker by calling CUGA's ``POST /run`` over HTTP instead of in-process.
 
     This is the seam that lets the eventing layer be its own deployable: everything upstream of
@@ -381,161 +334,31 @@ class HttpRuntime(CugaRuntime):
         raise RuntimeError(f"cuga /run unreachable at {self._base} ({last})")
 
 
-# ---- SupervisorRuntime (EVENTS_SUPERVISOR=1) — ONE agent, canonical roster ----
-class SupervisorRuntime(AgentRuntime):
-    """The single-agent world (events_docs/plans/SUPERVISOR_REFACTOR.md).
-
-    There is exactly ONE addressable agent: **"cuga"**. With ``EVENTS_SUPERVISOR=1`` it is a
-    ``CugaSupervisor`` whose sub-agents come from the CANONICAL roster file
-    (``supervisor_agents.yaml``, CUGA-main's ``load_supervisor_config`` schema) — the SUPERVISOR
-    does all routing, per wake-up, and the answer bubbles up. ``run()``'s ``agent_id`` is kept
-    only as a caller hint recorded in runmeta; execution always goes to the one agent.
-
-    Sub-agent management is CANONICAL: edit the YAML + ``make reload``. There is no store, no
-    upsert — ``upsert_agent`` refuses loudly so the old fleet APIs can't silently half-work.
-    ``list_agents`` serves the ROSTER as read-only AgentSpecs (name + prompt) for the Studio's
-    view; nothing routes on it."""
-
-    ROSTER_FILE = "supervisor_agents.yaml"
-
-    def __init__(self, roster_path: str | None = None) -> None:
-        # BYO agents: EVENTS_SUPERVISOR_ROSTER points at YOUR roster YAML (canonical CUGA-main
-        # supervisor schema). Default = ./supervisor_agents.yaml (this repo ships a 27-agent
-        # example; the infra carries no assumptions about it — see events_docs/SETUP.md).
-        env_roster = os.environ.get("EVENTS_SUPERVISOR_ROSTER", "").split(" #", 1)[0].strip()
-        self._roster_path = (roster_path or env_roster
-                             or os.path.join(os.getcwd(), self.ROSTER_FILE))
-        self._sup = None                       # lazy CugaSupervisor (needs the model config)
-        self._specs: list[AgentSpec] = []      # read-only roster view
-
-    # ---- roster (read-only; the YAML is the truth) --------------------------
-    def _load_specs(self) -> list[AgentSpec]:
-        if self._specs:
-            return self._specs
-        try:
-            import yaml
-            cfg = yaml.safe_load(open(self._roster_path)) or {}
-            self._specs = [
-                AgentSpec(name=a.get("name", ""), backend="cuga",
-                          prompt=(a.get("special_instructions") or "").strip(),
-                          mcp_servers=[m.get("name") if isinstance(m, dict) else str(m)
-                                       for m in (a.get("mcp_servers") or [])])
-                for a in (cfg.get("agents") or []) if a.get("name")
-            ]
-        except FileNotFoundError:
-            self._specs = []
-        return self._specs
-
-    def upsert_agent(self, spec: AgentSpec, *, scope: str = DEFAULT_SCOPE) -> str:
-        raise RuntimeError(
-            "supervisor mode: sub-agents are defined in supervisor_agents.yaml (canonical "
-            "CUGA-main schema) — edit the file and `make reload`. The fleet upsert API is retired.")
-
-    def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
-        if agent_id == "cuga":
-            return AgentSpec(name="cuga", backend="cuga", prompt="the CUGA supervisor")
-        return next((s for s in self._load_specs() if s.name == agent_id), None)
-
-    def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
-        return self._load_specs()
-
-    # ---- execution — everything goes to THE agent ---------------------------
-    async def _supervisor(self):
-        if self._sup is None:
-            from cuga.supervisor_utils.supervisor_config import load_supervisor_config
-            from cuga.sdk import CugaSupervisor
-            cfg = await load_supervisor_config(self._roster_path)
-            self._sup = CugaSupervisor(
-                agents=cfg.agents,
-                special_instructions=(cfg.supervisor or {}).get("special_instructions"))
-            logging_warn(f"supervisor 'cuga' up with {len(cfg.agents)} sub-agents "
-                         f"(roster: {self._roster_path})")
-        return self._sup
-
-    async def run(self, agent_id: str, thread_id: str, text: str,
-                  *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
-        from . import runmeta
-        runmeta.add(agent="cuga", backend="supervisor",
-                    mcp=[f"hint:{agent_id}"] if agent_id not in ("", "cuga") else [])
-        sup = await self._supervisor()
-        # thread identity: per-conversation, NOT the delegation module's fixed per-agent thread —
-        # scope+thread keeps users' contexts apart at the supervisor level.
-        res = await sup.invoke(text, thread_id=f"{scope}:{thread_id}")
-        # OBSERVABILITY (fix #1): the supervisor picks the sub-agent INTERNALLY, so the run log would
-        # otherwise show the flat "cuga". Surface WHICH sub-agent actually handled the turn into
-        # runmeta.agent (mutates the same dict start()/add() set). Best-effort + fully guarded — this
-        # is events-scoped observability and must never break the run. Falls back to "cuga".
-        try:
-            _st = getattr(sup, "_supervisor_state", None)
-            _sel = (_st.get("selected_agents") if isinstance(_st, dict)
-                    else getattr(_st, "selected_agents", None))
-            if isinstance(_sel, (list, tuple)) and _sel:
-                runmeta.add(agent=str(_sel[-1]))       # the sub-agent that answered
-        except Exception:  # noqa: BLE001
-            pass
-        return res.answer if hasattr(res, "answer") else str(res)
-
-
-# ---- ClassicRuntime (EVENTS_SUPERVISOR unset) — the good old single cuga agent ----
-class ClassicRuntime(CugaRuntime):
-    """One plain CUGA agent, as main ships it — no fleet, no supervisor, no roster.
-
-    Every ``run()`` executes the SAME generalist graph regardless of the requested agent id
-    (kept only as a runmeta hint). ``upsert_agent`` refuses: in the single-agent world there is
-    nothing to register. This is the EVENTS_SUPERVISOR-unset half of the supervisor refactor
-    (events_docs/plans/SUPERVISOR_REFACTOR.md): unset = classic cuga, set = supervisor."""
-
-    _CUGA = AgentSpec(name="cuga", backend="cuga",
-                      prompt="",                       # no special instructions — the plain agent
-                      channels=["web", "slack", "discord", "telegram"])
-
-    def __init__(self, *, app_context=None, cache_size: int = 2) -> None:
-        super().__init__(agent_store=None, app_context=app_context, cache_size=cache_size)
-
-    def upsert_agent(self, spec: AgentSpec, *, scope: str = DEFAULT_SCOPE) -> str:
-        raise RuntimeError("classic mode (EVENTS_SUPERVISOR unset): one plain cuga agent, "
-                           "no registrations. Set EVENTS_SUPERVISOR=1 and edit "
-                           "supervisor_agents.yaml for sub-agents.")
-
-    def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
-        return self._CUGA
-
-    def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
-        return [self._CUGA]
-
-    async def run(self, agent_id: str, thread_id: str, text: str,
-                  *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
-        if agent_id not in ("", "cuga"):
-            from . import runmeta
-            runmeta.add(agent="cuga", backend="cuga", mcp=[f"hint:{agent_id}"])
-        return await super().run("cuga", thread_id, text, scope=DEFAULT_SCOPE,
-                                 deliver_to=deliver_to)
-
-
 # ---- selection -----------------------------------------------------------
-def make_runtime(backend: str, **kw) -> AgentRuntime:
-    """Build the WORKER runtime. ``cuga`` (default) executes on CUGA — no silent react fallback
-    (opt in with ``EVENTS_CUGA_FALLBACK_REACT=1``). ``react`` is the bare react runtime; ``stub``
-    for tests. ``kw``: ``agent_store`` (shared storage), ``model_factory``/``checkpointer`` (react),
-    ``app_context`` (cuga), ``cache_size``."""
-    b = (backend or "cuga").lower()
+def make_runtime(backend: str = "http", **kw) -> AgentRuntime:
+    """Build the WORKER runtime.
+
+    **There is one production runtime: ``http``.** The eventing layer is its own service, so the
+    worker call always crosses the wire to CUGA's ``POST /run``. The in-process runtimes
+    (SupervisorRuntime / ClassicRuntime) existed only for the retired "combined" topology, where
+    events mounted onto CUGA's app and could reach its objects directly; with that gone they were
+    unreachable, so they are gone too.
+
+    ``react`` and ``stub`` remain for tests and dry-runs. ``kw``: ``agent_store`` (shared storage),
+    ``cuga_url``/``cuga_token`` (http), ``model_factory``/``checkpointer`` (react).
+    """
+    b = (backend or "http").lower()
     if b == "stub":
         return StubRuntime()
     if b == "react":     # dev/test-only lightweight loop (unchanged)
         return ReactRuntime(**{k: v for k, v in kw.items()
                                if k in ("model_factory", "agent_store", "checkpointer")})
-    # SPLIT DEPLOYMENT: CUGA runs as its own service and the worker call crosses the wire.
-    # Same agents, same graph — only the transport differs (see HttpRuntime).
-    if b == "http":
-        return HttpRuntime(agent_store=kw.get("agent_store"),
-                           base_url=kw.get("cuga_url", ""), token=kw.get("cuga_token", ""))
-    # THE SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md). One addressable agent,
-    # "cuga", in both modes — the fleet-routing runtime is retired:
-    #   EVENTS_SUPERVISOR=1 → the canonical supervisor, sub-agents from supervisor_agents.yaml
-    #   unset               → the plain classic cuga agent, as main ships it
-    if os.environ.get("EVENTS_SUPERVISOR", "").split(" #", 1)[0].strip() in ("1", "true", "yes"):
-        return SupervisorRuntime(roster_path=kw.get("roster_path"))
-    return ClassicRuntime(app_context=kw.get("app_context"))
+    if b not in ("http", "cuga", ""):
+        raise ValueError(f"unknown worker backend {backend!r} (expected http | react | stub)")
+    # "cuga" is accepted as a legacy alias so an old EVENTS_WORKER_BACKEND=cuga in someone's .env
+    # keeps working — it means the same thing now: execute on CUGA, over HTTP.
+    return HttpRuntime(agent_store=kw.get("agent_store"),
+                       base_url=kw.get("cuga_url", ""), token=kw.get("cuga_token", ""))
 
 
 async def make_sqlite_checkpointer(path: str):

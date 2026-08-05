@@ -122,11 +122,11 @@ def test_scheduler_gate():
 # ── concierge routing: cron arms NATIVE (no AP); gmail push declines w/o AP ──
 def _tools(engine):
     from agent_store import AgentStore
-    from runtime import CugaRuntime, AgentSpec
+    from runtime import AgentStoreRuntime, AgentSpec
     from subscriptions import SubscriptionStore as _S
     import concierge
     import principal as _principal_mod
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="cuga", prompt="x", integrations=[]), scope="default")
     store = _S(":memory:")
     tools = concierge.make_concierge_tools(rt, store=store, engine=engine, users=None)

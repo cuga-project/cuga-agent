@@ -1068,24 +1068,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
 
-    # Launch the events-layer background loops (direct Telegram long-poll, Discord Gateway, and the
-    # native cron/poll scheduler) that register_events_routes queued into app.state.events_background.
-    # RESTORED: this launcher was dropped in the event_support merge (main.py conflict), leaving the
-    # loops registered but never started — the shutdown-cancel below still referenced _events_bg_tasks.
-    _events_bg_tasks = []
-    try:
-        for _factory in getattr(app.state, "events_background", []) or []:
-            _events_bg_tasks.append(asyncio.create_task(_factory()))
-        if _events_bg_tasks:
-            logger.info(f"events: launched {len(_events_bg_tasks)} background task(s) "
-                        "(direct channel loops + native scheduler)")
-    except Exception as _bg_err:  # noqa: BLE001
-        logger.warning(f"events background launch failed: {_bg_err}")
+    # NB: the events background loops (Telegram long-poll, Discord Gateway, native scheduler) are
+    # NOT launched here any more — they belong to the eventing service's own lifespan
+    # (cuga/backend/events/service.py). This server starts no event loops at all.
 
     # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
-    # RESTORED (2026-08-05): a SECOND casualty of the same event_support merge conflict that ate the
-    # launcher above — upstream main.py has this at the same point in lifespan, and the merged file
-    # simply lost it. Nothing failed loudly; ephemeral rows just accumulated forever.
+    # RESTORED (2026-08-05): a casualty of the event_support merge conflict in this file — upstream
+    # main.py has this at the same point in lifespan and the merged file simply lost it. Nothing
+    # failed loudly; ephemeral rows just accumulated forever.
     try:
         removed = await get_conversation_db().gc_ephemeral_stream_events()
         if removed:
@@ -1095,9 +1085,6 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Application is shutting down...")
-
-    for _t in _events_bg_tasks:            # stop the events background tasks
-        _t.cancel()
 
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
@@ -2034,110 +2021,17 @@ app.add_middleware(
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
-# ---- event-driven concierge layer (opt-in: EVENTS_ENABLED; off → CUGA unchanged) ----
-try:
-    from cuga.backend.events import enabled as _events_enabled
-
-    if _events_enabled():
-        import logging as _logging
-        import os as _os
-
-        from cuga.backend.events.agent_store import AgentStore
-        from cuga.backend.events.app import register_events_routes
-        from cuga.backend.events.concierge import Concierge, WORKER_BACKEND
-        from cuga.backend.events.llm import default_model_factory
-        from cuga.backend.events.runtime import make_runtime
-        from cuga.backend.events.subscriptions import SubscriptionStore
-
-        # EVENTS_DB=<path> → agents + subscriptions persist and are SHARED across replicas
-        # (fleet model). For shared conversation memory across replicas, also wire
-        # runtime.make_sqlite_checkpointer(EVENTS_MEMORY_DB) in startup.
-        #
-        # DURABLE BY DEFAULT: the default used to be ":memory:", which silently wiped the whole
-        # subscription fleet (and every parked arming question) on any restart or redeploy — an
-        # armed watcher just vanished. Now it defaults to a FILE. Home-dir, not PACKAGE_ROOT, for
-        # the same reason FASTEMBED_CACHE_DIR is (config.py): a pip-installed CUGA's package root
-        # is site-packages, which is the wrong home for state and may be read-only.
-        # ":memory:" is still honoured when set explicitly (offline tests do exactly that).
-        _ev_db = _os.environ.get("EVENTS_DB", "").strip()
-        if not _ev_db:
-            _ev_db = _os.path.join(_os.path.expanduser("~"), ".cuga", "events.db")
-        if _ev_db != ":memory:":
-            try:
-                _os.makedirs(_os.path.dirname(_ev_db) or ".", exist_ok=True)
-            except OSError as _db_err:      # unwritable home → fall back rather than fail boot
-                _logging.getLogger(__name__).warning(
-                    "events: cannot create %s (%s) — falling back to :memory: (state will NOT "
-                    "survive restart)", _ev_db, _db_err)
-                _ev_db = ":memory:"
-        _logging.getLogger(__name__).info("events: store = %s", _ev_db)
-
-        # WORKERS do the hard work of answering → default backend = **cuga** (they get CUGA's
-        # policies/knowledge/supervisor/tools). The concierge (NL→flow) stays react — its own
-        # graph is built inside Concierge. The cuga worker runtime needs the running server's
-        # shared context (policy_system, langfuse_handler, tool includes); we hand it a LAZY
-        # getter because this mount runs before startup populates app_state. If startup hasn't
-        # built policy_system yet (or in a partial env), the getter returns None and the cuga
-        # runtime transparently falls back to react — so nothing ever breaks.
-        def _cuga_app_context():
-            if getattr(app_state, "policy_system", None) is None:
-                return None                      # startup not ready → react fallback
-            return {
-                "policy_system": app_state.policy_system,
-                "langfuse_handler": getattr(app_state, "langfuse_handler", None),
-                "get_include_by_app": lambda: (
-                    getattr(app_state, "tools_include_by_app", None),
-                    getattr(app_state, "tools_include_version", 0)),
-            }
-
-        _ev_runtime = make_runtime(WORKER_BACKEND, model_factory=default_model_factory,
-                                   agent_store=AgentStore(_ev_db),
-                                   app_context=_cuga_app_context)
-        _ev_store = SubscriptionStore(_ev_db)
-        _ev_engine = None
-        try:  # AP engine only if Activepieces is configured
-            if _os.environ.get("AP_BASE_URL"):
-                from cuga.backend.events.ap_engine import APEngine
-                _ev_engine = APEngine()
-        except Exception:  # noqa: BLE001
-            _ev_engine = None
-        # identity anchor (decision 0007): local users + the channel identity map (shared store)
-        from cuga.backend.events.users import UserStore
-        from cuga.backend.events.identity import IdentityMap
-        from cuga.backend.events.oauth import OAuthAppStore
-        _ev_users = UserStore(_ev_db)
-        _ev_identity = IdentityMap(_ev_db)
-        _ev_oauth_store = OAuthAppStore(_ev_db)
-        # SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): sub-agents live in
-        # supervisor_agents.yaml (canonical schema; EVENTS_SUPERVISOR=1) — the fleet seeding is
-        # retired. Demo USERS are still seeded (identity/permissions need them).
-        if _os.environ.get("EVENTS_SEED_AGENTS"):
-            try:
-                from cuga.backend.events.seed import seed_default_users
-                seed_default_users(_ev_users, tenant="default")
-            except Exception as _seed_err:  # noqa: BLE001
-                _logging.getLogger("cuga.events").warning("seed failed: %s", _seed_err)
-        _ev_concierge = Concierge(_ev_runtime, _ev_store, _ev_engine,
-                                  model_factory=default_model_factory, users=_ev_users)
-        # /stream needs it too: an events slash command typed in the MAIN web chat must reach the
-        # concierge — handed to the plain agent it tried to IMPLEMENT the schedule (loop+sleep).
-        app.state.ev_concierge = _ev_concierge
-        register_events_routes(app, runtime=_ev_runtime, store=_ev_store,
-                                concierge=_ev_concierge, engine=_ev_engine,
-                                users=_ev_users, identity=_ev_identity,
-                                oauth_store=_ev_oauth_store)
-        _logging.getLogger("cuga.events").info(
-            "event-driven concierge layer mounted: /invoke, /api/concierge, "
-            "/api/events/{subscriptions,status,channels,integrations,examples} "
-            "(concierge=react, worker_backend=%s, ap=%s)", WORKER_BACKEND, bool(_ev_engine))
-        try:                                    # honest tiered capability report at startup
-            from cuga.backend.events import capability as _cap
-            _cap.log_report(_logging.getLogger("cuga.events"))
-        except Exception:  # noqa: BLE001
-            pass
-except Exception as _ev_err:  # noqa: BLE001 - never block CUGA startup
-    import logging as _logging
-    _logging.getLogger("cuga.events").warning("events layer not mounted: %s", _ev_err)
+# ---- the eventing layer is a SEPARATE SERVICE ----------------------------------------------
+# It used to mount onto this app ("combined mode"). That is gone: the eventing layer now runs as
+# its own FastAPI service (`python -m cuga.backend.events.service`) and reaches CUGA over HTTP via
+# POST /run. This file therefore imports NOTHING from cuga.backend.events — CUGA core carries no
+# triggers, no scheduler, no channel loops, and no bot tokens.
+#
+# What CUGA still owes the eventing service, all defined above:
+#   POST /run          run one task, return one JSON answer  (the worker call)
+#   GET  /run/agents   what roster this server has loaded    (the events side asks, never guesses)
+#   /api/ui/config     carries EVENTS_API_URL so the SPA can find the events service
+# and the slash forwarder in /stream, which is pure HTTP — see _forward_slash_to_events.
 
 
 @app.get("/health")
@@ -2529,56 +2423,29 @@ async def stream(
     # No need to save it separately here to avoid race conditions
 
     # EDGE DISPATCH — the ONE rule, identical on every surface (web here, channels in /invoke):
-    #   an explicit slash verb            → the eventing layer (arming)
-    #   an OPEN arming dialogue on this thread → the eventing layer (it owns the reply: yes/edit/cancel)
-    #   everything else                   → plain chat, straight through to the agent below.
+    #   an explicit slash verb                 → the eventing SERVICE (arming)
+    #   an OPEN arming dialogue on this thread → the eventing SERVICE (it owns yes/edit/cancel)
+    #   everything else                        → plain chat, straight through to the agent below.
+    #
+    # This used to call the concierge in-process. It is now a plain HTTP forward to the eventing
+    # service (see _forward_slash_to_events), so this file imports nothing from the events package.
     #
     # The NL classifier used to sit here too ("every morning …" was auto-detected as arming). It is
     # gone deliberately: auto-detection mis-fires on ordinary chat, and arming is now an explicit,
     # confirmed act. The cost is that a plain-English standing request runs ONCE as chat; the fix is
     # to type /automate, which is discoverable and never surprises.
-    #
-    # The parked-state probe is now a READ (store.get_pending_arm), not the old pop-on-read
-    # flowspec.pending_for under the DEFAULT principal — that combination consumed the parked entry
-    # here, so the concierge then found nothing and answered the slot reply as ordinary chat
-    # (arming silently never resumed). Same principal, no pop, no bug.
-    _conc = getattr(request.app.state, "ev_concierge", None) if os.environ.get("EVENTS_ENABLED") == "1" else None
-    _princ = None
-    if _conc is not None and isinstance(query, str):
-        from cuga.backend.events.principal import resolve as _resolve_principal
+    if isinstance(query, str) and _forwards_to_events(query, thread_id):
+        _q, _tid = query, thread_id
 
-        # Arm under the SAME principal the Studio + /api/concierge resolve (headers → EVENTS_USER_ID),
-        # NOT the concierge's DEFAULT_PRINCIPAL (user=local). Otherwise a flow armed from the main web
-        # chat lands under default/default/local while the Studio queries default/default/admin — armed
-        # but invisible.
-        _princ = _resolve_principal(headers=request.headers)
+        async def _arming_stream():
+            # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
+            # referencing it here used to raise NameError and kill the whole arming reply.
+            from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
 
-        def _routes_to_events(q: str) -> bool:
-            if re.match(r"\s*/(automate|watch|schedule|cron|poll|push|cancel)\b", q, re.I):
-                return True
-            _store = getattr(_conc, "_store", None)
-            if _store is None:
-                return False
-            try:
-                return _store.get_pending_arm(_princ.thread(thread_id)) is not None
-            except Exception:  # noqa: BLE001 — routing must never take the chat down
-                return False
+            reply = await _forward_slash_to_events(_q, _tid, request.headers)
+            yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
 
-        if _routes_to_events(query):
-            _q, _tid = query, thread_id
-
-            async def _arming_stream():
-                # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
-                # referencing it here used to raise NameError and kill the whole arming reply.
-                from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
-
-                try:
-                    reply = await _conc.run(_tid, _q, _princ)
-                except Exception as e:  # noqa: BLE001
-                    reply = f"error: couldn't arm the flow ({e})"
-                yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
-
-            return StreamingResponse(_arming_stream(), media_type="text/event-stream")
+        return StreamingResponse(_arming_stream(), media_type="text/event-stream")
 
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
@@ -2771,6 +2638,21 @@ async def run_sync(request: Request):
     disable_history = bool(body.get("disable_history", False))
     attachments = body.get("attachments") or None
 
+    # ── CUGA IS THE DOOR ────────────────────────────────────────────────────────────────────────
+    # Every channel utterance (Slack/Telegram/Discord/web) arrives HERE, not at the eventing layer.
+    # The adapters are pure transport; the decision is CUGA's, and it is the same one rule /stream
+    # applies: an explicit slash verb, or a thread with an arming dialogue already open, goes to the
+    # eventing service. Everything else is ordinary chat and never touches it.
+    #
+    # The arming conversation is multi-turn ("which repo?", "yes", "change the prompt to …"), so the
+    # open-dialogue check is what keeps the follow-ups routed — a bare "yes" means nothing on its own.
+    channel = body.get("channel") if isinstance(body.get("channel"), dict) else None
+    if isinstance(query, str) and _forwards_to_events(query, thread_id):
+        reply = await _forward_slash_to_events(query, thread_id, request.headers, channel=channel)
+        return {"ok": bool(reply), "status": "ok" if reply else "error",
+                "answer": reply, "thread_id": thread_id, "sources": [], "variables": {},
+                "routed_to": "events", "error": None if reply else "eventing layer returned nothing"}
+
     run_agent = None
     if str(body.get("use_draft", "")).lower() in ("1", "true", "yes", "on"):
         draft_state = getattr(request.app.state, "draft_app_state", None)
@@ -2865,6 +2747,85 @@ async def run_sync(request: Request):
         "variables": out.get("variables") or {},
         "error": err or None,
     }
+
+
+# ── the slash forwarder: main-chat arming, without mounting the events layer ───────────────────
+# CUGA core does not know how to arm anything, and shouldn't. But a user typing "/automate …" in
+# the MAIN chat box must still reach the concierge — handed to the plain agent it tries to
+# IMPLEMENT the schedule (a loop with sleeps), which is the silent-failure trap this whole feature
+# exists to close. So core detects the intent and FORWARDS over HTTP. No events import, no shared
+# DB, no bot tokens — just one POST.
+# A leading @mention is tolerated: Slack/Discord normally strip it before we see the text, but that
+# depends on a bot-id lookup succeeding. If it ever doesn't, "<@U123> /automate …" must still be
+# recognised as arming — handing it to the plain agent is the silent-failure trap (it tries to
+# IMPLEMENT the schedule), which is precisely what this feature exists to prevent.
+_SLASH_VERBS = re.compile(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push|cancel)\b",
+                          re.I)
+# Threads with an arming dialogue open, so a bare "yes" / "cancel" / "change the prompt to …" is
+# forwarded too. Deliberately IN-MEMORY: core must not read the events store. It is a routing hint,
+# not state — the eventing service holds the real parked entry (10-minute TTL) and is the only
+# thing that can actually arm. Lost on restart, which costs the user one retype at worst.
+_events_open_threads: set = set()
+
+
+def _events_api_url() -> str:
+    return (os.environ.get("EVENTS_API_URL", "") or "").split(" #", 1)[0].strip().rstrip("/")
+
+
+def _forwards_to_events(query: str, thread_id: Optional[str]) -> bool:
+    if not _events_api_url():
+        return False                      # no eventing service configured → plain chat, as before
+    if _SLASH_VERBS.match(query or ""):
+        return True
+    return bool(thread_id) and thread_id in _events_open_threads
+
+
+async def _forward_slash_to_events(query: str, thread_id: Optional[str], headers,
+                                   channel: Optional[Dict[str, Any]] = None) -> str:
+    """POST the utterance to the eventing service's /api/concierge and return its reply text.
+
+    Also tracks whether the dialogue is still open, straight off the structured `state` the events
+    service returns — so the follow-up "yes" routes here without core ever querying anything.
+
+    ``channel`` is the originating channel envelope when the utterance came from Slack/Telegram/
+    Discord via /run. It rides along so the concierge arms with the right delivery target and under
+    the right identity.
+    """
+    import httpx
+
+    base = _events_api_url()
+    tok = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+    hdrs = {"Content-Type": "application/json"}
+    if tok:
+        hdrs["X-Gateway-Token"] = tok
+    # Carry identity through, or the flow arms under a different scope than the Studio queries
+    # (armed, but invisible in the Flows tab — a bug we have already paid for once).
+    for h in ("X-Tenant-Id", "X-Instance-Id", "X-User-Id"):
+        if headers is not None and headers.get(h):
+            hdrs[h] = headers.get(h)
+    payload: Dict[str, Any] = {"text": query, "thread_id": thread_id}
+    if channel:
+        payload["channel"] = channel
+        # The concierge resolves per-user identity from the channel's native sender id; without it
+        # a Slack-armed flow lands in a different scope than the Studio lists.
+        if channel.get("user"):
+            hdrs.setdefault("X-Channel-User", str(channel["user"]))
+    try:
+        async with httpx.AsyncClient(timeout=120) as c:
+            r = await c.post(f"{base}/api/concierge", headers=hdrs, json=payload)
+        if r.status_code != 200:
+            return f"The eventing service returned HTTP {r.status_code}. Nothing was armed."
+        data = r.json() if r.content else {}
+    except Exception as e:  # noqa: BLE001 — a down events service must not break chat
+        logger.warning(f"slash forward to {base} failed: {e}")
+        return (f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed.")
+    state = (data.get("state") or "").lower()
+    if thread_id:
+        if state in ("confirm", "needs_input"):
+            _events_open_threads.add(thread_id)      # the next message is part of this dialogue
+        else:
+            _events_open_threads.discard(thread_id)  # armed / cancelled / plain answer → done
+    return data.get("reply") or data.get("answer") or data.get("message") or ""
 
 
 @app.get("/run/agents")

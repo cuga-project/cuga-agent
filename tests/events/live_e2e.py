@@ -191,8 +191,11 @@ def phase_preflight(r: Report) -> dict:
         r.ok("preflight", "events server reachable", False, f"{BASE} → {code} {st.get('error','')}")
         return {"dead": True}
     r.ok("preflight", "events server reachable", True, BASE)
-    r.ok("preflight", "worker backend = cuga", st.get("worker_backend") == "cuga",
-         str(st.get("worker_backend")))
+    # ONE runtime: the eventing service always executes by calling CUGA's POST /run, so the honest
+    # label is "http". "cuga" is still accepted — it is the legacy alias for the same thing, and an
+    # existing EVENTS_WORKER_BACKEND=cuga in a deployment's env must keep working.
+    r.ok("preflight", "worker executes on CUGA (over /run)",
+         st.get("worker_backend") in ("http", "cuga"), str(st.get("worker_backend")))
 
     # AP reachability is load-bearing: without it, CONNECT-NEEDED is indistinguishable from
     # "user never connected" (concierge.py swallows the AP exception). Probe AP itself, not just

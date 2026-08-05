@@ -122,38 +122,41 @@ def test_flow_builders_per_mode():
 
 
 # ---- runtime selection: cuga default + fallback GATING -------------------
-def test_runtime_selection_single_agent_world():
-    """The single-agent world (events_docs/plans/SUPERVISOR_REFACTOR.md): one addressable agent,
-    'cuga', in both modes. unset → ClassicRuntime (the plain agent, as main ships it);
-    EVENTS_SUPERVISOR=1 → SupervisorRuntime (sub-agents from the canonical YAML roster).
-    Neither accepts registrations — the fleet-routing runtime is retired."""
+def test_runtime_selection_is_always_http():
+    """ONE production runtime. The eventing layer is its own service, so the worker call always
+    crosses the wire to CUGA's POST /run. The in-process runtimes (SupervisorRuntime /
+    ClassicRuntime) belonged to the retired "combined" topology — with events mounted onto CUGA's
+    app they could touch its objects directly; standalone they were unreachable, and are deleted.
+
+    "cuga" survives as a LEGACY ALIAS so an existing EVENTS_WORKER_BACKEND=cuga in someone's .env
+    keeps working — it means the same thing now: execute on CUGA, over HTTP."""
     import pytest
 
-    os.environ.pop("EVENTS_SUPERVISOR", None)
-    rt = runtime.make_runtime("cuga", app_context=lambda: None)
-    assert isinstance(rt, runtime.ClassicRuntime)
-    assert [a.name for a in rt.list_agents()] == ["cuga"]
-    assert rt.get_agent("anything").name == "cuga"  # every id resolves to THE agent
-    with pytest.raises(RuntimeError):  # no registrations in classic mode
-        rt.upsert_agent(runtime.AgentSpec(name="x"))
-    # explicit react (dev/test) unchanged
+    for backend in ("http", "cuga", "", None):
+        assert isinstance(runtime.make_runtime(backend), runtime.HttpRuntime), backend
+    assert isinstance(runtime.make_runtime(), runtime.HttpRuntime)          # default
+    # explicit react / stub (dev + tests) unchanged
     assert isinstance(runtime.make_runtime("react", model_factory=lambda s: None), runtime.ReactRuntime)
-    os.environ["EVENTS_SUPERVISOR"] = "1"
-    try:
-        rt2 = runtime.make_runtime("cuga")
-        assert isinstance(rt2, runtime.SupervisorRuntime)
-        assert rt2.get_agent("cuga") is not None
-        with pytest.raises(RuntimeError):  # sub-agents come from the YAML only
-            rt2.upsert_agent(runtime.AgentSpec(name="x"))
-    finally:
-        os.environ.pop("EVENTS_SUPERVISOR", None)
+    assert isinstance(runtime.make_runtime("stub"), runtime.StubRuntime)
+    # a typo must be loud, not a silent fallback to something that quietly does nothing
+    with pytest.raises(ValueError, match="unknown worker backend"):
+        runtime.make_runtime("supervisor")
+    # the retired runtimes are really gone
+    for gone in ("SupervisorRuntime", "ClassicRuntime"):
+        assert not hasattr(runtime, gone), f"{gone} should have been removed with combined mode"
 
 
-def test_cuga_storage_isolation_via_agentstore():
+def test_the_one_agent_is_always_addressable():
+    """Whatever else is unknown, 'cuga' exists by construction — every scheduled tick targets it."""
+    rt = runtime.make_runtime("http", agent_store=None)
+    assert rt.get_agent("cuga") is not None
+
+
+def test_storage_isolation_via_agentstore():
     from agent_store import AgentStore
-    from runtime import CugaRuntime, AgentSpec
+    from runtime import AgentStoreRuntime, AgentSpec
 
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(
         AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance"]), scope="acme/·/alice"
     )
@@ -162,21 +165,39 @@ def test_cuga_storage_isolation_via_agentstore():
     assert rt.get_agent("pricebot", scope="acme/·/bob") is None  # isolated by scope
 
 
-def test_cuga_run_raises_without_stack_and_no_fallback():
+def test_the_store_runtime_stores_but_refuses_to_run():
+    """It used to EXECUTE too, building a DynamicAgentGraph in-process via _cuga_bridge — which
+    only worked with the events layer mounted inside CUGA. Standalone, execution always crosses
+    the wire, so that half is deleted. Refusing loudly beats quietly doing nothing."""
     import asyncio
     from agent_store import AgentStore
-    from runtime import CugaRuntime, AgentSpec
+    from runtime import AgentStoreRuntime, AgentSpec
 
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"), app_context=lambda: None)  # no ctx, no fb
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="w", prompt="x"), scope="s")
     raised = None
     try:
         asyncio.run(rt.run("w", "t", "hi", scope="s"))
-    except RuntimeError as e:
+    except NotImplementedError as e:
         raised = str(e)
-    assert raised and "CUGA worker backend requires" in raised, (
-        f"expected the no-fallback RuntimeError, got: {raised!r}"
-    )
+    assert raised and "does not run them" in raised, f"expected the refusal, got: {raised!r}"
+
+
+def test_the_events_package_no_longer_imports_cugas_graph():
+    """The in-process bridge is gone, so this package's only tie to CUGA core is one secrets
+    helper. That is what makes a lean, separate events image possible — if this test starts
+    failing, something re-coupled the eventing layer to the agent runtime."""
+    import pathlib
+    import re
+
+    ev = pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga" / "backend" / "events"
+    offenders = {}
+    for f in ev.glob("*.py"):
+        hits = [m for m in re.findall(r"from (cuga\.[a-z_.]+) import", f.read_text())
+                if not m.startswith("cuga.backend.secrets")]
+        if hits:
+            offenders[f.name] = sorted(set(hits))
+    assert not offenders, f"events/ re-coupled to CUGA core: {offenders}"
 
 
 # ---- mcp catalog: the full event-agent-ap set ----------------------------
@@ -191,9 +212,9 @@ def test_mcp_catalog_full_set():
 def test_seed_agents_carry_connectors():
     import seed
     from agent_store import AgentStore
-    from runtime import CugaRuntime
+    from runtime import AgentStoreRuntime
 
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     names = seed.seed_default_agents(rt, scope="acme/·/alice", backend="cuga")
     assert "pricebot" in names and "mailbot" in names
     mail = rt.get_agent("mailbot", scope="acme/·/alice")

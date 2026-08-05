@@ -103,7 +103,14 @@ def _slash_parse(text: str) -> dict | None:
         from . import classify
     except ImportError:  # flat load (offline tests put the events dir on sys.path)
         import classify
-    m = re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S)
+    # A leading @mention is tolerated for the SAME reason CUGA's door tolerates it: channels
+    # normally strip "<@bot>" before we see the text, but that depends on a bot-id lookup
+    # succeeding. This must stay in lockstep with server/main.py:_SLASH_VERBS — when the door
+    # tolerated a mention and this did NOT, a mention-prefixed "/automate …" was forwarded here,
+    # missed by this parser, and armed by the NL path WITHOUT the confirmation card. The HITL gate
+    # leaked: a flow armed that no human had approved.
+    m = re.match(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)",
+                 text or "", re.I | re.S)
     if not m:
         return None
     cmd, rest = m.group(1).lower(), (m.group(2) or "").strip()
@@ -498,7 +505,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 _task_tag = _hl.sha1(_norm.encode()).hexdigest()[:10]
             dedup_key = (f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
                          f"{_task_tag}|{_owner_scope(spec, p)}")
-            existing = store.find_by_dedup_key(dedup_key)
+            existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
             if existing:
                 nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
                 return (f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
@@ -571,7 +578,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     try:
                         store.upsert(sub)
                     except DuplicateSubscription:
-                        ex = store.find_by_dedup_key(dedup_key)
+                        ex = store.find_by_dedup_key(dedup_key, scope=p.scope)
                         return (f"REUSING existing watcher ({ex.id})." if ex
                                 else "REUSING an existing identical watcher.")
                     log.info("concierge armed DIRECT watcher app=%s event=%s agent=%s",
@@ -696,7 +703,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         await engine.delete_flow(ap_flow_id)
                     except Exception:  # noqa: BLE001
                         pass
-                    ex = store.find_by_dedup_key(dedup_key)
+                    ex = store.find_by_dedup_key(dedup_key, scope=p.scope)
                     return (f"REUSING existing flow ({ex.mode}) for {agent} → {sink} "
                             f"(subscription {ex.id})." if ex else
                             "REUSING an existing identical flow. Nothing new created.")

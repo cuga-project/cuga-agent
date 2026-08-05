@@ -252,10 +252,10 @@ def test_admin_credential_rejects_a_key_not_in_the_whitelist_400():
 # ── the NO-AP path at the HTTP layer (engine=None) ───────────────────────────────────────────────
 def _concierge_client(engine=None):
     from events.agent_store import AgentStore
-    from events.runtime import CugaRuntime, AgentSpec
+    from events.runtime import AgentStoreRuntime, AgentSpec
     from events.concierge import Concierge
 
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope="default")
     store = SubscriptionStore(":memory:")
     cg = Concierge(rt, store=store, engine=engine)

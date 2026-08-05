@@ -1,7 +1,7 @@
 """LIVE smoke — a **CUGA worker using its MCP tools** answers a real question.
 
 The full chain: concierge-provisioned worker (backend=cuga) with ``mcp_servers=['cuga-finance']``
-→ ``CugaRuntime`` builds a ``DynamicAgentGraph`` whose ``CombinedToolProvider(app_names=[...])``
+→ ``AgentStoreRuntime`` builds a ``DynamicAgentGraph`` whose ``CombinedToolProvider(app_names=[...])``
 pulls the server's tools from the CUGA **registry** → CUGA calls ``get_crypto_price`` → real number.
 
 Prereq: the CUGA **registry** must be running with the cuga-apps config (all 7 servers):
@@ -42,7 +42,7 @@ async def main() -> int:
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     _load_dotenv(os.path.join(repo, ".env"))
 
-    from cuga.backend.events.runtime import CugaRuntime, AgentSpec, DEFAULT_SCOPE
+    from cuga.backend.events.runtime import AgentStoreRuntime, AgentSpec, DEFAULT_SCOPE
     from cuga.backend.events.agent_store import AgentStore
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
@@ -55,7 +55,7 @@ async def main() -> int:
     def app_context():
         return {"policy_system": policy, "langfuse_handler": None, "get_include_by_app": None}
 
-    rt = CugaRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
     # a worker WITH an MCP server — CUGA must load cuga-finance tools from the registry
     rt.upsert_agent(AgentSpec(name="pricebot", prompt="You answer finance questions.",
                               mcp_servers=["cuga-finance"]), scope=DEFAULT_SCOPE)
