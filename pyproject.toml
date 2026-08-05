@@ -35,7 +35,9 @@ dependencies = [
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
-    "langchain-litellm>=0.7.0",
+    # 0.6+/0.7.0 publish cryptography<49, which blocks GHSA-g6cj-pr64-35w5 (needs cryptography>=50).
+    # Stay on 0.5.x until langchain-litellm lifts that cap; ChatLiteLLM API used here is unchanged.
+    "langchain-litellm>=0.5.1,<0.6",
     # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
     "litellm>=1.84.0",
     "tavily-python",
@@ -110,11 +112,7 @@ constraint-dependencies = [
     "datamodel-code-generator>=0.64.0",  # GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
-# langchain-litellm 0.7.0 caps cryptography<49; force 50+ for GHSA-g6cj-pr64-35w5 (PKCS#7 oracle).
-override-dependencies = [
-    "python-dotenv>=1.1.0",
-    "cryptography>=50.0.0",
-]
+override-dependencies = ["python-dotenv>=1.1.0"]
 
 [tool.uv.sources]
 torch                 = { index = "pytorch-cpu" }
@@ -131,18 +129,6 @@ explicit = true
 # - Lock file generated with: uv lock --upgrade-package strawberry-graphql --upgrade-package arize-phoenix --prerelease=allow
 # - graphql-core is mature; alpha is for new features, not instability
 # - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
-
-# langchain-litellm 0.7.0 caps cryptography<49; GHSA-g6cj-pr64-35w5 needs cryptography>=50.
-# Lift the upper bound for uv lock / Docker / pip resolution only (API surface unchanged).
-[[tool.uv.dependency-metadata]]
-name = "langchain-litellm"
-version = "0.7.0"
-requires-dist = [
-    "cryptography>=46.0.5",
-    "httpx>=0.28.1,<0.29.0",
-    "langchain-core>=1.4.7,<2.0.0",
-    "litellm>=1.83.14,<2.0.0,!=1.82.7,!=1.82.8",
-]
 
 # PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]

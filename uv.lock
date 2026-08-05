@@ -37,15 +37,7 @@ constraints = [
     { name = "strawberry-graphql", specifier = ">=0.312.3" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
-overrides = [
-    { name = "cryptography", specifier = ">=50.0.0" },
-    { name = "python-dotenv", specifier = ">=1.1.0" },
-]
-
-[[manifest.dependency-metadata]]
-name = "langchain-litellm"
-version = "0.7.0"
-requires-dist = ["cryptography>=46.0.5", "httpx>=0.28.1,<0.29.0", "langchain-core>=1.4.7,<2.0.0", "litellm!=1.82.7,!=1.82.8,>=1.83.14,<2.0.0"]
+overrides = [{ name = "python-dotenv", specifier = ">=1.1.0" }]
 
 [[manifest.dependency-metadata]]
 name = "openlit"
@@ -1149,7 +1141,7 @@ requires-dist = [
     { name = "langchain-docling", specifier = ">=2.0,<3.0" },
     { name = "langchain-groq", specifier = ">=0.3.8" },
     { name = "langchain-ibm", specifier = ">=0.3.9" },
-    { name = "langchain-litellm", specifier = ">=0.7.0" },
+    { name = "langchain-litellm", specifier = ">=0.5.1,<0.6" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-ollama", specifier = ">=0.2.0" },
     { name = "langchain-openai" },
@@ -2999,17 +2991,16 @@ wheels = [
 
 [[package]]
 name = "langchain-litellm"
-version = "0.7.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "litellm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/24/473283e69791fb35e11126c11e7347ffbf110c2dfcebebe90bd974bc7348/langchain_litellm-0.7.0.tar.gz", hash = "sha256:d3b8d0e6f65132f048fbe9d706e5334d45830e3c49aa033d32c37c6683ad2ceb", size = 345959, upload-time = "2026-06-15T10:00:36.437Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/fa/088dd2e3426aa413991afb67aef4c4e79ff3c0e4c25f753842bfaf4ec43f/langchain_litellm-0.5.1.tar.gz", hash = "sha256:1af5743c424456ce12c59cbf08b4774fbc9025124b6de8249713864242db57e1", size = 18869, upload-time = "2026-02-11T00:56:40.631Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/d7/73ffd47f1e4bfe4649f25a58229fca4e0162c2f946c9f8f9ae5eb44e5c3c/langchain_litellm-0.7.0-py3-none-any.whl", hash = "sha256:5f67e456bc4e14e1247aa5a30e9da08d61d390aee66ff97e0113bfcb4334ff42", size = 25465, upload-time = "2026-06-15T10:00:37.428Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/6f/84c8cef2cd5a20e94222de93cc57645102087dff616d5054755b97db51b1/langchain_litellm-0.5.1-py3-none-any.whl", hash = "sha256:3726c050eaaeb0b8aad0c8ceefae549917b185d176859866375f97d1d0ed6748", size = 19954, upload-time = "2026-02-11T00:56:41.717Z" },
 ]
 
 [[package]]
