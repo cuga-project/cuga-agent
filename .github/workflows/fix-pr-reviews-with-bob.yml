@@ -1,0 +1,332 @@
+# Fix PR Reviews with Bob
+#
+# Secret-backed companion to `fix-pr-reviews-with-bob-trigger.yml`.
+# Runs after the trigger succeeds so fork PR reviews can still use secrets.
+# Trigger restricts @cuga-bob invocation to vars.BOB_ALLOWED_ACTORS.
+#
+# Required secrets:
+#   BOBSHELL_API_KEY
+#   BOB_GITHUB_TOKEN   — recommended; falls back to github.token
+#   WATSONX_APIKEY
+#   MODEL_NAME
+#
+# Required vars:
+#   WATSONX_PROJECT_ID
+#   WATSONX_URL
+#   AGENT_SETTING_CONFIG
+
+name: Fix PR Reviews with Bob
+
+on:
+  workflow_run:
+    workflows: ["Fix PR Reviews with Bob - Trigger"]
+    types: [completed]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+  checks: read
+
+jobs:
+  fix-pr-reviews-with-bob:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      BOB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+
+    steps:
+      - name: Get PR details from workflow run
+        id: get_pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+          script: |
+            const workflowRun = context.payload.workflow_run;
+
+            const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: workflowRun.id,
+              per_page: 100
+            });
+
+            const payloadArtifact = artifacts.artifacts?.find(
+              (artifact) => artifact.name === 'pr-review-context'
+            );
+            if (!payloadArtifact) {
+              // Label-only / reject-only trigger runs succeed with no artifact.
+              core.info('No pr-review-context artifact; nothing to do');
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            const zipResponse = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: payloadArtifact.id,
+              archive_format: 'zip'
+            });
+
+            const fs = require('fs');
+            const os = require('os');
+            const path = require('path');
+            const { execFileSync } = require('child_process');
+
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bob-pr-review-'));
+            const zipPath = path.join(tempDir, 'artifact.zip');
+            const zipBuffer = Buffer.isBuffer(zipResponse.data)
+              ? zipResponse.data
+              : Buffer.from(zipResponse.data);
+            fs.writeFileSync(zipPath, zipBuffer);
+            execFileSync('unzip', ['-o', zipPath, '-d', tempDir], { stdio: 'inherit' });
+
+            const payload = JSON.parse(
+              fs.readFileSync(path.join(tempDir, 'pr-review-context.json'), 'utf8')
+            );
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: payload.pr_number
+            });
+
+            if (!pr.labels.some((label) => label.name === 'fix-with-bob')) {
+              core.info('PR does not have fix-with-bob label, skipping');
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            const headRepo = pr.head.repo.full_name;
+            const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (headRepo !== baseRepo) {
+              core.info(`Skipping fork PR head ${headRepo}; cuga-bob can only push to ${baseRepo}`);
+              core.setOutput('should_run', 'false');
+              core.setOutput('skip_reason', 'fork');
+              core.setOutput('pr_number', String(pr.number));
+              return;
+            }
+
+            const { data: review } = await github.rest.pulls.getReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: payload.pr_number,
+              review_id: payload.review_id
+            });
+
+            if (review.state !== 'COMMENTED' && review.state !== 'CHANGES_REQUESTED') {
+              core.info(`Review state ${review.state} is not actionable, skipping`);
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            core.setOutput('should_run', 'true');
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('pr_title', pr.title);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_repo', headRepo);
+            core.setOutput('review_id', String(review.id));
+            core.setOutput('reviewer', review.user.login);
+
+      - name: Comment on fork skip
+        if: steps.get_pr.outputs.should_run == 'false' && steps.get_pr.outputs.skip_reason == 'fork'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/issues/${{ steps.get_pr.outputs.pr_number }}/comments" \
+            -f body="Bob Shell skipped this review-fix: fork PR heads cannot be pushed by \`cuga-bob\`. Use a same-repo branch, or apply the fix manually."
+
+      - name: Checkout PR branch
+        if: steps.get_pr.outputs.should_run == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ steps.get_pr.outputs.head_repo }}
+          ref: ${{ steps.get_pr.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ env.BOB_TOKEN }}
+
+      - name: Setup Node.js
+        if: steps.get_pr.outputs.should_run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Bob Shell
+        if: steps.get_pr.outputs.should_run == 'true'
+        run: |
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
+          command -v bob
+          bob --version
+
+      - name: Authenticate Bob Shell
+        if: steps.get_pr.outputs.should_run == 'true'
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+        run: |
+          if [ -z "$BOBSHELL_API_KEY" ]; then
+            echo "Error: BOBSHELL_API_KEY secret is not set"
+            exit 1
+          fi
+
+      - name: Get PR and Review Details
+        if: steps.get_pr.outputs.should_run == 'true'
+        id: pr_details
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.get_pr.outputs.pr_number }}"
+          REVIEW_ID="${{ steps.get_pr.outputs.review_id }}"
+          PROMPT_DIR="${RUNNER_TEMP}/bob-pr-review-prompt"
+          mkdir -p "${PROMPT_DIR}"
+
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "review_id=${REVIEW_ID}" >> "$GITHUB_OUTPUT"
+          echo "reviewer=${{ steps.get_pr.outputs.reviewer }}" >> "$GITHUB_OUTPUT"
+          echo "prompt_dir=${PROMPT_DIR}" >> "$GITHUB_OUTPUT"
+
+          COMMENTS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments" \
+            --jq '.[] | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"')
+
+          printf '%s\n' "${COMMENTS}" > "${PROMPT_DIR}/review_comments.txt"
+
+          REVIEW_BODY=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
+            --jq '.body // ""')
+
+          if [ -n "${REVIEW_BODY}" ]; then
+            {
+              echo "Review Summary:"
+              printf '%s\n' "${REVIEW_BODY}"
+            } >> "${PROMPT_DIR}/review_comments.txt"
+          fi
+
+          cat "${PROMPT_DIR}/review_comments.txt"
+
+      - name: Configure Git
+        if: steps.get_pr.outputs.should_run == 'true'
+        run: |
+          git config --global user.name "cuga-bob"
+          git config --global user.email "cuga-bob@users.noreply.github.com"
+
+      - name: Execute Bob to Address Review Comments
+        if: steps.get_pr.outputs.should_run == 'true'
+        uses: nick-fields/retry@v3
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr_details.outputs.pr_number }}
+          PR_TITLE: ${{ steps.get_pr.outputs.pr_title }}
+          REVIEWER: ${{ steps.get_pr.outputs.reviewer }}
+          PROMPT_DIR: ${{ steps.pr_details.outputs.prompt_dir }}
+          AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+          WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+          WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+          WATSONX_URL: ${{ vars.WATSONX_URL }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            PROMPT_FILE="${PROMPT_DIR}/bob-prompt.md"
+            {
+              echo "Address PR review comments for PR #${PR_NUMBER}: ${PR_TITLE}"
+              echo
+              echo "Repository: ${{ github.repository }}"
+              echo "Reviewer: ${REVIEWER}"
+              echo
+              echo "Review Comments:"
+              cat "${PROMPT_DIR}/review_comments.txt"
+              echo
+              echo "Project notes:"
+              echo "- Python project managed with uv. Prefer \`uv run\` for tools and tests."
+              echo "- Keep changes focused on the review feedback."
+              echo "- New/changed pytest tests must use a type marker from pyproject.toml (e.g. @pytest.mark.unit)."
+              echo "- Preserve lazy-import patterns in cuga/__init__.py, cuga/sdk.py, and LLM provider modules."
+              echo
+              echo "Analyze all review comments and make the necessary code changes to address each point."
+              echo "Be thorough. If a comment is unclear, use best judgment from context."
+            } > "${PROMPT_FILE}"
+
+            bob --accept-license --yolo -p "$(cat "${PROMPT_FILE}")"
+
+      - name: Check for Changes
+        if: steps.get_pr.outputs.should_run == 'true'
+        id: changes
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            git status --short
+            CHANGED_FILES=$(git diff --name-only | tr '\n' ', ' | sed 's/,$//')
+            echo "changed_files=${CHANGED_FILES}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and Push Changes
+        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          git add -A
+          git reset .bob/ || true
+          git commit -m "fix: address review comments from @${{ steps.pr_details.outputs.reviewer }}
+
+          Review ID: ${{ steps.pr_details.outputs.review_id }}
+
+          Made with Bob Shell."
+          git remote set-url origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ steps.get_pr.outputs.head_repo }}.git"
+          git push origin "HEAD:${{ steps.get_pr.outputs.head_ref }}"
+
+      - name: Comment on PR
+        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/issues/${{ steps.pr_details.outputs.pr_number }}/comments" \
+            -f body="Thanks @${{ steps.pr_details.outputs.reviewer }} — Bob Shell addressed the review comments.
+
+          **Changed files:** ${{ steps.changes.outputs.changed_files }}"
+
+      - name: Comment on PR - No Changes
+        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'false'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/issues/${{ steps.pr_details.outputs.pr_number }}/comments" \
+            -f body="Bob Shell analyzed review comments from @${{ steps.pr_details.outputs.reviewer }} but did not generate code changes. Manual follow-up may be needed."
+
+      - name: Handle Errors
+        if: steps.get_pr.outputs.should_run == 'true' && failure()
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/issues/${{ steps.get_pr.outputs.pr_number }}/comments" \
+            -f body="Bob Shell hit an error while addressing review comments. Check the workflow logs."
