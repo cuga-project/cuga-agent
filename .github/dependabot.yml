@@ -1,0 +1,63 @@
+# Tells Dependabot to open pull requests for dependency updates.
+#
+# Without this file, Dependabot still reports security alerts on the Security
+# tab, but it never opens a pull request to fix them. Someone has to notice the
+# alerts and update the lockfiles by hand.
+#
+# Updates are grouped so that one pull request covers many packages. Ungrouped,
+# a backlog of 45 alerts would arrive as 45 separate pull requests.
+version: 2
+
+updates:
+  # Python packages in pyproject.toml and uv.lock.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
+      prefix-development: "chore(deps)"
+    groups:
+      # One pull request for everything that fixes a security alert.
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      # One pull request for routine minor and patch upgrades. Major upgrades
+      # are left on their own because they are more likely to break something.
+      python-minor:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # Frontend packages. This is the pnpm workspace root; Dependabot picks up the
+  # nested package.json files under it from pnpm-lock.yaml.
+  - package-ecosystem: "npm"
+    directory: "/src/frontend_workspaces"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
+      prefix-development: "chore(deps)"
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      npm-minor:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # Versions of the actions used in .github/workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns: ["*"]
