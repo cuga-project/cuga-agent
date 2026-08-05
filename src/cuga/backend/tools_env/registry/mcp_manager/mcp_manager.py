@@ -545,14 +545,19 @@ class MCPManager:
         if not args:
             args = {}
         if not server:
+            logger.error(f"Tool {tool_name} not found. Available tools: {list(self.server_by_tool.keys())[:10]}")
             raise Exception(f"[Tool {tool_name} not found in any server]")
 
-        # Check if this is an MCP server tool
-        if isinstance(server, str) and server in self.mcp_clients:
-            return await self._call_mcp_server_tool(server, tool_name, args)
+        # Check if this is a string (MCP server name) or FastMCP server instance
+        if isinstance(server, str):
+            # MCP server - use client-based call
+            if server in self.mcp_clients:
+                return await self._call_mcp_server_tool(server, tool_name, args)
+            else:
+                raise Exception(f"[MCP server {server} not found in mcp_clients]")
         else:
-            # Traditional MCP server call
-            return await server.call_tool(tool_name, {"params": args, "headers": headers})
+            # FastMCP server instance - call directly with args and headers
+            return await server.call_tool(tool_name, {**args, "headers": headers})
 
     def get_server_names(self):
         return list(self.tools_by_server.keys())
@@ -1310,6 +1315,7 @@ class MCPManager:
 
     async def _register_tools(self, mcp_server):
         response = await mcp_server.list_tools()
+        logger.info(f"Registering {len(response)} tools for server {mcp_server.name}")
         for tool in response:
             # Convert FunctionTool to MCP Tool format if needed
             if hasattr(tool, 'to_mcp_tool'):
@@ -1330,9 +1336,9 @@ class MCPManager:
                 },
             }
             self.tools_by_server[mcp_server.name].append(tool_dict)
-            # Store the app name (mcp_server.name) so call_tool can route to _call_mcp_server_tool
-            # The tool.name is the full tool name, mcp_server.name is the app/server name
-            self.server_by_tool[tool.name] = mcp_server.name
+            # Store the FastMCP server instance so call_tool can invoke it directly
+            self.server_by_tool[tool.name] = mcp_server
+            logger.info(f"Registered tool '{tool.name}' -> server '{mcp_server.name}'")
             # Also store in original_tool_name_by_sanitized for reverse lookup
             self.original_tool_name_by_sanitized[tool.name] = tool.name
 
