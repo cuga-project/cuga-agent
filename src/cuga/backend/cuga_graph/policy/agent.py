@@ -6,9 +6,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.policy.models import (
     AlwaysTrigger,
     AppTrigger,
@@ -515,6 +517,22 @@ Which policy (if any) best matches the context above?"""
 
 Which policy (if any) best matches the user's intent?"""
 
+    @staticmethod
+    def _min_nl_threshold(nl_triggers: List[NaturalLanguageTrigger]) -> float:
+        """Minimum NL threshold across triggers (most strict gate)."""
+        return min(t.threshold for t in nl_triggers)
+
+    @staticmethod
+    def _fallback_confidence(nl_triggers: List[NaturalLanguageTrigger]) -> float:
+        """Gate-clearing confidence for non-LLM fallback selection.
+
+        Not an estimated match-quality score: exactly the policy's minimum NL
+        threshold so ``_evaluate_natural_language_policies`` keeps the match.
+        Lower thresholds therefore yield lower fallback confidence and can lose
+        to higher-confidence keyword matches in ``match_policy`` — intentional.
+        """
+        return PolicyAgent._min_nl_threshold(nl_triggers)
+
     async def _resolve_nl_trigger_conflicts(
         self,
         policies_with_nl_triggers: List[tuple[Policy, List[NaturalLanguageTrigger]]],
@@ -527,7 +545,10 @@ Which policy (if any) best matches the user's intent?"""
         Use LLM to resolve conflicts when multiple policies have Natural Language triggers.
 
         Args:
-            policies_with_nl_triggers: List of (policy, nl_triggers) tuples
+            policies_with_nl_triggers: List of (policy, nl_triggers) tuples. Order is
+                embedding/priority-sorted only when embeddings are configured and
+                search succeeds; otherwise storage order. Exception fallback uses
+                index 0 of this list — not guaranteed to be the semantic best.
             context: Current context
             target: Target field being evaluated (e.g., "intent", "agent_response")
             target_text: The actual text from the target field (includes combined user input + agent response for agent_response)
@@ -552,20 +573,8 @@ Which policy (if any) best matches the user's intent?"""
             logger.debug(f"       Description: {policy.description[:100]}...")
             logger.debug(f"       NL Triggers: {[t.value for t in nl_triggers]}")
 
+        # Production callers already return before invoking when llm/query is missing.
         if not self.llm or not query_text:
-            # Fallback: return first policy
-            logger.warning("⚠️  Cannot use LLM conflict resolution:")
-            logger.warning(f"    - LLM available: {self.llm is not None}")
-            logger.warning(f"    - Query text available: {query_text is not None}")
-            if policies_with_nl_triggers:
-                policy, triggers = policies_with_nl_triggers[0]
-                logger.debug(f"  - Falling back to first policy: '{policy.name}'")
-                return (
-                    policy,
-                    0.5,
-                    "No LLM or query text available for conflict resolution, using first policy",
-                )
-            logger.debug("  - No policies to resolve, returning None")
             return None
 
         try:
@@ -611,22 +620,24 @@ Provide:
                 policy_types=policy_types,
             )
 
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
-
             logger.debug("  - Sending request to LLM for conflict resolution")
             logger.debug(f"    User prompt length: {len(user_prompt)} chars")
             logger.debug(f"    Number of policies in prompt: {len(policies_with_nl_triggers)}")
 
-            # Use structured output for reliable JSON parsing.
-            # method="json_schema" (matching OutputFormatter in enactment.py) is enforced
-            # server-side by IBM Watsonx. The default (function_calling) returns None on
-            # gpt-oss-120b when it emits no tool call, which raised AttributeError below and
-            # silently dropped the policy match.
-            structured_llm = self.llm.with_structured_output(PolicyConflictResolution, method="json_schema")
-            result: PolicyConflictResolution = await structured_llm.ainvoke(messages)
+            # BaseAgent.get_chain: structured parse + retry for OpenAI/Groq/Watsonx
+            # response_format paths. ChatOpenAI models with "GCP"/"Claude" in the
+            # name return an unparsed chain and land in the exception fallback
+            # below (nothing we ship uses that path for policy matching today).
+            prompt_template = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_prompt),
+                    ("human", "{user_prompt}"),
+                ]
+            )
+            chain = BaseAgent.get_chain(prompt_template, self.llm, PolicyConflictResolution)
+            result = await chain.ainvoke({"user_prompt": user_prompt})
+            if isinstance(result, dict):
+                result = PolicyConflictResolution(**result)
 
             logger.debug("  - Received structured LLM response:")
             logger.debug(f"    - matched_policy_index: {result.matched_policy_index}")
@@ -640,22 +651,18 @@ Provide:
             if matched_index and 1 <= matched_index <= len(policies_with_nl_triggers):
                 policy, nl_triggers = policies_with_nl_triggers[matched_index - 1]
 
-                # Validate confidence against threshold(s) from the selected policy's triggers
-                # Use minimum threshold (most strict) if multiple triggers exist
-                thresholds = [trigger.threshold for trigger in nl_triggers if hasattr(trigger, 'threshold')]
-                if thresholds:
-                    min_threshold = min(thresholds)
-                    if confidence < min_threshold:
-                        logger.info(
-                            f"❌ LLM conflict resolution confidence ({confidence:.2f}) "
-                            f"below threshold ({min_threshold:.2f}) for policy '{policy.name}'"
-                        )
-                        logger.debug(
-                            f"    - Confidence: {confidence:.2f}, Threshold: {min_threshold:.2f}, "
-                            f"Policy: {policy.name}"
-                        )
-                        return None
-                    logger.debug(f"    - Confidence {confidence:.2f} meets threshold {min_threshold:.2f}")
+                min_threshold = self._min_nl_threshold(nl_triggers)
+                if confidence < min_threshold:
+                    logger.info(
+                        f"❌ LLM conflict resolution confidence ({confidence:.2f}) "
+                        f"below threshold ({min_threshold:.2f}) for policy '{policy.name}'"
+                    )
+                    logger.debug(
+                        f"    - Confidence: {confidence:.2f}, Threshold: {min_threshold:.2f}, "
+                        f"Policy: {policy.name}"
+                    )
+                    return None
+                logger.debug(f"    - Confidence {confidence:.2f} meets threshold {min_threshold:.2f}")
 
                 logger.info(
                     f"✅ LLM resolved conflict: selected '{policy.name}' (confidence: {confidence:.2f})"
@@ -674,11 +681,16 @@ Provide:
             import traceback
 
             logger.debug(f"    - Traceback: {traceback.format_exc()}")
-            # Fallback: return first policy
+            # Intentional: on LLM/parse failure, prefer first candidate over no match.
+            # A successful LLM "no match" or below-threshold result still returns None,
+            # so a parse error is more likely to trigger a policy than a working model
+            # that rejects — same first-policy fallback as before #577; only confidence
+            # now clears the shared threshold helper instead of a hardcoded 0.5.
             if policies_with_nl_triggers:
-                policy, _ = policies_with_nl_triggers[0]
-                logger.debug(f"    - Falling back to first policy: '{policy.name}'")
-                return policy, 0.5, f"Error in conflict resolution, using first policy: {e}"
+                policy, triggers = policies_with_nl_triggers[0]
+                confidence = self._fallback_confidence(triggers)
+                logger.warning(f"Falling back to first policy: '{policy.name}' (confidence={confidence:.2f})")
+                return policy, confidence, f"Error in conflict resolution, using first policy: {e}"
             logger.debug("    - No policies available for fallback, returning None")
             return None
 
@@ -876,27 +888,21 @@ Provide:
             and (t.target == target or (target == "intent" and t.target in ("intent", "user_input")))
         ]
 
-        # Validate confidence against threshold(s) from the policy's NL triggers
-        # Use minimum threshold (most strict) if multiple triggers exist
         if nl_triggers_for_policy:
-            thresholds = [
-                trigger.threshold for trigger in nl_triggers_for_policy if hasattr(trigger, 'threshold')
-            ]
-            if thresholds:
-                min_threshold = min(thresholds)
-                if confidence < min_threshold:
-                    logger.info(
-                        f"❌ LLM conflict resolution confidence ({confidence:.2f}) "
-                        f"below threshold ({min_threshold:.2f}) for policy '{resolved_policy.name}'"
-                    )
-                    logger.debug(
-                        f"    - Confidence: {confidence:.2f}, Threshold: {min_threshold:.2f}, "
-                        f"Policy: {resolved_policy.name}"
-                    )
-                    return None
-                logger.debug(
-                    f"✅ Confidence {confidence:.2f} meets threshold {min_threshold:.2f} for policy '{resolved_policy.name}'"
+            min_threshold = self._min_nl_threshold(nl_triggers_for_policy)
+            if confidence < min_threshold:
+                logger.info(
+                    f"❌ LLM conflict resolution confidence ({confidence:.2f}) "
+                    f"below threshold ({min_threshold:.2f}) for policy '{resolved_policy.name}'"
                 )
+                logger.debug(
+                    f"    - Confidence: {confidence:.2f}, Threshold: {min_threshold:.2f}, "
+                    f"Policy: {resolved_policy.name}"
+                )
+                return None
+            logger.debug(
+                f"✅ Confidence {confidence:.2f} meets threshold {min_threshold:.2f} for policy '{resolved_policy.name}'"
+            )
 
         all_matched, full_confidence, trigger_details = await self._check_policy_triggers(
             resolved_policy, context, skip_nl_triggers=True
@@ -906,20 +912,15 @@ Provide:
             logger.debug(f"Resolved policy '{resolved_policy.name}' did not match all non-NL triggers")
             return None
 
-        # Final confidence must also meet the threshold
         final_confidence = max(confidence, full_confidence)
         if nl_triggers_for_policy:
-            thresholds = [
-                trigger.threshold for trigger in nl_triggers_for_policy if hasattr(trigger, 'threshold')
-            ]
-            if thresholds:
-                min_threshold = min(thresholds)
-                if final_confidence < min_threshold:
-                    logger.info(
-                        f"❌ Final confidence ({final_confidence:.2f}) "
-                        f"below threshold ({min_threshold:.2f}) for policy '{resolved_policy.name}'"
-                    )
-                    return None
+            min_threshold = self._min_nl_threshold(nl_triggers_for_policy)
+            if final_confidence < min_threshold:
+                logger.info(
+                    f"❌ Final confidence ({final_confidence:.2f}) "
+                    f"below threshold ({min_threshold:.2f}) for policy '{resolved_policy.name}'"
+                )
+                return None
 
         final_reasoning = f"NL-triggered policy (LLM-validated): {reasoning}"
 
@@ -956,8 +957,10 @@ Provide:
             elif policy_types:
                 logger.debug(f"  - Filtering by policy types: {policy_types}")
 
-            logger.debug(f"  - user_input: {context.user_input}")
-            logger.debug(f"  - chat_messages: {context.chat_messages}")
+            logger.debug(
+                f"  - user_input_len={len(context.user_input or '')}, "
+                f"chat_messages={len(context.chat_messages or [])}"
+            )
 
             # For intent target, use get_query_text() which prioritizes last chat message
             # For other targets, use get_target_text() to get the specific field
