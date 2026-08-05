@@ -132,6 +132,17 @@ class SubscriptionStore:
                  threshold REAL NOT NULL DEFAULT 0,
                  updated_at REAL NOT NULL DEFAULT 0
                )""")
+        # HITL arming: the half-finished arming dialogue for a thread (see arming.py). Lives here,
+        # in the SAME db/connection as subscriptions, so it survives a restart (it used to be a
+        # module-level dict — a redeploy silently dropped every in-flight arm) and so ":memory:"
+        # tests still see one shared database.
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS pending_arm (
+                 thread TEXT PRIMARY KEY,
+                 state TEXT NOT NULL,
+                 payload TEXT NOT NULL DEFAULT '{}',
+                 expires_at REAL NOT NULL DEFAULT 0
+               )""")
         # Dedup used to be check-then-write with no constraint — two concurrent arms with the same
         # identity both missed the check and created duplicate AP flows. The partial UNIQUE index
         # makes the database the referee; upsert() surfaces the loser as a DuplicateSubscription.
@@ -261,6 +272,38 @@ class SubscriptionStore:
         d = dict(r)
         d["seen_keys"] = json.loads(d.get("seen_keys") or "[]")
         return d
+
+    # ── HITL arming: the in-flight arming dialogue for one thread ──────────────────────────────
+    def get_pending_arm(self, thread: str) -> dict | None:
+        """The parked arming state for this thread, or None when there is none / it expired.
+
+        Unlike the old in-memory version this does NOT pop: the caller decides the transition
+        (answer a question, confirm, cancel), because a read that consumed the state made an
+        innocent chat message destroy an in-flight arm."""
+        r = self._db.execute("SELECT * FROM pending_arm WHERE thread=?", (thread,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        if float(d.get("expires_at") or 0) < time.time():
+            self.clear_pending_arm(thread)
+            return None
+        try:
+            d["payload"] = json.loads(d.get("payload") or "{}")
+        except json.JSONDecodeError:
+            d["payload"] = {}
+        return d
+
+    def set_pending_arm(self, thread: str, state: str, payload: dict, ttl_secs: float) -> None:
+        self._db.execute(
+            """INSERT INTO pending_arm (thread,state,payload,expires_at) VALUES (?,?,?,?)
+               ON CONFLICT(thread) DO UPDATE SET
+                 state=excluded.state, payload=excluded.payload, expires_at=excluded.expires_at""",
+            (thread, state, json.dumps(payload or {}), time.time() + float(ttl_secs)))
+        self._db.commit()
+
+    def clear_pending_arm(self, thread: str) -> None:
+        self._db.execute("DELETE FROM pending_arm WHERE thread=?", (thread,))
+        self._db.commit()
 
     def set_watch_state(self, ws: dict) -> None:
         """Upsert a watch_state row (arm-time seed and per-fire update both call this)."""

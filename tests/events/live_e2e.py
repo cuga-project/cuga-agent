@@ -547,10 +547,31 @@ def flow_now(r: Report):
     r.ok("NOW", "agent returns a live number via a real tool", code == 200 and has_digit(reply))
 
 
+def arm_with_confirm(utter: str, thread: str, *, timeout: int = 300, max_turns: int = 4):
+    """Say an arming utterance and drive the HITL dialogue to completion.
+
+    Arming is a CONFIRM-gated conversation now (events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md):
+    the concierge proposes, the human approves. A harness is that human — it answers the clarifying
+    question if one comes back, then says "yes". Returns ``(code, body)`` of the LAST turn, so the
+    caller sees the armed reply exactly as before the gate existed.
+    """
+    code, body = srv("POST", "/api/concierge", {"text": utter, "thread_id": thread}, timeout=timeout)
+    for _ in range(max_turns):
+        state = (body or {}).get("state")
+        if state not in ("confirm", "needs_input"):
+            break                                    # armed, cancelled, or a plain answer
+        # needs_input carries ONE question; the utterances below always contain a cadence, so a
+        # question here means something else is missing and "yes" would be wrong — answer with the
+        # utterance itself, which is the best information we have, then confirm.
+        reply = "yes" if state == "confirm" else utter
+        code, body = srv("POST", "/api/concierge", {"text": reply, "thread_id": thread}, timeout=timeout)
+    return code, body
+
+
 def _arm_and_verify(r: Report, phase: str, utter: str, mode: str, thread: str,
                     ap_live: bool, created: list):
     before = {s.get("id") for s in _subs()}
-    code, rep = srv("POST", "/api/concierge", {"text": utter, "thread_id": thread}, timeout=300)
+    code, rep = arm_with_confirm(utter, thread)
     reply = str(rep.get("reply", ""))
     print(f"     → {reply[:140]}")
     if not r.ok(phase, f"{phase}: concierge accepted the utterance", code == 200,

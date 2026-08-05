@@ -19,6 +19,7 @@ import time as time_module
 from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
+from . import arming as _arming
 from . import concierge_plan
 from .envelope import Envelope
 from .principal import resolve as resolve_principal
@@ -307,7 +308,18 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             try:
                 import time
                 t0 = time.time()
-                answer = await runtime.run(agent, env.thread_id, env.worker_input(), scope=agent_scope,
+                # EXECUTION THREAD ≠ DELIVERY THREAD. env.thread_id carries the ORIGIN conversation
+                # (channel + chat id + in-thread locus) and stays the delivery target below. But
+                # running every fire under it too meant one frozen thread accumulated conversation
+                # memory forever: fire #288 of "IBM every 5 min" dragged 287 prior turns — costly,
+                # and the agent starts answering from stale context. A watch tick is independent by
+                # nature (the poll change-gate, not chat memory, is what carries "did it change"),
+                # so fires get a FRESH per-fire thread. EVENTS_FIRE_MEMORY=continuous restores the
+                # old accumulating behaviour for a task that genuinely wants it.
+                _exec_thread = env.thread_id
+                if not is_now and os.environ.get("EVENTS_FIRE_MEMORY", "stateless") != "continuous":
+                    _exec_thread = f"fire:{body.get('subscription_id') or env.thread_id}#{tr.id}"
+                answer = await runtime.run(agent, _exec_thread, env.worker_input(), scope=agent_scope,
                                            deliver_to=[env.source.name] if env.deliver else None)
                 ms = int((time.time() - t0) * 1000)
                 tr("worker.done", agent=agent, ok=True, ms=ms)
@@ -409,16 +421,25 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # a stateful poll that found no change is a real run (it executed) but delivered nothing —
         # mark it 'nochange' so the timeline shows the tick without implying the user was pinged.
         _run_status = "nochange" if (_poll_ws is not None and not _poll_changed) else "ok"
+        # Log the DELIVERY channel, not the trigger's name. A native fire's source.name is the MODE
+        # ("cron"/"poll"), so a web-armed fire logged channel="cron" — and the web chat's new-fire
+        # toast (which matches ""/"web") never fired, leaving web users with no notification at
+        # all. A fire that originated in a real channel keeps that channel; the rest are web fires.
+        from .principal import channel_origin as _log_chorigin
+        _lc_origin = _log_chorigin(env.thread_id)
+        _log_channel = _lc_origin[0] if _lc_origin else (env.source.name if is_now else "web")
         _log_now(scope=scope,
                  agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
                  # log what the worker actually RAN ON (framing + [event] payload for a fire; the
                  # bare utterance for chat) — env.text alone hid the payload from the disk log
-                 channel=env.source.name, prompt=env.worker_input(), answer=base_answer,
+                 channel=_log_channel, prompt=env.worker_input(), answer=base_answer,
                  status=_run_status, ms=ms, meta=meta, trace_id=tr.id,
                  thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
                  event_kind=str(getattr(env.event, "kind", "") or ""), db=(is_now or _native_fire),
                  mode=_run_mode, backend=_run_backend, subscription_id=_sub_id)
         return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
+                # HITL arming state (present only for an arming turn) — see /api/concierge
+                **({k: v for k, v in (_arming.get() or {}).items() if v}),
                 # poll delta result: delivered? and why (absent for non-poll fires)
                 **({"poll": {"changed": _poll_changed, "reason": _poll_reason}} if _poll_ws is not None else {}),
                 "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
@@ -554,6 +575,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                  status="ok", ms=_ms, meta=_meta, trace_id=tr.id,
                  thread_id=thread_id or "", kind="chat")
         out = {"ok": True, "reply": reply, "scope": principal.scope, "trace_id": tr.id}
+        # HITL arming: the machine-readable half of the reply. `state` tells a caller whether the
+        # thread is mid-dialogue (needs_input|confirm → keep routing here) or done (armed|
+        # cancelled), so the UI can render a confirm card and the channel edges can stay sticky
+        # without re-classifying the follow-up.
+        _arm = _arming.get()
+        if _arm:
+            out.update({k: v for k, v in _arm.items() if v})
         if want_flow:
             out["flows"] = await _armed_flows(before, principal.scope, full=full_flow)
         return out
@@ -990,7 +1018,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     def _capability_lines():
         try:
             from . import capability
-            return capability.report()
+            # Split out, the roster is CUGA's — ask the runtime that talks to it (HttpRuntime
+            # caches, so this is not a per-request round trip).
+            from .runtime import HttpRuntime
+            remote = ([s.name for s in runtime.list_agents()]
+                      if isinstance(runtime, HttpRuntime) else None)
+            return capability.report(remote)
         except Exception:  # noqa: BLE001
             return []
 

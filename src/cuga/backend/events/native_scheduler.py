@@ -123,7 +123,9 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
             await fire_fn(sub)
             fired.append(sub.id)
         except Exception as e:  # noqa: BLE001 — one bad fire must not stall the whole loop
-            log.warning("native fire %s failed: %s", sub.id, e)
+            # Some transport exceptions (httpx timeouts, cancelled tasks) carry an EMPTY str(), so
+            # "native fire X failed: " told an operator nothing at all. Always name the type.
+            log.warning("native fire %s failed: %s: %s", sub.id, type(e).__name__, e or "(no detail)")
         nxt = next_fire_after(sub, now)
         if not nxt or (sub.expires_at and nxt > sub.expires_at):
             store.delete(sub.id)                          # bounded run complete (or unschedulable)
@@ -133,6 +135,28 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
     return fired
 
 
+async def _await_loopback(port: str, *, timeout: float = 60.0, interval: float = 0.5) -> bool:
+    """Block until this process's own HTTP port accepts a connection (or ``timeout``).
+
+    Returns True if it came up. On timeout we log and proceed anyway rather than disabling the
+    scheduler: a slow boot must not cost every future tick.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            _r, w = await asyncio.open_connection("127.0.0.1", int(port))
+            w.close()
+            try:
+                await w.wait_closed()
+            except Exception:  # noqa: BLE001 — closing is best-effort
+                pass
+            return True
+        except (OSError, ValueError):
+            await asyncio.sleep(interval)
+    log.warning("native scheduler: :%s never accepted within %.0fs — firing anyway", port, timeout)
+    return False
+
+
 async def run_scheduler(store, *, port: str, token: str, tick: float = 10.0,
                         stop: asyncio.Event | None = None) -> None:
     """Background loop: every ``tick`` seconds, fire due native subscriptions. Registered at boot the
@@ -140,6 +164,12 @@ async def run_scheduler(store, *, port: str, token: str, tick: float = 10.0,
     if store is None:
         return
     log.info("native scheduler started (tick=%ss)", tick)
+    # WAIT FOR OUR OWN FRONT DOOR. This loop is launched from the lifespan hook, which runs BEFORE
+    # uvicorn starts accepting — and a subscription that was already due at boot fires on the very
+    # first tick, into a socket that is not listening yet. That fire was lost outright: the failure
+    # is caught per-sub and next_fire has already advanced, so nothing retries it. Harmless for a
+    # 1-minute cron, a whole missed day for a daily one.
+    await _await_loopback(port)
 
     async def _fire(sub):
         await _fire_invoke(sub, port=port, token=token)

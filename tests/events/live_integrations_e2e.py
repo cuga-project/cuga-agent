@@ -66,7 +66,14 @@ def _post(path, body, timeout=400, headers=None):
 
 
 def _concierge(text, thread="web:e2e"):
+    # Arming is CONFIRM-gated (HITL spec): the concierge proposes, a human approves. Play the human.
     c, rep = _post("/api/concierge", {"text": text, "thread_id": thread})
+    for _ in range(4):
+        state = (rep or {}).get("state")
+        if state not in ("confirm", "needs_input"):
+            break
+        c, rep = _post("/api/concierge",
+                       {"text": "yes" if state == "confirm" else text, "thread_id": thread})
     return c, str(rep.get("reply", rep))
 
 

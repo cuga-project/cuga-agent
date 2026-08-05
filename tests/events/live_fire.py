@@ -149,9 +149,19 @@ def subs() -> list[dict]:
 
 
 def arm(utterance: str, thread: str) -> tuple[dict | None, str]:
-    """Send the utterance through the concierge; return the subscription it created (if any)."""
+    """Send the utterance through the concierge; return the subscription it created (if any).
+
+    Arming is CONFIRM-gated (see the HITL spec): the concierge proposes and a human approves, so
+    the harness plays the human — answer a clarifying question, then say "yes"."""
     before = {s["id"] for s in subs()}
     code, body = srv("POST", "/api/concierge", {"text": utterance, "thread_id": thread}, timeout=240)
+    for _ in range(4):
+        state = (body or {}).get("state")
+        if state not in ("confirm", "needs_input"):
+            break
+        code, body = srv("POST", "/api/concierge",
+                         {"text": "yes" if state == "confirm" else utterance, "thread_id": thread},
+                         timeout=240)
     reply = (body or {}).get("reply") or (body or {}).get("error") or f"HTTP {code}"
     if code != 200:
         return None, reply
@@ -222,8 +232,22 @@ def phase_channel(r: Report):
          action=f"type it into the Slack channel {chan}",
          expect="Slack's Events API notifies CUGA", got=f"posted, ts={ts}", ok=None)
 
+    # EVENTS_SLACK_CHAT=mention gates an unmentioned CHANNEL message away from chat — correctly, so
+    # that arming "watch #incidents" doesn't turn every message into a chat turn. A real user must
+    # @mention the bot, so the probe must too; without this the bot never replies and the case looks
+    # like a broken round trip when it is the gate doing its job. (live_e2e.ch_slack does the same.)
+    probe_text = utter
+    if env("EVENTS_SLACK_CHAT", "").lower() == "mention":
+        _, who = http("POST", "https://slack.com/api/auth.test", headers=sh, timeout=15)
+        uid = (who or {}).get("user_id", "")
+        if uid:
+            probe_text = f"<@{uid}> {utter}"
+        else:
+            print("     \033[33mwarning\033[0m: mention mode on but auth.test gave no bot user id — "
+                  "the probe cannot @mention, so the message will be gated away from chat")
     ev = {"type": "event_callback",
-          "event": {"type": "message", "text": utter, "channel": chan, "user": "U0FIRE", "ts": ts}}
+          "event": {"type": "message", "text": probe_text, "channel": chan, "user": "U0FIRE",
+                    "ts": ts}}
     raw = json.dumps(ev)
     hdrs = {"Content-Type": "application/json"}
     if secret:
@@ -251,6 +275,137 @@ def phase_channel(r: Report):
          trigger="NOW", action="reply in the thread under your message",
          expect="a price, delivered back into the same Slack thread",
          got=reply or "(no reply appeared in the thread)", ok=ok)
+
+
+def _slack_channel_and_headers():
+    """(channel_id, slack_headers, bot_user_id) or (None, …) when Slack isn't usable here."""
+    tok = env("SLACK_BOT_TOKEN")
+    if not tok:
+        return None, None, ""
+    sh = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json; charset=utf-8"}
+    chan = env("SLACK_TEST_CHANNEL")
+    if not chan:
+        _, lst = http("GET", "https://slack.com/api/conversations.list?types=public_channel&limit=200",
+                      headers=sh, timeout=20)
+        member = [c for c in lst.get("channels", []) if c.get("is_member")]
+        if not member:
+            return None, sh, ""
+        chan = member[0]["id"]
+    _, who = http("POST", "https://slack.com/api/auth.test", headers=sh, timeout=15)
+    return chan, sh, (who or {}).get("user_id", "")
+
+
+def _slack_deliver_event(chan, sh, text, ts, *, thread_ts=None):
+    """Forge the signed Events API callback Slack itself would send for `text`."""
+    ev = {"type": "event_callback",
+          "event": {"type": "message", "text": text, "channel": chan, "user": "U0FIRE", "ts": ts}}
+    if thread_ts:
+        ev["event"]["thread_ts"] = thread_ts
+    raw = json.dumps(ev)
+    hdrs = {"Content-Type": "application/json"}
+    secret = env("SLACK_SIGNING_SECRET")
+    if secret:
+        stamp = str(int(time.time()))
+        hdrs["X-Slack-Request-Timestamp"] = stamp
+        hdrs["X-Slack-Signature"] = "v0=" + hmac.new(
+            secret.encode(), f"v0:{stamp}:{raw}".encode(), hashlib.sha256).hexdigest()
+    return http("POST", BASE + "/api/events/slack/events", raw_body=raw, headers=hdrs, timeout=30)
+
+
+def _slack_wait(chan, sh, ts, *, match=None, seen=0, budget=120):
+    """Wait for a NEW bot reply in the thread rooted at `ts`. Returns (text, count_of_bot_msgs)."""
+    deadline = time.time() + min(budget, max(left() - 30, 0))
+    while time.time() < deadline:
+        time.sleep(8)
+        _, thr = http("GET", f"https://slack.com/api/conversations.replies?channel={chan}&ts={ts}",
+                      headers=sh, timeout=20)
+        bots = [m for m in (thr.get("messages") or [])[1:] if m.get("bot_id") or m.get("app_id")]
+        if len(bots) > seen:
+            for m in bots[seen:]:
+                txt = (m.get("text") or "").replace("\n", " ")
+                if match is None or match(txt):
+                    return txt, len(bots)
+            seen = len(bots)
+    return "", seen
+
+
+def phase_channel_arm(r: Report, created: list):
+    """THE end-to-end story, entirely inside a real Slack channel:
+
+        @bot /automate every minute …   →  the bot posts the CONFIRM card in-thread
+        yes                             →  ARMED  (no re-@mention needed: the bot rooted the thread)
+        …one minute later               →  the tick's answer is delivered into that same thread
+
+    This is the one case that proves arming, human approval, and channel-delivery all work together
+    on a real channel rather than through a synthetic envelope.
+    """
+    print("\n\033[1m[CHANNEL-ARM]\033[0m  /automate in Slack → confirm in-thread → the fire lands there")
+    case, utter = "channel-arm/slack", "every minute send me the price of bitcoin"
+    chan, sh, bot_uid = _slack_channel_and_headers()
+    if chan is None:
+        return r.add(case=case, verdict=SKIP, utterance=utter, channel="slack", integration="",
+                     trigger="CRON",
+                     why="Slack unusable (no SLACK_BOT_TOKEN, or the bot is in no channel — /invite it)")
+    mention = f"<@{bot_uid}> " if (bot_uid and env("EVENTS_SLACK_CHAT", "").lower() == "mention") else ""
+
+    # 1) the human types the slash command in the channel
+    _, posted = http("POST", "https://slack.com/api/chat.postMessage",
+                     {"channel": chan, "text": f"[arm-{RUN}] {mention}/automate {utter}"}, sh, timeout=20)
+    if not posted.get("ok"):
+        return r.add(case=case, verdict=SKIP, utterance=utter, channel="slack", integration="",
+                     trigger="CRON", why=f"chat.postMessage: {posted.get('error')}")
+    ts = posted["ts"]
+    before = {s["id"] for s in subs()}
+    _slack_deliver_event(chan, sh, f"{mention}/automate {utter}", ts)
+    step(phase="fire", surface="slack", actor="you", utterance=f"/automate {utter}", channel="slack",
+         trigger="CRON", action="type the slash command in Slack",
+         expect="the bot proposes the flow and asks you to confirm", got=f"posted, ts={ts}", ok=None)
+
+    # 2) the bot must PROPOSE, not arm
+    card, seen = _slack_wait(chan, sh, ts, match=lambda t: "yes" in t.lower() or "arm" in t.lower())
+    armed_early = [s for s in subs() if s["id"] not in before]
+    if armed_early:
+        created.extend(s["id"] for s in armed_early)
+    if not card:
+        return r.add(case=case, verdict=FAIL, utterance=utter, channel="slack", integration="",
+                     trigger="CRON", why="no confirmation card appeared in the Slack thread")
+    if armed_early:
+        return r.add(case=case, verdict=FAIL, utterance=utter, channel="slack", integration="",
+                     trigger="CRON", response=card[:200],
+                     why="a subscription was armed BEFORE the human confirmed — the gate leaked")
+    step(phase="fire", surface="slack", actor="the bot", utterance=f"/automate {utter}",
+         channel="slack", trigger="CRON", action="post the confirmation card in the thread",
+         expect="the exact fire-time prompt, shown for approval; nothing armed yet",
+         got=card[:200], ok=True)
+
+    # 3) the human replies "yes" IN THE THREAD — deliberately with no @mention, because the bot
+    #    rooted this thread, which is what makes a follow-up reachable in mention mode.
+    _, yes_msg = http("POST", "https://slack.com/api/chat.postMessage",
+                      {"channel": chan, "text": "yes", "thread_ts": ts}, sh, timeout=20)
+    _slack_deliver_event(chan, sh, "yes", yes_msg.get("ts", ts), thread_ts=ts)
+    confirm, seen = _slack_wait(chan, sh, ts, seen=seen)
+    new = [s for s in subs() if s["id"] not in before]
+    if not new:
+        return r.add(case=case, verdict=FAIL, utterance=utter, channel="slack", integration="",
+                     trigger="CRON", response=confirm[:200],
+                     why='replied "yes" in-thread but nothing armed (is the thread follow-up gated?)')
+    sub = new[0]
+    created.append(sub["id"])
+    step(phase="fire", surface="slack", actor="you", utterance="yes", channel="slack", trigger="CRON",
+         action='reply "yes" in the thread (no new @mention)',
+         expect="the flow arms, and the reply is reachable because the bot rooted the thread",
+         got=f"{confirm[:120]} | armed {sub['id']}", ok=True)
+
+    # 4) the tick must be DELIVERED into that same Slack thread
+    answer, _ = _slack_wait(chan, sh, ts, seen=seen, match=has_digit, budget=180)
+    ok = bool(answer)
+    r.add(case=case, verdict=FIRED if ok else FAIL, utterance=utter, channel="slack", integration="",
+          trigger=sub.get("mode") or "CRON", response=answer[:200],
+          why="" if ok else "armed, but no tick was delivered into the Slack thread within 180s")
+    step(phase="fire", surface="slack", actor="the scheduler", utterance=utter, channel="slack",
+         trigger="CRON", action="fire the flow a minute later",
+         expect="the answer is delivered back into the SAME Slack thread you armed it from",
+         got=answer or "(nothing arrived in the thread)", ok=ok)
 
 
 def _schedule_case(r: Report, created: list, *, case, utter, thread, channel, trigger):
@@ -425,7 +580,8 @@ def phase_push_github(r: Report, created: list):
          note="not fired on purpose — firing would push to a real repository")
 
 
-PHASES = {"now": phase_now, "channel": phase_channel, "cron": phase_cron, "poll": phase_poll,
+PHASES = {"now": phase_now, "channel": phase_channel, "channel-arm": phase_channel_arm,
+          "cron": phase_cron, "poll": phase_poll,
           "webhook": phase_webhook, "box": phase_box, "push": phase_push_github}
 
 
@@ -472,7 +628,8 @@ def main() -> int:
                 print(f"\n  \033[33mbudget exhausted — skipping {name}\033[0m")
                 break
             fn = PHASES[name]
-            fn(r, created) if fn in (phase_cron, phase_poll, phase_push_github) else fn(r)
+            fn(r, created) if fn in (phase_cron, phase_poll, phase_push_github,
+                                     phase_channel_arm) else fn(r)
     finally:
         cleanup(created)
     return r.summary()

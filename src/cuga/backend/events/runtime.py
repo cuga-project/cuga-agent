@@ -240,6 +240,147 @@ def logging_warn(msg: str) -> None:
     logging.getLogger("cuga.events").warning(msg)
 
 
+# ---- HttpRuntime (backend="http") — CUGA as a SEPARATE SERVICE ------------
+class HttpRuntime(CugaRuntime):
+    """Run the worker by calling CUGA's ``POST /run`` over HTTP instead of in-process.
+
+    This is the seam that lets the eventing layer be its own deployable: everything upstream of
+    the worker (triggers, scheduler, channels, concierge, delivery) already talks HTTP, and the
+    single in-process tie was ``_cuga_bridge`` — which also needed CUGA's live ``app_state``
+    objects. Calling ``/run`` removes that tie entirely: those objects stay on CUGA's side where
+    they belong, and this process never imports the CUGA graph.
+
+    Agent storage/isolation is inherited from CugaRuntime (the shared AgentStore) — only execution
+    moves across the wire. ``/run`` is the non-streaming sibling of ``/stream``: same graph, same
+    knowledge/history/policies, terminal answer only.
+    """
+
+    def __init__(self, *, agent_store, base_url: str = "", token: str = "",
+                 timeout: float = 300.0, retries: int = 2) -> None:
+        super().__init__(agent_store=agent_store)
+        self._base = (base_url or os.environ.get("CUGA_URL")
+                      or f"http://127.0.0.1:{os.environ.get('EVENTS_CUGA_PORT', '7860')}").rstrip("/")
+        self._token = token or (os.environ.get("CUGA_RUN_TOKEN")
+                                or os.environ.get("GATEWAY_TOKEN") or "").split(" #", 1)[0].strip()
+        self._timeout = timeout
+        self._retries = max(0, int(retries))
+        self._roster: list[AgentSpec] = []
+        self._roster_at = 0.0
+
+    _ROSTER_TTL = 60.0      # a roster changes only on redeploy; re-ask rarely, never per call
+
+    def _remote_roster(self) -> list[AgentSpec]:
+        """Ask CUGA what it has loaded. THE ROSTER BELONGS TO WHOEVER EXECUTES — in a split that is
+        CUGA, not this process, so guessing here is always wrong. ``/run/agents`` is the machine
+        sibling of ``/run`` and reports the supervisor's sub-agents; ``/api/agents`` is the
+        dashboard's endpoint (cookie-guarded, one card for the configured agent) and is only a
+        fallback for a CUGA old enough not to serve the former."""
+        import time
+        now = time.monotonic()
+        if self._roster and (now - self._roster_at) < self._ROSTER_TTL:
+            return self._roster
+        headers = {"X-Gateway-Token": self._token} if self._token else {}
+        for path in ("/run/agents", "/api/agents"):
+            try:
+                import httpx
+                r = httpx.get(f"{self._base}{path}", headers=headers, timeout=10)
+                if r.status_code != 200:
+                    continue
+                rows = r.json()
+                rows = rows.get("agents", rows) if isinstance(rows, dict) else rows
+                out = []
+                for a in rows or []:
+                    d = a if isinstance(a, dict) else {"name": str(a)}
+                    name = d.get("name") or ""
+                    if name:
+                        out.append(AgentSpec(name=name, backend="http",
+                                             prompt=d.get("description") or "",
+                                             mcp_servers=list(d.get("mcp_servers") or [])))
+                if out:
+                    self._roster, self._roster_at = out, now
+                    return out
+            except Exception as e:  # noqa: BLE001 — reporting must never break the service
+                logging_warn(f"could not read the roster from {self._base}{path}: {e}")
+        return []
+
+    def list_agents(self, *, scope: str = DEFAULT_SCOPE) -> list[AgentSpec]:
+        """What CUGA has loaded — asked, not assumed.
+
+        CUGA WINS. In a split deployment execution happens on the CUGA side, so its roster is the
+        only truth; this process's store holds at best a stale copy. Preferring the local store
+        (the first cut) meant one leftover row from an earlier run — a "Digital Sales Agent" left
+        in ~/.cuga/events.db — masked the entire live roster and the service reported 1 agent while
+        CUGA was serving 9. The local store stays as the fallback for when CUGA can't be reached,
+        so a reporting call never takes the events layer down.
+        """
+        remote = self._remote_roster()
+        if remote:
+            return remote
+        # The supervisor is always addressable even when the roster can't be listed.
+        return super().list_agents(scope=scope) or [
+            AgentSpec(name="cuga", backend="http", prompt="the CUGA supervisor")]
+
+    def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
+        """SUPERVISOR MODEL: "cuga" is always addressable — the one agent exists by construction,
+        exactly as SupervisorRuntime and find_or_create_flow already treat it. Without this the
+        split's agent store starts empty (the roster lives in CUGA's process, not here) and every
+        scheduled tick came back `404 unknown agent 'cuga'` — armed, never fired.
+
+        Any OTHER name is resolved against CUGA's loaded roster for the same reason: a webhook
+        pinned to ``?agent=incident_triage`` is naming a real sub-agent, and rejecting it here as
+        unknown — which is what happened before, since only this process's empty store was
+        consulted — failed the call before the supervisor ever got a say."""
+        if agent_id == "cuga":
+            return (super().get_agent(agent_id, scope=scope)
+                    or AgentSpec(name="cuga", backend="http", prompt="the CUGA supervisor"))
+        want = agent_id.split("::")[-1]
+        remote = next((s for s in self._remote_roster() if s.name == want), None)
+        return remote if remote is not None else super().get_agent(agent_id, scope=scope)
+
+    async def run(self, agent_id: str, thread_id: str, text: str,
+                  *, scope: str = DEFAULT_SCOPE, deliver_to: list | None = None) -> str:
+        import asyncio
+        import httpx
+        spec = self.get_agent(agent_id, scope=scope)
+        if spec is None:
+            raise KeyError(f"unknown agent {agent_id!r} in scope {scope!r}")
+        from . import runmeta
+        runmeta.add(agent=agent_id.split("::")[-1], backend="http",
+                    mcp=list(getattr(spec, "mcp_servers", []) or []) if spec else [])
+        # Carry the caller's agent across the hop. In-process runtimes get this for free; over HTTP
+        # it has to be said out loud, or a pinned specialist silently degrades to generic routing.
+        body = {"query": text, "thread_id": thread_id, "user_id": scope,
+                "disable_history": True, "agent": agent_id.split("::")[-1]}
+        headers = {"X-Gateway-Token": self._token} if self._token else {}
+        last = None
+        for attempt in range(self._retries + 1):
+            # Only TRANSPORT failures are retryable. An application-level answer (any HTTP
+            # response at all) is decided below and either returned or raised — retrying a 401 or
+            # an agent error just multiplies the damage and, worse, an early version swallowed
+            # both into the retry loop and returned the NEXT attempt's answer.
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as c:
+                    r = await c.post(f"{self._base}/run", json=body, headers=headers)
+            except Exception as e:  # noqa: BLE001 — connect/read/timeout: worth another go
+                last = e
+                if attempt < self._retries:
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+                    continue
+                break
+            if r.status_code == 200:
+                data = r.json() or {}
+                if data.get("status") == "ok" or data.get("answer"):
+                    return data.get("answer") or ""
+                raise RuntimeError(
+                    f"cuga /run: {data.get('error') or 'status=' + str(data.get('status'))}")
+            if 400 <= r.status_code < 500:      # our fault (bad token/body) — retrying cannot help
+                raise RuntimeError(f"cuga /run HTTP {r.status_code}: {r.text[:200]}")
+            last = RuntimeError(f"cuga /run HTTP {r.status_code}")   # 5xx — transient, retry
+            if attempt < self._retries:
+                await asyncio.sleep(0.5 * (2 ** attempt))
+        raise RuntimeError(f"cuga /run unreachable at {self._base} ({last})")
+
+
 # ---- SupervisorRuntime (EVENTS_SUPERVISOR=1) — ONE agent, canonical roster ----
 class SupervisorRuntime(AgentRuntime):
     """The single-agent world (events_docs/plans/SUPERVISOR_REFACTOR.md).
@@ -383,6 +524,11 @@ def make_runtime(backend: str, **kw) -> AgentRuntime:
     if b == "react":     # dev/test-only lightweight loop (unchanged)
         return ReactRuntime(**{k: v for k, v in kw.items()
                                if k in ("model_factory", "agent_store", "checkpointer")})
+    # SPLIT DEPLOYMENT: CUGA runs as its own service and the worker call crosses the wire.
+    # Same agents, same graph — only the transport differs (see HttpRuntime).
+    if b == "http":
+        return HttpRuntime(agent_store=kw.get("agent_store"),
+                           base_url=kw.get("cuga_url", ""), token=kw.get("cuga_token", ""))
     # THE SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md). One addressable agent,
     # "cuga", in both modes — the fleet-routing runtime is retired:
     #   EVENTS_SUPERVISOR=1 → the canonical supervisor, sub-agents from supervisor_agents.yaml

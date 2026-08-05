@@ -8072,7 +8072,7 @@ ___CSS_LOADER_EXPORT___.push([module.id, ".manage-page {\n  display: flex;\n  fl
 
 var ___CSS_LOADER_EXPORT___ = _node_modules_pnpm_css_loader_7_1_4_webpack_5_104_1_node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1___default()((_node_modules_pnpm_css_loader_7_1_4_webpack_5_104_1_node_modules_css_loader_dist_runtime_sourceMaps_js__WEBPACK_IMPORTED_MODULE_0___default()));
 // Module
-___CSS_LOADER_EXPORT___.push([module.id, ".studio-page {\n  width: 100%;\n  display: flex;\n  flex-direction: column;\n  height: 100vh;\n}\n\n.studio-content {\n  flex: 1;\n  overflow: auto;\n  padding: 2rem 3rem;\n  margin-top: 3rem;\n  width: 100%;\n  max-width: 1200px;\n}\n\n.studio-heading-row {\n  display: flex;\n  justify-content: space-between;\n  align-items: flex-start;\n  margin-bottom: 1.5rem;\n}\n\n.studio-title {\n  font-size: 1.5rem;\n  font-weight: 400;\n  margin-bottom: 0.25rem;\n}\n\n.studio-muted {\n  color: #525252;\n  line-height: 1.5;\n  font-size: 0.875rem;\n}\n\n.studio-scope code,\n.studio-muted code {\n  background: #f4f4f4;\n  padding: 0 0.25rem;\n  border-radius: 2px;\n  font-size: 0.8125rem;\n}\n\n/* card grids for Channels / Integrations / Flows / Examples */\n.studio-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));\n  gap: 1rem;\n  margin-top: 1rem;\n}\n\n.studio-card {\n  display: flex;\n  flex-direction: column;\n  padding: 1.25rem;\n  min-height: 140px;\n}\n\n.studio-card-head {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  margin-bottom: 0.5rem;\n  gap: 0.5rem;\n}\n\n.studio-card-title {\n  display: flex;\n  align-items: center;\n  gap: 0.5rem;\n  font-weight: 600;\n}\n\n.studio-card-foot {\n  display: flex;\n  gap: 0.5rem;\n  align-items: center;\n  flex-wrap: wrap;\n  margin-top: auto;\n  padding-top: 0.75rem;\n}\n\n.studio-example-utterance {\n  font-style: italic;\n  color: #161616;\n  margin: 0.25rem 0 0.5rem;\n  line-height: 1.4;\n}\n\n/* per-agent example chips (Agents tab) — click to load into the Concierge */\n.studio-example-chip {\n  display: inline-block;\n  margin: 0 6px 6px 0;\n  padding: 3px 10px;\n  font-size: 12px;\n  font-style: italic;\n  color: #0f62fe;\n  background: #edf5ff;\n  border: 1px solid #d0e2ff;\n  border-radius: 14px;\n  cursor: pointer;\n  text-align: left;\n  line-height: 1.35;\n}\n.studio-example-chip:hover {\n  background: #d0e2ff;\n}\n\n/* concierge chat */\n.studio-chat {\n  display: flex;\n  flex-direction: column;\n  height: calc(100vh - 320px);\n  min-height: 360px;\n  margin-top: 1rem;\n}\n\n.studio-chat-log {\n  flex: 1;\n  overflow: auto;\n  padding: 0.5rem;\n  border: 1px solid #e0e0e0;\n  background: #f4f4f4;\n  margin-bottom: 1rem;\n}\n\n.studio-msg {\n  margin-bottom: 1rem;\n}\n\n.studio-msg-role {\n  font-weight: 600;\n  font-size: 0.8125rem;\n  margin-bottom: 0.25rem;\n  display: flex;\n  align-items: center;\n}\n\n.studio-msg-text {\n  margin: 0;\n  white-space: pre-wrap;\n  word-break: break-word;\n  font-family: inherit;\n  background: #ffffff;\n  padding: 0.75rem;\n  border-radius: 4px;\n  line-height: 1.5;\n}\n\n.studio-msg-user .studio-msg-text {\n  background: #edf5ff;\n}\n\n.studio-chat-input {\n  display: flex;\n  flex-direction: column;\n  gap: 0.5rem;\n}\n\n.studio-chat-actions {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n}\n", "",{"version":3,"sources":["webpack://./src/StudioPage.css"],"names":[],"mappings":"AAAA;EACE,WAAW;EACX,aAAa;EACb,sBAAsB;EACtB,aAAa;AACf;;AAEA;EACE,OAAO;EACP,cAAc;EACd,kBAAkB;EAClB,gBAAgB;EAChB,WAAW;EACX,iBAAiB;AACnB;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,uBAAuB;EACvB,qBAAqB;AACvB;;AAEA;EACE,iBAAiB;EACjB,gBAAgB;EAChB,sBAAsB;AACxB;;AAEA;EACE,cAAc;EACd,gBAAgB;EAChB,mBAAmB;AACrB;;AAEA;;EAEE,mBAAmB;EACnB,kBAAkB;EAClB,kBAAkB;EAClB,oBAAoB;AACtB;;AAEA,8DAA8D;AAC9D;EACE,aAAa;EACb,4DAA4D;EAC5D,SAAS;EACT,gBAAgB;AAClB;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,gBAAgB;EAChB,iBAAiB;AACnB;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,mBAAmB;EACnB,qBAAqB;EACrB,WAAW;AACb;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,WAAW;EACX,gBAAgB;AAClB;;AAEA;EACE,aAAa;EACb,WAAW;EACX,mBAAmB;EACnB,eAAe;EACf,gBAAgB;EAChB,oBAAoB;AACtB;;AAEA;EACE,kBAAkB;EAClB,cAAc;EACd,wBAAwB;EACxB,gBAAgB;AAClB;;AAEA,4EAA4E;AAC5E;EACE,qBAAqB;EACrB,mBAAmB;EACnB,iBAAiB;EACjB,eAAe;EACf,kBAAkB;EAClB,cAAc;EACd,mBAAmB;EACnB,yBAAyB;EACzB,mBAAmB;EACnB,eAAe;EACf,gBAAgB;EAChB,iBAAiB;AACnB;AACA;EACE,mBAAmB;AACrB;;AAEA,mBAAmB;AACnB;EACE,aAAa;EACb,sBAAsB;EACtB,2BAA2B;EAC3B,iBAAiB;EACjB,gBAAgB;AAClB;;AAEA;EACE,OAAO;EACP,cAAc;EACd,eAAe;EACf,yBAAyB;EACzB,mBAAmB;EACnB,mBAAmB;AACrB;;AAEA;EACE,mBAAmB;AACrB;;AAEA;EACE,gBAAgB;EAChB,oBAAoB;EACpB,sBAAsB;EACtB,aAAa;EACb,mBAAmB;AACrB;;AAEA;EACE,SAAS;EACT,qBAAqB;EACrB,sBAAsB;EACtB,oBAAoB;EACpB,mBAAmB;EACnB,gBAAgB;EAChB,kBAAkB;EAClB,gBAAgB;AAClB;;AAEA;EACE,mBAAmB;AACrB;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,WAAW;AACb;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,mBAAmB;AACrB","sourcesContent":[".studio-page {\n  width: 100%;\n  display: flex;\n  flex-direction: column;\n  height: 100vh;\n}\n\n.studio-content {\n  flex: 1;\n  overflow: auto;\n  padding: 2rem 3rem;\n  margin-top: 3rem;\n  width: 100%;\n  max-width: 1200px;\n}\n\n.studio-heading-row {\n  display: flex;\n  justify-content: space-between;\n  align-items: flex-start;\n  margin-bottom: 1.5rem;\n}\n\n.studio-title {\n  font-size: 1.5rem;\n  font-weight: 400;\n  margin-bottom: 0.25rem;\n}\n\n.studio-muted {\n  color: #525252;\n  line-height: 1.5;\n  font-size: 0.875rem;\n}\n\n.studio-scope code,\n.studio-muted code {\n  background: #f4f4f4;\n  padding: 0 0.25rem;\n  border-radius: 2px;\n  font-size: 0.8125rem;\n}\n\n/* card grids for Channels / Integrations / Flows / Examples */\n.studio-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));\n  gap: 1rem;\n  margin-top: 1rem;\n}\n\n.studio-card {\n  display: flex;\n  flex-direction: column;\n  padding: 1.25rem;\n  min-height: 140px;\n}\n\n.studio-card-head {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  margin-bottom: 0.5rem;\n  gap: 0.5rem;\n}\n\n.studio-card-title {\n  display: flex;\n  align-items: center;\n  gap: 0.5rem;\n  font-weight: 600;\n}\n\n.studio-card-foot {\n  display: flex;\n  gap: 0.5rem;\n  align-items: center;\n  flex-wrap: wrap;\n  margin-top: auto;\n  padding-top: 0.75rem;\n}\n\n.studio-example-utterance {\n  font-style: italic;\n  color: #161616;\n  margin: 0.25rem 0 0.5rem;\n  line-height: 1.4;\n}\n\n/* per-agent example chips (Agents tab) — click to load into the Concierge */\n.studio-example-chip {\n  display: inline-block;\n  margin: 0 6px 6px 0;\n  padding: 3px 10px;\n  font-size: 12px;\n  font-style: italic;\n  color: #0f62fe;\n  background: #edf5ff;\n  border: 1px solid #d0e2ff;\n  border-radius: 14px;\n  cursor: pointer;\n  text-align: left;\n  line-height: 1.35;\n}\n.studio-example-chip:hover {\n  background: #d0e2ff;\n}\n\n/* concierge chat */\n.studio-chat {\n  display: flex;\n  flex-direction: column;\n  height: calc(100vh - 320px);\n  min-height: 360px;\n  margin-top: 1rem;\n}\n\n.studio-chat-log {\n  flex: 1;\n  overflow: auto;\n  padding: 0.5rem;\n  border: 1px solid #e0e0e0;\n  background: #f4f4f4;\n  margin-bottom: 1rem;\n}\n\n.studio-msg {\n  margin-bottom: 1rem;\n}\n\n.studio-msg-role {\n  font-weight: 600;\n  font-size: 0.8125rem;\n  margin-bottom: 0.25rem;\n  display: flex;\n  align-items: center;\n}\n\n.studio-msg-text {\n  margin: 0;\n  white-space: pre-wrap;\n  word-break: break-word;\n  font-family: inherit;\n  background: #ffffff;\n  padding: 0.75rem;\n  border-radius: 4px;\n  line-height: 1.5;\n}\n\n.studio-msg-user .studio-msg-text {\n  background: #edf5ff;\n}\n\n.studio-chat-input {\n  display: flex;\n  flex-direction: column;\n  gap: 0.5rem;\n}\n\n.studio-chat-actions {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n}\n"],"sourceRoot":""}]);
+___CSS_LOADER_EXPORT___.push([module.id, ".studio-page {\n  width: 100%;\n  display: flex;\n  flex-direction: column;\n  height: 100vh;\n}\n\n.studio-content {\n  flex: 1;\n  overflow: auto;\n  padding: 2rem 3rem;\n  margin-top: 3rem;\n  width: 100%;\n  max-width: 1200px;\n}\n\n.studio-heading-row {\n  display: flex;\n  justify-content: space-between;\n  align-items: flex-start;\n  margin-bottom: 1.5rem;\n}\n\n.studio-title {\n  font-size: 1.5rem;\n  font-weight: 400;\n  margin-bottom: 0.25rem;\n}\n\n.studio-muted {\n  color: #525252;\n  line-height: 1.5;\n  font-size: 0.875rem;\n}\n\n.studio-scope code,\n.studio-muted code {\n  background: #f4f4f4;\n  padding: 0 0.25rem;\n  border-radius: 2px;\n  font-size: 0.8125rem;\n}\n\n/* card grids for Channels / Integrations / Flows / Examples */\n.studio-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));\n  gap: 1rem;\n  margin-top: 1rem;\n}\n\n.studio-card {\n  display: flex;\n  flex-direction: column;\n  padding: 1.25rem;\n  min-height: 140px;\n}\n\n.studio-card-head {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  margin-bottom: 0.5rem;\n  gap: 0.5rem;\n}\n\n.studio-card-title {\n  display: flex;\n  align-items: center;\n  gap: 0.5rem;\n  font-weight: 600;\n}\n\n.studio-card-foot {\n  display: flex;\n  gap: 0.5rem;\n  align-items: center;\n  flex-wrap: wrap;\n  margin-top: auto;\n  padding-top: 0.75rem;\n}\n\n.studio-example-utterance {\n  font-style: italic;\n  color: #161616;\n  margin: 0.25rem 0 0.5rem;\n  line-height: 1.4;\n}\n\n/* per-agent example chips (Agents tab) — click to load into the Concierge */\n.studio-example-chip {\n  display: inline-block;\n  margin: 0 6px 6px 0;\n  padding: 3px 10px;\n  font-size: 12px;\n  font-style: italic;\n  color: #0f62fe;\n  background: #edf5ff;\n  border: 1px solid #d0e2ff;\n  border-radius: 14px;\n  cursor: pointer;\n  text-align: left;\n  line-height: 1.35;\n}\n.studio-example-chip:hover {\n  background: #d0e2ff;\n}\n\n/* concierge chat */\n.studio-chat {\n  display: flex;\n  flex-direction: column;\n  height: calc(100vh - 320px);\n  min-height: 360px;\n  margin-top: 1rem;\n}\n\n.studio-chat-log {\n  flex: 1;\n  overflow: auto;\n  padding: 0.5rem;\n  border: 1px solid #e0e0e0;\n  background: #f4f4f4;\n  margin-bottom: 1rem;\n}\n\n.studio-msg {\n  margin-bottom: 1rem;\n}\n\n.studio-msg-role {\n  font-weight: 600;\n  font-size: 0.8125rem;\n  margin-bottom: 0.25rem;\n  display: flex;\n  align-items: center;\n}\n\n.studio-msg-text {\n  margin: 0;\n  white-space: pre-wrap;\n  word-break: break-word;\n  font-family: inherit;\n  background: #ffffff;\n  padding: 0.75rem;\n  border-radius: 4px;\n  line-height: 1.5;\n}\n\n.studio-msg-user .studio-msg-text {\n  background: #edf5ff;\n}\n\n.studio-chat-input {\n  display: flex;\n  flex-direction: column;\n  gap: 0.5rem;\n}\n\n.studio-chat-actions {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n}\n\n/* ── HITL arming: the CONFIRM gate ────────────────────────────────────────────\n   Deliberately louder than a normal reply. This is the last moment a human sees\n   the instruction the agent will be handed on EVERY fire, so the prompt is the\n   visual anchor and the facts sit underneath it. Carbon blue-60 rail to read as\n   \"action needed\", not \"error\". */\n.studio-arm-card {\n  background: #ffffff;\n  border: 1px solid #c6c6c6;\n  border-left: 3px solid #0f62fe;\n  border-radius: 4px;\n  padding: 0.875rem 1rem;\n}\n\n.studio-arm-title {\n  font-weight: 600;\n  margin-bottom: 0.625rem;\n}\n\n.studio-arm-prompt-label {\n  font-size: 0.75rem;\n  letter-spacing: 0.02em;\n  text-transform: uppercase;\n  color: #525252;\n  margin-bottom: 0.25rem;\n}\n\n.studio-arm-prompt {\n  margin: 0 0 0.875rem;\n  padding: 0.625rem 0.75rem;\n  background: #f4f4f4;\n  border-left: 2px solid #8d8d8d;\n  font-style: italic;\n  line-height: 1.5;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n.studio-arm-facts {\n  display: grid;\n  grid-template-columns: auto 1fr;\n  gap: 0.25rem 0.75rem;\n  margin: 0 0 0.875rem;\n  font-size: 0.875rem;\n}\n\n.studio-arm-facts dt {\n  color: #525252;\n}\n\n.studio-arm-facts dd {\n  margin: 0;\n  word-break: break-word;\n}\n\n.studio-arm-actions {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 0.5rem;\n}\n\n.studio-arm-stale {\n  margin: 0;\n  font-size: 0.75rem;\n}\n", "",{"version":3,"sources":["webpack://./src/StudioPage.css"],"names":[],"mappings":"AAAA;EACE,WAAW;EACX,aAAa;EACb,sBAAsB;EACtB,aAAa;AACf;;AAEA;EACE,OAAO;EACP,cAAc;EACd,kBAAkB;EAClB,gBAAgB;EAChB,WAAW;EACX,iBAAiB;AACnB;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,uBAAuB;EACvB,qBAAqB;AACvB;;AAEA;EACE,iBAAiB;EACjB,gBAAgB;EAChB,sBAAsB;AACxB;;AAEA;EACE,cAAc;EACd,gBAAgB;EAChB,mBAAmB;AACrB;;AAEA;;EAEE,mBAAmB;EACnB,kBAAkB;EAClB,kBAAkB;EAClB,oBAAoB;AACtB;;AAEA,8DAA8D;AAC9D;EACE,aAAa;EACb,4DAA4D;EAC5D,SAAS;EACT,gBAAgB;AAClB;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,gBAAgB;EAChB,iBAAiB;AACnB;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,mBAAmB;EACnB,qBAAqB;EACrB,WAAW;AACb;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,WAAW;EACX,gBAAgB;AAClB;;AAEA;EACE,aAAa;EACb,WAAW;EACX,mBAAmB;EACnB,eAAe;EACf,gBAAgB;EAChB,oBAAoB;AACtB;;AAEA;EACE,kBAAkB;EAClB,cAAc;EACd,wBAAwB;EACxB,gBAAgB;AAClB;;AAEA,4EAA4E;AAC5E;EACE,qBAAqB;EACrB,mBAAmB;EACnB,iBAAiB;EACjB,eAAe;EACf,kBAAkB;EAClB,cAAc;EACd,mBAAmB;EACnB,yBAAyB;EACzB,mBAAmB;EACnB,eAAe;EACf,gBAAgB;EAChB,iBAAiB;AACnB;AACA;EACE,mBAAmB;AACrB;;AAEA,mBAAmB;AACnB;EACE,aAAa;EACb,sBAAsB;EACtB,2BAA2B;EAC3B,iBAAiB;EACjB,gBAAgB;AAClB;;AAEA;EACE,OAAO;EACP,cAAc;EACd,eAAe;EACf,yBAAyB;EACzB,mBAAmB;EACnB,mBAAmB;AACrB;;AAEA;EACE,mBAAmB;AACrB;;AAEA;EACE,gBAAgB;EAChB,oBAAoB;EACpB,sBAAsB;EACtB,aAAa;EACb,mBAAmB;AACrB;;AAEA;EACE,SAAS;EACT,qBAAqB;EACrB,sBAAsB;EACtB,oBAAoB;EACpB,mBAAmB;EACnB,gBAAgB;EAChB,kBAAkB;EAClB,gBAAgB;AAClB;;AAEA;EACE,mBAAmB;AACrB;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,WAAW;AACb;;AAEA;EACE,aAAa;EACb,8BAA8B;EAC9B,mBAAmB;AACrB;;AAEA;;;;kCAIkC;AAClC;EACE,mBAAmB;EACnB,yBAAyB;EACzB,8BAA8B;EAC9B,kBAAkB;EAClB,sBAAsB;AACxB;;AAEA;EACE,gBAAgB;EAChB,uBAAuB;AACzB;;AAEA;EACE,kBAAkB;EAClB,sBAAsB;EACtB,yBAAyB;EACzB,cAAc;EACd,sBAAsB;AACxB;;AAEA;EACE,oBAAoB;EACpB,yBAAyB;EACzB,mBAAmB;EACnB,8BAA8B;EAC9B,kBAAkB;EAClB,gBAAgB;EAChB,qBAAqB;EACrB,sBAAsB;AACxB;;AAEA;EACE,aAAa;EACb,+BAA+B;EAC/B,oBAAoB;EACpB,oBAAoB;EACpB,mBAAmB;AACrB;;AAEA;EACE,cAAc;AAChB;;AAEA;EACE,SAAS;EACT,sBAAsB;AACxB;;AAEA;EACE,aAAa;EACb,eAAe;EACf,WAAW;AACb;;AAEA;EACE,SAAS;EACT,kBAAkB;AACpB","sourcesContent":[".studio-page {\n  width: 100%;\n  display: flex;\n  flex-direction: column;\n  height: 100vh;\n}\n\n.studio-content {\n  flex: 1;\n  overflow: auto;\n  padding: 2rem 3rem;\n  margin-top: 3rem;\n  width: 100%;\n  max-width: 1200px;\n}\n\n.studio-heading-row {\n  display: flex;\n  justify-content: space-between;\n  align-items: flex-start;\n  margin-bottom: 1.5rem;\n}\n\n.studio-title {\n  font-size: 1.5rem;\n  font-weight: 400;\n  margin-bottom: 0.25rem;\n}\n\n.studio-muted {\n  color: #525252;\n  line-height: 1.5;\n  font-size: 0.875rem;\n}\n\n.studio-scope code,\n.studio-muted code {\n  background: #f4f4f4;\n  padding: 0 0.25rem;\n  border-radius: 2px;\n  font-size: 0.8125rem;\n}\n\n/* card grids for Channels / Integrations / Flows / Examples */\n.studio-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));\n  gap: 1rem;\n  margin-top: 1rem;\n}\n\n.studio-card {\n  display: flex;\n  flex-direction: column;\n  padding: 1.25rem;\n  min-height: 140px;\n}\n\n.studio-card-head {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  margin-bottom: 0.5rem;\n  gap: 0.5rem;\n}\n\n.studio-card-title {\n  display: flex;\n  align-items: center;\n  gap: 0.5rem;\n  font-weight: 600;\n}\n\n.studio-card-foot {\n  display: flex;\n  gap: 0.5rem;\n  align-items: center;\n  flex-wrap: wrap;\n  margin-top: auto;\n  padding-top: 0.75rem;\n}\n\n.studio-example-utterance {\n  font-style: italic;\n  color: #161616;\n  margin: 0.25rem 0 0.5rem;\n  line-height: 1.4;\n}\n\n/* per-agent example chips (Agents tab) — click to load into the Concierge */\n.studio-example-chip {\n  display: inline-block;\n  margin: 0 6px 6px 0;\n  padding: 3px 10px;\n  font-size: 12px;\n  font-style: italic;\n  color: #0f62fe;\n  background: #edf5ff;\n  border: 1px solid #d0e2ff;\n  border-radius: 14px;\n  cursor: pointer;\n  text-align: left;\n  line-height: 1.35;\n}\n.studio-example-chip:hover {\n  background: #d0e2ff;\n}\n\n/* concierge chat */\n.studio-chat {\n  display: flex;\n  flex-direction: column;\n  height: calc(100vh - 320px);\n  min-height: 360px;\n  margin-top: 1rem;\n}\n\n.studio-chat-log {\n  flex: 1;\n  overflow: auto;\n  padding: 0.5rem;\n  border: 1px solid #e0e0e0;\n  background: #f4f4f4;\n  margin-bottom: 1rem;\n}\n\n.studio-msg {\n  margin-bottom: 1rem;\n}\n\n.studio-msg-role {\n  font-weight: 600;\n  font-size: 0.8125rem;\n  margin-bottom: 0.25rem;\n  display: flex;\n  align-items: center;\n}\n\n.studio-msg-text {\n  margin: 0;\n  white-space: pre-wrap;\n  word-break: break-word;\n  font-family: inherit;\n  background: #ffffff;\n  padding: 0.75rem;\n  border-radius: 4px;\n  line-height: 1.5;\n}\n\n.studio-msg-user .studio-msg-text {\n  background: #edf5ff;\n}\n\n.studio-chat-input {\n  display: flex;\n  flex-direction: column;\n  gap: 0.5rem;\n}\n\n.studio-chat-actions {\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n}\n\n/* ── HITL arming: the CONFIRM gate ────────────────────────────────────────────\n   Deliberately louder than a normal reply. This is the last moment a human sees\n   the instruction the agent will be handed on EVERY fire, so the prompt is the\n   visual anchor and the facts sit underneath it. Carbon blue-60 rail to read as\n   \"action needed\", not \"error\". */\n.studio-arm-card {\n  background: #ffffff;\n  border: 1px solid #c6c6c6;\n  border-left: 3px solid #0f62fe;\n  border-radius: 4px;\n  padding: 0.875rem 1rem;\n}\n\n.studio-arm-title {\n  font-weight: 600;\n  margin-bottom: 0.625rem;\n}\n\n.studio-arm-prompt-label {\n  font-size: 0.75rem;\n  letter-spacing: 0.02em;\n  text-transform: uppercase;\n  color: #525252;\n  margin-bottom: 0.25rem;\n}\n\n.studio-arm-prompt {\n  margin: 0 0 0.875rem;\n  padding: 0.625rem 0.75rem;\n  background: #f4f4f4;\n  border-left: 2px solid #8d8d8d;\n  font-style: italic;\n  line-height: 1.5;\n  white-space: pre-wrap;\n  word-break: break-word;\n}\n\n.studio-arm-facts {\n  display: grid;\n  grid-template-columns: auto 1fr;\n  gap: 0.25rem 0.75rem;\n  margin: 0 0 0.875rem;\n  font-size: 0.875rem;\n}\n\n.studio-arm-facts dt {\n  color: #525252;\n}\n\n.studio-arm-facts dd {\n  margin: 0;\n  word-break: break-word;\n}\n\n.studio-arm-actions {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 0.5rem;\n}\n\n.studio-arm-stale {\n  margin: 0;\n  font-size: 0.75rem;\n}\n"],"sourceRoot":""}]);
 // Exports
 /* harmony default export */ __webpack_exports__["default"] = (___CSS_LOADER_EXPORT___);
 
@@ -10769,8 +10769,8 @@ function ConciergeChat({
   const [busy, setBusy] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
   const [error, setError] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(null);
   const [dryRun, setDryRun] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
-  const send = async () => {
-    const text = draft.trim();
+  const send = async override => {
+    const text = (override ?? draft).trim();
     if (!text || busy) return;
     setError(null);
     setBusy(true);
@@ -10778,7 +10778,7 @@ function ConciergeChat({
       role: "user",
       text
     }]);
-    setDraft("");
+    if (override === undefined) setDraft("");
     try {
       const res = await _api__WEBPACK_IMPORTED_MODULE_3__.postConcierge(text, {
         threadId: "web:studio",
@@ -10799,10 +10799,15 @@ function ConciergeChat({
         reply = typeof data.reply === "string" ? data.reply : JSON.stringify(data.reply ?? data, null, 2);
         meta = data?.scope ? `scope=${data.scope}` : undefined;
       }
+      // HITL arming: `state` says whether this thread is mid-dialogue. When the server is at the
+      // CONFIRM gate it also sends the proposal, which we render as a card with real buttons —
+      // the whole point is that the human sees the exact fire-time prompt before anything arms.
       setMessages(m => [...m, {
         role: "concierge",
         text: reply,
-        meta
+        meta,
+        state: data?.state,
+        summary: data?.summary
       }]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Concierge request failed");
@@ -10827,7 +10832,13 @@ function ConciergeChat({
     style: {
       marginLeft: 8
     }
-  }, m.meta)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("pre", {
+  }, m.meta)), m.state === "confirm" && m.summary ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ArmConfirmCard, {
+    summary: m.summary,
+    busy: busy,
+    live: i === messages.length - 1,
+    onSay: t => send(t),
+    setDraft: setDraft
+  }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("pre", {
     className: "studio-msg-text"
   }, m.text))), busy && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.InlineLoading, {
     description: "Concierge is thinking\u2026"
@@ -10864,9 +10875,61 @@ function ConciergeChat({
     onToggle: v => setDryRun(v)
   }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
     renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_2__.Send,
-    onClick: send,
+    onClick: () => send(),
     disabled: busy || !draft.trim()
   }, "Send"))));
+}
+
+/**
+ * ArmConfirmCard — the CONFIRM gate, rendered.
+ *
+ * Nothing is armed until the human approves the exact prompt the agent will be handed on every
+ * fire (events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md §5). The card exists so that prompt is
+ * impossible to miss: it is the one thing a bad automation gets wrong, forever, silently.
+ *
+ * The buttons are shortcuts, not a separate protocol — each sends the same plain text a user could
+ * type ("yes" / "cancel"), so web, Slack, Discord and Telegram all drive one dialogue. Only the
+ * newest card stays interactive; older ones are history.
+ */
+function ArmConfirmCard({
+  summary,
+  busy,
+  live,
+  onSay,
+  setDraft
+}) {
+  const rows = [["When", summary.trigger], ["Results go to", summary.delivery], ["Agent", summary.agent]];
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-arm-card"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-arm-title"
+  }, "Ready to arm \u2014 check this first"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-arm-prompt-label"
+  }, "The agent will be asked, every time:"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("blockquote", {
+    className: "studio-arm-prompt"
+  }, summary.prompt), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("dl", {
+    className: "studio-arm-facts"
+  }, rows.map(([k, v]) => v ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), {
+    key: k
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("dt", null, k), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("dd", null, v)) : null)), live ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-arm-actions"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
+    size: "sm",
+    disabled: busy,
+    onClick: () => onSay("yes")
+  }, "Arm it"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
+    size: "sm",
+    kind: "tertiary",
+    disabled: busy,
+    onClick: () => setDraft(`change the prompt to ${summary.prompt ?? ""}`)
+  }, "Edit prompt"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Button, {
+    size: "sm",
+    kind: "ghost",
+    disabled: busy,
+    onClick: () => onSay("cancel")
+  }, "Cancel")) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted studio-arm-stale"
+  }, "Superseded by a later message."));
 }
 
 /***/ }),
@@ -16854,7 +16917,7 @@ function UnauthorizedPage() {
 /* harmony export */   uploadSessionKnowledgeDocuments: function() { return /* binding */ uploadSessionKnowledgeDocuments; },
 /* harmony export */   uploadWorkspaceFile: function() { return /* binding */ uploadWorkspaceFile; }
 /* harmony export */ });
-/* unused harmony exports getConversations, getEventsConnections, getEventsAdminOAuthApps, getKnowledgeAgentId, updateKnowledgeSettings */
+/* unused harmony exports getEventsBaseUrl, getConversations, getEventsConnections, getEventsAdminOAuthApps, getKnowledgeAgentId, updateKnowledgeSettings */
 /*
  * Central API client. All backend requests go through this module so auth (cookies, 401 handling) is consistent.
  */
@@ -16907,9 +16970,39 @@ async function getUiConfig() {
   };
   return uiConfigCache;
 }
+
+// ── the eventing layer's origin ───────────────────────────────────────────────────────────────
+// Combined deployment: events is mounted on this same server, so same-origin is right and this
+// resolves to getApiBaseUrl() — nothing changes. SPLIT deployment: the UI is served by cuga-core
+// while /api/events/*, /api/concierge and /invoke live on the events service, so those calls must
+// be sent there. The server tells us where via /api/ui/config (EVENTS_API_URL); resolved once and
+// cached, and any failure falls back to same-origin rather than breaking the page.
+const EVENTS_PATHS = ["/api/events", "/api/concierge", "/invoke"];
+let eventsBaseCache = null;
+let eventsBaseInFlight = null;
+async function getEventsBaseUrl() {
+  if (eventsBaseCache !== null) return eventsBaseCache;
+  if (!eventsBaseInFlight) {
+    eventsBaseInFlight = fetch(`${getApiBaseUrl()}/api/ui/config`, {
+      credentials: "include"
+    }).then(r => r.ok ? r.json() : Promise.resolve({})).then(c => {
+      const configured = String(c?.events_api_url ?? "").replace(/\/$/, "");
+      const resolved = configured || getApiBaseUrl();
+      eventsBaseCache = resolved;
+      return resolved;
+    }).catch(() => {
+      const resolved = getApiBaseUrl();
+      eventsBaseCache = resolved;
+      return resolved;
+    });
+  }
+  return eventsBaseInFlight;
+}
 async function apiFetch(url, init) {
   const base = getApiBaseUrl();
-  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${base}${url.startsWith("/") ? "" : "/"}${url}` : url;
+  const isEvents = typeof url === "string" && EVENTS_PATHS.some(p => url.startsWith(p));
+  const callBase = isEvents ? await getEventsBaseUrl() : base;
+  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${callBase}${url.startsWith("/") ? "" : "/"}${url}` : url;
   const res = await fetch(fullUrl, {
     ...init,
     credentials: "include",
@@ -22506,4 +22599,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.3deac47c2552147cbafa.js.map
+//# sourceMappingURL=main.3393cbfe972f88786e00.js.map

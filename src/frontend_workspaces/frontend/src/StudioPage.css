@@ -162,3 +162,68 @@
   justify-content: space-between;
   align-items: center;
 }
+
+/* ── HITL arming: the CONFIRM gate ────────────────────────────────────────────
+   Deliberately louder than a normal reply. This is the last moment a human sees
+   the instruction the agent will be handed on EVERY fire, so the prompt is the
+   visual anchor and the facts sit underneath it. Carbon blue-60 rail to read as
+   "action needed", not "error". */
+.studio-arm-card {
+  background: #ffffff;
+  border: 1px solid #c6c6c6;
+  border-left: 3px solid #0f62fe;
+  border-radius: 4px;
+  padding: 0.875rem 1rem;
+}
+
+.studio-arm-title {
+  font-weight: 600;
+  margin-bottom: 0.625rem;
+}
+
+.studio-arm-prompt-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #525252;
+  margin-bottom: 0.25rem;
+}
+
+.studio-arm-prompt {
+  margin: 0 0 0.875rem;
+  padding: 0.625rem 0.75rem;
+  background: #f4f4f4;
+  border-left: 2px solid #8d8d8d;
+  font-style: italic;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.studio-arm-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0 0 0.875rem;
+  font-size: 0.875rem;
+}
+
+.studio-arm-facts dt {
+  color: #525252;
+}
+
+.studio-arm-facts dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.studio-arm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.studio-arm-stale {
+  margin: 0;
+  font-size: 0.75rem;
+}

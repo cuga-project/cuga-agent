@@ -52,6 +52,17 @@ class APEngine:
                            or "http://host.docker.internal:8000/invoke")
         self.gateway_token = os.environ.get("GATEWAY_TOKEN", "")
         self._token = ""
+        self._token_exp = 0.0                       # cached-JWT expiry (see _auth)
+        self._auth_lock = asyncio.Lock()
+        self._piece_cache: dict[str, str] = {}
+        self._project_cache: dict[str, str] = {}   # project displayName -> id
+        self._degraded = False                      # set if the AP plan refuses extra projects
+        # Isolation grain for AP PROJECTS: 'tenant' (default; per-tenant project — the right
+        # multi-tenant boundary), 'user' (per-user project — strict), or 'shared' (one project;
+        # isolation via flow-name namespacing only). Flow names + connection externalIds are
+        # ALWAYS full-scope-prefixed, so finer isolation holds regardless of grain. If the AP
+        # plan caps projects (CE = 1), the engine auto-degrades to 'shared' behavior.
+        self.project_grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
 
     async def reachable(self, timeout: float = 2.5) -> bool:
         """Fast AP liveness probe (a SHORT GET) so a PUSH on an integration can decline QUICKLY when
@@ -64,17 +75,6 @@ class APEngine:
                 return r.status_code < 500
         except Exception:  # noqa: BLE001
             return False
-        self._token_exp = 0.0                       # cached-JWT expiry (see _auth)
-        self._auth_lock = asyncio.Lock()
-        self._piece_cache: dict[str, str] = {}
-        self._project_cache: dict[str, str] = {}   # project displayName -> id
-        self._degraded = False                      # set if the AP plan refuses extra projects
-        # Isolation grain for AP PROJECTS: 'tenant' (default; per-tenant project — the right
-        # multi-tenant boundary), 'user' (per-user project — strict), or 'shared' (one project;
-        # isolation via flow-name namespacing only). Flow names + connection externalIds are
-        # ALWAYS full-scope-prefixed, so finer isolation holds regardless of grain. If the AP
-        # plan caps projects (CE = 1), the engine auto-degrades to 'shared' behavior.
-        self.project_grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
 
     # ---- auth ------------------------------------------------------------
     async def _sign_in(self, c: httpx.AsyncClient) -> None:

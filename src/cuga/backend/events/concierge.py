@@ -32,12 +32,14 @@ THE_AGENT = "cuga"
 try:
     from .principal import Principal, DEFAULT as DEFAULT_PRINCIPAL
     from . import credentials, oauth, perms, triggers as trigger_registry
+    from . import arming
 except ImportError:  # flat load (offline tests put the events dir on sys.path)
     from principal import Principal, DEFAULT as DEFAULT_PRINCIPAL
     import credentials
     import oauth
     import perms
     import triggers as trigger_registry
+    import arming
 
 log = logging.getLogger("cuga.events.concierge")
 
@@ -825,6 +827,7 @@ class Concierge:
     def __init__(self, runtime, store=None, engine=None, model_factory=None, users=None):
         self._runtime = runtime
         self._model_factory = model_factory
+        self._store = store          # HITL arming parks its dialogue here (durable, see arming.py)
         self._tools = make_concierge_tools(runtime, store, engine, users=users)
         self._graph = None
 
@@ -841,11 +844,19 @@ class Concierge:
     async def run(self, thread_id: str, text: str, principal: Principal | None = None) -> str:
         from langchain_core.messages import HumanMessage
         p = principal or DEFAULT_PRINCIPAL
+        arming.reset()
         _utterance.set(text)    # tools read arm-time qualifiers from the RAW text (see ttl_of)
-        # /watch|/schedule|/cron|/poll|/push → deterministic arm (bypasses the LLM entirely)
+        # HITL ARMING GATE. An in-flight arming dialogue on this thread owns the next message —
+        # it is answering a question or standing at the CONFIRM gate. Checked FIRST so a bare
+        # "yes" is read as approval, not as a fresh chat message.
+        gated = await self._arm_gate(thread_id, p, text)
+        if gated is not None:
+            return gated
+        # /watch|/schedule|/cron|/poll|/push → deterministic arm … but NOT armed on the spot any
+        # more: it goes through the CONFIRM gate so the human approves the exact fire-time prompt.
         parsed = _slash_parse(text)
         if parsed is not None:
-            return await self._arm_slash(thread_id, p, parsed)
+            return await self._arm_propose(thread_id, p, parsed)
         # NL pre-router: fill-the-blanks / ask-till-legit. Arms ONLY a HIGH-confidence, registry-
         # validated PUSH spec (or asks its one missing question). Anything less confident falls
         # through to the LLM path below, exactly as before — the pre-router never guesses.
@@ -883,6 +894,122 @@ class Concierge:
             _origin.reset(t_origin)
             _principal.reset(t_princ)
         return res["messages"][-1].content or ""
+
+    # ── HITL arming: propose → (clarify) → CONFIRM → arm ───────────────────────────────────────
+    async def _arm_propose(self, thread_id: str, p, parsed: dict, prompt: str = "") -> str:
+        """Turn a slash command into a PROPOSAL the human must approve. Never arms."""
+        if parsed.get("error"):
+            arming.set_state(arming.CANCELLED)
+            return parsed["error"]
+        tkey = p.thread(thread_id)
+        prompt = prompt or arming.compose_prompt(parsed.get("utterance") or "", parsed.get("kind") or "cron")
+        question, field = arming.validate(parsed, thread_id)
+        payload = {"parsed": parsed, "prompt": prompt, "origin": thread_id, "agent": THE_AGENT}
+        if question:
+            payload["missing"] = field
+            self._park_arm(tkey, arming.NEEDS_INPUT, payload)
+            arming.set_state(arming.NEEDS_INPUT, question=question)
+            return question
+        summary = arming.summarize(parsed, prompt, thread_id, THE_AGENT)
+        payload["summary"] = summary
+        self._park_arm(tkey, arming.CONFIRM, payload)
+        arming.set_state(arming.CONFIRM, summary=summary)
+        return arming.render_card(summary)
+
+    def _park_arm(self, tkey: str, state: str, payload: dict) -> None:
+        if self._store is None:      # no store (bare unit test) → the dialogue is best-effort
+            return
+        try:
+            self._store.set_pending_arm(tkey, state, payload, arming.ARM_TTL_SECS)
+        except Exception as e:  # noqa: BLE001 — never let bookkeeping sink the reply
+            log.warning("could not park arming state: %s", e)
+
+    async def _arm_gate(self, thread_id: str, p, text: str) -> str | None:
+        """Own the next message when this thread has an arming dialogue open. None = not ours."""
+        tkey = p.thread(thread_id)
+        pend = None
+        if self._store is not None:
+            try:
+                pend = self._store.get_pending_arm(tkey)
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not read arming state: %s", e)
+        if not pend:
+            # "/cancel" with nothing in flight is a no-op, not an error the user has to decode.
+            if (text or "").strip().lower().startswith("/cancel"):
+                arming.set_state(arming.CANCELLED)
+                return "Nothing was waiting to be armed."
+            return None
+        payload = pend.get("payload") or {}
+        parsed = payload.get("parsed") or {}
+        prompt = payload.get("prompt") or ""
+        state = pend.get("state")
+
+        if state == arming.NEEDS_INPUT:
+            action, field, value = arming.read_reply(text)
+            if action == "cancel":
+                self._clear_arm(tkey)
+                arming.set_state(arming.CANCELLED)
+                return "Dropped it — nothing was armed."
+            # The reply IS the answer to the one open question: fold it into the utterance so the
+            # existing cadence/source extractors see it, then re-propose (which re-validates).
+            missing = payload.get("missing") or ""
+            merged = dict(parsed)
+            if missing == "schedule":
+                merged["utterance"] = f"{value or text.strip()} {parsed.get('utterance') or ''}".strip()
+            elif missing == "source":
+                src = (value or text.strip()).strip().lower().split()[0] if (value or text).strip() else ""
+                merged["source"] = src or None
+            else:
+                merged["utterance"] = f"{parsed.get('utterance') or ''} {text.strip()}".strip()
+            self._clear_arm(tkey)
+            return await self._arm_propose(thread_id, p, merged, prompt=prompt)
+
+        if state == arming.CONFIRM:
+            action, field, value = arming.read_reply(text)
+            if action == "cancel":
+                self._clear_arm(tkey)
+                arming.set_state(arming.CANCELLED)
+                return "Cancelled — nothing was armed."
+            if action == "edit":
+                if field == "prompt":
+                    prompt = value
+                elif field == "schedule":
+                    parsed = dict(parsed)
+                    parsed["utterance"] = f"{value} {arming.compose_prompt(parsed.get('utterance') or '')}"
+                elif field == "delivery":
+                    # Delivery follows the conversation the arm came from; an explicit target is
+                    # recorded on the utterance so the arming tool picks it up.
+                    parsed = dict(parsed)
+                    parsed["utterance"] = f"{parsed.get('utterance') or ''} send to {value}".strip()
+                self._clear_arm(tkey)
+                return await self._arm_propose(thread_id, p, parsed, prompt=prompt)
+            if action == "yes":
+                # Clear FIRST: arming re-enters run() for cron/poll, and a stale parked row would
+                # make the gate swallow that internal turn.
+                self._clear_arm(tkey)
+                reply = await self._arm_slash(thread_id, p, parsed, approved_prompt=prompt)
+                sub_id = ""
+                try:
+                    from . import runmeta
+                    sub_id = (runmeta.get() or {}).get("subscription_id") or ""
+                except Exception:  # noqa: BLE001
+                    pass
+                arming.set_state(arming.ARMED, summary=payload.get("summary"), subscription_id=sub_id)
+                return reply
+            # Unclear → re-ask rather than guess. Guessing "yes" arms something unapproved.
+            arming.set_state(arming.CONFIRM, summary=payload.get("summary"))
+            return ("I didn't catch that — reply **yes** to arm, **cancel** to drop it, or "
+                    "**change the prompt to …** to edit.\n\n"
+                    + arming.render_card(payload.get("summary") or {}))
+        return None
+
+    def _clear_arm(self, tkey: str) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.clear_pending_arm(tkey)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not clear arming state: %s", e)
 
     async def _pre_route(self, thread_id: str, p, text: str) -> str | None:
         """The deterministic NL→Flow path. None = not ours, run the LLM (today's behavior).
@@ -944,7 +1071,7 @@ class Concierge:
             _principal.reset(t_princ)
         return reply
 
-    async def _arm_slash(self, thread_id: str, p, parsed: dict) -> str:
+    async def _arm_slash(self, thread_id: str, p, parsed: dict, approved_prompt: str = "") -> str:
         """Arm a slash flow. The MODE is always deterministic (the router). The AGENT is resolved by
         the method each mode is good at:
           • PUSH  → DETERMINISTIC (filter agents by the integration for the source). This is the case
@@ -954,16 +1081,35 @@ class Concierge:
         if parsed.get("error"):
             return parsed["error"]
         kind = parsed["kind"]
-        if kind in ("cron", "poll"):
-            directive = (f"[/automate — arm a STANDING {kind.upper()} flow now: call "
-                         f"find_or_create_flow(kind={kind}, agent='{THE_AGENT}', …). "
-                         f"Do NOT answer_now and do NOT decline.] "
-                         f"{parsed['utterance']}")
-            return await self.run(thread_id, directive, p)   # cadence via LLM; agent is fixed
-        # PUSH — no agent picking (supervisor model): the flow targets THE one agent.
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
         if tool is None:
             return "Flow arming isn't available (Activepieces not configured)."
+        if kind in ("cron", "poll"):
+            # DETERMINISTIC. This used to hand the utterance back to the LLM to pick the cadence.
+            # That is wrong once there is a CONFIRM gate: the human approved a specific prompt and
+            # a specific schedule, and a second LLM pass is free to arm something *else* — the one
+            # thing the gate exists to prevent. arming.validate() has already guaranteed a cadence
+            # is present, so everything needed is known here.
+            try:
+                from . import classify
+            except ImportError:  # flat load (offline tests)
+                import classify
+            cad = classify.cadence_of(parsed.get("utterance") or "") or {}
+            args = {"agent": THE_AGENT, "kind": kind,
+                    "prompt": approved_prompt or parsed["utterance"]}
+            if cad.get("cron"):
+                args["cron"] = cad["cron"]
+            else:
+                secs = int(cad.get("interval_seconds") or 0)
+                args["every_minutes"] = max(1, round(secs / 60)) if secs else 60
+            t_origin = _origin.set(thread_id)
+            t_princ = _principal.set(p)
+            try:
+                return await tool.ainvoke(args)
+            finally:
+                _origin.reset(t_origin)
+                _principal.reset(t_princ)
+        # PUSH — no agent picking (supervisor model): the flow targets THE one agent.
         source = parsed.get("source")
         if not source:
             from . import classify
@@ -972,7 +1118,8 @@ class Concierge:
         if not source:
             return (f"/{parsed['cmd']}: tell me WHAT to watch (e.g. github/gmail/box/slack) — "
                     f"e.g. `/push when a PR opens on owner/repo, review it`.")
-        args = {"agent": THE_AGENT, "kind": "push", "prompt": parsed["utterance"],
+        args = {"agent": THE_AGENT, "kind": "push",
+                "prompt": approved_prompt or parsed["utterance"],
                 "source": source, "event": parsed.get("event")}
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)

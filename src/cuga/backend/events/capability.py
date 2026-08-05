@@ -25,8 +25,13 @@ def _reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def report() -> list[str]:
-    """Return the capability lines (also usable by a /api/events/status caller or a test)."""
+def report(remote_agents: list[str] | None = None) -> list[str]:
+    """Return the capability lines (also usable by a /api/events/status caller or a test).
+
+    ``remote_agents`` is the roster CUGA reports when the eventing layer runs SPLIT OUT — pass it
+    and the supervisor line describes what will actually execute, not this process's own (absent)
+    configuration.
+    """
     lines: list[str] = []
     ok = lambda s: lines.append(f"  ✓ {s}")          # noqa: E731
     no = lambda s: lines.append(f"  ✗ {s}")          # noqa: E731
@@ -39,7 +44,16 @@ def report() -> list[str]:
     sup = os.environ.get("EVENTS_SUPERVISOR", "").split(" #", 1)[0].strip() in ("1", "true", "yes")
     roster = (os.environ.get("EVENTS_SUPERVISOR_ROSTER", "").strip()
               or os.path.join(os.getcwd(), "supervisor_agents.yaml"))
-    if sup:
+    # SPLIT: execution — and therefore the roster — lives on the CUGA side. Reading THIS process's
+    # EVENTS_SUPERVISOR here reported "supervisor: OFF — one plain CUGA agent" while CUGA was
+    # serving nine specialists. Ask the side that actually runs them.
+    if remote_agents is not None:
+        n = len([a for a in remote_agents if a != "cuga"])
+        (ok if n else no)(
+            f"supervisor: ON (on CUGA, over /run) — {n} sub-agent(s): {', '.join(remote_agents[:6])}"
+            f"{'…' if len(remote_agents) > 6 else ''}"
+            if n else "supervisor: OFF on CUGA — one plain agent (set CUGA_SUPERVISOR_ROSTER there)")
+    elif sup:
         n = 0
         try:
             import yaml

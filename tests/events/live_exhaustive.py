@@ -116,6 +116,14 @@ def http(method, path_or_url, body=None, headers=None, timeout=240):
 def concierge(text, thread):
     code, rep = http("POST", "/api/concierge", {"text": text, "thread_id": thread},
                      headers={"x-user-id": "admin"})
+    # Arming is CONFIRM-gated (HITL spec): propose → approve. Drive the dialogue to completion.
+    for _ in range(4):
+        state = (rep or {}).get("state")
+        if state not in ("confirm", "needs_input"):
+            break
+        code, rep = http("POST", "/api/concierge",
+                         {"text": "yes" if state == "confirm" else text, "thread_id": thread},
+                         headers={"x-user-id": "admin"})
     return rep.get("reply", "") if code == 200 else f"HTTP {code}: {rep}"
 
 

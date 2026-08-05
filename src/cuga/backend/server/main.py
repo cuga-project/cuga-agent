@@ -1082,6 +1082,17 @@ async def lifespan(app: FastAPI):
     except Exception as _bg_err:  # noqa: BLE001
         logger.warning(f"events background launch failed: {_bg_err}")
 
+    # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
+    # RESTORED (2026-08-05): a SECOND casualty of the same event_support merge conflict that ate the
+    # launcher above — upstream main.py has this at the same point in lifespan, and the merged file
+    # simply lost it. Nothing failed loudly; ephemeral rows just accumulated forever.
+    try:
+        removed = await get_conversation_db().gc_ephemeral_stream_events()
+        if removed:
+            logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
+    except Exception:
+        logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -2039,9 +2050,27 @@ try:
         from cuga.backend.events.subscriptions import SubscriptionStore
 
         # EVENTS_DB=<path> → agents + subscriptions persist and are SHARED across replicas
-        # (fleet model). Default ":memory:" for dev. For shared conversation memory across
-        # replicas, also wire runtime.make_sqlite_checkpointer(EVENTS_MEMORY_DB) in startup.
-        _ev_db = _os.environ.get("EVENTS_DB", ":memory:")
+        # (fleet model). For shared conversation memory across replicas, also wire
+        # runtime.make_sqlite_checkpointer(EVENTS_MEMORY_DB) in startup.
+        #
+        # DURABLE BY DEFAULT: the default used to be ":memory:", which silently wiped the whole
+        # subscription fleet (and every parked arming question) on any restart or redeploy — an
+        # armed watcher just vanished. Now it defaults to a FILE. Home-dir, not PACKAGE_ROOT, for
+        # the same reason FASTEMBED_CACHE_DIR is (config.py): a pip-installed CUGA's package root
+        # is site-packages, which is the wrong home for state and may be read-only.
+        # ":memory:" is still honoured when set explicitly (offline tests do exactly that).
+        _ev_db = _os.environ.get("EVENTS_DB", "").strip()
+        if not _ev_db:
+            _ev_db = _os.path.join(_os.path.expanduser("~"), ".cuga", "events.db")
+        if _ev_db != ":memory:":
+            try:
+                _os.makedirs(_os.path.dirname(_ev_db) or ".", exist_ok=True)
+            except OSError as _db_err:      # unwritable home → fall back rather than fail boot
+                _logging.getLogger(__name__).warning(
+                    "events: cannot create %s (%s) — falling back to :memory: (state will NOT "
+                    "survive restart)", _ev_db, _db_err)
+                _ev_db = ":memory:"
+        _logging.getLogger(__name__).info("events: store = %s", _ev_db)
 
         # WORKERS do the hard work of answering → default backend = **cuga** (they get CUGA's
         # policies/knowledge/supervisor/tools). The concierge (NL→flow) stays react — its own
@@ -2159,7 +2188,17 @@ async def ui_config():
     """Return UI configuration flags from settings."""
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
-    return JSONResponse({"hide_cuga_logo": hide_logo, "brand_name": brand_name})
+    # SPLIT TOPOLOGY: this server may serve the UI while the eventing layer runs as its own
+    # service. The SPA otherwise assumes one origin for everything, so its Studio calls would land
+    # here — where /api/events/* does not exist — and silently fall through to the SPA catch-all.
+    # Empty (the default, combined mode) means "same origin", so nothing changes when unset.
+    return JSONResponse(
+        {
+            "hide_cuga_logo": hide_logo,
+            "brand_name": brand_name,
+            "events_api_url": (os.environ.get("EVENTS_API_URL", "") or "").strip().rstrip("/"),
+        }
+    )
 
 
 @app.get("/auth/login")
@@ -2489,53 +2528,57 @@ async def stream(
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
 
-    # THE ROUTING RULE (same rule as the channels — concierge.run applies it on /invoke):
-    #   slash verb                          → concierge (deterministic arm)
-    #   classifier says CRON/POLL/PUSH      → concierge (NL arming; benchmarked classifier)
-    #   this thread has a parked question   → concierge (ask-till-legit continuation)
-    #   otherwise (NOW = conversation)      → the plain agent below, untouched.
-    # Without this the plain agent tried to IMPLEMENT "/automate … every 5 minutes" (loop+sleep).
-    def _events_routes_to_concierge(q: str, tid: str) -> bool:
-        if re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b", q, re.I):
-            return True
-        # High-precision standing-intent markers: catch phrasings the heuristic classifier may read as
-        # NOW so they reach the CONCIERGE (which arms — or answers honestly) instead of the main agent,
-        # which has no arming tool and could falsely claim it set up a watch (the silent-failure trap).
-        # Deliberately unambiguous — these effectively never appear in ordinary one-shot chat.
-        if re.search(r"(\bevery\s+\d|\bremind me\b|\balert me\b|\bnotify me\b|\bping me\s+(when|if)\b|"
-                     r"\bkeep an eye\b|\bmonitor\b|\blet me know\s+(when|if)\b|"
-                     r"\beach\s+(morning|day|hour|week|weekday)\b|\bwatch\b.*\bfor\b.*"
-                     r"(change|update|error|new)\b)", q, re.I):
-            return True
-        try:
-            from cuga.backend.events import classify as _evc
-            from cuga.backend.events import flowspec as _evf
-            from cuga.backend.events.principal import DEFAULT as _evp
-            return _evc.classify(q) != "NOW" or _evf.pending_for(_evp.thread(tid)) is not None
-        except Exception:  # noqa: BLE001 — routing must never take the chat down
-            return False
+    # EDGE DISPATCH — the ONE rule, identical on every surface (web here, channels in /invoke):
+    #   an explicit slash verb            → the eventing layer (arming)
+    #   an OPEN arming dialogue on this thread → the eventing layer (it owns the reply: yes/edit/cancel)
+    #   everything else                   → plain chat, straight through to the agent below.
+    #
+    # The NL classifier used to sit here too ("every morning …" was auto-detected as arming). It is
+    # gone deliberately: auto-detection mis-fires on ordinary chat, and arming is now an explicit,
+    # confirmed act. The cost is that a plain-English standing request runs ONCE as chat; the fix is
+    # to type /automate, which is discoverable and never surprises.
+    #
+    # The parked-state probe is now a READ (store.get_pending_arm), not the old pop-on-read
+    # flowspec.pending_for under the DEFAULT principal — that combination consumed the parked entry
+    # here, so the concierge then found nothing and answered the slot reply as ordinary chat
+    # (arming silently never resumed). Same principal, no pop, no bug.
+    _conc = getattr(request.app.state, "ev_concierge", None) if os.environ.get("EVENTS_ENABLED") == "1" else None
+    _princ = None
+    if _conc is not None and isinstance(query, str):
+        from cuga.backend.events.principal import resolve as _resolve_principal
 
-    if (isinstance(query, str) and os.environ.get("EVENTS_ENABLED") == "1"
-            and _events_routes_to_concierge(query, thread_id)):
-        _conc = getattr(request.app.state, "ev_concierge", None)
-        if _conc is not None:
+        # Arm under the SAME principal the Studio + /api/concierge resolve (headers → EVENTS_USER_ID),
+        # NOT the concierge's DEFAULT_PRINCIPAL (user=local). Otherwise a flow armed from the main web
+        # chat lands under default/default/local while the Studio queries default/default/admin — armed
+        # but invisible.
+        _princ = _resolve_principal(headers=request.headers)
+
+        def _routes_to_events(q: str) -> bool:
+            if re.match(r"\s*/(automate|watch|schedule|cron|poll|push|cancel)\b", q, re.I):
+                return True
+            _store = getattr(_conc, "_store", None)
+            if _store is None:
+                return False
+            try:
+                return _store.get_pending_arm(_princ.thread(thread_id)) is not None
+            except Exception:  # noqa: BLE001 — routing must never take the chat down
+                return False
+
+        if _routes_to_events(query):
             _q, _tid = query, thread_id
-            # Arm under the SAME principal the Studio + /api/concierge resolve (headers → EVENTS_USER_ID),
-            # NOT the concierge's DEFAULT_PRINCIPAL (user=local). Otherwise a flow armed here from the main
-            # web chat lands under scope default/default/local, while the Studio's flows page queries
-            # default/default/admin — so the flow is armed but invisible in the Studio.
-            from cuga.backend.events.principal import resolve as _resolve_principal
-            _princ = _resolve_principal(headers=request.headers)
 
-            async def _slash_stream():
+            async def _arming_stream():
+                # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
+                # referencing it here used to raise NameError and kill the whole arming reply.
+                from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
+
                 try:
                     reply = await _conc.run(_tid, _q, _princ)
                 except Exception as e:  # noqa: BLE001
                     reply = f"error: couldn't arm the flow ({e})"
-                yield StreamEvent(name="Answer", data=reply).format(
-                    app_state.output_format, thread_id=_tid)
+                yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
 
-            return StreamingResponse(_slash_stream(), media_type="text/event-stream")
+            return StreamingResponse(_arming_stream(), media_type="text/event-stream")
 
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
@@ -2567,6 +2610,296 @@ async def stream(
         ),
         media_type="text/event-stream",
     )
+
+
+# ── /run — the non-streaming sibling of /stream ────────────────────────────────────────────────
+# WHY: /stream is built for the web UI — it holds a connection open and emits every intermediate
+# step as SSE. A service-to-service caller (the eventing layer, when it runs out-of-process) wants
+# the opposite: one request, one JSON answer. Same graph, same setup, terminal frame only.
+#
+# It drives the SAME ``event_stream`` generator /stream does — an in-process call, NOT an HTTP call
+# to /stream — so knowledge/attachments, conversation history, citations, policies and HITL all
+# behave identically by construction. Only the OUTPUT adapter differs: intermediate frames are
+# dropped, the terminal Answer is returned as the response body.
+_RUN_ANSWER_NAMES = {"Answer", "final_answer"}
+_RUN_ERROR_NAMES = {"Error", "error", "Stopped"}
+
+
+# ── CUGA preloaded as a supervisor ─────────────────────────────────────────────────────────────
+# CUGA_SUPERVISOR_ROSTER=<path to supervisor_agents.yaml> starts this server AS the supervisor:
+# /run builds a CugaSupervisor from the roster once and every call routes through it, so the
+# sub-agents are a CUGA-side concern — which is where they belong.
+#
+# WHY: the roster used to be loaded only by the events layer's SupervisorRuntime. That is fine when
+# events and CUGA share a process, but once the worker moves across an HTTP hop the executing side
+# is vanilla CUGA — no events layer, no runtime, no roster — so every call ran as CUGA's lone
+# default agent. Callers do not (and should not) pass an agent: they address the supervisor, and it
+# routes internally. One agent in the file or twenty-seven, the caller is unchanged.
+_supervisor_cache: Dict[str, Any] = {}
+# name → description for the loaded roster, kept beside the supervisor so /run/agents can answer
+# "what is loaded here?" without reaching into CugaSupervisor's privates.
+_supervisor_roster: Dict[str, List[Dict[str, str]]] = {}
+
+
+def _supervisor_roster_path() -> str:
+    return (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
+
+
+def _roster_details(path: str) -> Dict[str, Dict[str, Any]]:
+    """name → {description, mcp_servers}, read from the roster YAML itself.
+
+    load_supervisor_config builds CugaAgent instances and does NOT carry the YAML's descriptive
+    fields onto them, so the objects can't be asked. Those fields matter: they are how the events
+    layer's concierge decides which specialist a message belongs to, and a blank one makes a
+    sub-agent effectively unroutable. Same fields the in-process SupervisorRuntime reads, so the
+    split and combined topologies describe the roster identically.
+    """
+    try:
+        import yaml as _yaml
+
+        with open(path, "r") as f:
+            cfg = _yaml.safe_load(f) or {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for a in cfg.get("agents") or []:
+            if not isinstance(a, dict) or not a.get("name"):
+                continue
+            out[str(a["name"])] = {
+                "description": str(a.get("description")
+                                   or a.get("special_instructions") or "").strip(),
+                "mcp_servers": [m.get("name") if isinstance(m, dict) else str(m)
+                                for m in (a.get("mcp_servers") or [])],
+            }
+        return out
+    except Exception as e:  # noqa: BLE001 — a nicety; never fail the load for it
+        logger.warning(f"could not read agent details from roster {path!r}: {e}")
+        return {}
+
+
+async def _get_supervisor():
+    """The preloaded supervisor, or None when this server isn't running as one."""
+    path = _supervisor_roster_path()
+    if not path:
+        return None
+    if path in _supervisor_cache:
+        return _supervisor_cache[path]
+    from cuga.sdk import CugaSupervisor
+    from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+
+    cfg = await load_supervisor_config(path)
+    sup = CugaSupervisor(
+        agents=cfg.agents,
+        special_instructions=(cfg.supervisor or {}).get("special_instructions"),
+    )
+    _supervisor_cache[path] = sup
+    _details = _roster_details(path)
+    _supervisor_roster[path] = [
+        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})}
+        for n in (cfg.agents or {})
+    ]
+    logger.info(f"CUGA is running AS a supervisor: {len(cfg.agents)} sub-agent(s) from {path}")
+    return sup
+
+
+def _run_token() -> str:
+    """Shared secret for the machine seam. CUGA_RUN_TOKEN wins; GATEWAY_TOKEN is the events
+    layer's own token, reused so a split deployment configures ONE secret."""
+    return (os.environ.get("CUGA_RUN_TOKEN") or os.environ.get("GATEWAY_TOKEN") or "").strip()
+
+
+def _run_unpack_answer(payload: Any) -> Dict[str, Any]:
+    """The DEFAULT-mode Answer payload is a JSON string carrying the answer plus its sidecars
+    (see the Answer emission in event_stream); WXO mode sends bare text. Accept both."""
+    if isinstance(payload, dict):
+        obj = payload
+    else:
+        text = payload if isinstance(payload, str) else str(payload or "")
+        try:
+            obj = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return {"answer": text, "sources": [], "variables": {}}
+        if not isinstance(obj, dict):
+            return {"answer": text, "sources": [], "variables": {}}
+    return {
+        "answer": obj.get("data") if isinstance(obj.get("data"), str) else (obj.get("answer") or ""),
+        "sources": obj.get("sources") or [],
+        "variables": obj.get("variables") or {},
+        "active_policies": obj.get("active_policies") or [],
+    }
+
+
+@app.post("/run")
+async def run_sync(request: Request):
+    """Run one task to completion and return the final answer as a single JSON body.
+
+    Body: ``{query, thread_id?, agent?, user_id?, disable_history?, attachments?, action_response?}``
+    Reply: ``{ok, status, answer, thread_id, sources, variables, error}`` where ``status`` is
+    ``ok`` | ``error`` | ``interrupt`` (the graph paused for human input).
+
+    Knowledge bases are NOT passed here — they attach out-of-band to the ``thread_id`` (session
+    scope) or to the agent, exactly as for /stream, and are picked up by identity at run time.
+    """
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+    from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent
+
+    token = _run_token()
+    if token and request.headers.get("X-Gateway-Token") != token:
+        return JSONResponse({"ok": False, "status": "error", "error": "bad or missing X-Gateway-Token"}, 401)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "status": "error", "error": "body must be JSON"}, 400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "status": "error", "error": "body must be a JSON object"}, 400)
+
+    query = body.get("query")
+    resume_raw = body.get("action_response")
+    if not isinstance(query, str) or not query.strip():
+        if not resume_raw:
+            return JSONResponse(
+                {"ok": False, "status": "error", "error": "query is required (or action_response to resume)"}, 422
+            )
+        query = None
+    resume = None
+    if resume_raw:
+        try:
+            resume = ActionResponse(**resume_raw)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "status": "error", "error": f"bad action_response: {e}"}, 422)
+
+    thread_id = str(body.get("thread_id") or "") or str(uuid.uuid4())
+    user_id = str(body.get("user_id") or "") or DEFAULT_USER_ID
+    disable_history = bool(body.get("disable_history", False))
+    attachments = body.get("attachments") or None
+
+    run_agent = None
+    if str(body.get("use_draft", "")).lower() in ("1", "true", "yes", "on"):
+        draft_state = getattr(request.app.state, "draft_app_state", None)
+        if draft_state and getattr(draft_state, "agent", None):
+            run_agent = draft_state.agent
+
+    out: Dict[str, Any] = {"answer": "", "sources": [], "variables": {}}
+    status, err = "", ""
+
+    # Preloaded-supervisor mode: this server IS the supervisor, so the run goes through it and the
+    # sub-agent routing happens inside. Only /run takes this path — /stream and the UI keep their
+    # existing agent, so turning the roster on cannot disturb the interactive surface.
+    supervisor = None
+    try:
+        supervisor = await _get_supervisor()
+    except Exception as e:  # noqa: BLE001 — a bad roster must not take the endpoint down
+        logger.exception("supervisor roster failed to load")
+        return JSONResponse(
+            {"ok": False, "status": "error", "answer": "", "thread_id": thread_id,
+             "error": f"supervisor roster {_supervisor_roster_path()!r} failed to load: {e}"}, 500
+        )
+    if supervisor is not None and query:
+        # PINNED sub-agent: a caller that names a real sub-agent (a webhook with
+        # ?agent=incident_triage, a subscription armed against a specialist) gets routed to it. The
+        # supervisor stays the executor — this is a directive in the prompt, not a bypass — so
+        # policies, tools and HITL are unchanged, and a name that is not in the roster is simply
+        # ignored rather than failing the run.
+        pinned = str(body.get("agent") or "").split("::")[-1].strip()
+        roster_names = {a["name"] for a in (_supervisor_roster.get(_supervisor_roster_path()) or [])}
+        if pinned and pinned != "cuga" and pinned in roster_names:
+            query = (f"Delegate this to the `{pinned}` agent — it is the right specialist. "
+                     f"Return its answer.\n\n{query}")
+        try:
+            res = await supervisor.invoke(query, thread_id=thread_id)
+            answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
+            return {
+                "ok": bool(answer), "status": "ok" if answer else "error",
+                "answer": answer, "thread_id": thread_id,
+                "sources": list(getattr(res, "sources", None) or []),
+                "variables": dict(getattr(res, "variables", None) or {}),
+                "error": None if answer else "supervisor returned an empty answer",
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.exception("/run supervisor invoke failed")
+            return JSONResponse(
+                {"ok": False, "status": "error", "answer": "", "thread_id": thread_id,
+                 "error": str(e)}, 500
+            )
+    try:
+        async for frame in event_stream(
+            query,
+            api_mode=settings.advanced_features.mode == "api",
+            resume=resume,
+            thread_id=thread_id,
+            agent=run_agent,
+            disable_history=disable_history,
+            user_id=user_id,
+            user_attachments=attachments,
+        ):
+            try:
+                ev = StreamEvent.parse(frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame))
+            except Exception:  # noqa: BLE001 — a malformed/foreign frame must not sink the run
+                continue
+            if ev is None or not ev.name:
+                continue
+            if ev.name in _RUN_ANSWER_NAMES:
+                out = _run_unpack_answer(ev.data)
+                status = "ok"
+                break
+            if ev.name in _RUN_ERROR_NAMES:
+                unpacked = _run_unpack_answer(ev.data)
+                err = unpacked.get("answer") or f"agent {ev.name}"
+                status = "error"
+                break
+            # every other frame is in-flight progress — the whole point of /run is to drop it
+    except Exception as e:  # noqa: BLE001
+        logger.exception("/run failed")
+        return JSONResponse(
+            {"ok": False, "status": "error", "answer": "", "thread_id": thread_id, "error": str(e)}, 500
+        )
+
+    if not status:
+        # The stream ended with no terminal frame. That is the HITL shape: the graph paused
+        # awaiting an ActionResponse. Report it honestly rather than as a silent empty answer.
+        status, err = "interrupt", "agent paused awaiting human input"
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "answer": out.get("answer") or "",
+        "thread_id": thread_id,
+        "sources": out.get("sources") or [],
+        "variables": out.get("variables") or {},
+        "error": err or None,
+    }
+
+
+@app.get("/run/agents")
+async def run_agents(request: Request):
+    """What this server has loaded — the machine-readable sibling of /run.
+
+    A split deployment puts the eventing layer in its own process, so it has no roster of its own:
+    the roster belongs to whoever executes, which is this server. Without this endpoint the events
+    side had to guess, and it guessed "one agent" — so a webhook pinned to a real sub-agent
+    (``?agent=incident_triage``) was rejected as unknown before it ever reached the supervisor.
+
+    Deliberately NOT /api/agents: that one is the dashboard's, sits behind the manage-access cookie,
+    and returns UI card data for the configured agent. This is the machine seam, guarded by the same
+    shared secret as /run.
+    """
+    token = _run_token()
+    if token and request.headers.get("X-Gateway-Token") != token:
+        return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
+    path = _supervisor_roster_path()
+    if not path:
+        # Not running as a supervisor: one plain agent, still addressable as "cuga".
+        return {"ok": True, "supervisor": False, "roster": "",
+                "agents": [{"name": "cuga", "description": "the CUGA agent", "mcp_servers": []}]}
+    try:
+        await _get_supervisor()          # builds + populates _supervisor_roster on first call
+    except Exception as e:  # noqa: BLE001
+        logger.exception("roster failed to load")
+        return JSONResponse({"ok": False, "error": f"roster {path!r} failed to load: {e}"}, 500)
+    subs = list(_supervisor_roster.get(path) or [])
+    # "cuga" is the supervisor itself and is always addressable — callers that know nothing about
+    # the roster target it and let it route.
+    agents = [{"name": "cuga", "description": "the CUGA supervisor", "mcp_servers": []}] + [
+        s for s in subs if s.get("name") != "cuga"
+    ]
+    return {"ok": True, "supervisor": True, "roster": path, "agents": agents}
 
 
 @app.post("/stop")

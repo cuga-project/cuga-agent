@@ -28,7 +28,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown ce-deploy-split run-events test-e2e-split
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -178,6 +178,25 @@ test-ap: ## e2e WITH AP — the SaaS integration path (Box/GitHub/Gmail + webhoo
 	@echo "── e2e WITH Activepieces — integration push triggers; an unconnected integration is SKIPPED ──"
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py $(ARGS)
 
+## ---- SPLIT MODE — eventing as its own service, CUGA reached over /run --------
+##   Same wire contract as the mounted deployment, so every target above still applies —
+##   just point EVENTS_SERVER_URL at the eventing service instead of CUGA.
+EVENTS_PORT ?= 8100
+
+run-events: ## [split] Run the eventing service alone (needs CUGA up separately; CUGA_URL=…)
+	CUGA_URL=$${CUGA_URL:-http://localhost:$(CUGA_PORT)} EVENTS_SERVICE_PORT=$(EVENTS_PORT) \
+	  $(PY) -m cuga.backend.events.service
+
+test-e2e-split: ## [split] The SAME no-AP e2e, driven against the eventing service on :$(EVENTS_PORT)
+	@echo "── e2e (split topology) — eventing on :$(EVENTS_PORT), CUGA on :$(CUGA_PORT) ──"
+	EVENTS_SERVER_URL=http://localhost:$(EVENTS_PORT) EVENTS_SCHEDULER=native $(PY) tests/events/live_e2e.py $(ARGS)
+	@# A split fire crosses the wire (events → CUGA /run) and CUGA's tool servers scale to zero, so
+	@# the first tick legitimately takes longer than in-process. Give it room rather than call a
+	@# slower-but-working fire a failure.
+	EVENTS_SERVER_URL=http://localhost:$(EVENTS_PORT) EVENTS_SCHEDULER=native \
+	  FIRE_TICK_WAIT_SECS=$${FIRE_TICK_WAIT_SECS:-300} \
+	  $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
+
 # ── individual harnesses (hidden from `make help`; run by `make test-report`, or directly for a focused check) ──
 test-all:
 	$(PY) -m pytest tests/events tests/unit -q
@@ -290,8 +309,11 @@ test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e agains
 ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
 	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
 
-ce-deploy: ## [CE] Deploy/redeploy the app (supervisor + 27-agent roster; override CE_ROSTER=…)
+ce-deploy: ## [CE] Deploy/redeploy the app (supervisor + $(CE_ROSTER); override CE_ROSTER=rosters/…)
 	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy_app.sh
 
 ce-teardown: ## [CE] Delete the app (keeps the image + registry secret)
 	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh
+
+ce-deploy-split: ## [CE] Deploy the SPLIT topology — two apps (cuga-core + cuga-events-svc), one image
+	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./3_deploy_split.sh

@@ -48,6 +48,10 @@ args=(
   --env "EVENTS_SLACK_BACKEND=$EVENTS_SLACK_BACKEND"
   --env "EVENTS_DISCORD_MEMBERS_INTENT=1"
   --env "MCP_SERVERS_FILE=$MCP_SERVERS_FILE_IN_IMAGE"
+  # Durable-by-default store. The container filesystem is still ephemeral (no volume on CE), so
+  # this survives an in-container restart but NOT a revision replace — mount a volume, or move to
+  # Postgres, when subscriptions must outlive a redeploy. Explicit here so the path is greppable.
+  --env "EVENTS_DB=/app/.cuga/events.db"
   --env "DEPLOY_REV=$DEPLOY_REV"
 )
 # Agent model: classic generalist by default; supervisor + roster when opted in.

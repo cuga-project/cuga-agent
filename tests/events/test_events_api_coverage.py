@@ -265,10 +265,16 @@ def _concierge_client(engine=None):
 
 
 def test_native_cron_arms_over_http_with_no_ap(monkeypatch):
+    """HITL: a slash command PROPOSES; only an explicit "yes" arms."""
     monkeypatch.setenv("EVENTS_SCHEDULER", "native")
     c, store = _concierge_client(engine=None)
     r = c.post("/api/concierge", json={"text": "/cron every 2 minutes tell me a fun fact"})
     assert r.status_code == 200, r.text
+    assert r.json().get("state") == "confirm"
+    assert store.list() == [], "nothing may be armed before the human confirms"
+    r2 = c.post("/api/concierge", json={"text": "yes"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json().get("state") == "armed"
     subs = store.list()
     assert len(subs) == 1 and subs[0].backend == "native" and subs[0].ap_flow_id is None
 
@@ -277,6 +283,8 @@ def test_gmail_push_declines_over_http_with_no_ap():
     c, store = _concierge_client(engine=None)
     r = c.post("/api/concierge", json={"text": "/push when a new gmail arrives, summarize it"})
     assert r.status_code == 200
-    low = (r.json().get("answer") or r.json().get("reply") or "").lower()
+    assert r.json().get("state") == "confirm"      # proposed, not armed
+    r2 = c.post("/api/concierge", json={"text": "yes"})
+    low = (r2.json().get("answer") or r2.json().get("reply") or "").lower()
     assert "activepieces" in low or "make up" in low  # honest decline, nothing armed
     assert store.list() == []

@@ -36,7 +36,11 @@ def test_roster_parses_and_has_the_supervisor_block():
     assert (cfg.get("supervisor") or {}).get("name") == "cuga"
     assert "delegate" in (cfg["supervisor"].get("special_instructions") or "").lower()
     agents = cfg.get("agents") or []
-    assert len(agents) >= 20, f"roster suspiciously small: {len(agents)}"
+    # The shipped roster is deliberately SMALL (one agent per capability area, every MCP server
+    # covered); the 27-agent example moved to rosters/supervisor_agents_full.yaml. This floor only
+    # catches an accidentally truncated or half-written file — the real gate is trigger coverage
+    # below, which does not care how many agents share the work.
+    assert len(agents) >= 5, f"roster suspiciously small: {len(agents)}"
     assert all(a.get("name") and a.get("special_instructions") for a in agents)
 
 

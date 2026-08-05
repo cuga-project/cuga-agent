@@ -1379,12 +1379,26 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        if events:
-            # EVENTS world: the registry runs in FILE mode serving the MCP config the supervisor
-            # roster references (cuga-finance/geo/web/…), not the managed-config db ("none").
-            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins.
+        # The registry needs FILE mode (serving cuga-finance/geo/web/…) whenever a roster of
+        # sub-agents is in play; "none" means managed-config-db mode, which serves only the demo
+        # app. Three ways to be in that world:
+        #   • --events                     the events layer's supervisor roster
+        #   • CUGA_SUPERVISOR_ROSTER=…     this server preloaded AS a supervisor (split topology)
+        #   • an explicitly exported MCP_SERVERS_FILE  (make up, a container env, …)
+        # The last one used to be silently overwritten with "none" here, which is why a split
+        # cuga-core started with `cuga start demo` served only `digital_sales` and every roster
+        # agent answered "the available toolset does not include…" despite the env being set.
+        _explicit_mcp = (os.environ.get("MCP_SERVERS_FILE", "") or "").strip()
+        _wants_roster = bool(
+            events
+            or (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
+            or (_explicit_mcp and _explicit_mcp != "none")
+        )
+        if _wants_roster:
+            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins over the default.
             os.environ.setdefault("MCP_SERVERS_FILE", os.path.join(
                 PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"))
+            logger.info(f"registry in FILE mode: MCP_SERVERS_FILE={os.environ['MCP_SERVERS_FILE']}")
         else:
             os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())

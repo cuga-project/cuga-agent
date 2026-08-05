@@ -42,12 +42,45 @@ export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_na
   return uiConfigCache;
 }
 
+// ── the eventing layer's origin ───────────────────────────────────────────────────────────────
+// Combined deployment: events is mounted on this same server, so same-origin is right and this
+// resolves to getApiBaseUrl() — nothing changes. SPLIT deployment: the UI is served by cuga-core
+// while /api/events/*, /api/concierge and /invoke live on the events service, so those calls must
+// be sent there. The server tells us where via /api/ui/config (EVENTS_API_URL); resolved once and
+// cached, and any failure falls back to same-origin rather than breaking the page.
+const EVENTS_PATHS = ["/api/events", "/api/concierge", "/invoke"];
+let eventsBaseCache: string | null = null;
+let eventsBaseInFlight: Promise<string> | null = null;
+
+export async function getEventsBaseUrl(): Promise<string> {
+  if (eventsBaseCache !== null) return eventsBaseCache;
+  if (!eventsBaseInFlight) {
+    eventsBaseInFlight = fetch(`${getApiBaseUrl()}/api/ui/config`, { credentials: "include" })
+      .then((r): Promise<Record<string, unknown>> => (r.ok ? r.json() : Promise.resolve({})))
+      .then((c): string => {
+        const configured = String(c?.events_api_url ?? "").replace(/\/$/, "");
+        const resolved = configured || getApiBaseUrl();
+        eventsBaseCache = resolved;
+        return resolved;
+      })
+      .catch((): string => {
+        const resolved = getApiBaseUrl();
+        eventsBaseCache = resolved;
+        return resolved;
+      });
+  }
+  return eventsBaseInFlight;
+}
+
 export async function apiFetch(
   url: string | URL,
   init?: RequestInit
 ): Promise<Response> {
   const base = getApiBaseUrl();
-  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${base}${url.startsWith("/") ? "" : "/"}${url}` : url;
+  const isEvents =
+    typeof url === "string" && EVENTS_PATHS.some((p) => url.startsWith(p));
+  const callBase = isEvents ? await getEventsBaseUrl() : base;
+  const fullUrl = typeof url === "string" && !url.startsWith("http") ? `${callBase}${url.startsWith("/") ? "" : "/"}${url}` : url;
   const res = await fetch(fullUrl, {
     ...init,
     credentials: "include",

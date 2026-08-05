@@ -196,3 +196,46 @@ def test_gmail_push_declines_without_ap():
     low = reply.lower()
     assert "gmail" in low and ("activepieces" in low or "make up" in low)
     assert store.list() == []                            # nothing armed
+
+
+# ── startup race: the scheduler must not fire into a socket that isn't listening yet ──────────
+def test_scheduler_waits_for_its_own_port_before_the_first_tick():
+    """run_scheduler is launched from the lifespan hook, which runs BEFORE uvicorn accepts. A
+    subscription already due at boot fired into a closed socket and was LOST — the per-sub except
+    swallows it and next_fire has already advanced, so nothing retries. Observed live as
+    `native fire cuga-e8493b failed: ConnectError: All connection attempts failed`.
+    """
+    async def scenario():
+        srv_holder = {}
+
+        async def _handler(reader, writer):
+            writer.close()
+
+        # 1. nothing is listening → the wait must NOT return immediately
+        free = _free_port()
+        waiter = asyncio.ensure_future(ns._await_loopback(str(free), timeout=10.0, interval=0.05))
+        await asyncio.sleep(0.3)
+        assert not waiter.done(), "returned before anything was listening"
+
+        # 2. the server comes up → the wait resolves
+        srv_holder["s"] = await asyncio.start_server(_handler, "127.0.0.1", free)
+        assert await asyncio.wait_for(waiter, timeout=5.0) is True
+        srv_holder["s"].close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_gives_up_waiting_rather_than_disabling_itself():
+    """A slow boot must not cost every future tick — time out and proceed."""
+    t0 = time.time()
+    got = asyncio.run(ns._await_loopback(str(_free_port()), timeout=0.5, interval=0.05))
+    assert got is False and time.time() - t0 < 5.0
+
+
+def _free_port() -> int:
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
