@@ -201,10 +201,14 @@ MODEL_CONTEXT_SIZES = {
     # ============================================================================
     # Google Gemma 4 Models
     # ============================================================================
-    "gemma-4-31B-it": 262144,
-    "gemma-4-31b-it": 262144,
-    "google/gemma-4-31B-it": 262144,
-    "google/gemma-4-31b-it": 262144,
+    # Deployment cap, not the 262,144 native window: the RITS vLLM deployment serves
+    # max_model_len=131072 (probed via GET .../v1/models, 2026-07-28). Registering the
+    # native window put the 70% summarization trigger (~183k) beyond the deployment's
+    # 131k cliff, so summarization could never engage on Gemma (issue #563).
+    "gemma-4-31B-it": 131072,
+    "gemma-4-31b-it": 131072,
+    "google/gemma-4-31B-it": 131072,
+    "google/gemma-4-31b-it": 131072,
     # ============================================================================
     # Meta Llama Models
     # ============================================================================
@@ -338,12 +342,13 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
     if "/" in normalized_name:
         normalized_name = normalized_name.split("/", 1)[1]
 
-    if normalized_name in MODEL_CONTEXT_SIZES:
-        return MODEL_CONTEXT_SIZES[normalized_name]
+    # Case-insensitive exact + longest-prefix match (model ids vary in casing).
+    normalized_lower = normalized_name.lower()
+    if normalized_lower in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[normalized_lower]
 
-    sorted_keys = _SORTED_MODEL_CONTEXT_KEYS
-    for key in sorted_keys:
-        if normalized_name.startswith(key):
+    for key in _SORTED_MODEL_CONTEXT_KEYS:
+        if normalized_lower.startswith(key.lower()):
             return MODEL_CONTEXT_SIZES[key]
 
     return None

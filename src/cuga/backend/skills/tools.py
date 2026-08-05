@@ -19,14 +19,22 @@ class LoadSkillInput(BaseModel):
 
 def create_skill_tools(registry: SkillRegistry) -> list[StructuredTool]:
     def load_skill_impl(name: str, args: str = "") -> str:
-        return registry.load_skill(name, args)
+        instructions = registry.load_skill(name, args)
+        # Print unconditionally: the code-agent's stdout capture is the only
+        # guaranteed way these instructions reach the agent's context. If the
+        # agent's own code discards the return value instead of printing it
+        # (e.g. `await load_skill(...); print("Skill loaded successfully")`),
+        # it otherwise never sees the skill body and improvises from scratch.
+        print(instructions)
+        return instructions
 
     load_tool = StructuredTool.from_function(
         func=load_skill_impl,
         name="load_skill",
         description=(
             "Fetch the full instructions for a named skill. "
-            "Call this first, print the output, then follow the instructions."
+            "Call this first; instructions are emitted automatically — "
+            "do not print the returned value again. Then follow the instructions."
         ),
         args_schema=LoadSkillInput,
     )
