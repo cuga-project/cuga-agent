@@ -58,6 +58,7 @@ class MCPManager:
         self.schemas = {}
         self.trm_tools = {}
         self.mcp_clients = {}  # Store MCP client connections
+        self.mcp_transports = {}  # Store SSE transports for FastMCP servers
         self.fastmcp_client = None  # FastMCP client for standard MCP servers
         self.initialization_errors = {}  # Track errors during tool initialization
         self.service_statuses = {}
