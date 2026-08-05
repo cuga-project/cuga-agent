@@ -1,4 +1,5 @@
 .env
+docs/*.md
 .omc/
 .omx/
 __pycache__
@@ -6,9 +7,11 @@ output
 *.db
 cuga_workspace/
 .idea
+mcp.db*
 node_modules
 .pnpm-store/
 .agents
+src/cuga/backend/skills/number_theory_tools/
 *.log
 .claude/settings.json
 .claude/settings.local.json
@@ -28,6 +31,7 @@ logs/
 .bob
 !.bob/commands/
 !.bob/commands/cuga-*.md
+!.bob/commands/github_commands.md
 test_workspace/
 *.logs
 
@@ -81,6 +85,7 @@ cuga.egg-info
 .cursor/
 !.cursor/commands/
 !.cursor/commands/cuga-*.md
+!.cursor/commands/github_commands.md
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
