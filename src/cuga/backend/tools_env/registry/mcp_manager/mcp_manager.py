@@ -1310,23 +1310,41 @@ class MCPManager:
     async def _register_tools(self, mcp_server):
         response = await mcp_server.list_tools()
         for tool in response:
+            # Convert FunctionTool to MCP Tool format if needed
+            if hasattr(tool, 'to_mcp_tool'):
+                mcp_tool = tool.to_mcp_tool()
+                input_schema = mcp_tool.inputSchema
+            elif hasattr(tool, 'inputSchema'):
+                input_schema = tool.inputSchema
+            else:
+                # Fallback for FunctionTool with parameters attribute
+                input_schema = getattr(tool, 'parameters', {})
+            
             tool_dict = {
                 "type": "function",
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.inputSchema,
+                    "parameters": input_schema,
                 },
             }
             self.tools_by_server[mcp_server.name].append(tool_dict)
-            self.server_by_tool[tool.name] = mcp_server
+            # Store the app name (mcp_server.name) so call_tool can route to _call_mcp_server_tool
+            # The tool.name is the full tool name, mcp_server.name is the app/server name
+            self.server_by_tool[tool.name] = mcp_server.name
+            # Also store in original_tool_name_by_sanitized for reverse lookup
+            self.original_tool_name_by_sanitized[tool.name] = tool.name
 
     async def run_all_servers(self):
         for name, server in self.servers.items():
             port = self._get_free_port()
             self.server_ports[server.name] = port
-            server.settings.port = port
-            thread = threading.Thread(target=server.run, kwargs={"transport": "sse"}, daemon=True)
+            # Register the server URL in mcp_clients so call_tool can route to _call_mcp_server_tool
+            self.mcp_clients[name] = f"http://localhost:{port}/sse"
+            # Create SSE transport for this server so _call_mcp_server_tool can use FastMCP client
+            from fastmcp.client.transports import SSETransport
+            self.mcp_transports[name] = SSETransport(f"http://localhost:{port}/sse")
+            thread = threading.Thread(target=server.run, kwargs={"transport": "sse", "port": port}, daemon=True)
             thread.start()
             self.threads[name] = thread
             print(f"Started MCP SSE server for {name} on port {port}")
