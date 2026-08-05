@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 
 
@@ -48,6 +50,31 @@ def test_extract_values_empty_storage_returns_empty():
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
     assert VariableBridge.extract_values({}) == {}
+
+
+@pytest.mark.unit
+def test_extract_values_hydrates_tagged_sets():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
+
+    storage = {
+        "emails": {
+            "value": {"__set_type__": "set", "items": ["a@x.com", "b@y.com"], "__cuga_enc__": True},
+            "type": "set",
+            "created_at": "...",
+            "count_items": 2,
+        },
+        "frozen": {
+            "value": {"__set_type__": "frozenset", "items": ["x", "y"], "__cuga_enc__": True},
+            "type": "frozenset",
+            "created_at": "...",
+            "count_items": 2,
+        },
+    }
+    result = VariableBridge.extract_values(storage)
+    assert type(result["emails"]) is set
+    assert result["emails"] == {"a@x.com", "b@y.com"}
+    assert type(result["frozen"]) is frozenset
+    assert result["frozen"] == frozenset({"x", "y"})
 
 
 def test_bridge_copies_values_into_target_manager():

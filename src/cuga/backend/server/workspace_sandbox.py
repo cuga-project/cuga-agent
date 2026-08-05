@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform as _platform
 import shlex
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +18,25 @@ NATIVE_DISPLAY_ROOT = "workspace"
 LEGACY_DISPLAY_ROOT = "cuga_workspace"
 LEGACY_SANDBOX_WORKSPACE_ROOT = "/tmp/cuga_workspace"
 _LEGACY_DISPLAY_ROOTS = {"tmp", "cuga_workspace"}  # kept for backward-compat path resolution
+
+
+def get_sandbox_env_description() -> str:
+    """Return a human-readable OS/environment string for the active sandbox mode.
+
+    opensandbox (e2b) always runs in a Linux Docker container.
+    native/local runs on the host process, so we read the real OS from Python.
+    """
+    mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    if mode == "opensandbox":
+        return "Linux (Ubuntu, Docker container)"
+    sys_name = _platform.system()
+    if sys_name == "Darwin":
+        mac_ver = _platform.mac_ver()[0]
+        return f"macOS {mac_ver}" if mac_ver else "macOS"
+    if sys_name == "Linux":
+        release = _platform.release()
+        return f"Linux ({release})"
+    return f"{sys_name} ({_platform.release()})"
 
 
 def workspace_tree_is_sandbox_backed() -> bool:

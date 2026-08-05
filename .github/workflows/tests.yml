@@ -99,7 +99,9 @@ jobs:
             tests/unit/test_embedder_cache_resilience.py \
             tests/unit/test_knowledge_copy_source_files.py \
             tests/unit/test_knowledge_envelope_rank_fields.py
-          uv run pytest tests/unit/test_cuga_lite_bind_tools.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \

@@ -42,7 +42,8 @@ class BaseExecutor(ABC):
             available_tools: Names of tools/functions present in the execution
                 namespace, used to correct fabricated tool-name NameErrors.
             code: The code that raised the error; used to distinguish
-                fabricated tool calls from undefined-variable references.
+                fabricated tool usage (calls and assignment-RHS aliases) from
+                undefined-variable references.
 
         Returns:
             Formatted error string

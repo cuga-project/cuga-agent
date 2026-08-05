@@ -186,6 +186,9 @@ def create_cuga_lite_graph(
     # LangChain bind-tools metadata: _lc_bind_tools_* entries for resolve_model_with_bind_tools.
     # Kept separate so it never leaks into context_locals used by the code executor.
     lc_bind_tools_meta: Dict[str, Any] = {}
+    # Closure dict for async spawn futures (agent_spawn).
+    # Populated by spawn_agent (mode="async"), read by get_agent_result.
+    spawn_futures: Dict[str, Any] = {}
 
     adapter = AgentGraphAdapter(
         tracker=tracker,
@@ -200,6 +203,7 @@ def create_cuga_lite_graph(
         tools_context=tools_context,
         static_prompt=prompt,
         thread_id=thread_id,
+        spawn_futures_ref=spawn_futures,
     )
 
     prepare_node = adapter.build_prepare_node(lc_bind_tools_meta)
