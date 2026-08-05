@@ -65,3 +65,20 @@ def merge_tool_call_args(
                 all_kwargs[f"arg{i}"] = arg
     all_kwargs.update(kwargs)
     return all_kwargs
+
+
+def resolve_tool_call_args(
+    args: tuple,
+    kwargs: Dict[str, Any],
+    param_names: List[str],
+) -> tuple[Dict[str, Any], List[str]]:
+    """Merge tool args and report unexpected names in one step.
+
+    Returns ``(merged_args, unexpected_names)``. When unexpected names are present,
+    ``merged_args`` keeps the unfiltered raw arguments for tracking/diagnostics;
+    otherwise it is the schema-filtered merge used for the API call.
+    """
+    unexpected = unexpected_tool_arg_names(args, kwargs, param_names)
+    if unexpected:
+        return merge_tool_call_args(args, kwargs, []), unexpected
+    return merge_tool_call_args(args, kwargs, param_names), []

@@ -20,7 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import (
     create_tool_from_api_dict,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
 from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_registry_base_url
 from cuga.config import settings
 
@@ -36,7 +36,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
     Returns:
         StructuredTool instance that calls tracker.invoke_tool
     """
-    from pydantic import Field, create_model
+    from pydantic import Field, ValidationError, create_model
 
     description = tool_def.get("description", "")
     parameters = tool_def.get("parameters", {})
@@ -130,7 +130,18 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
 
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
-            all_kwargs = merge_tool_call_args(args, kwargs, param_names)
+            all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
+            if unexpected:
+                error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
+                logger.error(error_msg)
+                return {"error": error_msg}
+
+            try:
+                all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
+            except ValidationError as e:
+                error_msg = f"Tool input validation error for {tool_name}: {e}"
+                logger.error(error_msg)
+                return {"error": error_msg}
 
             # Use tracker.invoke_tool with timeout
             timeout_seconds = getattr(settings.advanced_features, "tool_call_timeout", 30)

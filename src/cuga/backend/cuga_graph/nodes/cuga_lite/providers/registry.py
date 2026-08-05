@@ -12,12 +12,9 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
-from pydantic import Field, create_model
+from pydantic import Field, ValidationError, create_model
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import (
-    merge_tool_call_args,
-    unexpected_tool_arg_names,
-)
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallCounter,
     ToolCallTracker,
@@ -223,16 +220,18 @@ def create_tool_from_api_dict(
     _operation_id = operation_id
     _agent_id = agent_id
 
+    def _validation_error_message(exc: BaseException) -> str:
+        return f"Tool input validation error for {tool_name}: {exc}"
+
     async def tool_func(*args, **kwargs):
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
-            unexpected = unexpected_tool_arg_names(args, kwargs, param_names)
+            all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
             if unexpected:
                 error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
-                raw_args = merge_tool_call_args(args, kwargs, [])
                 ToolCallTracker.record_call(
                     tool_name=tool_name,
-                    arguments=raw_args,
+                    arguments=all_kwargs,
                     result=None,
                     app_name=app_name,
                     operation_id=_operation_id,
@@ -242,7 +241,21 @@ def create_tool_from_api_dict(
                 logger.error(error_msg)
                 return {"error": error_msg}
 
-            all_kwargs = merge_tool_call_args(args, kwargs, param_names)
+            try:
+                all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
+            except ValidationError as e:
+                error_msg = _validation_error_message(e)
+                ToolCallTracker.record_call(
+                    tool_name=tool_name,
+                    arguments=all_kwargs,
+                    result=None,
+                    app_name=app_name,
+                    operation_id=_operation_id,
+                    duration_ms=0.0,
+                    error=error_msg,
+                )
+                logger.error(error_msg)
+                return {"error": error_msg}
 
             # Call API with timeout (timeout is handled inside call_api)
             result = await call_api(
@@ -277,7 +290,7 @@ def create_tool_from_api_dict(
         name=tool_name,
         description=description,
         args_schema=InputModel,
-        handle_validation_error=True,
+        handle_validation_error=_validation_error_message,
     )
 
     if not hasattr(tool.func, "_response_schemas"):

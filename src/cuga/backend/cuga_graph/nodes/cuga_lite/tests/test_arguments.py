@@ -2,6 +2,7 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import (
     merge_tool_call_args,
+    resolve_tool_call_args,
     unexpected_tool_arg_names,
 )
 
@@ -69,3 +70,21 @@ def test_unexpected_names_empty_when_schema_has_no_params():
 def test_unexpected_names_from_surplus_positionals():
     param_names = ["a", "b"]
     assert unexpected_tool_arg_names((1, 2, 3), {}, param_names) == ["arg2"]
+
+
+@pytest.mark.unit
+def test_resolve_returns_filtered_args_when_clean():
+    param_names = ["product_id", "quantity"]
+    d = {"product_id": 1, "quantity": 2}
+    merged, unexpected = resolve_tool_call_args((d,), {}, param_names)
+    assert unexpected == []
+    assert merged == d
+
+
+@pytest.mark.unit
+def test_resolve_keeps_raw_args_when_unexpected():
+    param_names = ["product_id", "quantity"]
+    d = {"product_id": 1, "quantity": 2, "currency": "USD"}
+    merged, unexpected = resolve_tool_call_args((d,), {}, param_names)
+    assert unexpected == ["currency"]
+    assert merged == d
