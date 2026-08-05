@@ -607,9 +607,13 @@ def create_handler(api, model, base_url: str, name: str, schemas: Dict[str, Serv
     builds the URL, and handles the request.
     """
 
-    def handler(params: model, headers: dict = None):
+    def handler(**kwargs):
+        # Extract headers from kwargs if present
+        headers = kwargs.pop('headers', None) or {}
+        
+        # Create model instance from remaining kwargs
+        params = model(**kwargs)
         all_params = params.model_dump()
-        headers = headers if headers else {}
 
         try:
             params = get_operation_override_parameters(
@@ -647,6 +651,9 @@ def create_handler(api, model, base_url: str, name: str, schemas: Dict[str, Serv
                 response = requests.request(api.method, final_url, headers=headers, data=body_params)
 
             response.raise_for_status()
+            
+            # Always return text - FastMCP will wrap it in TextContent
+            # The server layer will parse JSON from TextContent.text
             return response.text
 
         except Exception as e:
