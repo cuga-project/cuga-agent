@@ -10,8 +10,7 @@ from __future__ import annotations
 # The cuga-apps MCP servers hosted on IBM Code Engine.
 CUGA_APPS = ("web", "knowledge", "geo", "finance", "code", "local", "text")
 
-_CODE_ENGINE = ("https://cuga-apps-mcp-{app}"
-                ".1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp")
+_CODE_ENGINE = "https://cuga-apps-mcp-{app}.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
 
 # One-line hint per server for the concierge's list_capabilities.
 HINTS = {
@@ -40,7 +39,7 @@ def known_mcp_url(name: str) -> str | None:
 def to_client_config(name: str, transport: str = "streamable_http") -> dict | None:
     """A MultiServerMCPClient-style config entry for a known server, else None.
 
-        {"cuga-finance": {"url": "...", "transport": "streamable_http"}}
+    {"cuga-finance": {"url": "...", "transport": "streamable_http"}}
     """
     url = known_mcp_url(name)
     if url is None:

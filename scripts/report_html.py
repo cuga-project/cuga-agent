@@ -12,6 +12,7 @@ that nobody can check.
 The page is one file, no CDN, no fonts, no scripts beyond a theme toggle — so it survives being
 emailed, committed, or opened from a `file://` URL.
 """
+
 from __future__ import annotations
 
 import html
@@ -138,8 +139,9 @@ def parse_suite(log: str) -> list[dict]:
             tm = re.match(r"\[([^\]]+)\]\s*(.*)", detail)
             if tm:
                 tools, detail = tm.groups()
-            cases.append({"verdict": SUITE_VERDICT[glyph], "id": cid,
-                          "tools": tools, "got": detail, "note": ""})
+            cases.append(
+                {"verdict": SUITE_VERDICT[glyph], "id": cid, "tools": tools, "got": detail, "note": ""}
+            )
             continue
         n = SUITE_NOTE.match(line)
         if n and cases and not cases[-1]["note"]:
@@ -160,11 +162,19 @@ def parse_fire(log: str) -> list[dict]:
         m = FIRE_ROW.match(line)
         if m:
             case, trig, chan, integ, verdict = m.groups()
-            rows.append({"case": case, "trigger": trig,
-                         "channel": "" if chan == "—" else chan,
-                         "integration": "" if integ == "—" else integ,
-                         "verdict": verdict, "kind": FIRE_KIND[verdict],
-                         "utterance": "", "response": "", "why": ""})
+            rows.append(
+                {
+                    "case": case,
+                    "trigger": trig,
+                    "channel": "" if chan == "—" else chan,
+                    "integration": "" if integ == "—" else integ,
+                    "verdict": verdict,
+                    "kind": FIRE_KIND[verdict],
+                    "utterance": "",
+                    "response": "",
+                    "why": "",
+                }
+            )
             continue
         if not rows:
             continue
@@ -173,8 +183,14 @@ def parse_fire(log: str) -> list[dict]:
             rows[-1]["utterance"] = t.split(":", 1)[1].strip().strip("“”")
         elif t.startswith("response :"):
             rows[-1]["response"] = t.split(":", 1)[1].strip()
-        elif t and rows[-1]["utterance"] and not rows[-1]["why"] and not FIRE_ROW.match(line) \
-                and line.startswith("     ") and not t.startswith(("case", "─", "═", "RESULT")):
+        elif (
+            t
+            and rows[-1]["utterance"]
+            and not rows[-1]["why"]
+            and not FIRE_ROW.match(line)
+            and line.startswith("     ")
+            and not t.startswith(("case", "─", "═", "RESULT"))
+        ):
             rows[-1]["why"] = t
     return rows
 
@@ -186,26 +202,41 @@ def parse_matrix(log: str) -> list[dict]:
         if m:
             glyph, trigger, sink, detail = m.groups()
             name, kind, _ = MATRIX_MEANING.get(glyph, ("?", "skip", ""))
-            cells.append({"glyph": glyph, "outcome": name, "kind": kind,
-                          "trigger": trigger.strip(), "sink": sink, "detail": detail.strip()})
+            cells.append(
+                {
+                    "glyph": glyph,
+                    "outcome": name,
+                    "kind": kind,
+                    "trigger": trigger.strip(),
+                    "sink": sink,
+                    "detail": detail.strip(),
+                }
+            )
     return cells
 
 
 # ── sections ──────────────────────────────────────────────────────────────────
 def _header(prov, st, subs_after) -> str:
-    dirty = ('<span class="b fail">DIRTY</span> not reproducible from this commit'
-             if prov["dirty"] else '<span class="b pass">CLEAN</span>')
+    dirty = (
+        '<span class="b fail">DIRTY</span> not reproducible from this commit'
+        if prov["dirty"]
+        else '<span class="b pass">CLEAN</span>'
+    )
     integ = ", ".join(f"{k}=<code>{e(v)}</code>" for k, v in (st["integrations"] or {}).items())
-    leak = ("no leak" if st["subscriptions_before"] == subs_after
-            else '<span class="b fail">LEAKED</span>')
-    ghrepo = (f'<div><b>GitHub test repo</b><br><code>{e(prov["github_test_repo"])}</code> '
-              f'— webhooks created by this run were deleted afterwards</div>'
-              if prov["github_test_repo"] else
-              '<div><b>GitHub test repo</b><br><span class="g-skip">unset — the github push row '
-              'skipped. Set <code>GITHUB_TEST_REPO=owner/repo</code> to arm it.</span></div>')
-    warn = ("" if st["ap_up"] else
-            '<div class="warn"><b>Activepieces was DOWN for this run.</b> cron/poll/push could not arm, '
-            'and every CONNECT NEEDED below is a false negative. Do not trust the flow rows.</div>')
+    leak = "no leak" if st["subscriptions_before"] == subs_after else '<span class="b fail">LEAKED</span>'
+    ghrepo = (
+        f'<div><b>GitHub test repo</b><br><code>{e(prov["github_test_repo"])}</code> '
+        f'— webhooks created by this run were deleted afterwards</div>'
+        if prov["github_test_repo"]
+        else '<div><b>GitHub test repo</b><br><span class="g-skip">unset — the github push row '
+        'skipped. Set <code>GITHUB_TEST_REPO=owner/repo</code> to arm it.</span></div>'
+    )
+    warn = (
+        ""
+        if st["ap_up"]
+        else '<div class="warn"><b>Activepieces was DOWN for this run.</b> cron/poll/push could not arm, '
+        'and every CONNECT NEEDED below is a false negative. Do not trust the flow rows.</div>'
+    )
     return f"""
 <h1>CUGA events — test report</h1>
 <p class="sub">{e(prov['local'])} &nbsp;·&nbsp; commit <code>{e(prov['commit'])}</code>
@@ -224,25 +255,35 @@ def _header(prov, st, subs_after) -> str:
 
 
 def _cards(results) -> str:
-    tot = {k: sum(r.get(k, 0) for r in results) for k in
-           ("passed", "failed", "xfail", "xpass", "skipped")}
+    tot = {k: sum(r.get(k, 0) for r in results) for k in ("passed", "failed", "xfail", "xpass", "skipped")}
     crashed = sum(1 for r in results if r.get("crashed"))
-    cards = [("pass", tot["passed"], "passed"), ("fail", tot["failed"], "failed"),
-             ("xfail", tot["xfail"], "known gaps"), ("xpass", tot["xpass"], "xpass"),
-             ("skip", tot["skipped"], "skipped")]
+    cards = [
+        ("pass", tot["passed"], "passed"),
+        ("fail", tot["failed"], "failed"),
+        ("xfail", tot["xfail"], "known gaps"),
+        ("xpass", tot["xpass"], "xpass"),
+        ("skip", tot["skipped"], "skipped"),
+    ]
     if crashed:
         cards.append(("fail", crashed, "harnesses crashed"))
-    return ('<div class="cards">' + "".join(
-        f'<div class="card {c}"><div class="v">{n}</div><div class="k">{e(k)}</div></div>'
-        for c, n, k in cards) + "</div>")
+    return (
+        '<div class="cards">'
+        + "".join(
+            f'<div class="card {c}"><div class="v">{n}</div><div class="k">{e(k)}</div></div>'
+            for c, n, k in cards
+        )
+        + "</div>"
+    )
 
 
 def _harness_table(results, log_prefix) -> str:
     rows = []
     for r in results:
         if r.get("skipped_by_request"):
-            rows.append(f'<tr><td><code>{e(r["key"])}</code></td>'
-                        f'<td class="u" colspan="8"><em>skipped by request</em></td></tr>')
+            rows.append(
+                f'<tr><td><code>{e(r["key"])}</code></td>'
+                f'<td class="u" colspan="8"><em>skipped by request</em></td></tr>'
+            )
             continue
         log = f'{log_prefix}{r["key"]}.log'
         if r.get("crashed"):
@@ -251,10 +292,10 @@ def _harness_table(results, log_prefix) -> str:
                 f'<td class="v" colspan="5">{badge("crash", "CRASH")}</td>'
                 f'<td class="n">{_secs(r["secs"])}</td>'
                 f'<td><a href="{e(log)}">log</a></td></tr>'
-                f'<tr><td></td><td class="u" colspan="8">{e(r["note"])}</td></tr>')
+                f'<tr><td></td><td class="u" colspan="8">{e(r["note"])}</td></tr>'
+            )
             continue
-        f = (f'<b class="g-fail">{r["failed"]}</b>' if r["failed"] else
-             '<span class="g-skip">0</span>')
+        f = f'<b class="g-fail">{r["failed"]}</b>' if r["failed"] else '<span class="g-skip">0</span>'
         rows.append(
             f'<tr><td><code>{e(r["key"])}</code></td><td class="u">{e(r["question"])}</td>'
             f'<td class="n g-pass">{r["passed"]}</td><td class="n">{f}</td>'
@@ -262,7 +303,8 @@ def _harness_table(results, log_prefix) -> str:
             f'<td class="n g-xpass">{r["xpass"] or ""}</td>'
             f'<td class="n g-skip">{r["skipped"] or ""}</td>'
             f'<td class="n">{_secs(r["secs"])}</td>'
-            f'<td><a href="{e(log)}">log</a></td></tr>')
+            f'<td><a href="{e(log)}">log</a></td></tr>'
+        )
     return f"""
 <h2>Harnesses</h2>
 <p class="sub">Each answers a different question. Only <b>Fail</b> is worth acting on immediately.</p>
@@ -284,23 +326,30 @@ def _walkthrough(steps) -> str:
     """The verbose e2e: what a person did, what we expected, what came back."""
     if not steps:
         return ""
-    out = ["""
+    out = [
+        """
 <h2>End-to-end walkthrough</h2>
 <p class="sub">Exactly what a person would do, and exactly what came back. Rows with no verdict are
 scene-setting (posting the message), not assertions — only ✓/✗ rows are checked. The
 <b>utterance</b>, <b>channel</b>, <b>integration</b> and <b>trigger</b> columns appear in whichever
-phases they mean something.</p>"""]
+phases they mean something.</p>"""
+    ]
     for phase in dict.fromkeys(s["phase"] for s in steps):
         prows = [x for x in steps if x["phase"] == phase]
         dims = _dims_present(prows)
         out.append(f"<h3>{e(phase)}</h3>")
         heads = "".join(f"<th>{d.title()}</th>" for d in dims)
-        out.append(f'<div class="scroll"><table><thead><tr><th>Surface</th>{heads}<th>Who</th>'
-                   "<th>Does what</th><th>Expected</th><th>Actually got</th><th></th>"
-                   "</tr></thead><tbody>")
+        out.append(
+            f'<div class="scroll"><table><thead><tr><th>Surface</th>{heads}<th>Who</th>'
+            "<th>Does what</th><th>Expected</th><th>Actually got</th><th></th>"
+            "</tr></thead><tbody>"
+        )
         for s in prows:
-            mark = ("" if s["ok"] is None else
-                    ('<span class="g-pass">✓</span>' if s["ok"] else '<span class="g-fail">✗</span>'))
+            mark = (
+                ""
+                if s["ok"] is None
+                else ('<span class="g-pass">✓</span>' if s["ok"] else '<span class="g-fail">✗</span>')
+            )
             note = f'<span class="sn">{e(s["note"])}</span>' if s["note"] else ""
             cells = ""
             for d in dims:
@@ -311,10 +360,12 @@ phases they mean something.</p>"""]
                     cells += f'<td class="utt">“{e(v)}”</td>'
                 else:
                     cells += f'<td class="u"><code>{e(v)}</code></td>'
-            out.append(f'<tr><td><code>{e(s["surface"])}</code></td>{cells}'
-                       f'<td>{e(s["actor"])}</td>'
-                       f'<td>{e(s["action"])}{note}</td><td class="u">{e(s["expect"])}</td>'
-                       f'<td class="got">{e(s["got"] or "—")}</td><td class="v">{mark}</td></tr>')
+            out.append(
+                f'<tr><td><code>{e(s["surface"])}</code></td>{cells}'
+                f'<td>{e(s["actor"])}</td>'
+                f'<td>{e(s["action"])}{note}</td><td class="u">{e(s["expect"])}</td>'
+                f'<td class="got">{e(s["got"] or "—")}</td><td class="v">{mark}</td></tr>'
+            )
         out.append("</tbody></table></div>")
     return "".join(out)
 
@@ -325,10 +376,12 @@ def _cases(title, blurb, cases) -> str:
     rows = []
     for c in cases:
         note = f'<span class="sn">{e(c["note"])}</span>' if c["note"] else ""
-        rows.append(f'<tr><td><code>{e(c["id"])}</code></td>'
-                    f'<td class="v">{badge(c["verdict"])}</td>'
-                    f'<td class="u">{e(c["tools"]) or "—"}</td>'
-                    f'<td class="got">{e(c["got"])}{note}</td></tr>')
+        rows.append(
+            f'<tr><td><code>{e(c["id"])}</code></td>'
+            f'<td class="v">{badge(c["verdict"])}</td>'
+            f'<td class="u">{e(c["tools"]) or "—"}</td>'
+            f'<td class="got">{e(c["got"])}{note}</td></tr>'
+        )
     return f"""
 <h2>{e(title)}</h2>
 <p class="sub">{blurb}</p>
@@ -344,13 +397,15 @@ def _fire(rows) -> str:
     def row(r) -> str:
         utt = f'“{e(r["utterance"])}”' if r["utterance"] else "—"
         why = f'<span class="sn">{e(r["why"])}</span>' if r["why"] else ""
-        return (f'<tr><td><code>{e(r["case"])}</code></td>'
-                f'<td class="utt">{utt}</td>'
-                f'<td class="u"><code>{e(r["channel"] or "—")}</code></td>'
-                f'<td class="u"><code>{e(r["integration"] or "—")}</code></td>'
-                f'<td class="u"><code>{e(r["trigger"])}</code></td>'
-                f'<td class="v">{badge(r["kind"], r["verdict"])}</td>'
-                f'<td class="got">{e(r["response"]) or "—"}{why}</td></tr>')
+        return (
+            f'<tr><td><code>{e(r["case"])}</code></td>'
+            f'<td class="utt">{utt}</td>'
+            f'<td class="u"><code>{e(r["channel"] or "—")}</code></td>'
+            f'<td class="u"><code>{e(r["integration"] or "—")}</code></td>'
+            f'<td class="u"><code>{e(r["trigger"])}</code></td>'
+            f'<td class="v">{badge(r["kind"], r["verdict"])}</td>'
+            f'<td class="got">{e(r["response"]) or "—"}{why}</td></tr>'
+        )
 
     body = "".join(row(r) for r in rows)
     return f"""
@@ -387,15 +442,20 @@ def _matrix(cells) -> str:
             if not c:
                 tds.append('<td class="v g-skip">·</td>')
             else:
-                tds.append(f'<td class="v g-{c["kind"]}" title="{e(c["outcome"])}: {e(c["detail"])}">'
-                           f'{c["glyph"]}</td>')
+                tds.append(
+                    f'<td class="v g-{c["kind"]}" title="{e(c["outcome"])}: {e(c["detail"])}">'
+                    f'{c["glyph"]}</td>'
+                )
         rows.append(f'<tr><td><code>{e(t)}</code></td>{"".join(tds)}</tr>')
-    legend = " ".join(f'<span><b class="g-{k}">{g}</b> {e(n)}</span>'
-                      for g, (n, k, _) in MATRIX_MEANING.items())
+    legend = " ".join(
+        f'<span><b class="g-{k}">{g}</b> {e(n)}</span>' for g, (n, k, _) in MATRIX_MEANING.items()
+    )
     detail = "".join(
         f'<tr><td><code>{e(c["trigger"])}</code></td><td><code>{e(c["sink"])}</code></td>'
         f'<td class="v">{badge(c["kind"], c["outcome"])}</td>'
-        f'<td class="got">{e(c["detail"]) or "—"}</td></tr>' for c in cells)
+        f'<td class="got">{e(c["detail"]) or "—"}</td></tr>'
+        for c in cells
+    )
     return f"""
 <h2>Trigger × sink matrix</h2>
 <p class="sub">Every trigger mode against every delivery channel. Hover a cell for its detail.
@@ -411,7 +471,7 @@ it genuinely needs. Only <code>✗</code> fails the run.</p>
 
 def _footer(results, outdir) -> str:
     notes = [r for r in results if r.get("note")]
-    n = ("".join(f'<li><code>{e(r["key"])}</code> — {e(r["note"])}</li>' for r in notes))
+    n = "".join(f'<li><code>{e(r["key"])}</code> — {e(r["note"])}</li>' for r in notes)
     n = f"<h2>How to read this</h2><ul>{n}</ul>" if notes else ""
     return f"""{n}
 <h2>Verdict vocabulary</h2>
@@ -441,26 +501,36 @@ def render_html(prov, st, subs_after, results, outdir, steps, logs, log_prefix="
     suite_flows = parse_suite(logs.get("flows", ""))
     cells = parse_matrix(logs.get("matrix", ""))
     fire = parse_fire(logs.get("fire", ""))
-    body = "".join([
-        _header(prov, st, subs_after),
-        _cards(results),
-        _harness_table(results, log_prefix),
-        _walkthrough(steps),
-        _fire(fire),
-        _cases("Agents answering NOW", "Every seeded agent, invoked directly on <code>/invoke</code> "
-               "with no channel and no concierge. The verdict asserts on <code>meta.mcp</code> — that "
-               "the agent reached the tool it claims to use, not merely that it produced prose.",
-               suite_now),
-        _cases("English sentence → Activepieces flow", "cron, poll and push. The verdict is whether the "
-               "utterance armed the right kind of flow, delivered to the channel it came from.",
-               suite_flows),
-        _matrix(cells),
-        _footer(results, outdir),
-    ])
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>CUGA events — test report {e(prov["commit"])}</title>'
-            f"<style>{CSS}</style></head><body>"
-            f'<button class="toggle" title="light / dark">◐</button>'
-            f'<div class="wrap">{body}</div>'
-            f"<script>{TOGGLE_JS}</script></body></html>")
+    body = "".join(
+        [
+            _header(prov, st, subs_after),
+            _cards(results),
+            _harness_table(results, log_prefix),
+            _walkthrough(steps),
+            _fire(fire),
+            _cases(
+                "Agents answering NOW",
+                "Every seeded agent, invoked directly on <code>/invoke</code> "
+                "with no channel and no concierge. The verdict asserts on <code>meta.mcp</code> — that "
+                "the agent reached the tool it claims to use, not merely that it produced prose.",
+                suite_now,
+            ),
+            _cases(
+                "English sentence → Activepieces flow",
+                "cron, poll and push. The verdict is whether the "
+                "utterance armed the right kind of flow, delivered to the channel it came from.",
+                suite_flows,
+            ),
+            _matrix(cells),
+            _footer(results, outdir),
+        ]
+    )
+    return (
+        f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>CUGA events — test report {e(prov["commit"])}</title>'
+        f"<style>{CSS}</style></head><body>"
+        f'<button class="toggle" title="light / dark">◐</button>'
+        f'<div class="wrap">{body}</div>'
+        f"<script>{TOGGLE_JS}</script></body></html>"
+    )

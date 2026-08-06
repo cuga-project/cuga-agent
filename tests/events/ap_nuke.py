@@ -18,10 +18,13 @@ import sys
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 EV = os.path.join(REPO, "src", "cuga", "backend", "events")
 from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(os.path.join(REPO, ".env"))
-_spec = importlib.util.spec_from_file_location("events", os.path.join(EV, "__init__.py"),
-                                               submodule_search_locations=[EV])
-_pkg = importlib.util.module_from_spec(_spec); sys.modules["events"] = _pkg
+_spec = importlib.util.spec_from_file_location(
+    "events", os.path.join(EV, "__init__.py"), submodule_search_locations=[EV]
+)
+_pkg = importlib.util.module_from_spec(_spec)
+sys.modules["events"] = _pkg
 _spec.loader.exec_module(_pkg)
 ap_engine = importlib.import_module("events.ap_engine")
 import httpx  # noqa: E402
@@ -40,12 +43,14 @@ async def main() -> int:
     async with httpx.AsyncClient(timeout=20) as c:
         hdrs = await eng._auth(c)
         pr = await c.get(f"{eng.base}/api/v1/projects", headers=hdrs, params={"limit": 100})
-        data = pr.json(); projects = data.get("data", data) if isinstance(data, dict) else data
+        data = pr.json()
+        projects = data.get("data", data) if isinstance(data, dict) else data
         for p in projects or []:
             pid, pname = p["id"], p.get("displayName")
             # flows
-            fr = await c.get(f"{eng.base}/api/v1/flows", headers=hdrs,
-                             params={"projectId": pid, "limit": 100})
+            fr = await c.get(
+                f"{eng.base}/api/v1/flows", headers=hdrs, params={"projectId": pid, "limit": 100}
+            )
             for f in fr.json().get("data", []):
                 nm = (f.get("version") or {}).get("displayName", "")
                 if ALL or _is_ea_flow(nm):
@@ -54,8 +59,9 @@ async def main() -> int:
                         await c.delete(f"{eng.base}/api/v1/flows/{f['id']}", headers=hdrs)
                     df += 1
             # connections
-            cr = await c.get(f"{eng.base}/api/v1/app-connections", headers=hdrs,
-                             params={"projectId": pid, "limit": 100})
+            cr = await c.get(
+                f"{eng.base}/api/v1/app-connections", headers=hdrs, params={"projectId": pid, "limit": 100}
+            )
             for cn in cr.json().get("data", []):
                 ext = cn.get("externalId", "")
                 if ALL or ext.startswith("ea"):

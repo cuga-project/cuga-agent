@@ -2539,10 +2539,10 @@ def _roster_details(path: str) -> Dict[str, Dict[str, Any]]:
             if not isinstance(a, dict) or not a.get("name"):
                 continue
             out[str(a["name"])] = {
-                "description": str(a.get("description")
-                                   or a.get("special_instructions") or "").strip(),
-                "mcp_servers": [m.get("name") if isinstance(m, dict) else str(m)
-                                for m in (a.get("mcp_servers") or [])],
+                "description": str(a.get("description") or a.get("special_instructions") or "").strip(),
+                "mcp_servers": [
+                    m.get("name") if isinstance(m, dict) else str(m) for m in (a.get("mcp_servers") or [])
+                ],
             }
         return out
     except Exception as e:  # noqa: BLE001 — a nicety; never fail the load for it
@@ -2573,8 +2573,7 @@ async def _get_supervisor():
     _supervisor_cache[path] = sup
     _details = _roster_details(path)
     _supervisor_roster[path] = [
-        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})}
-        for n in (cfg.agents or {})
+        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (cfg.agents or {})
     ]
     logger.info(f"CUGA is running AS a supervisor: {len(cfg.agents)} sub-agent(s) from {path}")
     return sup
@@ -2636,7 +2635,8 @@ async def run_sync(request: Request):
     if not isinstance(query, str) or not query.strip():
         if not resume_raw:
             return JSONResponse(
-                {"ok": False, "status": "error", "error": "query is required (or action_response to resume)"}, 422
+                {"ok": False, "status": "error", "error": "query is required (or action_response to resume)"},
+                422,
             )
         query = None
     resume = None
@@ -2662,9 +2662,16 @@ async def run_sync(request: Request):
     channel = body.get("channel") if isinstance(body.get("channel"), dict) else None
     if isinstance(query, str) and _forwards_to_events(query, thread_id):
         reply = await _forward_slash_to_events(query, thread_id, request.headers, channel=channel)
-        return {"ok": bool(reply), "status": "ok" if reply else "error",
-                "answer": reply, "thread_id": thread_id, "sources": [], "variables": {},
-                "routed_to": "events", "error": None if reply else "eventing layer returned nothing"}
+        return {
+            "ok": bool(reply),
+            "status": "ok" if reply else "error",
+            "answer": reply,
+            "thread_id": thread_id,
+            "sources": [],
+            "variables": {},
+            "routed_to": "events",
+            "error": None if reply else "eventing layer returned nothing",
+        }
 
     run_agent = None
     if str(body.get("use_draft", "")).lower() in ("1", "true", "yes", "on"):
@@ -2684,8 +2691,14 @@ async def run_sync(request: Request):
     except Exception as e:  # noqa: BLE001 — a bad roster must not take the endpoint down
         logger.exception("supervisor roster failed to load")
         return JSONResponse(
-            {"ok": False, "status": "error", "answer": "", "thread_id": thread_id,
-             "error": f"supervisor roster {_supervisor_roster_path()!r} failed to load: {e}"}, 500
+            {
+                "ok": False,
+                "status": "error",
+                "answer": "",
+                "thread_id": thread_id,
+                "error": f"supervisor roster {_supervisor_roster_path()!r} failed to load: {e}",
+            },
+            500,
         )
     if supervisor is not None and query:
         # PINNED sub-agent: a caller that names a real sub-agent (a webhook with
@@ -2696,14 +2709,18 @@ async def run_sync(request: Request):
         pinned = str(body.get("agent") or "").split("::")[-1].strip()
         roster_names = {a["name"] for a in (_supervisor_roster.get(_supervisor_roster_path()) or [])}
         if pinned and pinned != "cuga" and pinned in roster_names:
-            query = (f"Delegate this to the `{pinned}` agent — it is the right specialist. "
-                     f"Return its answer.\n\n{query}")
+            query = (
+                f"Delegate this to the `{pinned}` agent — it is the right specialist. "
+                f"Return its answer.\n\n{query}"
+            )
         try:
             res = await supervisor.invoke(query, thread_id=thread_id)
             answer = (getattr(res, "answer", None) or getattr(res, "result", None) or "") if res else ""
             return {
-                "ok": bool(answer), "status": "ok" if answer else "error",
-                "answer": answer, "thread_id": thread_id,
+                "ok": bool(answer),
+                "status": "ok" if answer else "error",
+                "answer": answer,
+                "thread_id": thread_id,
                 "sources": list(getattr(res, "sources", None) or []),
                 "variables": dict(getattr(res, "variables", None) or {}),
                 "error": None if answer else "supervisor returned an empty answer",
@@ -2711,8 +2728,7 @@ async def run_sync(request: Request):
         except Exception as e:  # noqa: BLE001
             logger.exception("/run supervisor invoke failed")
             return JSONResponse(
-                {"ok": False, "status": "error", "answer": "", "thread_id": thread_id,
-                 "error": str(e)}, 500
+                {"ok": False, "status": "error", "answer": "", "thread_id": thread_id, "error": str(e)}, 500
             )
     try:
         async for frame in event_stream(
@@ -2726,7 +2742,9 @@ async def run_sync(request: Request):
             user_attachments=attachments,
         ):
             try:
-                ev = StreamEvent.parse(frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame))
+                ev = StreamEvent.parse(
+                    frame.decode("utf-8") if isinstance(frame, (bytes, bytearray)) else str(frame)
+                )
             except Exception:  # noqa: BLE001 — a malformed/foreign frame must not sink the run
                 continue
             if ev is None or not ev.name:
@@ -2772,8 +2790,7 @@ async def run_sync(request: Request):
 # depends on a bot-id lookup succeeding. If it ever doesn't, "<@U123> /automate …" must still be
 # recognised as arming — handing it to the plain agent is the silent-failure trap (it tries to
 # IMPLEMENT the schedule), which is precisely what this feature exists to prevent.
-_SLASH_VERBS = re.compile(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push|cancel)\b",
-                          re.I)
+_SLASH_VERBS = re.compile(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push|cancel)\b", re.I)
 # Threads with an arming dialogue open, so a bare "yes" / "cancel" / "change the prompt to …" is
 # forwarded too. Deliberately IN-MEMORY: core must not read the events store. It is a routing hint,
 # not state — the eventing service holds the real parked entry (10-minute TTL) and is the only
@@ -2787,14 +2804,15 @@ def _events_api_url() -> str:
 
 def _forwards_to_events(query: str, thread_id: Optional[str]) -> bool:
     if not _events_api_url():
-        return False                      # no eventing service configured → plain chat, as before
+        return False  # no eventing service configured → plain chat, as before
     if _SLASH_VERBS.match(query or ""):
         return True
     return bool(thread_id) and thread_id in _events_open_threads
 
 
-async def _forward_slash_to_events(query: str, thread_id: Optional[str], headers,
-                                   channel: Optional[Dict[str, Any]] = None) -> str:
+async def _forward_slash_to_events(
+    query: str, thread_id: Optional[str], headers, channel: Optional[Dict[str, Any]] = None
+) -> str:
     """POST the utterance to the eventing service's /api/concierge and return its reply text.
 
     Also tracks whether the dialogue is still open, straight off the structured `state` the events
@@ -2831,11 +2849,11 @@ async def _forward_slash_to_events(query: str, thread_id: Optional[str], headers
         data = r.json() if r.content else {}
     except Exception as e:  # noqa: BLE001 — a down events service must not break chat
         logger.warning(f"slash forward to {base} failed: {e}")
-        return (f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed.")
+        return f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed."
     state = (data.get("state") or "").lower()
     if thread_id:
         if state in ("confirm", "needs_input"):
-            _events_open_threads.add(thread_id)      # the next message is part of this dialogue
+            _events_open_threads.add(thread_id)  # the next message is part of this dialogue
         else:
             _events_open_threads.discard(thread_id)  # armed / cancelled / plain answer → done
     return data.get("reply") or data.get("answer") or data.get("message") or ""
@@ -2860,10 +2878,14 @@ async def run_agents(request: Request):
     path = _supervisor_roster_path()
     if not path:
         # Not running as a supervisor: one plain agent, still addressable as "cuga".
-        return {"ok": True, "supervisor": False, "roster": "",
-                "agents": [{"name": "cuga", "description": "the CUGA agent", "mcp_servers": []}]}
+        return {
+            "ok": True,
+            "supervisor": False,
+            "roster": "",
+            "agents": [{"name": "cuga", "description": "the CUGA agent", "mcp_servers": []}],
+        }
     try:
-        await _get_supervisor()          # builds + populates _supervisor_roster on first call
+        await _get_supervisor()  # builds + populates _supervisor_roster on first call
     except Exception as e:  # noqa: BLE001
         logger.exception("roster failed to load")
         return JSONResponse({"ok": False, "error": f"roster {path!r} failed to load: {e}"}, 500)

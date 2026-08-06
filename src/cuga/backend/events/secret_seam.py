@@ -38,10 +38,14 @@ def secret(name: str, default: str = "") -> str:
         return raw
     try:
         from cuga.backend.secrets import resolve_secret
+
         val = resolve_secret(raw)
         if val is None:
-            log.warning("secret %s is a reference (%s…) but resolved to nothing — "
-                        "check the secrets backend", name, raw.split("://", 1)[0])
+            log.warning(
+                "secret %s is a reference (%s…) but resolved to nothing — check the secrets backend",
+                name,
+                raw.split("://", 1)[0],
+            )
             return ""
         return val
     except Exception as e:  # noqa: BLE001 — resolver missing/broken must not crash the caller

@@ -24,6 +24,7 @@ Config:
   EVENTS_DB             durable store path                  (default ~/.cuga/events.db)
   EVENTS_SERVICE_PORT   listen port                         (default 8100)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -60,11 +61,10 @@ def _load_env() -> None:
     """
     try:
         from dotenv import find_dotenv, load_dotenv
-    except ImportError:                     # dotenv is a CUGA dep; absence just means "env only"
+    except ImportError:  # dotenv is a CUGA dep; absence just means "env only"
         return
     forced = os.environ.get("ENV_FILE")
-    path = forced or find_dotenv(filename=".env", usecwd=True) or find_dotenv(filename=".env",
-                                                                              usecwd=False)
+    path = forced or find_dotenv(filename=".env", usecwd=True) or find_dotenv(filename=".env", usecwd=False)
     if path and os.path.isfile(path):
         load_dotenv(path, override=bool(forced))
         log.info("events service: loaded env from %s", path)
@@ -80,7 +80,7 @@ def _apply_defaults() -> None:
     Slack was stored under one scope and listed under another. Armed, fired, delivered, and
     completely invisible in the Flows tab. ``setdefault`` throughout, so .env and real env still win.
     """
-    os.environ.setdefault("EVENTS_USER_ID", "admin")     # Studio + channels share one scope
+    os.environ.setdefault("EVENTS_USER_ID", "admin")  # Studio + channels share one scope
     os.environ.setdefault("EVENTS_WORKER_BACKEND", "http")
     os.environ.setdefault("EVENTS_SEED_AGENTS", "1")
 
@@ -109,6 +109,7 @@ def create_app():
     # credentials in plaintext to the platform log, readable by anyone with log access to the
     # project and retained long after a rotation. db._redact keeps the shape, drops the secret.
     from .db import _redact as _redact_dsn
+
     log.info("events service: store = %s", _redact_dsn(db))
 
     # DURABILITY. The container filesystem is ephemeral: when the platform replaces the instance,
@@ -116,6 +117,7 @@ def create_app():
     # the durable snapshot BEFORE any store opens the file, or the stores create fresh empty tables
     # and the restore has nothing to put back. See db_persist.py for why the live DB stays local.
     from . import db_persist
+
     db_persist.restore(db)
 
     # WHERE /invoke LIVES. Every trigger source (native scheduler, Slack/Discord/Telegram loops,
@@ -134,8 +136,9 @@ def create_app():
     if cuga_url.rstrip("/").endswith(f":{port}"):
         raise RuntimeError(
             f"CUGA_URL ({cuga_url}) points at this service's own port — the worker would call "
-            f"itself in a loop. Set CUGA_URL to the CUGA service.")
-    os.environ["EVENTS_CUGA_PORT"] = str(port)     # loopback /invoke = this service
+            f"itself in a loop. Set CUGA_URL to the CUGA service."
+        )
+    os.environ["EVENTS_CUGA_PORT"] = str(port)  # loopback /invoke = this service
     log.info("events service: /invoke on :%d · CUGA at %s", port, cuga_url)
 
     store = SubscriptionStore(db)
@@ -146,10 +149,12 @@ def create_app():
 
     # THE split: the worker crosses the wire. Everything else — triggers, scheduler, channels,
     # concierge, delivery — stays right here, which is why the direct integrations are unaffected.
-    runtime = make_runtime("http", agent_store=agents, cuga_url=cuga_url,
-                           cuga_token=os.environ.get("CUGA_RUN_TOKEN", ""))
-    concierge = Concierge(runtime, store=store, engine=_engine(), model_factory=default_model_factory,
-                          users=users)
+    runtime = make_runtime(
+        "http", agent_store=agents, cuga_url=cuga_url, cuga_token=os.environ.get("CUGA_RUN_TOKEN", "")
+    )
+    concierge = Concierge(
+        runtime, store=store, engine=_engine(), model_factory=default_model_factory, users=users
+    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -178,17 +183,34 @@ def create_app():
     # That is cross-origin in a split deployment, so the browser needs CORS. Origins are explicit
     # (EVENTS_CORS_ORIGINS, comma-separated — the deploy script sets it to the CUGA app's URL);
     # unset means combined mode, where the UI is same-origin and no CORS is needed at all.
-    _origins = [o.strip().rstrip("/") for o in
-                (os.environ.get("EVENTS_CORS_ORIGINS", "") or "").split(",") if o.strip()]
+    _origins = [
+        o.strip().rstrip("/")
+        for o in (os.environ.get("EVENTS_CORS_ORIGINS", "") or "").split(",")
+        if o.strip()
+    ]
     if _origins:
         from fastapi.middleware.cors import CORSMiddleware
-        app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=True,
-                           allow_methods=["*"], allow_headers=["*"])
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
         log.info("events service: CORS enabled for %s", ", ".join(_origins))
     gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
-    register_events_routes(app, runtime=runtime, store=store, concierge=concierge,
-                           engine=_engine(), users=users, identity=identity,
-                           oauth_store=oauth_store, gateway_token=gw)
+    register_events_routes(
+        app,
+        runtime=runtime,
+        store=store,
+        concierge=concierge,
+        engine=_engine(),
+        users=users,
+        identity=identity,
+        oauth_store=oauth_store,
+        gateway_token=gw,
+    )
     app.state.ev_concierge = concierge
 
     @app.get("/health")
@@ -204,6 +226,7 @@ def _engine():
         return None
     try:
         from .ap_engine import APEngine
+
         return APEngine()
     except Exception as e:  # noqa: BLE001 — AP is optional; never block boot on it
         log.warning("Activepieces configured but unavailable (%s) — continuing without it", e)
@@ -212,8 +235,9 @@ def _engine():
 
 def main() -> None:
     import uvicorn
+
     logging.basicConfig(level=os.environ.get("EVENTS_LOG_LEVEL", "INFO"))
-    _load_env()                    # the process entrypoint owns config, not create_app()
+    _load_env()  # the process entrypoint owns config, not create_app()
     # httpx logs every request URL at INFO — and channel APIs carry the BOT TOKEN in the path
     # (api.telegram.org/bot<token>/getUpdates), so INFO httpx logging writes live credentials into
     # the log. Quiet it unless someone explicitly asks for it.

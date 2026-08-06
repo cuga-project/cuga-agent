@@ -13,21 +13,30 @@ from __future__ import annotations
 import re
 
 # event verbs that imply a native app trigger (PUSH)
-_PUSH = re.compile(r"\bwhen (a |an |someone |my |the )?\b|\bwhenever\b|\blands?\b|\barrives?\b|"
-                   r"\bopens?\b|\bis (opened|created|added|labeled|uploaded)\b|\bposts?\b", re.I)
+_PUSH = re.compile(
+    r"\bwhen (a |an |someone |my |the )?\b|\bwhenever\b|\blands?\b|\barrives?\b|"
+    r"\bopens?\b|\bis (opened|created|added|labeled|uploaded)\b|\bposts?\b",
+    re.I,
+)
 # "only when it changes / crosses / moves / on a move" → POLL (an interval that emits on change).
 # Verbs are restricted to change-signals so "when a PR opens"/"when it lands" stay PUSH.
-_POLL = re.compile(r"\bonly (if|when)\b|\b(if|when) it (changes?|moves?|drops?|crosses?|rises?|"
-                   r"spikes?|jumps?|goes|hits)\b|\b(on|upon) a (move|change|dip|spike|jump|drop|"
-                   r"rise|swing)\b|\bwatch\b.*\b(change|move|>|<|%|threshold|drops?|rises?)\b|"
-                   r"\bnotify me (only|when)\b|"
-                   # "tell me only about new items" / "only if there are new ones": an interval that
-                   # emits only on NEW content is a POLL, not a plain CRON — the proven feed_watcher
-                   # misroute (armed CRON 3/3 on the dry-run planner, 2026-07-10).
-                   r"\bonly\b[^.]{0,40}\bnew\b", re.I)
+_POLL = re.compile(
+    r"\bonly (if|when)\b|\b(if|when) it (changes?|moves?|drops?|crosses?|rises?|"
+    r"spikes?|jumps?|goes|hits)\b|\b(on|upon) a (move|change|dip|spike|jump|drop|"
+    r"rise|swing)\b|\bwatch\b.*\b(change|move|>|<|%|threshold|drops?|rises?)\b|"
+    r"\bnotify me (only|when)\b|"
+    # "tell me only about new items" / "only if there are new ones": an interval that
+    # emits only on NEW content is a POLL, not a plain CRON — the proven feed_watcher
+    # misroute (armed CRON 3/3 on the dry-run planner, 2026-07-10).
+    r"\bonly\b[^.]{0,40}\bnew\b",
+    re.I,
+)
 # recurring clock words → CRON
-_CRON = re.compile(r"\bevery\b|\bdaily\b|\bhourly\b|\bweekday\b|\beach (morning|day|week|friday|"
-                   r"monday|hour)\b|\bat \d{1,2}(:\d\d)?\s*(am|pm)?\b|\bcron\b", re.I)
+_CRON = re.compile(
+    r"\bevery\b|\bdaily\b|\bhourly\b|\bweekday\b|\beach (morning|day|week|friday|"
+    r"monday|hour)\b|\bat \d{1,2}(:\d\d)?\s*(am|pm)?\b|\bcron\b",
+    re.I,
+)
 
 # native sources → (app, event) — GENERATED from the trigger registry (triggers.py), so a new
 # trigger's phrases are picked up here automatically. Longer (more specific) phrases are tried
@@ -45,23 +54,51 @@ _SOURCES += [
 ]
 
 # word-numbers: dictated/voice input says "every five minutes", not "every 5 minutes"
-_NUM_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-              "seven": 7, "eight": 8, "nine": 9, "ten": 10, "fifteen": 15, "twenty": 20,
-              "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60}
+_NUM_WORDS = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "fifteen": 15,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+}
 _NUM_RX = r"(\d+|" + "|".join(_NUM_WORDS) + r")"
-_UNIT_SECS = {"second": 1, "sec": 1, "minute": 60, "min": 60, "hour": 3600, "hr": 3600,
-              "day": 86400, "week": 604800}
+_UNIT_SECS = {
+    "second": 1,
+    "sec": 1,
+    "minute": 60,
+    "min": 60,
+    "hour": 3600,
+    "hr": 3600,
+    "day": 86400,
+    "week": 604800,
+}
 _INTERVAL = re.compile(rf"every\s+{_NUM_RX}?\s*(second|sec|minute|min|hour|hr|day)s?\b", re.I)
 _AT_TIME = re.compile(r"\bat\s+(\d{1,2})(?::(\d\d))?\s*(am|pm)?", re.I)
 _WEEKDAY = re.compile(r"\bweekday|mon(day)?[- ]?(to|through|-)?[- ]?fri(day)?\b", re.I)
 # a bounded run: "for one hour", "for 45 minutes", "for the next 2 days", "for an hour"
-_TTL = re.compile(rf"\bfor\s+(?:the\s+next\s+)?{_NUM_RX}\s*"
-                  r"(second|sec|minute|min|hour|hr|day|week)s?\b", re.I)
+_TTL = re.compile(
+    rf"\bfor\s+(?:the\s+next\s+)?{_NUM_RX}\s*"
+    r"(second|sec|minute|min|hour|hr|day|week)s?\b",
+    re.I,
+)
 
 
 def _num(tok: str | None) -> int:
     if not tok:
-        return 1                     # "every minute" / "every hour"
+        return 1  # "every minute" / "every hour"
     tok = tok.lower()
     return int(tok) if tok.isdigit() else _NUM_WORDS.get(tok, 1)
 
@@ -108,7 +145,7 @@ def source_candidates(text: str) -> list[tuple[str, str]]:
     hits = [se for rx, se in _SOURCES if rx.search(t)]
     named = [se for se in hits if re.search(rf"\b{re.escape(se[0])}\b", t, re.I)]
     out: list[tuple[str, str]] = []
-    for se in (named + hits):
+    for se in named + hits:
         if se not in out:
             out.append(se)
     return out
@@ -125,7 +162,7 @@ def ttl_of(text: str) -> int | None:
         return None
     iv = _INTERVAL.search(text or "")
     if iv and iv.start() <= m.start() < iv.end():
-        return None                  # "for" overlapped the cadence match — not a bound
+        return None  # "for" overlapped the cadence match — not a bound
     n, unit = _num(m.group(1)), m.group(2).lower()
     return n * _UNIT_SECS.get(unit, 60)
 

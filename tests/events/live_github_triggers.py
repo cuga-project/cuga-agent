@@ -33,7 +33,7 @@ import triggers  # noqa: E402
 
 SERVER = os.environ.get("EVENTS_SERVER_URL", "http://localhost:7860").rstrip("/")
 TEST_REPO = os.environ.get("GITHUB_TEST_REPO", "anupamamurthi/pachyderm")
-ALLOWED_REPOS = {"anupamamurthi/pachyderm"}          # the ONLY repo this harness may touch
+ALLOWED_REPOS = {"anupamamurthi/pachyderm"}  # the ONLY repo this harness may touch
 
 
 def _env(key, default=""):
@@ -73,8 +73,9 @@ UTTERANCES = {
 
 def http(method, url, body=None, headers=None, timeout=200):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json", **(headers or {})})
+    req = urllib.request.Request(
+        url, data=data, method=method, headers={"Content-Type": "application/json", **(headers or {})}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -88,9 +89,11 @@ def http(method, url, body=None, headers=None, timeout=200):
 
 
 def gh(path, method="GET"):
-    req = urllib.request.Request(f"https://api.github.com{path}", method=method,
-                                 headers={"Authorization": f"token {GH_TOKEN}",
-                                          "Accept": "application/vnd.github+json"})
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        method=method,
+        headers={"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github+json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, (json.loads(r.read().decode() or "null") if method == "GET" else None)
@@ -106,13 +109,14 @@ def cleanup_repo_webhooks() -> int:
     n = 0
     for h in hooks:
         st, _ = gh(f"/repos/{TEST_REPO}/hooks/{h['id']}", method="DELETE")
-        n += (st == 204)
+        n += st == 204
     return n
 
 
 def main() -> int:
     assert TEST_REPO in ALLOWED_REPOS, (
-        f"refusing to run against {TEST_REPO!r} — this harness is pinned to {ALLOWED_REPOS}")
+        f"refusing to run against {TEST_REPO!r} — this harness is pinned to {ALLOWED_REPOS}"
+    )
     only = sys.argv[1] if len(sys.argv) > 1 else ""
     rows = [t for t in triggers.events_for("github") if (not only or t.event == only)]
     print(f"GitHub trigger tier — {len(rows)} trigger(s) against {TEST_REPO}  ({SERVER})")
@@ -122,8 +126,12 @@ def main() -> int:
         ev = t.event
         utter = UTTERANCES[ev].format(repo=TEST_REPO)
         # 1) ARM via the deterministic slash path (no LLM routing variance)
-        code, rep = http("POST", f"{SERVER}/api/concierge",
-                         {"text": f"/push {utter}", "thread_id": f"web:ghtier:{ev}"}, timeout=240)
+        code, rep = http(
+            "POST",
+            f"{SERVER}/api/concierge",
+            {"text": f"/push {utter}", "thread_id": f"web:ghtier:{ev}"},
+            timeout=240,
+        )
         reply = str(rep.get("reply", ""))
         m = re.search(r"subscription ([\w-]+)", reply)
         armed = code == 200 and ("ARMED" in reply or "REUSING" in reply) and m
@@ -142,8 +150,13 @@ def main() -> int:
         raw = json.dumps(t.synth).replace("o/r", TEST_REPO)
         raw = raw.replace("MENTION_LOGIN", GH_LOGIN or TEST_REPO.split("/")[0])
         synth = json.loads(raw)
-        code, run = http("POST", f"{SERVER}/api/events/subscriptions/{sub_id}/run?timeout=150",
-                         synth, headers={"X-Gateway-Token": GW}, timeout=200)
+        code, run = http(
+            "POST",
+            f"{SERVER}/api/events/subscriptions/{sub_id}/run?timeout=150",
+            synth,
+            headers={"X-Gateway-Token": GW},
+            timeout=200,
+        )
         answer = str(run.get("answer") or "")
         fired = code == 200 and run.get("ok") and len(answer) > 20
         status = "PASS" if fired else ("ARMED-NOFIRE" if code else "FIRE-FAIL")
@@ -157,18 +170,21 @@ def main() -> int:
         http("DELETE", f"{SERVER}/api/events/subscriptions/{sid}", timeout=60)
     removed = cleanup_repo_webhooks()
     st, hooks = gh(f"/repos/{TEST_REPO}/hooks")
-    print(f"[cleanup] removed {removed} webhook(s); remaining on {TEST_REPO}: "
-          f"{len(hooks) if hooks else 0}")
+    print(f"[cleanup] removed {removed} webhook(s); remaining on {TEST_REPO}: {len(hooks) if hooks else 0}")
     npass = sum(1 for _, s, _ in results if s == "PASS")
-    print(f"\nRESULT: {npass}/{len(rows)} triggers armed+fired  ({time.time()-t0:.0f}s)")
+    print(f"\nRESULT: {npass}/{len(rows)} triggers armed+fired  ({time.time() - t0:.0f}s)")
     if npass == len(rows):
         try:
-            import sys as _s, os as _o
+            import sys as _s
+            import os as _o
+
             _s.path.insert(0, _o.path.dirname(__file__))
             from _ledger import record as _lrec
+
             _lrec("github", "arm", "ok", f"all {len(rows)} arm as real AP flows + repo webhooks")
-            _lrec("github", "fire_synth", "ok",
-                  f"{npass}/{len(rows)} piece-exact payloads fired real AP runs")
+            _lrec(
+                "github", "fire_synth", "ok", f"{npass}/{len(rows)} piece-exact payloads fired real AP runs"
+            )
         except Exception:  # noqa: BLE001
             pass
     for ev, s, detail in results:

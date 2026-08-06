@@ -11,6 +11,7 @@ Sources of truth (nothing in the deck is hand-typed twice):
 The deck is a single self-contained HTML file: ← → / space to navigate, `p` for print view
 (all slides), deep-linkable (#7). Served in the Studio via GET /api/events/docs/slides.
 """
+
 from __future__ import annotations
 
 import html
@@ -27,14 +28,18 @@ CHANNELS = [
     ("telegram", "bot long-poll via the events layer"),
 ]
 
-FIRE_LABEL = {"synth": "machine-fireable", "real": "fireable with a real local action",
-              "manual": "needs a real external event"}
+FIRE_LABEL = {
+    "synth": "machine-fireable",
+    "real": "fireable with a real local action",
+    "manual": "needs a real external event",
+}
 FIRE_BADGE = {"synth": "synth", "real": "real", "manual": "manual"}
 
 
 def _sources():
     sys.path.insert(0, str(ROOT))
     from src.cuga.backend.events import triggers, catalog  # noqa: E402
+
     return triggers, catalog
 
 
@@ -43,6 +48,7 @@ def _bench_stats():
     sys.path.insert(0, str(ROOT / "tests" / "events"))
     from src.cuga.backend.events import flowspec  # noqa: E402
     from test_flowspec_bench import BENCH  # noqa: E402
+
     push = [(u, w) for u, w in BENCH if w["kind"] == "push" and w["source"]]
     high = right = 0
     for u, w in push:
@@ -104,7 +110,10 @@ def build() -> str:
 </section>""")
 
     # 2 — why (the pitch)
-    slides.append(_slide("Why — the human shouldn't be the trigger", f"""
+    slides.append(
+        _slide(
+            "Why — the human shouldn't be the trigger",
+            f"""
 <p class="big">Today most agents only act when a human asks. Event-driven agents act when
    <b>time</b> says so or when <b>the world changes</b> — a tool you operate becomes a teammate
    that works while you sleep.</p>
@@ -125,10 +134,15 @@ def build() -> str:
   <tr><td class="k">The world changes</td><td class="ex">“ping me only when this PR / price / file
       changes”</td>
       <td><span class="badge fire-synth">live — {len(rows)} triggers, POLL + PUSH</span></td></tr>
-</table>"""))
+</table>""",
+        )
+    )
 
     # 3 — the idea
-    slides.append(_slide("From ask → answer to watch → act", """
+    slides.append(
+        _slide(
+            "From ask → answer to watch → act",
+            """
 <div class="cols">
   <div class="col">
     <h3>A chat agent</h3>
@@ -144,7 +158,9 @@ def build() -> str:
   </div>
 </div>
 <p>One sentence in any channel is enough: the concierge turns natural language into an armed,
-   standing flow — no console, no YAML.</p>"""))
+   standing flow — no console, no YAML.</p>""",
+        )
+    )
 
     # 4 — the three kinds, with real catalog examples per kind (starred first)
     kind_ex: dict[str, list[str]] = {"cron": [], "poll": [], "push": []}
@@ -156,7 +172,10 @@ def build() -> str:
     def _exs(k):
         return "".join(f"<div class='ex'>“{_esc(u)}”</div>" for u in kind_ex[k])
 
-    slides.append(_slide("Three kinds of standing flow", f"""
+    slides.append(
+        _slide(
+            "Three kinds of standing flow",
+            f"""
 <table class="tbl kinds">
   <tr><th>Kind</th><th>Fires when…</th><th>Say it like this</th></tr>
   <tr><td class="k cron">CRON</td><td>a schedule ticks — no external state, pure time</td>
@@ -168,12 +187,17 @@ def build() -> str:
       reaction added, webhook called. No sampling: the world calls us</td>
       <td>{_exs('push')}</td></tr>
 </table>
-<p>PUSH is where the trigger registry lives — everything on the next slides is a PUSH trigger.</p>"""))
+<p>PUSH is where the trigger registry lives — everything on the next slides is a PUSH trigger.</p>""",
+        )
+    )
 
     # 4 — architecture
-    svg = (ROOT / "events_docs" / "architecture" / "system.svg")
+    svg = ROOT / "events_docs" / "architecture" / "system.svg"
     svg_markup = svg.read_text() if svg.exists() else "<p class='dim'>architecture/system.svg</p>"
-    slides.append(_slide("Architecture — one seam, two backends", f"""
+    slides.append(
+        _slide(
+            "Architecture — one seam, two backends",
+            f"""
 <div class="arch">{svg_markup}</div>
 <ul class="tight">
   <li><b>/invoke</b> is the single seam: every trigger, from every backend, arrives as the same
@@ -182,15 +206,21 @@ def build() -> str:
       The agent never sees a token.</li>
   <li><b>Direct backend</b> — CUGA already receives Slack Events / the Discord Gateway, so a watcher
       is just a subscription row. No AP flow at all.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # 4b — the single-agent model (roster size read from the canonical YAML — can't overstate)
     try:
         import yaml as _yaml
+
         n_roster = len((_yaml.safe_load(open(ROOT / "supervisor_agents.yaml")) or {}).get("agents") or [])
     except Exception:  # noqa: BLE001
         n_roster = 0
-    slides.append(_slide("One agent — the supervisor model", f"""
+    slides.append(
+        _slide(
+            "One agent — the supervisor model",
+            f"""
 <p class="big">Users and events address exactly <b>one agent: <code>cuga</code></b>. Specialists
    exist, but they are <em>its</em> sub-agents — never addressed, never exposed.</p>
 <pre style="background: var(--card); border: 1px solid #262b38; border-radius: 10px;
@@ -213,10 +243,15 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
   <li><b>Routing is a measured gate</b>, not a vibe: <code>make test-delegation</code> scores the
       supervisor's picks on labelled payloads (first full run: 14/14, zero self-answers).</li>
   <li>Flag unset → the same one agent, as plain classic CUGA — the whole events layer still works.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # 5 — the registry
-    slides.append(_slide("The trigger registry — one table rules everything", f"""
+    slides.append(
+        _slide(
+            "The trigger registry — one table rules everything",
+            f"""
 <p><code>triggers.py</code> holds <b>{len(rows)} triggers</b> — one row per
    <code>(integration, event)</code>: the AP piece trigger <em>or</em> the direct event kind, the
    curated payload map, the config slots, the classifier phrases, and a synthetic fire payload.</p>
@@ -228,18 +263,27 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
   <li>{n_ap} triggers run via Activepieces · {n_direct} run direct</li>
 </ul>
 <p class="dim">Adding a trigger = adding one row (+ an agent that declares it). The parametrized test
-   suite picks it up automatically.</p>"""))
+   suite picks it up automatically.</p>""",
+        )
+    )
 
     # 6 — channels
-    ch_rows = "".join(f"<tr><td class='k chan'>{_esc(n)}</td><td>{_esc(d)}</td></tr>"
-                      for n, d in CHANNELS)
-    slides.append(_slide("Channels — where you talk to it (and where answers land)", f"""
+    ch_rows = "".join(f"<tr><td class='k chan'>{_esc(n)}</td><td>{_esc(d)}</td></tr>" for n, d in CHANNELS)
+    slides.append(
+        _slide(
+            "Channels — where you talk to it (and where answers land)",
+            f"""
 <table class="tbl">{ch_rows}</table>
 <p>The <b>sink follows the origin</b>: arm a watcher from Slack and the answers arrive in Slack;
-   arm it from web chat and they ride back over HTTP. Same agent, same flow.</p>"""))
+   arm it from web chat and they ride back over HTTP. Same agent, same flow.</p>""",
+        )
+    )
 
     # channels are a SEPARATE deliverable from triggers+actions — make that explicit
-    slides.append(_slide("Two tracks that converge — channels vs. watch/act", """
+    slides.append(
+        _slide(
+            "Two tracks that converge — channels vs. watch/act",
+            """
 <div class="cols">
   <div class="col">
     <h3>Track A — Channels (converse)</h3>
@@ -257,12 +301,17 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
 </div>
 <p>The two are <b>decoupled by design</b> and meet at one seam — <code>/invoke</code>. Any channel in,
    any trigger/action out. So "open up Slack/Discord/Telegram" and "support GitHub/Gmail/Calendar
-   actions" are <b>separate deliverables</b> that compose — not one tangled effort.</p>"""))
+   actions" are <b>separate deliverables</b> that compose — not one tangled effort.</p>""",
+        )
+    )
 
     # 6.5 — WHAT WAS DONE (the status slide): the two-track story with concrete numbers
     n_ap_i = len({t.app for t in rows if t.backend == "ap"})
     n_direct_i = len({t.app for t in rows if t.backend == "direct"})
-    slides.append(_slide("What's built — two tracks, one seam", f"""
+    slides.append(
+        _slide(
+            "What's built — two tracks, one seam",
+            f"""
 <div class="cols">
   <div class="col">
     <h3>Track A · Channels — communication</h3>
@@ -282,7 +331,9 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
 </div>
 <p>Both meet at <code>/invoke</code>. Test any event with <b>no connection</b> via
    <code>POST /api/events/synth-fire</code>; connect Calendar/Pinterest via OAuth for the real fire.
-   YouTube + RSS need no OAuth (public feeds).</p>"""))
+   YouTube + RSS need no OAuth (public feeds).</p>""",
+        )
+    )
 
     # 7 — integrations overview
     over = []
@@ -291,21 +342,30 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
         backends = sorted({t.backend for t in ts})
         b = " + ".join("Activepieces" if x == "ap" else "direct" for x in backends)
         default = next((t.event for t in ts if t.default), ts[0].event)
-        over.append(f"<tr><td class='k'>{_esc(app)}</td><td>{len(ts)}</td>"
-                    f"<td>{_esc(b)}</td><td><code>{_esc(default)}</code></td></tr>")
+        over.append(
+            f"<tr><td class='k'>{_esc(app)}</td><td>{len(ts)}</td>"
+            f"<td>{_esc(b)}</td><td><code>{_esc(default)}</code></td></tr>"
+        )
     # TIME-DRIVEN — the AP schedule piece is the clock behind every CRON/POLL flow (it's what ticks
     # the youtube/rss/calendar/pinterest pollers and any "every morning at 9…"). It has no OAuth
     # connection — it's a MODE, not an app — so it sits below the app rows, not among them.
-    over.append("<tr><td class='k'>schedule / cron</td><td>cron + poll</td>"
-                "<td>Activepieces (clock)</td><td><code>cron · poll</code></td></tr>")
-    slides.append(_slide(f"Integrations — {len(apps)} apps, {len(rows)} triggers", f"""
+    over.append(
+        "<tr><td class='k'>schedule / cron</td><td>cron + poll</td>"
+        "<td>Activepieces (clock)</td><td><code>cron · poll</code></td></tr>"
+    )
+    slides.append(
+        _slide(
+            f"Integrations — {len(apps)} apps, {len(rows)} triggers",
+            f"""
 <table class="tbl">
   <tr><th>Integration</th><th>Triggers</th><th>Backend</th><th>Default trigger</th></tr>
   {''.join(over)}
 </table>
 <p class="dim"><b>schedule / cron</b> isn't a connectable app — it's the AP <b>timer</b> that powers
    every POLL and CRON flow (including all four new pollers). Modeled as a time <em>mode</em>
-   (<code>source_type="time"</code>), not an integration you connect.</p>"""))
+   (<code>source_type="time"</code>), not an integration you connect.</p>""",
+        )
+    )
 
     # 8..N — one slide per integration
     for app in apps:
@@ -314,8 +374,10 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
         for t in ts:
             req = [n for n in t.slots if tr.SLOTS[n].required]
             opt = [n for n in t.slots if not tr.SLOTS[n].required]
-            slot = (" · ".join([f"needs <code>{_esc(n)}</code>" for n in req]
-                               + [f"<span class='dim'>{_esc(n)}?</span>" for n in opt]))
+            slot = " · ".join(
+                [f"needs <code>{_esc(n)}</code>" for n in req]
+                + [f"<span class='dim'>{_esc(n)}?</span>" for n in opt]
+            )
             exs = by_row.get(t.key, [])[:1]
             ex = f"<div class='ex'>“{_esc(exs[0])}”</div>" if exs else ""
             trs.append(
@@ -324,12 +386,19 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
                 f"<td><span class='badge {t.backend}'>{'AP' if t.backend == 'ap' else 'direct'}</span> "
                 f"<span class='badge fire-{t.fire}' title='{_esc(FIRE_LABEL[t.fire])}'>"
                 f"{FIRE_BADGE[t.fire]}</span></td>"
-                f"<td class='slots'>{slot}</td></tr>")
-        slides.append(_slide(f"{app} — {len(ts)} trigger{'s' if len(ts) > 1 else ''}", f"""
+                f"<td class='slots'>{slot}</td></tr>"
+            )
+        slides.append(
+            _slide(
+                f"{app} — {len(ts)} trigger{'s' if len(ts) > 1 else ''}",
+                f"""
 <table class="tbl triggers">
   <tr><th>Trigger</th><th>What it watches (+ say it like this)</th><th>Backend · fire</th><th>Config</th></tr>
   {''.join(trs)}
-</table>""", klass="integration"))
+</table>""",
+                klass="integration",
+            )
+        )
 
     # ── the ACTION half ────────────────────────────────────────────────────────────────────────
     # actions from the catalog (any example that arms a post-agent action)
@@ -340,13 +409,18 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
         for e in _act_ex:
             if pred(e) and len(out) < n:
                 live = "live" if e.get("live") else "offline"
-                out.append(f"<tr><td>“{_esc(e['utterance'])}”</td>"
-                           f"<td class='k'>{_esc(e['action'])}</td>"
-                           f"<td><span class='badge fire-{ 'synth' if e.get('live') else 'manual' }'>"
-                           f"{live}</span></td></tr>")
+                out.append(
+                    f"<tr><td>“{_esc(e['utterance'])}”</td>"
+                    f"<td class='k'>{_esc(e['action'])}</td>"
+                    f"<td><span class='badge fire-{'synth' if e.get('live') else 'manual'}'>"
+                    f"{live}</span></td></tr>"
+                )
         return "".join(out)
 
-    slides.append(_slide("From watch → act: the action half", f"""
+    slides.append(
+        _slide(
+            "From watch → act: the action half",
+            f"""
 <p>A trigger fires the agent — then the agent's answer drives a real <b>action</b> in a connected app,
    as a step in the same flow. Not just notify: <em>do</em>.</p>
 <table class="tbl">
@@ -362,9 +436,14 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
   <li><b>Three anti-silent-failure gates</b> — deterministic build · an arm-time AP <b>validity gate</b>
       (an invalid step is refused, never a false “ARMED”) · an <b>LLM verifier</b> that flags intent
       mismatches. A 22-case NL→Flow <b>benchmark</b> holds CORRECT-AT-ARM at 100%.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
-    slides.append(_slide("Direct triggers can act too — the executor (Option A)", f"""
+    slides.append(
+        _slide(
+            "Direct triggers can act too — the executor (Option A)",
+            f"""
 <p>Slack / Discord / Telegram triggers own <em>no</em> Activepieces flow (CUGA receives them itself),
    so their Gmail action runs via a reusable <b>executor flow</b> CUGA fires after the agent answers —
    Activepieces still keeps the credentials.</p>
@@ -378,7 +457,9 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
       caught two real bugs while proving it). <b>Pending:</b> the executor <em>run</em> hits an
       Activepieces platform error — the send doesn't execute on the test instance yet.</li>
   <li><b>Never silent</b> — if the action can't be armed, the concierge declines and says why.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # ── LAUNDRY LIST — a broad menu of utterances that actually work ────────────────────────────
     def _ex_rows(pred, n=9):
@@ -387,39 +468,61 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
             if not (pred(e) and e.get("utterance")):
                 continue
             app = e.get("integration") if e.get("integration") not in (None, "none") else e.get("trigger")
-            status = ("<span class='badge fire-synth'>live</span>" if e.get("live")
-                      else "<span class='badge fire-manual'>offline</span>")
-            rows_.append(f"<tr><td>“{_esc(e['utterance'])}”</td>"
-                         f"<td class='k'>{_esc(app)}</td><td>{status}</td></tr>")
+            status = (
+                "<span class='badge fire-synth'>live</span>"
+                if e.get("live")
+                else "<span class='badge fire-manual'>offline</span>"
+            )
+            rows_.append(
+                f"<tr><td>“{_esc(e['utterance'])}”</td><td class='k'>{_esc(app)}</td><td>{status}</td></tr>"
+            )
             if len(rows_) >= n:
                 break
         return "".join(rows_)
 
-    slides.append(_slide("Laundry list — TRIGGERS you can say (watch)", f"""
+    slides.append(
+        _slide(
+            "Laundry list — TRIGGERS you can say (watch)",
+            f"""
 <p class="dim">Event triggers — the world calls the agent. One sentence in any channel arms a standing flow.</p>
 <table class="tbl">
   <tr><th>Say it like this</th><th>App</th><th>Status</th></tr>
   {_ex_rows(lambda e: e.get('trigger') == 'push' and not e.get('action'), n=10)}
-</table>"""))
+</table>""",
+        )
+    )
 
-    slides.append(_slide("Laundry list — SCHEDULES &amp; watchers (cron · poll · webhook)", f"""
+    slides.append(
+        _slide(
+            "Laundry list — SCHEDULES &amp; watchers (cron · poll · webhook)",
+            f"""
 <table class="tbl">
   <tr><th>Say it like this</th><th>Kind</th><th>Status</th></tr>
   {_ex_rows(lambda e: e.get('trigger') in ('cron', 'poll') or e.get('integration') == 'webhook', n=10)}
 </table>
 <p class="dim">CRON = pure time · POLL = sample &amp; compare, speak only on change · WEBHOOK = anything
-   that can POST becomes a trigger.</p>"""))
+   that can POST becomes a trigger.</p>""",
+        )
+    )
 
-    slides.append(_slide("Laundry list — trigger ▸ agent ▸ ACTION (act)", f"""
+    slides.append(
+        _slide(
+            "Laundry list — trigger ▸ agent ▸ ACTION (act)",
+            f"""
 <p class="dim">The action half: after the agent answers, a connector action runs — reply, draft, send,
    or (from a direct channel) via the executor. Gmail is the live pilot; more actions are v1 breadth.</p>
 <table class="tbl">
   <tr><th>Say it like this</th><th>Action app</th><th>Status</th></tr>
   {_ex_rows(lambda e: bool(e.get('action')), n=11)}
-</table>"""))
+</table>""",
+        )
+    )
 
     # creating a flow
-    slides.append(_slide("Creating a flow — one sentence, or one command", """
+    slides.append(
+        _slide(
+            "Creating a flow — one sentence, or one command",
+            """
 <div class="cols">
   <div class="col">
     <h3>Natural language (any channel)</h3>
@@ -437,11 +540,16 @@ channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}
        lands on <b>the one agent (cuga)</b>, whose supervisor picks the right specialist
        internally.</p>
   </div>
-</div>"""))
+</div>""",
+        )
+    )
 
     # NL→Flow — how it's engineered
     b = _bench_stats()
-    slides.append(_slide("NL→Flow — engineered, not vibes", f"""
+    slides.append(
+        _slide(
+            "NL→Flow — engineered, not vibes",
+            f"""
 <p><b>The contract: a sentence becomes exactly the right flow, or a question — never silently the
 wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 <div class="cols">
@@ -465,10 +573,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 <p><b>Benchmarked in CI:</b> {b['cases']} hand-labelled cases (utterance → expected FlowSpec) —
    fast-path {b['high']}/{b['push']} push cases ({100 * b['high'] // max(b['push'], 1)}%),
    correct-at-high {b['right']}/{b['high']}, gated on <b>zero wrong-at-high</b>. It caught two real
-   bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p>"""))
+   bugs on its first run. Full walkthrough: <code>events_docs/nl_to_flow.html</code>.</p>""",
+        )
+    )
 
     # benchmarking — the two levels ("armed ≠ works")
-    slides.append(_slide("How we know it works — two levels of benchmark", f"""
+    slides.append(
+        _slide(
+            "How we know it works — two levels of benchmark",
+            f"""
 <p><b>Arming a flow is not proof it works.</b> A flow can compile perfectly and still never fire, or
    fire down the wrong branch. So we benchmark at two levels — a capability is "done" only when it
    passes <b>both</b>.</p>
@@ -488,10 +601,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 </table>
 <p class="dim">Fire strategy is tagged per trigger: <b>synth</b> (github webhooks, machine-fireable) ·
    <b>real</b> (a controllable local action — box upload, a slack message) · <b>manual</b> (a real email —
-   a scripted send in the harness). Level 2 is what turns "armed" into "proven."</p>"""))
+   a scripted send in the harness). Level 2 is what turns "armed" into "proven."</p>""",
+        )
+    )
 
     # under the hood — the API + division of labor
-    slides.append(_slide("Under the hood — the technical highlights", f"""
+    slides.append(
+        _slide(
+            "Under the hood — the technical highlights",
+            f"""
 <table class="tbl">
   <tr><th>Layer</th><th>What it does</th><th>Fuzzy or deterministic?</th></tr>
   <tr><td class="k">The envelope API</td>
@@ -520,10 +638,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
       <td>deterministic</td></tr>
 </table>
 <p class="dim">The division of labor in one line: <b>language is compiled at arm time, judgment is
-   spent at fire time, and everything either side of the LLM is a function you can test.</b></p>"""))
+   spent at fire time, and everything either side of the LLM is a function you can test.</b></p>""",
+        )
+    )
 
     # the receipts — concrete, verifiable engineering wins
-    slides.append(_slide("The receipts — why you can trust this", f"""
+    slides.append(
+        _slide(
+            "The receipts — why you can trust this",
+            f"""
 <ul class="tight">
   <li><b>One registry, zero drift.</b> All {len(rows)} triggers live in one table; flows,
       classifier, validation, docs, this deck and the tests <em>derive</em> from it — and five
@@ -545,10 +668,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
       a supervisor whose specialists load from a canonical YAML roster. Its per-event routing is a
       gated benchmark (<code>make test-delegation</code>): first full run 14/14, zero
       self-answers.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # credentials
-    slides.append(_slide("Credentials — the agent never holds a token", """
+    slides.append(
+        _slide(
+            "Credentials — the agent never holds a token",
+            """
 <ul class="tight">
   <li><b>Activepieces is the vault</b>: OAuth tokens live encrypted in AP's own store; flows resolve
       them inside AP's sandbox. CUGA passes a connection <em>name</em>, never a secret.</li>
@@ -558,10 +686,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
       resolves through <code>vault:// aws:// db:// env://</code> URIs — plaintext still works in dev.</li>
   <li><b>Signed OAuth state</b>: connect callbacks carry an HMAC-signed, expiring state — a forged or
       replayed callback is a hard reject.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # multi-tenant deployment honesty slide
-    slides.append(_slide("Multi-tenant cloud — the isolation gate (v2)", """
+    slides.append(
+        _slide(
+            "Multi-tenant cloud — the isolation gate (v2)",
+            """
 <p class="big">Can <b>one</b> hosted CUGA serve <b>many</b> users, each with their own integrations —
    my Gmail vs. your Gmail — with no data leak? The <b>design</b> says yes; the <b>runtime</b> isn't there yet.
    <b>Today: single-user / trusted-demo. Multi-user cloud is v2.</b></p>
@@ -589,10 +722,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
 </div>
 <p class="dim"><b>Critical path to safe:</b> inject <code>X-User-Id</code> from auth · durable
    <code>EVENTS_DB</code> · contextvar-scope the tracker (upstream). All fixable — full analysis in
-   <code>events_docs/DEPLOYMENT_ISSUES.md</code>. Naming the gate is how we ship v1 honestly.</p>"""))
+   <code>events_docs/DEPLOYMENT_ISSUES.md</code>. Naming the gate is how we ship v1 honestly.</p>""",
+        )
+    )
 
     # tested
-    slides.append(_slide("Proven end-to-end — live, not mocked", """
+    slides.append(
+        _slide(
+            "Proven end-to-end — live, not mocked",
+            """
 <ul class="tight">
   <li><b>Offline gate</b> (<code>make test</code>) — every registry row parametrized: flow building,
       classification (a labelled utterance per trigger), validation, dedup, signed state.</li>
@@ -604,10 +742,15 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
       verified through the full loop, answer delivered back into the channel.</li>
   <li><b><code>make test-fire</code></b> — the only harness that waits for a genuine schedule tick:
       <em>ARMED is not FIRED</em>, and the verdicts say which.</li>
-</ul>"""))
+</ul>""",
+        )
+    )
 
     # roadmap (mirrors events_docs/ROADMAP.md — that file is the source of truth)
-    slides.append(_slide("Roadmap — tight, sequenced, quality-first", """
+    slides.append(
+        _slide(
+            "Roadmap — tight, sequenced, quality-first",
+            """
 <p>Don't chase breadth. <b>Make the core undeniable, then extend.</b> Four priorities, in order:</p>
 <table class="tbl">
   <tr><th>#</th><th>Priority</th><th>What it means</th></tr>
@@ -626,16 +769,25 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
           <em>registry data, not engine code</em>; the gates + Studio + this deck update themselves.</td></tr>
 </table>
 <p class="dim">Discipline: a capability is "done" only when it passes both benchmark levels.
-   Full plan: events_docs/roadmap.html · gaps: events_docs/todos_actions/GAPS.md</p>"""))
+   Full plan: events_docs/roadmap.html · gaps: events_docs/todos_actions/GAPS.md</p>""",
+        )
+    )
 
     # examples closer
-    ex_lis = "".join(f"<li>“{_esc(e['utterance'])}”<span class='dim'> — {_esc(e.get('agent', ''))}"
-                     f"</span></li>" for e in starred[:8])
-    slides.append(_slide("Try it — the examples board", f"""
+    ex_lis = "".join(
+        f"<li>“{_esc(e['utterance'])}”<span class='dim'> — {_esc(e.get('agent', ''))}</span></li>"
+        for e in starred[:8]
+    )
+    slides.append(
+        _slide(
+            "Try it — the examples board",
+            f"""
 <ul class="tight examples">{ex_lis}</ul>
 <p class="dim">All {len(catalog.EXAMPLES)} examples (with feasibility notes) live on the examples
    board — <code>events_docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
-   and that board are both generated from the code, so neither can drift.</p>"""))
+   and that board are both generated from the code, so neither can drift.</p>""",
+        )
+    )
 
     body = "\n".join(slides)
     return f"""<!DOCTYPE html>
@@ -738,14 +890,16 @@ def main() -> int:
     fresh = build()
     current = OUT.read_text() if OUT.exists() else ""
     if current == fresh:
-        print(f"✓ slides.html up to date ({fresh.count('class=\"slide')} slides)")
+        print(f"✓ slides.html up to date ({fresh.count('class="slide')} slides)")
         return 0
     if check:
         print("✗ slides.html is stale — run: python scripts/gen_slides.py", file=sys.stderr)
         return 1
     OUT.write_text(fresh)
-    print(f"✓ wrote events_docs/slides.html — {fresh.count('class=\"slide')} slides "
-          f"from triggers.py + catalog.py")
+    print(
+        f"✓ wrote events_docs/slides.html — {fresh.count('class="slide')} slides "
+        f"from triggers.py + catalog.py"
+    )
     return 0
 
 

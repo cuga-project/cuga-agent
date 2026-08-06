@@ -23,9 +23,11 @@ try:
 except ImportError:  # bare import (tests / scripts with the events dir on sys.path)
     from triggers import event_kinds as _registry_kinds  # type: ignore
 
-EVENT_KINDS = tuple(dict.fromkeys(
-    ("message", "new_email", "new_pr", "new_issue", "new_file", "tick", "runonce")
-    + _registry_kinds()))
+EVENT_KINDS = tuple(
+    dict.fromkeys(
+        ("message", "new_email", "new_pr", "new_issue", "new_file", "tick", "runonce") + _registry_kinds()
+    )
+)
 
 
 def normalize_kind(kind: str | None) -> str:
@@ -40,17 +42,17 @@ def normalize_kind(kind: str | None) -> str:
 
 @dataclass
 class Source:
-    type: str = "channel"          # channel | integration | time
-    name: str = "web"              # telegram | gmail | box | cron | ...
-    thread_id: str = "web:local"   # chat id, or a stable per-subscription id, or a correlation id
-    user: str = ""                 # channel-native AUTHOR id (Slack ev.user / Discord author) →
-                                   # per-user identity (whose creds/perms). Empty → fall back to
-                                   # the thread-native id (Telegram chat.id is already the user).
+    type: str = "channel"  # channel | integration | time
+    name: str = "web"  # telegram | gmail | box | cron | ...
+    thread_id: str = "web:local"  # chat id, or a stable per-subscription id, or a correlation id
+    user: str = ""  # channel-native AUTHOR id (Slack ev.user / Discord author) →
+    # per-user identity (whose creds/perms). Empty → fall back to
+    # the thread-native id (Telegram chat.id is already the user).
 
 
 @dataclass
 class Event:
-    kind: str = "message"          # see EVENT_KINDS
+    kind: str = "message"  # see EVENT_KINDS
     payload: dict = field(default_factory=dict)
 
 
@@ -58,11 +60,11 @@ class Event:
 class Envelope:
     source: Source = field(default_factory=Source)
     event: Event = field(default_factory=Event)
-    text: str = ""                 # the user utterance when source.type == "channel"
-    agent: str | None = None       # target worker agent_id, if the subscription names one
-    deliver: bool = False          # AP asks the seam to deliver the answer
-    scope: str = ""                # Principal.scope; "" = unset → /invoke resolves from headers
-    trace_id: str = ""             # end-to-end correlation id (see trace.py)
+    text: str = ""  # the user utterance when source.type == "channel"
+    agent: str | None = None  # target worker agent_id, if the subscription names one
+    deliver: bool = False  # AP asks the seam to deliver the answer
+    scope: str = ""  # Principal.scope; "" = unset → /invoke resolves from headers
+    trace_id: str = ""  # end-to-end correlation id (see trace.py)
 
     # ---- (de)serialization ----------------------------------------------
     @classmethod
@@ -77,7 +79,9 @@ class Envelope:
                 thread_id=src.get("thread_id", "web:local"),
                 user=src.get("user", "") or "",
             ),
-            event=Event(kind=normalize_kind(ev.get("kind", "message")), payload=dict(ev.get("payload") or {})),
+            event=Event(
+                kind=normalize_kind(ev.get("kind", "message")), payload=dict(ev.get("payload") or {})
+            ),
             text=d.get("text", "") or "",
             agent=d.get("agent"),
             deliver=bool(d.get("deliver", False)),
@@ -115,8 +119,9 @@ class Envelope:
             # a full forwarded email body (tens of KB) blew up the supervisor→delegate exchange —
             # the delegate lost the variable, floundered ~7 min, and its raw deliberation was
             # delivered as the answer (Slack, 2026-07-16). 1500 chars keeps the substance.
-            parts = [f"{k}={str(v)[:1500]}" for k, v in pl.items()
-                     if not str(k).startswith("_") and str(v).strip()]
+            parts = [
+                f"{k}={str(v)[:1500]}" for k, v in pl.items() if not str(k).startswith("_") and str(v).strip()
+            ]
             ctx = ", ".join(parts)
             if not ctx and pl.get("_raw"):
                 # curated map came back empty → surface the FULL raw trigger output instead
@@ -125,17 +130,22 @@ class Envelope:
                 except Exception:  # noqa: BLE001
                     raw = str(pl["_raw"])[:4000]
                 ctx = f"raw={raw}"
-            base = (self.text + ("\n\n[event] " + ctx if ctx else "")).strip() or ctx \
+            base = (
+                (self.text + ("\n\n[event] " + ctx if ctx else "")).strip()
+                or ctx
                 or (self.text or "(no input)")
+            )
             # (webhook excluded: the hook endpoint composes its OWN one-shot instruction text —
             # stacking this generic frame on top gave the agent two competing frames)
             if self.source.type == "integration" and self.source.name != "webhook" and ctx:
-                base = ("A watched event just occurred — the [event] line below is its "
-                        "authoritative data; work from it (fetching MORE detail on it is fine, "
-                        "second-guessing it is not). Handle THIS event now, once: the subscription "
-                        "keeps watching, so do not wait for or ask about future events. Your reply "
-                        "is delivered to the user as the result — reply with the content itself, "
-                        "not a description of what you did.\n" + base)
+                base = (
+                    "A watched event just occurred — the [event] line below is its "
+                    "authoritative data; work from it (fetching MORE detail on it is fine, "
+                    "second-guessing it is not). Handle THIS event now, once: the subscription "
+                    "keeps watching, so do not wait for or ask about future events. Your reply "
+                    "is delivered to the user as the result — reply with the content itself, "
+                    "not a description of what you did.\n" + base
+                )
             return base
         return self.text or "(no input)"
 
@@ -149,7 +159,10 @@ def validate(d: dict) -> list[str]:
     ev = (d or {}).get("event") or {}
     if ev.get("kind") and normalize_kind(ev["kind"]) not in EVENT_KINDS:
         problems.append(f"event.kind '{ev['kind']}' not in {EVENT_KINDS}")
-    if src.get("type") == "channel" and not (d.get("text") or "").strip() \
-            and ev.get("kind", "message") == "message":
+    if (
+        src.get("type") == "channel"
+        and not (d.get("text") or "").strip()
+        and ev.get("kind", "message") == "message"
+    ):
         problems.append("channel message envelope has empty text")
     return problems

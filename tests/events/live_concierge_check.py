@@ -17,10 +17,12 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 EVENTS_DIR = os.path.join(REPO, "src", "cuga", "backend", "events")
 
 from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(os.path.join(REPO, ".env"))
 
 _spec = importlib.util.spec_from_file_location(
-    "events", os.path.join(EVENTS_DIR, "__init__.py"), submodule_search_locations=[EVENTS_DIR])
+    "events", os.path.join(EVENTS_DIR, "__init__.py"), submodule_search_locations=[EVENTS_DIR]
+)
 _pkg = importlib.util.module_from_spec(_spec)
 sys.modules["events"] = _pkg
 _spec.loader.exec_module(_pkg)
@@ -34,7 +36,7 @@ principal_mod = importlib.import_module("events.principal")
 async def main() -> int:
     rt = runtime.ReactRuntime(model_factory=llm.default_model_factory)
     con = concierge_mod.Concierge(rt, model_factory=llm.default_model_factory)
-    p = principal_mod.Principal(user_id="demo")   # explicit principal (isolation scope)
+    p = principal_mod.Principal(user_id="demo")  # explicit principal (isolation scope)
 
     print("→ user: what's the bitcoin price right now?")
     r1 = await con.run("web:1", "what's the bitcoin price right now?", p)
@@ -52,7 +54,7 @@ async def main() -> int:
     print("   agents visible to a different tenant:", other)
 
     created_one = len(agents_after) >= 1
-    reused = len(agents_after2) == len(agents_after)      # no new agent on the follow-up
+    reused = len(agents_after2) == len(agents_after)  # no new agent on the follow-up
     has_number = bool(re.search(r"\d", r1)) and bool(re.search(r"\d", r2))
     ok = created_one and reused and has_number
     print(f"\n{'PASS' if ok else 'FAIL'}  (created={created_one} reused={reused} numeric={has_number})")

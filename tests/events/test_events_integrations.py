@@ -20,17 +20,17 @@ import importlib.util
 import os
 import sys
 
-_EV = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                   "..", "..", "src", "cuga", "backend", "events"))
+_EV = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
 if "events" not in sys.modules:
-    _spec = importlib.util.spec_from_file_location("events", os.path.join(_EV, "__init__.py"),
-                                                   submodule_search_locations=[_EV])
+    _spec = importlib.util.spec_from_file_location(
+        "events", os.path.join(_EV, "__init__.py"), submodule_search_locations=[_EV]
+    )
     _pkg = importlib.util.module_from_spec(_spec)
     sys.modules["events"] = _pkg
     _spec.loader.exec_module(_pkg)
 
-import pytest                                     # noqa: E402
-from events import box_direct                     # noqa: E402
+import pytest  # noqa: E402
+from events import box_direct  # noqa: E402
 
 
 # ── credential rotation (the GitHub 401 root cause) ───────────────────────────
@@ -73,8 +73,8 @@ def _engine(client):
     eng = APEngine.__new__(APEngine)
     eng.base = "http://ap.test"
     eng.project_id = "proj-1"
-    eng._auth = lambda c: _done({})                      # noqa: SLF001
-    eng._connections = lambda c, h, p: _done(client.existing)   # noqa: SLF001
+    eng._auth = lambda c: _done({})  # noqa: SLF001
+    eng._connections = lambda c, h, p: _done(client.existing)  # noqa: SLF001
     eng.ensure_project = lambda c, h, n: _done("proj-1")
     return eng
 
@@ -91,9 +91,11 @@ def _run(eng, client, **kw):
     orig = ap.httpx.AsyncClient
     ap.httpx.AsyncClient = lambda **_: client
     try:
-        return asyncio.run(eng.ensure_secret_connection(
-            "ea::default::local::github", "@activepieces/piece-github", kw.pop("token", "ghp_new"),
-            **kw))
+        return asyncio.run(
+            eng.ensure_secret_connection(
+                "ea::default::local::github", "@activepieces/piece-github", kw.pop("token", "ghp_new"), **kw
+            )
+        )
     finally:
         ap.httpx.AsyncClient = orig
 
@@ -104,13 +106,14 @@ def test_rotation_overwrites_an_existing_connection():
     _run(_engine(client), client, token="ghp_FRESH")
     assert len(client.posts) == 1, "an existing connection must still be written, not skipped"
     assert client.posts[0]["value"]["secret_text"] == "ghp_FRESH"
-    assert client.deletes == []          # AP upserted; no destructive fallback needed
+    assert client.deletes == []  # AP upserted; no destructive fallback needed
 
 
 def test_rotation_falls_back_to_delete_and_recreate_when_ap_refuses():
     """Older AP builds 409 a duplicate externalId. Do what a human would do in the console."""
-    client = _FakeAPClient(existing=[{"externalId": "ea::default::local::github", "id": "c1"}],
-                           post_status=409)
+    client = _FakeAPClient(
+        existing=[{"externalId": "ea::default::local::github", "id": "c1"}], post_status=409
+    )
     _run(_engine(client), client, token="ghp_FRESH")
     assert client.deletes == ["c1"]
     assert len(client.posts) == 2 and client.posts[-1]["value"]["secret_text"] == "ghp_FRESH"
@@ -156,14 +159,14 @@ def test_a_long_text_file_is_truncated_not_dropped(monkeypatch):
     monkeypatch.setattr(box_direct, "MAX_INLINE_CHARS", 50)
     got = _fetch(monkeypatch, raw=b"x" * 500)
     assert got["kind"] == "text" and got["truncated"] is True and len(got["text"]) == 50
-    assert got["bytes"] == 500          # the true size, not the truncated one
+    assert got["bytes"] == 500  # the true size, not the truncated one
 
 
 def test_a_pdf_that_happens_to_decode_as_utf8_is_still_binary(monkeypatch):
     """REGRESSION. Every byte of `%PDF-1.4\x00\x01\x02` is < 0x80, so `.decode("utf-8")` succeeds and
     a decodability check would inline a PDF into the prompt as mojibake. The NUL byte is the tell."""
     pdf = b"%PDF-1.4\x00\x01\x02stream"
-    pdf.decode("utf-8")                                   # it really does decode
+    pdf.decode("utf-8")  # it really does decode
     got = _fetch(monkeypatch, raw=pdf)
     assert got["kind"] == "binary" and base64.b64decode(got["base64"]) == pdf
 
@@ -198,6 +201,7 @@ def test_download_can_be_disabled(monkeypatch):
 
 def test_download_respects_the_byte_cap_even_when_content_length_lies(monkeypatch):
     """content-length is absent on a chunked response and can simply be wrong. Check while reading."""
+
     class _Stream:
         status_code, headers = 200, {}
 
@@ -244,8 +248,12 @@ def _poll(monkeypatch, body, content=None):
         return [{"id": "9", "name": "priya_nair.md", "created_at": "2026-07-01T11:33:46-07:00"}]
 
     async def _fake_fetch(file_id, name="", tok=None):
-        return content or {"kind": "text", "text": "Ph.D. NLP. RLHF, PyTorch, JAX.",
-                           "truncated": False, "bytes": 30}
+        return content or {
+            "kind": "text",
+            "text": "Ph.D. NLP. RLHF, PyTorch, JAX.",
+            "truncated": False,
+            "bytes": 30,
+        }
 
     class _Resp:
         status_code = 200
@@ -270,8 +278,7 @@ def _poll(monkeypatch, body, content=None):
     monkeypatch.setattr(_httpx, "AsyncClient", lambda *a, **k: _Client())
 
     app = FastAPI()
-    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
-                           gateway_token="gw")
+    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw")
     r = TestClient(app).post("/api/events/box/poll", headers={"X-Gateway-Token": "gw"}, json=body)
     assert r.status_code == 200, r.text
     return posted[0]
@@ -279,13 +286,13 @@ def _poll(monkeypatch, body, content=None):
 
 def _tmp():
     import tempfile
+
     return tempfile.mkdtemp()
 
 
 def test_ap_data_wrapped_body_is_unwrapped(monkeypatch):
     """AP's HTTP action posts {"data": {...}}. The poll endpoint must read folder_id/agent from
     inside that envelope, not default to root — the bug that made every schedule tick poll folder 0."""
-    import httpx as _httpx
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from events.app import register_events_routes
@@ -299,27 +306,29 @@ def test_ap_data_wrapped_body_is_unwrapped(monkeypatch):
     monkeypatch.setattr(box_direct, "new_files_since", _cap_new)
     monkeypatch.setattr(box_direct, "_SINCE_FILE", os.path.join(_tmp(), "since.json"))
     app = FastAPI()
-    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
-                           gateway_token="gw")
+    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw")
     c = TestClient(app)
     # wrapped (AP shape) → folder must come from inside "data"
-    r = c.post("/api/events/box/poll", headers={"X-Gateway-Token": "gw"},
-               json={"data": {"folder_id": "395587297576", "agent": "cuga"}})
+    r = c.post(
+        "/api/events/box/poll",
+        headers={"X-Gateway-Token": "gw"},
+        json={"data": {"folder_id": "395587297576", "agent": "cuga"}},
+    )
     assert r.status_code == 200 and r.json()["folder"] == "395587297576"
     assert seen["folder"] == "395587297576"
     # flat (manual) shape still works
-    r = c.post("/api/events/box/poll", headers={"X-Gateway-Token": "gw"},
-               json={"folder_id": "42", "agent": "cuga"})
+    r = c.post(
+        "/api/events/box/poll", headers={"X-Gateway-Token": "gw"}, json={"folder_id": "42", "agent": "cuga"}
+    )
     assert r.json()["folder"] == "42" and seen["folder"] == "42"
 
 
 def test_jd_from_the_poll_body_reaches_the_agent(monkeypatch):
-    p = _poll(monkeypatch, {"folder_id": "0", "agent": "resume_judge",
-                            "jd": "Senior Rust systems engineer."})
+    p = _poll(monkeypatch, {"folder_id": "0", "agent": "resume_judge", "jd": "Senior Rust systems engineer."})
     assert "Senior Rust systems engineer." in p["text"]
     assert p["event"]["payload"]["has_jd"] is True
     assert "MATCH or SKIP" in p["text"]
-    assert "Ph.D. NLP. RLHF, PyTorch, JAX." in p["text"]      # the file's CONTENT, not just its name
+    assert "Ph.D. NLP. RLHF, PyTorch, JAX." in p["text"]  # the file's CONTENT, not just its name
 
 
 def test_jd_from_the_environment_is_used_when_the_body_has_none(monkeypatch):
@@ -355,15 +364,15 @@ def test_without_a_jd_the_agent_is_told_not_to_ask(monkeypatch):
 
 
 def test_a_binary_resume_points_the_agent_at_the_base64(monkeypatch):
-    p = _poll(monkeypatch, {"folder_id": "0", "jd": "any"},
-              content={"kind": "binary", "base64": "QUJD", "bytes": 3})
+    p = _poll(
+        monkeypatch, {"folder_id": "0", "jd": "any"}, content={"kind": "binary", "base64": "QUJD", "bytes": 3}
+    )
     assert p["event"]["payload"]["file_base64"] == "QUJD"
     assert "extract_text_from_bytes" in p["text"]
 
 
 def test_a_failed_download_tells_the_agent_not_to_invent(monkeypatch):
-    p = _poll(monkeypatch, {"folder_id": "0", "jd": "any"},
-              content={"kind": "skipped", "reason": "HTTP 401"})
+    p = _poll(monkeypatch, {"folder_id": "0", "jd": "any"}, content={"kind": "skipped", "reason": "HTTP 401"})
     assert p["event"]["payload"]["download_error"] == "HTTP 401"
     assert "do not invent" in p["text"]
 
@@ -381,9 +390,10 @@ def test_integrations_auth_matches_the_oauth_provider_registry():
     for i in connectors.INTEGRATIONS:
         kind = oauth.connect_kind(i["app"])
         if kind is None:
-            continue                      # not a connectable provider (e.g. planned/outlook alias)
+            continue  # not a connectable provider (e.g. planned/outlook alias)
         assert i["auth"] == kind, (
-            f"connectors says {i['name']} is '{i['auth']}' but oauth.PROVIDERS says '{kind}'")
+            f"connectors says {i['name']} is '{i['auth']}' but oauth.PROVIDERS says '{kind}'"
+        )
 
 
 def test_integrations_status_reports_the_live_auth_kind():
@@ -391,7 +401,7 @@ def test_integrations_status_reports_the_live_auth_kind():
     from events import connectors
 
     rows = {r["name"]: r for r in connectors.integrations_status(None, ap_configured=False)}
-    assert rows["github"]["auth"] == "oauth"      # piece-github: OAUTH2/CUSTOM_AUTH only
+    assert rows["github"]["auth"] == "oauth"  # piece-github: OAUTH2/CUSTOM_AUTH only
     assert rows["gmail"]["auth"] == "oauth"
 
 
@@ -401,4 +411,4 @@ def test_github_is_not_a_token_app_anywhere():
 
     assert oauth.connect_kind("github") == "oauth"
     assert setup_guides.guide("github")["connect"] == "oauth"
-    assert oauth.connect_kind("telegram") == "token"      # a piece that really takes SECRET_TEXT
+    assert oauth.connect_kind("telegram") == "token"  # a piece that really takes SECRET_TEXT

@@ -62,7 +62,7 @@ def test_events_package_imports_only_resolve_secret_from_core():
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cuga."):
                 if node.module.startswith("cuga.backend.events"):
-                    continue                       # intra-package, fine
+                    continue  # intra-package, fine
                 for a in node.names:
                     if a.name not in allowed_names:
                         found.setdefault(py.name, []).append(f"{node.module}.{a.name}")
@@ -80,7 +80,9 @@ def test_the_door_is_closed_when_events_is_not_configured(monkeypatch):
     """
     src = (ROOT / "backend" / "server" / "main.py").read_text(encoding="utf-8")
     fn = src.split("def _forwards_to_events(")[1].split("\ndef ")[0]
-    first_real_line = [ln.strip() for ln in fn.splitlines() if ln.strip() and not ln.strip().startswith(("#", '"'))][1]
+    first_real_line = [
+        ln.strip() for ln in fn.splitlines() if ln.strip() and not ln.strip().startswith(("#", '"'))
+    ][1]
     assert "_events_api_url()" in first_real_line and "not" in first_real_line, (
         "the FIRST thing _forwards_to_events does must be the EVENTS_API_URL check — otherwise "
         f"vanilla CUGA starts behaving differently. Got: {first_real_line!r}"

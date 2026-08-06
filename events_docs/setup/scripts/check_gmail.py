@@ -14,6 +14,7 @@ ONE-TIME: on the OAuth client (Google Cloud -> APIs & Services -> Credentials), 
           http://localhost:8765/  as an Authorized redirect URI. This is separate from CUGA's
           callback URI and only used by this script. The script prints this if it hits a mismatch.
 """
+
 import base64
 import json
 import os
@@ -56,8 +57,12 @@ def _capture_code():
 
 def _token_request(cid, secret, **extra):
     data = urllib.parse.urlencode({"client_id": cid, "client_secret": secret, **extra})
-    return request_json("POST", "https://oauth2.googleapis.com/token",
-                        headers={"Content-Type": "application/x-www-form-urlencoded"}, data=data)
+    return request_json(
+        "POST",
+        "https://oauth2.googleapis.com/token",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=data,
+    )
 
 
 def _email_from_id_token(id_token):
@@ -80,9 +85,16 @@ def _access_token(cid, secret):
                 return j["access_token"], cached.get("email")
             warn("cached Gmail token no longer valid — re-consenting")
 
-    auth = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
-        "client_id": cid, "redirect_uri": REDIRECT, "response_type": "code",
-        "scope": SCOPE, "access_type": "offline", "prompt": "consent"})
+    auth = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(
+        {
+            "client_id": cid,
+            "redirect_uri": REDIRECT,
+            "response_type": "code",
+            "scope": SCOPE,
+            "access_type": "offline",
+            "prompt": "consent",
+        }
+    )
     info("opening the Google consent screen in your browser…")
     info(f"if it doesn't open, paste this into a browser:\n      {auth}")
     webbrowser.open(auth)
@@ -92,8 +104,9 @@ def _access_token(cid, secret):
         bad(f"consent failed: {err or 'no authorization code returned'}")
         return None, None
 
-    st, _, j, _ = _token_request(cid, secret, grant_type="authorization_code",
-                                 code=code, redirect_uri=REDIRECT)
+    st, _, j, _ = _token_request(
+        cid, secret, grant_type="authorization_code", code=code, redirect_uri=REDIRECT
+    )
     if st != 200 or not j or not j.get("access_token"):
         bad(f"token exchange failed (HTTP {st}): {(j or {}).get('error')}")
         if j and j.get("error") == "redirect_uri_mismatch":
@@ -136,8 +149,12 @@ def main():
     msg["Subject"] = "CUGA pre-req check — Gmail OK"
     msg.set_content("Your Gmail OAuth client works — this email was sent by the pre-req check script.")
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    st, _, j, _ = request_json("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-                               headers={"Authorization": f"Bearer {at}"}, data={"raw": raw})
+    st, _, j, _ = request_json(
+        "POST",
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        headers={"Authorization": f"Bearer {at}"},
+        data={"raw": raw},
+    )
     if st == 200:
         ok(f"sent a test email to {to} — check the inbox")
         return PASS

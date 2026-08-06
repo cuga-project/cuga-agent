@@ -13,6 +13,7 @@ SQLite or Postgres via ``db.connect``. For the ``cuga`` backend, CUGA's own ``co
 from __future__ import annotations
 
 import json
+
 try:
     from . import db as _db
 except ImportError:  # flat load (tests put the events dir on sys.path)
@@ -40,7 +41,8 @@ class AgentStore:
                  integrations TEXT NOT NULL DEFAULT '[]',
                  access TEXT NOT NULL DEFAULT '[]',
                  PRIMARY KEY (scope, name)
-               )""")
+               )"""
+        )
         # migrate: add columns older DBs predate
         cols = self._db.columns("agent")
         for col in ("integrations", "access"):
@@ -57,26 +59,37 @@ class AgentStore:
                  mcp_servers=excluded.mcp_servers, builtin_tools=excluded.builtin_tools,
                  channels=excluded.channels, integrations=excluded.integrations,
                  access=excluded.access""",
-            (scope, spec.name, spec.prompt, spec.backend, json.dumps(spec.mcp_servers),
-             json.dumps(spec.builtin_tools), json.dumps(spec.channels),
-             json.dumps(spec.integrations), json.dumps(spec.access)))
+            (
+                scope,
+                spec.name,
+                spec.prompt,
+                spec.backend,
+                json.dumps(spec.mcp_servers),
+                json.dumps(spec.builtin_tools),
+                json.dumps(spec.channels),
+                json.dumps(spec.integrations),
+                json.dumps(spec.access),
+            ),
+        )
         self._db.commit()
 
     def _row(self, r: _db.Row) -> AgentSpec:
         k = r.keys()
-        return AgentSpec(name=r["name"], prompt=r["prompt"] or "", backend=r["backend"],
-                         mcp_servers=json.loads(r["mcp_servers"]),
-                         builtin_tools=json.loads(r["builtin_tools"]),
-                         channels=json.loads(r["channels"]),
-                         integrations=json.loads(r["integrations"] if "integrations" in k else "[]"),
-                         access=json.loads(r["access"] if "access" in k else "[]"))
+        return AgentSpec(
+            name=r["name"],
+            prompt=r["prompt"] or "",
+            backend=r["backend"],
+            mcp_servers=json.loads(r["mcp_servers"]),
+            builtin_tools=json.loads(r["builtin_tools"]),
+            channels=json.loads(r["channels"]),
+            integrations=json.loads(r["integrations"] if "integrations" in k else "[]"),
+            access=json.loads(r["access"] if "access" in k else "[]"),
+        )
 
     def get(self, scope: str, name: str) -> AgentSpec | None:
-        r = self._db.execute("SELECT * FROM agent WHERE scope=? AND name=?",
-                             (scope, name)).fetchone()
+        r = self._db.execute("SELECT * FROM agent WHERE scope=? AND name=?", (scope, name)).fetchone()
         return self._row(r) if r else None
 
     def list(self, scope: str) -> list[AgentSpec]:
-        rows = self._db.execute("SELECT * FROM agent WHERE scope=? ORDER BY name",
-                               (scope,)).fetchall()
+        rows = self._db.execute("SELECT * FROM agent WHERE scope=? ORDER BY name", (scope,)).fetchall()
         return [self._row(r) for r in rows]

@@ -14,13 +14,14 @@ SQLite or Postgres via ``db.connect`` → flat-loadable + offline-testable.
 from __future__ import annotations
 
 import secrets
+
 try:
     from . import db as _db
 except ImportError:  # flat load (tests put the events dir on sys.path)
     import db as _db
 import time
 
-_TOKEN_TTL = 15 * 60     # link tokens are valid 15 minutes
+_TOKEN_TTL = 15 * 60  # link tokens are valid 15 minutes
 
 
 class IdentityMap:
@@ -31,12 +32,14 @@ class IdentityMap:
                  tenant TEXT NOT NULL, channel TEXT NOT NULL, native_id TEXT NOT NULL,
                  user_id TEXT NOT NULL, created_at REAL NOT NULL DEFAULT 0,
                  PRIMARY KEY (tenant, channel, native_id)
-               )""")
+               )"""
+        )
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS link_token (
                  token TEXT PRIMARY KEY, tenant TEXT NOT NULL, user_id TEXT NOT NULL,
                  channel TEXT NOT NULL, created_at REAL NOT NULL DEFAULT 0, used INTEGER NOT NULL DEFAULT 0
-               )""")
+               )"""
+        )
         self._db.commit()
 
     # ---- resolution -------------------------------------------------------
@@ -45,24 +48,28 @@ class IdentityMap:
             """INSERT INTO identity (tenant,channel,native_id,user_id,created_at)
                VALUES (?,?,?,?,?)
                ON CONFLICT(tenant,channel,native_id) DO UPDATE SET user_id=excluded.user_id""",
-            (tenant, channel, str(native_id), user_id, time.time()))
+            (tenant, channel, str(native_id), user_id, time.time()),
+        )
         self._db.commit()
 
     def resolve(self, tenant: str, channel: str, native_id: str) -> str | None:
         r = self._db.execute(
             "SELECT user_id FROM identity WHERE tenant=? AND channel=? AND native_id=?",
-            (tenant, channel, str(native_id))).fetchone()
+            (tenant, channel, str(native_id)),
+        ).fetchone()
         return r["user_id"] if r else None
 
     def unlink(self, tenant: str, channel: str, native_id: str) -> None:
-        self._db.execute("DELETE FROM identity WHERE tenant=? AND channel=? AND native_id=?",
-                         (tenant, channel, str(native_id)))
+        self._db.execute(
+            "DELETE FROM identity WHERE tenant=? AND channel=? AND native_id=?",
+            (tenant, channel, str(native_id)),
+        )
         self._db.commit()
 
     def links_for_user(self, tenant: str, user_id: str) -> list[dict]:
         rows = self._db.execute(
-            "SELECT channel,native_id FROM identity WHERE tenant=? AND user_id=?",
-            (tenant, user_id)).fetchall()
+            "SELECT channel,native_id FROM identity WHERE tenant=? AND user_id=?", (tenant, user_id)
+        ).fetchall()
         return [{"channel": r["channel"], "native_id": r["native_id"]} for r in rows]
 
     # ---- link tokens (issued from the authenticated profile) -------------
@@ -70,7 +77,8 @@ class IdentityMap:
         token = secrets.token_urlsafe(8)
         self._db.execute(
             "INSERT INTO link_token (token,tenant,user_id,channel,created_at,used) VALUES (?,?,?,?,?,0)",
-            (token, tenant, user_id, channel, time.time()))
+            (token, tenant, user_id, channel, time.time()),
+        )
         self._db.commit()
         return token
 

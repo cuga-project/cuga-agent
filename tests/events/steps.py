@@ -14,6 +14,7 @@ every step it got through — which is exactly when you want them.
          expect="the bot replies in-thread with a number",
          got=reply, ok=bool(reply))
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,7 @@ def enabled() -> bool:
 
 
 def _clip(v, n=240) -> str:
-    s = " ".join(str(v or "").split())      # collapse newlines: one step = one row
+    s = " ".join(str(v or "").split())  # collapse newlines: one step = one row
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
@@ -39,9 +40,21 @@ def _clip(v, n=240) -> str:
 DIMENSIONS = ("utterance", "channel", "integration", "trigger")
 
 
-def step(*, actor: str, action: str, expect: str, got="", ok: bool | None = None,
-         phase: str = "", surface: str = "", note: str = "",
-         utterance: str = "", channel: str = "", integration: str = "", trigger: str = "") -> None:
+def step(
+    *,
+    actor: str,
+    action: str,
+    expect: str,
+    got="",
+    ok: bool | None = None,
+    phase: str = "",
+    surface: str = "",
+    note: str = "",
+    utterance: str = "",
+    channel: str = "",
+    integration: str = "",
+    trigger: str = "",
+) -> None:
     """Record one thing a person did and what came back. No-op unless E2E_STEPS_FILE is set.
 
     `ok=None` means "this step is setup, not an assertion" — it renders without a verdict, which keeps
@@ -53,11 +66,20 @@ def step(*, actor: str, action: str, expect: str, got="", ok: bool | None = None
     """
     if not _PATH:
         return
-    row = {"phase": phase, "surface": surface, "actor": actor, "action": action,
-           "expect": _clip(expect), "got": _clip(got),
-           "ok": ok, "note": _clip(note, 160),
-           "utterance": _clip(utterance, 120), "channel": channel,
-           "integration": integration, "trigger": trigger}
+    row = {
+        "phase": phase,
+        "surface": surface,
+        "actor": actor,
+        "action": action,
+        "expect": _clip(expect),
+        "got": _clip(got),
+        "ok": ok,
+        "note": _clip(note, 160),
+        "utterance": _clip(utterance, 120),
+        "channel": channel,
+        "integration": integration,
+        "trigger": trigger,
+    }
     with _LOCK:
         with open(_PATH, "a") as f:
             f.write(json.dumps(row) + "\n")

@@ -23,6 +23,7 @@ Env: EVENTS_SERVER_URL (default http://localhost:7860), GATEWAY_TOKEN (from .env
 
 Run:  EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_integrations_e2e.py
 """
+
 from __future__ import annotations
 
 import json
@@ -53,8 +54,12 @@ def _get(path, timeout=120):
 
 
 def _post(path, body, timeout=400, headers=None):
-    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", **(headers or {})})
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.load(r)
@@ -72,8 +77,7 @@ def _concierge(text, thread="web:e2e"):
         state = (rep or {}).get("state")
         if state not in ("confirm", "needs_input"):
             break
-        c, rep = _post("/api/concierge",
-                       {"text": "yes" if state == "confirm" else text, "thread_id": thread})
+        c, rep = _post("/api/concierge", {"text": "yes" if state == "confirm" else text, "thread_id": thread})
     return c, str(rep.get("reply", rep))
 
 
@@ -87,7 +91,9 @@ def _subs():
 
 def _find_sub(mode=None, source=None):
     for s in _subs():
-        if (mode is None or s.get("mode") == mode) and (source is None or s.get("source_connector") == source):
+        if (mode is None or s.get("mode") == mode) and (
+            source is None or s.get("source_connector") == source
+        ):
             return s
     return None
 
@@ -104,8 +110,11 @@ def main() -> int:
     code, st = _get("/api/events/status")
     ap_on = bool(st.get("ap_configured"))
     check("status: enabled + worker=cuga", code == 200 and st.get("worker_backend") == "cuga")
-    check("AP engine configured (integrations need AP)", ap_on,
-          "AP up" if ap_on else "AP NOT configured — CRON/POLL/PUSH can't arm")
+    check(
+        "AP engine configured (integrations need AP)",
+        ap_on,
+        "AP up" if ap_on else "AP NOT configured — CRON/POLL/PUSH can't arm",
+    )
 
     # which integrations are connected in AP right now (drives whether PUSH really arms)
     _, integ = _get("/api/events/integrations")
@@ -120,14 +129,18 @@ def main() -> int:
 
     # ── CRON ─────────────────────────────────────────────────────────────
     print("\n[CRON] arm a scheduled flow (AP schedule piece)")
-    code, rep = _concierge("every day at 9am send me new arxiv papers on mixture of experts",
-                           thread="web:cron")
+    code, rep = _concierge(
+        "every day at 9am send me new arxiv papers on mixture of experts", thread="web:cron"
+    )
     print("   →", rep[:160])
     armed_cron = any(w in rep.lower() for w in ("armed", "created", "cron", "every", "schedul"))
     sub = _find_sub(mode="CRON")
     check("CRON: concierge armed a scheduled flow", armed_cron or bool(sub))
-    check("CRON: AP flow id recorded on the subscription", bool(sub and sub.get("ap_flow_id")),
-          (sub or {}).get("ap_flow_id", "no CRON subscription found"))
+    check(
+        "CRON: AP flow id recorded on the subscription",
+        bool(sub and sub.get("ap_flow_id")),
+        (sub or {}).get("ap_flow_id", "no CRON subscription found"),
+    )
 
     # ── POLL ─────────────────────────────────────────────────────────────
     print("\n[POLL] arm a watch-on-change flow")
@@ -136,8 +149,11 @@ def main() -> int:
     armed_poll = any(w in rep.lower() for w in ("armed", "created", "poll", "watch", "every"))
     subp = _find_sub(mode="POLL")
     check("POLL: concierge armed a watch flow", armed_poll or bool(subp))
-    check("POLL: AP flow id recorded on the subscription", bool(subp and subp.get("ap_flow_id")),
-          (subp or {}).get("ap_flow_id", "no POLL subscription found"))
+    check(
+        "POLL: AP flow id recorded on the subscription",
+        bool(subp and subp.get("ap_flow_id")),
+        (subp or {}).get("ap_flow_id", "no POLL subscription found"),
+    )
 
     # ── PUSH · Box / GitHub / Gmail (full AP) ────────────────────────────
     push_cases = [
@@ -151,35 +167,60 @@ def main() -> int:
         code, rep = _concierge(utter, thread=f"web:push:{app}")
         print("   →", rep[:180])
         low = rep.lower()
-        armed = bool(_find_sub(mode="PUSH", source=app))          # authoritative: a subscription exists
-        connect_needed = ("connect" in low and app in low)
+        armed = bool(_find_sub(mode="PUSH", source=app))  # authoritative: a subscription exists
+        connect_needed = "connect" in low and app in low
         # honest outcomes:  not connected → CONNECT-NEEDED · connected + no required input → ARMED ·
         # connected but the trigger needs a slot/input → the concierge asks for it. That "slot" is
         # per-agent: a github repo, a box folder, or a domain input like the job description that
         # resume_judge judges resumes against ("share the JD").
-        needs_input = any(w in low for w in ("repo", "repository", "folder", "which ", "specify",
-                                             "builder", "no push trigger", "job description", "jd",
-                                             "share the", "provide the", "attach"))
+        needs_input = any(
+            w in low
+            for w in (
+                "repo",
+                "repository",
+                "folder",
+                "which ",
+                "specify",
+                "builder",
+                "no push trigger",
+                "job description",
+                "jd",
+                "share the",
+                "provide the",
+                "attach",
+            )
+        )
         ok = armed or connect_needed or (connected and needs_input)
-        state = ("ARMED (AP flow)" if armed else
-                 "connect-needed (not connected — correct)" if connect_needed else
-                 "connected → needs a repo/folder/input slot (correct)" if (connected and needs_input) else
-                 f"unexpected: {rep[:80]}")
+        state = (
+            "ARMED (AP flow)"
+            if armed
+            else "connect-needed (not connected — correct)"
+            if connect_needed
+            else "connected → needs a repo/folder/input slot (correct)"
+            if (connected and needs_input)
+            else f"unexpected: {rep[:80]}"
+        )
         check(f"PUSH {app}: routes to AP correctly [{state}]", ok)
         if armed:
             s = _find_sub(mode="PUSH", source=app)
-            check(f"PUSH {app}: AP flow id recorded (true e2e)", bool(s and s.get("ap_flow_id")),
-                  (s or {}).get("ap_flow_id", "armed but no ap_flow_id"))
+            check(
+                f"PUSH {app}: AP flow id recorded (true e2e)",
+                bool(s and s.get("ap_flow_id")),
+                (s or {}).get("ap_flow_id", "armed but no ap_flow_id"),
+            )
 
     # ── WEBHOOK (generic inbound; direct, no AP) ─────────────────────────
     print("\n[WEBHOOK] POST an alert → incident_triage → response")
-    gw = _env("GATEWAY_TOKEN")
-    code, r = _post("/api/events/hook/monitoring",
-                    {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"})
-    ans = (r.get("answer") or "")
+    code, r = _post(
+        "/api/events/hook/monitoring",
+        {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
+    )
+    ans = r.get("answer") or ""
     print("   →", ans[:160])
-    check("WEBHOOK: inbound payload triaged by an agent",
-          code == 200 and r.get("ok") and any(sev in ans for sev in ("P1", "P2", "P3", "sever")))
+    check(
+        "WEBHOOK: inbound payload triaged by an agent",
+        code == 200 and r.get("ok") and any(sev in ans for sev in ("P1", "P2", "P3", "sever")),
+    )
 
     # ── summary ──────────────────────────────────────────────────────────
     print("\n" + "─" * 60)

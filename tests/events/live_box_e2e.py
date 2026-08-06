@@ -9,6 +9,7 @@ Box dev tokens expire ~60 min; if it's stale you'll see a clear "regenerate" mes
 Run:  BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:7860 GATEWAY_TOKEN=<..> \
         .venv/bin/python tests/events/live_box_e2e.py
 """
+
 from __future__ import annotations
 
 import json
@@ -41,10 +42,12 @@ TOKEN = _env("BOX_DEV_TOKEN") or _env("EVENTS_BOX_TOKEN")
 GWTOK = _env("GATEWAY_TOKEN")
 FOLDER = os.environ.get("BOX_FOLDER_ID", "0")
 
-RESUME = ("Jane Doe — Senior ML Engineer\n"
-          "8 years building production ML systems in Python. Led a team shipping a fraud-detection\n"
-          "platform on Kubernetes; expert in PyTorch, feature stores, and low-latency inference.\n"
-          "Prior: staff engineer at a fintech; MS in CS. Looking for senior/staff ML roles.\n")
+RESUME = (
+    "Jane Doe — Senior ML Engineer\n"
+    "8 years building production ML systems in Python. Led a team shipping a fraud-detection\n"
+    "platform on Kubernetes; expert in PyTorch, feature stores, and low-latency inference.\n"
+    "Prior: staff engineer at a fintech; MS in CS. Looking for senior/staff ML roles.\n"
+)
 JD = "Senior ML Engineer — 5+ yrs Python, production ML, Kubernetes, PyTorch."
 
 
@@ -54,7 +57,8 @@ def _hb():
 
 def main() -> int:
     if not TOKEN:
-        print("no BOX_DEV_TOKEN in .env"); return 2
+        print("no BOX_DEV_TOKEN in .env")
+        return 2
     ok = True
     file_id = None
 
@@ -66,8 +70,11 @@ def main() -> int:
     with httpx.Client(timeout=30) as c:
         # 1) token valid?
         r = c.get(f"{API}/users/me", headers=_hb())
-        check("Box token valid (whoami)", r.status_code == 200,
-              r.json().get("login") if r.status_code == 200 else "EXPIRED — regenerate in the Box console")
+        check(
+            "Box token valid (whoami)",
+            r.status_code == 200,
+            r.json().get("login") if r.status_code == 200 else "EXPIRED — regenerate in the Box console",
+        )
         if r.status_code != 200:
             return 1
         try:
@@ -75,38 +82,46 @@ def main() -> int:
             files = {"file": ("jane_doe_resume.txt", RESUME.encode(), "text/plain")}
             data = {"attributes": json.dumps({"name": "jane_doe_resume.txt", "parent": {"id": FOLDER}})}
             r = c.post(UPLOAD, headers=_hb(), data=data, files=files)
-            up_ok = r.status_code in (201, 409)      # 409 = already exists (a prior run)
+            up_ok = r.status_code in (201, 409)  # 409 = already exists (a prior run)
             check("uploaded a real résumé to Box", up_ok, f"HTTP {r.status_code}")
             if r.status_code == 201:
                 file_id = r.json()["entries"][0]["id"]
-            elif r.status_code == 409:               # find the existing one to clean up later
+            elif r.status_code == 409:  # find the existing one to clean up later
                 ctx = r.json().get("context_info", {}).get("conflicts", {})
                 file_id = ctx.get("id") if isinstance(ctx, dict) else None
 
             # 3) poll → the watcher detects it and resume_judge runs
             since = None
-            req = urllib.request.Request(f"{SERVER}/api/events/box/poll", method="POST",
-                                         data=json.dumps({"folder_id": FOLDER, "since": since,
-                                                          "agent": "resume_judge"}).encode(),
-                                         headers={"Content-Type": "application/json",
-                                                  "X-Gateway-Token": GWTOK})
+            req = urllib.request.Request(
+                f"{SERVER}/api/events/box/poll",
+                method="POST",
+                data=json.dumps({"folder_id": FOLDER, "since": since, "agent": "resume_judge"}).encode(),
+                headers={"Content-Type": "application/json", "X-Gateway-Token": GWTOK},
+            )
             with urllib.request.urlopen(req, timeout=200) as resp:
                 pr = json.load(resp)
             names = [f["name"] for f in pr.get("processed", [])]
             print("   poll processed:", names[:6])
-            check("poll detected the résumé + fired resume_judge",
-                  pr.get("ok") and any("jane_doe" in n for n in names))
+            check(
+                "poll detected the résumé + fired resume_judge",
+                pr.get("ok") and any("jane_doe" in n for n in names),
+            )
         finally:
             if file_id:
                 d = c.delete(f"{API}/files/{file_id}", headers=_hb())
                 print(f"  cleanup: delete file {file_id} → HTTP {d.status_code}")
 
-    print(f"\nRESULT: {'PASS — Box integration e2e green (real file uploaded → detected → judged)' if ok else 'FAIL'}")
+    print(
+        f"\nRESULT: {'PASS — Box integration e2e green (real file uploaded → detected → judged)' if ok else 'FAIL'}"
+    )
     if ok:
         try:
-            import sys as _s, os as _o
+            import sys as _s
+            import os as _o
+
             _s.path.insert(0, _o.path.dirname(__file__))
             from _ledger import record as _lrec
+
             _lrec("box", "fire_real", "ok", "REAL upload → poller detected → judged → cleaned")
         except Exception:  # noqa: BLE001
             pass
@@ -117,4 +132,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except urllib.error.URLError as e:
-        print(f"cannot reach {SERVER} ({e})"); sys.exit(2)
+        print(f"cannot reach {SERVER} ({e})")
+        sys.exit(2)

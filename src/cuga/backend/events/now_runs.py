@@ -12,6 +12,7 @@ single shared connection). Dependency-free → unit-testable in isolation.
 from __future__ import annotations
 
 import json
+
 try:
     from . import db as _db
 except ImportError:  # flat load (tests put the events dir on sys.path)
@@ -46,23 +47,40 @@ class NowRunStore:
                  mcp TEXT NOT NULL DEFAULT '[]',
                  tools TEXT NOT NULL DEFAULT '[]',
                  trace_id TEXT NOT NULL DEFAULT ''
-               )""")
+               )"""
+        )
         # migrate-on-open: mode/backend/subscription_id let a run carry its TRIGGER TYPE (cron/poll/
         # push/now · native/ap) so the Runs API can filter and the UI can group — not just "NOW".
         cols = self._db.columns("now_run")
-        for _c, _d in (("mode", "TEXT NOT NULL DEFAULT 'NOW'"),
-                       ("backend", "TEXT NOT NULL DEFAULT 'direct'"),
-                       ("subscription_id", "TEXT NOT NULL DEFAULT ''"),
-                       ("event_kind", "TEXT NOT NULL DEFAULT ''")):
+        for _c, _d in (
+            ("mode", "TEXT NOT NULL DEFAULT 'NOW'"),
+            ("backend", "TEXT NOT NULL DEFAULT 'direct'"),
+            ("subscription_id", "TEXT NOT NULL DEFAULT ''"),
+            ("event_kind", "TEXT NOT NULL DEFAULT ''"),
+        ):
             if _c not in cols:
                 self._db.execute(f"ALTER TABLE now_run ADD COLUMN {_c} {_d}")
         self._db.execute("CREATE INDEX IF NOT EXISTS ix_now_run_ts ON now_run(ts)")
         self._db.commit()
 
-    def add(self, *, scope: str, agent: str, channel: str, prompt: str, answer: str,
-            status: str = "ok", ms: int = 0, mcp=None, tools=None, trace_id: str = "",
-            mode: str = "NOW", backend: str = "direct", subscription_id: str = "",
-            event_kind: str = "") -> str:
+    def add(
+        self,
+        *,
+        scope: str,
+        agent: str,
+        channel: str,
+        prompt: str,
+        answer: str,
+        status: str = "ok",
+        ms: int = 0,
+        mcp=None,
+        tools=None,
+        trace_id: str = "",
+        mode: str = "NOW",
+        backend: str = "direct",
+        subscription_id: str = "",
+        event_kind: str = "",
+    ) -> str:
         """Append one NOW run. Answers can be long — cap what we persist so the log stays light."""
         rid = uuid.uuid4().hex
         self._db.execute(
@@ -70,34 +88,62 @@ class NowRunStore:
                  (id, ts, scope, agent, channel, prompt, answer, status, ms, mcp, tools, trace_id,
                   mode, backend, subscription_id, event_kind)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (rid, time.time(), scope or "", agent or "", channel or "",
-             (prompt or "")[:2000], (answer or "")[:8000], status or "ok", int(ms or 0),
-             json.dumps(mcp or []), json.dumps(tools or []), trace_id or "",
-             mode or "NOW", backend or "direct", subscription_id or "", event_kind or ""))
+            (
+                rid,
+                time.time(),
+                scope or "",
+                agent or "",
+                channel or "",
+                (prompt or "")[:2000],
+                (answer or "")[:8000],
+                status or "ok",
+                int(ms or 0),
+                json.dumps(mcp or []),
+                json.dumps(tools or []),
+                trace_id or "",
+                mode or "NOW",
+                backend or "direct",
+                subscription_id or "",
+                event_kind or "",
+            ),
+        )
         # trim: keep the newest _CAP rows overall (cheap, runs only when we exceed the cap)
         self._db.execute(
-            "DELETE FROM now_run WHERE id NOT IN (SELECT id FROM now_run ORDER BY ts DESC LIMIT ?)",
-            (_CAP,))
+            "DELETE FROM now_run WHERE id NOT IN (SELECT id FROM now_run ORDER BY ts DESC LIMIT ?)", (_CAP,)
+        )
         self._db.commit()
         return rid
 
-    def list(self, *, scope: str | None = None, limit: int = 100,
-             mode: str | None = None, backend: str | None = None,
-             agent: str | None = None, status: str | None = None,
-             subscription_id: str | None = None) -> list[dict]:
+    def list(
+        self,
+        *,
+        scope: str | None = None,
+        limit: int = 100,
+        mode: str | None = None,
+        backend: str | None = None,
+        agent: str | None = None,
+        status: str | None = None,
+        subscription_id: str | None = None,
+    ) -> list[dict]:
         where, params = [], []
         if scope is not None:
-            where.append("scope=?"); params.append(scope)
-        if mode:                                     # CRON | POLL | PUSH | NOW (case-insensitive)
-            where.append("UPPER(mode)=?"); params.append(mode.upper())
-        if backend:                                  # native | ap | direct
-            where.append("backend=?"); params.append(backend.lower())
+            where.append("scope=?")
+            params.append(scope)
+        if mode:  # CRON | POLL | PUSH | NOW (case-insensitive)
+            where.append("UPPER(mode)=?")
+            params.append(mode.upper())
+        if backend:  # native | ap | direct
+            where.append("backend=?")
+            params.append(backend.lower())
         if agent:
-            where.append("agent=?"); params.append(agent)
+            where.append("agent=?")
+            params.append(agent)
         if status:
-            where.append("status=?"); params.append(status)
+            where.append("status=?")
+            params.append(status)
         if subscription_id:
-            where.append("subscription_id=?"); params.append(subscription_id)
+            where.append("subscription_id=?")
+            params.append(subscription_id)
         sql = "SELECT * FROM now_run"
         if where:
             sql += " WHERE " + " AND ".join(where)

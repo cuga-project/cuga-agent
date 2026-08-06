@@ -6,6 +6,7 @@ a one-line footer on the reply (and a structured ``meta`` block in the API respo
 so it flows through the single awaited call chain (/invoke → runtime.run → run_graph, or via the
 concierge's answer_now) without changing the AgentRuntime interface.
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -45,10 +46,10 @@ def footer(meta: dict | None, *, ms: int | None = None) -> str:
         return ""
     bits = [meta["agent"]]
     tools = meta.get("tools") or []
-    if tools:                                   # exact tool calls (when captured)
+    if tools:  # exact tool calls (when captured)
         bits.append(", ".join(tools[:4]) + ("…" if len(tools) > 4 else ""))
-    elif meta.get("mcp"):                       # else the tool namespace (which MCP servers)
+    elif meta.get("mcp"):  # else the tool namespace (which MCP servers)
         bits.append("via " + ", ".join(meta["mcp"]))
     if ms is not None:
-        bits.append(f"{ms/1000:.1f}s")
+        bits.append(f"{ms / 1000:.1f}s")
     return "— " + " · ".join(bits)

@@ -20,8 +20,9 @@ import os
 import sys
 
 # MUST run before any cuga import: point the registry client at our cuga-apps registry.
-os.environ.setdefault("DYNACONF_SERVER_PORTS__REGISTRY_HOST",
-                      os.environ.get("EVENTS_REGISTRY_URL", "http://localhost:8001"))
+os.environ.setdefault(
+    "DYNACONF_SERVER_PORTS__REGISTRY_HOST", os.environ.get("EVENTS_REGISTRY_URL", "http://localhost:8001")
+)
 
 import asyncio  # noqa: E402
 
@@ -57,8 +58,10 @@ async def main() -> int:
 
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
     # a worker WITH an MCP server — CUGA must load cuga-finance tools from the registry
-    rt.upsert_agent(AgentSpec(name="pricebot", prompt="You answer finance questions.",
-                              mcp_servers=["cuga-finance"]), scope=DEFAULT_SCOPE)
+    rt.upsert_agent(
+        AgentSpec(name="pricebot", prompt="You answer finance questions.", mcp_servers=["cuga-finance"]),
+        scope=DEFAULT_SCOPE,
+    )
     print("registry:", os.environ["DYNACONF_SERVER_PORTS__REGISTRY_HOST"])
     print("provisioned 'pricebot' backend=cuga mcp=[cuga-finance]")
 
@@ -72,8 +75,12 @@ async def main() -> int:
     has_number = any(c.isdigit() for c in (answer or ""))
     ok = used_cuga and has_number
     print(f"\nexecuted via: {'CUGA DynamicAgentGraph' if used_cuga else 'other'}")
-    print("RESULT:", "PASS — CUGA worker used its MCP tool (numeric price)" if ok else
-          "FAIL — no numeric answer (registry up + cuga-finance warm?)")
+    print(
+        "RESULT:",
+        "PASS — CUGA worker used its MCP tool (numeric price)"
+        if ok
+        else "FAIL — no numeric answer (registry up + cuga-finance warm?)",
+    )
     return 0 if ok else 1
 
 

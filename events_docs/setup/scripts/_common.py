@@ -4,6 +4,7 @@ Pure Python 3 stdlib — NO CUGA or Activepieces imports. These scripts only rea
 `.env` and talk directly to each vendor's public API, so they verify your credentials in isolation,
 before any of the CUGA/AP machinery is involved.
 """
+
 import json
 import os
 import ssl
@@ -23,18 +24,44 @@ def _c(code, s):
     return f"\033[{code}m{s}\033[0m" if _TTY else s
 
 
-def green(s): return _c("32", s)
-def red(s): return _c("31", s)
-def yellow(s): return _c("33", s)
-def dim(s): return _c("2", s)
-def bold(s): return _c("1", s)
+def green(s):
+    return _c("32", s)
 
 
-def title(name): print(bold(f"\n{name}"))
-def ok(msg): print(f"  {green('OK')}   {msg}")
-def bad(msg): print(f"  {red('FAIL')} {msg}")
-def warn(msg): print(f"  {yellow('!')}    {msg}")
-def info(msg): print(f"  {dim('.')}    {dim(msg)}")
+def red(s):
+    return _c("31", s)
+
+
+def yellow(s):
+    return _c("33", s)
+
+
+def dim(s):
+    return _c("2", s)
+
+
+def bold(s):
+    return _c("1", s)
+
+
+def title(name):
+    print(bold(f"\n{name}"))
+
+
+def ok(msg):
+    print(f"  {green('OK')}   {msg}")
+
+
+def bad(msg):
+    print(f"  {red('FAIL')} {msg}")
+
+
+def warn(msg):
+    print(f"  {yellow('!')}    {msg}")
+
+
+def info(msg):
+    print(f"  {dim('.')}    {dim(msg)}")
 
 
 def load_env(path=None):

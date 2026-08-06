@@ -14,6 +14,7 @@ This is the DEFAULT Telegram backend. The AP webhook path stays behind ``EVENTS_
 Env: ``TELEGRAM_BOT_TOKEN`` (required), ``EVENTS_TELEGRAM_BOT_USERNAME`` (optional — enables the
 group @mention gate), ``EVENTS_TELEGRAM_CHAT`` = ``all`` (default) | ``mention``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,7 +58,7 @@ def chat_mode() -> str:
 
 
 def bot_username() -> str:
-    return (os.environ.get("EVENTS_TELEGRAM_BOT_USERNAME", "").split(" #", 1)[0].strip().lstrip("@"))
+    return os.environ.get("EVENTS_TELEGRAM_BOT_USERNAME", "").split(" #", 1)[0].strip().lstrip("@")
 
 
 def mention_gate(msg: dict) -> tuple[bool, str]:
@@ -73,7 +74,7 @@ def mention_gate(msg: dict) -> tuple[bool, str]:
         return True, text
     uname = bot_username()
     if not uname:
-        return True, text                       # can't detect a mention → fail open
+        return True, text  # can't detect a mention → fail open
     tag = f"@{uname}"
     if tag.lower() in text.lower():
         # strip a leading "@bot " so the concierge sees the bare request
@@ -107,8 +108,9 @@ async def _get_me() -> dict:
         return {}
 
 
-async def run_poller(on_message, *, stop: asyncio.Event | None = None,
-                     ready: asyncio.Future | None = None) -> None:
+async def run_poller(
+    on_message, *, stop: asyncio.Event | None = None, ready: asyncio.Future | None = None
+) -> None:
     """Long-poll ``getUpdates`` and call ``on_message(message)`` for each human text message.
 
     Uses the ``offset`` cursor so each update is delivered once (ack'd by requesting offset =

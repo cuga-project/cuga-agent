@@ -25,8 +25,9 @@ OWNERSHIP = ("shared", "per-user")
 @dataclass
 class Integration:
     """An integration bound to an agent (declared at agent creation)."""
-    app: str                       # gmail | box | github | telegram | slack | ...
-    ownership: str = "per-user"    # 'shared' (service acct) | 'per-user' (each user's own)
+
+    app: str  # gmail | box | github | telegram | slack | ...
+    ownership: str = "per-user"  # 'shared' (service acct) | 'per-user' (each user's own)
 
     def __post_init__(self):
         if self.ownership not in OWNERSHIP:
@@ -46,7 +47,7 @@ def connection_external_id(app: str, ownership: str, principal, agent: str | Non
     if ownership == "shared":
         base = f"{principal.tenant_id}::agent::{agent}" if agent else f"{principal.tenant_id}::shared"
         return _san(f"ea::{base}::{app}")
-    return principal.connection_external_id(app)     # ea::<tenant>::<user>::<app>
+    return principal.connection_external_id(app)  # ea::<tenant>::<user>::<app>
 
 
 def is_per_user(ownership: str) -> bool:

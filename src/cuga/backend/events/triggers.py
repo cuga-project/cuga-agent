@@ -46,7 +46,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Slot:
     name: str
-    question: str                       # what the concierge asks when the slot is missing
+    question: str  # what the concierge asks when the slot is missing
     required: bool = True
 
 
@@ -54,12 +54,11 @@ SLOTS = {
     "repo": Slot("repo", "Which repository (owner/repo) should I watch?"),
     "label": Slot("label", "Which Gmail label should I watch (as shown in Gmail)?"),
     "channel": Slot("channel", "Which channel should I watch?", required=False),
-    "emoji": Slot("emoji", "Which emoji reaction should trigger this (e.g. bug, bookmark)?",
-                  required=False),
+    "emoji": Slot("emoji", "Which emoji reaction should trigger this (e.g. bug, bookmark)?", required=False),
     "folder": Slot("folder", "Which Box folder id should I watch?", required=False),
     "pattern": Slot("pattern", "What text/URL pattern should the message match?", required=False),
     "calendar": Slot("calendar", "Which Google Calendar (its id, or 'primary')?", required=False),
-    "board": Slot("board", "Which Pinterest board id should I watch?"),   # required: new_pin needs board_id
+    "board": Slot("board", "Which Pinterest board id should I watch?"),  # required: new_pin needs board_id
     "yt_channel": Slot("yt_channel", "Which YouTube channel (id, URL, or @handle)?"),
     "rss_feed_url": Slot("rss_feed_url", "Which RSS/Atom feed URL should I watch?"),
 }
@@ -67,23 +66,23 @@ SLOTS = {
 
 @dataclass(frozen=True)
 class Trigger:
-    app: str                            # integration / connection app ("github", "gmail", …)
-    event: str                          # OUR canonical event kind (rides in envelope.event.kind)
-    title: str                          # human name (mirrors the AP display name)
-    backend: str = "ap"                 # "ap" | "direct"
-    piece: str = ""                     # AP piece key (ap backend)
-    ap_trigger: str = ""                # AP trigger name (ap backend)
-    direct_kind: str = ""               # transport event type (direct backend)
-    payload: dict | None = None         # curated field map (see module docstring)
-    slots: tuple = ()                   # Slot names this trigger needs
-    phrases: tuple = ()                 # regex fragments for the deterministic classifier
-    synth: dict | None = None           # synthetic /run payload (webhook triggers only)
+    app: str  # integration / connection app ("github", "gmail", …)
+    event: str  # OUR canonical event kind (rides in envelope.event.kind)
+    title: str  # human name (mirrors the AP display name)
+    backend: str = "ap"  # "ap" | "direct"
+    piece: str = ""  # AP piece key (ap backend)
+    ap_trigger: str = ""  # AP trigger name (ap backend)
+    direct_kind: str = ""  # transport event type (direct backend)
+    payload: dict | None = None  # curated field map (see module docstring)
+    slots: tuple = ()  # Slot names this trigger needs
+    phrases: tuple = ()  # regex fragments for the deterministic classifier
+    synth: dict | None = None  # synthetic /run payload (webhook triggers only)
     # The provider's webhook EVENT NAME for this trigger (github's X-GitHub-Event header). One repo
     # webhook carries many event types, so the piece disambiguates on this header — a synthetic fire
     # without it makes the piece emit NOTHING (proven: new_release/new_commit produced no AP run).
     hook_event: str = ""
-    fire: str = "manual"                # "synth" | "real" | "manual"
-    default: bool = False               # the app's default trigger
+    fire: str = "manual"  # "synth" | "real" | "manual"
+    default: bool = False  # the app's default trigger
     notes: str = ""
 
     @property
@@ -102,161 +101,390 @@ def _t(*a, **kw) -> Trigger:
 _GH = dict(app="github", backend="ap", piece="github", slots=("repo",), fire="synth")
 
 _GITHUB = [
-    _t(event="new_pr", title="New Pull Request", ap_trigger="trigger_pull_request", hook_event="pull_request", default=True,
-       payload={"action": "{{trigger.action}}", "title": "{{trigger.pull_request.title}}",
-                "body": "{{trigger.pull_request.body}}", "url": "{{trigger.pull_request.html_url}}",
-                "author": "{{trigger.pull_request.user.login}}",
-                "repo": "{{trigger.repository.full_name}}",
-                "changed_files": "{{trigger.pull_request.changed_files}}",
-                "additions": "{{trigger.pull_request.additions}}",
-                "deletions": "{{trigger.pull_request.deletions}}"},
-       phrases=(r"\bpull requests?\b", r"\bPRs?\b", r"\bnew pr\b"),
-       synth={"action": "opened",
-              "pull_request": {"title": "Add retry with backoff to the download client",
-                               "body": "Wraps the download call in an exponential-backoff retry.",
-                               "html_url": "https://github.com/o/r/pull/999",
-                               "user": {"login": "tester"},
-                               "changed_files": 3, "additions": 84, "deletions": 12},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_issue", title="New Issue", ap_trigger="trigger_issues", hook_event="issues",
-       payload={"action": "{{trigger.action}}", "title": "{{trigger.issue.title}}",
-                "body": "{{trigger.issue.body}}", "url": "{{trigger.issue.html_url}}",
-                "author": "{{trigger.issue.user.login}}",
-                "labels": "{{trigger.issue.labels}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bissues?\b",),
-       synth={"action": "opened",
-              "issue": {"title": "Login page 500s on submit",
-                        "body": "Users get a 500 when submitting the login form. Blocking.",
-                        "html_url": "https://github.com/o/r/issues/501",
-                        "user": {"login": "tester"}, "labels": []},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_star", title="New Star", ap_trigger="trigger_star", hook_event="star",
-       payload={"action": "{{trigger.action}}", "starred_at": "{{trigger.starred_at}}",
-                "by": "{{trigger.sender.login}}", "repo": "{{trigger.repository.full_name}}",
-                "stars": "{{trigger.repository.stargazers_count}}"},
-       phrases=(r"\bstars?\b.{0,20}\brepo\b", r"\brepo\b.{0,30}\bstar", r"\bnew star\b"),
-       synth={"action": "created", "starred_at": "2026-07-13T11:18:55Z",
-              "sender": {"login": "stargazer"},
-              "repository": {"full_name": "o/r", "stargazers_count": 42}}, **_GH),
-    _t(event="new_push", title="Push", ap_trigger="trigger_push", hook_event="push",
-       payload={"ref": "{{trigger.ref}}", "before": "{{trigger.before}}",
-                "after": "{{trigger.after}}", "commits": "{{trigger.commits}}",
-                "pusher": "{{trigger.pusher.name}}", "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bpush(ed|es)?\b.{0,20}\b(main|master|branch|repo)\b", r"\bcode is pushed\b"),
-       synth={"ref": "refs/heads/main", "before": "abc123", "after": "def456",
-              "commits": [{"id": "def456", "message": "tighten retry loop",
-                           "author": {"name": "Tester", "email": "t@example.com"},
-                           "added": [], "modified": ["client.py"], "removed": []}],
-              "pusher": {"name": "tester"}, "repository": {"full_name": "o/r"},
-              "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_discussion", title="New Discussion", ap_trigger="trigger_discussion", hook_event="discussion",
-       payload={"action": "{{trigger.action}}", "title": "{{trigger.discussion.title}}",
-                "body": "{{trigger.discussion.body}}", "url": "{{trigger.discussion.html_url}}",
-                "author": "{{trigger.discussion.user.login}}",
-                "category": "{{trigger.discussion.category.name}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bdiscussions?\b",),
-       synth={"action": "created",
-              "discussion": {"title": "Should we support Python 3.13?",
-                             "body": "3.13 is out — what breaks?",
-                             "html_url": "https://github.com/o/r/discussions/7",
-                             "user": {"login": "tester"}, "category": {"name": "Ideas"}},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_discussion_comment", title="New Comment Posted",
-       ap_trigger="trigger_discussion_comment", hook_event="discussion_comment",
-       payload={"action": "{{trigger.action}}", "comment": "{{trigger.comment.body}}",
-                "url": "{{trigger.comment.html_url}}", "author": "{{trigger.comment.user.login}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bcomment(s|ed)?\b.{0,30}\b(discussion|issue|posted)\b",),
-       synth={"action": "created",
-              "comment": {"body": "This blocks the release — the fix must land first.",
-                          "html_url": "https://github.com/o/r/discussions/7#comment-1",
-                          "user": {"login": "tester"}},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_branch", title="New Branch", ap_trigger="new_branch", hook_event="create",
-       payload={"branch": "{{trigger.ref}}", "ref_type": "{{trigger.ref_type}}",
-                "by": "{{trigger.sender.login}}", "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bbranch(es)?\b.{0,20}\b(created?|new)\b", r"\bnew branch\b"),
-       synth={"ref": "feature/new-design", "ref_type": "branch", "master_branch": "main",
-              "sender": {"login": "tester"}, "repository": {"full_name": "o/r"}}, **_GH),
-    _t(event="new_collaborator", title="New Collaborator", ap_trigger="new_collaborator", hook_event="member",
-       payload={"action": "{{trigger.action}}", "member": "{{trigger.member.login}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bcollaborators?\b",),
-       synth={"action": "added", "member": {"login": "octocat"},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_repo_label", title="New Label", ap_trigger="new_label", hook_event="label",
-       payload={"action": "{{trigger.action}}", "label": "{{trigger.label.name}}",
-                "color": "{{trigger.label.color}}", "repo": "{{trigger.repository.full_name}}"},
-       # repo/github context REQUIRED: a bare "label … created" also matches "when a new gmail
-       # label is created", which belongs to gmail/new_gmail_label.
-       phrases=(r"\b(repo|repository|github)\b.{0,25}\blabel\b",
-                r"\blabel\b.{0,20}\b(repo|repository|github)\b"),
-       synth={"action": "created", "label": {"name": "needs-triage", "color": "f29513"},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_milestone", title="New Milestone", ap_trigger="new_milestone", hook_event="milestone",
-       payload={"action": "{{trigger.action}}", "title": "{{trigger.milestone.title}}",
-                "description": "{{trigger.milestone.description}}",
-                "due_on": "{{trigger.milestone.due_on}}",
-                "url": "{{trigger.milestone.html_url}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bmilestones?\b",),
-       synth={"action": "created",
-              "milestone": {"title": "v1.0", "description": "First stable release",
-                            "due_on": "2026-09-01T00:00:00Z",
-                            "html_url": "https://github.com/o/r/milestones/1",
-                            "creator": {"login": "tester"}, "number": 1, "state": "open"},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_release", title="New Release", ap_trigger="new_release", hook_event="release",
-       payload={"action": "{{trigger.action}}", "tag": "{{trigger.release.tag_name}}",
-                "name": "{{trigger.release.name}}", "notes": "{{trigger.release.body}}",
-                "url": "{{trigger.release.html_url}}", "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\breleases?\b", r"\bchangelog\b"),
-       # The piece's run() is: action === "created" ? [body] : []  — its sampleData says
-       # "published", which the trigger itself would DISCARD. Verified in piece-github@0.8.5.
-       synth={"action": "created",
-              "release": {"id": 1, "tag_name": "v1.4.0", "name": "v1.4.0",
-                          "body": "### Added\n- retry with backoff\n### Fixed\n- 401 refresh",
-                          "url": "https://api.github.com/repos/o/r/releases/1",
-                          "html_url": "https://github.com/o/r/releases/v1.4.0",
-                          "target_commitish": "main", "draft": False, "prerelease": False,
-                          "author": {"login": "tester"}},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_commit", title="New Commit", ap_trigger="new_commit", hook_event="push",
-       payload={"ref": "{{trigger.ref}}", "commits": "{{trigger.commits}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bcommits?\b",),
-       # The piece's run() drops the event unless ref starts with refs/heads/ AND keeps only
-       # commits with distinct === true — its sampleData omits `distinct`, so the sample as-shipped
-       # yields ZERO items. Verified in piece-github@0.8.5.
-       synth={"ref": "refs/heads/main", "deleted": False,
-              "commits": [{"id": "def456", "message": "Add new feature", "distinct": True,
-                           "timestamp": "2026-07-13T12:34:56Z",
-                           "url": "https://github.com/o/r/commit/def456"}],
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_review_request", title="New Review Request", ap_trigger="new_review_request", hook_event="pull_request",
-       payload={"action": "{{trigger.action}}", "title": "{{trigger.pull_request.title}}",
-                "url": "{{trigger.pull_request.html_url}}",
-                "author": "{{trigger.pull_request.user.login}}",
-                "reviewer": "{{trigger.requested_reviewer.login}}",
-                "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\breview(s|ed)?\b.{0,25}\b(request|assigned|PR)\b", r"\brequested to review\b"),
-       synth={"action": "review_requested",
-              "pull_request": {"title": "Amazing new feature",
-                               "html_url": "https://github.com/o/r/pull/1347",
-                               "user": {"login": "author"}},
-              "requested_reviewer": {"login": "tester"},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "tester"}}, **_GH),
-    _t(event="new_gh_mention", title="New Mention", ap_trigger="new_mention", hook_event="issue_comment",
-       payload={"action": "{{trigger.action}}", "comment": "{{trigger.comment.body}}",
-                "by": "{{trigger.comment.user.login}}", "repo": "{{trigger.repository.full_name}}"},
-       phrases=(r"\bmention(s|ed)?\b.{0,25}\b(github|repo|me)\b",),
-       synth={"action": "created",
-              "comment": {"body": "@MENTION_LOGIN please review this.",
-                          "user": {"login": "author"},
-                          "created_at": "2026-07-13T20:09:31Z"},
-              "repository": {"full_name": "o/r"}, "sender": {"login": "author"}}, **_GH),
+    _t(
+        event="new_pr",
+        title="New Pull Request",
+        ap_trigger="trigger_pull_request",
+        hook_event="pull_request",
+        default=True,
+        payload={
+            "action": "{{trigger.action}}",
+            "title": "{{trigger.pull_request.title}}",
+            "body": "{{trigger.pull_request.body}}",
+            "url": "{{trigger.pull_request.html_url}}",
+            "author": "{{trigger.pull_request.user.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+            "changed_files": "{{trigger.pull_request.changed_files}}",
+            "additions": "{{trigger.pull_request.additions}}",
+            "deletions": "{{trigger.pull_request.deletions}}",
+        },
+        phrases=(r"\bpull requests?\b", r"\bPRs?\b", r"\bnew pr\b"),
+        synth={
+            "action": "opened",
+            "pull_request": {
+                "title": "Add retry with backoff to the download client",
+                "body": "Wraps the download call in an exponential-backoff retry.",
+                "html_url": "https://github.com/o/r/pull/999",
+                "user": {"login": "tester"},
+                "changed_files": 3,
+                "additions": 84,
+                "deletions": 12,
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_issue",
+        title="New Issue",
+        ap_trigger="trigger_issues",
+        hook_event="issues",
+        payload={
+            "action": "{{trigger.action}}",
+            "title": "{{trigger.issue.title}}",
+            "body": "{{trigger.issue.body}}",
+            "url": "{{trigger.issue.html_url}}",
+            "author": "{{trigger.issue.user.login}}",
+            "labels": "{{trigger.issue.labels}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bissues?\b",),
+        synth={
+            "action": "opened",
+            "issue": {
+                "title": "Login page 500s on submit",
+                "body": "Users get a 500 when submitting the login form. Blocking.",
+                "html_url": "https://github.com/o/r/issues/501",
+                "user": {"login": "tester"},
+                "labels": [],
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_star",
+        title="New Star",
+        ap_trigger="trigger_star",
+        hook_event="star",
+        payload={
+            "action": "{{trigger.action}}",
+            "starred_at": "{{trigger.starred_at}}",
+            "by": "{{trigger.sender.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+            "stars": "{{trigger.repository.stargazers_count}}",
+        },
+        phrases=(r"\bstars?\b.{0,20}\brepo\b", r"\brepo\b.{0,30}\bstar", r"\bnew star\b"),
+        synth={
+            "action": "created",
+            "starred_at": "2026-07-13T11:18:55Z",
+            "sender": {"login": "stargazer"},
+            "repository": {"full_name": "o/r", "stargazers_count": 42},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_push",
+        title="Push",
+        ap_trigger="trigger_push",
+        hook_event="push",
+        payload={
+            "ref": "{{trigger.ref}}",
+            "before": "{{trigger.before}}",
+            "after": "{{trigger.after}}",
+            "commits": "{{trigger.commits}}",
+            "pusher": "{{trigger.pusher.name}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bpush(ed|es)?\b.{0,20}\b(main|master|branch|repo)\b", r"\bcode is pushed\b"),
+        synth={
+            "ref": "refs/heads/main",
+            "before": "abc123",
+            "after": "def456",
+            "commits": [
+                {
+                    "id": "def456",
+                    "message": "tighten retry loop",
+                    "author": {"name": "Tester", "email": "t@example.com"},
+                    "added": [],
+                    "modified": ["client.py"],
+                    "removed": [],
+                }
+            ],
+            "pusher": {"name": "tester"},
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_discussion",
+        title="New Discussion",
+        ap_trigger="trigger_discussion",
+        hook_event="discussion",
+        payload={
+            "action": "{{trigger.action}}",
+            "title": "{{trigger.discussion.title}}",
+            "body": "{{trigger.discussion.body}}",
+            "url": "{{trigger.discussion.html_url}}",
+            "author": "{{trigger.discussion.user.login}}",
+            "category": "{{trigger.discussion.category.name}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bdiscussions?\b",),
+        synth={
+            "action": "created",
+            "discussion": {
+                "title": "Should we support Python 3.13?",
+                "body": "3.13 is out — what breaks?",
+                "html_url": "https://github.com/o/r/discussions/7",
+                "user": {"login": "tester"},
+                "category": {"name": "Ideas"},
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_discussion_comment",
+        title="New Comment Posted",
+        ap_trigger="trigger_discussion_comment",
+        hook_event="discussion_comment",
+        payload={
+            "action": "{{trigger.action}}",
+            "comment": "{{trigger.comment.body}}",
+            "url": "{{trigger.comment.html_url}}",
+            "author": "{{trigger.comment.user.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bcomment(s|ed)?\b.{0,30}\b(discussion|issue|posted)\b",),
+        synth={
+            "action": "created",
+            "comment": {
+                "body": "This blocks the release — the fix must land first.",
+                "html_url": "https://github.com/o/r/discussions/7#comment-1",
+                "user": {"login": "tester"},
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_branch",
+        title="New Branch",
+        ap_trigger="new_branch",
+        hook_event="create",
+        payload={
+            "branch": "{{trigger.ref}}",
+            "ref_type": "{{trigger.ref_type}}",
+            "by": "{{trigger.sender.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bbranch(es)?\b.{0,20}\b(created?|new)\b", r"\bnew branch\b"),
+        synth={
+            "ref": "feature/new-design",
+            "ref_type": "branch",
+            "master_branch": "main",
+            "sender": {"login": "tester"},
+            "repository": {"full_name": "o/r"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_collaborator",
+        title="New Collaborator",
+        ap_trigger="new_collaborator",
+        hook_event="member",
+        payload={
+            "action": "{{trigger.action}}",
+            "member": "{{trigger.member.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bcollaborators?\b",),
+        synth={
+            "action": "added",
+            "member": {"login": "octocat"},
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_repo_label",
+        title="New Label",
+        ap_trigger="new_label",
+        hook_event="label",
+        payload={
+            "action": "{{trigger.action}}",
+            "label": "{{trigger.label.name}}",
+            "color": "{{trigger.label.color}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        # repo/github context REQUIRED: a bare "label … created" also matches "when a new gmail
+        # label is created", which belongs to gmail/new_gmail_label.
+        phrases=(
+            r"\b(repo|repository|github)\b.{0,25}\blabel\b",
+            r"\blabel\b.{0,20}\b(repo|repository|github)\b",
+        ),
+        synth={
+            "action": "created",
+            "label": {"name": "needs-triage", "color": "f29513"},
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_milestone",
+        title="New Milestone",
+        ap_trigger="new_milestone",
+        hook_event="milestone",
+        payload={
+            "action": "{{trigger.action}}",
+            "title": "{{trigger.milestone.title}}",
+            "description": "{{trigger.milestone.description}}",
+            "due_on": "{{trigger.milestone.due_on}}",
+            "url": "{{trigger.milestone.html_url}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bmilestones?\b",),
+        synth={
+            "action": "created",
+            "milestone": {
+                "title": "v1.0",
+                "description": "First stable release",
+                "due_on": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/o/r/milestones/1",
+                "creator": {"login": "tester"},
+                "number": 1,
+                "state": "open",
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_release",
+        title="New Release",
+        ap_trigger="new_release",
+        hook_event="release",
+        payload={
+            "action": "{{trigger.action}}",
+            "tag": "{{trigger.release.tag_name}}",
+            "name": "{{trigger.release.name}}",
+            "notes": "{{trigger.release.body}}",
+            "url": "{{trigger.release.html_url}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\breleases?\b", r"\bchangelog\b"),
+        # The piece's run() is: action === "created" ? [body] : []  — its sampleData says
+        # "published", which the trigger itself would DISCARD. Verified in piece-github@0.8.5.
+        synth={
+            "action": "created",
+            "release": {
+                "id": 1,
+                "tag_name": "v1.4.0",
+                "name": "v1.4.0",
+                "body": "### Added\n- retry with backoff\n### Fixed\n- 401 refresh",
+                "url": "https://api.github.com/repos/o/r/releases/1",
+                "html_url": "https://github.com/o/r/releases/v1.4.0",
+                "target_commitish": "main",
+                "draft": False,
+                "prerelease": False,
+                "author": {"login": "tester"},
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_commit",
+        title="New Commit",
+        ap_trigger="new_commit",
+        hook_event="push",
+        payload={
+            "ref": "{{trigger.ref}}",
+            "commits": "{{trigger.commits}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bcommits?\b",),
+        # The piece's run() drops the event unless ref starts with refs/heads/ AND keeps only
+        # commits with distinct === true — its sampleData omits `distinct`, so the sample as-shipped
+        # yields ZERO items. Verified in piece-github@0.8.5.
+        synth={
+            "ref": "refs/heads/main",
+            "deleted": False,
+            "commits": [
+                {
+                    "id": "def456",
+                    "message": "Add new feature",
+                    "distinct": True,
+                    "timestamp": "2026-07-13T12:34:56Z",
+                    "url": "https://github.com/o/r/commit/def456",
+                }
+            ],
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_review_request",
+        title="New Review Request",
+        ap_trigger="new_review_request",
+        hook_event="pull_request",
+        payload={
+            "action": "{{trigger.action}}",
+            "title": "{{trigger.pull_request.title}}",
+            "url": "{{trigger.pull_request.html_url}}",
+            "author": "{{trigger.pull_request.user.login}}",
+            "reviewer": "{{trigger.requested_reviewer.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\breview(s|ed)?\b.{0,25}\b(request|assigned|PR)\b", r"\brequested to review\b"),
+        synth={
+            "action": "review_requested",
+            "pull_request": {
+                "title": "Amazing new feature",
+                "html_url": "https://github.com/o/r/pull/1347",
+                "user": {"login": "author"},
+            },
+            "requested_reviewer": {"login": "tester"},
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "tester"},
+        },
+        **_GH,
+    ),
+    _t(
+        event="new_gh_mention",
+        title="New Mention",
+        ap_trigger="new_mention",
+        hook_event="issue_comment",
+        payload={
+            "action": "{{trigger.action}}",
+            "comment": "{{trigger.comment.body}}",
+            "by": "{{trigger.comment.user.login}}",
+            "repo": "{{trigger.repository.full_name}}",
+        },
+        phrases=(r"\bmention(s|ed)?\b.{0,25}\b(github|repo|me)\b",),
+        synth={
+            "action": "created",
+            "comment": {
+                "body": "@MENTION_LOGIN please review this.",
+                "user": {"login": "author"},
+                "created_at": "2026-07-13T20:09:31Z",
+            },
+            "repository": {"full_name": "o/r"},
+            "sender": {"login": "author"},
+        },
+        **_GH,
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -265,35 +493,66 @@ _GITHUB = [
 _GM = dict(app="gmail", backend="ap", piece="gmail", fire="manual")
 
 _GMAIL = [
-    _t(event="new_email", title="New Email", ap_trigger="gmail_new_email_received", default=True,
-       payload={"subject": "{{trigger.message.subject}}",
-                "from": "{{trigger.message.from.value[0].address}}",
-                "body": "{{trigger.message.text}}"},
-       # inbound-context required: a bare "email" is usually a DELIVERY clause ("…email me the
-       # fit"), which must not make gmail the watched source.
-       phrases=(r"\bgmail\b", r"\binbox\b", r"\b(new|an) e-?mails?\b",
-                r"\be-?mail\b.{0,20}\b(arrives?|received|lands|comes)\b"), **_GM),
-    _t(event="new_labeled_email", title="New Labeled Email", ap_trigger="new_labeled_email",
-       slots=("label",),
-       payload={"subject": "{{trigger.message.subject}}",
-                "from": "{{trigger.message.from.value[0].address}}",
-                "body": "{{trigger.message.text}}"},
-       phrases=(r"\blabel(ed)?\b.{0,30}\be-?mail\b", r"\be-?mail\b.{0,30}\blabel\b",
-                r"\bI label\b"),
-       notes="the `label` prop is an AP dropdown — we pass the label as given; verify the first "
-             "real fire matches the label you meant (Gmail system labels are UPPERCASE ids)", **_GM),
-    _t(event="new_attachment", title="New Attachment", ap_trigger="new_attachment",
-       payload={"subject": "{{trigger.message.subject}}",
-                "from": "{{trigger.message.from.value[0].address}}",
-                "attachment": "{{trigger.attachment.filename}}",
-                "body": "{{trigger.message.text}}"},
-       phrases=(r"\battach(ment|ed)s?\b",
-                r"\be-?mail\b.{0,30}\b(resume|pdf|attach)",  # email-context FIRST — a bare
-                # "resume … email me" is usually a Box/other watcher that DELIVERS by email
-                ), **_GM),
-    _t(event="new_gmail_label", title="New Label created", ap_trigger="new_label",
-       payload={"label": "{{trigger.name}}", "id": "{{trigger.id}}"},
-       phrases=(r"\bgmail label\b.{0,25}\bcreated\b", r"\bnew gmail label\b"), **_GM),
+    _t(
+        event="new_email",
+        title="New Email",
+        ap_trigger="gmail_new_email_received",
+        default=True,
+        payload={
+            "subject": "{{trigger.message.subject}}",
+            "from": "{{trigger.message.from.value[0].address}}",
+            "body": "{{trigger.message.text}}",
+        },
+        # inbound-context required: a bare "email" is usually a DELIVERY clause ("…email me the
+        # fit"), which must not make gmail the watched source.
+        phrases=(
+            r"\bgmail\b",
+            r"\binbox\b",
+            r"\b(new|an) e-?mails?\b",
+            r"\be-?mail\b.{0,20}\b(arrives?|received|lands|comes)\b",
+        ),
+        **_GM,
+    ),
+    _t(
+        event="new_labeled_email",
+        title="New Labeled Email",
+        ap_trigger="new_labeled_email",
+        slots=("label",),
+        payload={
+            "subject": "{{trigger.message.subject}}",
+            "from": "{{trigger.message.from.value[0].address}}",
+            "body": "{{trigger.message.text}}",
+        },
+        phrases=(r"\blabel(ed)?\b.{0,30}\be-?mail\b", r"\be-?mail\b.{0,30}\blabel\b", r"\bI label\b"),
+        notes="the `label` prop is an AP dropdown — we pass the label as given; verify the first "
+        "real fire matches the label you meant (Gmail system labels are UPPERCASE ids)",
+        **_GM,
+    ),
+    _t(
+        event="new_attachment",
+        title="New Attachment",
+        ap_trigger="new_attachment",
+        payload={
+            "subject": "{{trigger.message.subject}}",
+            "from": "{{trigger.message.from.value[0].address}}",
+            "attachment": "{{trigger.attachment.filename}}",
+            "body": "{{trigger.message.text}}",
+        },
+        phrases=(
+            r"\battach(ment|ed)s?\b",
+            r"\be-?mail\b.{0,30}\b(resume|pdf|attach)",  # email-context FIRST — a bare
+            # "resume … email me" is usually a Box/other watcher that DELIVERS by email
+        ),
+        **_GM,
+    ),
+    _t(
+        event="new_gmail_label",
+        title="New Label created",
+        ap_trigger="new_label",
+        payload={"label": "{{trigger.name}}", "id": "{{trigger.id}}"},
+        phrases=(r"\bgmail label\b.{0,25}\bcreated\b", r"\bnew gmail label\b"),
+        **_GM,
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -302,22 +561,44 @@ _GMAIL = [
 # non-direct mode and reuse the same events.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _BOX = [
-    _t(app="box", event="new_file", title="New File", backend="ap", piece="box",
-       ap_trigger="new_file", default=True, fire="real", slots=("folder",),
-       payload={"name": "{{trigger.name}}", "id": "{{trigger.id}}"},
-       phrases=(r"\bbox\b",),
-       notes="direct mode arms a schedule→/api/events/box/poll watcher instead of an AP box trigger"),
-    _t(app="box", event="new_folder", title="New Folder", backend="direct",
-       direct_kind="new_folder", fire="real", slots=("folder",),
-       payload={"name": None, "id": None, "created_at": None},
-       # folder-CREATION verbs only: "a resume lands in my Box folder" is a new_FILE utterance
-       # that merely mentions a folder — it must not route here.
-       phrases=(r"\b(new|a) folder\b.{0,25}\b(appears?|created|added)\b",
-                r"\bfolder is (created|added)\b")),
-    _t(app="box", event="new_box_comment", title="New Comment", backend="direct",
-       direct_kind="new_comment", fire="real", slots=("folder",),
-       payload={"message": None, "file": None, "by": None, "created_at": None},
-       phrases=(r"\bcomments?\b.{0,25}\bbox\b", r"\bbox\b.{0,25}\bcomments?\b")),
+    _t(
+        app="box",
+        event="new_file",
+        title="New File",
+        backend="ap",
+        piece="box",
+        ap_trigger="new_file",
+        default=True,
+        fire="real",
+        slots=("folder",),
+        payload={"name": "{{trigger.name}}", "id": "{{trigger.id}}"},
+        phrases=(r"\bbox\b",),
+        notes="direct mode arms a schedule→/api/events/box/poll watcher instead of an AP box trigger",
+    ),
+    _t(
+        app="box",
+        event="new_folder",
+        title="New Folder",
+        backend="direct",
+        direct_kind="new_folder",
+        fire="real",
+        slots=("folder",),
+        payload={"name": None, "id": None, "created_at": None},
+        # folder-CREATION verbs only: "a resume lands in my Box folder" is a new_FILE utterance
+        # that merely mentions a folder — it must not route here.
+        phrases=(r"\b(new|a) folder\b.{0,25}\b(appears?|created|added)\b", r"\bfolder is (created|added)\b"),
+    ),
+    _t(
+        app="box",
+        event="new_box_comment",
+        title="New Comment",
+        backend="direct",
+        direct_kind="new_comment",
+        fire="real",
+        slots=("folder",),
+        payload={"message": None, "file": None, "by": None, "created_at": None},
+        phrases=(r"\bcomments?\b.{0,25}\bbox\b", r"\bbox\b.{0,25}\bcomments?\b"),
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -328,41 +609,89 @@ _BOX = [
 _SL = dict(app="slack", backend="direct", fire="real")
 
 _SLACK = [
-    _t(event="new_channel_message", title="New Message Posted to Channel", direct_kind="message",
-       slots=("channel", "pattern"),
-       payload={"text": None, "channel": None, "user": None, "ts": None},
-       # an explicit #channel is REQUIRED. A looser "message … in <word>" also matched "when a
-       # message gets a :bug: reaction in slack", stealing the reaction trigger.
-       phrases=(r"\b(message|posts?)\b.{0,30}\bin #\w+", r"\bposts? in #\w+",
-                r"\bposted (to|in) (the )?#\w+"),
-       notes="a channel-scoped watcher; converse (the chat bot) still answers unmatched messages",
-       **_SL),
-    _t(event="new_reaction", title="New Reaction", direct_kind="reaction_added",
-       slots=("emoji", "channel"),
-       payload={"reaction": None, "user": None, "item": None},
-       phrases=(r"\bmessage\b.{0,30}\breaction\b", r"\breaction\b.{0,20}\b(is )?added\b",
-                r":\w+:\s*reaction", r"\breacts?\b.{0,20}:\w+:", r"\breactions?\b"), **_SL),
-    _t(event="reaction_removed", title="Reaction Removed", direct_kind="reaction_removed",
-       slots=("emoji", "channel"),
-       payload={"reaction": None, "user": None, "item": None},
-       phrases=(r"\breaction\b.{0,20}\bremoved\b",), **_SL),
-    _t(event="new_slack_mention", title="New Mention in Channel", direct_kind="app_mention",
-       payload={"text": None, "channel": None, "user": None, "ts": None},
-       phrases=(r"@?mention(s|ed)?\b.{0,25}\b(slack|channel|team)\b",
-                r"\b(slack|team)\b.{0,25}@?mention"), **_SL),
-    _t(event="channel_created", title="Channel created", direct_kind="channel_created",
-       payload={"channel": None},
-       phrases=(r"\bchannel\b.{0,20}\b(created|new)\b", r"\bnew channel\b"), **_SL),
-    _t(event="new_slack_user", title="New User", direct_kind="team_join",
-       payload={"user": None},
-       phrases=(r"\b(user|teammate|member)\b.{0,25}\bjoins?\b.{0,25}\b(workspace|slack|team)\b",
-                r"\bnew (user|teammate)\b"), **_SL),
-    _t(event="new_emoji", title="New Team Custom Emoji", direct_kind="emoji_changed",
-       payload={"name": None, "value": None, "subtype": None},
-       phrases=(r"\bcustom emoji\b", r"\bemoji\b.{0,20}\badded\b"), **_SL),
-    _t(event="saved_message", title="New Saved Message", direct_kind="star_added",
-       payload={"item": None, "user": None},
-       phrases=(r"\bsaved? (a )?message\b", r"\bsave\b.{0,15}\bfor later\b"), **_SL),
+    _t(
+        event="new_channel_message",
+        title="New Message Posted to Channel",
+        direct_kind="message",
+        slots=("channel", "pattern"),
+        payload={"text": None, "channel": None, "user": None, "ts": None},
+        # an explicit #channel is REQUIRED. A looser "message … in <word>" also matched "when a
+        # message gets a :bug: reaction in slack", stealing the reaction trigger.
+        phrases=(
+            r"\b(message|posts?)\b.{0,30}\bin #\w+",
+            r"\bposts? in #\w+",
+            r"\bposted (to|in) (the )?#\w+",
+        ),
+        notes="a channel-scoped watcher; converse (the chat bot) still answers unmatched messages",
+        **_SL,
+    ),
+    _t(
+        event="new_reaction",
+        title="New Reaction",
+        direct_kind="reaction_added",
+        slots=("emoji", "channel"),
+        payload={"reaction": None, "user": None, "item": None},
+        phrases=(
+            r"\bmessage\b.{0,30}\breaction\b",
+            r"\breaction\b.{0,20}\b(is )?added\b",
+            r":\w+:\s*reaction",
+            r"\breacts?\b.{0,20}:\w+:",
+            r"\breactions?\b",
+        ),
+        **_SL,
+    ),
+    _t(
+        event="reaction_removed",
+        title="Reaction Removed",
+        direct_kind="reaction_removed",
+        slots=("emoji", "channel"),
+        payload={"reaction": None, "user": None, "item": None},
+        phrases=(r"\breaction\b.{0,20}\bremoved\b",),
+        **_SL,
+    ),
+    _t(
+        event="new_slack_mention",
+        title="New Mention in Channel",
+        direct_kind="app_mention",
+        payload={"text": None, "channel": None, "user": None, "ts": None},
+        phrases=(r"@?mention(s|ed)?\b.{0,25}\b(slack|channel|team)\b", r"\b(slack|team)\b.{0,25}@?mention"),
+        **_SL,
+    ),
+    _t(
+        event="channel_created",
+        title="Channel created",
+        direct_kind="channel_created",
+        payload={"channel": None},
+        phrases=(r"\bchannel\b.{0,20}\b(created|new)\b", r"\bnew channel\b"),
+        **_SL,
+    ),
+    _t(
+        event="new_slack_user",
+        title="New User",
+        direct_kind="team_join",
+        payload={"user": None},
+        phrases=(
+            r"\b(user|teammate|member)\b.{0,25}\bjoins?\b.{0,25}\b(workspace|slack|team)\b",
+            r"\bnew (user|teammate)\b",
+        ),
+        **_SL,
+    ),
+    _t(
+        event="new_emoji",
+        title="New Team Custom Emoji",
+        direct_kind="emoji_changed",
+        payload={"name": None, "value": None, "subtype": None},
+        phrases=(r"\bcustom emoji\b", r"\bemoji\b.{0,20}\badded\b"),
+        **_SL,
+    ),
+    _t(
+        event="saved_message",
+        title="New Saved Message",
+        direct_kind="star_added",
+        payload={"item": None, "user": None},
+        phrases=(r"\bsaved? (a )?message\b", r"\bsave\b.{0,15}\bfor later\b"),
+        **_SL,
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -371,27 +700,55 @@ _SLACK = [
 # gateway with 4014 — so it must never be default-on).
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _DISCORD = [
-    _t(app="discord", event="new_member", title="New Member", backend="direct",
-       direct_kind="GUILD_MEMBER_ADD", fire="real",
-       payload={"user": None, "joined_at": None, "guild_id": None},
-       phrases=(r"\bmember\b.{0,20}\bjoins?\b.{0,25}\b(server|discord)\b",
-                r"\b(server|discord)\b.{0,30}\bnew member\b"),
-       notes="requires EVENTS_DISCORD_MEMBERS_INTENT=1 AND the Server Members intent enabled in "
-             "the Discord dev portal — otherwise the gateway rejects the connection (4014)"),
-    _t(app="discord", event="new_channel_message", title="New message (channel-scoped)",
-       backend="direct", direct_kind="MESSAGE_CREATE", fire="real", slots=("channel", "pattern"),
-       payload={"content": None, "channel_id": None, "author": None},
-       phrases=(r"\bposts? in #\w+.{0,30}\bdiscord\b", r"\bdiscord\b.{0,30}\bposts? in #\w+",
-                r"\bsomeone posts in #\w+")),
+    _t(
+        app="discord",
+        event="new_member",
+        title="New Member",
+        backend="direct",
+        direct_kind="GUILD_MEMBER_ADD",
+        fire="real",
+        payload={"user": None, "joined_at": None, "guild_id": None},
+        phrases=(
+            r"\bmember\b.{0,20}\bjoins?\b.{0,25}\b(server|discord)\b",
+            r"\b(server|discord)\b.{0,30}\bnew member\b",
+        ),
+        notes="requires EVENTS_DISCORD_MEMBERS_INTENT=1 AND the Server Members intent enabled in "
+        "the Discord dev portal — otherwise the gateway rejects the connection (4014)",
+    ),
+    _t(
+        app="discord",
+        event="new_channel_message",
+        title="New message (channel-scoped)",
+        backend="direct",
+        direct_kind="MESSAGE_CREATE",
+        fire="real",
+        slots=("channel", "pattern"),
+        payload={"content": None, "channel_id": None, "author": None},
+        phrases=(
+            r"\bposts? in #\w+.{0,30}\bdiscord\b",
+            r"\bdiscord\b.{0,30}\bposts? in #\w+",
+            r"\bsomeone posts in #\w+",
+        ),
+    ),
     # MESSAGE_REACTION_ADD rides the GUILD_MESSAGE_REACTIONS intent (bit 10, NOT privileged — so it
     # is default-on, unlike GUILD_MEMBERS). The gateway forwards it via on_event; _discord_event
     # lifts channel_id + emoji.name for the channel/emoji filters.
-    _t(app="discord", event="new_reaction", title="New Reaction", backend="direct",
-       direct_kind="MESSAGE_REACTION_ADD", fire="real", slots=("emoji", "channel"),
-       payload={"emoji": None, "user_id": None, "channel_id": None, "message_id": None},
-       phrases=(r"\breaction\b.{0,20}\bdiscord\b", r"\bdiscord\b.{0,25}\breact(s|ed|ion)?\b",
-                r"\breact(s|ed|ion)?\b.{0,25}\bdiscord\b",
-                r"\breacts?\b.{0,20}:\w+:.{0,20}\bdiscord\b")),
+    _t(
+        app="discord",
+        event="new_reaction",
+        title="New Reaction",
+        backend="direct",
+        direct_kind="MESSAGE_REACTION_ADD",
+        fire="real",
+        slots=("emoji", "channel"),
+        payload={"emoji": None, "user_id": None, "channel_id": None, "message_id": None},
+        phrases=(
+            r"\breaction\b.{0,20}\bdiscord\b",
+            r"\bdiscord\b.{0,25}\breact(s|ed|ion)?\b",
+            r"\breact(s|ed|ion)?\b.{0,25}\bdiscord\b",
+            r"\breacts?\b.{0,20}:\w+:.{0,20}\bdiscord\b",
+        ),
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -401,28 +758,58 @@ _DISCORD = [
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # app is our canonical name (google_calendar); piece is the AP piece key (google-calendar). Kept
 # distinct so the app stays [a-z_] — the supervisor-roster/classifier HANDLES convention is app/event.
-_GCAL = dict(app="google_calendar", backend="ap", piece="google-calendar", slots=("calendar",),
-             fire="manual")
-_CAL_PAYLOAD = {"title": "{{trigger.summary}}", "description": "{{trigger.description}}",
-                "start": "{{trigger.start.dateTime}}", "end": "{{trigger.end.dateTime}}",
-                "status": "{{trigger.status}}", "organizer": "{{trigger.organizer.email}}",
-                "url": "{{trigger.htmlLink}}"}
+_GCAL = dict(app="google_calendar", backend="ap", piece="google-calendar", slots=("calendar",), fire="manual")
+_CAL_PAYLOAD = {
+    "title": "{{trigger.summary}}",
+    "description": "{{trigger.description}}",
+    "start": "{{trigger.start.dateTime}}",
+    "end": "{{trigger.end.dateTime}}",
+    "status": "{{trigger.status}}",
+    "organizer": "{{trigger.organizer.email}}",
+    "url": "{{trigger.htmlLink}}",
+}
 _GOOGLE_CALENDAR = [
-    _t(event="new_event", title="New Event", ap_trigger="new_event", default=True,
-       payload=dict(_CAL_PAYLOAD),
-       synth={"summary": "Team Sync", "description": "Weekly team sync — agenda in the doc.",
-              "status": "confirmed", "htmlLink": "https://calendar.google.com/event?eid=abc123",
-              "organizer": {"email": "lead@example.com"},
-              "start": {"dateTime": "2026-07-22T10:00:00-07:00"},
-              "end": {"dateTime": "2026-07-22T11:00:00-07:00"}},
-       phrases=(r"\bnew (calendar )?event\b", r"\bevent\b.{0,20}\b(added|created)\b.{0,20}\bcalendar\b",
-                r"\b(added|scheduled)\b.{0,20}\bcalendar\b"), **_GCAL),
-    _t(event="new_or_updated_event", title="New or Updated Event",
-       ap_trigger="new_or_updated_event", payload=dict(_CAL_PAYLOAD),
-       phrases=(r"\bcalendar\b.{0,25}\b(changes?|updated?|modified)\b",
-                r"\b(event|meeting)\b.{0,20}\b(changes?|updated?)\b"), **_GCAL),
-    _t(event="event_ends", title="Event Ends", ap_trigger="event_ends", payload=dict(_CAL_PAYLOAD),
-       phrases=(r"\b(event|meeting)\b.{0,20}\bends?\b", r"\bafter (a |the )?meeting\b"), **_GCAL),
+    _t(
+        event="new_event",
+        title="New Event",
+        ap_trigger="new_event",
+        default=True,
+        payload=dict(_CAL_PAYLOAD),
+        synth={
+            "summary": "Team Sync",
+            "description": "Weekly team sync — agenda in the doc.",
+            "status": "confirmed",
+            "htmlLink": "https://calendar.google.com/event?eid=abc123",
+            "organizer": {"email": "lead@example.com"},
+            "start": {"dateTime": "2026-07-22T10:00:00-07:00"},
+            "end": {"dateTime": "2026-07-22T11:00:00-07:00"},
+        },
+        phrases=(
+            r"\bnew (calendar )?event\b",
+            r"\bevent\b.{0,20}\b(added|created)\b.{0,20}\bcalendar\b",
+            r"\b(added|scheduled)\b.{0,20}\bcalendar\b",
+        ),
+        **_GCAL,
+    ),
+    _t(
+        event="new_or_updated_event",
+        title="New or Updated Event",
+        ap_trigger="new_or_updated_event",
+        payload=dict(_CAL_PAYLOAD),
+        phrases=(
+            r"\bcalendar\b.{0,25}\b(changes?|updated?|modified)\b",
+            r"\b(event|meeting)\b.{0,20}\b(changes?|updated?)\b",
+        ),
+        **_GCAL,
+    ),
+    _t(
+        event="event_ends",
+        title="Event Ends",
+        ap_trigger="event_ends",
+        payload=dict(_CAL_PAYLOAD),
+        phrases=(r"\b(event|meeting)\b.{0,20}\bends?\b", r"\bafter (a |the )?meeting\b"),
+        **_GCAL,
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -431,21 +818,50 @@ _GOOGLE_CALENDAR = [
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _PIN = dict(app="pinterest", backend="ap", piece="pinterest", fire="manual")
 _PINTEREST = [
-    _t(event="new_pin", title="New Pin on Board", ap_trigger="newPinOnBoard", default=True,
-       slots=("board",), payload={"items": "{{trigger.items}}", "bookmark": "{{trigger.bookmark}}"},
-       synth={"items": [{"id": "813744226420795884", "title": "Sheet-pan dinner",
-                         "description": "One-pan roasted chickpeas + veg",
-                         "link": "https://www.pinterest.com/pin/813744226420795884/"}],
-              "bookmark": "abc"},
-       phrases=(r"\bnew pin\b", r"\bpin\b.{0,20}\bboard\b", r"\bpinterest\b.{0,20}\bpin\b"), **_PIN),
-    _t(event="new_board", title="New Board", ap_trigger="newBoard",
-       payload={"name": "{{trigger.name}}", "description": "{{trigger.description}}",
-                "id": "{{trigger.id}}", "pins": "{{trigger.pin_count}}",
-                "followers": "{{trigger.follower_count}}", "owner": "{{trigger.owner.username}}"},
-       phrases=(r"\bnew board\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bnew board\b"), **_PIN),
-    _t(event="new_follower", title="New Follower", ap_trigger="newFollower",
-       payload={"username": "{{trigger.username}}", "type": "{{trigger.type}}"},
-       phrases=(r"\bnew follower\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bfollower\b"), **_PIN),
+    _t(
+        event="new_pin",
+        title="New Pin on Board",
+        ap_trigger="newPinOnBoard",
+        default=True,
+        slots=("board",),
+        payload={"items": "{{trigger.items}}", "bookmark": "{{trigger.bookmark}}"},
+        synth={
+            "items": [
+                {
+                    "id": "813744226420795884",
+                    "title": "Sheet-pan dinner",
+                    "description": "One-pan roasted chickpeas + veg",
+                    "link": "https://www.pinterest.com/pin/813744226420795884/",
+                }
+            ],
+            "bookmark": "abc",
+        },
+        phrases=(r"\bnew pin\b", r"\bpin\b.{0,20}\bboard\b", r"\bpinterest\b.{0,20}\bpin\b"),
+        **_PIN,
+    ),
+    _t(
+        event="new_board",
+        title="New Board",
+        ap_trigger="newBoard",
+        payload={
+            "name": "{{trigger.name}}",
+            "description": "{{trigger.description}}",
+            "id": "{{trigger.id}}",
+            "pins": "{{trigger.pin_count}}",
+            "followers": "{{trigger.follower_count}}",
+            "owner": "{{trigger.owner.username}}",
+        },
+        phrases=(r"\bnew board\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bnew board\b"),
+        **_PIN,
+    ),
+    _t(
+        event="new_follower",
+        title="New Follower",
+        ap_trigger="newFollower",
+        payload={"username": "{{trigger.username}}", "type": "{{trigger.type}}"},
+        phrases=(r"\bnew follower\b.{0,20}\bpinterest\b", r"\bpinterest\b.{0,20}\bfollower\b"),
+        **_PIN,
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -453,15 +869,35 @@ _PINTEREST = [
 # @handle) → the yt_channel slot. Payload follows the feed sampleData.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _YOUTUBE = [
-    _t(app="youtube", backend="ap", piece="youtube", event="new_video", title="New Video",
-       ap_trigger="new-video", default=True, slots=("yt_channel",), fire="manual",
-       payload={"title": "{{trigger.title}}", "link": "{{trigger.link}}",
-                "author": "{{trigger.author}}", "published": "{{trigger.pubDate}}"},
-       synth={"title": "How the new transformer variant actually works",
-              "link": "https://www.youtube.com/watch?v=C7MZkWxrtvM",
-              "author": "Fireship", "pubDate": "2026-07-21T09:00:00.000Z"},
-       phrases=(r"\bnew videos?\b", r"\byoutube\b.{0,20}\b(videos?|uploads?|posts?)\b",
-                r"\b(uploads?|posts?)\b.{0,20}\byoutube\b", r"@[\w.-]+.{0,20}\b(video|upload)s?\b")),
+    _t(
+        app="youtube",
+        backend="ap",
+        piece="youtube",
+        event="new_video",
+        title="New Video",
+        ap_trigger="new-video",
+        default=True,
+        slots=("yt_channel",),
+        fire="manual",
+        payload={
+            "title": "{{trigger.title}}",
+            "link": "{{trigger.link}}",
+            "author": "{{trigger.author}}",
+            "published": "{{trigger.pubDate}}",
+        },
+        synth={
+            "title": "How the new transformer variant actually works",
+            "link": "https://www.youtube.com/watch?v=C7MZkWxrtvM",
+            "author": "Fireship",
+            "pubDate": "2026-07-21T09:00:00.000Z",
+        },
+        phrases=(
+            r"\bnew videos?\b",
+            r"\byoutube\b.{0,20}\b(videos?|uploads?|posts?)\b",
+            r"\b(uploads?|posts?)\b.{0,20}\byoutube\b",
+            r"@[\w.-]+.{0,20}\b(video|upload)s?\b",
+        ),
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -469,17 +905,37 @@ _YOUTUBE = [
 # Same feed sampleData shape as youtube.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _RSS = [
-    _t(app="rss", backend="ap", piece="rss", event="new_item", title="New RSS Item",
-       ap_trigger="new-item", default=True, slots=("rss_feed_url",), fire="manual",
-       payload={"title": "{{trigger.title}}", "link": "{{trigger.link}}",
-                "author": "{{trigger.author}}", "published": "{{trigger.pubDate}}",
-                "summary": "{{trigger.summary}}"},
-       synth={"title": "Anthropic ships a new agents SDK feature",
-              "link": "https://example.com/blog/agents-sdk",
-              "author": "The Verge", "pubDate": "2026-07-21T08:00:00.000Z",
-              "summary": "A short summary of the feed item."},
-       phrases=(r"\brss\b", r"\b(feed|atom)\b.{0,20}\b(new|item|post|update|entry)\b",
-                r"\bnew (feed )?item\b", r"\bwhen .{0,30}\bfeed\b.{0,20}\bupdates?\b")),
+    _t(
+        app="rss",
+        backend="ap",
+        piece="rss",
+        event="new_item",
+        title="New RSS Item",
+        ap_trigger="new-item",
+        default=True,
+        slots=("rss_feed_url",),
+        fire="manual",
+        payload={
+            "title": "{{trigger.title}}",
+            "link": "{{trigger.link}}",
+            "author": "{{trigger.author}}",
+            "published": "{{trigger.pubDate}}",
+            "summary": "{{trigger.summary}}",
+        },
+        synth={
+            "title": "Anthropic ships a new agents SDK feature",
+            "link": "https://example.com/blog/agents-sdk",
+            "author": "The Verge",
+            "pubDate": "2026-07-21T08:00:00.000Z",
+            "summary": "A short summary of the feed item.",
+        },
+        phrases=(
+            r"\brss\b",
+            r"\b(feed|atom)\b.{0,20}\b(new|item|post|update|entry)\b",
+            r"\bnew (feed )?item\b",
+            r"\bwhen .{0,30}\bfeed\b.{0,20}\bupdates?\b",
+        ),
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -487,11 +943,20 @@ _RSS = [
 # watcher matches messages (e.g. carrying a URL) before the concierge converse path.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _TELEGRAM = [
-    _t(app="telegram", event="new_channel_message", title="New Update (content-filtered)",
-       backend="direct", direct_kind="message", fire="real", slots=("pattern",),
-       payload={"text": None, "chat_id": None, "user": None},
-       phrases=(r"\b(send|forward)\b.{0,20}\b(the bot|telegram)\b.{0,20}\b(link|url)\b",
-                r"\btelegram\b.{0,40}\b(link|url)\b")),
+    _t(
+        app="telegram",
+        event="new_channel_message",
+        title="New Update (content-filtered)",
+        backend="direct",
+        direct_kind="message",
+        fire="real",
+        slots=("pattern",),
+        payload={"text": None, "chat_id": None, "user": None},
+        phrases=(
+            r"\b(send|forward)\b.{0,20}\b(the bot|telegram)\b.{0,20}\b(link|url)\b",
+            r"\btelegram\b.{0,40}\b(link|url)\b",
+        ),
+    ),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -499,23 +964,43 @@ _TELEGRAM = [
 # enumerate it with everything else; arming is not needed (the endpoint is always live).
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 _WEBHOOK = [
-    _t(app="webhook", event="inbound", title="Generic inbound webhook (pinned or routed)",
-       backend="direct", direct_kind="http_post", fire="synth", default=True,
-       payload=None, phrases=(r"\bwebhook\b",),
-       notes="POST /api/events/hook/<name>; ?agent= pins, ?route=1 routes via the concierge"),
+    _t(
+        app="webhook",
+        event="inbound",
+        title="Generic inbound webhook (pinned or routed)",
+        backend="direct",
+        direct_kind="http_post",
+        fire="synth",
+        default=True,
+        payload=None,
+        phrases=(r"\bwebhook\b",),
+        notes="POST /api/events/hook/<name>; ?agent= pins, ?route=1 routes via the concierge",
+    ),
 ]
 
 
 TRIGGERS: dict[tuple[str, str], Trigger] = {
-    t.key: t for t in (_GITHUB + _GMAIL + _BOX + _SLACK + _DISCORD + _TELEGRAM + _WEBHOOK
-                       + _GOOGLE_CALENDAR + _PINTEREST + _YOUTUBE + _RSS)
+    t.key: t
+    for t in (
+        _GITHUB
+        + _GMAIL
+        + _BOX
+        + _SLACK
+        + _DISCORD
+        + _TELEGRAM
+        + _WEBHOOK
+        + _GOOGLE_CALENDAR
+        + _PINTEREST
+        + _YOUTUBE
+        + _RSS
+    )
 }
 
 # legacy source aliases (the classifier/LLM historically said github_pr / github_issue)
 SOURCE_ALIASES = {
     "github_pr": ("github", "new_pr"),
     "github_issue": ("github", "new_issue"),
-    "github": ("github", ""),          # bare app → its default trigger
+    "github": ("github", ""),  # bare app → its default trigger
 }
 
 # legacy event-kind aliases (older flows/LLM output used these; keep them resolving)
@@ -549,7 +1034,7 @@ def get(app: str, event: str = "") -> Trigger | None:
     event = EVENT_ALIASES.get((app, event), event)
     if event and (app, event) in TRIGGERS:
         return TRIGGERS[(app, event)]
-    if alias_event:                       # the alias's own event wins over an unresolvable one
+    if alias_event:  # the alias's own event wins over an unresolvable one
         return TRIGGERS.get((app, alias_event))
     if not event:
         return next((t for t in TRIGGERS.values() if t.app == app and t.default), None)

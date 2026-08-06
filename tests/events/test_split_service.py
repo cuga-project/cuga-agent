@@ -4,6 +4,7 @@ The contract that matters is that NOTHING on the wire changes — /invoke and /a
 same in both topologies, so every harness and every armed subscription keeps working. These tests
 pin that, plus the /run hop's own behaviour (auth, retries, error surfacing).
 """
+
 import json
 import os
 
@@ -24,9 +25,13 @@ class _FakeCuga:
         self.calls = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        self.calls.append({"url": str(request.url),
-                           "headers": dict(request.headers),
-                           "body": json.loads(request.content or b"{}")})
+        self.calls.append(
+            {
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "body": json.loads(request.content or b"{}"),
+            }
+        )
         status, payload = self.replies.pop(0) if self.replies else (200, {"status": "ok", "answer": "hi"})
         return httpx.Response(status, json=payload)
 
@@ -71,15 +76,16 @@ async def test_run_calls_cuga_and_returns_the_answer(patch_httpx):
     assert out == "IBM is $237.10"
     call = fake.calls[0]
     assert call["url"].endswith("/run")
-    assert call["headers"]["x-gateway-token"] == "t0k"          # the hop is authenticated
+    assert call["headers"]["x-gateway-token"] == "t0k"  # the hop is authenticated
     assert call["body"]["query"] == "Report the IBM price"
-    assert call["body"]["thread_id"] == "sub_1"                  # KB/session ride on the thread
+    assert call["body"]["thread_id"] == "sub_1"  # KB/session ride on the thread
 
 
 @pytest.mark.asyncio
 async def test_run_retries_a_5xx_then_succeeds(patch_httpx):
-    fake = patch_httpx(_FakeCuga((503, {"error": "starting"}),
-                                 (200, {"status": "ok", "answer": "second try"})))
+    fake = patch_httpx(
+        _FakeCuga((503, {"error": "starting"}), (200, {"status": "ok", "answer": "second try"}))
+    )
     assert await _rt().run("cuga", "t", "x", scope="default") == "second try"
     assert len(fake.calls) == 2
 
@@ -131,32 +137,36 @@ def patch_httpx_sync(monkeypatch):
 
 def _rt_empty_store(**kw):
     """No local agents — the split's real shape: the roster lives on the CUGA side."""
-    return HttpRuntime(agent_store=AgentStore(":memory:"), base_url="http://cuga.test",
-                       token="t0k", **kw)
+    return HttpRuntime(agent_store=AgentStore(":memory:"), base_url="http://cuga.test", token="t0k", **kw)
 
 
 def test_get_agent_resolves_a_sub_agent_from_cugas_roster(patch_httpx_sync):
     """THE SPLIT WEBHOOK BUG: ?agent=incident_triage 404'd because only this process's (empty)
     store was consulted. The roster belongs to whoever executes — ask CUGA."""
-    patch_httpx_sync(_FakeCugaRoster([{"name": "cuga", "description": "the supervisor"},
-                                      {"name": "incident_triage", "description": "triage"}]))
+    patch_httpx_sync(
+        _FakeCugaRoster(
+            [
+                {"name": "cuga", "description": "the supervisor"},
+                {"name": "incident_triage", "description": "triage"},
+            ]
+        )
+    )
     rt = _rt_empty_store()
     assert rt.get_agent("incident_triage", scope="default").name == "incident_triage"
-    assert rt.get_agent("cuga", scope="default") is not None       # always addressable
+    assert rt.get_agent("cuga", scope="default") is not None  # always addressable
     assert rt.get_agent("not_a_real_agent", scope="default") is None
 
 
 def test_list_agents_reports_cugas_roster_not_a_guess(patch_httpx_sync):
     patch_httpx_sync(_FakeCugaRoster([{"name": "cuga"}, {"name": "pricebot"}, {"name": "geobot"}]))
-    assert [a.name for a in _rt_empty_store().list_agents(scope="default")] == [
-        "cuga", "pricebot", "geobot"]
+    assert [a.name for a in _rt_empty_store().list_agents(scope="default")] == ["cuga", "pricebot", "geobot"]
 
 
 def test_roster_falls_back_to_api_agents_then_to_the_supervisor(patch_httpx_sync):
     """An older CUGA has no /run/agents; and if nothing answers, 'cuga' still exists."""
     fake = patch_httpx_sync(_FakeCugaRoster([{"name": "legacy"}], path="/api/agents"))
     assert [a.name for a in _rt_empty_store().list_agents(scope="default")] == ["legacy"]
-    assert fake.paths == ["/run/agents", "/api/agents"]            # tried the machine seam first
+    assert fake.paths == ["/run/agents", "/api/agents"]  # tried the machine seam first
 
     patch_httpx_sync(_FakeCugaRoster([], path="/nowhere"))
     assert [a.name for a in _rt_empty_store().list_agents(scope="default")] == ["cuga"]
@@ -212,13 +222,20 @@ def test_standalone_service_serves_the_same_wire_contract(monkeypatch):
 
     c = TestClient(create_app())
     assert c.get("/health").json()["service"] == "events"
-    for path in ("/api/events/status", "/api/events/subscriptions", "/api/events/channels",
-                 "/api/events/integrations", "/api/events/runs", "/api/events/agents"):
+    for path in (
+        "/api/events/status",
+        "/api/events/subscriptions",
+        "/api/events/channels",
+        "/api/events/integrations",
+        "/api/events/runs",
+        "/api/events/agents",
+    ):
         assert c.get(path).status_code == 200, path
     # and the HITL arming dialogue behaves identically to the mounted deployment
-    out = c.post("/api/concierge",
-                 json={"text": "/automate every 5 minutes send IBM stock price",
-                       "thread_id": "web:local"}).json()
+    out = c.post(
+        "/api/concierge",
+        json={"text": "/automate every 5 minutes send IBM stock price", "thread_id": "web:local"},
+    ).json()
     assert out["state"] == "confirm" and "IBM" in out["summary"]["prompt"]
 
 
@@ -235,8 +252,9 @@ def test_events_routes_are_identical_in_both_topologies(monkeypatch):
     agents = AgentStore(":memory:")
     rt = make_runtime("http", agent_store=agents)
     mounted = FastAPI()
-    register_events_routes(mounted, runtime=rt, store=store,
-                           concierge=Concierge(rt, store=store), gateway_token="")
+    register_events_routes(
+        mounted, runtime=rt, store=store, concierge=Concierge(rt, store=store), gateway_token=""
+    )
     mounted_paths = {r.path for r in mounted.routes}
     service_paths = {r.path for r in create_app().routes}
     assert mounted_paths - service_paths == set(), "the standalone service is missing routes"
@@ -283,9 +301,15 @@ def test_channel_adapter_targets_cugas_run(monkeypatch):
             return {"ok": True, "status": "ok", "answer": "42"}
 
     class _Client:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
         async def post(self, url, headers=None, json=None):
             seen.update(url=url, headers=headers or {}, body=json or {})
             return _Resp()
@@ -295,12 +319,16 @@ def test_channel_adapter_targets_cugas_run(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     out = asyncio.run(cuga_door.ask("hi", channel="slack", native_id="C1", user="U9", locus="17.5"))
     assert out == "42"
-    assert seen["url"] == "http://cuga.test/run"          # CUGA, not the eventing service
-    assert seen["headers"]["X-Gateway-Token"] == "tok"    # the hop is authenticated
+    assert seen["url"] == "http://cuga.test/run"  # CUGA, not the eventing service
+    assert seen["headers"]["X-Gateway-Token"] == "tok"  # the hop is authenticated
     # thread_id carries the delivery address AND the per-topic memory locus
     assert seen["body"]["thread_id"] == "gw:slack:C1#17.5"
-    assert seen["body"]["channel"] == {"name": "slack", "native_id": "C1",
-                                       "user": "U9", "thread_id": "gw:slack:C1#17.5"}
+    assert seen["body"]["channel"] == {
+        "name": "slack",
+        "native_id": "C1",
+        "user": "U9",
+        "thread_id": "gw:slack:C1#17.5",
+    }
 
 
 def test_channel_adapter_survives_cuga_being_down(monkeypatch):
@@ -309,10 +337,17 @@ def test_channel_adapter_survives_cuga_being_down(monkeypatch):
     from cuga.backend.events import cuga_door
 
     class _Boom:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw): raise ConnectionError("refused")
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **kw):
+            raise ConnectionError("refused")
 
     monkeypatch.setenv("CUGA_URL", "http://cuga.test")
     monkeypatch.setattr(httpx, "AsyncClient", _Boom)
@@ -360,7 +395,7 @@ def test_forward_is_enabled_only_by_events_api_url(monkeypatch):
 
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
     assert m._forwards_to_events("/automate x", "t1") is True
-    assert m._forwards_to_events("what is the weather?", "t1") is False   # chat never forwards
+    assert m._forwards_to_events("what is the weather?", "t1") is False  # chat never forwards
 
 
 @pytest.mark.asyncio
@@ -370,10 +405,17 @@ async def test_cuga_degrades_gracefully_when_the_eventing_service_is_down(monkey
     from cuga.backend.server import main as m
 
     class _Down:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw): raise ConnectionError("connection refused")
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **kw):
+            raise ConnectionError("connection refused")
 
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
     monkeypatch.setattr(httpx, "AsyncClient", _Down)
@@ -398,19 +440,26 @@ async def test_an_open_dialogue_closes_when_the_flow_arms(monkeypatch):
             return {"ok": True, "reply": "ok", "state": next(states)}
 
     class _C:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **kw): return _Resp()
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **kw):
+            return _Resp()
 
     monkeypatch.setenv("EVENTS_API_URL", "http://events.test")
     monkeypatch.setattr(httpx, "AsyncClient", _C)
     m._events_open_threads.discard("t-gate")
 
-    await m._forward_slash_to_events("/automate x", "t-gate", {})       # → confirm
-    assert m._forwards_to_events("yes", "t-gate") is True               # bare follow-up routes
-    await m._forward_slash_to_events("yes", "t-gate", {})               # → armed
-    assert m._forwards_to_events("what is 2+2?", "t-gate") is False     # gate released
+    await m._forward_slash_to_events("/automate x", "t-gate", {})  # → confirm
+    assert m._forwards_to_events("yes", "t-gate") is True  # bare follow-up routes
+    await m._forward_slash_to_events("yes", "t-gate", {})  # → armed
+    assert m._forwards_to_events("what is 2+2?", "t-gate") is False  # gate released
 
 
 def test_flow_reuse_never_crosses_tenants():
@@ -423,13 +472,22 @@ def test_flow_reuse_never_crosses_tenants():
 
     store = SubscriptionStore(":memory:")
     key = "cuga|time|5m|||owner"
-    store.upsert(Subscription(id="cuga-aaaaaa", mode="cron", target_agent="cuga",
-                              tenant="default/default/local", deliver_to=["slack"],
-                              thread_id="gw:slack:C1", prompt="p", dedup_key=key))
+    store.upsert(
+        Subscription(
+            id="cuga-aaaaaa",
+            mode="cron",
+            target_agent="cuga",
+            tenant="default/default/local",
+            deliver_to=["slack"],
+            thread_id="gw:slack:C1",
+            prompt="p",
+            dedup_key=key,
+        )
+    )
 
     assert store.find_by_dedup_key(key, scope="default/default/local").id == "cuga-aaaaaa"
-    assert store.find_by_dedup_key(key, scope="default/default/admin") is None   # the leak
-    assert store.find_by_dedup_key(key) is not None      # unscoped callers keep old behaviour
+    assert store.find_by_dedup_key(key, scope="default/default/admin") is None  # the leak
+    assert store.find_by_dedup_key(key) is not None  # unscoped callers keep old behaviour
 
 
 def test_slack_endpoint_answers_a_browser_instead_of_a_bare_405(monkeypatch):
@@ -446,9 +504,8 @@ def test_slack_endpoint_answers_a_browser_instead_of_a_bare_405(monkeypatch):
     body = r.json()
     assert body["ok"] is True
     assert "POST" in body["note"]
-    assert "cuga-events-svc" in body["wrong_host_hint"]      # names the actual trap
+    assert "cuga-events-svc" in body["wrong_host_hint"]  # names the actual trap
 
     # and the real path is untouched: Slack's handshake still echoes the challenge
-    r2 = c.post("/api/events/slack/events",
-                json={"type": "url_verification", "challenge": "probe-1"})
+    r2 = c.post("/api/events/slack/events", json={"type": "url_verification", "challenge": "probe-1"})
     assert r2.status_code == 200 and "probe-1" in r2.text

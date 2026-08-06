@@ -7,6 +7,7 @@ can DELIVER a message (sendMessage) — the two halves of a chat round-trip.
 Keys:   TELEGRAM_BOT_TOKEN
 Extra:  TELEGRAM_CHAT_ID  (optional — set it to send a real test message to yourself)
 """
+
 import sys
 
 from _common import PASS, FAIL, SKIP, load_env, request_json, title, ok, bad, warn, info
@@ -32,14 +33,18 @@ def main():
     if not chat:
         info("set TELEGRAM_CHAT_ID to also send a real test message")
         st, _, upd, _ = request_json("GET", f"{api}/getUpdates")
-        ids = sorted({str(u["message"]["chat"]["id"])
-                      for u in (upd or {}).get("result", []) if "message" in u})
+        ids = sorted(
+            {str(u["message"]["chat"]["id"]) for u in (upd or {}).get("result", []) if "message" in u}
+        )
         if ids:
             info("chat ids seen recently (DM the bot to populate this): " + ", ".join(ids))
         return PASS
 
-    st, _, j, _ = request_json("POST", f"{api}/sendMessage", data={
-        "chat_id": chat, "text": "CUGA pre-req check: your Telegram bot token works."})
+    st, _, j, _ = request_json(
+        "POST",
+        f"{api}/sendMessage",
+        data={"chat_id": chat, "text": "CUGA pre-req check: your Telegram bot token works."},
+    )
     if st == 200 and j and j.get("ok"):
         ok(f"sent a test message to chat {chat} — check Telegram")
         return PASS

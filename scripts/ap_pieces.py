@@ -20,6 +20,7 @@ Usage:
 Env: AP_BASE_URL / AP_EMAIL / AP_PASSWORD from .env. EVENTS_PIECES_WAIT overrides the wait (default
 300s; set 0 to skip the wait and install immediately).
 """
+
 import json
 import os
 import sys
@@ -30,15 +31,15 @@ import urllib.request
 # The pieces the events layer actually uses (see flows.SOURCE_TRIGGER + AP-backed channels).
 # slack/discord are DIRECT backends (not AP), so they are intentionally not here.
 NEEDED = [
-    "@activepieces/piece-gmail",           # gmail push (new-email) + send
-    "@activepieces/piece-github",          # github PR / issue push
-    "@activepieces/piece-box",             # box new-file push (OAuth path)
-    "@activepieces/piece-telegram-bot",    # telegram channel (AP webhook)
-    "@activepieces/piece-schedule",        # CRON / POLL flows
-    "@activepieces/piece-google-calendar", # calendar new_event / updated / ends
-    "@activepieces/piece-pinterest",       # pinterest new_pin / board / follower
-    "@activepieces/piece-youtube",         # youtube new_video (public feed)
-    "@activepieces/piece-rss",             # rss new_item (any feed)
+    "@activepieces/piece-gmail",  # gmail push (new-email) + send
+    "@activepieces/piece-github",  # github PR / issue push
+    "@activepieces/piece-box",  # box new-file push (OAuth path)
+    "@activepieces/piece-telegram-bot",  # telegram channel (AP webhook)
+    "@activepieces/piece-schedule",  # CRON / POLL flows
+    "@activepieces/piece-google-calendar",  # calendar new_event / updated / ends
+    "@activepieces/piece-pinterest",  # pinterest new_pin / board / follower
+    "@activepieces/piece-youtube",  # youtube new_video (public feed)
+    "@activepieces/piece-rss",  # rss new_item (any feed)
 ]
 CLOUD = "https://cloud.activepieces.com/api/v1/pieces"
 
@@ -158,9 +159,12 @@ def main():
     catalog = _catalog(base)  # {name: current-version} — authoritative version to install with
 
     def _install(name, ver):
-        return _req(f"{base}/api/v1/pieces", "POST",
-                    {"pieceName": name, "pieceVersion": ver,
-                     "packageType": "REGISTRY", "scope": "PLATFORM"}, token=token)
+        return _req(
+            f"{base}/api/v1/pieces",
+            "POST",
+            {"pieceName": name, "pieceVersion": ver, "packageType": "REGISTRY", "scope": "PLATFORM"},
+            token=token,
+        )
 
     print(f"installing {[short(p) for p in missing]} (live catalog version; the sync also delivers them)…")
     for p in missing:
@@ -177,7 +181,9 @@ def main():
             if fresh and fresh != ver:
                 st, res = _install(p, fresh)
                 ver, src = fresh, "catalog-retry"
-        print(f"  install {short(p)} @ {ver} ({src}): HTTP {st} {'OK' if st in (200, 201) else str(res)[:90]}")
+        print(
+            f"  install {short(p)} @ {ver} ({src}): HTTP {st} {'OK' if st in (200, 201) else str(res)[:90]}"
+        )
 
     # Poll until all resolve — the install may settle asynchronously, and the sync backstops anything
     # that didn't take. A fresh-DB sync can take ~3-4 min, so wait generously (override: EVENTS_PIECES_WAIT).

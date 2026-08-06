@@ -14,27 +14,36 @@ import os
 import sys
 import tempfile
 
-_EV = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                   "..", "..", "src", "cuga", "backend", "events"))
-_spec = importlib.util.spec_from_file_location("events", os.path.join(_EV, "__init__.py"),
-                                               submodule_search_locations=[_EV])
+_EV = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
+_spec = importlib.util.spec_from_file_location(
+    "events", os.path.join(_EV, "__init__.py"), submodule_search_locations=[_EV]
+)
 _pkg = importlib.util.module_from_spec(_spec)
 sys.modules["events"] = _pkg
 _spec.loader.exec_module(_pkg)
 
-from fastapi import FastAPI                       # noqa: E402
-from fastapi.testclient import TestClient         # noqa: E402
-from events.app import register_events_routes     # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from events.app import register_events_routes  # noqa: E402
 from events.subscriptions import SubscriptionStore, Subscription  # noqa: E402
-from events.runtime import DEFAULT_SCOPE          # noqa: E402
+from events.runtime import DEFAULT_SCOPE  # noqa: E402
 
 
 def _client():
     db = os.path.join(tempfile.mkdtemp(), "subs.db")
     store = SubscriptionStore(db)
-    store.upsert(Subscription(id="s1", mode="CRON", target_agent="papers", tenant=DEFAULT_SCOPE,
-                              deliver_to=["telegram"], prompt="arxiv MoE", status="active"))
-    store2 = SubscriptionStore(db)                 # a fresh handle (cross-thread read)
+    store.upsert(
+        Subscription(
+            id="s1",
+            mode="CRON",
+            target_agent="papers",
+            tenant=DEFAULT_SCOPE,
+            deliver_to=["telegram"],
+            prompt="arxiv MoE",
+            status="active",
+        )
+    )
+    store2 = SubscriptionStore(db)  # a fresh handle (cross-thread read)
     app = FastAPI()
     register_events_routes(app, runtime=object(), store=store2, concierge=None, engine=None)
     return TestClient(app)
@@ -57,7 +66,7 @@ def test_channels_endpoint():
 
 def test_integrations_endpoint_no_ap():
     r = _client().get("/api/events/integrations")
-    assert r.status_code == 200                     # never 500 even with engine=None
+    assert r.status_code == 200  # never 500 even with engine=None
     for i in r.json()["integrations"]:
         assert i["status"] == "ap_not_configured"
 
@@ -90,22 +99,28 @@ def test_invoke_direct_channel_delivery():
 
     class _Runtime:
         def get_agent(self, agent, scope=""):
-            return object()                          # agent exists
+            return object()  # agent exists
 
         async def run(self, agent, thread_id, worker_input, scope="", deliver_to=None):
             return "the market brief"
 
     _orig = delivery.send_direct
     delivery.send_direct = _fake_send_direct
-    os.environ["EVENTS_REPLY_METADATA"] = "0"        # deterministic answer (no footer)
+    os.environ["EVENTS_REPLY_METADATA"] = "0"  # deterministic answer (no footer)
     try:
         app = FastAPI()
         register_events_routes(app, runtime=_Runtime(), store=None, concierge=None, engine=None)
         c = TestClient(app)
-        r = c.post("/invoke", json={"agent": "pricebot", "deliver": True, "text": "brief",
-                                    "source": {"type": "channel", "name": "slack",
-                                               "thread_id": "gw:slack:C1"},
-                                    "event": {"kind": "tick", "payload": {}}})
+        r = c.post(
+            "/invoke",
+            json={
+                "agent": "pricebot",
+                "deliver": True,
+                "text": "brief",
+                "source": {"type": "channel", "name": "slack", "thread_id": "gw:slack:C1"},
+                "event": {"kind": "tick", "payload": {}},
+            },
+        )
         assert r.status_code == 200 and r.json()["ok"] is True
         # a FIRE (kind=tick) is labeled with the flow-fired header; no locus in this thread id
         assert len(sent) == 1 and sent[0][:2] == ("slack", "C1"), sent
@@ -146,11 +161,20 @@ def test_invoke_push_flow_delivers_to_direct_channel():
         app = FastAPI()
         register_events_routes(app, runtime=_Runtime(), store=None, concierge=None, engine=None)
         c = TestClient(app)
-        r = c.post("/invoke", json={
-            "agent": "mailbot", "deliver": True, "text": "summarize",
-            "source": {"type": "integration", "name": "gmail",
-                       "thread_id": "default/default/admin::gw:slack:C0BEYJ9NATB#1699.9"},
-            "event": {"kind": "new_email", "payload": {"subject": "Hi"}}})
+        r = c.post(
+            "/invoke",
+            json={
+                "agent": "mailbot",
+                "deliver": True,
+                "text": "summarize",
+                "source": {
+                    "type": "integration",
+                    "name": "gmail",
+                    "thread_id": "default/default/admin::gw:slack:C0BEYJ9NATB#1699.9",
+                },
+                "event": {"kind": "new_email", "payload": {"subject": "Hi"}},
+            },
+        )
         assert r.status_code == 200 and r.json()["ok"] is True
         # delivered to the SLACK sink parsed from the scope-prefixed thread_id — not 'gmail', not
         # dropped — labeled as a fire, and INTO the #locus thread (the arming thread's ts)
@@ -167,6 +191,7 @@ def test_schedule_flow_direct_sink_has_no_ap_send_step():
     /invoke body's source is the channel (deliver=True) so CUGA sends the answer itself."""
     import asyncio
     from events.ap_engine import APEngine
+
     posted = []
 
     class _Resp:
@@ -208,13 +233,22 @@ def test_schedule_flow_direct_sink_has_no_ap_send_step():
     eng._auth, eng._piece_version, eng._post_op, eng.find_flow_by_name = _auth, _pv, _post_op, _ff
 
     import httpx as _httpx
+
     _orig = _httpx.AsyncClient
     _httpx.AsyncClient = lambda *a, **k: _Client()
     try:
         fid = asyncio.run(
-            eng.create_schedule_flow(name="ea:x", agent="pricebot", thread_id="gw:slack:C1",
-                                     prompt="brief", interval_seconds=3600, scope="t1",
-                                     deliver_direct_channel="slack", deliver_direct_target="C1"))
+            eng.create_schedule_flow(
+                name="ea:x",
+                agent="pricebot",
+                thread_id="gw:slack:C1",
+                prompt="brief",
+                interval_seconds=3600,
+                scope="t1",
+                deliver_direct_channel="slack",
+                deliver_direct_target="C1",
+            )
+        )
     finally:
         _httpx.AsyncClient = _orig
     assert fid == "flow-direct-1"
@@ -223,7 +257,7 @@ def test_schedule_flow_direct_sink_has_no_ap_send_step():
     assert types == ["UPDATE_TRIGGER", "ADD_ACTION", "LOCK_AND_PUBLISH"], types
     http_op = next(o[2] for o in posted if o[0] == "OP" and o[1] == "ADD_ACTION")
     body = http_op["request"]["action"]["settings"]["input"]["body"]["data"]
-    assert body["deliver"] is True                                   # CUGA delivers
+    assert body["deliver"] is True  # CUGA delivers
     assert body["source"] == {"type": "channel", "name": "slack", "thread_id": "gw:slack:C1"}
 
 
@@ -255,14 +289,15 @@ def test_box_direct_new_files_filter():
             return _Resp()
 
     import httpx as _httpx
+
     _orig = _httpx.AsyncClient
     _httpx.AsyncClient = lambda *a, **k: _Client()
     os.environ["BOX_DEV_TOKEN"] = "t"
     try:
         got = asyncio.run(box_direct.new_files_since("0", "2026-07-05T00:00:00-07:00"))
-        assert [f["id"] for f in got] == ["2"], got        # new.pdf only; folder excluded, old excluded
+        assert [f["id"] for f in got] == ["2"], got  # new.pdf only; folder excluded, old excluded
         allf = asyncio.run(box_direct.new_files_since("0", None))
-        assert [f["id"] for f in allf] == ["1", "2"]        # since=None → all files, still no folder
+        assert [f["id"] for f in allf] == ["1", "2"]  # since=None → all files, still no folder
     finally:
         _httpx.AsyncClient = _orig
         os.environ.pop("BOX_DEV_TOKEN", None)
@@ -285,7 +320,7 @@ def test_box_poll_endpoint_dispatches_new_files():
         def json(self):
             return {"ok": True, "answer": "SKIP — not a fit"}
 
-    class _Client:                       # intercepts the internal POST /invoke
+    class _Client:  # intercepts the internal POST /invoke
         async def __aenter__(self):
             return self
 
@@ -297,8 +332,7 @@ def test_box_poll_endpoint_dispatches_new_files():
             return _Resp()
 
     async def _fake_fetch(file_id, name="", tok=None):
-        return {"kind": "text", "text": "Jane Doe — 8 years of Python.", "truncated": False,
-                "bytes": 28}
+        return {"kind": "text", "text": "Jane Doe — 8 years of Python.", "truncated": False, "bytes": 28}
 
     # The watermark file is REAL and module-level: without this the test reads whatever the last live
     # poll left on disk (so `newest` comes back as that date, not the fixture's) and then WRITES to it.
@@ -311,12 +345,16 @@ def test_box_poll_endpoint_dispatches_new_files():
     _httpx.AsyncClient = lambda *a, **k: _Client()
     try:
         app = FastAPI()
-        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
-                               gateway_token="gw-tok")
+        register_events_routes(
+            app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw-tok"
+        )
         c = TestClient(app)
         assert c.post("/api/events/box/poll", json={"folder_id": "0"}).status_code == 401  # no token
-        r = c.post("/api/events/box/poll", headers={"X-Gateway-Token": "gw-tok"},
-                   json={"folder_id": "0", "agent": "resume_judge", "deliver_to": "slack"})
+        r = c.post(
+            "/api/events/box/poll",
+            headers={"X-Gateway-Token": "gw-tok"},
+            json={"folder_id": "0", "agent": "resume_judge", "deliver_to": "slack"},
+        )
         assert r.status_code == 200, r.text
         b = r.json()
         assert b["ok"] and [f["id"] for f in b["processed"]] == ["9"]
@@ -355,7 +393,13 @@ def test_discord_direct_send_and_delivery():
             return False
 
         async def post(self, url, headers=None, json=None):
-            sent.update({"url": url, "auth": (headers or {}).get("Authorization"), "content": (json or {}).get("content")})
+            sent.update(
+                {
+                    "url": url,
+                    "auth": (headers or {}).get("Authorization"),
+                    "content": (json or {}).get("content"),
+                }
+            )
             return _Resp()
 
     orig = _httpx.AsyncClient
@@ -379,8 +423,9 @@ def test_arm_discord_direct_backend():
     try:
         app = FastAPI()
         register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
-        r = TestClient(app).post("/api/events/admin/channels/discord/arm",
-                                 headers={"x-user-id": "admin"}, json={})
+        r = TestClient(app).post(
+            "/api/events/admin/channels/discord/arm", headers={"x-user-id": "admin"}, json={}
+        )
         assert r.status_code == 200, r.text
         b = r.json()
         assert b["ok"] and b["backend"] == "direct" and "ap_flow_id" not in b
@@ -392,6 +437,7 @@ def test_inbound_webhook_triages_and_delivers():
     """POST /api/events/hook/{name} → renders the payload → fires an agent via /invoke → returns the
     triage. With deliver_to+target it also delivers to a direct channel. Direct, no AP."""
     import httpx as _httpx
+
     posted = []
 
     class _Resp:
@@ -416,15 +462,18 @@ def test_inbound_webhook_triages_and_delivers():
     os.environ["GATEWAY_TOKEN"] = "gw"
     try:
         app = FastAPI()
-        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
-                               gateway_token="gw")
+        register_events_routes(
+            app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw"
+        )
         c = TestClient(app)
-        r = c.post("/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1",
-                   json={"alert": "HighCPU", "service": "checkout-api", "value": "97%"})
+        r = c.post(
+            "/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1",
+            json={"alert": "HighCPU", "service": "checkout-api", "value": "97%"},
+        )
         assert r.status_code == 200, r.text
         b = r.json()
         assert b["ok"] and b["webhook"] == "monitoring" and "P1" in (b["answer"] or "")
-        assert b["routed"] is False                          # PINNED mode
+        assert b["routed"] is False  # PINNED mode
         # the internal /invoke got the payload as text + the direct-channel sink
         inv = posted[0]
         assert inv["agent"] == "incident_triage" and inv["deliver"] is True
@@ -440,6 +489,7 @@ def test_inbound_webhook_routed_uses_the_concierge():
     agent='concierge' (the runtime router) instead of a pinned agent name — so the caller needs to
     know nothing about the agent catalog. The concierge's chosen agent is echoed back as `agent`."""
     import httpx as _httpx
+
     posted = []
 
     class _Resp:
@@ -447,8 +497,11 @@ def test_inbound_webhook_routed_uses_the_concierge():
 
         def json(self):
             # /invoke's shape when agent='concierge' routed to a worker: meta.agent is the pick
-            return {"ok": True, "answer": "Payment dispute — P1 — open the case",
-                    "meta": {"agent": "incident_triage"}}
+            return {
+                "ok": True,
+                "answer": "Payment dispute — P1 — open the case",
+                "meta": {"agent": "incident_triage"},
+            }
 
     class _C:
         async def __aenter__(self):
@@ -466,18 +519,21 @@ def test_inbound_webhook_routed_uses_the_concierge():
     os.environ["GATEWAY_TOKEN"] = "gw"
     try:
         app = FastAPI()
-        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
-                               gateway_token="gw")
+        register_events_routes(
+            app, runtime=object(), store=None, concierge=None, engine=None, gateway_token="gw"
+        )
         c = TestClient(app)
-        r = c.post("/api/events/hook/stripe?route=1&deliver_to=slack&target=C1",
-                   json={"type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"})
+        r = c.post(
+            "/api/events/hook/stripe?route=1&deliver_to=slack&target=C1",
+            json={"type": "charge.dispute.created", "amount": 48000, "reason": "fraudulent"},
+        )
         assert r.status_code == 200, r.text
         b = r.json()
         assert b["ok"] and b["routed"] is True
         # the router (not a pinned agent) handled it, and the CHOSEN agent is surfaced to the caller
-        assert b["agent"] == "incident_triage"               # from meta, the concierge's pick
+        assert b["agent"] == "incident_triage"  # from meta, the concierge's pick
         inv = posted[0]
-        assert inv["agent"] == "concierge"                   # routed through the chat brain
+        assert inv["agent"] == "concierge"  # routed through the chat brain
         assert inv["deliver"] is True and inv["source"]["name"] == "slack"
         # the routed directive must FORCE delegation (self-answering leaves meta agent-less and
         # the caller sees agent='concierge' — the live flake this wording fixed)
@@ -496,7 +552,7 @@ def test_webhook_key_gate():
         app = FastAPI()
         register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
         c = TestClient(app)
-        assert c.post("/api/events/hook/x", json={}).status_code == 401            # no key
+        assert c.post("/api/events/hook/x", json={}).status_code == 401  # no key
         # wrong key also 401; correct key passes the gate (then fails downstream w/o a live server — fine)
         assert c.post("/api/events/hook/x?key=nope", json={}).status_code == 401
     finally:
@@ -509,7 +565,7 @@ def test_setup_guides_connection_status_and_scope():
     app = FastAPI()
     register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
     r = TestClient(app).get("/api/events/setup-guides", headers={"x-user-id": "admin"})
-    assert r.status_code == 200, r.text            # regresses the KeyError('app') we hit
+    assert r.status_code == 200, r.text  # regresses the KeyError('app') we hit
     guides = {g["label"]: g for g in r.json()["guides"]}
     # every connector carries the connection fields the UI needs
     for g in r.json()["guides"]:
@@ -536,6 +592,7 @@ def test_channels_report_direct_vs_ap_backend():
 
 class _FakeRuntime:
     """Minimal AgentRuntime for the agent-CRUD endpoints — a dict-backed store."""
+
     def __init__(self):
         self._store = {}
 
@@ -567,9 +624,15 @@ def test_agent_create_list_and_update():
     rt = _FakeRuntime()
     c = _agent_client(rt)
     # create
-    body = {"name": "digestbot", "backend": "cuga", "prompt": "post a digest",
-            "mcp_servers": ["cuga-web"], "channels": ["web", "slack"],
-            "integrations": [{"app": "github", "ownership": "per-user"}], "access": ["builder"]}
+    body = {
+        "name": "digestbot",
+        "backend": "cuga",
+        "prompt": "post a digest",
+        "mcp_servers": ["cuga-web"],
+        "channels": ["web", "slack"],
+        "integrations": [{"app": "github", "ownership": "per-user"}],
+        "access": ["builder"],
+    }
     r = c.post("/api/events/agents", json=body, headers={"x-user-id": "admin"})
     assert r.status_code == 200 and r.json()["ok"], r.text
     # it shows up in the list
@@ -587,18 +650,22 @@ def test_agents_carry_example_utterances():
     render clickable 'Try' chips."""
     rt = _FakeRuntime()
     from events.runtime import AgentSpec
+
     rt.upsert_agent(AgentSpec(name="pricebot", backend="cuga"), scope="default/default")
     agents = {a["name"]: a for a in _agent_client(rt).get("/api/events/agents").json()["agents"]}
     assert "examples" in agents["pricebot"]
     assert isinstance(agents["pricebot"]["examples"], list)
-    assert len(agents["pricebot"]["examples"]) >= 1        # catalog has pricebot utterances
+    assert len(agents["pricebot"]["examples"]) >= 1  # catalog has pricebot utterances
 
 
 def test_agent_create_validation_rejects_bad_input():
     c = _agent_client(_FakeRuntime())
     # unknown mcp server
-    r = c.post("/api/events/agents", json={"name": "x", "mcp_servers": ["not-a-server"]},
-               headers={"x-user-id": "admin"})
+    r = c.post(
+        "/api/events/agents",
+        json={"name": "x", "mcp_servers": ["not-a-server"]},
+        headers={"x-user-id": "admin"},
+    )
     assert r.status_code == 400
     # whitespace in name
     r = c.post("/api/events/agents", json={"name": "bad name"}, headers={"x-user-id": "admin"})
@@ -615,28 +682,39 @@ def test_agent_triggers_survive_the_save_round_trip():
     ('pull_request' is the legacy name for new_pr) and duplicates collapse."""
     rt = _FakeRuntime()
     c = _agent_client(rt)
-    body = {"name": "pr_bot", "backend": "cuga",
-            "integrations": [
-                {"app": "github", "ownership": "per-user",
-                 "triggers": ["new_pr", "pull_request", "new_review_request"]},
-                {"app": "gmail", "ownership": "per-user"}]}
+    body = {
+        "name": "pr_bot",
+        "backend": "cuga",
+        "integrations": [
+            {
+                "app": "github",
+                "ownership": "per-user",
+                "triggers": ["new_pr", "pull_request", "new_review_request"],
+            },
+            {"app": "gmail", "ownership": "per-user"},
+        ],
+    }
     r = c.post("/api/events/agents", json=body, headers={"x-user-id": "admin"})
     assert r.status_code == 200 and r.json()["ok"], r.text
     a = {x["name"]: x for x in c.get("/api/events/agents").json()["agents"]}["pr_bot"]
     gh = next(i for i in a["integrations"] if i["app"] == "github")
     gm = next(i for i in a["integrations"] if i["app"] == "gmail")
-    assert gh["triggers"] == ["new_pr", "new_review_request"]   # canonical, deduped, order kept
-    assert "triggers" not in gm                                 # no declaration = all triggers
+    assert gh["triggers"] == ["new_pr", "new_review_request"]  # canonical, deduped, order kept
+    assert "triggers" not in gm  # no declaration = all triggers
 
 
 def test_agent_create_rejects_an_unknown_trigger():
     """A typo'd trigger is a 400 naming the known events — not a silently-stored declaration the
     concierge can never match."""
     c = _agent_client(_FakeRuntime())
-    r = c.post("/api/events/agents",
-               json={"name": "x", "integrations": [
-                   {"app": "github", "ownership": "per-user", "triggers": ["new_prr"]}]},
-               headers={"x-user-id": "admin"})
+    r = c.post(
+        "/api/events/agents",
+        json={
+            "name": "x",
+            "integrations": [{"app": "github", "ownership": "per-user", "triggers": ["new_prr"]}],
+        },
+        headers={"x-user-id": "admin"},
+    )
     assert r.status_code == 400
     assert "new_prr" in r.json()["error"] and "new_pr" in r.json()["error"]
 
@@ -647,6 +725,7 @@ def test_slack_mention_gate():
     import asyncio
 
     from events import slack_direct as sd
+
     ch = {"type": "message", "text": "hello world", "channel": "C1", "user": "U1"}
     at = {"type": "message", "text": "<@UBOT> what's our policy?", "channel": "C1", "user": "U1"}
     dm = {"type": "message", "text": "hi", "channel": "D1", "channel_type": "im", "user": "U1"}
@@ -656,10 +735,16 @@ def test_slack_mention_gate():
         assert asyncio.run(sd.mention_gate(ch)) == (False, "hello world")
         ok, cleaned = asyncio.run(sd.mention_gate(at))
         assert ok and cleaned == "what's our policy?"
-        assert asyncio.run(sd.mention_gate(dm))[0] is True          # 1:1 im always through
+        assert asyncio.run(sd.mention_gate(dm))[0] is True  # 1:1 im always through
         # a reply in a thread the BOT rooted (a trigger's delivery) passes without a mention…
-        reply = {"type": "message", "text": "yes, escalate it", "channel": "C1", "user": "U1",
-                 "thread_ts": "1700.1", "parent_user_id": "UBOT"}
+        reply = {
+            "type": "message",
+            "text": "yes, escalate it",
+            "channel": "C1",
+            "user": "U1",
+            "thread_ts": "1700.1",
+            "parent_user_id": "UBOT",
+        }
         assert asyncio.run(sd.mention_gate(reply)) == (True, "yes, escalate it")
         # …but a reply in a HUMAN-rooted thread the bot never joined stays gated
         # (SLACK_BOT_TOKEN may exist in .env-loaded envs; kill it so the API fallback is inert)
@@ -668,12 +753,11 @@ def test_slack_mention_gate():
         # …and a follow-up in a thread the bot has ANSWERED IN passes without a mention:
         # "@bot weather in NY?" → bot replies in-thread → "what about NYC?" must reach chat
         sd.remember_thread("C1", "1700.1")
-        ok, t2 = asyncio.run(sd.mention_gate(dict(reply, parent_user_id="U9",
-                                                  text="what about NYC?")))
+        ok, t2 = asyncio.run(sd.mention_gate(dict(reply, parent_user_id="U9", text="what about NYC?")))
         assert ok and t2 == "what about NYC?"
         os.environ.pop("SLACK_BOT_TOKEN", None)
         os.environ["EVENTS_SLACK_CHAT"] = "all"
-        assert asyncio.run(sd.mention_gate(ch)) == (True, "hello world")   # default: unchanged
+        assert asyncio.run(sd.mention_gate(ch)) == (True, "hello world")  # default: unchanged
     finally:
         os.environ.pop("EVENTS_SLACK_CHAT", None)
         os.environ.pop("SLACK_BOT_USER_ID", None)
@@ -683,6 +767,7 @@ def test_triggers_endpoint_serves_the_registry():
     """GET /api/events/triggers is the registry, verbatim — the Studio's trigger picker and the
     slides deck both render it, so it must agree with triggers.py exactly."""
     from events import triggers as tr
+
     r = _agent_client(_FakeRuntime()).get("/api/events/triggers")
     assert r.status_code == 200
     d = r.json()
@@ -690,7 +775,7 @@ def test_triggers_endpoint_serves_the_registry():
     assert d["total"] == len(tr.rows()) and sorted(d["kinds"]) == sorted(tr.event_kinds())
     gh = next(a for a in d["apps"] if a["app"] == "github")
     assert len(gh["triggers"]) == len(tr.events_for("github"))
-    assert gh["triggers"][0]["default"] is True                 # the app default leads its group
+    assert gh["triggers"][0]["default"] is True  # the app default leads its group
     row = next(t for t in gh["triggers"] if t["event"] == "new_pr")
     assert row["backend"] == "ap" and row["fire"] == "synth"
     assert row["slots"][0]["name"] == "repo" and row["slots"][0]["required"] is True
@@ -708,20 +793,25 @@ def test_integrations_box_direct_backend_reports_connected():
         assert rows["box"]["status"] == "connected" and rows["box"]["connected"] is True
         assert rows["box"]["backend"] == "direct"
     finally:
-        os.environ.pop("BOX_DEV_TOKEN", None) if old_tok is None else os.environ.__setitem__("BOX_DEV_TOKEN", old_tok)
-        os.environ.pop("EVENTS_BOX_BACKEND", None) if old_be is None else os.environ.__setitem__("EVENTS_BOX_BACKEND", old_be)
+        os.environ.pop("BOX_DEV_TOKEN", None) if old_tok is None else os.environ.__setitem__(
+            "BOX_DEV_TOKEN", old_tok
+        )
+        os.environ.pop("EVENTS_BOX_BACKEND", None) if old_be is None else os.environ.__setitem__(
+            "EVENTS_BOX_BACKEND", old_be
+        )
 
 
 def test_integrations_github_env_token_does_not_fake_connected():
     """A .env GITHUB_TOKEN must NOT make github look connected. GitHub is OAuth (piece-github accepts
     only OAUTH2), so a PAT in .env doesn't auto-connect anything — the status stays 'not_connected'
     until the user consents. The old 'auto_connect_pending' heuristic was a lie once github went OAuth."""
+
     class _Engine:
         base = "http://ap"
         project_grain = "tenant"
 
         async def list_connections(self, project_name=None):
-            return []                                   # no github connection yet
+            return []  # no github connection yet
 
     old = os.environ.get("GITHUB_TOKEN")
     os.environ["GITHUB_TOKEN"] = "ghp_test_value"
@@ -730,7 +820,7 @@ def test_integrations_github_env_token_does_not_fake_connected():
         register_events_routes(app, runtime=object(), store=None, concierge=None, engine=_Engine())
         rows = {i["name"]: i for i in TestClient(app).get("/api/events/integrations").json()["integrations"]}
         assert rows["github"]["status"] == "not_connected", rows["github"]
-        assert rows["github"]["auth"] == "oauth"        # connect via consent, not a pasted token
+        assert rows["github"]["auth"] == "oauth"  # connect via consent, not a pasted token
     finally:
         os.environ.pop("GITHUB_TOKEN", None) if old is None else os.environ.__setitem__("GITHUB_TOKEN", old)
 
@@ -740,7 +830,9 @@ if __name__ == "__main__":
     passed = 0
     for name, fn in fns:
         try:
-            fn(); print(f"PASS  {name}"); passed += 1
+            fn()
+            print(f"PASS  {name}")
+            passed += 1
         except Exception as e:  # noqa: BLE001
             print(f"FAIL  {name}: {type(e).__name__}: {e}")
     print(f"\n{passed}/{len(fns)} passed")

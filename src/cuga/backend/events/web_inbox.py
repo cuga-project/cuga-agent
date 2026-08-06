@@ -51,29 +51,51 @@ class WebInbox:
                  subscription_id TEXT NOT NULL DEFAULT '',
                  flow_name TEXT NOT NULL DEFAULT '',
                  event_kind TEXT NOT NULL DEFAULT ''
-               )""")
+               )"""
+        )
         # the read is always "this thread, newer than my cursor" — index it that way
         self._db.execute("CREATE INDEX IF NOT EXISTS ix_web_inbox_thread ON web_inbox(thread_id, ts)")
         self._db.commit()
 
-    def put(self, *, scope: str, thread_id: str, text: str, agent: str = "",
-            subscription_id: str = "", flow_name: str = "", event_kind: str = "") -> str:
+    def put(
+        self,
+        *,
+        scope: str,
+        thread_id: str,
+        text: str,
+        agent: str = "",
+        subscription_id: str = "",
+        flow_name: str = "",
+        event_kind: str = "",
+    ) -> str:
         """Deliver one message to a web thread. Returns the message id."""
         mid = uuid.uuid4().hex
         self._db.execute(
             """INSERT INTO web_inbox
                  (id, ts, scope, thread_id, text, agent, subscription_id, flow_name, event_kind)
                VALUES (?,?,?,?,?,?,?,?,?)""",
-            (mid, time.time(), scope or "", thread_id or "", (text or "")[:16000],
-             agent or "", subscription_id or "", flow_name or "", event_kind or ""))
+            (
+                mid,
+                time.time(),
+                scope or "",
+                thread_id or "",
+                (text or "")[:16000],
+                agent or "",
+                subscription_id or "",
+                flow_name or "",
+                event_kind or "",
+            ),
+        )
         self._db.execute(
             "DELETE FROM web_inbox WHERE id NOT IN (SELECT id FROM web_inbox ORDER BY ts DESC LIMIT ?)",
-            (_CAP,))
+            (_CAP,),
+        )
         self._db.commit()
         return mid
 
-    def list(self, *, thread_id: str, since: float = 0.0, scope: str | None = None,
-             limit: int = 50) -> list[dict]:
+    def list(
+        self, *, thread_id: str, since: float = 0.0, scope: str | None = None, limit: int = 50
+    ) -> list[dict]:
         """Messages for one thread newer than ``since`` (epoch seconds), **oldest first** — the
         order a chat log appends them in. ``since`` is exclusive, so a client can pass back the
         ``ts`` of the last message it rendered and never see it twice."""
@@ -84,8 +106,8 @@ class WebInbox:
             params.append(scope)
         params.append(max(1, min(200, limit)))
         rows = self._db.execute(
-            "SELECT * FROM web_inbox WHERE " + " AND ".join(where) + " ORDER BY ts ASC LIMIT ?",
-            params).fetchall()
+            "SELECT * FROM web_inbox WHERE " + " AND ".join(where) + " ORDER BY ts ASC LIMIT ?", params
+        ).fetchall()
         return [dict(r) for r in rows]
 
 

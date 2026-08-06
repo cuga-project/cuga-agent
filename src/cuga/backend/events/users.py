@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+
 try:
     from . import db as _db
 except ImportError:  # flat load (tests put the events dir on sys.path)
@@ -30,7 +31,7 @@ def _hash(password: str, salt: bytes) -> str:
 class User:
     user_id: str
     email: str = ""
-    roles: list = field(default_factory=list)     # e.g. ["user"], ["admin"], ["builder"]
+    roles: list = field(default_factory=list)  # e.g. ["user"], ["admin"], ["builder"]
     tenant: str = "default"
 
     def has_role(self, role: str) -> bool:
@@ -50,11 +51,19 @@ class UserStore:
                  pwhash TEXT NOT NULL DEFAULT '',
                  created_at REAL NOT NULL DEFAULT 0,
                  PRIMARY KEY (tenant, user_id)
-               )""")
+               )"""
+        )
         self._db.commit()
 
-    def add(self, user_id: str, *, email: str = "", roles: list | None = None,
-            password: str | None = None, tenant: str = "default") -> User:
+    def add(
+        self,
+        user_id: str,
+        *,
+        email: str = "",
+        roles: list | None = None,
+        password: str | None = None,
+        tenant: str = "default",
+    ) -> User:
         salt = os.urandom(16)
         pwhash = _hash(password, salt) if password else ""
         self._db.execute(
@@ -64,33 +73,40 @@ class UserStore:
                  email=excluded.email, roles=excluded.roles,
                  salt=CASE WHEN excluded.pwhash!='' THEN excluded.salt ELSE app_user.salt END,
                  pwhash=CASE WHEN excluded.pwhash!='' THEN excluded.pwhash ELSE app_user.pwhash END""",
-            (tenant, user_id, email, json.dumps(roles or ["user"]),
-             salt.hex() if password else "", pwhash, time.time()))
+            (
+                tenant,
+                user_id,
+                email,
+                json.dumps(roles or ["user"]),
+                salt.hex() if password else "",
+                pwhash,
+                time.time(),
+            ),
+        )
         self._db.commit()
         return User(user_id=user_id, email=email, roles=roles or ["user"], tenant=tenant)
 
     def _row(self, r: _db.Row) -> User:
-        return User(user_id=r["user_id"], email=r["email"], roles=json.loads(r["roles"]),
-                    tenant=r["tenant"])
+        return User(user_id=r["user_id"], email=r["email"], roles=json.loads(r["roles"]), tenant=r["tenant"])
 
     def get(self, user_id: str, tenant: str = "default") -> User | None:
-        r = self._db.execute("SELECT * FROM app_user WHERE tenant=? AND user_id=?",
-                             (tenant, user_id)).fetchone()
+        r = self._db.execute(
+            "SELECT * FROM app_user WHERE tenant=? AND user_id=?", (tenant, user_id)
+        ).fetchone()
         return self._row(r) if r else None
 
     def by_email(self, email: str, tenant: str = "default") -> User | None:
-        r = self._db.execute("SELECT * FROM app_user WHERE tenant=? AND email=?",
-                             (tenant, email)).fetchone()
+        r = self._db.execute("SELECT * FROM app_user WHERE tenant=? AND email=?", (tenant, email)).fetchone()
         return self._row(r) if r else None
 
     def list(self, tenant: str = "default") -> list[User]:
-        rows = self._db.execute("SELECT * FROM app_user WHERE tenant=? ORDER BY user_id",
-                               (tenant,)).fetchall()
+        rows = self._db.execute(
+            "SELECT * FROM app_user WHERE tenant=? ORDER BY user_id", (tenant,)
+        ).fetchall()
         return [self._row(r) for r in rows]
 
     def authenticate(self, email: str, password: str, tenant: str = "default") -> User | None:
-        r = self._db.execute("SELECT * FROM app_user WHERE tenant=? AND email=?",
-                             (tenant, email)).fetchone()
+        r = self._db.execute("SELECT * FROM app_user WHERE tenant=? AND email=?", (tenant, email)).fetchone()
         if not r or not r["pwhash"]:
             return None
         if _hash(password, bytes.fromhex(r["salt"])) == r["pwhash"]:

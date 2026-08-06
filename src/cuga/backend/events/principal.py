@@ -64,8 +64,9 @@ class Principal:
 DEFAULT = Principal()
 
 
-def resolve(*, tenant_id: str | None = None, instance_id: str | None = None,
-            user_id: str | None = None, headers=None) -> Principal:
+def resolve(
+    *, tenant_id: str | None = None, instance_id: str | None = None, user_id: str | None = None, headers=None
+) -> Principal:
     """Resolve a Principal from explicit args → request headers → env → defaults.
 
     Headers: ``X-Tenant-Id`` / ``X-Instance-Id`` / ``X-User-Id`` (handy for the standalone
@@ -85,10 +86,10 @@ def resolve(*, tenant_id: str | None = None, instance_id: str | None = None,
         return default
 
     return Principal(
-        tenant_id=pick(tenant_id, "X-Tenant-Id", "DYNACONF_SERVICE__TENANT_ID",
-                       "EVENTS_TENANT_ID", default="default"),
-        instance_id=pick(instance_id, "X-Instance-Id", "DYNACONF_SERVICE__INSTANCE_ID",
-                         default="default"),
+        tenant_id=pick(
+            tenant_id, "X-Tenant-Id", "DYNACONF_SERVICE__TENANT_ID", "EVENTS_TENANT_ID", default="default"
+        ),
+        instance_id=pick(instance_id, "X-Instance-Id", "DYNACONF_SERVICE__INSTANCE_ID", default="default"),
         user_id=pick(user_id, "X-User-Id", "EVENTS_USER_ID", default="local"),
     )
 
@@ -130,7 +131,7 @@ def channel_origin(thread_id: str) -> tuple[str, str] | None:
     i = tid.find("gw:")
     if i < 0:
         return None
-    parts = tid[i:].split(":", 2)          # ["gw", channel, "<native>#<locus>"]
+    parts = tid[i:].split(":", 2)  # ["gw", channel, "<native>#<locus>"]
     if len(parts) == 3:
         return parts[1], parts[2].split("#", 1)[0]
     return None
@@ -157,17 +158,28 @@ def channel_user_id(source) -> str | None:
     return u or channel_native_id(source)
 
 
-def resolve_channel(channel: str, native_id: str, identity_map, *,
-                    tenant_id: str | None = None, instance_id: str | None = None) -> Principal | None:
+def resolve_channel(
+    channel: str,
+    native_id: str,
+    identity_map,
+    *,
+    tenant_id: str | None = None,
+    instance_id: str | None = None,
+) -> Principal | None:
     """Map a channel-native id → a Principal via the identity map (decision 0007). Returns None
     if the native id isn't linked to a user yet (→ caller prompts an account-link)."""
     if identity_map is None or not native_id:
         return None
-    t = tenant_id or os.environ.get("DYNACONF_SERVICE__TENANT_ID") or os.environ.get(
-        "EVENTS_TENANT_ID", "default")
+    t = (
+        tenant_id
+        or os.environ.get("DYNACONF_SERVICE__TENANT_ID")
+        or os.environ.get("EVENTS_TENANT_ID", "default")
+    )
     uid = identity_map.resolve(t, channel, native_id)
     if uid is None:
         return None
-    return Principal(tenant_id=t,
-                     instance_id=instance_id or os.environ.get("DYNACONF_SERVICE__INSTANCE_ID", "default"),
-                     user_id=uid)
+    return Principal(
+        tenant_id=t,
+        instance_id=instance_id or os.environ.get("DYNACONF_SERVICE__INSTANCE_ID", "default"),
+        user_id=uid,
+    )

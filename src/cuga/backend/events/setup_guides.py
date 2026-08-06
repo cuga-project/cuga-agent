@@ -6,6 +6,7 @@ the concrete step list, and how it's wired (direct vs AP). ``ownership`` options
   • ``tenant``   — one shared credential for everyone in the tenant (a shared bot / shared app).
   • ``per_user`` — each user connects their OWN account (per-user OAuth login).
 """
+
 from __future__ import annotations
 
 # fmt: off

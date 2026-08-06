@@ -115,7 +115,7 @@ def _driver_errors():
 
         integrity.append(psycopg.errors.IntegrityError)
         operational.append(psycopg.errors.OperationalError)
-        operational.append(psycopg.errors.ProgrammingError)   # PG raises this for a bad DDL
+        operational.append(psycopg.errors.ProgrammingError)  # PG raises this for a bad DDL
     except Exception:  # noqa: BLE001 — psycopg is optional when running on SQLite
         pass
     return tuple(integrity), tuple(operational)
@@ -186,9 +186,9 @@ def _to_pg_types(sql: str) -> str:
             out.append(c)
             i += 1
             continue
-        if not in_str and (c in "rR") and sql[i:i + 4].upper() == "REAL":
+        if not in_str and (c in "rR") and sql[i : i + 4].upper() == "REAL":
             before_ok = i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")
-            after = sql[i + 4:i + 5]
+            after = sql[i + 4 : i + 5]
             after_ok = after == "" or not (after.isalnum() or after == "_")
             if before_ok and after_ok:
                 out.append("DOUBLE PRECISION")
@@ -349,7 +349,8 @@ class _PostgresConnection(_Connection):
 
     def columns(self, table: str) -> set:
         res = self.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,)
+        )
         return {r["column_name"] for r in res.fetchall()}
 
     def widen_real_columns(self) -> list[str]:
@@ -368,7 +369,8 @@ class _PostgresConnection(_Connection):
         try:
             rows = self.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND data_type = 'real'").fetchall()
+                "WHERE table_schema = 'public' AND data_type = 'real'"
+            ).fetchall()
         except Exception as e:  # noqa: BLE001 — a permissions-limited role must not break boot
             log.warning("could not inspect column types (%s) — skipping the float4 repair", e)
             return fixed
@@ -381,8 +383,11 @@ class _PostgresConnection(_Connection):
                 log.warning("could not widen %s.%s to double precision: %s", t, c, e)
         if fixed:
             self.commit()
-            log.info("events db: widened %d float4 column(s) to double precision — %s",
-                     len(fixed), ", ".join(fixed))
+            log.info(
+                "events db: widened %d float4 column(s) to double precision — %s",
+                len(fixed),
+                ", ".join(fixed),
+            )
         return fixed
 
 

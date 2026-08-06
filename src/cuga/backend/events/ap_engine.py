@@ -47,16 +47,18 @@ class APEngine:
         self.email = os.environ.get("AP_EMAIL", "")
         self.password = _secret("AP_PASSWORD")
         self.project_id = os.environ.get("AP_PROJECT_ID", "")
-        self.invoke_url = (os.environ.get("HOST_CALLBACK_URL")
-                           or os.environ.get("EA_INVOKE_URL")
-                           or "http://host.docker.internal:8000/invoke")
+        self.invoke_url = (
+            os.environ.get("HOST_CALLBACK_URL")
+            or os.environ.get("EA_INVOKE_URL")
+            or "http://host.docker.internal:8000/invoke"
+        )
         self.gateway_token = os.environ.get("GATEWAY_TOKEN", "")
         self._token = ""
-        self._token_exp = 0.0                       # cached-JWT expiry (see _auth)
+        self._token_exp = 0.0  # cached-JWT expiry (see _auth)
         self._auth_lock = asyncio.Lock()
         self._piece_cache: dict[str, str] = {}
-        self._project_cache: dict[str, str] = {}   # project displayName -> id
-        self._degraded = False                      # set if the AP plan refuses extra projects
+        self._project_cache: dict[str, str] = {}  # project displayName -> id
+        self._degraded = False  # set if the AP plan refuses extra projects
         # Isolation grain for AP PROJECTS: 'tenant' (default; per-tenant project — the right
         # multi-tenant boundary), 'user' (per-user project — strict), or 'shared' (one project;
         # isolation via flow-name namespacing only). Flow names + connection externalIds are
@@ -70,6 +72,7 @@ class APEngine:
         means up (4xx = up-but-unauthorized); connection error / 5xx / timeout → treat as down."""
         try:
             import httpx
+
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.get(f"{self.base}/api/v1/flags")
                 return r.status_code < 500
@@ -78,8 +81,10 @@ class APEngine:
 
     # ---- auth ------------------------------------------------------------
     async def _sign_in(self, c: httpx.AsyncClient) -> None:
-        r = await c.post(f"{self.base}/api/v1/authentication/sign-in",
-                         json={"email": self.email, "password": self.password})
+        r = await c.post(
+            f"{self.base}/api/v1/authentication/sign-in",
+            json={"email": self.email, "password": self.password},
+        )
         if r.status_code >= 300:
             raise APError(f"AP sign-in failed: HTTP {r.status_code} {r.text[:200]}")
         body = r.json()
@@ -157,21 +162,35 @@ class APEngine:
         # validates the value against the (unfetched) dropdown options and flags the step invalid.
         ps = {k: {"type": "DYNAMIC" if k in dynamic else "MANUAL"} for k in inp}
         if "body" in ps:
-            ps["body"] = {"type": "MANUAL", "schema": {
-                "data": {"type": "JSON", "required": True, "displayName": "JSON Body"}}}
+            ps["body"] = {
+                "type": "MANUAL",
+                "schema": {"data": {"type": "JSON", "required": True, "displayName": "JSON Body"}},
+            }
         return ps
 
-    def _invoke_body(self, agent: str, thread_id: str, prompt: str, deliver: bool,
-                     scope: str = "", source: dict | None = None) -> dict:
+    def _invoke_body(
+        self,
+        agent: str,
+        thread_id: str,
+        prompt: str,
+        deliver: bool,
+        scope: str = "",
+        source: dict | None = None,
+    ) -> dict:
         """The normalized envelope the AP HTTP step POSTs to /invoke. ``scope`` (the
         principal) rides along so the fired run executes in the right tenant namespace.
 
         ``source`` overrides the default time/cron source — used for a DIRECT-channel sink, where
         the source is set to {type:channel, name:<ch>, thread_id:gw:<ch>:<native>} so ``/invoke``
         delivers the answer itself via the channel's direct adapter (no AP send step)."""
-        return {"agent": agent, "text": prompt, "deliver": deliver, "scope": scope,
-                "source": source or {"type": "time", "name": "cron", "thread_id": thread_id},
-                "event": {"kind": "tick", "payload": {}}}
+        return {
+            "agent": agent,
+            "text": prompt,
+            "deliver": deliver,
+            "scope": scope,
+            "source": source or {"type": "time", "name": "cron", "thread_id": thread_id},
+            "event": {"kind": "tick", "payload": {}},
+        }
 
     def _trigger_op(self, cron: str | None, interval_seconds: int | None, ver: str) -> dict:
         if not cron and interval_seconds:
@@ -187,45 +206,98 @@ class APEngine:
                 cron = f"*/{mins} * * * *"
             elif mins % 60 == 0 and mins // 60 <= 23:
                 cron = f"0 */{mins // 60} * * *"
-            else:                                    # odd large interval → best-effort minute step
+            else:  # odd large interval → best-effort minute step
                 cron = f"*/{max(1, mins % 60)} * * * *"
         if not cron:
             raise APError("schedule needs cron or interval_seconds")
-        tname, inp, display = "cron_expression", {"cronExpression": cron, "timezone": "UTC"}, \
-            f"cron {cron} UTC"
-        settings = {"propertySettings": self._prop_settings(inp), "pieceName": SCHEDULE_PIECE,
-                    "pieceVersion": ver, "triggerName": tname, "input": inp}
-        return {"type": "UPDATE_TRIGGER",
-                "request": {"name": "trigger", "valid": True, "displayName": display,
-                            "type": "PIECE_TRIGGER", "settings": settings}}
+        tname, inp, display = (
+            "cron_expression",
+            {"cronExpression": cron, "timezone": "UTC"},
+            f"cron {cron} UTC",
+        )
+        settings = {
+            "propertySettings": self._prop_settings(inp),
+            "pieceName": SCHEDULE_PIECE,
+            "pieceVersion": ver,
+            "triggerName": tname,
+            "input": inp,
+        }
+        return {
+            "type": "UPDATE_TRIGGER",
+            "request": {
+                "name": "trigger",
+                "valid": True,
+                "displayName": display,
+                "type": "PIECE_TRIGGER",
+                "settings": settings,
+            },
+        }
 
-    def _http_action(self, body: dict, ver: str, url: str | None = None,
-                     display: str = "Invoke CUGA") -> dict:
+    def _http_action(
+        self, body: dict, ver: str, url: str | None = None, display: str = "Invoke CUGA"
+    ) -> dict:
         headers = {"X-Gateway-Token": self.gateway_token} if self.gateway_token else {}
-        inp = {"url": url or self.invoke_url, "body": {"data": body}, "method": "POST",
-               "headers": headers, "timeout": "", "authType": "NONE", "body_type": "json",
-               "use_proxy": False, "authFields": {}, "failureMode": "continue_none",
-               "queryParams": {}, "proxy_settings": {}, "followRedirects": False,
-               "response_is_binary": False}
-        settings = {"propertySettings": self._prop_settings(inp), "pieceName": HTTP_PIECE,
-                    "pieceVersion": ver, "actionName": "send_request", "input": inp}
-        return {"type": "ADD_ACTION",
-                "request": {"parentStep": "trigger",
-                            "action": {"name": "step_1", "skip": False, "type": "PIECE",
-                                       "valid": True, "displayName": display,
-                                       "settings": settings}}}
+        inp = {
+            "url": url or self.invoke_url,
+            "body": {"data": body},
+            "method": "POST",
+            "headers": headers,
+            "timeout": "",
+            "authType": "NONE",
+            "body_type": "json",
+            "use_proxy": False,
+            "authFields": {},
+            "failureMode": "continue_none",
+            "queryParams": {},
+            "proxy_settings": {},
+            "followRedirects": False,
+            "response_is_binary": False,
+        }
+        settings = {
+            "propertySettings": self._prop_settings(inp),
+            "pieceName": HTTP_PIECE,
+            "pieceVersion": ver,
+            "actionName": "send_request",
+            "input": inp,
+        }
+        return {
+            "type": "ADD_ACTION",
+            "request": {
+                "parentStep": "trigger",
+                "action": {
+                    "name": "step_1",
+                    "skip": False,
+                    "type": "PIECE",
+                    "valid": True,
+                    "displayName": display,
+                    "settings": settings,
+                },
+            },
+        }
 
-
-    async def create_box_poll_flow(self, *, name: str, agent: str, folder_id: str,
-                                   deliver_to: str | None, deliver_target: str | None = None,
-                                   interval_seconds: int, scope: str = "",
-                                   project_name: str | None = None) -> str:
+    async def create_box_poll_flow(
+        self,
+        *,
+        name: str,
+        agent: str,
+        folder_id: str,
+        deliver_to: str | None,
+        deliver_target: str | None = None,
+        interval_seconds: int,
+        scope: str = "",
+        project_name: str | None = None,
+    ) -> str:
         """A STANDING DIRECT-Box watcher — AP-free source, no Box OAuth. AP's schedule piece is just
         the clock: schedule → HTTP POST /api/events/box/poll, which polls Box with the dev token and
         fires <agent> on each new file (the server tracks the per-folder watermark). Returns flow id."""
         box_url = self.invoke_url.replace("/invoke", "/api/events/box/poll")
-        body = {"folder_id": str(folder_id), "agent": agent, "deliver_to": deliver_to,
-                "deliver_target": deliver_target, "scope": scope}
+        body = {
+            "folder_id": str(folder_id),
+            "agent": agent,
+            "deliver_to": deliver_to,
+            "deliver_target": deliver_target,
+            "scope": scope,
+        }
         async with httpx.AsyncClient(timeout=30) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
@@ -234,14 +306,20 @@ class APEngine:
             flow_id = await self._new_flow(c, hdrs, name, pid, scope)
             sched_ver = await self._piece_version(c, SCHEDULE_PIECE)
             http_ver = await self._piece_version(c, HTTP_PIECE)
-            await self._post_op(c, flow_id,
-                                self._trigger_op(None, interval_seconds, sched_ver), hdrs)
-            await self._post_op(c, flow_id,
-                                self._http_action(body, http_ver, url=box_url, display="Poll Box"), hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
-        log.info("created AP box-poll flow=%s name=%s folder=%s every=%ss", flow_id, name,
-                 folder_id, interval_seconds)
+            await self._post_op(c, flow_id, self._trigger_op(None, interval_seconds, sched_ver), hdrs)
+            await self._post_op(
+                c, flow_id, self._http_action(body, http_ver, url=box_url, display="Poll Box"), hdrs
+            )
+            await self._post_op(
+                c, flow_id, {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs
+            )
+        log.info(
+            "created AP box-poll flow=%s name=%s folder=%s every=%ss",
+            flow_id,
+            name,
+            folder_id,
+            interval_seconds,
+        )
         return flow_id
 
         return flow_id
@@ -263,8 +341,11 @@ class APEngine:
                 await c.delete(f"{self.base}/api/v1/flows/{flow_id}", headers=hdrs)
             except Exception:  # noqa: BLE001
                 pass
-            raise APError("Activepieces marked these step(s) invalid — the flow would never fire: "
-                          + ", ".join(bad) + ". Not arming.")
+            raise APError(
+                "Activepieces marked these step(s) invalid — the flow would never fire: "
+                + ", ".join(bad)
+                + ". Not arming."
+            )
 
     async def _post_op(self, c: httpx.AsyncClient, flow_id: str, op: dict, hdrs: dict) -> dict:
         r = await c.post(f"{self.base}/api/v1/flows/{flow_id}", json=op, headers=hdrs)
@@ -272,10 +353,12 @@ class APEngine:
             raise APError(f"AP op {op['type']} failed: HTTP {r.status_code} {r.text[:300]}")
         return r.json() if r.text else {}
 
-    async def find_flow_by_name(self, c: httpx.AsyncClient, hdrs: dict, name: str,
-                                project_id: str) -> str | None:
-        r = await c.get(f"{self.base}/api/v1/flows",
-                        params={"projectId": project_id, "limit": 100}, headers=hdrs)
+    async def find_flow_by_name(
+        self, c: httpx.AsyncClient, hdrs: dict, name: str, project_id: str
+    ) -> str | None:
+        r = await c.get(
+            f"{self.base}/api/v1/flows", params={"projectId": project_id, "limit": 100}, headers=hdrs
+        )
         if r.status_code != 200:
             return None
         for f in r.json().get("data", []):
@@ -288,7 +371,7 @@ class APEngine:
 
         Each principal's flows + connections live in their own AP project, so tenants can't
         see or touch each other's automations."""
-        if self._degraded:                       # plan caps projects → everything shares default
+        if self._degraded:  # plan caps projects → everything shares default
             return self.project_id
         if project_name in self._project_cache:
             return self._project_cache[project_name]
@@ -296,64 +379,94 @@ class APEngine:
         if r.status_code == 200:
             data = r.json()
             items = data.get("data", data) if isinstance(data, dict) else data
-            for p in (items or []):
+            for p in items or []:
                 if p.get("displayName") == project_name:
                     self._project_cache[project_name] = p["id"]
                     return p["id"]
-        rc = await c.post(f"{self.base}/api/v1/projects", headers=hdrs,
-                          json={"displayName": project_name})
+        rc = await c.post(f"{self.base}/api/v1/projects", headers=hdrs, json={"displayName": project_name})
         if rc.status_code == 402 or "FEATURE_DISABLED" in rc.text:
             # AP plan caps team projects → degrade to the default project with scope-prefixed
             # flow names (still isolated + filterable per tenant at the app layer).
             self._degraded = True
             self._project_cache[project_name] = self.project_id
-            log.warning("AP plan limits projects (%s) — using namespace isolation "
-                        "(scope-prefixed flows) in the default project for '%s'",
-                        rc.status_code, project_name)
+            log.warning(
+                "AP plan limits projects (%s) — using namespace isolation "
+                "(scope-prefixed flows) in the default project for '%s'",
+                rc.status_code,
+                project_name,
+            )
             return self.project_id
         if rc.status_code >= 300:
-            raise APError(f"AP create project '{project_name}' failed: HTTP {rc.status_code} "
-                          f"{rc.text[:200]}")
+            raise APError(f"AP create project '{project_name}' failed: HTTP {rc.status_code} {rc.text[:200]}")
         pid = rc.json()["id"]
         self._project_cache[project_name] = pid
         log.info("created AP project '%s' → %s (per-tenant project isolation)", project_name, pid)
         return pid
 
     # ---- public API ------------------------------------------------------
-    def _channel_send_op(self, channel: str, target_ref: str, connection: str,
-                         sver: str, parent: str = "step_1", name: str = "step_2") -> dict:
+    def _channel_send_op(
+        self,
+        channel: str,
+        target_ref: str,
+        connection: str,
+        sver: str,
+        parent: str = "step_1",
+        name: str = "step_2",
+    ) -> dict:
         """A channel OUTBOUND send op (piece send-action). ``target_ref`` is where the reply goes —
         a literal native id (schedule/push: fixed at arm time) or a trigger template (inbound)."""
         from . import flows
+
         d = flows.CHANNELS[channel]
         piece = flows.PIECE[d["piece"]]
-        send_inp = {d["target_arg"]: str(target_ref), d["text_arg"]: "{{step_1.body.answer}}",
-                    **d.get("const", {})}
+        send_inp = {
+            d["target_arg"]: str(target_ref),
+            d["text_arg"]: "{{step_1.body.answer}}",
+            **d.get("const", {}),
+        }
         if connection:
             send_inp["auth"] = f"{{{{connections['{connection}']}}}}"
-        return self._piece_action_op(parent, name, piece, d["send_action"], send_inp, sver,
-                                     f"{channel} · send", dynamic=d.get("dynamic_props", []))
+        return self._piece_action_op(
+            parent,
+            name,
+            piece,
+            d["send_action"],
+            send_inp,
+            sver,
+            f"{channel} · send",
+            dynamic=d.get("dynamic_props", []),
+        )
 
-    async def create_schedule_flow(self, *, name: str, agent: str, thread_id: str, prompt: str,
-                                   cron: str | None = None, interval_seconds: int | None = None,
-                                   deliver: bool = True, replace: bool = True,
-                                   project_name: str | None = None, scope: str = "",
-                                   deliver_channel: str | None = None,
-                                   deliver_target: str | None = None,
-                                   deliver_connection: str | None = None,
-                                   deliver_direct_channel: str | None = None,
-                                   deliver_direct_target: str | None = None,
-                                   subscription_id: str | None = None,
-                                   expires_at: float | None = None) -> str:
+    async def create_schedule_flow(
+        self,
+        *,
+        name: str,
+        agent: str,
+        thread_id: str,
+        prompt: str,
+        cron: str | None = None,
+        interval_seconds: int | None = None,
+        deliver: bool = True,
+        replace: bool = True,
+        project_name: str | None = None,
+        scope: str = "",
+        deliver_channel: str | None = None,
+        deliver_target: str | None = None,
+        deliver_connection: str | None = None,
+        deliver_direct_channel: str | None = None,
+        deliver_direct_target: str | None = None,
+        subscription_id: str | None = None,
+        expires_at: float | None = None,
+    ) -> str:
         """Create + ENABLE a schedule→/invoke flow. Returns the AP flow id.
 
         ``project_name`` (a Principal.ap_project_name()) isolates the flow into that principal's
         own AP project; without it, the engine's default project is used."""
         async with httpx.AsyncClient(timeout=30) as c:
             hdrs = await self._auth(c)
-            if project_name:                        # grain=tenant/user → dedicated project
-                project_id = await self.ensure_project(c, hdrs, project_name)   # (degrades on cap)
-            else:                                   # grain=shared → default project + prefixing
+            if project_name:  # grain=tenant/user → dedicated project
+                project_id = await self.ensure_project(c, hdrs, project_name)  # (degrades on cap)
+            else:  # grain=shared → default project + prefixing
                 project_id = self.project_id
             if not project_id:
                 raise APError("AP project unresolved (no project_name and no default project)")
@@ -366,8 +479,11 @@ class APEngine:
                     await c.delete(f"{self.base}/api/v1/flows/{existing}", headers=hdrs)
             sched_ver = await self._piece_version(c, SCHEDULE_PIECE)
             http_ver = await self._piece_version(c, HTTP_PIECE)
-            r = await c.post(f"{self.base}/api/v1/flows", headers=hdrs,
-                             json={"displayName": flow_name, "projectId": project_id})
+            r = await c.post(
+                f"{self.base}/api/v1/flows",
+                headers=hdrs,
+                json={"displayName": flow_name, "projectId": project_id},
+            )
             if r.status_code >= 300:
                 raise APError(f"AP create flow failed: HTTP {r.status_code} {r.text[:300]}")
             flow_id = r.json()["id"]
@@ -377,14 +493,19 @@ class APEngine:
             # invoke body's source is the channel, so /invoke sends the answer via its direct
             # adapter (deliver=True). This is how a scheduled flow reaches an out-of-AP channel.
             from . import flows
+
             has_send = bool(deliver_channel in flows.CHANNELS and deliver_target)
             direct_source = None
             if deliver_direct_channel and deliver_direct_target and not has_send:
-                direct_source = {"type": "channel", "name": deliver_direct_channel,
-                                 "thread_id": f"gw:{deliver_direct_channel}:{deliver_direct_target}"}
+                direct_source = {
+                    "type": "channel",
+                    "name": deliver_direct_channel,
+                    "thread_id": f"gw:{deliver_direct_channel}:{deliver_direct_target}",
+                }
             await self._post_op(c, flow_id, self._trigger_op(cron, interval_seconds, sched_ver), hdrs)
-            body = self._invoke_body(agent, thread_id, prompt, deliver and not has_send,
-                                     scope, source=direct_source)
+            body = self._invoke_body(
+                agent, thread_id, prompt, deliver and not has_send, scope, source=direct_source
+            )
             if subscription_id:
                 body["subscription_id"] = subscription_id
             if expires_at:
@@ -394,14 +515,25 @@ class APEngine:
             if has_send:
                 piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
                 sver = await self._piece_version(c, piece)
-                await self._post_op(c, flow_id, self._channel_send_op(
-                    deliver_channel, deliver_target, deliver_connection or "", sver), hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
-        log.info("created AP schedule flow=%s name=%s (sched=%s http=%s send=%s)",
-                 flow_id, name, sched_ver, http_ver,
-                 deliver_channel if has_send else (f"direct:{deliver_direct_channel}"
-                                                   if direct_source else "none"))
+                await self._post_op(
+                    c,
+                    flow_id,
+                    self._channel_send_op(deliver_channel, deliver_target, deliver_connection or "", sver),
+                    hdrs,
+                )
+            await self._post_op(
+                c, flow_id, {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs
+            )
+        log.info(
+            "created AP schedule flow=%s name=%s (sched=%s http=%s send=%s)",
+            flow_id,
+            name,
+            sched_ver,
+            http_ver,
+            deliver_channel
+            if has_send
+            else (f"direct:{deliver_direct_channel}" if direct_source else "none"),
+        )
         return flow_id
 
     # ---- inbound (channel) + push (integration) flows -------------------
@@ -410,41 +542,80 @@ class APEngine:
     # so there is NO channel/integration API in CUGA — AP does the receiving + sending.
     # ⚠️ VERIFY the piece trigger/action op shapes against your AP build on first live arm.
     def _piece_trigger_op(self, piece: str, trigger: str, inp: dict, ver: str, dynamic=()) -> dict:
-        settings = {"propertySettings": self._prop_settings(inp, dynamic), "pieceName": piece,
-                    "pieceVersion": ver, "triggerName": trigger, "input": inp}
-        return {"type": "UPDATE_TRIGGER",
-                "request": {"name": "trigger", "valid": True, "displayName": f"{piece} · {trigger}",
-                            "type": "PIECE_TRIGGER", "settings": settings}}
+        settings = {
+            "propertySettings": self._prop_settings(inp, dynamic),
+            "pieceName": piece,
+            "pieceVersion": ver,
+            "triggerName": trigger,
+            "input": inp,
+        }
+        return {
+            "type": "UPDATE_TRIGGER",
+            "request": {
+                "name": "trigger",
+                "valid": True,
+                "displayName": f"{piece} · {trigger}",
+                "type": "PIECE_TRIGGER",
+                "settings": settings,
+            },
+        }
 
-    def _piece_action_op(self, parent: str, name: str, piece: str, action: str, inp: dict,
-                         ver: str, display: str, dynamic=()) -> dict:
-        settings = {"propertySettings": self._prop_settings(inp, dynamic), "pieceName": piece,
-                    "pieceVersion": ver, "actionName": action, "input": inp}
-        return {"type": "ADD_ACTION",
-                "request": {"parentStep": parent,
-                            "action": {"name": name, "skip": False, "type": "PIECE", "valid": True,
-                                       "displayName": display, "settings": settings}}}
+    def _piece_action_op(
+        self, parent: str, name: str, piece: str, action: str, inp: dict, ver: str, display: str, dynamic=()
+    ) -> dict:
+        settings = {
+            "propertySettings": self._prop_settings(inp, dynamic),
+            "pieceName": piece,
+            "pieceVersion": ver,
+            "actionName": action,
+            "input": inp,
+        }
+        return {
+            "type": "ADD_ACTION",
+            "request": {
+                "parentStep": parent,
+                "action": {
+                    "name": name,
+                    "skip": False,
+                    "type": "PIECE",
+                    "valid": True,
+                    "displayName": display,
+                    "settings": settings,
+                },
+            },
+        }
 
     async def _new_flow(self, c, hdrs, name: str, project_id: str, scope: str) -> str:
         flow_name = f"{scope}::{name}" if scope else name
         existing = await self.find_flow_by_name(c, hdrs, flow_name, project_id)
         if existing:
             await c.delete(f"{self.base}/api/v1/flows/{existing}", headers=hdrs)
-        r = await c.post(f"{self.base}/api/v1/flows", headers=hdrs,
-                         json={"displayName": flow_name, "projectId": project_id})
+        r = await c.post(
+            f"{self.base}/api/v1/flows",
+            headers=hdrs,
+            json={"displayName": flow_name, "projectId": project_id},
+        )
         if r.status_code >= 300:
             raise APError(f"AP create flow failed: HTTP {r.status_code} {r.text[:200]}")
         return r.json()["id"]
 
-    async def create_inbound_flow(self, *, channel: str, agent: str = "concierge",
-                                  connection: str = "", project_name: str | None = None,
-                                  scope: str = "", trigger_input: dict | None = None) -> str:
+    async def create_inbound_flow(
+        self,
+        *,
+        channel: str,
+        agent: str = "concierge",
+        connection: str = "",
+        project_name: str | None = None,
+        scope: str = "",
+        trigger_input: dict | None = None,
+    ) -> str:
         """Arm a channel INBOUND flow: <channel>·trigger ▸ /invoke ▸ <channel>·send. Every
         message from the channel reaches the concierge; the reply goes back out via AP.
         ``connection`` = the bot's AP connection externalId (wired as auth on trigger + send).
         ``trigger_input`` supplies channel-specific trigger config declared in ``trigger_args``
         (e.g. Discord's polling trigger needs the ``channel`` id to watch)."""
         from . import flows
+
         d = flows.CHANNELS.get(channel)
         if not d:
             raise APError(f"unknown channel '{channel}'")
@@ -462,58 +633,97 @@ class APEngine:
                 if not trigger_input or trigger_input.get(k) in (None, ""):
                     raise APError(f"channel '{channel}' trigger needs '{k}' — pass it when arming")
                 tinp[k] = trigger_input[k]
-            tinp.update(d.get("trigger_const", {}))     # fixed trigger inputs (e.g. slack ignoreBots)
-            await self._post_op(c, flow_id, self._piece_trigger_op(
-                piece, d["trigger"], tinp, tver, dynamic=d.get("dynamic_props", [])), hdrs)
+            tinp.update(d.get("trigger_const", {}))  # fixed trigger inputs (e.g. slack ignoreBots)
+            await self._post_op(
+                c,
+                flow_id,
+                self._piece_trigger_op(piece, d["trigger"], tinp, tver, dynamic=d.get("dynamic_props", [])),
+                hdrs,
+            )
             # HTTP → /invoke (channel envelope: text + native id ride in the body/thread_id).
             # source.user = the message AUTHOR (a trigger template, e.g. discord {{trigger.author.id}})
             # → per-user identity through a shared bot. Absent ⇒ falls back to the thread-native id.
-            src = {"type": "channel", "name": channel,
-                   "thread_id": f"gw:{channel}:{d['native_ref']}"}
+            src = {"type": "channel", "name": channel, "thread_id": f"gw:{channel}:{d['native_ref']}"}
             if d.get("user_ref"):
                 src["user"] = d["user_ref"]
-            body = {"agent": agent, "text": d["text_ref"], "deliver": False, "scope": scope,
-                    "source": src, "event": {"kind": "message", "payload": {}}}
+            body = {
+                "agent": agent,
+                "text": d["text_ref"],
+                "deliver": False,
+                "scope": scope,
+                "source": src,
+                "event": {"kind": "message", "payload": {}},
+            }
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
             # send the answer back to the channel (auth = the bot connection). native_ref is a
             # trigger template here (reply to the SAME chat the message came from).
             sver = await self._piece_version(c, piece)
-            send_inp = {d["target_arg"]: d["native_ref"], d["text_arg"]: "{{step_1.body.answer}}",
-                        **d.get("const", {})}
+            send_inp = {
+                d["target_arg"]: d["native_ref"],
+                d["text_arg"]: "{{step_1.body.answer}}",
+                **d.get("const", {}),
+            }
             if auth:
                 send_inp["auth"] = auth
-            await self._post_op(c, flow_id, self._piece_action_op(
-                "step_1", "step_2", piece, d["send_action"], send_inp, sver,
-                f"{channel} · send", dynamic=d.get("dynamic_props", [])), hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
+            await self._post_op(
+                c,
+                flow_id,
+                self._piece_action_op(
+                    "step_1",
+                    "step_2",
+                    piece,
+                    d["send_action"],
+                    send_inp,
+                    sver,
+                    f"{channel} · send",
+                    dynamic=d.get("dynamic_props", []),
+                ),
+                hdrs,
+            )
+            await self._post_op(
+                c, flow_id, {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs
+            )
         log.info("armed inbound flow channel=%s agent=%s flow=%s", channel, agent, flow_id)
         return flow_id
 
         return flow_id
 
-    async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
-                               prompt: str, project_name: str | None = None, scope: str = "",
-                               connection: str = "", source_input: dict | None = None,
-                               name: str | None = None,
-                               deliver_channel: str | None = None, deliver_target: str | None = None,
-                               deliver_connection: str | None = None) -> str:
+    async def create_push_flow(
+        self,
+        *,
+        source: str,
+        event: str,
+        agent: str,
+        thread_id: str,
+        prompt: str,
+        project_name: str | None = None,
+        scope: str = "",
+        connection: str = "",
+        source_input: dict | None = None,
+        name: str | None = None,
+        deliver_channel: str | None = None,
+        deliver_target: str | None = None,
+        deliver_connection: str | None = None,
+    ) -> str:
         """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent) ▸ deliver. ``connection`` =
         the trigger app's AP connection externalId (wired as auth on the trigger — REQUIRED to
         publish). ``source_input`` supplies trigger-specific inputs (github ``repository``, box a
         ``folder``). The agent's answer returns to the origin channel (deliver=True), or via an AP
         send step for an AP-backed channel (deliver_channel/deliver_target)."""
         from . import flows
+
         # Registry-resolved: (source, event) selects the SPECIFIC piece trigger. The old lookup
         # keyed on source alone and IGNORED `event` for known apps — gmail/new_attachment armed the
         # new-email trigger, and a second trigger on the same app could never exist.
         row = flows.resolve_trigger(source, event)
         if row is not None and row.backend == "direct":
-            raise ValueError(f"{source}/{row.event} is a DIRECT trigger (CUGA receives it) — "
-                             "it is not armable as an Activepieces flow")
+            raise ValueError(
+                f"{source}/{row.event} is a DIRECT trigger (CUGA receives it) — "
+                "it is not armable as an Activepieces flow"
+            )
         if row is not None:
             piece_key, trig = row.piece, row.ap_trigger
-        else:                                    # legacy channel/webhook/rss rows
+        else:  # legacy channel/webhook/rss rows
             piece_key, trig = flows._LEGACY_SOURCE_TRIGGER[source]
         piece = flows.PIECE.get(piece_key, f"@activepieces/piece-{piece_key}")
         # The default flow name must include the EVENT: _new_flow deletes any existing flow with
@@ -527,7 +737,7 @@ class APEngine:
             tver = await self._piece_version(c, piece)
             hver = await self._piece_version(c, flows.PIECE["http"])
             tinp = dict(source_input or {})
-            if connection:                       # wire the integration's connection as trigger auth
+            if connection:  # wire the integration's connection as trigger auth
                 tinp["auth"] = f"{{{{connections['{connection}']}}}}"
             await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
             # Pass the trigger's meaningful fields into the /invoke payload so the worker has real
@@ -547,24 +757,40 @@ class APEngine:
             # gmail ≠ the chat channel, so action + report is never a double-send. Armed from web →
             # neither fires (thread_id not gw:*, no deliver_channel).
             has_send = bool(deliver_channel in flows.CHANNELS and deliver_target)
-            body = {"agent": agent, "text": prompt, "deliver": not has_send, "scope": scope,
-                    "source": {"type": "integration", "name": source, "thread_id": thread_id},
-                    "event": {"kind": event, "payload": payload}}
+            body = {
+                "agent": agent,
+                "text": prompt,
+                "deliver": not has_send,
+                "scope": scope,
+                "source": {"type": "integration", "name": source, "thread_id": thread_id},
+                "event": {"kind": event, "payload": payload},
+            }
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
             parent, idx = "step_1", 2
-            if has_send:                              # AP-channel report (deliver=False path)
+            if has_send:  # AP-channel report (deliver=False path)
                 piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
                 sver = await self._piece_version(c, piece)
-                await self._post_op(c, flow_id, self._channel_send_op(
-                    deliver_channel, deliver_target, deliver_connection or "", sver,
-                    parent=parent, name=f"step_{idx}"), hdrs)
+                await self._post_op(
+                    c,
+                    flow_id,
+                    self._channel_send_op(
+                        deliver_channel,
+                        deliver_target,
+                        deliver_connection or "",
+                        sver,
+                        parent=parent,
+                        name=f"step_{idx}",
+                    ),
+                    hdrs,
+                )
             # ANTI-SILENT-FAILURE GATE: before publishing, ask AP whether every step is valid. An
             # invalid ACTION step publishes ENABLED and then NEVER fires — the worst kind of silent
             # failure (the user is told "ARMED" for a flow that can't run). Refuse: delete + raise so
             # the concierge reports the real problem instead of a false success.
             await self._assert_steps_valid(c, flow_id, hdrs)
-            await self._post_op(c, flow_id,
-                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
+            await self._post_op(
+                c, flow_id, {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs
+            )
         log.info("armed push flow source=%s/%s agent=%s flow=%s", source, event, agent, flow_id)
         return flow_id
 
@@ -576,12 +802,18 @@ class APEngine:
         has connected nothing" — which is precisely how a working credential got reported as
         CONNECT NEEDED. A 401/403 (a cached JWT invalidated by an AP restart) is retried once with
         a fresh sign-in before giving up."""
-        r = await c.get(f"{self.base}/api/v1/app-connections", headers=hdrs,
-                        params={"projectId": project_id, "limit": 100})
+        r = await c.get(
+            f"{self.base}/api/v1/app-connections",
+            headers=hdrs,
+            params={"projectId": project_id, "limit": 100},
+        )
         if r.status_code in (401, 403):
             fresh = await self._auth(c, force=True)
-            r = await c.get(f"{self.base}/api/v1/app-connections", headers=fresh,
-                            params={"projectId": project_id, "limit": 100})
+            r = await c.get(
+                f"{self.base}/api/v1/app-connections",
+                headers=fresh,
+                params={"projectId": project_id, "limit": 100},
+            )
         if r.status_code != 200:
             raise APError(f"AP list-connections failed: HTTP {r.status_code} {r.text[:160]}")
         return r.json().get("data", [])
@@ -593,9 +825,9 @@ class APEngine:
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
             return any(x.get("externalId") == external_id for x in await self._connections(c, hdrs, pid))
 
-    async def ensure_secret_connection(self, external_id: str, piece: str, token: str,
-                                       project_name: str | None = None,
-                                       update: bool = True) -> str:
+    async def ensure_secret_connection(
+        self, external_id: str, piece: str, token: str, project_name: str | None = None, update: bool = True
+    ) -> str:
         """Create **or update** a SECRET_TEXT connection holding ``token`` — the token/PAT path
         (Telegram/GitHub/Discord). OAuth apps (Gmail/Box) are authorized in AP's connect UI instead.
 
@@ -614,14 +846,20 @@ class APEngine:
         async with httpx.AsyncClient(timeout=20) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            existing = [x for x in await self._connections(c, hdrs, pid)
-                        if x.get("externalId") == external_id]
+            existing = [
+                x for x in await self._connections(c, hdrs, pid) if x.get("externalId") == external_id
+            ]
             if existing and not update:
                 return external_id
 
-            body = {"externalId": external_id, "displayName": external_id, "pieceName": piece,
-                    "projectId": pid, "type": "SECRET_TEXT",
-                    "value": {"type": "SECRET_TEXT", "secret_text": token}}
+            body = {
+                "externalId": external_id,
+                "displayName": external_id,
+                "pieceName": piece,
+                "projectId": pid,
+                "type": "SECRET_TEXT",
+                "value": {"type": "SECRET_TEXT", "secret_text": token},
+            }
             r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
             if r.status_code < 300:
                 if existing:
@@ -631,22 +869,35 @@ class APEngine:
             # Overwrite refused. Only worth the destructive fallback when one already exists —
             # otherwise this is a genuine create failure and the caller should see it.
             if not existing:
-                raise APError(f"AP create connection '{external_id}' failed: "
-                              f"HTTP {r.status_code} {r.text[:200]}")
-            log.warning("AP refused to overwrite %s (HTTP %s); deleting and recreating",
-                        external_id, r.status_code)
+                raise APError(
+                    f"AP create connection '{external_id}' failed: HTTP {r.status_code} {r.text[:200]}"
+                )
+            log.warning(
+                "AP refused to overwrite %s (HTTP %s); deleting and recreating", external_id, r.status_code
+            )
             await c.delete(f"{self.base}/api/v1/app-connections/{existing[0]['id']}", headers=hdrs)
             r2 = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
             if r2.status_code >= 300:
-                raise APError(f"AP update connection '{external_id}' failed after delete: "
-                              f"HTTP {r2.status_code} {r2.text[:200]}")
+                raise APError(
+                    f"AP update connection '{external_id}' failed after delete: "
+                    f"HTTP {r2.status_code} {r2.text[:200]}"
+                )
             log.info("AP connection %s recreated (token rotated)", external_id)
             return external_id
 
-    async def ensure_oauth_connection(self, external_id: str, piece: str, code: str,
-                                      *, client_id: str, client_secret: str, redirect_url: str,
-                                      scope: str = "", authorization_method: str = "BODY",
-                                      project_name: str | None = None) -> str:
+    async def ensure_oauth_connection(
+        self,
+        external_id: str,
+        piece: str,
+        code: str,
+        *,
+        client_id: str,
+        client_secret: str,
+        redirect_url: str,
+        scope: str = "",
+        authorization_method: str = "BODY",
+        project_name: str | None = None,
+    ) -> str:
         """Create an AP **OAUTH2** connection by handing AP the authorization ``code`` — AP does the
         token exchange itself and owns the refresh lifecycle.
 
@@ -663,37 +914,57 @@ class APEngine:
             # so a re-consent must replace what is stored — including replacing a wrong-TYPE row (a
             # SECRET_TEXT PAT left behind by an older build), which the piece cannot use and which
             # would otherwise make the whole OAuth round trip a silent no-op.
-            existing = [x for x in await self._connections(c, hdrs, pid)
-                        if x.get("externalId") == external_id]
-            value = {"type": "OAUTH2", "client_id": client_id, "client_secret": client_secret,
-                     "code": code, "redirect_url": redirect_url, "scope": scope,
-                     "grant_type": "authorization_code", "authorization_method": authorization_method,
-                     "props": {}}
-            body = {"externalId": external_id, "displayName": external_id, "pieceName": piece,
-                    "projectId": pid, "type": "OAUTH2", "value": value}
+            existing = [
+                x for x in await self._connections(c, hdrs, pid) if x.get("externalId") == external_id
+            ]
+            value = {
+                "type": "OAUTH2",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_url": redirect_url,
+                "scope": scope,
+                "grant_type": "authorization_code",
+                "authorization_method": authorization_method,
+                "props": {},
+            }
+            body = {
+                "externalId": external_id,
+                "displayName": external_id,
+                "pieceName": piece,
+                "projectId": pid,
+                "type": "OAUTH2",
+                "value": value,
+            }
             r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
             if r.status_code < 300:
                 return external_id
             if not existing:
-                raise APError(f"AP create OAUTH2 connection '{external_id}' failed: "
-                              f"HTTP {r.status_code} {r.text[:200]}")
+                raise APError(
+                    f"AP create OAUTH2 connection '{external_id}' failed: HTTP {r.status_code} {r.text[:200]}"
+                )
             # An authorization `code` is single-use, so we cannot retry the exchange after a failed
             # overwrite — but AP consumed nothing on a rejected upsert. Drop the stale row and retry.
-            log.warning("AP refused to overwrite %s (HTTP %s); deleting and recreating",
-                        external_id, r.status_code)
+            log.warning(
+                "AP refused to overwrite %s (HTTP %s); deleting and recreating", external_id, r.status_code
+            )
             await c.delete(f"{self.base}/api/v1/app-connections/{existing[0]['id']}", headers=hdrs)
             r2 = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json=body)
             if r2.status_code >= 300:
-                raise APError(f"AP update OAUTH2 connection '{external_id}' failed after delete: "
-                              f"HTTP {r2.status_code} {r2.text[:200]}")
+                raise APError(
+                    f"AP update OAUTH2 connection '{external_id}' failed after delete: "
+                    f"HTTP {r2.status_code} {r2.text[:200]}"
+                )
             return external_id
 
     async def list_connections(self, project_name: str | None = None) -> list[dict]:
         async with httpx.AsyncClient(timeout=15) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            return [{"id": x.get("id"), "externalId": x.get("externalId")}
-                    for x in await self._connections(c, hdrs, pid)]
+            return [
+                {"id": x.get("id"), "externalId": x.get("externalId")}
+                for x in await self._connections(c, hdrs, pid)
+            ]
 
     async def delete_connection(self, external_id: str, project_name: str | None = None) -> None:
         async with httpx.AsyncClient(timeout=15) as c:
@@ -717,8 +988,12 @@ class APEngine:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
                 hdrs = await self._auth(c)
-                await self._post_op(c, flow_id, {"type": "CHANGE_STATUS",
-                    "request": {"status": "ENABLED" if enabled else "DISABLED"}}, hdrs)
+                await self._post_op(
+                    c,
+                    flow_id,
+                    {"type": "CHANGE_STATUS", "request": {"status": "ENABLED" if enabled else "DISABLED"}},
+                    hdrs,
+                )
         except Exception as e:  # noqa: BLE001
             log.warning("AP set flow %s status=%s failed: %s", flow_id, enabled, e)
 
@@ -740,8 +1015,11 @@ class APEngine:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
                 hdrs = await self._auth(c)
-                r = await c.get(f"{self.base}/api/v1/flow-runs", headers=hdrs,
-                                params={"projectId": self.project_id, "limit": limit})
+                r = await c.get(
+                    f"{self.base}/api/v1/flow-runs",
+                    headers=hdrs,
+                    params={"projectId": self.project_id, "limit": limit},
+                )
                 if r.status_code != 200 or not r.text:
                     return []
                 data = r.json()
@@ -762,8 +1040,9 @@ class APEngine:
             log.warning("AP get run %s failed: %s", run_id, e)
             return None
 
-    async def trigger_flow(self, flow_id: str, payload: dict | None = None,
-                           headers: dict | None = None, *, sync: bool = False) -> tuple[bool, str]:
+    async def trigger_flow(
+        self, flow_id: str, payload: dict | None = None, headers: dict | None = None, *, sync: bool = False
+    ) -> tuple[bool, str]:
         """Fire an ENABLED flow immediately, out of band of its own trigger. **Debug use only.**
 
         Activepieces exposes ``POST /api/v1/webhooks/<flowId>`` for *every* flow, whatever its
@@ -791,15 +1070,21 @@ class APEngine:
                 # `headers` lets the caller reproduce the PROVIDER's delivery headers (e.g. GitHub's
                 # X-GitHub-Event). One repo webhook carries many event types, so a piece trigger
                 # disambiguates on that header — omit it and the piece emits nothing at all.
-                r = await c.post(f"{self.base}/api/v1/webhooks/{flow_id}{suffix}", json=payload or {},
-                                 headers=headers or None)
+                r = await c.post(
+                    f"{self.base}/api/v1/webhooks/{flow_id}{suffix}",
+                    json=payload or {},
+                    headers=headers or None,
+                )
             body = r.text or ""
             ok = r.status_code in (200, 204)
             if ok and sync:
                 # A completed-but-failed run comes back 200 with the run object; catch its status.
                 low = body.lower()
-                if '"status":"failed"' in low.replace(" ", "") or '"status": "failed"' in low \
-                        or "internal_error" in low:
+                if (
+                    '"status":"failed"' in low.replace(" ", "")
+                    or '"status": "failed"' in low
+                    or "internal_error" in low
+                ):
                     ok = False
             return ok, (f"HTTP {r.status_code}" + (f" {body[:200]}" if body else ""))
         except Exception as e:  # noqa: BLE001

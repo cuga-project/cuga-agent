@@ -16,6 +16,7 @@ Run:  .venv/bin/python tests/events/live_nl_to_flow_bench.py
 Prereqs: AP reachable (AP_BASE_URL in .env) + the relevant connections present (gmail/github/box).
 Nothing is left behind — every flow it builds, it deletes.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,23 +34,24 @@ if _env.exists():
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.split(" #", 1)[0].strip())
-os.environ["EVENTS_VERIFY_ACTIONS"] = "0"          # deterministic: no LLM verifier
+os.environ["EVENTS_VERIFY_ACTIONS"] = "0"  # deterministic: no LLM verifier
 sys.path.insert(0, str(_ROOT / "src"))
 
-from cuga.backend.events import concierge, triggers as _tr          # noqa: E402
-from cuga.backend.events.ap_engine import APEngine                  # noqa: E402
-from cuga.backend.events.agent_store import AgentStore              # noqa: E402
-from cuga.backend.events.runtime import AgentStoreRuntime, AgentSpec      # noqa: E402
-from cuga.backend.events.subscriptions import SubscriptionStore     # noqa: E402
-from cuga.backend.events.principal import Principal                 # noqa: E402
+from cuga.backend.events import concierge, triggers as _tr  # noqa: E402
+from cuga.backend.events.ap_engine import APEngine  # noqa: E402
+from cuga.backend.events.agent_store import AgentStore  # noqa: E402
+from cuga.backend.events.runtime import AgentStoreRuntime, AgentSpec  # noqa: E402
+from cuga.backend.events.subscriptions import SubscriptionStore  # noqa: E402
+from cuga.backend.events.principal import Principal  # noqa: E402
 
 DATASET = Path(__file__).parent / "nl_to_flow_bench.jsonl"
-ADMIN = Principal(user_id="admin")                                  # matches ea::default::admin::<app>
+ADMIN = Principal(user_id="admin")  # matches ea::default::admin::<app>
 
 
 async def _flow_steps(eng: APEngine, flow_id: str):
     """Return [(name, valid_bool)] for a flow's trigger + each action step, straight from AP."""
     import httpx
+
     async with httpx.AsyncClient(timeout=20) as c:
         hdrs = await eng._auth(c)
         d = (await c.get(f"{eng.base}/api/v1/flows/{flow_id}", headers=hdrs)).json()
@@ -73,10 +75,14 @@ async def _latest_run_status(eng: APEngine, flow_id: str) -> str:
 
 def _mk_tools(engine):
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
-    rt.upsert_agent(AgentSpec(name="cuga", prompt="triage",
-                              integrations=[{"app": a, "ownership": "per-user"}
-                                            for a in ("gmail", "github", "box", "slack")]),
-                    scope="default")
+    rt.upsert_agent(
+        AgentSpec(
+            name="cuga",
+            prompt="triage",
+            integrations=[{"app": a, "ownership": "per-user"} for a in ("gmail", "github", "box", "slack")],
+        ),
+        scope="default",
+    )
     store = SubscriptionStore(":memory:")
     tools = concierge.make_concierge_tools(rt, store=store, engine=engine, users=None)
     return next(t for t in tools if t.name == "find_or_create_flow"), store
@@ -92,16 +98,22 @@ async def run():
     tally = {"armed": 0, "valid": 0, "fired": 0, "succeeded": 0, "declined_or_ask": 0, "error": 0}
 
     for cx in cases:
-        if cx.get("kind") == "now":                # NOW answers, arms nothing
+        if cx.get("kind") == "now":  # NOW answers, arms nothing
             continue
-        focf, store = _mk_tools(eng)               # fresh store per case (no dedup carryover)
+        focf, store = _mk_tools(eng)  # fresh store per case (no dedup carryover)
         concierge._principal.set(ADMIN)
         concierge._origin.set("web:local")
-        args = {"agent": "cuga", "kind": cx["kind"], "prompt": cx["utterance"],
-                "source": cx.get("source", ""), "event": cx.get("event", "")}
+        args = {
+            "agent": "cuga",
+            "kind": cx["kind"],
+            "prompt": cx["utterance"],
+            "source": cx.get("source", ""),
+            "event": cx.get("event", ""),
+        }
         args.update(cx.get("slots") or {})
-        if cx["kind"] in ("cron", "poll"):         # cadence isn't in the label — parse it from the text
+        if cx["kind"] in ("cron", "poll"):  # cadence isn't in the label — parse it from the text
             from cuga.backend.events import classify
+
             cad = classify.cadence_of(cx["utterance"])
             if cad.get("cron"):
                 args["cron"] = cad["cron"]
@@ -117,9 +129,13 @@ async def run():
 
         armed = reply.startswith("ARMED")
         if not armed:
-            kind = ("REUSING" if reply.startswith("REUSING") else
-                    "ERROR" if reply.lower().startswith("error") or "wouldn't arm" in reply else
-                    "DECLINE/ASK")
+            kind = (
+                "REUSING"
+                if reply.startswith("REUSING")
+                else "ERROR"
+                if reply.lower().startswith("error") or "wouldn't arm" in reply
+                else "DECLINE/ASK"
+            )
             print(f"   ARM   : {kind} — {reply[:110]}\n")
             tally["declined_or_ask" if kind == "DECLINE/ASK" else "error"] += 1
             continue
@@ -134,10 +150,10 @@ async def run():
             flow_ids.append(("watcher", sub.ap_flow_id))
         plan = (getattr(sub, "config", None) or {}).get("action_plan") if sub else None
         if plan:
-            for st in (plan.get("steps") or []):
+            for st in plan.get("steps") or []:
                 if st.get("flow_id"):
                     flow_ids.append(("executor", st["flow_id"]))
-            for b in (plan.get("branches") or []):
+            for b in plan.get("branches") or []:
                 if (b.get("step") or {}).get("flow_id"):
                     flow_ids.append(("executor", b["step"]["flow_id"]))
 
@@ -168,9 +184,13 @@ async def run():
             if status == "SUCCEEDED":
                 tally["succeeded"] += 1
         else:
-            why = ("poll trigger — only a real event fires it" if trow and trow.fire == "manual"
-                   else "direct/real trigger — needs a real event" if trow
-                   else "no synth payload")
+            why = (
+                "poll trigger — only a real event fires it"
+                if trow and trow.fire == "manual"
+                else "direct/real trigger — needs a real event"
+                if trow
+                else "no synth payload"
+            )
             print(f"   FIRE  : SKIPPED ({why})")
 
         # CLEAN — delete every flow we built

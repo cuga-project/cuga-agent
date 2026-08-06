@@ -8,6 +8,7 @@ is a Gateway setting — it can't be read over REST; you confirm it live by mess
 Keys:   DISCORD_BOT_TOKEN
 Extra:  DISCORD_TEST_CHANNEL_ID  (optional — a text channel the bot can post in)
 """
+
 import sys
 
 from _common import PASS, FAIL, SKIP, load_env, request_json, title, ok, bad, warn, info
@@ -37,8 +38,12 @@ def main():
         info("reminder: enable MESSAGE CONTENT INTENT in the Developer Portal so the bot can read text")
         return PASS
 
-    st, _, j, _ = request_json("POST", f"{API}/channels/{ch}/messages", headers=h,
-                               data={"content": "CUGA pre-req check: Discord bot token works."})
+    st, _, j, _ = request_json(
+        "POST",
+        f"{API}/channels/{ch}/messages",
+        headers=h,
+        data={"content": "CUGA pre-req check: Discord bot token works."},
+    )
     if st in (200, 201):
         ok(f"posted a test message to channel {ch}")
         return PASS

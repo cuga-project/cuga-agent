@@ -53,33 +53,71 @@ CHANNEL = os.environ.get("SLACK_TEST_CHANNEL", "C0BEYJ9NATB")
 # Each Slack watcher: the bot event Slack must be subscribed to + the OAuth scope it needs.
 # (trigger, utterance, slack_event, scope, synthetic event payload)
 SLACK_WATCHERS = [
-    ("new_reaction", "/push when a message gets a :bug: reaction in slack, triage it as an incident",
-     "reaction_added", "reactions:read",
-     lambda: {"type": "reaction_added", "user": "U_TESTER", "reaction": "bug",
-              "item": {"type": "message", "channel": CHANNEL, "ts": "1700000000.000100"},
-              "event_ts": "1700000000.000200"}),
-    ("new_slack_mention", "/push when the team is @mentioned in a slack channel, draft an answer",
-     "app_mention", "app_mentions:read",
-     lambda: {"type": "app_mention", "user": "U_TESTER", "channel": CHANNEL,
-              "text": "<@BOT> what is our incident escalation policy?",
-              "ts": "1700000000.000300", "event_ts": "1700000000.000300"}),
-    ("channel_created", "/push when a new channel is created, post a welcome and suggest a charter",
-     "channel_created", "channels:read",
-     lambda: {"type": "channel_created",
-              "channel": {"id": "C_NEW1", "name": "launch-planning", "created": 1700000000,
-                          "creator": "U_TESTER"}}),
-    ("new_slack_user", "/push when a new user joins the workspace, send them an onboarding brief",
-     "team_join", "users:read",
-     lambda: {"type": "team_join",
-              "user": {"id": "U_NEW1", "name": "dana", "real_name": "Dana Lee",
-                       "profile": {"title": "Backend engineer"}}}),
+    (
+        "new_reaction",
+        "/push when a message gets a :bug: reaction in slack, triage it as an incident",
+        "reaction_added",
+        "reactions:read",
+        lambda: {
+            "type": "reaction_added",
+            "user": "U_TESTER",
+            "reaction": "bug",
+            "item": {"type": "message", "channel": CHANNEL, "ts": "1700000000.000100"},
+            "event_ts": "1700000000.000200",
+        },
+    ),
+    (
+        "new_slack_mention",
+        "/push when the team is @mentioned in a slack channel, draft an answer",
+        "app_mention",
+        "app_mentions:read",
+        lambda: {
+            "type": "app_mention",
+            "user": "U_TESTER",
+            "channel": CHANNEL,
+            "text": "<@BOT> what is our incident escalation policy?",
+            "ts": "1700000000.000300",
+            "event_ts": "1700000000.000300",
+        },
+    ),
+    (
+        "channel_created",
+        "/push when a new channel is created, post a welcome and suggest a charter",
+        "channel_created",
+        "channels:read",
+        lambda: {
+            "type": "channel_created",
+            "channel": {
+                "id": "C_NEW1",
+                "name": "launch-planning",
+                "created": 1700000000,
+                "creator": "U_TESTER",
+            },
+        },
+    ),
+    (
+        "new_slack_user",
+        "/push when a new user joins the workspace, send them an onboarding brief",
+        "team_join",
+        "users:read",
+        lambda: {
+            "type": "team_join",
+            "user": {
+                "id": "U_NEW1",
+                "name": "dana",
+                "real_name": "Dana Lee",
+                "profile": {"title": "Backend engineer"},
+            },
+        },
+    ),
 ]
 
 
 def http(method, url, body=None, headers=None, timeout=200):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json", **(headers or {})})
+    req = urllib.request.Request(
+        url, data=data, method=method, headers={"Content-Type": "application/json", **(headers or {})}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -94,8 +132,9 @@ def http(method, url, body=None, headers=None, timeout=200):
 
 def granted_scopes() -> set:
     """The scopes Slack actually granted this bot token (from auth.test's response header)."""
-    req = urllib.request.Request("https://slack.com/api/auth.test",
-                                 headers={"Authorization": f"Bearer {SLACK_TOKEN}"})
+    req = urllib.request.Request(
+        "https://slack.com/api/auth.test", headers={"Authorization": f"Bearer {SLACK_TOKEN}"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return {s.strip() for s in (r.headers.get("x-oauth-scopes") or "").split(",") if s.strip()}
@@ -109,11 +148,16 @@ def post_slack_event(event: dict) -> tuple[int, dict]:
     body = json.dumps({"type": "event_callback", "team_id": "T_TEST", "event": event})
     ts = str(int(time.time()))
     sig = "v0=" + hmac.new(SIGNING.encode(), f"v0:{ts}:{body}".encode(), hashlib.sha256).hexdigest()
-    req = urllib.request.Request(f"{SERVER}/api/events/slack/events", data=body.encode(),
-                                 method="POST",
-                                 headers={"Content-Type": "application/json",
-                                          "X-Slack-Request-Timestamp": ts,
-                                          "X-Slack-Signature": sig})
+    req = urllib.request.Request(
+        f"{SERVER}/api/events/slack/events",
+        data=body.encode(),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Slack-Request-Timestamp": ts,
+            "X-Slack-Signature": sig,
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -124,7 +168,8 @@ def post_slack_event(event: dict) -> tuple[int, dict]:
 def slack_latest(n=1) -> list:
     req = urllib.request.Request(
         f"https://slack.com/api/conversations.history?channel={CHANNEL}&limit={n}",
-        headers={"Authorization": f"Bearer {SLACK_TOKEN}"})
+        headers={"Authorization": f"Bearer {SLACK_TOKEN}"},
+    )
     with urllib.request.urlopen(req, timeout=20) as r:
         return (json.load(r) or {}).get("messages", []) or []
 
@@ -139,8 +184,10 @@ def main() -> int:
     for trig, ev, scope in ready:
         print(f"  \033[32m✓\033[0m {trig:20} needs {scope:20} (subscribe the app to `{ev}`)")
     for trig, ev, scope in missing:
-        print(f"  \033[33m—\033[0m {trig:20} needs {scope:20} \033[33mSCOPE NOT GRANTED\033[0m "
-              f"— Slack will not deliver `{ev}`")
+        print(
+            f"  \033[33m—\033[0m {trig:20} needs {scope:20} \033[33mSCOPE NOT GRANTED\033[0m "
+            f"— Slack will not deliver `{ev}`"
+        )
     if "--scopes" in sys.argv:
         return 0
     if not SIGNING:
@@ -154,8 +201,12 @@ def main() -> int:
         # web chat delivers to WEB (the answer rides back in the HTTP response) and nothing reaches
         # Slack. `gw:slack:<channel>` makes Slack the sink — which is what a user arming it from
         # Slack actually does.
-        code, rep = http("POST", f"{SERVER}/api/concierge",
-                         {"text": utter, "thread_id": f"gw:slack:{CHANNEL}"}, timeout=240)
+        code, rep = http(
+            "POST",
+            f"{SERVER}/api/concierge",
+            {"text": utter, "thread_id": f"gw:slack:{CHANNEL}"},
+            timeout=240,
+        )
         reply = str(rep.get("reply", ""))
         m = re.search(r"[Ss]ubscription ([\w-]+)", reply)
         if not (code == 200 and m and ("ARMED" in reply or "REUSING" in reply)):
@@ -191,9 +242,11 @@ def main() -> int:
     npass = sum(1 for _, s, _ in results if s == "PASS")
     print(f"\nRESULT: {npass}/{len(SLACK_WATCHERS)} direct watchers fired end-to-end")
     if missing:
-        print(f"  NOTE: {len(missing)} watcher(s) will not receive REAL Slack events until their "
-              f"scope is granted + the app is subscribed (events_docs/setup/SLACK.md). The synthetic "
-              f"fire above still proves CUGA's side.")
+        print(
+            f"  NOTE: {len(missing)} watcher(s) will not receive REAL Slack events until their "
+            f"scope is granted + the app is subscribed (events_docs/setup/SLACK.md). The synthetic "
+            f"fire above still proves CUGA's side."
+        )
     return 0 if npass == len(SLACK_WATCHERS) else 1
 
 

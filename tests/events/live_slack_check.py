@@ -18,6 +18,7 @@ Run:
     EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_slack_check.py
 Reads .env for SLACK_BOT_TOKEN.
 """
+
 import json
 import os
 import sys
@@ -61,7 +62,8 @@ def _http(method, url, body=None, headers=None, timeout=20):
 def main():
     tok = _env("SLACK_BOT_TOKEN")
     if not tok:
-        print("SKIP — no SLACK_BOT_TOKEN"); return 0
+        print("SKIP — no SLACK_BOT_TOKEN")
+        return 0
     h = {"Authorization": f"Bearer {tok}", "content-type": "application/json; charset=utf-8"}
     ok = True
 
@@ -72,36 +74,58 @@ def main():
 
     # 1) bot token valid (real Slack API)
     _, who = _http("POST", f"{SLACK}/auth.test", "", {"Authorization": f"Bearer {tok}"})
-    check("bot token valid (auth.test)", who.get("ok"),
-          f"team={who.get('team')} bot={who.get('user')}")
+    check("bot token valid (auth.test)", who.get("ok"), f"team={who.get('team')} bot={who.get('user')}")
 
     # 2) a channel the bot is in
-    _, ch = _http("GET", f"{SLACK}/conversations.list?types=public_channel&limit=50", None,
-                  {"Authorization": f"Bearer {tok}"})
+    _, ch = _http(
+        "GET",
+        f"{SLACK}/conversations.list?types=public_channel&limit=50",
+        None,
+        {"Authorization": f"Bearer {tok}"},
+    )
     member = [c for c in ch.get("channels", []) if c.get("is_member")]
     chan = member[0]["id"] if member else None
-    check("bot is a member of a channel", bool(chan),
-          f"#{member[0]['name']}={chan}" if member else "invite the bot to a channel")
+    check(
+        "bot is a member of a channel",
+        bool(chan),
+        f"#{member[0]['name']}={chan}" if member else "invite the bot to a channel",
+    )
 
     # 3) the delivery leg — can the bot post? (real chat.postMessage)
     if chan:
-        _, r = _http("POST", f"{SLACK}/chat.postMessage", {"channel": chan,
-                     "text": "✅ live_slack_check: delivery leg OK"}, h)
+        _, r = _http(
+            "POST",
+            f"{SLACK}/chat.postMessage",
+            {"channel": chan, "text": "✅ live_slack_check: delivery leg OK"},
+            h,
+        )
         check("bot can post (chat.postMessage)", r.get("ok"), r.get("ts") or r.get("error"))
 
     # 4) descriptor sanity (offline)
     sys.path.insert(0, os.path.join(REPO, "src", "cuga", "backend", "events"))
     import flows  # noqa: E402
+
     d = flows.CHANNELS["slack"]
-    check("descriptor: reply→channel, ignoreBots, sendAsBot, DYNAMIC",
-          d["native_ref"] == "{{trigger.channel}}" and d["trigger_const"].get("ignoreBots")
-          and d["const"].get("sendAsBot") and "channel" in d["dynamic_props"])
+    check(
+        "descriptor: reply→channel, ignoreBots, sendAsBot, DYNAMIC",
+        d["native_ref"] == "{{trigger.channel}}"
+        and d["trigger_const"].get("ignoreBots")
+        and d["const"].get("sendAsBot")
+        and "channel" in d["dynamic_props"],
+    )
 
     # 5) arm the DIRECT backend (default): returns the Events URL to paste — no AP, no OAuth
-    _, r = _http("POST", f"{SERVER}/api/events/admin/channels/slack/arm",
-                 {}, {"content-type": "application/json", "x-user-id": "admin"})
-    check("arm slack (direct backend)", r.get("ok") and r.get("backend") == "direct",
-          r.get("backend") or r.get("error"))
+    _, r = _http(
+        "POST",
+        f"{SERVER}/api/events/admin/channels/slack/arm",
+        {},
+        {"content-type": "application/json", "x-user-id": "admin"},
+    )
+    check(
+        "arm slack (direct backend)",
+        r.get("ok") and r.get("backend") == "direct",
+        r.get("backend") or r.get("error"),
+    )
     print(f"  [INFO] Events Request URL → {r.get('events_url', '?')}")
     print(f"  [INFO] signature verification: {r.get('signature_verification', '?')}")
 

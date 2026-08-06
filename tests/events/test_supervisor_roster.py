@@ -16,8 +16,7 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
-                                "src", "cuga", "backend", "events"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
 
 import triggers  # noqa: E402
 
@@ -27,6 +26,7 @@ ROSTER = os.path.join(ROOT, "supervisor_agents.yaml")
 
 def _roster():
     import yaml
+
     with open(ROSTER) as f:
         return yaml.safe_load(f)
 
@@ -47,8 +47,7 @@ def test_roster_parses_and_has_the_supervisor_block():
 def _handles_pairs(cfg) -> set:
     pairs = set()
     for a in cfg.get("agents") or []:
-        for m in re.finditer(r"\b([a-z_]+)/([a-z_]+)\b",
-                             a.get("special_instructions") or ""):
+        for m in re.finditer(r"\b([a-z_]+)/([a-z_]+)\b", a.get("special_instructions") or ""):
             pairs.add((m.group(1), m.group(2)))
     return pairs
 
@@ -56,8 +55,7 @@ def _handles_pairs(cfg) -> set:
 def test_every_registry_trigger_is_claimed_by_a_sub_agent():
     """An unclaimed trigger = the supervisor has NO routing hint for that event."""
     claimed = _handles_pairs(_roster())
-    missing = [t.key for t in triggers.rows()
-               if t.key not in claimed and t.key != ("webhook", "inbound")]
+    missing = [t.key for t in triggers.rows() if t.key not in claimed and t.key != ("webhook", "inbound")]
     assert not missing, f"triggers no sub-agent claims (add a HANDLES line): {missing}"
 
 
@@ -65,6 +63,5 @@ def test_every_claimed_trigger_exists_in_the_registry():
     """A stale HANDLES hint (renamed/removed trigger) misleads the supervisor's routing."""
     known = {t.key for t in triggers.rows()}
     apps = {t.app for t in triggers.rows()}
-    stale = [p for p in _handles_pairs(_roster())
-             if p[0] in apps and p not in known]
+    stale = [p for p in _handles_pairs(_roster()) if p[0] in apps and p not in known]
     assert not stale, f"HANDLES hints pointing at unknown triggers: {stale}"

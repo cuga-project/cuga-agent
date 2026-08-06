@@ -22,17 +22,22 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DATA = os.path.join(ROOT, "events_docs", "verification_data.json")
 
 
-def record(surface: str, capability: str, verdict: str, note: str = "",
-           source: str = "") -> None:
+def record(surface: str, capability: str, verdict: str, note: str = "", source: str = "") -> None:
     """verdict: 'ok' | 'partial' | 'blocked'. Never raises — evidence-keeping must not fail runs."""
     try:
         data = json.load(open(DATA)) if os.path.exists(DATA) else {"records": {}}
         src = source or os.path.basename(sys.argv[0] or "unknown")
         data["records"][f"{surface}::{capability}"] = {
-            "surface": surface, "capability": capability, "verdict": verdict,
-            "note": note, "source": src, "date": time.strftime("%Y-%m-%d %H:%M")}
+            "surface": surface,
+            "capability": capability,
+            "verdict": verdict,
+            "note": note,
+            "source": src,
+            "date": time.strftime("%Y-%m-%d %H:%M"),
+        }
         json.dump(data, open(DATA, "w"), indent=1, ensure_ascii=False)
-        subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "gen_ledger.py")],
-                       capture_output=True, timeout=60)
+        subprocess.run(
+            [sys.executable, os.path.join(ROOT, "scripts", "gen_ledger.py")], capture_output=True, timeout=60
+        )
     except Exception:  # noqa: BLE001
         pass

@@ -41,7 +41,8 @@ class _FakeAgent:
 @pytest.fixture()
 def roster(tmp_path):
     p = tmp_path / "roster.yaml"
-    p.write_text(textwrap.dedent("""
+    p.write_text(
+        textwrap.dedent("""
         supervisor:
           name: cuga
         agents:
@@ -53,7 +54,8 @@ def roster(tmp_path):
         - name: opted_out
           special_instructions: explicitly refuses policies
           auto_load_policies: false
-    """).strip())
+    """).strip()
+    )
     return str(p)
 
 
@@ -119,4 +121,4 @@ def test_signature_is_keyword_only_and_optional():
     p = sig.parameters["auto_load_policies"]
     assert p.kind is inspect.Parameter.KEYWORD_ONLY
     assert p.default is None
-    assert list(sig.parameters)[0] == "yaml_path"     # unchanged positional contract
+    assert list(sig.parameters)[0] == "yaml_path"  # unchanged positional contract

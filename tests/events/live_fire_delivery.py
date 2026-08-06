@@ -89,16 +89,23 @@ GW = ""
 
 def fire(channel: str, native: str, marker: str) -> tuple[int, object]:
     """POST the body the native scheduler posts for a due CRON — a tick, not a chat message."""
-    return http("POST", f"{SERVER}/invoke", {
-        "text": f"Reply with exactly this and nothing else: {marker}",
-        "agent": "cuga",
-        "deliver": True,
-        "source": {"type": "time", "name": "cron", "thread_id": f"gw:{channel}:{native}"},
-        "event": {"kind": "tick", "payload": {}},
-    }, {"X-Gateway-Token": GW} if GW else {}, timeout=240)
+    return http(
+        "POST",
+        f"{SERVER}/invoke",
+        {
+            "text": f"Reply with exactly this and nothing else: {marker}",
+            "agent": "cuga",
+            "deliver": True,
+            "source": {"type": "time", "name": "cron", "thread_id": f"gw:{channel}:{native}"},
+            "event": {"kind": "tick", "payload": {}},
+        },
+        {"X-Gateway-Token": GW} if GW else {},
+        timeout=240,
+    )
 
 
 # ── per-channel readback ──────────────────────────────────────────────────────────────────────────
+
 
 def _channel_from_subscriptions(channel: str) -> str:
     """Last-resort target discovery: a native id out of an ALREADY-ARMED flow on the server.
@@ -108,8 +115,13 @@ def _channel_from_subscriptions(channel: str) -> str:
     addresses in every flow armed from that channel (``thread_id = gw:<channel>:<native>``), so ask
     it rather than skipping the check.
     """
-    st, body = http("GET", f"{SERVER}/api/events/subscriptions", None,
-                    {"X-Gateway-Token": GW, "X-User-Id": "admin"} if GW else {}, timeout=30)
+    st, body = http(
+        "GET",
+        f"{SERVER}/api/events/subscriptions",
+        None,
+        {"X-Gateway-Token": GW, "X-User-Id": "admin"} if GW else {},
+        timeout=30,
+    )
     if st != 200 or not isinstance(body, dict):
         return ""
     for s in body.get("subscriptions", []):
@@ -125,8 +137,13 @@ def _slack_channel(tok: str) -> str:
     discovery live_matrix uses, so this runs on a stock .env with no extra setup."""
     if env("SLACK_TEST_CHANNEL"):
         return env("SLACK_TEST_CHANNEL")
-    _, lst = http("GET", "https://slack.com/api/conversations.list?types=public_channel&limit=200",
-                  None, {"Authorization": f"Bearer {tok}"}, timeout=20)
+    _, lst = http(
+        "GET",
+        "https://slack.com/api/conversations.list?types=public_channel&limit=200",
+        None,
+        {"Authorization": f"Bearer {tok}"},
+        timeout=20,
+    )
     member = [c for c in (lst.get("channels", []) if isinstance(lst, dict) else []) if c.get("is_member")]
     return member[0]["id"] if member else _channel_from_subscriptions("slack")
 
@@ -139,8 +156,9 @@ def _discord_channel(tok: str) -> str:
     _, guilds = http("GET", "https://discord.com/api/v10/users/@me/guilds", None, dh, timeout=20)
     if not isinstance(guilds, list) or not guilds:
         return _channel_from_subscriptions("discord")
-    _, chans = http("GET", f"https://discord.com/api/v10/guilds/{guilds[0]['id']}/channels",
-                    None, dh, timeout=20)
+    _, chans = http(
+        "GET", f"https://discord.com/api/v10/guilds/{guilds[0]['id']}/channels", None, dh, timeout=20
+    )
     text = [c for c in (chans if isinstance(chans, list) else []) if c.get("type") == 0]
     return text[0]["id"] if text else ""
 
@@ -154,8 +172,12 @@ def check_slack(marker: str):
     if st != 200:
         return FAIL, f"/invoke HTTP {st}"
     time.sleep(4)
-    _, hist = http("GET", f"https://slack.com/api/conversations.history?channel={chan}&limit=25",
-                   None, {"Authorization": f"Bearer {tok}"})
+    _, hist = http(
+        "GET",
+        f"https://slack.com/api/conversations.history?channel={chan}&limit=25",
+        None,
+        {"Authorization": f"Bearer {tok}"},
+    )
     if not isinstance(hist, dict) or not hist.get("ok"):
         return FAIL, f"conversations.history: {hist.get('error') if isinstance(hist, dict) else hist}"
     for m in hist.get("messages", []):
@@ -173,8 +195,12 @@ def check_discord(marker: str):
     if st != 200:
         return FAIL, f"/invoke HTTP {st}"
     time.sleep(4)
-    code, msgs = http("GET", f"https://discord.com/api/v10/channels/{chan}/messages?limit=25",
-                      None, {"Authorization": f"Bot {tok}"})
+    code, msgs = http(
+        "GET",
+        f"https://discord.com/api/v10/channels/{chan}/messages?limit=25",
+        None,
+        {"Authorization": f"Bot {tok}"},
+    )
     if not isinstance(msgs, list):
         # The READBACK was refused, which says nothing about whether the send worked. This bot
         # token gets 403 (code 1010) on the message-history routes — a missing scope on the app,
@@ -182,8 +208,10 @@ def check_discord(marker: str):
         # believes" that made live_matrix useless for cron/poll, so report it as unverifiable and
         # name the reason. The server's own log settles it: `deliver via=direct channel=discord`.
         detail = msgs.get("message") if isinstance(msgs, dict) else str(msgs)[:80]
-        return SENT, (f"sent; readback refused by Discord (HTTP {code}: {detail}) — needs the "
-                      "Read Message History scope. Confirm with: make ce-logs GREP=deliver")
+        return SENT, (
+            f"sent; readback refused by Discord (HTTP {code}: {detail}) — needs the "
+            "Read Message History scope. Confirm with: make ce-logs GREP=deliver"
+        )
     for m in msgs:
         if marker in (m.get("content") or ""):
             return OK, "read back out of the channel"
@@ -209,8 +237,9 @@ def check_web(marker: str):
     if st != 200:
         return FAIL, f"/invoke HTTP {st}"
     # No gw: origin in a real web thread; the server falls back to the web channel and mails it.
-    st2, inbox = http("GET", f"{SERVER}/api/events/inbox?thread_id={thread}", None,
-                      {"X-Gateway-Token": GW} if GW else {})
+    st2, inbox = http(
+        "GET", f"{SERVER}/api/events/inbox?thread_id={thread}", None, {"X-Gateway-Token": GW} if GW else {}
+    )
     if st2 != 200 or not isinstance(inbox, dict):
         return FAIL, f"/api/events/inbox HTTP {st2}"
     for m in inbox.get("messages", []):
@@ -219,8 +248,7 @@ def check_web(marker: str):
     return FAIL, "fired, but nothing reached the browser's mailbox"
 
 
-CHECKS = {"web": check_web, "slack": check_slack, "discord": check_discord,
-          "telegram": check_telegram}
+CHECKS = {"web": check_web, "slack": check_slack, "discord": check_discord, "telegram": check_telegram}
 
 
 def main() -> int:
@@ -249,8 +277,10 @@ def main() -> int:
     bad = [n for n, s in results.items() if s == FAIL]
     unverifiable = [n for n, s in results.items() if s == SENT]
     skipped = [n for n, s in results.items() if s == SKIP]
-    print(f"  {sum(1 for s in results.values() if s == OK)} verified · "
-          f"{len(unverifiable)} sent-but-unverifiable · {len(skipped)} skipped · {len(bad)} failed")
+    print(
+        f"  {sum(1 for s in results.values() if s == OK)} verified · "
+        f"{len(unverifiable)} sent-but-unverifiable · {len(skipped)} skipped · {len(bad)} failed"
+    )
     if unverifiable:
         print(f"  \033[33mnot proof:\033[0m {', '.join(unverifiable)} — the API offers no readback")
     if skipped:

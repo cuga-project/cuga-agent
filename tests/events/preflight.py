@@ -65,10 +65,14 @@ def check_watsonx():
     m = _need("WATSONX_APIKEY")
     if m:
         return None, f"skip — no {m[0]}"
-    code, body = _http("https://iam.cloud.ibm.com/identity/token", method="POST",
-                       headers={"Content-Type": "application/x-www-form-urlencoded"},
-                       data=("grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey="
-                             + os.environ["WATSONX_APIKEY"]).encode())
+    code, body = _http(
+        "https://iam.cloud.ibm.com/identity/token",
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=(
+            "grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=" + os.environ["WATSONX_APIKEY"]
+        ).encode(),
+    )
     if code == 200 and isinstance(body, dict) and body.get("access_token"):
         return True, "IAM token minted (watsonx apikey valid)"
     return False, f"IAM HTTP {code}: {str(body)[:120]}"
@@ -84,9 +88,12 @@ def check_activepieces():
     email, pw = os.environ.get("AP_EMAIL"), os.environ.get("AP_PASSWORD")
     if not (email and pw):
         return True, f"reachable at {base} (no AP_EMAIL/PASSWORD to test auth)"
-    code, body = _http(f"{base}/api/v1/authentication/sign-in", method="POST",
-                       headers={"Content-Type": "application/json"},
-                       data={"email": email, "password": pw})
+    code, body = _http(
+        f"{base}/api/v1/authentication/sign-in",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        data={"email": email, "password": pw},
+    )
     if not (code < 300 and isinstance(body, dict) and body.get("token")):
         return False, f"sign-in HTTP {code}: {str(body)[:120]}"
     # The container's baked AP_FRONTEND_URL must RESOLVE: the worker uploads every flow run's
@@ -98,16 +105,20 @@ def check_activepieces():
         import json as _j
         import socket
         import subprocess
-        insp = subprocess.run(["podman", "inspect", "activepieces"],
-                              capture_output=True, text=True, timeout=10)
+
+        insp = subprocess.run(
+            ["podman", "inspect", "activepieces"], capture_output=True, text=True, timeout=10
+        )
         envs = _j.loads(insp.stdout)[0]["Config"]["Env"] if insp.returncode == 0 else []
         front = next((e.split("=", 1)[1] for e in envs if e.startswith("AP_FRONTEND_URL=")), "")
         host = front.split("://", 1)[-1].split("/", 1)[0]
         if host:
             socket.getaddrinfo(host, 443)
     except socket.gaierror:
-        return False, (f"baked AP_FRONTEND_URL is DEAD ({host}) — every flow RUN fails "
-                       f"(INTERNAL_ERROR) though arming works. Fix: `make ap` then `make channels`")
+        return False, (
+            f"baked AP_FRONTEND_URL is DEAD ({host}) — every flow RUN fails "
+            f"(INTERNAL_ERROR) though arming works. Fix: `make ap` then `make channels`"
+        )
     except Exception:  # noqa: BLE001 — no podman / inspect failed: don't fail the check on tooling
         pass
     return True, f"reachable + authenticated (project {body.get('projectId', '?')[:12]})"
@@ -129,9 +140,11 @@ def check_telegram():
     err, pending = w.get("last_error_message"), int(w.get("pending_update_count") or 0)
     recent = time.time() - int(w.get("last_error_date") or 0) < 1800
     if err and (recent or pending):
-        return False, (f"bot @{u.get('username')} OK but INBOUND BROKEN — webhook "
-                       f"{str(w.get('url'))[:48]}… → “{err}” ({pending} update(s) stuck). "
-                       f"The tunnel URL changed: run `make channels`")
+        return False, (
+            f"bot @{u.get('username')} OK but INBOUND BROKEN — webhook "
+            f"{str(w.get('url'))[:48]}… → “{err}” ({pending} update(s) stuck). "
+            f"The tunnel URL changed: run `make channels`"
+        )
     return True, f"bot @{u.get('username')} (id {u.get('id')}) · webhook healthy ({pending} pending)"
 
 
@@ -139,8 +152,9 @@ def check_discord():
     tok = os.environ.get("DISCORD_BOT_TOKEN")
     if not tok:
         return None, "skip — no DISCORD_BOT_TOKEN"
-    code, body = _http("https://discord.com/api/v10/users/@me",
-                       headers={"Authorization": f"Bot {tok}"}, timeout=15)
+    code, body = _http(
+        "https://discord.com/api/v10/users/@me", headers={"Authorization": f"Bot {tok}"}, timeout=15
+    )
     if code == 200 and isinstance(body, dict) and body.get("id"):
         return True, f"bot {body.get('username')}#{body.get('discriminator', '')} (id {body.get('id')})"
     return False, f"users/@me HTTP {code}: {str(body)[:120]}"
@@ -150,10 +164,12 @@ def check_slack():
     tok = os.environ.get("SLACK_BOT_TOKEN")
     if not tok:
         return None, "skip — no SLACK_BOT_TOKEN"
-    code, body = _http("https://slack.com/api/auth.test", method="POST",
-                       headers={"Authorization": f"Bearer {tok}",
-                                "Content-Type": "application/x-www-form-urlencoded"},
-                       data=b"")
+    code, body = _http(
+        "https://slack.com/api/auth.test",
+        method="POST",
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/x-www-form-urlencoded"},
+        data=b"",
+    )
     if code == 200 and isinstance(body, dict) and body.get("ok"):
         return True, f"team '{body.get('team')}' as {body.get('user')} (bot id {body.get('bot_id', '?')})"
     err = body.get("error") if isinstance(body, dict) else body
@@ -164,8 +180,9 @@ def check_box():
     tok = os.environ.get("BOX_DEV_TOKEN")
     if not tok:
         return None, "skip — no BOX_DEV_TOKEN (dev token expires ~60 min; regenerate)"
-    code, body = _http("https://api.box.com/2.0/users/me",
-                       headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+    code, body = _http(
+        "https://api.box.com/2.0/users/me", headers={"Authorization": f"Bearer {tok}"}, timeout=15
+    )
     if code == 200 and isinstance(body, dict) and body.get("id"):
         return True, f"{body.get('name')} <{body.get('login')}> — dev token OK (⏳ ~60 min)"
     if code == 401:
@@ -177,12 +194,16 @@ def check_github():
     tok = os.environ.get("GITHUB_TOKEN")
     if not tok:
         return None, "skip — no GITHUB_TOKEN (a PAT here auto-connects github on startup)"
-    code, body = _http("https://api.github.com/user",
-                       headers={"Authorization": f"token {tok}",
-                                "Accept": "application/vnd.github+json"}, timeout=15)
+    code, body = _http(
+        "https://api.github.com/user",
+        headers={"Authorization": f"token {tok}", "Accept": "application/vnd.github+json"},
+        timeout=15,
+    )
     if code == 200 and isinstance(body, dict) and body.get("login"):
-        return True, (f"PAT valid as {body.get('login')} — note: PR/issue triggers also need "
-                      f"Webhooks:R/W (fine-grained PAT) or admin:repo_hook (classic)")
+        return True, (
+            f"PAT valid as {body.get('login')} — note: PR/issue triggers also need "
+            f"Webhooks:R/W (fine-grained PAT) or admin:repo_hook (classic)"
+        )
     if code == 401:
         return False, "401 bad credentials — PAT invalid/expired (regenerate + reconnect github)"
     return False, f"user HTTP {code}: {str(body)[:120]}"
@@ -193,8 +214,9 @@ def check_mcp():
     apps = ("finance", "geo", "web", "knowledge", "code", "local", "text")
     up = []
     for a in apps:
-        code, _ = _http(f"https://cuga-apps-mcp-{a}.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp",
-                        timeout=20)
+        code, _ = _http(
+            f"https://cuga-apps-mcp-{a}.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp", timeout=20
+        )
         if code and code < 500:
             up.append(a)
     if not up:
@@ -203,8 +225,13 @@ def check_mcp():
 
 
 CHECKS = {
-    "watsonx": check_watsonx, "activepieces": check_activepieces, "telegram": check_telegram,
-    "discord": check_discord, "slack": check_slack, "box": check_box, "github": check_github,
+    "watsonx": check_watsonx,
+    "activepieces": check_activepieces,
+    "telegram": check_telegram,
+    "discord": check_discord,
+    "slack": check_slack,
+    "box": check_box,
+    "github": check_github,
     "mcp": check_mcp,
 }
 
@@ -218,7 +245,8 @@ def main(argv) -> int:
     for name in want:
         fn = CHECKS.get(name)
         if not fn:
-            print(f"  ?  {name}: unknown check"); continue
+            print(f"  ?  {name}: unknown check")
+            continue
         try:
             ok, detail = fn()
         except Exception as e:  # noqa: BLE001

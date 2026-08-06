@@ -39,8 +39,12 @@ def _me(scope):
 
 def _concierge(text, scope):
     # act as a specific user via X-User-Id (tenant/instance default)
-    c, r = _req("POST", "/api/concierge", {"text": text, "thread_id": f"web:{scope}"},
-                headers={"X-User-Id": scope.split("/")[-1]})
+    c, r = _req(
+        "POST",
+        "/api/concierge",
+        {"text": text, "thread_id": f"web:{scope}"},
+        headers={"X-User-Id": scope.split("/")[-1]},
+    )
     return json.dumps(r.get("reply", r))
 
 
@@ -56,10 +60,13 @@ def main() -> int:
     print("  concierge as alice (capabilities)…")
     cap_alice = _concierge("what can you do for me?", "default/default/alice")
     print("   alice sees:", cap_alice[:180])
-    checks.append(("perms: alice does NOT see restricted market_briefer",
-                   "market_briefer" not in cap_alice))
-    checks.append(("perms: alice sees an open agent (pricebot/geobot/papers)",
-                   any(a in cap_alice for a in ("pricebot", "geobot", "papers", "weatherbot"))))
+    checks.append(("perms: alice does NOT see restricted market_briefer", "market_briefer" not in cap_alice))
+    checks.append(
+        (
+            "perms: alice sees an open agent (pricebot/geobot/papers)",
+            any(a in cap_alice for a in ("pricebot", "geobot", "papers", "weatherbot")),
+        )
+    )
     print("  concierge as admin (capabilities)…")
     cap_admin = _concierge("what can you do for me?", "default/default/admin")
     checks.append(("perms: admin DOES see market_briefer", "market_briefer" in cap_admin))
@@ -68,14 +75,20 @@ def main() -> int:
     _, lk = _req("POST", "/api/events/link/telegram", {"scope": "default/default/alice"})
     token = lk.get("token")
     checks.append(("link: token issued from profile", bool(token)))
-    env = {"source": {"type": "channel", "name": "telegram", "thread_id": "gw:telegram:12345"},
-           "event": {"kind": "message", "payload": {}}, "text": f"/start {token}",
-           "agent": "pricebot", "deliver": False}
+    env = {
+        "source": {"type": "channel", "name": "telegram", "thread_id": "gw:telegram:12345"},
+        "event": {"kind": "message", "payload": {}},
+        "text": f"/start {token}",
+        "agent": "pricebot",
+        "deliver": False,
+    }
     _, redeemed = _req("POST", "/invoke", env, headers={"X-Gateway-Token": TOKEN})
     checks.append(("link: /start <token> binds the telegram id", redeemed.get("linked") is True))
     alice2 = _me("default/default/alice")
-    linked = any(l.get("channel") == "telegram" and l.get("native_id") == "12345"
-                 for l in alice2.get("linked_channels", []))
+    linked = any(
+        link.get("channel") == "telegram" and link.get("native_id") == "12345"
+        for link in alice2.get("linked_channels", [])
+    )
     checks.append(("link: profile now shows the linked telegram id", linked))
 
     print("\n---")

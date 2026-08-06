@@ -33,21 +33,21 @@ from dataclasses import dataclass, field
 try:
     from . import classify, triggers
 except ImportError:  # flat load (offline tests put the events dir on sys.path)
-    import classify          # type: ignore
-    import triggers          # type: ignore
+    import classify  # type: ignore
+    import triggers  # type: ignore
 
 
 @dataclass
 class FlowSpec:
-    kind: str = ""                      # "push" | "cron" | "poll" | "now" | ""
-    source: str = ""                    # integration app (push)
-    event: str = ""                     # canonical trigger event (push)
-    config: dict = field(default_factory=dict)   # slot values (repo/label/folder/…)
+    kind: str = ""  # "push" | "cron" | "poll" | "now" | ""
+    source: str = ""  # integration app (push)
+    event: str = ""  # canonical trigger event (push)
+    config: dict = field(default_factory=dict)  # slot values (repo/label/folder/…)
     cadence: dict = field(default_factory=dict)  # {"interval_seconds": n} | {"cron": "…"}
-    confidence: str = "none"            # "high" | "ambiguous" | "none"
-    ask: str = ""                       # the ONE question that completes a high-confidence spec
-    missing: str = ""                   # which slot the ask is for
-    candidates: tuple = ()              # (app, event) hits, best first (ambiguous diagnostics)
+    confidence: str = "none"  # "high" | "ambiguous" | "none"
+    ask: str = ""  # the ONE question that completes a high-confidence spec
+    missing: str = ""  # which slot the ask is for
+    candidates: tuple = ()  # (app, event) hits, best first (ambiguous diagnostics)
 
     @property
     def armable(self) -> bool:
@@ -59,13 +59,33 @@ class FlowSpec:
 # unquoted fallbacks are guarded so filler words never become config ("label an email" must not
 # yield label="an email" — that exact bug shipped a garbage value to Gmail's trigger).
 _QUOTED = r"['\"‘’“”]([\w][\w .\-/]{0,38})['\"‘’“”]"
-_STOP = {"an", "a", "the", "my", "this", "that", "it", "email", "emails", "message", "messages",
-         "is", "was", "gets", "new", "file", "files", "in", "on", "with"}
+_STOP = {
+    "an",
+    "a",
+    "the",
+    "my",
+    "this",
+    "that",
+    "it",
+    "email",
+    "emails",
+    "message",
+    "messages",
+    "is",
+    "was",
+    "gets",
+    "new",
+    "file",
+    "files",
+    "in",
+    "on",
+    "with",
+}
 
 
 def _x_repo(t: str) -> str:
     m = re.search(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b", t)
-    if m and "." not in m.group(0).split("/")[0]:       # skip URLs ("github.com/foo") + filenames
+    if m and "." not in m.group(0).split("/")[0]:  # skip URLs ("github.com/foo") + filenames
         return m.group(0)
     return ""
 
@@ -110,10 +130,10 @@ def _x_yt_channel(t: str) -> str:
     m = re.search(r"(https?://(?:www\.)?youtube\.com/[^\s,]+)", t, re.I)
     if m:
         return m.group(1).rstrip(".,;")
-    m = re.search(r"(@[A-Za-z0-9_.-]{2,40})", t)          # @Fireship
+    m = re.search(r"(@[A-Za-z0-9_.-]{2,40})", t)  # @Fireship
     if m:
         return m.group(1)
-    m = re.search(r"\b(UC[0-9A-Za-z_-]{20,24})\b", t)     # raw channel id
+    m = re.search(r"\b(UC[0-9A-Za-z_-]{20,24})\b", t)  # raw channel id
     return m.group(1) if m else ""
 
 
@@ -137,10 +157,18 @@ def _x_rss(t: str) -> str:
     return m.group(1).rstrip(".,;") if m else ""
 
 
-_EXTRACT = {"repo": _x_repo, "label": _x_label, "channel": _x_channel,
-            "emoji": _x_emoji, "folder": _x_folder, "pattern": _x_pattern,
-            "yt_channel": _x_yt_channel, "board": _x_board, "calendar": _x_calendar,
-            "rss_feed_url": _x_rss}
+_EXTRACT = {
+    "repo": _x_repo,
+    "label": _x_label,
+    "channel": _x_channel,
+    "emoji": _x_emoji,
+    "folder": _x_folder,
+    "pattern": _x_pattern,
+    "yt_channel": _x_yt_channel,
+    "board": _x_board,
+    "calendar": _x_calendar,
+    "rss_feed_url": _x_rss,
+}
 
 
 def extract_slots(app: str, event: str, text: str) -> dict:
@@ -197,27 +225,36 @@ def resolve(text: str) -> FlowSpec:
     row = triggers.get(best_app, best_event)
     if row is None:
         return FlowSpec(kind="push", confidence="ambiguous", candidates=tuple(cands))
-    spec = FlowSpec(kind="push", source=row.app, event=row.event,
-                    config=extract_slots(row.app, row.event, t), candidates=tuple(cands))
+    spec = FlowSpec(
+        kind="push",
+        source=row.app,
+        event=row.event,
+        config=extract_slots(row.app, row.event, t),
+        candidates=tuple(cands),
+    )
     # three demotions to ambiguous (→ the LLM path), in honesty order:
     #  1. no explicit standing-flow marker — classify's loose PUSH heuristic isn't enough to ACT on
     #  2. several apps' trigger phrases hit and the winner isn't NAMED in the sentence
     #  3. another app's vocabulary appears ("…repo or inbox…") even if its phrases didn't match
-    if (not _STRONG.search(t)
-            or (len(apps_hit) > 1 and not re.search(rf"\b{re.escape(best_app)}\b", t, re.I))
-            or any(a != row.app and rx.search(t) for a, rx in _MARKERS.items())):
+    if (
+        not _STRONG.search(t)
+        or (len(apps_hit) > 1 and not re.search(rf"\b{re.escape(best_app)}\b", t, re.I))
+        or any(a != row.app and rx.search(t) for a, rx in _MARKERS.items())
+    ):
         spec.confidence = "ambiguous"
         return spec
     _row, problem = triggers.validate(spec.source, spec.event, spec.config)
     spec.confidence = "high"
     if problem:
-        spec.ask, spec.missing = problem, next(
-            (s for s in row.slots if triggers.SLOTS[s].required and s not in spec.config), "")
+        spec.ask, spec.missing = (
+            problem,
+            next((s for s in row.slots if triggers.SLOTS[s].required and s not in spec.config), ""),
+        )
     return spec
 
 
 # ── ask-till-legit: pending questions per conversation thread ────────────────────────────────────
-_PENDING: dict[str, tuple[FlowSpec, str, float]] = {}      # thread → (spec, utterance, expires)
+_PENDING: dict[str, tuple[FlowSpec, str, float]] = {}  # thread → (spec, utterance, expires)
 PENDING_TTL_SECS = 10 * 60
 
 
@@ -241,25 +278,31 @@ def fill(spec: FlowSpec, reply: str) -> FlowSpec | None:
     t = (reply or "").strip()
     if not t or not spec.missing:
         return None
-    if classify.classify(t) != "NOW" and len(t.split()) > 4:     # reads as a fresh request
+    if classify.classify(t) != "NOW" and len(t.split()) > 4:  # reads as a fresh request
         return None
     v = _EXTRACT.get(spec.missing, lambda _t: "")(t)
     if not v and len(t.split()) <= 3:
         # a bare answer ("Read-later", "acme/api", "1234") — take the meaningful token
         tok = t.strip(" .!'\"‘’“”")
         if tok and tok.lower() not in _STOP:
-            ok = {"repo": lambda s: "/" in s, "folder": str.isdigit}.get(spec.missing,
-                                                                         lambda s: True)(tok)
+            ok = {"repo": lambda s: "/" in s, "folder": str.isdigit}.get(spec.missing, lambda s: True)(tok)
             v = tok if ok else ""
     if not v:
         return None
     cfg = dict(spec.config)
     cfg[spec.missing] = v
     _row, problem = triggers.validate(spec.source, spec.event, cfg)
-    out = FlowSpec(kind="push", source=spec.source, event=spec.event, config=cfg,
-                   confidence="high", candidates=spec.candidates)
+    out = FlowSpec(
+        kind="push",
+        source=spec.source,
+        event=spec.event,
+        config=cfg,
+        confidence="high",
+        candidates=spec.candidates,
+    )
     if problem:
         out.ask = problem
-        out.missing = next((s for s in (_row.slots if _row else ())
-                            if triggers.SLOTS[s].required and s not in cfg), "")
+        out.missing = next(
+            (s for s in (_row.slots if _row else ()) if triggers.SLOTS[s].required and s not in cfg), ""
+        )
     return out

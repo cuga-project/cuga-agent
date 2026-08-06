@@ -3,6 +3,7 @@
 Pure unit tests for the decision core, the SIGNAL protocol, spec extraction (heuristic path), and the
 store's watch_state round-trip. No network, no server.
 """
+
 import os
 import sys
 
@@ -13,7 +14,7 @@ EVENTS = os.path.abspath(os.path.join(HERE, "..", "..", "src", "cuga", "backend"
 if EVENTS not in sys.path:
     sys.path.insert(0, EVENTS)
 
-import poll_state as ps                     # noqa: E402
+import poll_state as ps  # noqa: E402
 from subscriptions import Subscription, SubscriptionStore  # noqa: E402
 
 
@@ -43,8 +44,16 @@ def test_augment_prompt_per_kind():
 
 # ── Tier 1: threshold ─────────────────────────────────────────────────────────────────────────────
 def _ws(**kw):
-    base = {"subscription_id": "s1", "kind": "fuzzy", "seen_keys": [], "baseline": None,
-            "reset_policy": "ratchet", "value_path": "", "threshold": 0.0, "updated_at": 0.0}
+    base = {
+        "subscription_id": "s1",
+        "kind": "fuzzy",
+        "seen_keys": [],
+        "baseline": None,
+        "reset_policy": "ratchet",
+        "value_path": "",
+        "threshold": 0.0,
+        "updated_at": 0.0,
+    }
     base.update(kw)
     return base
 
@@ -56,24 +65,30 @@ def test_threshold_first_tick_seeds_baseline_no_alert():
 
 def test_threshold_small_move_no_alert():
     d = ps.decide(_ws(kind="threshold", threshold=0.05, baseline=100.0), {"value": 103}, now=1.0)
-    assert d.changed is False and d.state["baseline"] == 100.0    # ratchet keeps baseline until it fires
+    assert d.changed is False and d.state["baseline"] == 100.0  # ratchet keeps baseline until it fires
 
 
 def test_threshold_big_move_alerts_and_ratchets():
     d = ps.decide(_ws(kind="threshold", threshold=0.05, baseline=100.0), {"value": 106}, now=1.0)
-    assert d.changed is True and d.state["baseline"] == 106.0     # re-baselined to the alert value
+    assert d.changed is True and d.state["baseline"] == 106.0  # re-baselined to the alert value
 
 
 def test_threshold_absolute_policy_keeps_fixed_baseline():
-    d = ps.decide(_ws(kind="threshold", threshold=0.05, baseline=100.0, reset_policy="absolute"),
-                  {"value": 130}, now=1.0)
-    assert d.changed is True and d.state["baseline"] == 100.0     # never moves
+    d = ps.decide(
+        _ws(kind="threshold", threshold=0.05, baseline=100.0, reset_policy="absolute"),
+        {"value": 130},
+        now=1.0,
+    )
+    assert d.changed is True and d.state["baseline"] == 100.0  # never moves
 
 
 def test_threshold_per_tick_rebaselines_even_without_alert():
-    d = ps.decide(_ws(kind="threshold", threshold=0.10, baseline=100.0, reset_policy="per_tick"),
-                  {"value": 103}, now=1.0)
-    assert d.changed is False and d.state["baseline"] == 103.0    # follows every tick
+    d = ps.decide(
+        _ws(kind="threshold", threshold=0.10, baseline=100.0, reset_policy="per_tick"),
+        {"value": 103},
+        now=1.0,
+    )
+    assert d.changed is False and d.state["baseline"] == 103.0  # follows every tick
 
 
 def test_threshold_non_numeric_signal_no_alert():
@@ -84,7 +99,7 @@ def test_threshold_non_numeric_signal_no_alert():
 # ── Tier 1: identity ───────────────────────────────────────────────────────────────────────────────
 def test_identity_new_keys_alert_and_accumulate():
     d = ps.decide(_ws(kind="identity", seen_keys=["a", "b"]), {"keys": ["b", "c"]}, now=1.0)
-    assert d.changed is True                                      # 'c' is new
+    assert d.changed is True  # 'c' is new
     assert set(d.state["seen_keys"]) == {"a", "b", "c"}
 
 
@@ -144,7 +159,7 @@ async def test_extract_spec_defaults_fuzzy():
 def test_watch_state_store_roundtrip_and_cascade_delete():
     st = SubscriptionStore(":memory:")
     st.upsert(Subscription(id="s1", mode="POLL", target_agent="cuga", backend="native"))
-    assert st.get_watch_state("s1") is None                       # none until seeded
+    assert st.get_watch_state("s1") is None  # none until seeded
     st.set_watch_state(ps.spec_to_state("s1", {"kind": "threshold", "threshold": 0.05}))
     ws = st.get_watch_state("s1")
     assert ws["kind"] == "threshold" and ws["threshold"] == 0.05 and ws["seen_keys"] == []

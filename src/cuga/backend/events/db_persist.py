@@ -46,7 +46,7 @@ import time
 
 log = logging.getLogger("events.db_persist")
 
-_SNAPSHOT_INTERVAL = 15.0        # seconds between change checks; a lost tail is at most this long
+_SNAPSHOT_INTERVAL = 15.0  # seconds between change checks; a lost tail is at most this long
 
 
 def backup_path() -> str:
@@ -63,13 +63,17 @@ def _usable(local: str, backup: str) -> bool:
     # sqlite3.connect, which happily creates a FILE named "postgresql://…" in the working directory
     # and then reports success — durability that silently protects nothing.
     from . import db as _db
+
     if _db.is_postgres(local):
         return False
     if not backup or local == ":memory:" or not local:
         return False
     if os.path.abspath(local) == os.path.abspath(backup):
-        log.error("EVENTS_DB_BACKUP == EVENTS_DB (%s) — refusing to snapshot a file onto itself; "
-                  "the live DB must stay on LOCAL disk and the backup on the mounted store", local)
+        log.error(
+            "EVENTS_DB_BACKUP == EVENTS_DB (%s) — refusing to snapshot a file onto itself; "
+            "the live DB must stay on LOCAL disk and the backup on the mounted store",
+            local,
+        )
         return False
     return True
 
@@ -102,12 +106,15 @@ def restore(local: str, backup: str = "") -> bool:
         finally:
             src.close()
         n = _count_subscriptions(local)
-        log.info("restored events DB from %s (%s bytes, %s subscription(s))",
-                 backup, os.path.getsize(local), n if n is not None else "?")
+        log.info(
+            "restored events DB from %s (%s bytes, %s subscription(s))",
+            backup,
+            os.path.getsize(local),
+            n if n is not None else "?",
+        )
         return True
     except Exception as e:  # noqa: BLE001 — a bad snapshot must not stop the service booting
-        log.warning("could not restore from %s: %s: %s — starting fresh",
-                    backup, type(e).__name__, e)
+        log.warning("could not restore from %s: %s: %s — starting fresh", backup, type(e).__name__, e)
         return False
 
 
@@ -121,17 +128,17 @@ def snapshot(local: str, backup: str = "") -> bool:
         os.makedirs(os.path.dirname(backup) or ".", exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(backup) or ".", suffix=".snap")
         os.close(fd)
-        os.unlink(tmp)                     # sqlite wants to create it itself
+        os.unlink(tmp)  # sqlite wants to create it itself
         src = sqlite3.connect(f"file:{local}?mode=ro", uri=True)
         try:
             dst = sqlite3.connect(tmp)
             try:
-                src.backup(dst)            # online backup API — consistent under concurrent writes
+                src.backup(dst)  # online backup API — consistent under concurrent writes
             finally:
                 dst.close()
         finally:
             src.close()
-        os.replace(tmp, backup)            # atomic swap — never a truncated backup
+        os.replace(tmp, backup)  # atomic swap — never a truncated backup
         tmp = ""
         return True
     except Exception as e:  # noqa: BLE001 — persistence must never take the service down
@@ -164,8 +171,7 @@ def _fingerprint(path: str) -> tuple:
         return (0, 0)
 
 
-async def run_snapshot_loop(local: str, backup: str = "",
-                            interval: float = _SNAPSHOT_INTERVAL) -> None:
+async def run_snapshot_loop(local: str, backup: str = "", interval: float = _SNAPSHOT_INTERVAL) -> None:
     """Background task: snapshot whenever the live DB has actually changed.
 
     Change-detected rather than unconditional, because the durable store is object storage and a
@@ -187,10 +193,13 @@ async def run_snapshot_loop(local: str, backup: str = "",
                 t0 = time.time()
                 if snapshot(local, backup):
                     last = cur
-                    log.info("db snapshot written (%s bytes, %.0f ms)",
-                             os.path.getsize(backup), (time.time() - t0) * 1000)
+                    log.info(
+                        "db snapshot written (%s bytes, %.0f ms)",
+                        os.path.getsize(backup),
+                        (time.time() - t0) * 1000,
+                    )
         except asyncio.CancelledError:
-            snapshot(local, backup)        # final flush on shutdown
+            snapshot(local, backup)  # final flush on shutdown
             raise
         except Exception as e:  # noqa: BLE001 — the loop must survive a transient store outage
             log.warning("snapshot loop: %s: %s", type(e).__name__, e)
@@ -203,18 +212,33 @@ def status(local: str, backup: str = "") -> dict:
     # Postgres is durable by construction — no snapshot, no mount, nothing to configure. Reporting
     # "durable: false" here because EVENTS_DB_BACKUP is unset would be exactly backwards.
     if _db.is_postgres(local):
-        return {"durable": True, "backend": "postgres", "mechanism": "database",
-                "note": "state lives in PostgreSQL — an instance replace is a non-event"}
+        return {
+            "durable": True,
+            "backend": "postgres",
+            "mechanism": "database",
+            "note": "state lives in PostgreSQL — an instance replace is a non-event",
+        }
     backup = backup or backup_path()
     if not backup:
-        return {"durable": False, "backend": "sqlite",
-                "reason": "SQLite with no EVENTS_DB_BACKUP — armed flows are lost when the instance "
-                          "is replaced. Point EVENTS_DB at a postgresql:// URL, or set a backup."}
+        return {
+            "durable": False,
+            "backend": "sqlite",
+            "reason": "SQLite with no EVENTS_DB_BACKUP — armed flows are lost when the instance "
+            "is replaced. Point EVENTS_DB at a postgresql:// URL, or set a backup.",
+        }
     if not _usable(local, backup):
-        return {"durable": False, "backend": "sqlite",
-                "reason": f"EVENTS_DB_BACKUP={backup!r} is not usable with EVENTS_DB={local!r}"}
+        return {
+            "durable": False,
+            "backend": "sqlite",
+            "reason": f"EVENTS_DB_BACKUP={backup!r} is not usable with EVENTS_DB={local!r}",
+        }
     exists = os.path.exists(backup)
-    return {"durable": True, "backend": "sqlite", "mechanism": "snapshot", "backup": backup,
-            "snapshot_exists": exists,
-            "snapshot_bytes": os.path.getsize(backup) if exists else 0,
-            "subscriptions_in_snapshot": _count_subscriptions(backup) if exists else 0}
+    return {
+        "durable": True,
+        "backend": "sqlite",
+        "mechanism": "snapshot",
+        "backup": backup,
+        "snapshot_exists": exists,
+        "snapshot_bytes": os.path.getsize(backup) if exists else 0,
+        "subscriptions_in_snapshot": _count_subscriptions(backup) if exists else 0,
+    }

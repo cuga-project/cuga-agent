@@ -26,25 +26,25 @@ import os
 import sys
 import tempfile
 
-_EV = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                   "..", "..", "src", "cuga", "backend", "events"))
+_EV = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
 if "events" not in sys.modules:
-    _spec = importlib.util.spec_from_file_location("events", os.path.join(_EV, "__init__.py"),
-                                                   submodule_search_locations=[_EV])
+    _spec = importlib.util.spec_from_file_location(
+        "events", os.path.join(_EV, "__init__.py"), submodule_search_locations=[_EV]
+    )
     _pkg = importlib.util.module_from_spec(_spec)
     sys.modules["events"] = _pkg
     _spec.loader.exec_module(_pkg)
 
-import pytest                                     # noqa: E402
-from fastapi import FastAPI                       # noqa: E402
-from fastapi.testclient import TestClient         # noqa: E402
-from events.app import register_events_routes     # noqa: E402
+import pytest  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from events.app import register_events_routes  # noqa: E402
 from events.subscriptions import Subscription, SubscriptionStore  # noqa: E402
-from events.runtime import DEFAULT_SCOPE          # noqa: E402
+from events.runtime import DEFAULT_SCOPE  # noqa: E402
 
-MINE = DEFAULT_SCOPE                # whatever an unauthenticated local caller resolves to
-THEIRS = "other/other/bob"          # a different principal — must be invisible to MINE
-TENANT, _, ME = MINE.split("/")     # ("default", "default", "local") — don't hardcode the user
+MINE = DEFAULT_SCOPE  # whatever an unauthenticated local caller resolves to
+THEIRS = "other/other/bob"  # a different principal — must be invisible to MINE
+TENANT, _, ME = MINE.split("/")  # ("default", "default", "local") — don't hardcode the user
 
 
 # ── doubles ───────────────────────────────────────────────────────────────────
@@ -89,15 +89,33 @@ class _FakeEngine:
 
 
 def _sub(sub_id="s1", tenant=MINE, **kw):
-    d = dict(id=sub_id, mode="CRON", target_agent="papers", tenant=tenant,
-             deliver_to=["telegram"], prompt="arxiv MoE", status="active",
-             ap_flow_id="flow-1", flow_name="cron-papers", source_connector="cron")
+    d = dict(
+        id=sub_id,
+        mode="CRON",
+        target_agent="papers",
+        tenant=tenant,
+        deliver_to=["telegram"],
+        prompt="arxiv MoE",
+        status="active",
+        ap_flow_id="flow-1",
+        flow_name="cron-papers",
+        source_connector="cron",
+    )
     d.update(kw)
     return Subscription(**d)
 
 
-def _client(subs=(), *, engine=None, concierge=None, identity=None, users=None,
-            runtime=None, gateway_token=None, store=True):
+def _client(
+    subs=(),
+    *,
+    engine=None,
+    concierge=None,
+    identity=None,
+    users=None,
+    runtime=None,
+    gateway_token=None,
+    store=True,
+):
     """A TestClient over a real (file-backed) store so reads work across TestClient's threadpool."""
     st = None
     if store:
@@ -105,11 +123,18 @@ def _client(subs=(), *, engine=None, concierge=None, identity=None, users=None,
         w = SubscriptionStore(db)
         for s in subs:
             w.upsert(s)
-        st = SubscriptionStore(db)                # fresh handle: cross-thread read
+        st = SubscriptionStore(db)  # fresh handle: cross-thread read
     app = FastAPI()
-    register_events_routes(app, runtime=runtime or _Runtime(), store=st, concierge=concierge,
-                           engine=engine, identity=identity, users=users,
-                           gateway_token=gateway_token)
+    register_events_routes(
+        app,
+        runtime=runtime or _Runtime(),
+        store=st,
+        concierge=concierge,
+        engine=engine,
+        identity=identity,
+        users=users,
+        gateway_token=gateway_token,
+    )
     return TestClient(app), st
 
 
@@ -126,40 +151,64 @@ def test_invoke_rejects_missing_gateway_token():
     """/invoke runs an agent on a caller-supplied scope. With a token configured, an unsigned call
     is 401 — before the envelope is even parsed."""
     c, _ = _client(gateway_token="s3cret")
-    r = c.post("/invoke", json={"agent": "pricebot", "text": "hi",
-                               "source": {"type": "time", "name": "cron"},
-                               "event": {"kind": "runonce"}})
+    r = c.post(
+        "/invoke",
+        json={
+            "agent": "pricebot",
+            "text": "hi",
+            "source": {"type": "time", "name": "cron"},
+            "event": {"kind": "runonce"},
+        },
+    )
     assert r.status_code == 401
     assert "X-Gateway-Token" in r.json()["error"]
 
 
 def test_invoke_accepts_correct_gateway_token():
     c, _ = _client(gateway_token="s3cret")
-    r = c.post("/invoke", headers={"X-Gateway-Token": "s3cret"},
-               json={"agent": "pricebot", "text": "price of btc",
-                     "source": {"type": "time", "name": "cron"},
-                     "event": {"kind": "runonce"}})
+    r = c.post(
+        "/invoke",
+        headers={"X-Gateway-Token": "s3cret"},
+        json={
+            "agent": "pricebot",
+            "text": "price of btc",
+            "source": {"type": "time", "name": "cron"},
+            "event": {"kind": "runonce"},
+        },
+    )
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
 def test_invoke_slash_outranks_channel_watchers():
     """A slash command typed in a WATCHED chat must reach the concierge — caught live: an armed
     telegram link-watcher (pattern-less) consumed "/cron …" and asked for a URL to summarize."""
-    watcher = Subscription(id="w-tg", mode="PUSH", target_agent="cuga", source_connector="telegram",
-                           ap_flow_id=None, event="new_channel_message", config={},
-                           thread_id="gw:telegram:123", prompt="summarize the page", dedup_key="w-tg")
+    watcher = Subscription(
+        id="w-tg",
+        mode="PUSH",
+        target_agent="cuga",
+        source_connector="telegram",
+        ap_flow_id=None,
+        event="new_channel_message",
+        config={},
+        thread_id="gw:telegram:123",
+        prompt="summarize the page",
+        dedup_key="w-tg",
+    )
 
     class _Concierge:
         async def run(self, thread_id, text, principal=None):
             return "ARMED cron for cuga → web."
 
     c, _ = _client([watcher], concierge=_Concierge(), gateway_token="")
-    body = {"agent": "concierge", "thread_id": "gw:telegram:123",
-            "text": "/cron every 2 minutes post the bitcoin price",
-            "source": {"type": "channel", "name": "telegram", "thread_id": "gw:telegram:123"},
-            "event": {"kind": "message", "payload": {}}}
+    body = {
+        "agent": "concierge",
+        "thread_id": "gw:telegram:123",
+        "text": "/cron every 2 minutes post the bitcoin price",
+        "source": {"type": "channel", "name": "telegram", "thread_id": "gw:telegram:123"},
+        "event": {"kind": "message", "payload": {}},
+    }
     r = c.post("/invoke", json=body)
-    assert r.status_code == 200 and "ARMED" in r.json()["answer"]      # concierge, not the watcher
+    assert r.status_code == 200 and "ARMED" in r.json()["answer"]  # concierge, not the watcher
     # a NON-slash message in the same chat IS consumed by the watcher (unchanged behavior)
     r2 = c.post("/invoke", json={**body, "text": "https://example.com/paper"})
     assert r2.status_code == 200 and "ARMED" not in str(r2.json().get("answer"))
@@ -170,13 +219,18 @@ def test_invoke_expiry_gate_ends_a_bounded_flow():
     schedules can't end themselves, so the FIRST tick past the deadline must delete the
     subscription and skip the agent — and a tick BEFORE the deadline must run normally."""
     import time
-    sub = Subscription(id="pricebot-ttl001", mode="CRON", target_agent="pricebot",
-                       ap_flow_id=None, thread_id="t", prompt="p")
+
+    sub = Subscription(
+        id="pricebot-ttl001", mode="CRON", target_agent="pricebot", ap_flow_id=None, thread_id="t", prompt="p"
+    )
     c, st = _client([sub], gateway_token="")
-    tick = {"agent": "pricebot", "text": "price of btc",
-            "source": {"type": "time", "name": "cron"},
-            "event": {"kind": "runonce", "payload": {}},
-            "subscription_id": "pricebot-ttl001"}
+    tick = {
+        "agent": "pricebot",
+        "text": "price of btc",
+        "source": {"type": "time", "name": "cron"},
+        "event": {"kind": "runonce", "payload": {}},
+        "subscription_id": "pricebot-ttl001",
+    }
     # before the deadline → normal run
     r = c.post("/invoke", json={**tick, "expires_at": time.time() + 3600})
     assert r.status_code == 200 and r.json()["answer"] == "42"
@@ -193,24 +247,50 @@ def test_invoke_stateful_poll_gates_delivery_on_change():
     """A native POLL with watch_state: the agent's <<SIGNAL>> is parsed, the delta decided, and the
     reply delivered ONLY when it changed. First tick seeds the baseline (no alert); a big move fires;
     the SIGNAL line is stripped from the human answer either way."""
+
     class _SigRuntime:
         def __init__(self):
             self.value = 100.0
+
         def get_agent(self, agent, scope=""):
             return object()
+
         async def run(self, agent, thread_id, worker_input, scope="", deliver_to=None):
             return f"IBM is at {self.value}.\n<<SIGNAL {{\"value\": {self.value}}}>>"
+
     rt = _SigRuntime()
-    sub = Subscription(id="pricebot-p1", mode="POLL", target_agent="pricebot", backend="native",
-                       source_connector="interval", ap_flow_id=None, thread_id="t",
-                       prompt="check IBM", interval_seconds=120, next_fire=1.0)
+    sub = Subscription(
+        id="pricebot-p1",
+        mode="POLL",
+        target_agent="pricebot",
+        backend="native",
+        source_connector="interval",
+        ap_flow_id=None,
+        thread_id="t",
+        prompt="check IBM",
+        interval_seconds=120,
+        next_fire=1.0,
+    )
     c, st = _client([sub], runtime=rt, gateway_token="")
-    st.set_watch_state({"subscription_id": "pricebot-p1", "kind": "threshold", "seen_keys": [],
-                        "baseline": None, "reset_policy": "ratchet", "value_path": "IBM price",
-                        "threshold": 0.05, "updated_at": 0.0})
-    tick = {"agent": "pricebot", "text": "check IBM",
-            "source": {"type": "time", "name": "poll"},
-            "event": {"kind": "tick", "payload": {}}, "subscription_id": "pricebot-p1"}
+    st.set_watch_state(
+        {
+            "subscription_id": "pricebot-p1",
+            "kind": "threshold",
+            "seen_keys": [],
+            "baseline": None,
+            "reset_policy": "ratchet",
+            "value_path": "IBM price",
+            "threshold": 0.05,
+            "updated_at": 0.0,
+        }
+    )
+    tick = {
+        "agent": "pricebot",
+        "text": "check IBM",
+        "source": {"type": "time", "name": "poll"},
+        "event": {"kind": "tick", "payload": {}},
+        "subscription_id": "pricebot-p1",
+    }
     # first tick → baseline seeded, NOT reported
     b = c.post("/invoke", json=tick).json()
     assert b["poll"]["changed"] is False
@@ -230,23 +310,53 @@ def test_invoke_direct_agent_call_shape():
     """The channel-less direct call: source.type=time + event.kind=runonce. The response must carry
     meta.mcp — that is what the NOW suite asserts on to prove the agent reached a real tool."""
     c, _ = _client(gateway_token="")
-    r = c.post("/invoke", json={"agent": "pricebot", "text": "what is bitcoin worth?",
-                                "source": {"type": "time", "name": "cron"},
-                                "event": {"kind": "runonce", "payload": {}}})
+    r = c.post(
+        "/invoke",
+        json={
+            "agent": "pricebot",
+            "text": "what is bitcoin worth?",
+            "source": {"type": "time", "name": "cron"},
+            "event": {"kind": "runonce", "payload": {}},
+        },
+    )
     assert r.status_code == 200
     b = r.json()
     assert b["ok"] is True and b["agent"] == "pricebot" and b["answer"] == "42"
     assert b["trace_id"] and isinstance(b["meta"]["mcp"], list)
 
 
-@pytest.mark.parametrize("body,why", [
-    ({"agent": "x", "text": "hi", "source": {"type": "carrier-pigeon", "name": "n"},
-      "event": {"kind": "runonce"}}, "source.type"),
-    ({"agent": "x", "text": "hi", "source": {"type": "time", "name": "cron"},
-      "event": {"kind": "telepathy"}}, "event.kind"),
-    ({"agent": "x", "text": "   ", "source": {"type": "channel", "name": "slack"},
-      "event": {"kind": "message"}}, "empty text"),
-])
+@pytest.mark.parametrize(
+    "body,why",
+    [
+        (
+            {
+                "agent": "x",
+                "text": "hi",
+                "source": {"type": "carrier-pigeon", "name": "n"},
+                "event": {"kind": "runonce"},
+            },
+            "source.type",
+        ),
+        (
+            {
+                "agent": "x",
+                "text": "hi",
+                "source": {"type": "time", "name": "cron"},
+                "event": {"kind": "telepathy"},
+            },
+            "event.kind",
+        ),
+        (
+            {
+                "agent": "x",
+                "text": "   ",
+                "source": {"type": "channel", "name": "slack"},
+                "event": {"kind": "message"},
+            },
+            "empty text",
+        ),
+    ],
+)
 def test_invoke_rejects_invalid_envelope(body, why):
     """A malformed envelope is a 400 naming the problem — not a 500, and never a silent no-op."""
     c, _ = _client(gateway_token="")
@@ -260,13 +370,12 @@ def test_concierge_dry_run_plans_without_side_effects():
     """?dry_run=1 runs the deterministic planner: a plan comes back, no flow is armed, and no
     concierge instance is needed."""
     c, st = _client(concierge=None)
-    r = c.post("/api/concierge?dry_run=1",
-               json={"text": "every day at 9am send me the price of bitcoin"})
+    r = c.post("/api/concierge?dry_run=1", json={"text": "every day at 9am send me the price of bitcoin"})
     assert r.status_code == 200
     b = r.json()
     assert b["ok"] is True and b["dry_run"] is True
     assert b["decision"]["mode"] == "CRON"
-    assert st.as_dicts(scope=MINE) == []          # nothing armed
+    assert st.as_dicts(scope=MINE) == []  # nothing armed
 
 
 def test_concierge_live_without_instance_is_501_with_the_plan():
@@ -285,8 +394,7 @@ def test_concierge_live_returns_reply():
             return "Cron flow set up."
 
     c, _ = _client(concierge=_Concierge())
-    r = c.post("/api/concierge", json={"text": "every day at 9am send me bitcoin",
-                                       "thread_id": "web:local"})
+    r = c.post("/api/concierge", json={"text": "every day at 9am send me bitcoin", "thread_id": "web:local"})
     assert r.status_code == 200
     b = r.json()
     assert b["ok"] is True and b["reply"] == "Cron flow set up." and b["scope"] == MINE
@@ -308,22 +416,40 @@ def test_concierge_flow_param_returns_the_armed_ap_flow():
 
     The digest is the question people ask — which pieces, in what order — not AP's raw bookkeeping.
     """
-    ap_flow = {"id": "flow-1", "status": "ENABLED", "version": {"trigger": {
-        "settings": {"pieceName": "@activepieces/piece-schedule",
-                     "triggerName": "cron_expression",
-                     "input": {"cronExpression": "0 9 * * *"}},
-        "nextAction": {"name": "step_1", "displayName": "Invoke CUGA", "type": "PIECE",
-                       "settings": {"pieceName": "@activepieces/piece-http",
-                                    "actionName": "send_request"},
-                       "nextAction": {"name": "step_2", "displayName": "telegram · send",
-                                      "type": "PIECE",
-                                      "settings": {"pieceName": "@activepieces/piece-telegram-bot",
-                                                   "actionName": "send_text_message",
-                                                   "input": {"text": "{{step_1.body.answer}}"}}}}}}}
+    ap_flow = {
+        "id": "flow-1",
+        "status": "ENABLED",
+        "version": {
+            "trigger": {
+                "settings": {
+                    "pieceName": "@activepieces/piece-schedule",
+                    "triggerName": "cron_expression",
+                    "input": {"cronExpression": "0 9 * * *"},
+                },
+                "nextAction": {
+                    "name": "step_1",
+                    "displayName": "Invoke CUGA",
+                    "type": "PIECE",
+                    "settings": {"pieceName": "@activepieces/piece-http", "actionName": "send_request"},
+                    "nextAction": {
+                        "name": "step_2",
+                        "displayName": "telegram · send",
+                        "type": "PIECE",
+                        "settings": {
+                            "pieceName": "@activepieces/piece-telegram-bot",
+                            "actionName": "send_text_message",
+                            "input": {"text": "{{step_1.body.answer}}"},
+                        },
+                    },
+                },
+            }
+        },
+    }
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=_FakeEngine(flow=ap_flow))
+    register_events_routes(
+        app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st), engine=_FakeEngine(flow=ap_flow)
+    )
     c = TestClient(app)
 
     b = c.post("/api/concierge?flow=1", json={"text": "every day at 9am send bitcoin"}).json()
@@ -361,9 +487,15 @@ def test_web_chat_arming_uses_the_resolved_scope_not_default(monkeypatch):
 
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=_FakeEngine(flow={"id": "flow-1", "status": "ENABLED",
-                                                    "version": {"trigger": {"settings": {}}}}))
+    register_events_routes(
+        app,
+        runtime=_Runtime(),
+        store=st,
+        concierge=_ArmingConcierge(st),
+        engine=_FakeEngine(
+            flow={"id": "flow-1", "status": "ENABLED", "version": {"trigger": {"settings": {}}}}
+        ),
+    )
     c = TestClient(app)
 
     # Arm the CORRECT way (resolved principal — what /api/concierge and the fixed /stream both do):
@@ -373,21 +505,27 @@ def test_web_chat_arming_uses_the_resolved_scope_not_default(monkeypatch):
     st.upsert(_sub("stale-local", tenant=_DEFAULT.scope))
 
     body = c.get("/api/events/subscriptions").json()
-    assert body["scope"] == resolved                       # the Studio lists under the resolved scope
+    assert body["scope"] == resolved  # the Studio lists under the resolved scope
     listed = {s["id"] for s in body["subscriptions"]}
     assert "armed-1" in listed, "a resolved-scope flow must be visible in the Studio's flows list"
-    assert "stale-local" not in listed, "a DEFAULT-scoped (old web-chat bug) flow is invisible — the regression"
+    assert "stale-local" not in listed, (
+        "a DEFAULT-scoped (old web-chat bug) flow is invisible — the regression"
+    )
 
 
 def test_concierge_flow_full_returns_the_raw_ap_flow():
     ap_flow = {"id": "flow-1", "status": "ENABLED", "version": {"trigger": {"settings": {}}}}
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=_FakeEngine(flow=ap_flow))
-    b = TestClient(app).post("/api/concierge?flow=full",
-                             json={"text": "every day at 9am send bitcoin"}).json()
-    assert b["flows"][0]["flow"] == ap_flow          # verbatim, not the digest
+    register_events_routes(
+        app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st), engine=_FakeEngine(flow=ap_flow)
+    )
+    b = (
+        TestClient(app)
+        .post("/api/concierge?flow=full", json={"text": "every day at 9am send bitcoin"})
+        .json()
+    )
+    assert b["flows"][0]["flow"] == ap_flow  # verbatim, not the digest
 
 
 def test_concierge_flow_param_reports_a_dangling_flow():
@@ -395,12 +533,13 @@ def test_concierge_flow_param_reports_a_dangling_flow():
     otherwise a caller infers "armed" from a non-empty ap_flow_id, which is the original bug."""
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=_FakeEngine(flow=None))          # AP has no such flow
+    register_events_routes(
+        app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st), engine=_FakeEngine(flow=None)
+    )  # AP has no such flow
     b = TestClient(app).post("/api/concierge?flow=1", json={"text": "arm it"}).json()
     (f,) = b["flows"]
-    assert f["ap_flow_id"] == "flow-1"      # it still claims one
-    assert f["exists_in_ap"] is False       # …but it does not exist
+    assert f["ap_flow_id"] == "flow-1"  # it still claims one
+    assert f["exists_in_ap"] is False  # …but it does not exist
     assert "flow" not in f
 
 
@@ -411,10 +550,9 @@ def test_concierge_flow_param_survives_ap_being_down():
 
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=_Down())
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st), engine=_Down())
     r = TestClient(app).post("/api/concierge?flow=1", json={"text": "arm it"})
-    assert r.status_code == 200                     # the arm is not lost because AP is unreachable
+    assert r.status_code == 200  # the arm is not lost because AP is unreachable
     (f,) = r.json()["flows"]
     assert f["exists_in_ap"] is False and "connection refused" in f["flow_error"]
 
@@ -422,6 +560,7 @@ def test_concierge_flow_param_survives_ap_being_down():
 def test_concierge_flow_param_is_empty_when_nothing_was_armed():
     """A plain question arms nothing, so there is nothing to show. An empty list is the honest
     answer — and so is the case where an existing flow was REUSED rather than created."""
+
     class _Chatty:
         async def run(self, *a, **k):
             return "Bitcoin is about $63,964 USD."
@@ -436,8 +575,7 @@ def test_concierge_without_flow_param_makes_no_ap_call():
     eng = _FakeEngine(flow={"id": "flow-1"})
     st = SubscriptionStore(os.path.join(tempfile.mkdtemp(), "s.db"))
     app = FastAPI()
-    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st),
-                           engine=eng)
+    register_events_routes(app, runtime=_Runtime(), store=st, concierge=_ArmingConcierge(st), engine=eng)
     b = TestClient(app).post("/api/concierge", json={"text": "arm it"}).json()
     assert "flows" not in b
     assert [c for c in eng.calls if c[0] == "get_flow"] == []
@@ -482,31 +620,37 @@ def test_delete_removes_the_ap_flow_and_the_row():
     assert ("delete_flow", "flow-1") in eng.calls
 
 
-@pytest.mark.parametrize("method,path", [
-    ("post", "/api/events/subscriptions/nope/pause"),
-    ("post", "/api/events/subscriptions/nope/resume"),
-    ("delete", "/api/events/subscriptions/nope"),
-    ("get", "/api/events/subscriptions/nope/flow"),
-])
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/api/events/subscriptions/nope/pause"),
+        ("post", "/api/events/subscriptions/nope/resume"),
+        ("delete", "/api/events/subscriptions/nope"),
+        ("get", "/api/events/subscriptions/nope/flow"),
+    ],
+)
 def test_unknown_subscription_is_404(method, path):
     c, _ = _client([_sub()])
     assert getattr(c, method)(path).status_code == 404
 
 
-@pytest.mark.parametrize("method,path", [
-    ("post", "/api/events/subscriptions/s1/pause"),
-    ("post", "/api/events/subscriptions/s1/resume"),
-    ("delete", "/api/events/subscriptions/s1"),
-    ("get", "/api/events/subscriptions/s1/flow"),
-])
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("post", "/api/events/subscriptions/s1/pause"),
+        ("post", "/api/events/subscriptions/s1/resume"),
+        ("delete", "/api/events/subscriptions/s1"),
+        ("get", "/api/events/subscriptions/s1/flow"),
+    ],
+)
 def test_another_principals_subscription_is_404_not_403(method, path):
     """Isolation. 404 rather than 403 — a 403 would confirm the id exists, which leaks across
     tenants. The row must survive an attempted delete."""
     eng = _FakeEngine()
     c, st = _client([_sub(tenant=THEIRS)], engine=eng)
     assert getattr(c, method)(path).status_code == 404
-    assert st.get("s1") is not None                # not deleted
-    assert eng.calls == []                         # AP never touched
+    assert st.get("s1") is not None  # not deleted
+    assert eng.calls == []  # AP never touched
 
 
 def test_subscription_flow_returns_the_live_ap_flow():
@@ -514,8 +658,8 @@ def test_subscription_flow_returns_the_live_ap_flow():
     c, _ = _client([_sub()], engine=eng)
     b = c.get("/api/events/subscriptions/s1/flow").json()
     assert b["ok"] is True
-    assert b["subscription"]["target_agent"] == "papers"    # the CUGA model, as a dict
-    assert b["ap_flow"]["id"] == "flow-1"                   # the live AP flow
+    assert b["subscription"]["target_agent"] == "papers"  # the CUGA model, as a dict
+    assert b["ap_flow"]["id"] == "flow-1"  # the live AP flow
 
 
 def test_subscription_flow_reports_a_dangling_flow_as_ap_flow_null():
@@ -526,7 +670,7 @@ def test_subscription_flow_reports_a_dangling_flow_as_ap_flow_null():
     c, _ = _client([_sub()], engine=_FakeEngine(flow=None))
     b = c.get("/api/events/subscriptions/s1/flow").json()
     assert b["ok"] is True and b["ap_flow"] is None
-    assert b["subscription"]["ap_flow_id"] == "flow-1"      # it still *claims* a flow
+    assert b["subscription"]["ap_flow_id"] == "flow-1"  # it still *claims* a flow
 
 
 def test_subscription_flow_without_ap_configured():
@@ -539,7 +683,7 @@ def test_subscription_flow_without_ap_configured():
 class _RunEngine(_FakeEngine):
     """An AP that produces a new, finished run the moment the flow is triggered."""
 
-    _MISSING = object()          # so flow=None can mean "AP has no such flow" (the dangling case)
+    _MISSING = object()  # so flow=None can mean "AP has no such flow" (the dangling case)
 
     def __init__(self, *, flow=_MISSING, fail_trigger=False, finish=True, answer="42"):
         super().__init__(flow=({"id": "flow-1"} if flow is _RunEngine._MISSING else flow))
@@ -552,19 +696,26 @@ class _RunEngine(_FakeEngine):
         self.calls.append(("trigger_flow", flow_id, payload, headers))
         if self.fail_trigger:
             return False, "HTTP 404 flow not found"
-        self._runs.append({"id": "new-run", "flowId": flow_id,
-                           "status": "SUCCEEDED" if self.finish else "RUNNING"})
+        self._runs.append(
+            {"id": "new-run", "flowId": flow_id, "status": "SUCCEEDED" if self.finish else "RUNNING"}
+        )
         return True, "HTTP 200"
 
     async def list_runs(self, limit=60):
         return self._runs
 
     async def get_run(self, run_id):
-        return {"id": run_id, "flowId": "flow-1", "status": "SUCCEEDED",
-                "startTime": "2026-07-09T09:00:00Z", "finishTime": "2026-07-09T09:00:05Z",
-                "steps": {"trigger": {"output": {"tick": True}},
-                          "step_1": {"status": "SUCCEEDED",
-                                     "output": {"body": {"answer": self.answer}}}}}
+        return {
+            "id": run_id,
+            "flowId": "flow-1",
+            "status": "SUCCEEDED",
+            "startTime": "2026-07-09T09:00:00Z",
+            "finishTime": "2026-07-09T09:00:05Z",
+            "steps": {
+                "trigger": {"output": {"tick": True}},
+                "step_1": {"status": "SUCCEEDED", "output": {"body": {"answer": self.answer}}},
+            },
+        }
 
 
 def test_debug_run_fires_the_flow_and_returns_the_answer():
@@ -619,7 +770,7 @@ def test_debug_run_reports_a_timeout_rather_than_a_failure():
     b = c.post("/api/events/subscriptions/s1/run?timeout=1").json()
     assert b["ok"] is True and b["triggered"] is True and b["timed_out"] is True
     assert "no run finished within 1s" in b["note"]
-    assert b["run"]["status"] == "RUNNING"          # we saw it start
+    assert b["run"]["status"] == "RUNNING"  # we saw it start
 
 
 def test_debug_run_refuses_a_dangling_subscription():
@@ -628,7 +779,7 @@ def test_debug_run_refuses_a_dangling_subscription():
     c, _ = _client([_sub()], engine=eng)
     r = c.post("/api/events/subscriptions/s1/run")
     assert r.status_code == 409 and "DANGLING" in r.json()["error"]
-    assert [x for x in eng.calls if x[0] == "trigger_flow"] == []   # never fired
+    assert [x for x in eng.calls if x[0] == "trigger_flow"] == []  # never fired
 
 
 def test_debug_run_surfaces_an_ap_refusal_as_502():
@@ -642,8 +793,7 @@ def test_debug_run_requires_the_gateway_token():
     be weaker than /invoke's."""
     c, _ = _client([_sub()], engine=_RunEngine(), gateway_token="s3cret")
     assert c.post("/api/events/subscriptions/s1/run").status_code == 401
-    r = c.post("/api/events/subscriptions/s1/run?timeout=5",
-               headers={"X-Gateway-Token": "s3cret"})
+    r = c.post("/api/events/subscriptions/s1/run?timeout=5", headers={"X-Gateway-Token": "s3cret"})
     assert r.status_code == 200 and r.json()["triggered"] is True
 
 
@@ -677,8 +827,17 @@ def test_debug_run_on_a_subscription_with_no_flow_is_409():
 
 # ── run log ───────────────────────────────────────────────────────────────────
 def test_runs_join_ap_runs_to_their_subscription():
-    eng = _FakeEngine(runs=[{"id": "r1", "flowId": "flow-1", "status": "SUCCEEDED",
-                             "startTime": "2026-07-09T00:00:00Z", "finishTime": None}])
+    eng = _FakeEngine(
+        runs=[
+            {
+                "id": "r1",
+                "flowId": "flow-1",
+                "status": "SUCCEEDED",
+                "startTime": "2026-07-09T00:00:00Z",
+                "finishTime": None,
+            }
+        ]
+    )
     c, _ = _client([_sub()], engine=eng)
     runs = c.get("/api/events/runs").json()["runs"]
     assert len(runs) == 1
@@ -688,8 +847,12 @@ def test_runs_join_ap_runs_to_their_subscription():
 
 
 def test_runs_hides_runs_for_flows_the_caller_does_not_own():
-    eng = _FakeEngine(runs=[{"id": "r1", "flowId": "flow-1", "status": "SUCCEEDED"},
-                            {"id": "r2", "flowId": "someone-elses", "status": "SUCCEEDED"}])
+    eng = _FakeEngine(
+        runs=[
+            {"id": "r1", "flowId": "flow-1", "status": "SUCCEEDED"},
+            {"id": "r2", "flowId": "someone-elses", "status": "SUCCEEDED"},
+        ]
+    )
     c, _ = _client([_sub()], engine=eng)
     assert [r["id"] for r in c.get("/api/events/runs").json()["runs"]] == ["r1"]
 
@@ -703,12 +866,22 @@ def test_runs_without_ap_is_empty_not_an_error():
 def test_run_detail_extracts_the_agents_answer_and_trigger_payload():
     """The Studio's run view. The answer is buried at steps.<name>.output.body.answer — the shape
     /invoke returns — and the trigger's output is the raw event that fired the flow."""
-    eng = _FakeEngine(run={
-        "id": "r1", "flowId": "flow-1", "status": "SUCCEEDED",
-        "startTime": "2026-07-09T00:00:00Z", "finishTime": "2026-07-09T00:00:04Z",
-        "steps": {"trigger": {"output": {"subject": "Q3 numbers", "from": "boss@corp.com"}},
-                  "step_1": {"status": "SUCCEEDED",
-                             "output": {"body": {"answer": "Your boss sent Q3 numbers."}}}}})
+    eng = _FakeEngine(
+        run={
+            "id": "r1",
+            "flowId": "flow-1",
+            "status": "SUCCEEDED",
+            "startTime": "2026-07-09T00:00:00Z",
+            "finishTime": "2026-07-09T00:00:04Z",
+            "steps": {
+                "trigger": {"output": {"subject": "Q3 numbers", "from": "boss@corp.com"}},
+                "step_1": {
+                    "status": "SUCCEEDED",
+                    "output": {"body": {"answer": "Your boss sent Q3 numbers."}},
+                },
+            },
+        }
+    )
     c, _ = _client([_sub()], engine=eng)
     b = c.get("/api/events/runs/r1").json()
     assert b["ok"] is True and b["run"]["status"] == "SUCCEEDED"
@@ -718,9 +891,14 @@ def test_run_detail_extracts_the_agents_answer_and_trigger_payload():
 
 
 def test_run_detail_surfaces_a_failed_steps_error():
-    eng = _FakeEngine(run={"id": "r1", "flowId": "flow-1", "status": "FAILED",
-                           "steps": {"step_1": {"status": "FAILED",
-                                                "errorMessage": "401 Bad credentials"}}})
+    eng = _FakeEngine(
+        run={
+            "id": "r1",
+            "flowId": "flow-1",
+            "status": "FAILED",
+            "steps": {"step_1": {"status": "FAILED", "errorMessage": "401 Bad credentials"}},
+        }
+    )
     c, _ = _client([_sub()], engine=eng)
     b = c.get("/api/events/runs/r1").json()
     assert b["answer"] is None and b["error"] == "401 Bad credentials"
@@ -806,8 +984,12 @@ def test_connect_token_ap_failure_is_500_not_a_crash():
 def test_connections_lists_only_the_callers_own():
     """AP connection externalIds embed the owner: `ea::<tenant>::<user>::<app>`. Another user's
     connection in the same AP project must not appear."""
-    eng = _FakeEngine(connections=[{"externalId": f"ea::{TENANT}::{ME}::github"},
-                                   {"externalId": f"ea::{TENANT}::bob::github"}])
+    eng = _FakeEngine(
+        connections=[
+            {"externalId": f"ea::{TENANT}::{ME}::github"},
+            {"externalId": f"ea::{TENANT}::bob::github"},
+        ]
+    )
     c, _ = _client(engine=eng)
     b = c.get("/api/events/connections").json()
     assert [x["externalId"] for x in b["connections"]] == [f"ea::{TENANT}::{ME}::github"]
@@ -832,6 +1014,7 @@ def test_me_returns_profile_with_roles_and_links():
 
 def test_me_degrades_when_ap_is_down():
     """list_connections raising must not 500 the profile page."""
+
     class _Down(_FakeEngine):
         async def list_connections(self, project_name=None):
             raise RuntimeError("connection refused")
@@ -849,7 +1032,7 @@ def test_link_channel_issues_a_redeemable_token():
     b = c.post("/api/events/link/telegram").json()
     assert b["ok"] is True and b["channel"] == "telegram" and b["token"]
     assert "/start" in b["how"] or "t.me" in b["how"]
-    assert idm.redeem_token(b["token"], "tg-12345") is not None      # the token really works
+    assert idm.redeem_token(b["token"], "tg-12345") is not None  # the token really works
 
 
 def test_link_channel_without_identity_map_is_501():
@@ -863,11 +1046,11 @@ def test_admin_users_requires_the_admin_role():
     from events.users import UserStore
 
     users = UserStore(":memory:")
-    users.add(ME, roles=["user"], tenant=TENANT)              # the caller — deliberately NOT admin
+    users.add(ME, roles=["user"], tenant=TENANT)  # the caller — deliberately NOT admin
     c, _ = _client(users=users)
     assert c.get("/api/events/admin/users").status_code == 403
     assert c.post("/api/events/admin/users", json={"user_id": "eve"}).status_code == 403
-    assert users.get("eve", TENANT) is None                   # and eve was not created
+    assert users.get("eve", TENANT) is None  # and eve was not created
 
 
 def test_admin_can_list_and_add_users():
@@ -876,8 +1059,7 @@ def test_admin_can_list_and_add_users():
     users = UserStore(":memory:")
     users.add(ME, roles=["admin"], tenant=TENANT)
     c, _ = _client(users=users)
-    r = c.post("/api/events/admin/users",
-               json={"user_id": "bob", "email": "b@corp.com", "roles": ["user"]})
+    r = c.post("/api/events/admin/users", json={"user_id": "bob", "email": "b@corp.com", "roles": ["user"]})
     assert r.status_code == 200 and r.json()["user"]["user_id"] == "bob"
     ids = {u["user_id"] for u in c.get("/api/events/admin/users").json()["users"]}
     assert {ME, "bob"} <= ids
@@ -913,9 +1095,13 @@ def test_api_spec_is_golden():
     import subprocess
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_api_spec.py"), "--check"],
-                       capture_output=True, text=True, cwd=root)
-    assert p.returncode == 0, (p.stdout + p.stderr)
+    p = subprocess.run(
+        [sys.executable, os.path.join(root, "scripts/gen_api_spec.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    assert p.returncode == 0, p.stdout + p.stderr
 
 
 def test_examples_board_matches_the_catalog():
@@ -929,9 +1115,13 @@ def test_examples_board_matches_the_catalog():
     import subprocess
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run([sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
-                       capture_output=True, text=True, cwd=root)
-    assert p.returncode == 0, (p.stdout + p.stderr)
+    p = subprocess.run(
+        [sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    assert p.returncode == 0, p.stdout + p.stderr
 
 
 def test_every_trigger_appears_in_its_setup_guide():
@@ -943,6 +1133,7 @@ def test_every_trigger_appears_in_its_setup_guide():
 
     root = pathlib.Path(__file__).resolve().parents[2] / "events_docs" / "setup"
     from events import triggers as tr
+
     missing = []
     for t in tr.rows():
         doc = root / f"{t.app.upper()}.md"
@@ -968,4 +1159,5 @@ def test_every_route_appears_in_the_api_reference():
     routes = {norm(p) for _, p in re.findall(r'@app\.(get|post|delete|put)\("([^"]+)"\)', src)}
     undocumented = sorted(r for r in routes if r not in norm(doc))
     assert not undocumented, (
-        f"{len(undocumented)} route(s) missing from events_docs/api/api.html: {undocumented}")
+        f"{len(undocumented)} route(s) missing from events_docs/api/api.html: {undocumented}"
+    )

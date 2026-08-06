@@ -7,6 +7,7 @@ is configured, and EVENTS_NGROK_DOMAIN is set. See NGROK.md.
 
 Keys:  EVENTS_NGROK_DOMAIN
 """
+
 import shutil
 import sys
 from pathlib import Path

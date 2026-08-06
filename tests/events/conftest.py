@@ -37,7 +37,7 @@ def _hermetic_loopback():
     saved = {k: os.environ.get(k) for k in ("EVENTS_CUGA_PORT", "CUGA_URL", "EVENTS_API_URL")}
     os.environ["EVENTS_CUGA_PORT"] = dead
     os.environ["CUGA_URL"] = f"http://127.0.0.1:{dead}"
-    os.environ.pop("EVENTS_API_URL", None)      # CUGA's slash forwarder: off unless a test sets it
+    os.environ.pop("EVENTS_API_URL", None)  # CUGA's slash forwarder: off unless a test sets it
     yield
     for k, v in saved.items():
         if v is None:

@@ -8,23 +8,29 @@ file's content — which is exactly what the watcher hands to the agent.
 Keys:   BOX_DEV_TOKEN   (or EVENTS_BOX_TOKEN)   — a Box Developer Token expires ~60 min
 Extra:  BOX_FOLDER_ID   (optional — defaults to "0", the "All Files" root)
 """
+
 import json
 import sys
 import time
 import uuid
 
-from _common import PASS, FAIL, SKIP, load_env, request, request_json, title, ok, bad, warn, info
+from _common import PASS, FAIL, SKIP, load_env, request, request_json, title, ok, bad, warn
 
 
 def _multipart(fields, filename, content):
     boundary = "----cuga" + uuid.uuid4().hex
     body = b""
     for name, val in fields.items():
-        body += (f"--{boundary}\r\n"
-                 f'Content-Disposition: form-data; name="{name}"\r\n\r\n{val}\r\n').encode()
-    body += (f"--{boundary}\r\n"
-             f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-             f"Content-Type: text/plain\r\n\r\n").encode() + content + b"\r\n"
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n").encode()
+    body += (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: text/plain\r\n\r\n"
+        ).encode()
+        + content
+        + b"\r\n"
+    )
     body += f"--{boundary}--\r\n".encode()
     return boundary, body
 

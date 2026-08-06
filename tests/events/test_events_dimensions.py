@@ -134,7 +134,7 @@ def test_runtime_selection_is_always_http():
 
     for backend in ("http", "cuga", "", None):
         assert isinstance(runtime.make_runtime(backend), runtime.HttpRuntime), backend
-    assert isinstance(runtime.make_runtime(), runtime.HttpRuntime)          # default
+    assert isinstance(runtime.make_runtime(), runtime.HttpRuntime)  # default
     # explicit react / stub (dev + tests) unchanged
     assert isinstance(runtime.make_runtime("react", model_factory=lambda s: None), runtime.ReactRuntime)
     assert isinstance(runtime.make_runtime("stub"), runtime.StubRuntime)
@@ -193,8 +193,11 @@ def test_the_events_package_no_longer_imports_cugas_graph():
     ev = pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga" / "backend" / "events"
     offenders = {}
     for f in ev.glob("*.py"):
-        hits = [m for m in re.findall(r"from (cuga\.[a-z_.]+) import", f.read_text())
-                if not m.startswith("cuga.backend.secrets")]
+        hits = [
+            m
+            for m in re.findall(r"from (cuga\.[a-z_.]+) import", f.read_text())
+            if not m.startswith("cuga.backend.secrets")
+        ]
         if hits:
             offenders[f.name] = sorted(set(hits))
     assert not offenders, f"events/ re-coupled to CUGA core: {offenders}"
@@ -448,6 +451,7 @@ def test_a_truncated_llm_rewrite_is_rejected():
         async def ainvoke(self, _msgs):
             class R:
                 content = self.reply
+
             return R()
 
     utt = "every minute send me the price of bitcoin"
@@ -466,6 +470,7 @@ def test_truncation_detector_precision():
     """Narrow by construction: only a final word that is a strict PREFIX of a longer input word
     counts. A genuine rephrase, or one ending in a word present in full, must pass."""
     import concierge
+
     t = concierge._looks_truncated
     assert t("The price of bitcoi.", "every minute send me the price of bitcoin")
     assert t("Summarize the docum", "every day summarize the document")

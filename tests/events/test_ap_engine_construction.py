@@ -10,6 +10,7 @@ off (the current default) the whole class looked fine.
 These tests need no AP server: they assert the SHAPE of the object, which is exactly the property
 a truncated `__init__` breaks.
 """
+
 import inspect
 
 import pytest
@@ -19,8 +20,19 @@ from cuga.backend.events.ap_engine import APEngine
 # Everything __init__ promises. A method landing mid-constructor silently drops the tail of this
 # list, so assert the whole set rather than the one attribute that happened to blow up.
 REQUIRED_ATTRS = [
-    "base", "api_key", "email", "password", "project_id", "invoke_url", "gateway_token",
-    "_token", "_token_exp", "_auth_lock", "_piece_cache", "_project_cache", "_degraded",
+    "base",
+    "api_key",
+    "email",
+    "password",
+    "project_id",
+    "invoke_url",
+    "gateway_token",
+    "_token",
+    "_token_exp",
+    "_auth_lock",
+    "_piece_cache",
+    "_project_cache",
+    "_degraded",
     "project_grain",
 ]
 
@@ -35,7 +47,8 @@ def test_init_assigns_every_attribute_it_promises(engine):
     missing = [a for a in REQUIRED_ATTRS if not hasattr(engine, a)]
     assert not missing, (
         f"APEngine.__init__ never assigned {missing} — most likely a method was pasted into the "
-        f"middle of the constructor, ending it early")
+        f"middle of the constructor, ending it early"
+    )
 
 
 def test_init_body_contains_no_return(engine):

@@ -31,8 +31,12 @@ def _get(path, timeout=120):
 
 
 def _post(path, body, timeout=400):
-    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.load(r)
@@ -53,39 +57,46 @@ def main() -> int:
     checks = []
 
     code, st = _get("/api/events/status")
-    checks.append(("status: enabled + worker_backend=cuga",
-                   code == 200 and st.get("worker_backend") == "cuga"))
+    checks.append(
+        ("status: enabled + worker_backend=cuga", code == 200 and st.get("worker_backend") == "cuga")
+    )
 
     # pre-built agents are present (seeded, not concierge-created)
     code, cap = _concierge("list what you can do")
     print("  capabilities:", cap[:200])
-    checks.append(("router sees PRE-BUILT agents (pricebot/papers)",
-                   "pricebot" in cap or "papers" in cap))
+    checks.append(("router sees PRE-BUILT agents (pricebot/papers)", "pricebot" in cap or "papers" in cap))
 
     # 1) answer-now via an existing agent → real MCP tool → number
     print("  answer-now (bitcoin → pricebot → cuga_finance)…")
     code, rep = _concierge("what is the current price of bitcoin in usd? just the number")
     print("  reply:", rep[:200])
-    checks.append(("answer-now → numeric price via a pre-built agent",
-                   code == 200 and any(ch.isdigit() for ch in rep)))
+    checks.append(
+        ("answer-now → numeric price via a pre-built agent", code == 200 and any(ch.isdigit() for ch in rep))
+    )
 
     # 2) create a standing flow, then 3) REUSE it (dedup)
     utter = "every 1 minute send me new arxiv papers on mixture of experts"
     code, rep1 = _concierge(utter, thread="web:flow")
     print("  flow create:", rep1[:160])
-    checks.append(("standing request → flow created (cron/poll)",
-                   any(w in rep1.lower() for w in
-                       ("armed", "created", "poll", "cron", "schedul", "every", "watch"))))
+    checks.append(
+        (
+            "standing request → flow created (cron/poll)",
+            any(w in rep1.lower() for w in ("armed", "created", "poll", "cron", "schedul", "every", "watch")),
+        )
+    )
     code, rep2 = _concierge(utter, thread="web:flow")
     print("  flow reuse:", rep2[:160])
-    checks.append(("repeat request → REUSES flow (dedup, no duplicate)",
-                   "reus" in rep2.lower()))
+    checks.append(("repeat request → REUSES flow (dedup, no duplicate)", "reus" in rep2.lower()))
 
     # 4) decline when nothing fits — never invents an agent
     code, rep = _concierge("book me a flight to tokyo next friday", thread="web:decline")
     print("  decline:", rep[:160])
-    checks.append(("no agent fits → DECLINE (mentions builder / no agent)",
-                   any(w in rep.lower() for w in ("builder", "no agent", "not set up", "don't have"))))
+    checks.append(
+        (
+            "no agent fits → DECLINE (mentions builder / no agent)",
+            any(w in rep.lower() for w in ("builder", "no agent", "not set up", "don't have")),
+        )
+    )
 
     print("\n---")
     passed = sum(1 for _, ok in checks if ok)

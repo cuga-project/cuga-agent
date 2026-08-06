@@ -41,6 +41,7 @@ Run:  make test-matrix
       make test-matrix ARGS="--no-cleanup"
       GITHUB_TEST_REPO=me/sandbox .venv/bin/python tests/events/live_matrix.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,18 +51,42 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from live_e2e import (  # noqa: E402  — shared HTTP/env/report plumbing, one source of truth
-    BASE, RUN, connect_needed_app, env, flow_alive, gw_headers, has_digit, http, srv,
+    BASE,
+    RUN,
+    connect_needed_app,
+    env,
+    flow_alive,
+    gw_headers,
+    has_digit,
+    http,
+    srv,
 )
 
 ARMED, REUSED, NEEDS, CONNECT, ERROR, SKIPPED, STALE = "✓", "≡", "?", "⚠", "✗", "–", "!"
-LABEL = {ARMED: "armed", REUSED: "reused", NEEDS: "needs-input", CONNECT: "connect-needed",
-         ERROR: "error", SKIPPED: "skip", STALE: "claims-existing-but-none"}
+LABEL = {
+    ARMED: "armed",
+    REUSED: "reused",
+    NEEDS: "needs-input",
+    CONNECT: "connect-needed",
+    ERROR: "error",
+    SKIPPED: "skip",
+    STALE: "claims-existing-but-none",
+}
 
 # The model may answer "that's already set up" from conversation memory without calling the arm tool.
 # We never take its word for it: a reuse claim is only believed when a matching subscription exists.
-_REUSE_PHRASES = ("reusing existing flow", "already set up", "already active", "already exists",
-                  "is already", "no new flow was created", "already configured", "is active",
-                  "trigger for", "watcher is active")
+_REUSE_PHRASES = (
+    "reusing existing flow",
+    "already set up",
+    "already active",
+    "already exists",
+    "is already",
+    "no new flow was created",
+    "already configured",
+    "is active",
+    "trigger for",
+    "watcher is active",
+)
 
 CHANNELS = ["web", "slack", "discord", "telegram"]
 INTEGRATIONS = ["box", "github", "gmail"]
@@ -82,8 +107,12 @@ def discover_targets() -> dict:
     if tok:
         chan = env("SLACK_TEST_CHANNEL")
         if not chan:
-            _, lst = http("GET", "https://slack.com/api/conversations.list?types=public_channel&limit=200",
-                          headers={"Authorization": f"Bearer {tok}"}, timeout=20)
+            _, lst = http(
+                "GET",
+                "https://slack.com/api/conversations.list?types=public_channel&limit=200",
+                headers={"Authorization": f"Bearer {tok}"},
+                timeout=20,
+            )
             member = [c for c in lst.get("channels", []) if c.get("is_member")]
             chan = member[0]["id"] if member else ""
         t["slack"] = chan or None
@@ -97,8 +126,12 @@ def discover_targets() -> dict:
             dh = {"Authorization": f"Bot {dtok}"}
             _, guilds = http("GET", "https://discord.com/api/v10/users/@me/guilds", headers=dh, timeout=20)
             if isinstance(guilds, list) and guilds:
-                _, chans = http("GET", f"https://discord.com/api/v10/guilds/{guilds[0]['id']}/channels",
-                                headers=dh, timeout=20)
+                _, chans = http(
+                    "GET",
+                    f"https://discord.com/api/v10/guilds/{guilds[0]['id']}/channels",
+                    headers=dh,
+                    timeout=20,
+                )
                 text = [c for c in (chans if isinstance(chans, list) else []) if c.get("type") == 0]
                 chan = text[0]["id"] if text else ""
         t["discord"] = chan or None
@@ -125,20 +158,32 @@ def thread_for(channel: str, native: str, tag: str) -> str:
     if channel == "web":
         return f"web:{RUN}:{tag}"
     if channel == "telegram":
-        return f"gw:telegram:{native}"          # no suffix: AP send step bakes the target verbatim
+        return f"gw:telegram:{native}"  # no suffix: AP send step bakes the target verbatim
     return f"gw:{channel}:{native}#{RUN}{tag}"
 
 
 def ask(channel: str, native: str, tag: str, text: str, timeout=300):
     """Drive the concierge over the SAME entrypoint the channel's transport uses."""
     if channel == "web":
-        code, rep = srv("POST", "/api/concierge",
-                        {"text": text, "thread_id": thread_for(channel, native, tag)}, timeout=timeout)
+        code, rep = srv(
+            "POST",
+            "/api/concierge",
+            {"text": text, "thread_id": thread_for(channel, native, tag)},
+            timeout=timeout,
+        )
         return code, str(rep.get("reply", ""))
-    payload = {"text": text, "agent": "concierge", "deliver": False,
-               "source": {"type": "channel", "name": channel,
-                          "thread_id": thread_for(channel, native, tag), "user": f"e2e-{RUN}"},
-               "event": {"kind": "message", "payload": {}}}
+    payload = {
+        "text": text,
+        "agent": "concierge",
+        "deliver": False,
+        "source": {
+            "type": "channel",
+            "name": channel,
+            "thread_id": thread_for(channel, native, tag),
+            "user": f"e2e-{RUN}",
+        },
+        "event": {"kind": "message", "payload": {}},
+    }
     code, rep = srv("POST", "/invoke", payload, gw_headers(), timeout=timeout)
     return code, str(rep.get("answer", rep.get("error", "")))
 
@@ -226,8 +271,22 @@ def classify(reply: str, sub, is_new, app: str | None, ap_live: bool) -> tuple[s
     if any(p in low for p in _REUSE_PHRASES):
         return STALE, "model says a flow exists; no subscription with this sink does"
 
-    if any(w in low for w in ("repo", "repository", "folder", "which ", "specify", "job description",
-                             " jd", "share the", "provide the", "attach", "what ")):
+    if any(
+        w in low
+        for w in (
+            "repo",
+            "repository",
+            "folder",
+            "which ",
+            "specify",
+            "job description",
+            " jd",
+            "share the",
+            "provide the",
+            "attach",
+            "what ",
+        )
+    ):
         return NEEDS, reply[:44].replace("\n", " ")
     return ERROR, reply[:60].replace("\n", " ") or "no subscription, no explanation"
 
@@ -243,7 +302,7 @@ class Grid:
         print(f"     {sym} {row:<16} → {col:<9} {note}", flush=True)
 
     def render(self):
-        w = max(len(r) for r in self.rows) + 3      # +3 so the longest label keeps a gutter
+        w = max(len(r) for r in self.rows) + 3  # +3 so the longest label keeps a gutter
         print("\n" + "─" * 72)
         print("  TRIGGER × SINK MATRIX\n")
         print("  " + " " * w + "".join(f"{c:<11}" for c in self.cols))
@@ -252,8 +311,10 @@ class Grid:
             for c in self.cols:
                 line += f"{self.cell.get((r, c), (' ', ''))[0]:<11}"
             print(line)
-        print("\n  ✓ armed   ≡ reused (dedup)   ? needs-input   ⚠ connect-needed"
-              "   ! claims-existing (none found)   ✗ error   – skip")
+        print(
+            "\n  ✓ armed   ≡ reused (dedup)   ? needs-input   ⚠ connect-needed"
+            "   ! claims-existing (none found)   ✗ error   – skip"
+        )
         counts: dict[str, int] = {}
         for sym, _ in self.cell.values():
             counts[sym] = counts.get(sym, 0) + 1
@@ -268,8 +329,11 @@ class Grid:
             print("\n  Errors:")
             for r, c, n in errs:
                 print(f"    ✗ {r} → {c}: {n}")
-        print("\n  RESULT:", "\033[31mFAIL\033[0m" if errs else "\033[32mPASS\033[0m",
-              "(only ✗ fails; ? and ⚠ are correct behaviours)")
+        print(
+            "\n  RESULT:",
+            "\033[31mFAIL\033[0m" if errs else "\033[32mPASS\033[0m",
+            "(only ✗ fails; ? and ⚠ are correct behaviours)",
+        )
         return 1 if errs else 0
 
 
@@ -280,7 +344,9 @@ def run_now(g: Grid, targets: dict):
         if targets.get(ch) is None:
             g.put("NOW", ch, SKIPPED, "channel not configured")
             continue
-        code, reply = ask(ch, targets[ch], "now", "what is the current price of bitcoin in usd? just the number")
+        code, reply = ask(
+            ch, targets[ch], "now", "what is the current price of bitcoin in usd? just the number"
+        )
         if code == 200 and has_digit(reply):
             g.put("NOW", ch, ARMED, reply[:36].replace("\n", " "))
         else:
@@ -289,8 +355,10 @@ def run_now(g: Grid, targets: dict):
 
 def run_standing(g: Grid, targets: dict, ap_live: bool, created: list):
     """CRON and POLL, once per sink."""
-    cases = [("CRON", "every day at 9am send me new arxiv papers on mixture of experts", "CRON"),
-             ("POLL", "watch bitcoin every 2 minutes and ping me on any move", "POLL")]
+    cases = [
+        ("CRON", "every day at 9am send me new arxiv papers on mixture of experts", "CRON"),
+        ("POLL", "watch bitcoin every 2 minutes and ping me on any move", "POLL"),
+    ]
     for row, utter, mode in cases:
         print(f"\n\033[1m[{row}]\033[0m  arm one flow per sink")
         for ch in CHANNELS:
@@ -326,11 +394,16 @@ def run_push(g: Grid, targets: dict, conn: dict, ap_live: bool, created: list):
     repo = env("GITHUB_TEST_REPO")
     folder = env("BOX_FOLDER_ID")
     utters = {
-        "box": ("when a resume lands in my Box"
-                + (f" folder {folder}" if folder else "")
-                + ", judge it against this JD — 'senior python engineer, 5y, distributed systems' — and tell me"),
-        "github": (f"when a pull request opens on {repo}, summarize it and message me" if repo
-                   else "when a pull request opens on my repo, summarize it and message me"),
+        "box": (
+            "when a resume lands in my Box"
+            + (f" folder {folder}" if folder else "")
+            + ", judge it against this JD — 'senior python engineer, 5y, distributed systems' — and tell me"
+        ),
+        "github": (
+            f"when a pull request opens on {repo}, summarize it and message me"
+            if repo
+            else "when a pull request opens on my repo, summarize it and message me"
+        ),
         "gmail": "when an email from my boss arrives, summarize it and message me",
     }
     for app in INTEGRATIONS:
@@ -360,9 +433,12 @@ def run_push(g: Grid, targets: dict, conn: dict, ap_live: bool, created: list):
 
 def run_webhook(g: Grid):
     print("\n\033[1m[WEBHOOK]\033[0m  generic inbound trigger (direct, no AP)")
-    code, rep = srv("POST", "/api/events/hook/monitoring",
-                    {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
-                    timeout=240)
+    code, rep = srv(
+        "POST",
+        "/api/events/hook/monitoring",
+        {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
+        timeout=240,
+    )
     ans = str(rep.get("answer", ""))
     ok = code == 200 and rep.get("ok") and any(s in ans for s in ("P1", "P2", "P3", "sever"))
     g.put("WEBHOOK", "web", ARMED if ok else ERROR, ans[:44].replace("\n", " ") or f"HTTP {code}")
@@ -375,8 +451,12 @@ def gh_hook_ids(repo: str) -> set:
     tok = env("GITHUB_TOKEN")
     if not (repo and tok):
         return set()
-    code, hooks = http("GET", f"https://api.github.com/repos/{repo}/hooks", timeout=20,
-                       headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"})
+    code, hooks = http(
+        "GET",
+        f"https://api.github.com/repos/{repo}/hooks",
+        timeout=20,
+        headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+    )
     return {h["id"] for h in hooks} if code == 200 and isinstance(hooks, list) else set()
 
 
@@ -401,9 +481,12 @@ def cleanup(created: list, repo: str = "", hooks_before: set | None = None):
         tok = env("GITHUB_TOKEN")
         print(f"     removing {len(new_hooks)} github webhook(s) this run created on {repo}")
         for hid in new_hooks:
-            code, _ = http("DELETE", f"https://api.github.com/repos/{repo}/hooks/{hid}", timeout=20,
-                           headers={"Authorization": f"Bearer {tok}",
-                                    "Accept": "application/vnd.github+json"})
+            code, _ = http(
+                "DELETE",
+                f"https://api.github.com/repos/{repo}/hooks/{hid}",
+                timeout=20,
+                headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+            )
             print(f"       hook {hid}: {'removed' if code in (204, 200) else f'FAILED HTTP {code}'}")
 
 
@@ -423,8 +506,10 @@ def main() -> int:
     conn = {i["name"]: i.get("status") for i in integ.get("integrations", [])}
     print(f"  AP reachable: {ap_live}   integrations: { {k: conn.get(k) for k in INTEGRATIONS} }")
     if not ap_live:
-        print("  \033[33mAP is DOWN\033[0m — nothing can arm, and a 'connect your credentials' reply "
-              "would be a false negative. Cells will read ✗ rather than ⚠.")
+        print(
+            "  \033[33mAP is DOWN\033[0m — nothing can arm, and a 'connect your credentials' reply "
+            "would be a false negative. Cells will read ✗ rather than ⚠."
+        )
 
     targets = discover_targets()
     print("  sinks:", {k: (v if v else "—") for k, v in targets.items()})

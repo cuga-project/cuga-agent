@@ -32,6 +32,7 @@ def _iso(ts: float) -> str:
     """epoch seconds → the ISO shape Activepieces uses (UTC, milliseconds, Z) so NOW runs and AP
     flow-runs sort together as strings in the unified Runs log."""
     from datetime import datetime, timezone
+
     dt = datetime.fromtimestamp(ts or 0, tz=timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
@@ -39,6 +40,7 @@ def _iso(ts: float) -> str:
 def _events_env_path():
     """The repo .env (config.py load_dotenv finds it from cwd; $CUGA_REPO overrides)."""
     import pathlib
+
     repo = os.environ.get("CUGA_REPO") or str(pathlib.Path(__file__).resolve().parents[4])
     return pathlib.Path(repo) / ".env"
 
@@ -56,10 +58,11 @@ def _env_upsert(key: str, value: str) -> None:
     if p.is_file():
         for raw in p.read_text().splitlines():
             s = raw.lstrip()
-            bare = s[1:].lstrip() if s.startswith("#") else s          # tolerate a commented-out line
+            bare = s[1:].lstrip() if s.startswith("#") else s  # tolerate a commented-out line
             if "=" in bare and bare.split("=", 1)[0].strip() == key:
                 if not found:
-                    out.append(line); found = True                    # first hit → the new value
+                    out.append(line)
+                    found = True  # first hit → the new value
                 # any further (dup/commented) copies of the same key are dropped
             else:
                 out.append(raw)
@@ -86,9 +89,18 @@ def _slack_first_touch(ts: str) -> bool:
     return True
 
 
-def register_events_routes(app, *, runtime, store=None, concierge=None, engine=None,
-                           users=None, identity=None, oauth_store=None,
-                           gateway_token: str | None = None) -> None:
+def register_events_routes(
+    app,
+    *,
+    runtime,
+    store=None,
+    concierge=None,
+    engine=None,
+    users=None,
+    identity=None,
+    oauth_store=None,
+    gateway_token: str | None = None,
+) -> None:
     """Attach /invoke, /api/concierge and the read-only Studio endpoints to a FastAPI ``app``.
 
     ``engine`` is the (optional) AP engine — passed so the Integrations endpoint can report
@@ -96,25 +108,33 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     exactly what the backend can do, no client-side business logic.
     """
     from .secret_seam import secret as _secret
+
     token = gateway_token if gateway_token is not None else _secret("GATEWAY_TOKEN")
     if not token:
         # /invoke runs agents on a caller-supplied scope; with no token the seam is open. Fine for
         # local dev, dangerous in a shared deploy — warn loudly rather than fail silently.
-        _elog.warning("events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
-                      "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server.")
+        _elog.warning(
+            "events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
+            "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server."
+        )
     if not os.environ.get("EVENTS_WEBHOOK_KEY"):
         # The hook runs an agent and can post into a channel. Unset, `?key=` is not merely optional —
         # it is ignored, so a WRONG key is accepted too. That surprises people; say it plainly.
-        _elog.warning("events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> accepts "
-                      "ANY request, including one with a wrong ?key=. Set it before exposing this "
-                      "server on a public URL.")
+        _elog.warning(
+            "events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> accepts "
+            "ANY request, including one with a wrong ?key=. Set it before exposing this "
+            "server on a public URL."
+        )
     if not os.environ.get("SLACK_SIGNING_SECRET") and os.environ.get("SLACK_BOT_TOKEN"):
-        _elog.warning("events: SLACK_SIGNING_SECRET is empty — /api/events/slack/events accepts "
-                      "UNSIGNED requests from anyone who finds your public URL.")
+        _elog.warning(
+            "events: SLACK_SIGNING_SECRET is empty — /api/events/slack/events accepts "
+            "UNSIGNED requests from anyone who finds your public URL."
+        )
 
     # NOW-run log: immediate (chat / channel DM) answers, which never become AP flow-runs. Same DB
     # file as the subscription index; ":memory:" when no EVENTS_DB (ephemeral, fine for dev/tests).
     from .now_runs import NowRunStore
+
     now_runs = NowRunStore(os.environ.get("EVENTS_DB", ":memory:"))
 
     # The WEB channel's outbound transport. Slack/Discord/Telegram get pushed into; a browser can
@@ -122,11 +142,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # surface polls GET /api/events/inbox. Same DB as the subscription index → a fire survives an
     # instance replace and is still waiting when the tab comes back.
     from . import web_inbox
+
     web_inbox.init(os.environ.get("EVENTS_DB", ":memory:"))
 
-    def _log_now(*, scope, agent, channel, prompt, answer, status, ms=0, meta=None, trace_id="",
-                 thread_id="", kind="chat", subscription_id="", event_kind="", db=True,
-                 mode="NOW", backend="direct"):
+    def _log_now(
+        *,
+        scope,
+        agent,
+        channel,
+        prompt,
+        answer,
+        status,
+        ms=0,
+        meta=None,
+        trace_id="",
+        thread_id="",
+        kind="chat",
+        subscription_id="",
+        event_kind="",
+        db=True,
+        mode="NOW",
+        backend="direct",
+    ):
         """Record one execution: the in-DB log (Runs tab; ``db=False`` for AP-backed fires whose
         run history AP already keeps) + a DETAILED per-run file on disk for EVERY execution
         (results/run_logs/<date>/…, see run_logger). Never let logging break the response.
@@ -134,33 +171,52 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         · native/ap)."""
         if db:
             try:
-                now_runs.add(scope=scope, agent=agent or "", channel=channel or "",
-                             prompt=prompt or "",
-                             answer=answer if isinstance(answer, str) else str(answer),
-                             status=status, ms=ms or 0,
-                             mcp=(meta or {}).get("mcp") or [],
-                             tools=(meta or {}).get("tools") or [],
-                             trace_id=trace_id or "", mode=mode or "NOW",
-                             backend=backend or "direct", subscription_id=subscription_id or "",
-                             event_kind=event_kind or "")
+                now_runs.add(
+                    scope=scope,
+                    agent=agent or "",
+                    channel=channel or "",
+                    prompt=prompt or "",
+                    answer=answer if isinstance(answer, str) else str(answer),
+                    status=status,
+                    ms=ms or 0,
+                    mcp=(meta or {}).get("mcp") or [],
+                    tools=(meta or {}).get("tools") or [],
+                    trace_id=trace_id or "",
+                    mode=mode or "NOW",
+                    backend=backend or "direct",
+                    subscription_id=subscription_id or "",
+                    event_kind=event_kind or "",
+                )
             except Exception:  # noqa: BLE001
                 pass
         try:
             from . import run_logger
-            run_logger.dump(kind=kind, scope=scope, agent=agent or "", channel=channel or "",
-                            thread_id=thread_id, subscription_id=subscription_id,
-                            event_kind=event_kind,
-                            text_in=prompt or "", answer_out=answer, status=status, ms=ms or 0,
-                            trace_id=trace_id or "", meta=meta or {})
+
+            run_logger.dump(
+                kind=kind,
+                scope=scope,
+                agent=agent or "",
+                channel=channel or "",
+                thread_id=thread_id,
+                subscription_id=subscription_id,
+                event_kind=event_kind,
+                text_in=prompt or "",
+                answer_out=answer,
+                status=status,
+                ms=ms or 0,
+                trace_id=trace_id or "",
+                meta=meta or {},
+            )
         except Exception:  # noqa: BLE001
             pass
 
     # let OAuth app creds come from the admin store (UI) before .env
     if oauth_store is not None:
         from . import oauth as _oauth
+
         _oauth.set_cred_resolver(
-            lambda app, key: oauth_store.get(
-                (resolve_principal(headers={}).tenant_id), app, key))
+            lambda app, key: oauth_store.get((resolve_principal(headers={}).tenant_id), app, key)
+        )
 
     # ── THE THREE DOORS INTO THE CONCIERGE/AGENT (they are NOT duplicates) ───────────────────────────
     #   POST /invoke        — the MACHINE seam. Envelope-in {agent,text,source,event,scope,thread},
@@ -179,6 +235,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if token and request.headers.get("X-Gateway-Token") != token:
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from .envelope import validate as _validate_envelope
+
         problems = _validate_envelope(body)
         if problems:
             tr.error("error", reason="invalid envelope", problems=problems)
@@ -191,7 +248,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         scope = env.scope
         if not scope and env.source.type == "channel" and identity is not None:
             from .principal import channel_user_id, resolve_channel
-            nid = channel_user_id(env.source)          # the AUTHOR (per-user), not the channel
+
+            nid = channel_user_id(env.source)  # the AUTHOR (per-user), not the channel
             cp = resolve_channel(env.source.name, nid, identity) if nid else None
             if cp is not None:
                 scope = cp.scope
@@ -199,8 +257,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 tr("channel.unlinked", channel=env.source.name, native=nid)
         if not scope:
             scope = resolve_principal(headers=request.headers).scope
-        tr("inbound", source=f"{env.source.type}/{env.source.name}", thread=env.thread_id,
-           kind=env.event.kind, scope=scope, text=env.text[:80])
+        tr(
+            "inbound",
+            source=f"{env.source.type}/{env.source.name}",
+            thread=env.thread_id,
+            kind=env.event.kind,
+            scope=scope,
+            text=env.text[:80],
+        )
         # BOUNDED-RUN EXPIRY GATE ("… for one hour"): AP schedules cannot end themselves, so the
         # deadline baked into the flow's body is enforced HERE — the first tick past expires_at
         # deletes the flow + subscription instead of running the agent. Lazy on purpose: it works
@@ -218,24 +282,37 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             if _sub is not None:
                 store.delete(_sub_id)
             tr("expired", subscription=_sub_id, expires_at=_exp)
-            return {"ok": True, "expired": True, "trace_id": tr.id,
-                    "answer": "This bounded flow reached its end time and has been removed."}
+            return {
+                "ok": True,
+                "expired": True,
+                "trace_id": tr.id,
+                "answer": "This bounded flow reached its end time and has been removed.",
+            }
         # account-linking handshake: a channel message "/start <token>" / "/link <token>" binds
         # the sender's native id → the profile that issued the token (decision 0007).
         if env.source.type == "channel" and identity is not None:
             from .principal import channel_user_id
+
             txt = (env.text or "").strip()
             for pfx in ("/start ", "/link "):
                 if txt.startswith(pfx):
-                    nid = channel_user_id(env.source)          # bind the AUTHOR's native id
-                    uid = identity.redeem_token(txt[len(pfx):].strip(), nid) if nid else None
+                    nid = channel_user_id(env.source)  # bind the AUTHOR's native id
+                    uid = identity.redeem_token(txt[len(pfx) :].strip(), nid) if nid else None
                     tr("channel.link", channel=env.source.name, native=nid, ok=bool(uid))
-                    return {"ok": True, "linked": bool(uid), "trace_id": tr.id,
-                            "answer": ("Your account is linked — you can chat now."
-                                       if uid else "That link code is invalid or expired.")}
+                    return {
+                        "ok": True,
+                        "linked": bool(uid),
+                        "trace_id": tr.id,
+                        "answer": (
+                            "Your account is linked — you can chat now."
+                            if uid
+                            else "That link code is invalid or expired."
+                        ),
+                    }
         # agents are tenant-shared (agent_scope = first 2 scope segments); run-state is per-user
         agent_scope = "/".join(scope.split("/")[:2]) or scope
         from . import runmeta
+
         runmeta.start()
         ms = None
         agent = env.agent
@@ -255,6 +332,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 _poll_ws = None
             if _poll_ws is not None:
                 from . import poll_state as _ps
+
                 env.text = (env.text or "") + _ps.augment_prompt(_poll_ws)
                 tr("poll.watch", subscription=_poll_sid, kind=_poll_ws.get("kind"))
         # 'concierge' is the runtime ROUTER (picks among pre-built agents / arms flows), not a
@@ -268,35 +346,54 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # Slash COMMANDS outrank watchers: "/cron …" typed in a watched Telegram chat must reach
         # the concierge, not be consumed as "a link to summarize" (caught live by the exhaustive
         # matrix, 2026-07-17 — an armed link-watcher swallowed the arm command).
-        _is_slash = bool(re.match(r"\s*/(automate|watch|schedule|cron|poll|push|start|link)\b",
-                                  env.text or "", re.I))
-        if (agent == "concierge" and store is not None and env.source.type == "channel"
-                and env.event.kind == "message" and not _is_slash):
+        _is_slash = bool(
+            re.match(r"\s*/(automate|watch|schedule|cron|poll|push|start|link)\b", env.text or "", re.I)
+        )
+        if (
+            agent == "concierge"
+            and store is not None
+            and env.source.type == "channel"
+            and env.event.kind == "message"
+            and not _is_slash
+        ):
             from . import direct_events
             from .principal import channel_origin as _chorigin
+
             _org = _chorigin(env.thread_id) or (env.source.name, "")
-            _watchers = direct_events.match(store, env.source.name, "new_channel_message",
-                                            channel=_org[1], text=env.text)
+            _watchers = direct_events.match(
+                store, env.source.name, "new_channel_message", channel=_org[1], text=env.text
+            )
             if _watchers:
                 import asyncio as _aio
-                tr("direct.watch", channel=env.source.name, matched=len(_watchers),
-                   agent=_watchers[0].target_agent)
+
+                tr(
+                    "direct.watch",
+                    channel=env.source.name,
+                    matched=len(_watchers),
+                    agent=_watchers[0].target_agent,
+                )
                 _wpay = {"text": env.text, "channel": _org[1]}
                 # The first matched watcher becomes the foreground worker; extras fire in the background.
                 if len(_watchers) > 1:
-                    _aio.create_task(direct_events.dispatch_all(
-                        _watchers[1:], app=env.source.name, event="new_channel_message",
-                        payload=_wpay, engine=engine))
+                    _aio.create_task(
+                        direct_events.dispatch_all(
+                            _watchers[1:],
+                            app=env.source.name,
+                            event="new_channel_message",
+                            payload=_wpay,
+                            engine=engine,
+                        )
+                    )
                 agent = _watchers[0].target_agent
                 env.agent = agent
-                env.text = (f"{_watchers[0].prompt}\n\nThe watched message just arrived: "
-                            f"{env.text}")
+                env.text = f"{_watchers[0].prompt}\n\nThe watched message just arrived: {env.text}"
         if agent == "concierge":
             if concierge is None:
                 tr.error("error", reason="concierge not configured")
                 return JSONResponse({"ok": False, "error": "concierge not configured"}, 501)
             try:
                 import time
+
                 t0 = time.time()
                 principal = _principal_from(scope, request.headers)
                 answer = await concierge.run(env.thread_id, env.text, principal)
@@ -305,8 +402,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             except Exception as e:  # noqa: BLE001
                 tr.error("error", agent=agent, err=str(e))
                 if is_now:
-                    _log_now(scope=scope, agent=agent, channel=env.source.name, prompt=env.text,
-                             answer=str(e), status="error", ms=ms, trace_id=tr.id)
+                    _log_now(
+                        scope=scope,
+                        agent=agent,
+                        channel=env.source.name,
+                        prompt=env.text,
+                        answer=str(e),
+                        status="error",
+                        ms=ms,
+                        trace_id=tr.id,
+                    )
                 return JSONResponse({"ok": False, "error": str(e)}, 500)
         else:
             if not agent or runtime.get_agent(agent, scope=agent_scope) is None:
@@ -314,6 +419,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 return JSONResponse({"ok": False, "error": f"unknown agent '{agent}'"}, 404)
             try:
                 import time
+
                 t0 = time.time()
                 # EXECUTION THREAD ≠ DELIVERY THREAD. env.thread_id carries the ORIGIN conversation
                 # (channel + chat id + in-thread locus) and stays the delivery target below. But
@@ -326,15 +432,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 _exec_thread = env.thread_id
                 if not is_now and os.environ.get("EVENTS_FIRE_MEMORY", "stateless") != "continuous":
                     _exec_thread = f"fire:{body.get('subscription_id') or env.thread_id}#{tr.id}"
-                answer = await runtime.run(agent, _exec_thread, env.worker_input(), scope=agent_scope,
-                                           deliver_to=[env.source.name] if env.deliver else None)
+                answer = await runtime.run(
+                    agent,
+                    _exec_thread,
+                    env.worker_input(),
+                    scope=agent_scope,
+                    deliver_to=[env.source.name] if env.deliver else None,
+                )
                 ms = int((time.time() - t0) * 1000)
                 tr("worker.done", agent=agent, ok=True, ms=ms)
             except Exception as e:  # noqa: BLE001
                 tr.error("error", agent=agent, err=str(e))
                 if is_now:
-                    _log_now(scope=scope, agent=agent, channel=env.source.name, prompt=env.text,
-                             answer=str(e), status="error", ms=ms, trace_id=tr.id)
+                    _log_now(
+                        scope=scope,
+                        agent=agent,
+                        channel=env.source.name,
+                        prompt=env.text,
+                        answer=str(e),
+                        status="error",
+                        ms=ms,
+                        trace_id=tr.id,
+                    )
                 return JSONResponse({"ok": False, "error": str(e)}, 500)
         # metadata footer — who answered + which tools ran — appended to the reply so it shows on
         # every channel (Telegram/Discord/…). Structured `meta` also rides in the API response.
@@ -348,8 +467,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         _poll_reason = ""
         if _poll_ws is not None and isinstance(answer, str):
             from . import poll_state as _ps
+
             _clean, _signal = _ps.parse_signal(answer)
-            answer = _clean                       # strip the machine SIGNAL line from the human reply
+            answer = _clean  # strip the machine SIGNAL line from the human reply
             _dec = _ps.decide(_poll_ws, _signal, time_module.time())
             _poll_changed, _poll_reason = _dec.changed, _dec.reason
             try:
@@ -357,7 +477,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             except Exception as e:  # noqa: BLE001
                 tr.error("poll.state", err=str(e)[:120])
             tr("poll.decide", subscription=_poll_sid, changed=_poll_changed, reason=_poll_reason)
-        base_answer = answer if isinstance(answer, str) else str(answer)   # log the reply, sans footer
+        base_answer = answer if isinstance(answer, str) else str(answer)  # log the reply, sans footer
         if os.environ.get("EVENTS_REPLY_METADATA", "1") != "0" and isinstance(answer, str):
             foot = runmeta.footer(meta, ms=ms)
             if foot:
@@ -374,14 +494,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if env.deliver and _poll_changed:
             from . import delivery
             from .principal import channel_origin, channel_locus
+
             direct_done = False
-            origin = channel_origin(env.thread_id)     # (channel, native) from the thread_id
+            origin = channel_origin(env.thread_id)  # (channel, native) from the thread_id
             # A browser thread has no gw: origin — the Studio and the main chat pass their own
             # conversation id. Treat that as the WEB channel, whose delivery address IS the thread
             # id: the fire lands in the mailbox the chat surface drains. Without this a web-armed
             # flow ran, logged, and told nobody (the "it fired but I don't see it" gap).
             if origin is None and env.thread_id and not is_now:
                 from .principal import unscoped_thread
+
                 origin = ("web", unscoped_thread(env.thread_id))
             if origin and delivery.is_direct(origin[0]) and origin[1] and isinstance(answer, str):
                 # a FIRE (not a chat message) is labeled so the reader knows WHY the bot spoke:
@@ -394,27 +516,40 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                         _s = store.get(_sid)
                         _flow_name = (_s.flow_name or "") if _s is not None else ""
                     _flow = f" · {_flow_name}" if _flow_name else ""
-                    _what = ("cron tick" if env.event.kind == "tick"
-                             else f"{env.source.name}/{env.event.kind}")
+                    _what = "cron tick" if env.event.kind == "tick" else f"{env.source.name}/{env.event.kind}"
                     out_text = f"⚡ flow fired · {_what}{_flow}\n{answer}"
                 # locus = the in-channel anchor (Slack thread_ts / Discord message id): deliver
                 # INTO the thread the flow was armed from, not to the channel root
-                ok, why = await delivery.send_direct(origin[0], origin[1], out_text,
-                                                     locus=channel_locus(env.thread_id),
-                                                     scope=scope,
-                                                     meta={"agent": meta.get("agent") or agent,
-                                                           "subscription_id": _sid,
-                                                           "flow_name": _flow_name,
-                                                           "event_kind": str(getattr(env.event, "kind", "") or "")})
+                ok, why = await delivery.send_direct(
+                    origin[0],
+                    origin[1],
+                    out_text,
+                    locus=channel_locus(env.thread_id),
+                    scope=scope,
+                    meta={
+                        "agent": meta.get("agent") or agent,
+                        "subscription_id": _sid,
+                        "flow_name": _flow_name,
+                        "event_kind": str(getattr(env.event, "kind", "") or ""),
+                    },
+                )
                 tr("deliver", via="direct", channel=origin[0], ok=ok, reason=why)
                 direct_done = ok
             cap = os.environ.get("EA_CAPTURE_URL")
             if not direct_done and cap:
                 try:
                     import httpx
+
                     async with httpx.AsyncClient(timeout=10) as hc:
-                        await hc.post(cap, json={"agent": agent, "answer": answer,
-                                                 "thread_id": env.thread_id, "trace_id": tr.id})
+                        await hc.post(
+                            cap,
+                            json={
+                                "agent": agent,
+                                "answer": answer,
+                                "thread_id": env.thread_id,
+                                "trace_id": tr.id,
+                            },
+                        )
                     tr("deliver", via="capture", ok=True)
                 except Exception as e:  # noqa: BLE001
                     tr.error("deliver", via="capture", err=str(e))
@@ -431,8 +566,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 _s = store.get(_sub_id)
                 if _s is not None:
                     _native_fire = _s.backend == "native"
-                    _run_mode = _s.mode or "NOW"           # CRON | POLL | PUSH
-                    _run_backend = _s.backend or "ap"      # native | react/ap
+                    _run_mode = _s.mode or "NOW"  # CRON | POLL | PUSH
+                    _run_backend = _s.backend or "ap"  # native | react/ap
             except Exception:  # noqa: BLE001
                 _native_fire = False
         elif is_now:
@@ -446,30 +581,50 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # toast (which matches ""/"web") never fired, leaving web users with no notification at
         # all. A fire that originated in a real channel keeps that channel; the rest are web fires.
         from .principal import channel_origin as _log_chorigin
+
         _lc_origin = _log_chorigin(env.thread_id)
         _log_channel = _lc_origin[0] if _lc_origin else (env.source.name if is_now else "web")
-        _log_now(scope=scope,
-                 agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
-                 # log what the worker actually RAN ON (framing + [event] payload for a fire; the
-                 # bare utterance for chat) — env.text alone hid the payload from the disk log
-                 channel=_log_channel, prompt=env.worker_input(), answer=base_answer,
-                 status=_run_status, ms=ms, meta=meta, trace_id=tr.id,
-                 thread_id=env.thread_id, kind=("chat" if is_now else "fire"),
-                 event_kind=str(getattr(env.event, "kind", "") or ""), db=(is_now or _native_fire),
-                 mode=_run_mode, backend=_run_backend, subscription_id=_sub_id)
-        return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
-                # HITL arming state (present only for an arming turn) — see /api/concierge
-                **({k: v for k, v in (_arming.get() or {}).items() if v}),
-                # poll delta result: delivered? and why (absent for non-poll fires)
-                **({"poll": {"changed": _poll_changed, "reason": _poll_reason}} if _poll_ws is not None else {}),
-                "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
-                         "backend": meta.get("backend"), "mcp": meta.get("mcp") or [],
-                         "tools": meta.get("tools") or [], "ms": ms}}
+        _log_now(
+            scope=scope,
+            agent=meta.get("agent") or (agent if agent != "concierge" else "concierge"),
+            # log what the worker actually RAN ON (framing + [event] payload for a fire; the
+            # bare utterance for chat) — env.text alone hid the payload from the disk log
+            channel=_log_channel,
+            prompt=env.worker_input(),
+            answer=base_answer,
+            status=_run_status,
+            ms=ms,
+            meta=meta,
+            trace_id=tr.id,
+            thread_id=env.thread_id,
+            kind=("chat" if is_now else "fire"),
+            event_kind=str(getattr(env.event, "kind", "") or ""),
+            db=(is_now or _native_fire),
+            mode=_run_mode,
+            backend=_run_backend,
+            subscription_id=_sub_id,
+        )
+        return {
+            "ok": True,
+            "agent": agent,
+            "answer": answer,
+            "trace_id": tr.id,
+            # HITL arming state (present only for an arming turn) — see /api/concierge
+            **({k: v for k, v in (_arming.get() or {}).items() if v}),
+            # poll delta result: delivered? and why (absent for non-poll fires)
+            **({"poll": {"changed": _poll_changed, "reason": _poll_reason}} if _poll_ws is not None else {}),
+            "meta": {
+                "agent": meta.get("agent") or (agent if agent != "concierge" else None),
+                "backend": meta.get("backend"),
+                "mcp": meta.get("mcp") or [],
+                "tools": meta.get("tools") or [],
+                "ms": ms,
+            },
+        }
 
     @app.get("/api/events/dry-run")
     @app.post("/api/events/dry-run")
-    async def dry_run_utterance(request: Request, text: str | None = None,
-                                utterance: str | None = None):
+    async def dry_run_utterance(request: Request, text: str | None = None, utterance: str | None = None):
         """DRY-RUN an utterance — see exactly what the concierge WOULD do, with ZERO side effects
         (nothing armed, nothing persisted). Browser-friendly (just paste a URL):
 
@@ -479,19 +634,23 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         Also accepts POST {"text": "..."} — the same utterance the web UX sends. Returns the routed
         decision: mode (CRON|POLL|PUSH|NOW), native-vs-AP backend, cadence + next-fire preview, the
         resolved source/event for a push, and whether it would ARM, ASK, DECLINE, or ANSWER — and why."""
-        _utt = (text or utterance or "")
+        _utt = text or utterance or ""
         if not _utt and request.method == "POST":
             _b = await _safe_json(request)
             _utt = (_b or {}).get("text") or (_b or {}).get("utterance") or ""
         text = (_utt or "").strip()
         if not text:
-            return JSONResponse({"ok": False,
-                                 "error": "provide ?text=<utterance> (or POST {\"text\": ...})"}, 400)
+            return JSONResponse(
+                {"ok": False, "error": "provide ?text=<utterance> (or POST {\"text\": ...})"}, 400
+            )
         try:
             from . import classify, flowspec, native_scheduler
         except ImportError:  # flat load
-            import classify, flowspec, native_scheduler  # type: ignore
+            import classify
+            import flowspec
+            import native_scheduler  # type: ignore
         import time as _t
+
         mode = classify.classify(text)
         out = {"ok": True, "utterance": text, "mode": mode, "side_effects": "none (dry run)"}
         if mode in ("CRON", "POLL"):
@@ -502,23 +661,38 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             nxt = None
             try:
                 _now = _t.time()
-                nxt = (_now + interval) if interval else (native_scheduler.next_cron(cron, _now)
-                                                          if cron else None)
+                nxt = (
+                    (_now + interval)
+                    if interval
+                    else (native_scheduler.next_cron(cron, _now) if cron else None)
+                )
             except Exception:  # noqa: BLE001
                 nxt = None
-            out.update({
-                "backend": "native" if native else "ap",
-                "routing": ("native scheduler — runs in-process, no Activepieces" if native
-                            else "Activepieces schedule piece (EVENTS_SCHEDULER=ap)"),
-                "cadence": ({"interval_seconds": interval} if interval
-                            else {"cron": cron} if cron else {}),
-                "cadence_human": (f"every {interval // 60} min" if interval and interval % 60 == 0
-                                  else f"every {interval}s" if interval
-                                  else f"cron '{cron}'" if cron else "none detected — would ask"),
-                "bounded_run_seconds": ttl,
-                "next_fire_preview": (_iso(nxt) if nxt else None),
-                "would": "arm" if (interval or cron) else "ask (no cadence detected)",
-            })
+            out.update(
+                {
+                    "backend": "native" if native else "ap",
+                    "routing": (
+                        "native scheduler — runs in-process, no Activepieces"
+                        if native
+                        else "Activepieces schedule piece (EVENTS_SCHEDULER=ap)"
+                    ),
+                    "cadence": (
+                        {"interval_seconds": interval} if interval else {"cron": cron} if cron else {}
+                    ),
+                    "cadence_human": (
+                        f"every {interval // 60} min"
+                        if interval and interval % 60 == 0
+                        else f"every {interval}s"
+                        if interval
+                        else f"cron '{cron}'"
+                        if cron
+                        else "none detected — would ask"
+                    ),
+                    "bounded_run_seconds": ttl,
+                    "next_fire_preview": (_iso(nxt) if nxt else None),
+                    "would": "arm" if (interval or cron) else "ask (no cadence detected)",
+                }
+            )
         elif mode == "PUSH":
             spec = flowspec.resolve(text)
             ap_up = False
@@ -527,28 +701,40 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     ap_up = (await engine.reachable()) if hasattr(engine, "reachable") else True
                 except Exception:  # noqa: BLE001
                     ap_up = False
-            would = ("arm (AP integration)" if (spec.confidence == "high" and ap_up)
-                     else "decline — Activepieces not reachable" if (spec.confidence == "high" and not ap_up)
-                     else "ask — ambiguous source" if spec.confidence == "ambiguous"
-                     else "unresolved — no integration matched (try 'when a new <app> …')")
-            out.update({
-                "backend": "ap",
-                "routing": "Activepieces (integration piece)",
-                "source": spec.source, "event": spec.event, "confidence": spec.confidence,
-                "candidates": [f"{a}/{e}" for a, e in (spec.candidates or [])],
-                "ask": spec.ask, "ap_reachable": ap_up,
-                "would": would,
-            })
+            would = (
+                "arm (AP integration)"
+                if (spec.confidence == "high" and ap_up)
+                else "decline — Activepieces not reachable"
+                if (spec.confidence == "high" and not ap_up)
+                else "ask — ambiguous source"
+                if spec.confidence == "ambiguous"
+                else "unresolved — no integration matched (try 'when a new <app> …')"
+            )
+            out.update(
+                {
+                    "backend": "ap",
+                    "routing": "Activepieces (integration piece)",
+                    "source": spec.source,
+                    "event": spec.event,
+                    "confidence": spec.confidence,
+                    "candidates": [f"{a}/{e}" for a, e in (spec.candidates or [])],
+                    "ask": spec.ask,
+                    "ap_reachable": ap_up,
+                    "would": would,
+                }
+            )
         else:  # NOW
-            out.update({
-                "backend": "—",
-                "routing": "answered by the agent now (no flow armed)",
-                "would": "answer",
-            })
+            out.update(
+                {
+                    "backend": "—",
+                    "routing": "answered by the agent now (no flow armed)",
+                    "would": "answer",
+                }
+            )
         return out
 
     @app.post("/api/concierge")
-    async def api_concierge(request: Request):   # NOT 'concierge' — that name is the instance arg
+    async def api_concierge(request: Request):  # NOT 'concierge' — that name is the instance arg
         body = await request.json()
         text = (body or {}).get("text", "")
         dry = request.query_params.get("dry_run") in ("1", "true", "yes")
@@ -556,16 +742,25 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         tr("inbound", source="api/concierge", dry_run=dry, text=text[:80])
         if dry:
             # reason → build, NO side effects (deterministic planner)
-            planned = concierge_plan.plan(text, agent=(body or {}).get("agent", "worker"),
-                                          thread_id=(body or {}).get("thread_id", "web:local"))
+            planned = concierge_plan.plan(
+                text,
+                agent=(body or {}).get("agent", "worker"),
+                thread_id=(body or {}).get("thread_id", "web:local"),
+            )
             tr("flow.build", mode=planned["decision"]["mode"], dry_run=True)
             return {"ok": True, "dry_run": True, **planned, "trace_id": tr.id}
         # live path: run the LLM concierge (host-bound meta-tools) — reuse/create + run/arm.
         if concierge is None:
             planned = concierge_plan.plan(text, agent=(body or {}).get("agent", "worker"))
             return JSONResponse(
-                {"ok": False, "reason": "concierge not configured; use ?dry_run=1 for the plan",
-                 "plan": planned, "trace_id": tr.id}, 501)
+                {
+                    "ok": False,
+                    "reason": "concierge not configured; use ?dry_run=1 for the plan",
+                    "plan": planned,
+                    "trace_id": tr.id,
+                },
+                501,
+            )
         thread_id = (body or {}).get("thread_id", "web:local")
         # CHANNEL-ORIGINATED ARMING. CUGA is the door now: a Slack/Telegram/Discord "/automate …"
         # reaches /run first and is forwarded here with the originating channel attached. Resolve
@@ -576,6 +771,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         _ch = (body or {}).get("channel")
         if isinstance(_ch, dict) and _ch.get("name") and identity is not None:
             from .principal import resolve_channel
+
             _cp = resolve_channel(str(_ch["name"]), str(_ch.get("user") or ""), identity)
             if _cp is not None:
                 principal = _cp
@@ -591,6 +787,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # work from every surface — web chat AND channels), no interception needed here.
         from . import runmeta
         import time as _t
+
         runmeta.start()
         _t0 = _t.time()
         try:
@@ -599,14 +796,31 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             tr("concierge", ok=True, scope=principal.scope)
         except Exception as e:  # noqa: BLE001
             tr.error("error", err=str(e))
-            _log_now(scope=principal.scope, agent="concierge", channel="web", prompt=text,
-                     answer=str(e), status="error", ms=int((_t.time() - _t0) * 1000), trace_id=tr.id)
+            _log_now(
+                scope=principal.scope,
+                agent="concierge",
+                channel="web",
+                prompt=text,
+                answer=str(e),
+                status="error",
+                ms=int((_t.time() - _t0) * 1000),
+                trace_id=tr.id,
+            )
             return JSONResponse({"ok": False, "error": str(e), "trace_id": tr.id}, 500)
         _meta = runmeta.get() or {}
-        _log_now(scope=principal.scope, agent=_meta.get("agent") or "concierge", channel="web",
-                 prompt=text, answer=reply if isinstance(reply, str) else str(reply),
-                 status="ok", ms=_ms, meta=_meta, trace_id=tr.id,
-                 thread_id=thread_id or "", kind="chat")
+        _log_now(
+            scope=principal.scope,
+            agent=_meta.get("agent") or "concierge",
+            channel="web",
+            prompt=text,
+            answer=reply if isinstance(reply, str) else str(reply),
+            status="ok",
+            ms=_ms,
+            meta=_meta,
+            trace_id=tr.id,
+            thread_id=thread_id or "",
+            kind="chat",
+        )
         out = {"ok": True, "reply": reply, "scope": principal.scope, "trace_id": tr.id}
         # HITL arming: the machine-readable half of the reply. `state` tells a caller whether the
         # thread is mid-dialogue (needs_input|confirm → keep routing here) or done (armed|
@@ -628,18 +842,27 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         steps, node = [], trig.get("nextAction")
         while node:
             s = node.get("settings") or {}
-            steps.append({"name": node.get("name"), "display": node.get("displayName"),
-                          "type": node.get("type"),
-                          "piece": s.get("pieceName"), "action": s.get("actionName"),
-                          # the send step's text is a template that reads step_1's HTTP RESPONSE —
-                          # this is the seam that proves the answer flows into the sink
-                          "text": ((s.get("input") or {}).get("text")
-                                   or (s.get("input") or {}).get("message"))})
+            steps.append(
+                {
+                    "name": node.get("name"),
+                    "display": node.get("displayName"),
+                    "type": node.get("type"),
+                    "piece": s.get("pieceName"),
+                    "action": s.get("actionName"),
+                    # the send step's text is a template that reads step_1's HTTP RESPONSE —
+                    # this is the seam that proves the answer flows into the sink
+                    "text": ((s.get("input") or {}).get("text") or (s.get("input") or {}).get("message")),
+                }
+            )
             node = node.get("nextAction")
         return {
-            "id": ap_flow.get("id"), "status": ap_flow.get("status"),
-            "trigger": {"piece": ts.get("pieceName"), "name": ts.get("triggerName"),
-                        "input": ts.get("input")},
+            "id": ap_flow.get("id"),
+            "status": ap_flow.get("status"),
+            "trigger": {
+                "piece": ts.get("pieceName"),
+                "name": ts.get("triggerName"),
+                "input": ts.get("input"),
+            },
             "steps": steps,
         }
 
@@ -653,9 +876,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         for sub in store.list(scope=scope):
             if sub.id in before:
                 continue
-            row: dict = {"subscription_id": sub.id, "mode": sub.mode, "agent": sub.target_agent,
-                         "deliver_to": list(sub.deliver_to or []), "flow_name": sub.flow_name,
-                         "ap_flow_id": sub.ap_flow_id, "dedup_key": sub.dedup_key}
+            row: dict = {
+                "subscription_id": sub.id,
+                "mode": sub.mode,
+                "agent": sub.target_agent,
+                "deliver_to": list(sub.deliver_to or []),
+                "flow_name": sub.flow_name,
+                "ap_flow_id": sub.ap_flow_id,
+                "dedup_key": sub.dedup_key,
+            }
             ap_flow = None
             if engine is not None and sub.ap_flow_id:
                 try:
@@ -672,9 +901,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return out
 
     @app.get("/api/events/subscriptions")
-    async def list_subscriptions(request: Request,
-                                 mode: str | None = None, backend: str | None = None,
-                                 status: str | None = None):
+    async def list_subscriptions(
+        request: Request, mode: str | None = None, backend: str | None = None, status: str | None = None
+    ):
         """Every armed watcher for this caller (isolation), with a by-type summary.
 
         Filter with ``?mode=CRON|POLL|PUSH|NOW`` · ``?backend=native|ap|react`` · ``?status=active|paused``.
@@ -685,10 +914,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         f_mode = (mode or "").upper() or None
         f_backend = (backend or "").lower() or None
         f_status = (status or "").lower() or None
+
         def _keep(s):
-            return ((not f_mode or str(s.get("mode") or "").upper() == f_mode)
-                    and (not f_backend or str(s.get("backend") or "").lower() == f_backend)
-                    and (not f_status or str(s.get("status") or "").lower() == f_status))
+            return (
+                (not f_mode or str(s.get("mode") or "").upper() == f_mode)
+                and (not f_backend or str(s.get("backend") or "").lower() == f_backend)
+                and (not f_status or str(s.get("status") or "").lower() == f_status)
+            )
+
         subs = [s for s in subs if _keep(s)]
         # attach the stateful-poll delta state (kind/threshold + live baseline/seen-count) so the
         # dashboard can show WHAT each poll watches and its current reference point.
@@ -700,13 +933,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     except Exception:  # noqa: BLE001
                         ws = None
                     if ws:
-                        s["watch"] = {"kind": ws.get("kind"), "threshold": ws.get("threshold"),
-                                      "watching": ws.get("value_path"), "baseline": ws.get("baseline"),
-                                      "seen": len(ws.get("seen_keys") or [])}
+                        s["watch"] = {
+                            "kind": ws.get("kind"),
+                            "threshold": ws.get("threshold"),
+                            "watching": ws.get("value_path"),
+                            "baseline": ws.get("baseline"),
+                            "seen": len(ws.get("seen_keys") or []),
+                        }
         summary = {
             "total": len(subs),
-            "by_mode": {m: sum(1 for s in subs if str(s.get("mode") or "").upper() == m)
-                        for m in ("CRON", "POLL", "PUSH", "NOW")},
+            "by_mode": {
+                m: sum(1 for s in subs if str(s.get("mode") or "").upper() == m)
+                for m in ("CRON", "POLL", "PUSH", "NOW")
+            },
             "native_no_ap": sum(1 for s in subs if s.get("backend") == "native"),
             "ap_flows": sum(1 for s in subs if s.get("ap_flow_id")),
             "active": sum(1 for s in subs if s.get("status") == "active"),
@@ -727,7 +966,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
         if engine is not None and sub.ap_flow_id:
-            await engine.set_flow_status(sub.ap_flow_id, enabled=False)   # disable in AP
+            await engine.set_flow_status(sub.ap_flow_id, enabled=False)  # disable in AP
         store.set_status(sub_id, "paused")
         Trace(new_trace_id())("sub.pause", id=sub_id, flow=sub.ap_flow_id)
         return {"ok": True, "id": sub_id, "status": "paused"}
@@ -738,7 +977,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
         if engine is not None and sub.ap_flow_id:
-            await engine.set_flow_status(sub.ap_flow_id, enabled=True)    # re-enable in AP
+            await engine.set_flow_status(sub.ap_flow_id, enabled=True)  # re-enable in AP
         store.set_status(sub_id, "active")
         Trace(new_trace_id())("sub.resume", id=sub_id, flow=sub.ap_flow_id)
         return {"ok": True, "id": sub_id, "status": "active"}
@@ -749,7 +988,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
         if engine is not None and sub.ap_flow_id:
-            await engine.delete_flow(sub.ap_flow_id)                      # delete in AP
+            await engine.delete_flow(sub.ap_flow_id)  # delete in AP
         store.delete(sub_id)
         Trace(new_trace_id())("sub.delete", id=sub_id, flow=sub.ap_flow_id)
         return {"ok": True, "id": sub_id, "deleted": True}
@@ -759,6 +998,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         """Rich read-only flow view: the CUGA subscription model + the live AP flow JSON (trigger +
         steps), so the Studio can render the flow like AP does without opening the AP console."""
         import dataclasses as _dc
+
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
@@ -773,12 +1013,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         channel, pretty and readable, with pause/resume/delete/run + an inline dry-run. Reads only the
         /api/events/* APIs; no build step, so it can't break the pre-built Studio bundle."""
         from .events_dashboard import DASHBOARD_HTML
+
         return HTMLResponse(DASHBOARD_HTML)
 
     # --- the web channel's mailbox: fires waiting for a browser to come and collect them ----------
     @app.get("/api/events/inbox")
-    async def web_inbox_read(request: Request, thread_id: str, since: float = 0.0,
-                             limit: int = 50, max_age: float = 0.0):
+    async def web_inbox_read(
+        request: Request, thread_id: str, since: float = 0.0, limit: int = 50, max_age: float = 0.0
+    ):
         """Messages delivered to ONE web thread, **oldest first**, newer than ``since``.
 
         This is how a browser receives an asynchronous fire. A flow armed in the Studio chat or the
@@ -803,18 +1045,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if max_age > 0 and since <= 0:
             since = max(0.0, time_module.time() - max_age)
         msgs = web_inbox.list_since(thread_id=thread_id, since=since, scope=scope, limit=limit)
-        return {"thread_id": thread_id, "count": len(msgs), "scope": scope,
-                # the cursor to send back next time — the client never has to compute it
-                "cursor": (msgs[-1]["ts"] if msgs else since),
-                "messages": msgs}
+        return {
+            "thread_id": thread_id,
+            "count": len(msgs),
+            "scope": scope,
+            # the cursor to send back next time — the client never has to compute it
+            "cursor": (msgs[-1]["ts"] if msgs else since),
+            "messages": msgs,
+        }
 
     # --- execution log: which flows RAN, succeeded/failed, and their output -----------------------
     @app.get("/api/events/runs")
-    async def list_runs(request: Request,
-                        mode: str | None = None, backend: str | None = None,
-                        agent: str | None = None, status: str | None = None,
-                        kind: str | None = None, source: str | None = None,
-                        subscription_id: str | None = None, limit: int = 150):
+    async def list_runs(
+        request: Request,
+        mode: str | None = None,
+        backend: str | None = None,
+        agent: str | None = None,
+        status: str | None = None,
+        kind: str | None = None,
+        source: str | None = None,
+        subscription_id: str | None = None,
+        limit: int = 150,
+    ):
         """The unified execution log — every run, tagged with its TRIGGER TYPE and rich metadata.
 
         Each row carries: ``mode`` (CRON | POLL | PUSH | NOW), ``backend`` (native | ap | direct),
@@ -849,37 +1101,58 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         for r in runs:
             sub = by_flow.get(r.get("flowId"))
             if sub is None:
-                continue   # isolation: skip runs whose flow isn't the caller's
-            out.append({
-                "id": r.get("id"), "status": r.get("status"),
-                "started_at": r.get("startTime"), "finished_at": r.get("finishTime"),
-                "agent": sub.get("target_agent"), "mode": sub.get("mode"),
-                "backend": "ap",
-                "integration": sub.get("source_connector"),
-                "channel": ", ".join(sub.get("deliver_to") or []),
-                "utterance": sub.get("prompt"), "answer": None, "tools": [], "mcp": [], "ms": None,
-                "event_kind": sub.get("event") or "",
-                "flow_name": sub.get("flow_name"), "subscription_id": sub.get("id"),
-                "flow_id": r.get("flowId"), "trace_id": "",
-                "kind": "flow",
-            })
+                continue  # isolation: skip runs whose flow isn't the caller's
+            out.append(
+                {
+                    "id": r.get("id"),
+                    "status": r.get("status"),
+                    "started_at": r.get("startTime"),
+                    "finished_at": r.get("finishTime"),
+                    "agent": sub.get("target_agent"),
+                    "mode": sub.get("mode"),
+                    "backend": "ap",
+                    "integration": sub.get("source_connector"),
+                    "channel": ", ".join(sub.get("deliver_to") or []),
+                    "utterance": sub.get("prompt"),
+                    "answer": None,
+                    "tools": [],
+                    "mcp": [],
+                    "ms": None,
+                    "event_kind": sub.get("event") or "",
+                    "flow_name": sub.get("flow_name"),
+                    "subscription_id": sub.get("id"),
+                    "flow_id": r.get("flowId"),
+                    "trace_id": "",
+                    "kind": "flow",
+                }
+            )
         # ── NOW answers + NATIVE fires (backend=native/direct): logged here, no AP history ──
         for nr in now_runs.list(scope=scope, limit=200):
-            out.append({
-                "id": nr["id"],
-                "status": "SUCCEEDED" if nr.get("status") == "ok" else "FAILED",
-                "started_at": _iso(nr["ts"]), "finished_at": _iso(nr["ts"]),
-                "agent": nr.get("agent") or "concierge", "mode": nr.get("mode") or "NOW",
-                "backend": nr.get("backend") or "direct",
-                "integration": "—", "channel": nr.get("channel"),
-                "utterance": nr.get("prompt"),
-                "answer": nr.get("answer"),                       # the agent's actual reply
-                "tools": nr.get("tools") or [], "mcp": nr.get("mcp") or [],   # what it invoked
-                "ms": nr.get("ms"), "event_kind": nr.get("event_kind") or "",
-                "flow_name": "", "subscription_id": nr.get("subscription_id") or None,
-                "flow_id": "", "trace_id": nr.get("trace_id") or "",
-                "kind": "flow" if (nr.get("mode") or "NOW") != "NOW" else "now",
-            })
+            out.append(
+                {
+                    "id": nr["id"],
+                    "status": "SUCCEEDED" if nr.get("status") == "ok" else "FAILED",
+                    "started_at": _iso(nr["ts"]),
+                    "finished_at": _iso(nr["ts"]),
+                    "agent": nr.get("agent") or "concierge",
+                    "mode": nr.get("mode") or "NOW",
+                    "backend": nr.get("backend") or "direct",
+                    "integration": "—",
+                    "channel": nr.get("channel"),
+                    "utterance": nr.get("prompt"),
+                    "answer": nr.get("answer"),  # the agent's actual reply
+                    "tools": nr.get("tools") or [],
+                    "mcp": nr.get("mcp") or [],  # what it invoked
+                    "ms": nr.get("ms"),
+                    "event_kind": nr.get("event_kind") or "",
+                    "flow_name": "",
+                    "subscription_id": nr.get("subscription_id") or None,
+                    "flow_id": "",
+                    "trace_id": nr.get("trace_id") or "",
+                    "kind": "flow" if (nr.get("mode") or "NOW") != "NOW" else "now",
+                }
+            )
+
         # ── filters (AND) ──
         def _keep(r):
             if f_mode and str(r.get("mode") or "").upper() != f_mode:
@@ -897,12 +1170,22 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             if f_sub and r.get("subscription_id") != f_sub:
                 return False
             return True
+
         out = [r for r in out if _keep(r)]
         out.sort(key=lambda r: r.get("started_at") or "", reverse=True)
-        return {"scope": scope, "count": len(out[:limit]),
-                "filters": {"mode": f_mode, "backend": f_backend, "agent": f_agent,
-                            "status": f_status, "kind": f_kind, "source": f_source},
-                "runs": out[:limit]}
+        return {
+            "scope": scope,
+            "count": len(out[:limit]),
+            "filters": {
+                "mode": f_mode,
+                "backend": f_backend,
+                "agent": f_agent,
+                "status": f_status,
+                "kind": f_kind,
+                "source": f_source,
+            },
+            "runs": out[:limit],
+        }
 
     def _dissect_run(run: dict) -> tuple[str | None, object, str | None]:
         """(answer, trigger_payload, error) out of an AP run's step tree.
@@ -911,7 +1194,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         which the flow's send step reads as ``{{step_1.body.answer}}``."""
         steps = run.get("steps") or {}
         answer = trigger_payload = error = None
-        for name, s in (steps.items() if isinstance(steps, dict) else []):
+        for name, s in steps.items() if isinstance(steps, dict) else []:
             if not isinstance(s, dict):
                 continue
             outp = s.get("output")
@@ -934,23 +1217,42 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             if nr.get("scope") != scope:
                 return JSONResponse({"ok": False, "error": "run not found"}, 404)
             is_ok = nr["status"] == "ok"
-            return {"ok": True,
-                    "run": {"id": nr["id"], "status": "SUCCEEDED" if is_ok else "FAILED",
-                            "started_at": _iso(nr["ts"]), "finished_at": _iso(nr["ts"])},
-                    "answer": nr["answer"] if is_ok else None,
-                    "trigger_payload": {"prompt": nr["prompt"], "channel": nr["channel"],
-                                        "agent": nr["agent"], "mcp": nr["mcp"],
-                                        "tools": nr["tools"], "ms": nr["ms"]},
-                    "error": None if is_ok else nr["answer"]}
+            return {
+                "ok": True,
+                "run": {
+                    "id": nr["id"],
+                    "status": "SUCCEEDED" if is_ok else "FAILED",
+                    "started_at": _iso(nr["ts"]),
+                    "finished_at": _iso(nr["ts"]),
+                },
+                "answer": nr["answer"] if is_ok else None,
+                "trigger_payload": {
+                    "prompt": nr["prompt"],
+                    "channel": nr["channel"],
+                    "agent": nr["agent"],
+                    "mcp": nr["mcp"],
+                    "tools": nr["tools"],
+                    "ms": nr["ms"],
+                },
+                "error": None if is_ok else nr["answer"],
+            }
         owned = {s.get("ap_flow_id") for s in (store.as_dicts(scope=scope) if store else [])}
         run = await engine.get_run(run_id) if engine is not None else None
         if run is None or run.get("flowId") not in owned:
             return JSONResponse({"ok": False, "error": "run not found"}, 404)
         answer, trigger_payload, error = _dissect_run(run)
-        return {"ok": True,
-                "run": {"id": run.get("id"), "status": run.get("status"),
-                        "started_at": run.get("startTime"), "finished_at": run.get("finishTime")},
-                "answer": answer, "trigger_payload": trigger_payload, "error": error}
+        return {
+            "ok": True,
+            "run": {
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "started_at": run.get("startTime"),
+                "finished_at": run.get("finishTime"),
+            },
+            "answer": answer,
+            "trigger_payload": trigger_payload,
+            "error": error,
+        }
 
     @app.post("/api/events/subscriptions/{sub_id}/run")
     async def run_subscription_now(sub_id: str, request: Request):
@@ -985,8 +1287,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import time
 
         if os.environ.get("EVENTS_DEBUG_RUN", "1") == "0":
-            return JSONResponse({"ok": False, "error": "debug run endpoint disabled "
-                                                       "(EVENTS_DEBUG_RUN=0)"}, 403)
+            return JSONResponse(
+                {"ok": False, "error": "debug run endpoint disabled (EVENTS_DEBUG_RUN=0)"}, 403
+            )
         # Same seam as /invoke: this runs an agent with the caller's credentials and delivers to a
         # real channel, so it must not be weaker than /invoke's gate.
         if token and request.headers.get("X-Gateway-Token") != token:
@@ -1000,6 +1303,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # backend=='native' ONLY: an AP-backed sub that has LOST its flow id is dangling → still 409.
         if sub.backend == "native":
             import httpx
+
             try:
                 from . import native_scheduler as _nsched
             except ImportError:  # flat load
@@ -1008,12 +1312,20 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             _gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
             try:
                 async with httpx.AsyncClient(timeout=200) as c:
-                    r = await c.post(f"http://127.0.0.1:{_port}/invoke",
-                                     headers={"X-Gateway-Token": _gw} if _gw else {},
-                                     json=_nsched._invoke_body(sub))
+                    r = await c.post(
+                        f"http://127.0.0.1:{_port}/invoke",
+                        headers={"X-Gateway-Token": _gw} if _gw else {},
+                        json=_nsched._invoke_body(sub),
+                    )
                     ans = (r.json() or {}).get("answer") if r.status_code == 200 else None
-                return {"ok": True, "id": sub.id, "backend": "native", "fired": True, "answer": ans,
-                        "note": "native watch fired via /invoke (no AP) — also in GET /api/events/runs."}
+                return {
+                    "ok": True,
+                    "id": sub.id,
+                    "backend": "native",
+                    "fired": True,
+                    "answer": ans,
+                    "note": "native watch fired via /invoke (no AP) — also in GET /api/events/runs.",
+                }
             except Exception as e:  # noqa: BLE001
                 return JSONResponse({"ok": False, "error": f"native fire failed: {e}"}, 500)
         if engine is None:
@@ -1022,9 +1334,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": "subscription has no AP flow to run"}, 409)
         # A dangling subscription would otherwise 'trigger' happily and never run anything.
         if not await engine.get_flow(sub.ap_flow_id):
-            return JSONResponse({"ok": False, "error": (
-                f"DANGLING: subscription points at AP flow {sub.ap_flow_id}, which does not exist in "
-                f"Activepieces. Nothing to run."), "ap_flow_id": sub.ap_flow_id}, 409)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        f"DANGLING: subscription points at AP flow {sub.ap_flow_id}, which does not exist in "
+                        f"Activepieces. Nothing to run."
+                    ),
+                    "ap_flow_id": sub.ap_flow_id,
+                },
+                409,
+            )
 
         wait = request.query_params.get("wait", "1") not in ("0", "false", "no")
         try:
@@ -1033,26 +1353,47 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             timeout = 120
         tr = Trace(new_trace_id())
         # Snapshot first: AP gives us no run id back, so the new run is identified by difference.
-        before = {r.get("id") for r in await engine.list_runs(limit=60)
-                  if r.get("flowId") == sub.ap_flow_id}
+        before = {r.get("id") for r in await engine.list_runs(limit=60) if r.get("flowId") == sub.ap_flow_id}
         # Reproduce the PROVIDER's delivery headers so the piece can identify the event. One GitHub
         # repo webhook carries every subscribed event type, so the piece disambiguates on
         # X-GitHub-Event — a synthetic POST without it makes the piece emit NOTHING (AP accepts the
         # trigger, no run is ever created). Proven on new_release / new_commit.
         from . import triggers as _tr
+
         _row = _tr.get(sub.source_connector or "", sub.event or "")
-        _hdrs = ({"X-GitHub-Event": _row.hook_event}
-                 if (_row is not None and _row.app == "github" and _row.hook_event) else None)
-        ok, detail = await engine.trigger_flow(sub.ap_flow_id, await _safe_json(request),
-                                               headers=_hdrs)
-        tr("debug.run", sub=sub_id, flow=sub.ap_flow_id, ok=ok, detail=detail,
-           hook_event=(_row.hook_event if _row is not None else ""))
+        _hdrs = (
+            {"X-GitHub-Event": _row.hook_event}
+            if (_row is not None and _row.app == "github" and _row.hook_event)
+            else None
+        )
+        ok, detail = await engine.trigger_flow(sub.ap_flow_id, await _safe_json(request), headers=_hdrs)
+        tr(
+            "debug.run",
+            sub=sub_id,
+            flow=sub.ap_flow_id,
+            ok=ok,
+            detail=detail,
+            hook_event=(_row.hook_event if _row is not None else ""),
+        )
         if not ok:
-            return JSONResponse({"ok": False, "error": f"Activepieces refused the trigger: {detail}",
-                                 "ap_flow_id": sub.ap_flow_id, "trace_id": tr.id}, 502)
-        out = {"ok": True, "debug": True, "subscription_id": sub_id, "ap_flow_id": sub.ap_flow_id,
-               "triggered": True, "trace_id": tr.id,
-               "warning": "this fired the real flow: it delivered to its real sink"}
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"Activepieces refused the trigger: {detail}",
+                    "ap_flow_id": sub.ap_flow_id,
+                    "trace_id": tr.id,
+                },
+                502,
+            )
+        out = {
+            "ok": True,
+            "debug": True,
+            "subscription_id": sub_id,
+            "ap_flow_id": sub.ap_flow_id,
+            "triggered": True,
+            "trace_id": tr.id,
+            "warning": "this fired the real flow: it delivered to its real sink",
+        }
         if not wait:
             return out
 
@@ -1060,8 +1401,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         run = None
         while time.time() < deadline:
             await asyncio.sleep(3)
-            fresh = [r for r in await engine.list_runs(limit=60)
-                     if r.get("flowId") == sub.ap_flow_id and r.get("id") not in before]
+            fresh = [
+                r
+                for r in await engine.list_runs(limit=60)
+                if r.get("flowId") == sub.ap_flow_id and r.get("id") not in before
+            ]
             done = [r for r in fresh if r.get("status") not in ("RUNNING", "PAUSED", None)]
             if done:
                 run = await engine.get_run(done[0]["id"])
@@ -1071,12 +1415,18 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if run is None:
             # Triggered, but no FINISHED run inside the budget. Say which, rather than imply failure.
             out["timed_out"] = True
-            out["note"] = (f"AP accepted the trigger but no run finished within {timeout}s. "
-                           f"Poll GET /api/events/runs, or retry with a larger ?timeout=.")
+            out["note"] = (
+                f"AP accepted the trigger but no run finished within {timeout}s. "
+                f"Poll GET /api/events/runs, or retry with a larger ?timeout=."
+            )
             return out
         answer, trigger_payload, error = _dissect_run(run)
-        out["run"] = {"id": run.get("id"), "status": run.get("status"),
-                      "started_at": run.get("startTime"), "finished_at": run.get("finishTime")}
+        out["run"] = {
+            "id": run.get("id"),
+            "status": run.get("status"),
+            "started_at": run.get("startTime"),
+            "finished_at": run.get("finishTime"),
+        }
         out["answer"], out["trigger_payload"], out["error"] = answer, trigger_payload, error
         return out
 
@@ -1084,11 +1434,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     def _capability_lines():
         try:
             from . import capability
+
             # Split out, the roster is CUGA's — ask the runtime that talks to it (HttpRuntime
             # caches, so this is not a per-request round trip).
             from .runtime import HttpRuntime
-            remote = ([s.name for s in runtime.list_agents()]
-                      if isinstance(runtime, HttpRuntime) else None)
+
+            remote = [s.name for s in runtime.list_agents()] if isinstance(runtime, HttpRuntime) else None
             return capability.report(remote)
         except Exception:  # noqa: BLE001
             return []
@@ -1097,6 +1448,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         """Whether armed flows survive the instance being replaced. See db_persist.py."""
         try:
             from . import db_persist
+
             return db_persist.status(os.environ.get("EVENTS_DB", ":memory:"))
         except Exception:  # noqa: BLE001 — diagnostics must never break /status
             return {"durable": False, "reason": "unavailable"}
@@ -1107,34 +1459,46 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         scope = resolve_principal(headers=request.headers).scope
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         worker_backend = os.environ.get("EVENTS_WORKER_BACKEND", "cuga")
-        return {"ok": True, "enabled": True, "scope": scope,
-                # concierge (NL→flow) = react; workers (answer the question) = cuga by default
-                "concierge_backend": "react", "worker_backend": worker_backend,
-                "backends": ["react", "cuga"], "ap_configured": engine is not None,
-                "project_grain": grain,
-                # all wired via AP when the engine is configured (inbound channel flows, PUSH
-                # watchers, and scheduled/poll flows that deliver via an appended channel send
-                # step). Telegram/Discord (AP) + Slack (direct) are round-trip-verified live.
-                "features": {"now": True, "cron": engine is not None,
-                             "poll": engine is not None, "push": engine is not None,
-                             "channels_inbound": engine is not None},
-                # the same tiered capability report printed at startup — queryable, so the Studio
-                # (or a smoke test) can show exactly what's live vs what needs infra.
-                "capability": _capability_lines(),
-                # Are armed flows durable? On an ephemeral filesystem the answer is NO, and that is
-                # invisible until the day an instance is replaced and every subscription is gone.
-                # Surfaced so a smoke test can assert it instead of discovering it in production.
-                "durability": _durability()}
+        return {
+            "ok": True,
+            "enabled": True,
+            "scope": scope,
+            # concierge (NL→flow) = react; workers (answer the question) = cuga by default
+            "concierge_backend": "react",
+            "worker_backend": worker_backend,
+            "backends": ["react", "cuga"],
+            "ap_configured": engine is not None,
+            "project_grain": grain,
+            # all wired via AP when the engine is configured (inbound channel flows, PUSH
+            # watchers, and scheduled/poll flows that deliver via an appended channel send
+            # step). Telegram/Discord (AP) + Slack (direct) are round-trip-verified live.
+            "features": {
+                "now": True,
+                "cron": engine is not None,
+                "poll": engine is not None,
+                "push": engine is not None,
+                "channels_inbound": engine is not None,
+            },
+            # the same tiered capability report printed at startup — queryable, so the Studio
+            # (or a smoke test) can show exactly what's live vs what needs infra.
+            "capability": _capability_lines(),
+            # Are armed flows durable? On an ephemeral filesystem the answer is NO, and that is
+            # invisible until the day an instance is replaced and every subscription is gone.
+            # Surfaced so a smoke test can assert it instead of discovering it in production.
+            "durability": _durability(),
+        }
 
     @app.get("/api/events/channels")
     async def events_channels(request: Request):
         from .connectors import channels_status
+
         return {"channels": channels_status()}
 
     @app.get("/api/events/integrations")
     async def events_integrations(request: Request):
         from .connectors import integrations_status
         from .principal import resolve as _resolve
+
         p = _resolve(headers=request.headers)
         conns = None
         connect_url = None
@@ -1146,8 +1510,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             except Exception as e:  # noqa: BLE001 — AP down → report 'unknown', never 500
                 conns = None
                 Trace(new_trace_id()).error("integrations", err=str(e))
-        rows = integrations_status(conns, ap_configured=engine is not None,
-                                   ap_connect_url=connect_url)
+        rows = integrations_status(conns, ap_configured=engine is not None, ap_connect_url=connect_url)
         # Which backend owns each integration's trigger + connection: AP (OAuth/PAT connection, the
         # default) vs DIRECT (CUGA polls the app's API with a token — no AP, no OAuth). Surfaced in
         # the UI so it's explicit that e.g. box-direct connects/tests differently from gmail-on-AP.
@@ -1157,14 +1520,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # connection, so AP-derived status would wrongly read 'not_connected'. Reflect the token.
         if os.environ.get("EVENTS_BOX_BACKEND") == "direct":
             from . import box_direct
+
             has_tok = bool(box_direct.token())
             for r in rows:
                 if r["name"] == "box":
                     r["status"] = "connected" if has_tok else "not_connected"
                     r["connected"] = has_tok
                     r["backend"] = "direct"
-                    r["note"] = ("DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
-                                 "Fires via POST /api/events/box/poll; test with live_box_direct_check.py.")
+                    r["note"] = (
+                        "DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
+                        "Fires via POST /api/events/box/poll; test with live_box_direct_check.py."
+                    )
         # No INTEGRATION auto-connects from an env token any more: github is OAuth (piece-github takes
         # OAUTH2 only — GITHUB_TOKEN does NOT connect it), gmail/box are OAuth, box-direct uses its own
         # token path. So an unconnected integration means "connect it" (OAuth consent), never "wait for
@@ -1178,6 +1544,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         the UI renders the specs; visibility follows per-agent access (perms.can_use)."""
         from . import perms
         from .catalog import as_list as _examples
+
         p = _principal_from(request.query_params.get("scope"), request.headers)
         roles = ["user"]
         if users is not None:
@@ -1193,15 +1560,20 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         agents = []
         for s in specs:
             usable = perms.can_use(s, roles=roles, user_id=p.user_id)
-            agents.append({"name": s.name, "prompt": getattr(s, "prompt", ""),
-                           "backend": getattr(s, "backend", ""),
-                           "mcp_servers": list(getattr(s, "mcp_servers", []) or []),
-                           "channels": list(getattr(s, "channels", []) or []),
-                           "integrations": list(getattr(s, "integrations", []) or []),
-                           "access": list(getattr(s, "access", []) or []),
-                           "restricted": bool(getattr(s, "access", []) or []),
-                           "examples": [u for u in by_agent.get(s.name, []) if u][:3],
-                           "can_use": usable})
+            agents.append(
+                {
+                    "name": s.name,
+                    "prompt": getattr(s, "prompt", ""),
+                    "backend": getattr(s, "backend", ""),
+                    "mcp_servers": list(getattr(s, "mcp_servers", []) or []),
+                    "channels": list(getattr(s, "channels", []) or []),
+                    "integrations": list(getattr(s, "integrations", []) or []),
+                    "access": list(getattr(s, "access", []) or []),
+                    "restricted": bool(getattr(s, "access", []) or []),
+                    "examples": [u for u in by_agent.get(s.name, []) if u][:3],
+                    "can_use": usable,
+                }
+            )
         agents.sort(key=lambda a: a["name"])
         return {"scope": agent_scope, "agents": agents}
 
@@ -1211,16 +1583,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         Agent-editor form so the UI never hardcodes the catalog. Also returns the MCP registry URL so
         the Studio can link out to the tool explorer (its interactive /docs)."""
         from . import mcp_catalog
+
         registry_url = (os.environ.get("EVENTS_REGISTRY_URL") or "http://localhost:8001").rstrip("/")
-        return {"servers": [{"name": n, "hint": mcp_catalog.HINTS.get(n, "")}
-                            for n in mcp_catalog.known_names()],
-                "registry_url": registry_url,
-                "explorer_url": f"{registry_url}/docs"}
+        return {
+            "servers": [{"name": n, "hint": mcp_catalog.HINTS.get(n, "")} for n in mcp_catalog.known_names()],
+            "registry_url": registry_url,
+            "explorer_url": f"{registry_url}/docs",
+        }
 
     def _agent_spec_from_body(body: dict):
         """Validate an agent-editor payload → AgentSpec (or a (None, error) pair)."""
         from .runtime import AgentSpec
         from . import mcp_catalog
+
         name = (body.get("name") or "").strip()
         if not name or any(ch.isspace() for ch in name):
             return None, "name is required and must not contain whitespace"
@@ -1237,8 +1612,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if bad_ch:
             return None, f"unknown channels: {bad_ch}"
         from . import triggers as _tr
+
         integrations = []
-        for it in (body.get("integrations") or []):
+        for it in body.get("integrations") or []:
             app_name = (it.get("app") or "").strip() if isinstance(it, dict) else ""
             own = (it.get("ownership") or "per-user") if isinstance(it, dict) else "per-user"
             if not app_name:
@@ -1254,17 +1630,22 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 row = _tr.get(app_name, str(ev))
                 if row is None:
                     known = ", ".join(t.event for t in _tr.events_for(app_name)) or "none"
-                    return None, (f"unknown trigger '{app_name}/{ev}' "
-                                  f"(known for {app_name}: {known})")
+                    return None, (f"unknown trigger '{app_name}/{ev}' (known for {app_name}: {known})")
                 if row.event not in trigs:
                     trigs.append(row.event)
             if trigs:
                 entry["triggers"] = trigs
             integrations.append(entry)
         access = [str(a) for a in (body.get("access") or [])]
-        return AgentSpec(name=name, prompt=body.get("prompt", "") or "", backend=backend,
-                         mcp_servers=mcp, channels=channels, integrations=integrations,
-                         access=access), None
+        return AgentSpec(
+            name=name,
+            prompt=body.get("prompt", "") or "",
+            backend=backend,
+            mcp_servers=mcp,
+            channels=channels,
+            integrations=integrations,
+            access=access,
+        ), None
 
     @app.post("/api/events/agents")
     async def create_agent(request: Request):
@@ -1309,7 +1690,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         try:
             runtime.upsert_agent(spec, scope=agent_scope)
         except RuntimeError as e:
-            return JSONResponse({"ok": False, "error": str(e)}, 410)   # single-agent world
+            return JSONResponse({"ok": False, "error": str(e)}, 410)  # single-agent world
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": str(e)}, 500)
         Trace(new_trace_id())("agent.update", name=spec.name, scope=agent_scope)
@@ -1318,6 +1699,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     @app.get("/api/events/examples")
     async def events_examples():
         from .catalog import as_list
+
         return {"examples": as_list()}
 
     @app.get("/api/events/triggers")
@@ -1326,16 +1708,27 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         triggers.py. Drives the Studio's agent editor (trigger-grain declarations) and the slides,
         so neither can drift from the code. Grouped per app, default trigger first."""
         from . import triggers as _tr
+
         out = []
         for app_name in _tr.apps():
             rows = []
             for t in sorted(_tr.events_for(app_name), key=lambda x: (not x.default, x.event)):
-                rows.append({"event": t.event, "title": t.title, "backend": t.backend,
-                             "default": t.default, "fire": t.fire,
-                             "piece": t.piece, "ap_trigger": t.ap_trigger,
-                             "direct_kind": t.direct_kind,
-                             "slots": [{"name": n, "question": _tr.SLOTS[n].question,
-                                        "required": _tr.SLOTS[n].required} for n in t.slots]})
+                rows.append(
+                    {
+                        "event": t.event,
+                        "title": t.title,
+                        "backend": t.backend,
+                        "default": t.default,
+                        "fire": t.fire,
+                        "piece": t.piece,
+                        "ap_trigger": t.ap_trigger,
+                        "direct_kind": t.direct_kind,
+                        "slots": [
+                            {"name": n, "question": _tr.SLOTS[n].question, "required": _tr.SLOTS[n].required}
+                            for n in t.slots
+                        ],
+                    }
+                )
             out.append({"app": app_name, "triggers": rows})
         return {"apps": out, "total": len(_tr.rows()), "kinds": list(_tr.event_kinds())}
 
@@ -1347,12 +1740,20 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         two live one level up, in events_docs/).
         Guarded to those files; path resolved from the repo (override with EVENTS_DOCS_DIR)."""
         import pathlib
-        fname = {"api": "api.html", "spec": "api_spec.html", "examples": "examples.html",
-                 "slides": "slides.html", "nlflow": "nl_to_flow.html"}.get(page)
+
+        fname = {
+            "api": "api.html",
+            "spec": "api_spec.html",
+            "examples": "examples.html",
+            "slides": "slides.html",
+            "nlflow": "nl_to_flow.html",
+        }.get(page)
         if not fname:
             return JSONResponse({"ok": False, "error": "unknown page"}, 404)
-        base = pathlib.Path(os.environ.get("EVENTS_DOCS_DIR") or str(
-            pathlib.Path(__file__).resolve().parents[4] / "events_docs" / "api"))
+        base = pathlib.Path(
+            os.environ.get("EVENTS_DOCS_DIR")
+            or str(pathlib.Path(__file__).resolve().parents[4] / "events_docs" / "api")
+        )
         fp = (base.parent if page in ("slides", "nlflow") else base) / fname
         if not fp.is_file():
             return JSONResponse({"ok": False, "error": f"{fname} not found (set EVENTS_DOCS_DIR)"}, 404)
@@ -1365,6 +1766,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         which is distinct from 'is the credential in .env'. Also tags each as USER vs TENANT."""
         from . import setup_guides
         from .connectors import channels_status, integrations_status
+
         pub = os.environ.get("EVENTS_PUBLIC_URL", "").rstrip("/") or "<EVENTS_PUBLIC_URL>"
         # live connection status per connector
         p = resolve_principal(headers=request.headers)
@@ -1380,21 +1782,29 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             st[c["name"]] = c["status"]
         for i in integrations_status(conns, ap_configured=engine is not None):
             st[i.get("app") or i["name"]] = i["status"]
-        if os.environ.get("EVENTS_BOX_BACKEND", "").lower() == "direct":   # box direct = a USER token
+        if os.environ.get("EVENTS_BOX_BACKEND", "").lower() == "direct":  # box direct = a USER token
             from . import box_direct
+
             st["box"] = "connected" if box_direct.token() else "not_connected"
         out = []
+
         def _cred_scope(key: str) -> str:
             # TENANT: OAuth *app* creds + channel bot tokens (one per org). USER: personal tokens/PATs.
             k = key.upper()
-            if k.startswith("EVENTS_OAUTH_") or k.endswith("_BOT_TOKEN") or k.endswith("_SIGNING_SECRET") \
-                    or k.endswith("_BOT_USERNAME"):
+            if (
+                k.startswith("EVENTS_OAUTH_")
+                or k.endswith("_BOT_TOKEN")
+                or k.endswith("_SIGNING_SECRET")
+                or k.endswith("_BOT_USERNAME")
+            ):
                 return "tenant"
-            return "user"     # GITHUB_TOKEN, BOX_DEV_TOKEN, …
+            return "user"  # GITHUB_TOKEN, BOX_DEV_TOKEN, …
 
         for g in setup_guides.as_list():
-            creds = [{**c, "present": bool(os.environ.get(c["key"])), "scope": _cred_scope(c["key"])}
-                     for c in g.get("creds", [])]
+            creds = [
+                {**c, "present": bool(os.environ.get(c["key"])), "scope": _cred_scope(c["key"])}
+                for c in g.get("creds", [])
+            ]
             steps = [s.replace("<EVENTS_PUBLIC_URL>", pub) for s in g.get("steps", [])]
             # how you connect it (drives the Studio's button): oauth consent · paste token · direct · none
             # a guide may declare `connect` explicitly (e.g. Box's default direct-token path); else derive.
@@ -1408,14 +1818,23 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 # from "the guide mentions GITHUB_TOKEN" told users to paste a PAT into an OAuth-only
                 # piece for months. oauth.connect_kind is the single source of truth.
                 from . import oauth as _oauth
+
                 connect = _oauth.connect_kind(app) or ("token" if g.get("creds") else "none")
             status = st.get(app, "n/a")
             # the CONNECTION is per-USER for integrations (each user logs in) · TENANT for channels (one bot)
             conn_scope = "user" if g.get("kind") == "integration" else "tenant"
-            out.append({**g, "creds": creds, "steps": steps, "connect": connect,
-                        "conn_status": status, "connected": status == "connected",
-                        "connection_scope": conn_scope,
-                        "needs_connection": connect != "none"})
+            out.append(
+                {
+                    **g,
+                    "creds": creds,
+                    "steps": steps,
+                    "connect": connect,
+                    "conn_status": status,
+                    "connected": status == "connected",
+                    "connection_scope": conn_scope,
+                    "needs_connection": connect != "none",
+                }
+            )
         return {"public_url": pub, "guides": out}
 
     # --- DIRECT Slack (default backend; no AP) — Slack Events API → /invoke → chat.postMessage -----
@@ -1431,15 +1850,21 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return {
             "ok": True,
             "endpoint": "slack events",
-            "note": ("This endpoint is healthy. Slack delivers events by POST — a GET from a "
-                     "browser cannot exercise it. Paste this exact URL into Slack → your app → "
-                     "Event Subscriptions → Request URL and it will verify."),
-            "self_test": ("curl -X POST <this-url> -H 'Content-Type: application/json' "
-                          "-d '{\"type\":\"url_verification\",\"challenge\":\"probe\"}'  "
-                          "# should print: probe"),
-            "wrong_host_hint": ("Slack points at the EVENTING SERVICE (cuga-events-svc), never at "
-                                "CUGA (cuga-core) — CUGA answers 405 here and Slack reports "
-                                "'your request URL returned an HTTP error'."),
+            "note": (
+                "This endpoint is healthy. Slack delivers events by POST — a GET from a "
+                "browser cannot exercise it. Paste this exact URL into Slack → your app → "
+                "Event Subscriptions → Request URL and it will verify."
+            ),
+            "self_test": (
+                "curl -X POST <this-url> -H 'Content-Type: application/json' "
+                "-d '{\"type\":\"url_verification\",\"challenge\":\"probe\"}'  "
+                "# should print: probe"
+            ),
+            "wrong_host_hint": (
+                "Slack points at the EVENTING SERVICE (cuga-events-svc), never at "
+                "CUGA (cuga-core) — CUGA answers 405 here and Slack reports "
+                "'your request URL returned an HTTP error'."
+            ),
         }
 
     @app.post("/api/events/slack/events")
@@ -1450,6 +1875,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import asyncio
         import json as _json
         from . import slack_direct
+
         raw = (await request.body()).decode("utf-8", "replace")
         try:
             body = _json.loads(raw or "{}")
@@ -1476,20 +1902,30 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 # thread identity: a threaded reply carries thread_ts; a root message uses its own
                 # ts so the bot's reply STARTS a thread; the conversation stays in that thread.
                 thread_ts = ev.get("thread_ts") or ev.get("ts")
-                asyncio.create_task(_slack_answer(text, ev.get("channel", ""),
-                                                  ev.get("user", ""), thread_ts))
+                asyncio.create_task(_slack_answer(text, ev.get("channel", ""), ev.get("user", ""), thread_ts))
             elif store is not None:
                 from . import direct_events
-                subs = direct_events.match(store, "slack", "new_channel_message",
-                                           channel=str(ev.get("channel") or ""),
-                                           text=str(ev.get("text") or ""))
+
+                subs = direct_events.match(
+                    store,
+                    "slack",
+                    "new_channel_message",
+                    channel=str(ev.get("channel") or ""),
+                    text=str(ev.get("text") or ""),
+                )
                 if subs:
-                    Trace(new_trace_id())("slack.direct", event="new_channel_message",
-                                          matched=len(subs), gated="mention")
-                    asyncio.create_task(direct_events.dispatch_all(
-                        subs, app="slack", event="new_channel_message",
-                        payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""},
-                        engine=engine))
+                    Trace(new_trace_id())(
+                        "slack.direct", event="new_channel_message", matched=len(subs), gated="mention"
+                    )
+                    asyncio.create_task(
+                        direct_events.dispatch_all(
+                            subs,
+                            app="slack",
+                            event="new_channel_message",
+                            payload={"text": ev.get("text") or "", "channel": ev.get("channel") or ""},
+                            engine=engine,
+                        )
+                    )
             return {"ok": True}
         # 3a-bis) an APP MENTION (`@bot …`) is unambiguously addressed to the bot → answer it in CHAT,
         #     even under EVENTS_SLACK_CHAT=mention. Slack delivers `app_mention` (NOT `message`) when the
@@ -1497,10 +1933,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         #     @mention silently gets no reply (the exact "@eda-test-app what's the weather" symptom).
         #     Dedup on ts so we don't double-answer when both subscriptions are on. Falls through to 3b
         #     so any `new_slack_mention` watcher still fires too.
-        if (ev.get("type") == "app_mention" and ev.get("text") and ev.get("channel")
-                and _slack_first_touch(ev.get("ts"))):
+        if (
+            ev.get("type") == "app_mention"
+            and ev.get("text")
+            and ev.get("channel")
+            and _slack_first_touch(ev.get("ts"))
+        ):
             _uid = await slack_direct.bot_user_id()
-            _txt = (ev.get("text") or "")
+            _txt = ev.get("text") or ""
             if _uid:
                 _txt = _txt.replace(f"<@{_uid}>", " ").strip()
             _thread_ts = ev.get("thread_ts") or ev.get("ts")
@@ -1512,18 +1952,25 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         ev_type = ev.get("type") or ""
         if ev_type and store is not None:
             from . import direct_events
+
             kind = direct_events.kind_for("slack", ev_type)
             if kind:
                 item = ev.get("item") or {}
                 subs = direct_events.match(
-                    store, "slack", kind,
+                    store,
+                    "slack",
+                    kind,
                     channel=str(ev.get("channel") or item.get("channel") or ""),
                     text=str(ev.get("text") or ""),
-                    emoji=str(ev.get("reaction") or ""))
+                    emoji=str(ev.get("reaction") or ""),
+                )
                 if subs:
                     Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
-                    asyncio.create_task(direct_events.dispatch_all(
-                        subs, app="slack", event=kind, payload=dict(ev), engine=engine))
+                    asyncio.create_task(
+                        direct_events.dispatch_all(
+                            subs, app="slack", event=kind, payload=dict(ev), engine=engine
+                        )
+                    )
         return {"ok": True}
 
     async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
@@ -1536,10 +1983,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         thread_ts keys conversation memory per-thread (one Slack thread = one topic); the native id
         for identity/delivery stays the channel — ``channel_native_id`` strips the ``#<ts>``."""
         from . import cuga_door, slack_direct
+
         tr = Trace(new_trace_id())
         try:
-            answer = await cuga_door.ask(text, channel="slack", native_id=channel,
-                                         user=user, locus=thread_ts or "")
+            answer = await cuga_door.ask(
+                text, channel="slack", native_id=channel, user=user, locus=thread_ts or ""
+            )
             if answer:
                 res = await slack_direct.send_message(channel, answer, thread_ts=thread_ts)
                 tr("slack.reply", channel=channel, thread=thread_ts, ok=res.get("ok"))
@@ -1559,6 +2008,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if token and request.headers.get("X-Gateway-Token") != token:
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import box_direct
+
         body = await _safe_json(request)
         # AP's HTTP action posts the body nested under "data" ({"data": {...}}, see _http_action).
         # A flat/manual caller posts the fields at top level. Unwrap so BOTH shapes read the same —
@@ -1573,8 +2023,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if server_tracked:
             since = box_direct.load_since(folder)
         agent = body.get("agent") or "resume_judge"
-        deliver_to = body.get("deliver_to")            # e.g. a direct channel: "slack"
-        deliver_target = body.get("deliver_target")    # the channel-native id (e.g. Slack channel id)
+        deliver_to = body.get("deliver_to")  # e.g. a direct channel: "slack"
+        deliver_target = body.get("deliver_target")  # the channel-native id (e.g. Slack channel id)
         # WHICH box event to poll for: new_file (default — the proven resume path), new_folder,
         # or new_box_comment. One poller, three trigger kinds (the trigger registry's box rows).
         kind = (body.get("kind") or "new_file").replace("-", "_")
@@ -1603,43 +2053,59 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             else:
                 # folder/comment events carry their metadata straight to the agent — there is no
                 # file body to download. Same /invoke seam, same delivery mechanics.
-                await _box_event_dispatch(agent, kind, f, deliver_to, body.get("scope"),
-                                          deliver_target)
-                processed.append({"id": f.get("id"),
-                                  "name": f.get("name") or f.get("message", "")[:60]})
+                await _box_event_dispatch(agent, kind, f, deliver_to, body.get("scope"), deliver_target)
+                processed.append({"id": f.get("id"), "name": f.get("name") or f.get("message", "")[:60]})
         if server_tracked and newest and newest != (since or ""):
-            box_direct.save_since(folder, newest)      # advance the watermark for the next poll
-        return {"ok": True, "folder": folder, "kind": kind, "processed": processed,
-                "newest": newest, "trace_id": tr.id}
+            box_direct.save_since(folder, newest)  # advance the watermark for the next poll
+        return {
+            "ok": True,
+            "folder": folder,
+            "kind": kind,
+            "processed": processed,
+            "newest": newest,
+            "trace_id": tr.id,
+        }
 
-    async def _box_event_dispatch(agent: str, kind: str, item: dict, deliver_to, scope,
-                                  deliver_target=None) -> None:
+    async def _box_event_dispatch(
+        agent: str, kind: str, item: dict, deliver_to, scope, deliver_target=None
+    ) -> None:
         """Fire one non-file Box event (a new folder / a new comment) through /invoke(agent)."""
         import httpx as _httpx
         from . import delivery
+
         tr = Trace(new_trace_id())
         port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
         if kind == "new_folder":
-            text = (f"A new folder appeared in the watched Box folder: '{item.get('name')}' "
-                    f"(id {item.get('id')}, created {item.get('created_at')}). "
-                    "Summarize what this means and suggest the next step.")
+            text = (
+                f"A new folder appeared in the watched Box folder: '{item.get('name')}' "
+                f"(id {item.get('id')}, created {item.get('created_at')}). "
+                "Summarize what this means and suggest the next step."
+            )
         else:
-            text = (f"A new comment was posted on Box file '{item.get('file')}' by "
-                    f"{item.get('by') or 'someone'}: \"{item.get('message', '')}\". "
-                    "Summarize the comment and flag any action items.")
-        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target}"}
-               if (direct and deliver_target) else
-               {"type": "integration", "name": "box", "thread_id": f"box:{kind}:{item.get('id')}"})
-        inv = {"agent": agent, "text": text, "deliver": bool(direct and deliver_target),
-               "source": src, "event": {"kind": kind, "payload": dict(item)}}
+            text = (
+                f"A new comment was posted on Box file '{item.get('file')}' by "
+                f"{item.get('by') or 'someone'}: \"{item.get('message', '')}\". "
+                "Summarize the comment and flag any action items."
+            )
+        src = (
+            {"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target}"}
+            if (direct and deliver_target)
+            else {"type": "integration", "name": "box", "thread_id": f"box:{kind}:{item.get('id')}"}
+        )
+        inv = {
+            "agent": agent,
+            "text": text,
+            "deliver": bool(direct and deliver_target),
+            "source": src,
+            "event": {"kind": kind, "payload": dict(item)},
+        }
         if scope:
             inv["scope"] = scope
         try:
             async with _httpx.AsyncClient(timeout=180) as c:
-                await c.post(f"http://127.0.0.1:{port}/invoke",
-                             headers={"X-Gateway-Token": gw}, json=inv)
+                await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
             tr("box.event", kind=kind, agent=agent, ok=True)
         except Exception as e:  # noqa: BLE001
             tr.error("box.event", kind=kind, err=str(e))
@@ -1664,47 +2130,76 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if token and request.headers.get("X-Gateway-Token") != token:
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import triggers as _triggers
+
         body = await _safe_json(request)
         source = (body.get("source") or "").strip()
         row = _triggers.get(source, body.get("event") or "")
         if row is None:
-            return JSONResponse({"ok": False, "error": f"no trigger for source={source!r} "
-                                 f"event={body.get('event')!r}"}, 404)
+            return JSONResponse(
+                {"ok": False, "error": f"no trigger for source={source!r} event={body.get('event')!r}"}, 404
+            )
         if row.backend != "ap":
-            return JSONResponse({"ok": False, "error": f"{row.app}/{row.event} is a DIRECT trigger — "
-                                 "fire it through its real transport (or /api/events/box/poll for box)"}, 400)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{row.app}/{row.event} is a DIRECT trigger — "
+                    "fire it through its real transport (or /api/events/box/poll for box)",
+                },
+                400,
+            )
         payload = body.get("payload") or row.synth
         if not payload:
-            return JSONResponse({"ok": False, "error": f"{row.app}/{row.event} has no synth sample; "
-                                 "pass an explicit 'payload'"}, 422)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"{row.app}/{row.event} has no synth sample; pass an explicit 'payload'",
+                },
+                422,
+            )
         agent = body.get("agent") or "cuga"
-        prompt = (body.get("prompt") or f"A {row.title} event just fired on {row.app}. "
-                  "Summarize what happened and what I should do next.")
+        prompt = (
+            body.get("prompt")
+            or f"A {row.title} event just fired on {row.app}. "
+            "Summarize what happened and what I should do next."
+        )
         deliver_to = body.get("deliver_to")
         deliver_target = body.get("deliver_target")
         direct = bool(deliver_to and deliver_target)
-        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target}"}
-               if direct else
-               {"type": "integration", "name": row.app, "thread_id": f"synth:{row.app}:{row.event}"})
-        inv = {"agent": agent, "text": prompt, "deliver": direct, "scope": body.get("scope") or "",
-               "source": src, "event": {"kind": row.event, "payload": {**payload, "_raw": payload}}}
+        src = (
+            {"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target}"}
+            if direct
+            else {"type": "integration", "name": row.app, "thread_id": f"synth:{row.app}:{row.event}"}
+        )
+        inv = {
+            "agent": agent,
+            "text": prompt,
+            "deliver": direct,
+            "scope": body.get("scope") or "",
+            "source": src,
+            "event": {"kind": row.event, "payload": {**payload, "_raw": payload}},
+        }
         tr = Trace(new_trace_id())
         import httpx as _httpx
+
         port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         try:
             async with _httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=inv)
+                r = await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
             answer = ""
             try:
                 answer = (r.json() or {}).get("answer") or ""
             except Exception:  # noqa: BLE001
                 answer = r.text[:400]
             tr("synth.fire", source=row.app, event=row.event, delivered=direct, ok=r.status_code == 200)
-            return {"ok": r.status_code == 200, "source": row.app, "event": row.event,
-                    "delivered_to": deliver_to if direct else None, "answer": answer,
-                    "trace_id": tr.id}
+            return {
+                "ok": r.status_code == 200,
+                "source": row.app,
+                "event": row.event,
+                "delivered_to": deliver_to if direct else None,
+                "answer": answer,
+                "trace_id": tr.id,
+            }
         except Exception as e:  # noqa: BLE001
             tr.error("synth.fire", err=str(e))
             return JSONResponse({"ok": False, "error": str(e)}, 502)
@@ -1726,24 +2221,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             got = await box_direct.fetch_content(fid, "job description")
             if got["kind"] == "text":
                 return got["text"]
-            Trace(new_trace_id()).error("box.jd", file=fid, kind=got["kind"],
-                                        reason=got.get("reason", ""))
+            Trace(new_trace_id()).error("box.jd", file=fid, kind=got["kind"], reason=got.get("reason", ""))
         return os.environ.get("EVENTS_RESUME_JD", "")
 
-    async def _box_dispatch(agent: str, file: dict, deliver_to, scope, deliver_target=None,
-                            jd: str = "") -> None:
+    async def _box_dispatch(
+        agent: str, file: dict, deliver_to, scope, deliver_target=None, jd: str = ""
+    ) -> None:
         """Fire one Box file through /invoke(agent). If deliver_to is a DIRECT channel the reply is
         sent CUGA-side (no AP); otherwise the answer just rides back in the /invoke response.
         ``deliver_target`` is the channel-native id (e.g. the Slack channel) so the answer lands in
         the right place — without it a direct sink has no destination."""
         import httpx
         from . import box_direct, delivery
+
         tr = Trace(new_trace_id())
         port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
-        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target or ''}"}
-               if direct else {"type": "integration", "name": "box", "thread_id": f"box:{file['id']}"})
+        src = (
+            {"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target or ''}"}
+            if direct
+            else {"type": "integration", "name": "box", "thread_id": f"box:{file['id']}"}
+        )
 
         # THE DOWNLOAD STEP. A watcher that knows only the filename cannot judge a resume, and the
         # agent holds no Box credential to fetch it with. So the server fetches: CUGA downloads the
@@ -1756,11 +2255,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             body = content["text"] + ("\n…[truncated]" if content.get("truncated") else "")
             excerpt = f"\n\n--- contents of {name} ---\n{body}\n--- end ---"
         elif content["kind"] == "binary":
-            excerpt = (f"\n\nThe file is binary ({content['bytes']} bytes). Its base64 is in "
-                       f"event.payload.file_base64 — decode it with extract_text_from_bytes.")
+            excerpt = (
+                f"\n\nThe file is binary ({content['bytes']} bytes). Its base64 is in "
+                f"event.payload.file_base64 — decode it with extract_text_from_bytes."
+            )
         else:
-            excerpt = (f"\n\nThe file could not be downloaded ({content['reason']}). Judge from the "
-                       f"filename alone, or say you could not read it — do not invent its contents.")
+            excerpt = (
+                f"\n\nThe file could not be downloaded ({content['reason']}). Judge from the "
+                f"filename alone, or say you could not read it — do not invent its contents."
+            )
 
         ev_payload = {"file_id": file["id"], "name": name, "content_kind": content["kind"]}
         if content["kind"] == "binary":
@@ -1771,24 +2274,33 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # No JD means no judgement. Say so, rather than asking a question into a channel where nobody
         # is listening — a watcher runs unattended, so "please provide the JD" is a dead end.
         if jd:
-            ask = ("Judge this candidate's fit against the job description below. "
-                   "Start your reply with MATCH or SKIP, then give two lines of reasoning citing the "
-                   f"resume.\n\n--- job description ---\n{jd}\n--- end ---")
+            ask = (
+                "Judge this candidate's fit against the job description below. "
+                "Start your reply with MATCH or SKIP, then give two lines of reasoning citing the "
+                f"resume.\n\n--- job description ---\n{jd}\n--- end ---"
+            )
             ev_payload["has_jd"] = True
         else:
-            ask = ("No job description is configured, so do NOT ask for one — nobody is reading. "
-                   "Start your reply with SKIP, say the JD is missing, and summarise the candidate in "
-                   "two lines so a human can triage.")
+            ask = (
+                "No job description is configured, so do NOT ask for one — nobody is reading. "
+                "Start your reply with SKIP, say the JD is missing, and summarise the candidate in "
+                "two lines so a human can triage."
+            )
             ev_payload["has_jd"] = False
 
-        payload = {"agent": agent, "deliver": bool(direct), "scope": scope or "",
-                   "text": f"A file '{name}' landed in Box. {ask}{excerpt}",
-                   "source": src,
-                   "event": {"kind": "new_file", "payload": ev_payload}}
+        payload = {
+            "agent": agent,
+            "deliver": bool(direct),
+            "scope": scope or "",
+            "text": f"A file '{name}' landed in Box. {ask}{excerpt}",
+            "source": src,
+            "event": {"kind": "new_file", "payload": ev_payload},
+        }
         try:
             async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=payload)
+                r = await c.post(
+                    f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=payload
+                )
             tr("box.dispatch", file=file.get("name"), ok=r.status_code == 200, deliver=deliver_to)
         except Exception as e:  # noqa: BLE001
             tr.error("box.dispatch", file=file.get("name"), err=str(e))
@@ -1821,6 +2333,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         import hmac as _hmac
         import json as _json
         import httpx
+
         want = os.environ.get("EVENTS_WEBHOOK_KEY")
         if want and not _hmac.compare_digest(request.query_params.get("key") or "", want):
             return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
@@ -1839,11 +2352,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             # tool" instruction the concierge sometimes handles an interesting payload (a code
             # diff) itself — then /invoke's meta carries no picked agent and the caller sees
             # agent='concierge', which defeats the point of routed mode.
-            text = (f"An external system sent this event via webhook '{name}'. Route it: CALL the "
-                    f"one best-suited pre-built agent tool on this payload and return its answer — "
-                    f"do NOT answer it yourself and do NOT set up a recurring flow:\n\n{body_txt}")
+            text = (
+                f"An external system sent this event via webhook '{name}'. Route it: CALL the "
+                f"one best-suited pre-built agent tool on this payload and return its answer — "
+                f"do NOT answer it yourself and do NOT set up a recurring flow:\n\n{body_txt}"
+            )
         else:
-            text = (f"An external system POSTed to webhook '{name}'. Triage this payload:\n\n{body_txt}")
+            text = f"An external system POSTed to webhook '{name}'. Triage this payload:\n\n{body_txt}"
         port = os.environ.get("EVENTS_CUGA_PORT", "7860")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         deliver = bool(deliver_to and target)
@@ -1851,14 +2366,21 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # `hook:{name}` thread the router's memory of past events biases it toward answering
         # itself (it has seen the answer shape before), and the picked-agent meta degrades.
         hook_thread = f"hook:{name}:{tr.id}" if routed else f"hook:{name}"
-        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{target}"}
-               if deliver else {"type": "integration", "name": "webhook", "thread_id": hook_thread})
-        inv = {"agent": agent, "text": text, "deliver": deliver, "source": src,
-               "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}}}
+        src = (
+            {"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{target}"}
+            if deliver
+            else {"type": "integration", "name": "webhook", "thread_id": hook_thread}
+        )
+        inv = {
+            "agent": agent,
+            "text": text,
+            "deliver": deliver,
+            "source": src,
+            "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}},
+        }
         try:
             async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=inv)
+                r = await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
             j = r.json() if r.status_code == 200 else {}
         except Exception as e:  # noqa: BLE001
             tr.error("hook", err=str(e))
@@ -1869,8 +2391,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         resolved = (j.get("meta") or {}).get("agent") or agent
         if routed and resolved in ("", "concierge"):
             resolved = "cuga"
-        return {"ok": r.status_code == 200, "webhook": name, "routed": routed,
-                "agent": resolved, "answer": j.get("answer"), "delivered": deliver, "trace_id": tr.id}
+        return {
+            "ok": r.status_code == 200,
+            "webhook": name,
+            "routed": routed,
+            "agent": resolved,
+            "answer": j.get("answer"),
+            "delivered": deliver,
+            "trace_id": tr.id,
+        }
 
     # --- DIRECT Discord (default backend; a Gateway WebSocket bot — no AP, no public URL) ----------
     async def _discord_answer(msg: dict) -> None:
@@ -1881,7 +2410,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         EVENTS_DISCORD_CHAT=mention: only @bot messages / DMs / replies-to-the-bot reach CHAT —
         a gated-out message still feeds the channel-message WATCHERS (mirrors the Slack gate)."""
         from . import discord_direct
-        import httpx
+
         tr = Trace(new_trace_id())
         channel_id = str(msg.get("channel_id") or "")
         author = str((msg.get("author") or {}).get("id") or "")
@@ -1889,23 +2418,27 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if not to_chat:
             if store is not None:
                 from . import direct_events
-                subs = direct_events.match(store, "discord", "new_channel_message",
-                                           channel=channel_id, text=msg.get("content") or "")
+
+                subs = direct_events.match(
+                    store, "discord", "new_channel_message", channel=channel_id, text=msg.get("content") or ""
+                )
                 if subs:
-                    tr("discord.direct", event="new_channel_message", matched=len(subs),
-                       gated="mention")
+                    tr("discord.direct", event="new_channel_message", matched=len(subs), gated="mention")
                     await direct_events.dispatch_all(
-                        subs, app="discord", event="new_channel_message",
+                        subs,
+                        app="discord",
+                        event="new_channel_message",
                         payload={"text": msg.get("content") or "", "channel": channel_id},
-                        engine=engine)
+                        engine=engine,
+                    )
             return
         try:
             from . import cuga_door
+
             answer = await cuga_door.ask(text, channel="discord", native_id=channel_id, user=author)
             if answer:
                 # reply-to the asking message: the answer visibly attaches to its question
-                res = await discord_direct.send_message(channel_id, answer,
-                                                        reply_to=str(msg.get("id") or ""))
+                res = await discord_direct.send_message(channel_id, answer, reply_to=str(msg.get("id") or ""))
                 tr("discord.reply", channel=channel_id, ok=res.get("ok"))
             else:
                 tr.error("discord", reason="no answer from CUGA /run")
@@ -1916,12 +2449,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # lifespan launches app.state.events_background; nothing to arm (the bot connects on boot).
     if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
         from . import discord_direct as _dd
+
         if _dd.bot_token():
+
             async def _discord_event(dispatch_type: str, data: dict) -> None:
                 """Non-message Gateway dispatches (GUILD_MEMBER_ADD, MESSAGE_REACTION_ADD) → the
                 direct watchers. Lift the channel + emoji so the channel/emoji filters can match a
                 reaction (a member-join carries neither and matches on guild only)."""
                 from . import direct_events
+
                 kind = direct_events.kind_for("discord", dispatch_type)
                 if not kind or store is None:
                     return
@@ -1931,11 +2467,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 subs = direct_events.match(store, "discord", kind, channel=chan, emoji=emoji)
                 if subs:
                     Trace(new_trace_id())("discord.direct", event=kind, matched=len(subs))
-                    await direct_events.dispatch_all(subs, app="discord", event=kind,
-                                                     payload=dict(data), engine=engine)
+                    await direct_events.dispatch_all(
+                        subs, app="discord", event=kind, payload=dict(data), engine=engine
+                    )
 
             async def _discord_gateway():
                 await _dd.run_gateway(_discord_answer, on_event=_discord_event)
+
             _bg = list(getattr(app.state, "events_background", []) or [])
             _bg.append(_discord_gateway)
             app.state.events_background = _bg
@@ -1948,7 +2486,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         EVENTS_TELEGRAM_CHAT=mention: in a GROUP, only @bot messages reach CHAT (a private chat always
         does) — a gated-out message still feeds the channel-message WATCHERS (mirrors Slack/Discord)."""
         from . import telegram_direct
-        import httpx
+
         tr = Trace(new_trace_id())
         chat_id = str((msg.get("chat") or {}).get("id") or "")
         sender = str((msg.get("from") or {}).get("id") or "")
@@ -1956,20 +2494,26 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if not to_chat:
             if store is not None:
                 from . import direct_events
-                subs = direct_events.match(store, "telegram", "new_channel_message",
-                                           channel=chat_id, text=msg.get("text") or "")
+
+                subs = direct_events.match(
+                    store, "telegram", "new_channel_message", channel=chat_id, text=msg.get("text") or ""
+                )
                 if subs:
                     tr("telegram.direct", event="new_channel_message", matched=len(subs), gated="mention")
                     await direct_events.dispatch_all(
-                        subs, app="telegram", event="new_channel_message",
-                        payload={"text": msg.get("text") or "", "channel": chat_id}, engine=engine)
+                        subs,
+                        app="telegram",
+                        event="new_channel_message",
+                        payload={"text": msg.get("text") or "", "channel": chat_id},
+                        engine=engine,
+                    )
             return
         try:
             from . import cuga_door
+
             answer = await cuga_door.ask(text, channel="telegram", native_id=chat_id, user=sender)
             if answer:
-                res = await telegram_direct.send_message(chat_id, answer,
-                                                         reply_to=msg.get("message_id"))
+                res = await telegram_direct.send_message(chat_id, answer, reply_to=msg.get("message_id"))
                 tr("telegram.reply", chat=chat_id, ok=res.get("ok"))
             else:
                 tr.error("telegram", reason="no answer from CUGA /run")
@@ -1980,9 +2524,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # tunnel). The AP webhook backend stays behind EVENTS_TELEGRAM_BACKEND=ap.
     if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
         from . import telegram_direct as _tg
+
         if _tg.bot_token():
+
             async def _telegram_poller():
                 await _tg.run_poller(_telegram_answer)
+
             _bg = list(getattr(app.state, "events_background", []) or [])
             _bg.append(_telegram_poller)
             app.state.events_background = _bg
@@ -1991,11 +2538,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # No AP, no tunnel. Gated by EVENTS_SCHEDULER (native default | ap keeps the legacy AP-schedule).
     if store is not None:
         from . import native_scheduler as _nsched
+
         if _nsched.enabled():
+
             async def _native_scheduler():
                 _port = os.environ.get("EVENTS_CUGA_PORT", "7860")
                 _gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
                 await _nsched.run_scheduler(store, port=_port, token=_gw)
+
             _bg = list(getattr(app.state, "events_background", []) or [])
             _bg.append(_native_scheduler)
             app.state.events_background = _bg
@@ -2008,8 +2558,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return
         import logging as _lg
         from . import credentials, oauth
+
         log = _lg.getLogger("cuga.events")
-        p = resolve_principal(headers={})     # the operator principal (EVENTS_USER_ID / defaults)
+        p = resolve_principal(headers={})  # the operator principal (EVENTS_USER_ID / defaults)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         # token-auth pieces whose secret sits in .env → create the operator's SECRET_TEXT AP
         # connection on startup, so "set in .env" == "connected" (mirrors the Studio's connect).
@@ -2029,6 +2580,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") == "ap":
             autoconn.append(("discord", os.environ.get("DISCORD_BOT_TOKEN", "")))
         import asyncio
+
         for app_name, raw in autoconn:
             tok = (raw or "").split(" #", 1)[0].strip()
             if not tok:
@@ -2043,20 +2595,26 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                         # hand with whatever stale value is sitting in .env. To ROTATE a token, use
                         # POST /api/events/connect/<app>/token (or the Studio's Connect button), which
                         # overwrites on purpose.
-                        await engine.ensure_secret_connection(ext, oauth.provider(app_name)["piece"],
-                                                              tok, project_name=p.ap_project_name(grain),
-                                                              update=False)
+                        await engine.ensure_secret_connection(
+                            ext,
+                            oauth.provider(app_name)["piece"],
+                            tok,
+                            project_name=p.ap_project_name(grain),
+                            update=False,
+                        )
                     log.info("autoconnect: %s connected from .env (%s)", app_name, ext)
                     break
                 except Exception as e:  # noqa: BLE001
                     if attempt == 4:
-                        log.warning("autoconnect %s failed after %d attempts: %r",
-                                    app_name, attempt, e, exc_info=True)
+                        log.warning(
+                            "autoconnect %s failed after %d attempts: %r", app_name, attempt, e, exc_info=True
+                        )
                     else:
                         await asyncio.sleep(2 * attempt)
 
-    if engine is not None and any(os.environ.get(k) for k in
-                                  ("GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN")):
+    if engine is not None and any(
+        os.environ.get(k) for k in ("GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN")
+    ):
         _bg = list(getattr(app.state, "events_background", []) or [])
         _bg.append(_autoconnect_env_tokens)
         app.state.events_background = _bg
@@ -2064,6 +2622,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # --- per-user connect (CUGA hosts the OAuth; AP holds the token) -------------
     def _principal_from(scope: str | None, headers):
         from .principal import Principal, resolve as _resolve
+
         if scope and scope.count("/") == 2:
             t, i, u = scope.split("/")
             return Principal(tenant_id=t, instance_id=i, user_id=u)
@@ -2074,21 +2633,36 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         """Begin connecting the caller's own account for ``app``. OAuth → redirect to consent;
         token app → tell the UI to collect a token."""
         from . import oauth
+
         p = _principal_from(request.query_params.get("scope"), request.headers)
         kind = oauth.connect_kind(app)
         if kind is None:
             return JSONResponse({"ok": False, "error": f"unknown app '{app}'"}, 404)
         if kind == "token":
-            return {"ok": True, "app": app, "kind": "token",
-                    "message": f"POST your {app} token to /api/events/connect/{app}/token"}
+            return {
+                "ok": True,
+                "app": app,
+                "kind": "token",
+                "message": f"POST your {app} token to /api/events/connect/{app}/token",
+            }
         if not oauth.is_configured(app):
-            return JSONResponse({"ok": False, "app": app, "kind": "oauth",
-                                 "error": f"OAuth not configured — set EVENTS_OAUTH_{app.upper()}_"
-                                          "CLIENT_ID / _CLIENT_SECRET"}, 501)
-        state = oauth.encode_state(scope=p.scope, app=app,
-                                   agent=request.query_params.get("agent", ""),
-                                   ownership=request.query_params.get("ownership", "per-user"),
-                                   ret=request.query_params.get("return", ""))
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "app": app,
+                    "kind": "oauth",
+                    "error": f"OAuth not configured — set EVENTS_OAUTH_{app.upper()}_"
+                    "CLIENT_ID / _CLIENT_SECRET",
+                },
+                501,
+            )
+        state = oauth.encode_state(
+            scope=p.scope,
+            app=app,
+            agent=request.query_params.get("agent", ""),
+            ownership=request.query_params.get("ownership", "per-user"),
+            ret=request.query_params.get("return", ""),
+        )
         return RedirectResponse(oauth.authorize_url(app, state), status_code=302)
 
     @app.get("/api/events/connect/{app}/callback")
@@ -2099,12 +2673,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         verification is a HARD reject, never a fallback to a header principal: an unsigned state
         let a crafted callback bind the new credential into an arbitrary scope."""
         from . import oauth, credentials
+
         code = request.query_params.get("code")
         raw_state = request.query_params.get("state", "")
         st = oauth.decode_state(raw_state)
         if raw_state and not st:
-            return HTMLResponse("<h3>Connect failed</h3><p>Bad or expired state — start again from "
-                                "the Connect button/link.</p>", 400)
+            return HTMLResponse(
+                "<h3>Connect failed</h3><p>Bad or expired state — start again from "
+                "the Connect button/link.</p>",
+                400,
+            )
         p = _principal_from(st.get("scope"), request.headers)
         if not code:
             return HTMLResponse("<h3>Connect failed</h3><p>No authorization code.</p>", 400)
@@ -2116,13 +2694,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 prov = oauth.provider(app)
                 grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
                 await engine.ensure_oauth_connection(
-                    ext, prov["piece"], code,
+                    ext,
+                    prov["piece"],
+                    code,
                     client_id=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_ID", ""),
                     client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
                     scope=" ".join(prov.get("scopes", [])),
                     redirect_url=oauth.redirect_uri(app),
                     authorization_method=prov.get("authorization_method", "BODY"),
-                    project_name=p.ap_project_name(grain))
+                    project_name=p.ap_project_name(grain),
+                )
         except Exception as e:  # noqa: BLE001
             Trace(new_trace_id()).error("connect", app=app, err=str(e))
             return HTMLResponse(f"<h3>Connect failed</h3><p>{str(e)[:300]}</p>", 500)
@@ -2130,6 +2711,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # could put in a link — allow only same-origin/relative targets (no open redirect).
         ret = st.get("ret") or ""
         from . import oauth as _oauth
+
         if ret and (ret.startswith("/") or ret.startswith(_oauth.public_base())):
             return RedirectResponse(ret, status_code=302)
         return HTMLResponse(f"<h3>✅ {app} connected</h3><p>You can return to your chat.</p>")
@@ -2146,6 +2728,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         of a cryptic AP validation error.
         """
         from . import oauth, credentials
+
         body = await request.json()
         token = (body or {}).get("token", "")
         prov = oauth.provider(app)
@@ -2154,9 +2737,17 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if not token:
             return JSONResponse({"ok": False, "error": "missing 'token'"}, 400)
         if oauth.connect_kind(app) != "token":
-            return JSONResponse({"ok": False, "app": app, "error": (
-                f"'{app}' is an OAuth connector — AP can't build a connection from a pasted token. "
-                f"Use the OAuth login: GET /api/events/connect/{app} (consent → callback).")}, 400)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "app": app,
+                    "error": (
+                        f"'{app}' is an OAuth connector — AP can't build a connection from a pasted token. "
+                        f"Use the OAuth login: GET /api/events/connect/{app} (consent → callback)."
+                    ),
+                },
+                400,
+            )
         p = _principal_from((body or {}).get("scope"), request.headers)
         # ownership: 'tenant' (shared across the tenant) | 'per_user' (each user's own). Default per-user.
         own = "shared" if (body or {}).get("ownership") in ("tenant", "shared") else "per-user"
@@ -2165,10 +2756,12 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         try:
-            await engine.ensure_secret_connection(ext, prov["piece"], token,
-                                                  project_name=p.ap_project_name(grain))
+            await engine.ensure_secret_connection(
+                ext, prov["piece"], token, project_name=p.ap_project_name(grain)
+            )
         except Exception as e:  # noqa: BLE001
             import traceback
+
             Trace(new_trace_id()).error("connect_token", app=app, err=repr(e), tb=traceback.format_exc())
             return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
         out = {"ok": True, "app": app, "connection": ext}
@@ -2181,13 +2774,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             out["warning"] = (
                 f"Stored — but Activepieces' {prov['piece']} accepts only {', '.join(accepted)}, not "
                 f"SECRET_TEXT. A flow using it will fail at publish with a credentials error that "
-                f"looks like a token-scope problem. Connect this app via OAuth instead.")
+                f"looks like a token-scope problem. Connect this app via OAuth instead."
+            )
             out["usable_by_piece"] = False
         return out
 
     async def _piece_auth_types(piece: str) -> list[str]:
         """Which connection types the AP piece will actually accept. [] if AP can't be asked."""
         import httpx
+
         if engine is None:
             return []
         try:
@@ -2235,8 +2830,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 conns = [c for c in all_c if f"::{p.user_id}::" in (c.get("externalId") or "")]
             except Exception:  # noqa: BLE001
                 conns = []
-        return {"scope": p.scope, "user_id": p.user_id, "email": email, "roles": roles,
-                "linked_channels": links, "connections": conns}
+        return {
+            "scope": p.scope,
+            "user_id": p.user_id,
+            "email": email,
+            "roles": roles,
+            "linked_channels": links,
+            "connections": conns,
+        }
 
     @app.post("/api/events/link/{channel}")
     async def link_channel(channel: str, request: Request):
@@ -2244,8 +2845,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         bind their channel-native id → this account (decision 0007)."""
         if identity is None:
             return JSONResponse({"ok": False, "error": "identity map not configured"}, 501)
-        p = _principal_from((await _safe_json(request)).get("scope")
-                            or request.query_params.get("scope"), request.headers)
+        p = _principal_from(
+            (await _safe_json(request)).get("scope") or request.query_params.get("scope"), request.headers
+        )
         token = identity.issue_token(p.tenant_id, p.user_id, channel)
         bot = os.environ.get(f"EVENTS_{channel.upper()}_BOT_USERNAME", "")
         if channel == "telegram" and bot:
@@ -2263,8 +2865,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         p = _principal_from(request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
-        return {"users": [{"user_id": u.user_id, "email": u.email, "roles": u.roles}
-                          for u in users.list(p.tenant_id)]}
+        return {
+            "users": [
+                {"user_id": u.user_id, "email": u.email, "roles": u.roles} for u in users.list(p.tenant_id)
+            ]
+        }
 
     @app.post("/api/events/admin/users")
     async def admin_add_user(request: Request):
@@ -2277,8 +2882,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         uid = body.get("user_id")
         if not uid:
             return JSONResponse({"ok": False, "error": "missing user_id"}, 400)
-        u = users.add(uid, email=body.get("email", ""), roles=body.get("roles") or ["user"],
-                      password=body.get("password"), tenant=p.tenant_id)
+        u = users.add(
+            uid,
+            email=body.get("email", ""),
+            roles=body.get("roles") or ["user"],
+            password=body.get("password"),
+            tenant=p.tenant_id,
+        )
         return {"ok": True, "user": {"user_id": u.user_id, "email": u.email, "roles": u.roles}}
 
     @app.post("/api/events/admin/channels/{channel}/arm")
@@ -2293,51 +2903,74 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # Discord DIRECT backend (default): nothing to arm in AP — the Gateway bot connects on boot.
         if channel == "discord" and os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
             from . import discord_direct
+
             if not discord_direct.bot_token():
                 return JSONResponse({"ok": False, "error": "set DISCORD_BOT_TOKEN"}, 400)
-            return {"ok": True, "channel": "discord", "backend": "direct",
-                    "note": "Direct Gateway backend — the bot connects on server start; nothing to "
-                            "arm. Ensure MESSAGE CONTENT INTENT is on (Developer Portal → Bot → "
-                            "Privileged Gateway Intents). Set EVENTS_DISCORD_BACKEND=ap for the "
-                            "(polling) AP path."}
+            return {
+                "ok": True,
+                "channel": "discord",
+                "backend": "direct",
+                "note": "Direct Gateway backend — the bot connects on server start; nothing to "
+                "arm. Ensure MESSAGE CONTENT INTENT is on (Developer Portal → Bot → "
+                "Privileged Gateway Intents). Set EVENTS_DISCORD_BACKEND=ap for the "
+                "(polling) AP path.",
+            }
         # Slack DIRECT backend (default): nothing to arm in AP — the CUGA endpoint is always live.
         if channel == "slack" and os.environ.get("EVENTS_SLACK_BACKEND", "direct") != "ap":
             from . import slack_direct
+
             pub = os.environ.get("EVENTS_PUBLIC_URL", "").rstrip("/")
             if not slack_direct.bot_token():
                 return JSONResponse({"ok": False, "error": "set SLACK_BOT_TOKEN"}, 400)
-            return {"ok": True, "channel": "slack", "backend": "direct",
-                    "events_url": f"{pub}/api/events/slack/events" if pub else
-                                  "<EVENTS_PUBLIC_URL>/api/events/slack/events",
-                    "signature_verification": "on" if slack_direct.signing_secret() else
-                                              "OFF (set SLACK_SIGNING_SECRET)",
-                    "note": "Set this events_url as your Slack app's Event Subscriptions Request URL "
-                            "and subscribe the bot event 'message.channels'. No AP flow needed."}
+            return {
+                "ok": True,
+                "channel": "slack",
+                "backend": "direct",
+                "events_url": f"{pub}/api/events/slack/events"
+                if pub
+                else "<EVENTS_PUBLIC_URL>/api/events/slack/events",
+                "signature_verification": "on"
+                if slack_direct.signing_secret()
+                else "OFF (set SLACK_SIGNING_SECRET)",
+                "note": "Set this events_url as your Slack app's Event Subscriptions Request URL "
+                "and subscribe the bot event 'message.channels'. No AP flow needed.",
+            }
         # Telegram DIRECT backend (default): nothing to arm in AP — the long-poll loop connects
         # (outbound) on server start. No AP, no public URL. Set EVENTS_TELEGRAM_BACKEND=ap for the
         # (webhook) AP path.
         if channel == "telegram" and os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
             from . import telegram_direct
+
             if not telegram_direct.bot_token():
                 return JSONResponse({"ok": False, "error": "set TELEGRAM_BOT_TOKEN"}, 400)
-            return {"ok": True, "channel": "telegram", "backend": "direct",
-                    "note": "Direct long-poll backend — the bot polls getUpdates on server start; "
-                            "nothing to arm, no AP, no public URL. DM the bot to test. Set "
-                            "EVENTS_TELEGRAM_BACKEND=ap for the (webhook) AP path."}
+            return {
+                "ok": True,
+                "channel": "telegram",
+                "backend": "direct",
+                "note": "Direct long-poll backend — the bot polls getUpdates on server start; "
+                "nothing to arm, no AP, no public URL. DM the bot to test. Set "
+                "EVENTS_TELEGRAM_BACKEND=ap for the (webhook) AP path.",
+            }
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         from . import credentials
+
         conn = credentials.connection_external_id(channel, "per-user", p)  # the bot connection
         # channel-specific trigger inputs (e.g. Discord polls ONE channel → pass {"channel": "<id>"})
         trigger_input = {k: v for k, v in body.items() if k not in ("scope",)}
         try:
             flow_id = await engine.create_inbound_flow(
-                channel=channel, agent="concierge", connection=conn,
-                project_name=p.ap_project_name(grain), scope=p.scope,
-                trigger_input=trigger_input)
+                channel=channel,
+                agent="concierge",
+                connection=conn,
+                project_name=p.ap_project_name(grain),
+                scope=p.scope,
+                trigger_input=trigger_input,
+            )
         except Exception as e:  # noqa: BLE001
             import traceback
+
             Trace(new_trace_id()).error("arm", channel=channel, err=repr(e), tb=traceback.format_exc())
             return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
         return {"ok": True, "channel": channel, "ap_flow_id": flow_id}
@@ -2379,6 +3012,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         process. Whitelisted to the known connector cred keys (from setup_guides) so the UI can never
         inject arbitrary environment. Admin only. Reports whether it applied live or needs a reload."""
         from . import setup_guides
+
         body = await _safe_json(request)
         p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
@@ -2387,7 +3021,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         value = body.get("value", "")
         known = {c["key"] for g in setup_guides.as_list() for c in g.get("creds", [])}
         if key not in known:
-            return JSONResponse({"ok": False, "error": f"'{key}' is not an editable connector credential"}, 400)
+            return JSONResponse(
+                {"ok": False, "error": f"'{key}' is not an editable connector credential"}, 400
+            )
         if value == "" or value is None:
             return JSONResponse({"ok": False, "error": "missing 'value'"}, 400)
         try:
@@ -2395,10 +3031,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": f"could not write .env: {e}"}, 500)
         live = key in _CRED_LIVE or key.startswith("EVENTS_OAUTH_")
-        note = ("Saved to .env and applied live — no restart needed."
-                if live else
-                ("Saved to .env — run `make reload` to apply (read at startup"
-                 + ("; Discord's gateway reconnects on restart)." if key == "DISCORD_BOT_TOKEN" else ").")))
+        note = (
+            "Saved to .env and applied live — no restart needed."
+            if live
+            else (
+                "Saved to .env — run `make reload` to apply (read at startup"
+                + ("; Discord's gateway reconnects on restart)." if key == "DISCORD_BOT_TOKEN" else ").")
+            )
+        )
         Trace(new_trace_id())("credential.set", key=key, live=live)
         return {"ok": True, "key": key, "live": live, "note": note}
 
@@ -2410,13 +3050,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     def _is_admin(p) -> bool:
         if users is None:
-            return True                 # no user store → open (dev)
+            return True  # no user store → open (dev)
         u = users.get(p.user_id, p.tenant_id)
         return bool(u and u.has_role("admin"))
 
     def _is_builder(p) -> bool:
         """Builders (and admins) may create/edit agents — that's design-time work (ADR-0005)."""
         if users is None:
-            return True                 # no user store → open (dev)
+            return True  # no user store → open (dev)
         u = users.get(p.user_id, p.tenant_id)
         return bool(u and (u.has_role("builder") or u.has_role("admin")))

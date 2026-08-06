@@ -14,6 +14,7 @@ Only ``backend='native'`` rows participate — AP-backed flows are still fired b
 core (``next_fire_after`` + ``process_due``) is pure/injectable so it unit-tests with no network.
 No third-party deps: a compact standard-cron implementation is included.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,11 +57,15 @@ def _matches(expr: str, t: time.struct_time) -> bool:
     mn, hr, dom, mon, dow = expr.split()
     # cron day-of-week: 0 and 7 are both Sunday; python tm_wday is Mon=0..Sun=6
     py_dow = t.tm_wday
-    cron_dow = 0 if py_dow == 6 else py_dow + 1        # → Sun=0..Sat=6
+    cron_dow = 0 if py_dow == 6 else py_dow + 1  # → Sun=0..Sat=6
     dow_ok = _field_matches(dow.replace("7", "0"), cron_dow, 0, 6)
-    return (_field_matches(mn, t.tm_min, 0, 59) and _field_matches(hr, t.tm_hour, 0, 23)
-            and _field_matches(dom, t.tm_mday, 1, 31) and _field_matches(mon, t.tm_mon, 1, 12)
-            and dow_ok)
+    return (
+        _field_matches(mn, t.tm_min, 0, 59)
+        and _field_matches(hr, t.tm_hour, 0, 23)
+        and _field_matches(dom, t.tm_mday, 1, 31)
+        and _field_matches(mon, t.tm_mon, 1, 12)
+        and dow_ok
+    )
 
 
 def next_cron(expr: str, after: float) -> float:
@@ -82,7 +87,7 @@ def next_fire_after(sub, now: float) -> float:
         return now + sub.interval_seconds
     if sub.cron_expr:
         return next_cron(sub.cron_expr, now)
-    return 0.0        # not schedulable → disables further firing
+    return 0.0  # not schedulable → disables further firing
 
 
 # ── the loop ───────────────────────────────────────────────────────────────────────────────────────
@@ -92,7 +97,7 @@ def _invoke_body(sub) -> dict:
     return {
         "text": sub.prompt,
         "agent": sub.target_agent,
-        "deliver": True,                       # CUGA-owned delivery (no AP send step)
+        "deliver": True,  # CUGA-owned delivery (no AP send step)
         "source": {"type": "time", "name": sub.mode.lower() or "cron", "thread_id": sub.thread_id},
         "event": {"kind": "tick", "payload": {}},
         "subscription_id": sub.id,
@@ -115,7 +120,7 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
     fall past ``expires_at`` is deleted instead (lazy end-of-life, mirrors the /invoke expiry gate)."""
     fired: list[str] = []
     for sub in store.due(now):
-        if sub.expires_at and now > sub.expires_at:      # already past its deadline → retire, don't run
+        if sub.expires_at and now > sub.expires_at:  # already past its deadline → retire, don't run
             store.delete(sub.id)
             log.info("native scheduler retired expired %s", sub.id)
             continue
@@ -128,7 +133,7 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
             log.warning("native fire %s failed: %s: %s", sub.id, type(e).__name__, e or "(no detail)")
         nxt = next_fire_after(sub, now)
         if not nxt or (sub.expires_at and nxt > sub.expires_at):
-            store.delete(sub.id)                          # bounded run complete (or unschedulable)
+            store.delete(sub.id)  # bounded run complete (or unschedulable)
             log.info("native scheduler completed %s (no further fire)", sub.id)
         else:
             store.mark_fired(sub.id, last_fire=now, next_fire=nxt)
@@ -157,8 +162,9 @@ async def _await_loopback(port: str, *, timeout: float = 60.0, interval: float =
     return False
 
 
-async def run_scheduler(store, *, port: str, token: str, tick: float = 10.0,
-                        stop: asyncio.Event | None = None) -> None:
+async def run_scheduler(
+    store, *, port: str, token: str, tick: float = 10.0, stop: asyncio.Event | None = None
+) -> None:
     """Background loop: every ``tick`` seconds, fire due native subscriptions. Registered at boot the
     same way the channel pollers are. Cheap when idle (one indexed query per tick)."""
     if store is None:

@@ -14,7 +14,6 @@ ON CONFLICT, the partial unique index behind dedup, tenant scoping, JSON round-t
 scheduler's due() query — against the engine we actually deploy.
 """
 
-import json
 import os
 import time
 import uuid
@@ -26,8 +25,7 @@ from cuga.backend.events.agent_store import AgentSpec, AgentStore
 from cuga.backend.events.identity import IdentityMap
 from cuga.backend.events.now_runs import NowRunStore
 from cuga.backend.events.oauth import OAuthAppStore
-from cuga.backend.events.subscriptions import (DuplicateSubscription, Subscription,
-                                               SubscriptionStore)
+from cuga.backend.events.subscriptions import DuplicateSubscription, Subscription, SubscriptionStore
 from cuga.backend.events.users import UserStore
 
 DSN = os.environ.get("EVENTS_TEST_PG_DSN", "")
@@ -45,15 +43,25 @@ def _reachable(dsn: str) -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _reachable(DSN),
-    reason="set EVENTS_TEST_PG_DSN to a reachable PostgreSQL to run the Postgres store tests")
+    reason="set EVENTS_TEST_PG_DSN to a reachable PostgreSQL to run the Postgres store tests",
+)
 
 
 @pytest.fixture()
 def dsn():
     """A DSN with every events table dropped, so each test starts from a real migrate-on-open."""
     conn = _db.connect(DSN)
-    for t in ("subscription", "watch_state", "pending_arm", "app_user", "identity",
-              "link_token", "now_run", "agent", "oauth_app"):
+    for t in (
+        "subscription",
+        "watch_state",
+        "pending_arm",
+        "app_user",
+        "identity",
+        "link_token",
+        "now_run",
+        "agent",
+        "oauth_app",
+    ):
         conn.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     conn.commit()
     return DSN
@@ -62,11 +70,25 @@ def dsn():
 def _sub(sub_id="cuga-a1", tenant="acme/prod/alice", dedup="k1", **kw):
     now = time.time()
     base = dict(
-        id=sub_id, mode="CRON", target_agent="cuga", tenant=tenant, backend="native",
-        source_type="time", source_connector="interval", ap_flow_id=None, deliver_to=["slack"],
-        thread_id=f"{tenant}::gw:slack:C1#1", prompt="The IBM stock price.", dedup_key=dedup,
-        flow_name=f"flow-{sub_id}", interval_seconds=300, cron_expr="", next_fire=now + 300,
-        expires_at=0.0, config={"emoji": "bug", "n": 1})
+        id=sub_id,
+        mode="CRON",
+        target_agent="cuga",
+        tenant=tenant,
+        backend="native",
+        source_type="time",
+        source_connector="interval",
+        ap_flow_id=None,
+        deliver_to=["slack"],
+        thread_id=f"{tenant}::gw:slack:C1#1",
+        prompt="The IBM stock price.",
+        dedup_key=dedup,
+        flow_name=f"flow-{sub_id}",
+        interval_seconds=300,
+        cron_expr="",
+        next_fire=now + 300,
+        expires_at=0.0,
+        config={"emoji": "bug", "n": 1},
+    )
     base.update(kw)
     return Subscription(**base)
 
@@ -78,18 +100,31 @@ def test_connect_picks_postgres(dsn):
 
 
 def test_columns_replaces_pragma(dsn):
-    SubscriptionStore(dsn)                       # migrate-on-open creates the table
+    SubscriptionStore(dsn)  # migrate-on-open creates the table
     cols = _db.connect(dsn).columns("subscription")
     # every column the migrate path adds must be visible, or migrate-on-open re-ALTERs forever
-    for c in ("id", "mode", "tenant", "dedup_key", "flow_name", "event", "config",
-              "interval_seconds", "cron_expr", "next_fire", "last_fire", "fire_count", "expires_at"):
+    for c in (
+        "id",
+        "mode",
+        "tenant",
+        "dedup_key",
+        "flow_name",
+        "event",
+        "config",
+        "interval_seconds",
+        "cron_expr",
+        "next_fire",
+        "last_fire",
+        "fire_count",
+        "expires_at",
+    ):
         assert c in cols, f"{c} missing from information_schema"
     assert _db.connect(dsn).columns("no_such_table") == set()
 
 
 def test_migrate_is_idempotent(dsn):
     for _ in range(3):
-        SubscriptionStore(dsn)                   # re-opening must not raise or duplicate columns
+        SubscriptionStore(dsn)  # re-opening must not raise or duplicate columns
     assert "dedup_key" in _db.connect(dsn).columns("subscription")
 
 
@@ -97,7 +132,7 @@ def test_row_supports_name_and_index_access(dsn):
     conn = _db.connect(dsn)
     r = conn.execute("SELECT 1 AS a, 'x' AS b").fetchone()
     assert r["a"] == 1 and r["b"] == "x"
-    assert r[0] == 1 and r[1] == "x"             # the OAuth store indexes positionally
+    assert r[0] == 1 and r[1] == "x"  # the OAuth store indexes positionally
     assert dict(r) == {"a": 1, "b": "x"}
     assert set(r.keys()) == {"a", "b"}
 
@@ -113,7 +148,7 @@ def test_failed_statement_does_not_poison_the_connection(dsn):
     conn = _db.connect(dsn)
     with pytest.raises(Exception):
         conn.execute("SELECT * FROM definitely_not_a_table")
-    assert conn.execute("SELECT 42 AS n").fetchone()["n"] == 42     # still usable
+    assert conn.execute("SELECT 42 AS n").fetchone()["n"] == 42  # still usable
 
 
 # ── subscriptions: the store that matters most ────────────────────────────────────────────────
@@ -122,7 +157,7 @@ def test_subscription_round_trip_with_json_columns(dsn):
     s.upsert(_sub())
     got = s.list(status="active")
     assert len(got) == 1
-    assert got[0].deliver_to == ["slack"]            # JSON column
+    assert got[0].deliver_to == ["slack"]  # JSON column
     assert got[0].config == {"emoji": "bug", "n": 1}  # JSON column
     assert got[0].interval_seconds == 300
 
@@ -175,7 +210,7 @@ def test_pending_arm_ttl_round_trip(dsn):
     s.set_pending_arm("gw:slack:C1", "confirm", {"prompt": "The IBM stock price."}, 600)
     got = s.get_pending_arm("gw:slack:C1")
     assert got and got["state"] == "confirm"
-    s.set_pending_arm("gw:slack:C2", "confirm", {"prompt": "x"}, -1)   # already expired
+    s.set_pending_arm("gw:slack:C2", "confirm", {"prompt": "x"}, -1)  # already expired
     assert s.get_pending_arm("gw:slack:C2") is None
 
 
@@ -186,8 +221,8 @@ def test_user_store(dsn):
     got = u.get("alice", tenant="acme")
     assert got and got.email == "alice@example.com" and got.roles == ["admin"]
     assert u.by_email("alice@example.com", tenant="acme").user_id == "alice"
-    assert u.get("alice", tenant="globex") is None          # tenant scoped
-    u.add("alice", email="new@example.com", roles=["admin"], tenant="acme")   # ON CONFLICT update
+    assert u.get("alice", tenant="globex") is None  # tenant scoped
+    u.add("alice", email="new@example.com", roles=["admin"], tenant="acme")  # ON CONFLICT update
     assert u.get("alice", tenant="acme").email == "new@example.com"
 
 
@@ -195,20 +230,29 @@ def test_identity_map_and_link_tokens(dsn):
     i = IdentityMap(dsn)
     i.link("acme", "slack", "U123", "alice")
     assert i.resolve("acme", "slack", "U123") == "alice"
-    assert i.resolve("globex", "slack", "U123") is None     # tenant scoped
-    i.link("acme", "slack", "U123", "bob")                  # ON CONFLICT update
+    assert i.resolve("globex", "slack", "U123") is None  # tenant scoped
+    i.link("acme", "slack", "U123", "bob")  # ON CONFLICT update
     assert i.resolve("acme", "slack", "U123") == "bob"
     tok = i.issue_token("acme", "carol", "telegram")
     assert i.redeem_token(tok, "T999") == "carol"
-    assert i.redeem_token(tok, "T999") is None              # single use
+    assert i.redeem_token(tok, "T999") is None  # single use
     i.unlink("acme", "slack", "U123")
     assert i.resolve("acme", "slack", "U123") is None
 
 
 def test_agent_store(dsn):
     a = AgentStore(dsn)
-    a.upsert("acme", AgentSpec(name="pricebot", prompt="prices", backend="cuga",
-                               mcp_servers=["cuga-finance"], builtin_tools=[], channels=["slack"]))
+    a.upsert(
+        "acme",
+        AgentSpec(
+            name="pricebot",
+            prompt="prices",
+            backend="cuga",
+            mcp_servers=["cuga-finance"],
+            builtin_tools=[],
+            channels=["slack"],
+        ),
+    )
     got = a.get("acme", "pricebot")
     assert got and got.mcp_servers == ["cuga-finance"] and got.channels == ["slack"]
     assert a.get("globex", "pricebot") is None
@@ -217,13 +261,21 @@ def test_agent_store(dsn):
 
 def test_now_run_store(dsn):
     r = NowRunStore(dsn)
-    rid = r.add(scope="acme", agent="cuga", channel="slack", prompt="p", answer="a",
-                mcp=["cuga-finance"], tools=["get_stock_quote"], ms=1234)
+    rid = r.add(
+        scope="acme",
+        agent="cuga",
+        channel="slack",
+        prompt="p",
+        answer="a",
+        mcp=["cuga-finance"],
+        tools=["get_stock_quote"],
+        ms=1234,
+    )
     rows = r.list(scope="acme")
     assert len(rows) == 1 and rows[0]["answer"] == "a"
     got = r.get(rid)
     assert got["prompt"] == "p"
-    assert got["mcp"] == ["cuga-finance"] and got["tools"] == ["get_stock_quote"]   # JSON columns
+    assert got["mcp"] == ["cuga-finance"] and got["tools"] == ["get_stock_quote"]  # JSON columns
     assert r.list(scope="globex") == []
 
 
@@ -247,12 +299,12 @@ def test_state_survives_a_new_process(dsn):
     """
     first = SubscriptionStore(dsn)
     first.upsert(_sub("cuga-durable", dedup="dur"))
-    del first                                    # the process goes away
+    del first  # the process goes away
 
-    second = SubscriptionStore(dsn)              # a brand-new pod, empty local disk
+    second = SubscriptionStore(dsn)  # a brand-new pod, empty local disk
     rows = second.list(status="active")
     assert len(rows) == 1 and rows[0].id == "cuga-durable"
-    assert rows[0].interval_seconds == 300       # still schedulable → the scheduler resumes it
+    assert rows[0].interval_seconds == 300  # still schedulable → the scheduler resumes it
 
 
 def test_two_processes_share_one_database(dsn):
@@ -274,9 +326,9 @@ def test_survives_the_server_closing_the_connection(dsn):
     """
     conn = _db.connect(dsn)
     assert conn.execute("SELECT 1 AS n").fetchone()["n"] == 1
-    conn._db.close()                                   # the server dropping us looks like this
+    conn._db.close()  # the server dropping us looks like this
     assert conn.execute("SELECT 2 AS n").fetchone()["n"] == 2, "must reconnect and retry once"
-    conn.commit()                                      # and a commit afterwards must not raise
+    conn.commit()  # and a commit afterwards must not raise
 
 
 def test_store_keeps_working_after_a_drop(dsn):
@@ -285,7 +337,7 @@ def test_store_keeps_working_after_a_drop(dsn):
     s.upsert(_sub("cuga-live", dedup="live"))
     s._db._db.close()
     assert {x.id for x in s.list(status="active")} == {"cuga-live"}
-    s.upsert(_sub("cuga-live2", dedup="live2"))        # a WRITE after the drop, incl. commit
+    s.upsert(_sub("cuga-live2", dedup="live2"))  # a WRITE after the drop, incl. commit
     assert len(s.list(status="active")) == 2
 
 
@@ -295,10 +347,11 @@ def test_a_real_sql_error_is_not_retried_or_masked(dsn):
     with pytest.raises(Exception) as ei:
         conn.execute("SELECT * FROM a_table_that_does_not_exist")
     assert "does not exist" in str(ei.value).lower()
-    assert conn.execute("SELECT 3 AS n").fetchone()["n"] == 3    # connection still usable
+    assert conn.execute("SELECT 3 AS n").fetchone()["n"] == 3  # connection still usable
 
 
 # ── float4 vs float8: the timestamp-precision bug ─────────────────────────────────────────────────
+
 
 def test_epoch_timestamps_survive_a_round_trip(dsn):
     """The bug this pins, measured on the deployed database before it was fixed.
@@ -310,7 +363,7 @@ def test_epoch_timestamps_survive_a_round_trip(dsn):
     """
     conn = _db.connect(dsn)
     conn.execute("DROP TABLE IF EXISTS _ts_fidelity")
-    conn.execute("CREATE TABLE _ts_fidelity (id INTEGER, ts REAL)")   # REAL must become float8
+    conn.execute("CREATE TABLE _ts_fidelity (id INTEGER, ts REAL)")  # REAL must become float8
     now = time.time()
     instants = [now, now + 1, now + 7, now + 30, now + 66]
     for i, v in enumerate(instants):
@@ -328,9 +381,12 @@ def test_epoch_timestamps_survive_a_round_trip(dsn):
 def test_the_ddl_translation_is_word_boundary_and_quote_aware(dsn):
     """REAL is rewritten as a TYPE, never inside an identifier or a string literal."""
     from cuga.backend.events.db import _to_pg_types
+
     assert _to_pg_types("CREATE TABLE t (ts REAL)") == "CREATE TABLE t (ts DOUBLE PRECISION)"
-    assert _to_pg_types("ALTER TABLE t ADD COLUMN ts REAL NOT NULL DEFAULT 0") == \
-        "ALTER TABLE t ADD COLUMN ts DOUBLE PRECISION NOT NULL DEFAULT 0"
+    assert (
+        _to_pg_types("ALTER TABLE t ADD COLUMN ts REAL NOT NULL DEFAULT 0")
+        == "ALTER TABLE t ADD COLUMN ts DOUBLE PRECISION NOT NULL DEFAULT 0"
+    )
     # an identifier that merely CONTAINS 'real'
     assert "realm TEXT" in _to_pg_types("CREATE TABLE t (realm TEXT, unreal TEXT)")
     assert "unreal TEXT" in _to_pg_types("CREATE TABLE t (realm TEXT, unreal TEXT)")
@@ -344,6 +400,7 @@ def test_an_existing_float4_column_is_widened_on_connect(dsn):
     """A database created by an OLDER build already has float4 columns, and CREATE TABLE IF NOT
     EXISTS never revisits them — so without the repair the deployed schedule stays on its grid."""
     import cuga.backend.events.db as dbmod
+
     conn = _db.connect(dsn)
     conn.execute("DROP TABLE IF EXISTS _legacy_f4")
     # deliberately create the OLD way, bypassing the DDL translation
@@ -353,11 +410,12 @@ def test_an_existing_float4_column_is_widened_on_connect(dsn):
     def _type_of():
         return conn.execute(
             "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name = '_legacy_f4' AND column_name = 'ts'").fetchone()["data_type"]
+            "WHERE table_name = '_legacy_f4' AND column_name = 'ts'"
+        ).fetchone()["data_type"]
 
     assert _type_of() == "real", "precondition: the column starts as float4"
-    dbmod._WIDENED = False                       # let the once-per-process repair run again
-    _db.connect(dsn)                             # connecting is what triggers it
+    dbmod._WIDENED = False  # let the once-per-process repair run again
+    _db.connect(dsn)  # connecting is what triggers it
     assert _type_of() == "double precision", "the legacy column was not widened"
 
     conn.execute("DROP TABLE _legacy_f4")
@@ -377,7 +435,7 @@ def test_the_web_mailbox_cursor_does_not_drop_a_message_on_postgres(dsn):
     thread = f"web:cursor-{uuid.uuid4().hex[:8]}"
     inbox.put(scope="s", thread_id=thread, text="first fire")
     time.sleep(0.05)
-    inbox.put(scope="s", thread_id=thread, text="second fire")     # seconds apart in the real world
+    inbox.put(scope="s", thread_id=thread, text="second fire")  # seconds apart in the real world
 
     msgs = inbox.list(thread_id=thread)
     assert [m["text"] for m in msgs] == ["first fire", "second fire"]

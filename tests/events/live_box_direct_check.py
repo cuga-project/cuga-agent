@@ -16,6 +16,7 @@ What it proves (all against the REAL Box API + the running CUGA server):
 
 With no/expired token it still checks the wiring and prints exactly what to paste — no OAuth dance.
 """
+
 import asyncio
 import json
 import os
@@ -42,8 +43,11 @@ def _env(key, default=""):
 
 def _post(path, body, tok):
     req = urllib.request.Request(
-        f"{SERVER}{path}", method="POST", data=json.dumps(body).encode(),
-        headers={"content-type": "application/json", "X-Gateway-Token": tok})
+        f"{SERVER}{path}",
+        method="POST",
+        data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", "X-Gateway-Token": tok},
+    )
     try:
         with urllib.request.urlopen(req, timeout=200) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -55,6 +59,7 @@ def _post(path, body, tok):
 
 def main():
     from cuga.backend.events import box_direct
+
     ok = True
 
     def check(name, cond, detail=""):
@@ -73,8 +78,11 @@ def main():
 
     # 1) token valid?
     who = asyncio.run(box_direct.whoami(tok))
-    check("Box token valid (whoami)", who.get("ok"),
-          who.get("login") or who.get("error") or who.get("detail", ""))
+    check(
+        "Box token valid (whoami)",
+        who.get("ok"),
+        who.get("login") or who.get("error") or who.get("detail", ""),
+    )
     if not who.get("ok"):
         print("  [INFO] token expired — dev tokens last ~60 min. Paste a fresh one and re-run.")
         return 1
@@ -84,23 +92,31 @@ def main():
         items = asyncio.run(box_direct.list_folder_items(folder, tok))
         check(f"list folder {folder} items", True, f"{len(items)} items")
     except Exception as e:  # noqa: BLE001
-        check(f"list folder {folder} items", False, str(e)); return 1
+        check(f"list folder {folder} items", False, str(e))
+        return 1
 
     # 3) new-since filter
     newest = max((i.get("created_at", "") for i in items if i.get("type") == "file"), default="")
     fresh = asyncio.run(box_direct.new_files_since(folder, newest, tok))
     check("new_files_since(newest) → empty (baseline correct)", fresh == [], f"{len(fresh)} after newest")
     all_files = asyncio.run(box_direct.new_files_since(folder, None, tok))
-    print(f"  [INFO] {len(all_files)} file(s) in folder {folder}: "
-          + ", ".join(f.get("name", "?") for f in all_files[:5]))
+    print(
+        f"  [INFO] {len(all_files)} file(s) in folder {folder}: "
+        + ", ".join(f.get("name", "?") for f in all_files[:5])
+    )
 
     # 4) server poll endpoint (fires the watcher per new file; direct-Slack delivery)
     if gw:
-        code, r = _post("/api/events/box/poll",
-                        {"folder_id": folder, "since": None, "agent": "resume_judge",
-                         "deliver_to": "slack"}, gw)
-        check("POST /api/events/box/poll", code == 200 and r.get("ok"),
-              f"processed {len(r.get('processed', []))}, newest {r.get('newest','')}")
+        code, r = _post(
+            "/api/events/box/poll",
+            {"folder_id": folder, "since": None, "agent": "resume_judge", "deliver_to": "slack"},
+            gw,
+        )
+        check(
+            "POST /api/events/box/poll",
+            code == 200 and r.get("ok"),
+            f"processed {len(r.get('processed', []))}, newest {r.get('newest', '')}",
+        )
     else:
         print("  [INFO] no GATEWAY_TOKEN — skipping the server poll leg.")
 

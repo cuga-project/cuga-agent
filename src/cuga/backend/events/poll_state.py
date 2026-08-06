@@ -31,7 +31,7 @@ log = logging.getLogger("events.poll_state")
 Decision = namedtuple("Decision", "changed state reason")
 
 _SIGNAL_RE = re.compile(r"<<\s*SIGNAL\s*(\{.*?\})\s*>>", re.S)
-_SEEN_CAP = 5000                     # bound the identity seen-set so it can't grow unbounded
+_SEEN_CAP = 5000  # bound the identity seen-set so it can't grow unbounded
 
 
 # ── SIGNAL protocol ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ def parse_signal(text: str) -> tuple[str, dict | None]:
     m = _SIGNAL_RE.search(text)
     if not m:
         return text, None
-    clean = (text[:m.start()] + text[m.end():]).strip()
+    clean = (text[: m.start()] + text[m.end() :]).strip()
     try:
         return clean, json.loads(m.group(1))
     except Exception:  # noqa: BLE001 — a bad signal must not break delivery
@@ -58,23 +58,29 @@ def augment_prompt(ws: dict) -> str:
     kind = (ws or {}).get("kind") or "fuzzy"
     if kind == "threshold":
         what = (ws.get("value_path") or "the watched quantity").strip()
-        return ("\n\n[WATCH] After your answer, output on a NEW final line EXACTLY "
-                "`<<SIGNAL {\"value\": N}>>` where N is the current numeric value of "
-                f"{what} — a bare number, no units, no thousands separators.")
+        return (
+            "\n\n[WATCH] After your answer, output on a NEW final line EXACTLY "
+            "`<<SIGNAL {\"value\": N}>>` where N is the current numeric value of "
+            f"{what} — a bare number, no units, no thousands separators."
+        )
     if kind == "identity":
         what = (ws.get("value_path") or "the items you found").strip()
-        return ("\n\n[WATCH] After your answer, output on a NEW final line EXACTLY "
-                "`<<SIGNAL {\"keys\": [...]}>>` — a JSON array of STABLE unique identifiers "
-                f"(ids, urls, or exact titles) for {what}. I use it to report only NEW ones, so keep "
-                "each key identical across runs for the same item.")
+        return (
+            "\n\n[WATCH] After your answer, output on a NEW final line EXACTLY "
+            "`<<SIGNAL {\"keys\": [...]}>>` — a JSON array of STABLE unique identifiers "
+            f"(ids, urls, or exact titles) for {what}. I use it to report only NEW ones, so keep "
+            "each key identical across runs for the same item."
+        )
     prev = ""
     seen = (ws or {}).get("seen_keys") or []
     if seen:
         prev = str(seen[0])
-    lead = (f"You last saw this as: {prev!r}. " if prev else "")
-    return ("\n\n[WATCH] " + lead + "After your answer, output on a NEW final line EXACTLY "
-            "`<<SIGNAL {\"changed\": true|false, \"state\": \"<short new state>\"}>>` — "
-            "changed=true ONLY if it MATERIALLY differs from what you last saw.")
+    lead = f"You last saw this as: {prev!r}. " if prev else ""
+    return (
+        "\n\n[WATCH] " + lead + "After your answer, output on a NEW final line EXACTLY "
+        "`<<SIGNAL {\"changed\": true|false, \"state\": \"<short new state>\"}>>` — "
+        "changed=true ONLY if it MATERIALLY differs from what you last saw."
+    )
 
 
 # ── the DECISION core (pure) ─────────────────────────────────────────────────────────────────────
@@ -95,7 +101,7 @@ def decide(ws: dict, signal: dict | None, now: float) -> Decision:
     kind = (ws or {}).get("kind") or "fuzzy"
     state = dict(ws or {})
     state["updated_at"] = now
-    if signal is None:                        # agent gave nothing usable → don't fire, keep state
+    if signal is None:  # agent gave nothing usable → don't fire, keep state
         return Decision(False, state, "no signal")
 
     if kind == "threshold":
@@ -103,7 +109,7 @@ def decide(ws: dict, signal: dict | None, now: float) -> Decision:
         if new is None:
             return Decision(False, state, "non-numeric signal")
         base = ws.get("baseline")
-        if base is None:                      # first observation seeds the baseline; never alerts
+        if base is None:  # first observation seeds the baseline; never alerts
             state["baseline"] = new
             return Decision(False, state, f"baseline set to {new:g}")
         move = abs(new - base) / abs(base) if base else float("inf")
@@ -115,7 +121,7 @@ def decide(ws: dict, signal: dict | None, now: float) -> Decision:
         # absolute: baseline is fixed forever (measures drift from the original).
         if (changed and policy == "ratchet") or policy == "per_tick":
             state["baseline"] = new
-        return Decision(changed, state, f"move {move*100:.2f}% vs {thr*100:.2f}%")
+        return Decision(changed, state, f"move {move * 100:.2f}% vs {thr * 100:.2f}%")
 
     if kind == "identity":
         raw = signal.get("keys")
@@ -125,7 +131,7 @@ def decide(ws: dict, signal: dict | None, now: float) -> Decision:
         seen = set(str(k) for k in (ws.get("seen_keys") or []))
         fresh = [k for k in keys if k not in seen]
         merged = list(seen | set(keys))
-        if len(merged) > _SEEN_CAP:           # keep the most recent window
+        if len(merged) > _SEEN_CAP:  # keep the most recent window
             merged = merged[-_SEEN_CAP:]
         state["seen_keys"] = merged
         return Decision(bool(fresh), state, f"{len(fresh)} new of {len(keys)}")
@@ -140,11 +146,16 @@ def decide(ws: dict, signal: dict | None, now: float) -> Decision:
 
 # ── SPEC extraction (arm time) — smart, not keyword ──────────────────────────────────────────────
 def _default_ws(sub_id: str, spec: dict) -> dict:
-    return {"subscription_id": sub_id, "kind": spec.get("kind") or "fuzzy",
-            "seen_keys": [], "baseline": None,
-            "reset_policy": spec.get("reset_policy") or "ratchet",
-            "value_path": spec.get("value_path") or "", "threshold": float(spec.get("threshold") or 0),
-            "updated_at": 0.0}
+    return {
+        "subscription_id": sub_id,
+        "kind": spec.get("kind") or "fuzzy",
+        "seen_keys": [],
+        "baseline": None,
+        "reset_policy": spec.get("reset_policy") or "ratchet",
+        "value_path": spec.get("value_path") or "",
+        "threshold": float(spec.get("threshold") or 0),
+        "updated_at": 0.0,
+    }
 
 
 def _heuristic_spec(utterance: str) -> dict:
@@ -190,6 +201,7 @@ async def extract_spec(utterance: str) -> dict:
     try:
         import asyncio
         from langchain_core.messages import HumanMessage, SystemMessage
+
         if _spec_model is None:
             try:
                 from .llm import default_model_factory
@@ -197,9 +209,9 @@ async def extract_spec(utterance: str) -> dict:
                 from llm import default_model_factory
             _spec_model = default_model_factory(None)
         res = await asyncio.wait_for(
-            _spec_model.ainvoke([SystemMessage(content=_SPEC_SYSTEM),
-                                 HumanMessage(content=utterance or "")]),
-            timeout=float(os.environ.get("EVENTS_POLL_LLM_TIMEOUT", "20")))
+            _spec_model.ainvoke([SystemMessage(content=_SPEC_SYSTEM), HumanMessage(content=utterance or "")]),
+            timeout=float(os.environ.get("EVENTS_POLL_LLM_TIMEOUT", "20")),
+        )
         raw = (res.content or "").strip()
         m = re.search(r"\{.*\}", raw, re.S)
         d = json.loads(m.group(0)) if m else {}

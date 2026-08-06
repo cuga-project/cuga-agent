@@ -1364,8 +1364,10 @@ def start(
         )
         if _wants_roster:
             # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins over the default.
-            os.environ.setdefault("MCP_SERVERS_FILE", os.path.join(
-                PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"))
+            os.environ.setdefault(
+                "MCP_SERVERS_FILE",
+                os.path.join(PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"),
+            )
             logger.info(f"registry in FILE mode: MCP_SERVERS_FILE={os.environ['MCP_SERVERS_FILE']}")
         else:
             os.environ["MCP_SERVERS_FILE"] = "none"

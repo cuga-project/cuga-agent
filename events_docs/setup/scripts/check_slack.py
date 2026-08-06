@@ -7,6 +7,7 @@ I / which workspace) and, if you name a channel, chat.postMessage (the reply leg
 Keys:   SLACK_BOT_TOKEN
 Extra:  SLACK_TEST_CHANNEL  (optional — a channel id the bot has been /invite'd to)
 """
+
 import sys
 
 from _common import PASS, FAIL, SKIP, load_env, request_json, title, ok, bad, warn, info
@@ -32,8 +33,12 @@ def main():
         info("set SLACK_TEST_CHANNEL (a channel id the bot is invited to) to post a real test message")
         return PASS
 
-    st, _, j, _ = request_json("POST", "https://slack.com/api/chat.postMessage", headers=h,
-                               data={"channel": ch, "text": "CUGA pre-req check: Slack bot token works."})
+    st, _, j, _ = request_json(
+        "POST",
+        "https://slack.com/api/chat.postMessage",
+        headers=h,
+        data={"channel": ch, "text": "CUGA pre-req check: Slack bot token works."},
+    )
     if j and j.get("ok"):
         ok(f"posted a test message to {ch}")
         return PASS

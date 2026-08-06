@@ -4,6 +4,7 @@ Proves the "adding a piece = adding data" claim end to end at the registry level
 is enumerable, classifiable, has a valid payload map, resolves its slots, and (direct) maps its
 transport event. Live arming additionally needs the piece's AP connection — out of scope here.
 """
+
 import os
 import sys
 
@@ -92,17 +93,28 @@ def test_discord_reaction_beats_slack_only_when_discord_named():
 # ── slot extraction pulls the required config out of the utterance ───────────────────────────────
 def test_slot_extraction_for_new_pieces():
     import flowspec
-    assert flowspec.extract_slots("youtube", "new_video",
-                                  "watch @Fireship for new videos")["yt_channel"] == "@Fireship"
-    assert flowspec.extract_slots("youtube", "new_video",
-                                  "watch https://youtube.com/@mkbhd for uploads")["yt_channel"].startswith("https://")
-    assert flowspec.extract_slots("rss", "new_item",
-                                  "watch https://blog.example.com/rss for new items")["rss_feed_url"] \
+
+    assert (
+        flowspec.extract_slots("youtube", "new_video", "watch @Fireship for new videos")["yt_channel"]
+        == "@Fireship"
+    )
+    assert flowspec.extract_slots("youtube", "new_video", "watch https://youtube.com/@mkbhd for uploads")[
+        "yt_channel"
+    ].startswith("https://")
+    assert (
+        flowspec.extract_slots("rss", "new_item", "watch https://blog.example.com/rss for new items")[
+            "rss_feed_url"
+        ]
         == "https://blog.example.com/rss"
-    assert flowspec.extract_slots("pinterest", "new_pin",
-                                  "new pin on board 549755885175")["board"] == "549755885175"
-    assert flowspec.extract_slots("google_calendar", "new_event",
-                                  "watch my primary calendar")["calendar"] == "primary"
+    )
+    assert (
+        flowspec.extract_slots("pinterest", "new_pin", "new pin on board 549755885175")["board"]
+        == "549755885175"
+    )
+    assert (
+        flowspec.extract_slots("google_calendar", "new_event", "watch my primary calendar")["calendar"]
+        == "primary"
+    )
 
 
 # ── slots + envelope kinds derive automatically ──────────────────────────────────────────────────
@@ -136,6 +148,7 @@ def test_default_ap_triggers_have_a_consistent_synth_sample():
     curated {{trigger.<path>}} in the payload map must resolve in the synth sample — a path typo
     (the classic 'flow ran green but the agent got nothing') fails here, offline."""
     import re
+
     for app in ("google_calendar", "pinterest", "youtube", "rss"):
         row = next(t for t in T.rows() if t.app == app and t.default)
         assert row.synth, f"{app} default trigger has no synth sample"
@@ -143,5 +156,6 @@ def test_default_ap_triggers_have_a_consistent_synth_sample():
             m = re.fullmatch(r"\{\{trigger\.([\w.]+)\}\}", tmpl)
             if not m:
                 continue
-            assert _dig(row.synth, m.group(1)) is not None, \
+            assert _dig(row.synth, m.group(1)) is not None, (
                 f"{app}: synth is missing path {m.group(1)!r} used by the payload map"
+            )

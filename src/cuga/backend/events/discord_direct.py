@@ -12,6 +12,7 @@ Flow:  Discord Gateway (MESSAGE_CREATE) ▸ CUGA POST /run ▸ REST create-messa
 Gateway Intents). Without it the Gateway closes with code 4014 (disallowed intents) or delivers empty
 content. Env: ``DISCORD_BOT_TOKEN``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,13 +30,13 @@ API = "https://discord.com/api/v10"
 # GUILD_MEMBERS (1<<1) is PRIVILEGED: requesting it without enabling "Server Members Intent" in
 # the Discord dev portal closes the whole gateway with 4014 — so it is opt-in via
 # EVENTS_DISCORD_MEMBERS_INTENT=1 (set it only AFTER flipping the portal toggle).
-INTENTS = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)   # +GUILD_MESSAGE_REACTIONS (bit 10, non-priv)
+INTENTS = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)  # +GUILD_MESSAGE_REACTIONS (bit 10, non-priv)
 
 
 def intents() -> int:
     n = INTENTS
     if os.environ.get("EVENTS_DISCORD_MEMBERS_INTENT", "") == "1":
-        n |= (1 << 1)                      # GUILD_MEMBERS → GUILD_MEMBER_ADD events
+        n |= 1 << 1  # GUILD_MEMBERS → GUILD_MEMBER_ADD events
     return n
 
 
@@ -56,7 +57,7 @@ def should_process(msg: dict) -> bool:
     return True
 
 
-_BOT_ID: dict = {"id": ""}          # the bot's own user id, learned from the Gateway READY
+_BOT_ID: dict = {"id": ""}  # the bot's own user id, learned from the Gateway READY
 
 
 def chat_mode() -> str:
@@ -78,13 +79,16 @@ def mention_gate(msg: dict) -> tuple[bool, str]:
         return True, text
     bid = _BOT_ID["id"]
     if not bid:
-        return True, text                    # READY not seen yet — fail open, never drop silently
-    if any(str(m.get("id")) == bid for m in (msg.get("mentions") or [])) \
-            or f"<@{bid}>" in text or f"<@!{bid}>" in text:
+        return True, text  # READY not seen yet — fail open, never drop silently
+    if (
+        any(str(m.get("id")) == bid for m in (msg.get("mentions") or []))
+        or f"<@{bid}>" in text
+        or f"<@!{bid}>" in text
+    ):
         return True, text.replace(f"<@!{bid}>", " ").replace(f"<@{bid}>", " ").strip()
     ref_author = ((msg.get("referenced_message") or {}).get("author") or {}).get("id")
     if str(ref_author or "") == bid:
-        return True, text                    # replying to the bot IS addressing it
+        return True, text  # replying to the bot IS addressing it
     return False, text
 
 
@@ -100,17 +104,19 @@ async def send_message(channel_id: str, text: str, reply_to: str = "") -> dict:
         # fail_if_not_exists=False: if the original was deleted, post normally instead of 400ing
         body["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{API}/channels/{channel_id}/messages",
-                         headers={"Authorization": f"Bot {tok}",
-                                  "content-type": "application/json"},
-                         json=body)
+        r = await c.post(
+            f"{API}/channels/{channel_id}/messages",
+            headers={"Authorization": f"Bot {tok}", "content-type": "application/json"},
+            json=body,
+        )
         if r.status_code < 300:
             return {"ok": True}
         return {"ok": False, "error": f"HTTP {r.status_code}", "detail": r.text[:200]}
 
 
-async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
-                      ready: asyncio.Future | None = None, on_event=None) -> None:
+async def run_gateway(
+    on_message, *, stop: asyncio.Event | None = None, ready: asyncio.Future | None = None, on_event=None
+) -> None:
     """Hold a Gateway connection and call ``on_message(msg)`` for each human MESSAGE_CREATE.
 
     ``on_event(dispatch_type, data)`` (optional) additionally receives NON-message dispatches we
@@ -119,19 +125,29 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
     resume — a fresh IDENTIFY is simple and robust enough for our use). ``stop`` (an Event) ends
     the loop cleanly; ``ready`` (a Future) is resolved on the first READY."""
     import websockets  # local import so the module loads even if websockets is absent
+
     tok = bot_token()
     if not tok:
         log.warning("discord_direct: no DISCORD_BOT_TOKEN — gateway not started")
         return
     while not (stop and stop.is_set()):
         try:
-            async with websockets.connect(GATEWAY_URL, max_size=2 ** 23) as ws:
+            async with websockets.connect(GATEWAY_URL, max_size=2**23) as ws:
                 hello = json.loads(await ws.recv())
                 hb_interval = float(hello["d"]["heartbeat_interval"]) / 1000.0
                 seq = {"s": None}
-                await ws.send(json.dumps({"op": 2, "d": {
-                    "token": tok, "intents": intents(),
-                    "properties": {"os": "linux", "browser": "cuga", "device": "cuga"}}}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "op": 2,
+                            "d": {
+                                "token": tok,
+                                "intents": intents(),
+                                "properties": {"os": "linux", "browser": "cuga", "device": "cuga"},
+                            },
+                        }
+                    )
+                )
 
                 async def _heartbeat():
                     try:
@@ -148,33 +164,37 @@ async def run_gateway(on_message, *, stop: asyncio.Event | None = None,
                         if ev.get("s") is not None:
                             seq["s"] = ev["s"]
                         op = ev.get("op")
-                        if op == 0:                                   # DISPATCH
+                        if op == 0:  # DISPATCH
                             t = ev.get("t")
                             if t == "READY":
                                 u = (ev.get("d") or {}).get("user") or {}
-                                _BOT_ID["id"] = str(u.get("id") or "")   # for mention_gate
-                                log.info("discord gateway READY as %s#%s",
-                                         u.get("username"), u.get("discriminator"))
+                                _BOT_ID["id"] = str(u.get("id") or "")  # for mention_gate
+                                log.info(
+                                    "discord gateway READY as %s#%s",
+                                    u.get("username"),
+                                    u.get("discriminator"),
+                                )
                                 if ready is not None and not ready.done():
                                     ready.set_result(u)
                             elif t == "MESSAGE_CREATE":
                                 msg = ev.get("d") or {}
                                 if should_process(msg):
                                     asyncio.create_task(on_message(msg))
-                            elif t in ("GUILD_MEMBER_ADD", "MESSAGE_REACTION_ADD") \
-                                    and on_event is not None:
+                            elif t in ("GUILD_MEMBER_ADD", "MESSAGE_REACTION_ADD") and on_event is not None:
                                 asyncio.create_task(on_event(t, ev.get("d") or {}))
-                        elif op == 1:                                 # server requests a heartbeat now
+                        elif op == 1:  # server requests a heartbeat now
                             await ws.send(json.dumps({"op": 1, "d": seq["s"]}))
-                        elif op in (7, 9):                            # reconnect / invalid session
+                        elif op in (7, 9):  # reconnect / invalid session
                             break
                 finally:
                     hbt.cancel()
         except Exception as e:  # noqa: BLE001
             code = getattr(e, "code", None)
             if code == 4014:
-                log.error("discord gateway: DISALLOWED INTENTS (4014) — enable MESSAGE CONTENT "
-                          "INTENT in the Developer Portal (Bot → Privileged Gateway Intents)")
+                log.error(
+                    "discord gateway: DISALLOWED INTENTS (4014) — enable MESSAGE CONTENT "
+                    "INTENT in the Developer Portal (Bot → Privileged Gateway Intents)"
+                )
             else:
                 log.warning("discord gateway error: %s (reconnecting in 5s)", e)
         if stop and stop.is_set():

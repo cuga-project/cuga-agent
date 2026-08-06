@@ -12,6 +12,7 @@ One knob per channel: ``EVENTS_<CHANNEL>_BACKEND`` (``direct`` | ``ap``). Slack 
 ``direct``; telegram/discord default to ``ap`` (their AP round-trip is verified live). Flip a
 channel to direct here the day its direct adapter lands — no other code changes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,11 +22,11 @@ log = logging.getLogger("events.delivery")
 
 # Per-channel default backend. Override at runtime with EVENTS_<CHANNEL>_BACKEND=direct|ap.
 _DEFAULT_BACKEND = {
-    "slack": "direct",     # direct is the default (bot token); AP path behind EVENTS_SLACK_BACKEND=ap
+    "slack": "direct",  # direct is the default (bot token); AP path behind EVENTS_SLACK_BACKEND=ap
     "telegram": "direct",  # direct long-poll (getUpdates/sendMessage, no AP); AP webhook behind EVENTS_TELEGRAM_BACKEND=ap
-    "discord": "direct",   # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
-    "web": "direct",       # the browser: no socket to push into, so its transport is a durable
-                           # per-thread mailbox the UI drains by cursor — see web_inbox.
+    "discord": "direct",  # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
+    "web": "direct",  # the browser: no socket to push into, so its transport is a durable
+    # per-thread mailbox the UI drains by cursor — see web_inbox.
 }
 
 
@@ -43,8 +44,9 @@ def is_direct(channel: str) -> bool:
     return channel_backend(channel) == "direct"
 
 
-async def send_direct(channel: str, target: str, text: str, locus: str = "",
-                      scope: str = "", meta: dict | None = None) -> tuple[bool, str]:
+async def send_direct(
+    channel: str, target: str, text: str, locus: str = "", scope: str = "", meta: dict | None = None
+) -> tuple[bool, str]:
     """CUGA-side outbound send for a direct channel. Returns (ok, reason).
 
     ``locus`` is the thread anchor from the gw thread id (principal.channel_locus): Slack posts
@@ -60,26 +62,35 @@ async def send_direct(channel: str, target: str, text: str, locus: str = "",
         if not target:
             return False, "web: no thread_id to deliver to"
         from . import web_inbox
+
         if web_inbox.store() is None:
             return False, "web: no mailbox mounted"
         m = meta or {}
-        web_inbox.put(scope=scope, thread_id=target, text=text, agent=str(m.get("agent") or ""),
-                      subscription_id=str(m.get("subscription_id") or ""),
-                      flow_name=str(m.get("flow_name") or ""),
-                      event_kind=str(m.get("event_kind") or ""))
+        web_inbox.put(
+            scope=scope,
+            thread_id=target,
+            text=text,
+            agent=str(m.get("agent") or ""),
+            subscription_id=str(m.get("subscription_id") or ""),
+            flow_name=str(m.get("flow_name") or ""),
+            event_kind=str(m.get("event_kind") or ""),
+        )
         return True, "ok"
     if ch == "slack":
         from . import slack_direct
+
         res = await slack_direct.send_message(target, text, thread_ts=locus or None)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"slack: {res.get('error') or res}")
     if ch == "discord":
         from . import discord_direct
+
         res = await discord_direct.send_message(target, text, reply_to=locus)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"discord: {res.get('error') or res}")
     if ch == "telegram":
         from . import telegram_direct
+
         # locus (a message id) → threaded reply; a scheduled fire has none, so it posts to the chat.
         res = await telegram_direct.send_message(target, text, reply_to=(locus or None))
         ok = bool(res.get("ok"))

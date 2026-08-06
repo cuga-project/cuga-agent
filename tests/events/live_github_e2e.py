@@ -11,6 +11,7 @@ real PR content end to end (which is exactly `pr_reviewer`'s job).
 Requires: GITHUB_TOKEN in .env, a running server. Optional: E2E_PR="owner/repo#123" to pin a PR.
 Run:  EVENTS_SERVER_URL=http://localhost:7860 GATEWAY_TOKEN=<..> .venv/bin/python tests/events/live_github_e2e.py
 """
+
 from __future__ import annotations
 
 import json
@@ -42,8 +43,9 @@ TOKEN, GWTOK = _env("GITHUB_TOKEN"), _env("GATEWAY_TOKEN")
 
 
 def _gh(path, accept="application/vnd.github+json"):
-    req = urllib.request.Request(GH + path, headers={
-        "Authorization": f"Bearer {TOKEN}", "Accept": accept, "User-Agent": "cuga-e2e"})
+    req = urllib.request.Request(
+        GH + path, headers={"Authorization": f"Bearer {TOKEN}", "Accept": accept, "User-Agent": "cuga-e2e"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             raw = r.read().decode()
@@ -56,19 +58,28 @@ def _gh(path, accept="application/vnd.github+json"):
 
 
 def _invoke(agent, text):
-    req = urllib.request.Request(f"{SERVER}/invoke", method="POST",
-                                 data=json.dumps({"agent": agent, "text": text, "deliver": False,
-                                                  "source": {"type": "integration", "name": "github",
-                                                             "thread_id": "gh:e2e"},
-                                                  "event": {"kind": "new_pr", "payload": {}}}).encode(),
-                                 headers={"Content-Type": "application/json", "X-Gateway-Token": GWTOK})
+    req = urllib.request.Request(
+        f"{SERVER}/invoke",
+        method="POST",
+        data=json.dumps(
+            {
+                "agent": agent,
+                "text": text,
+                "deliver": False,
+                "source": {"type": "integration", "name": "github", "thread_id": "gh:e2e"},
+                "event": {"kind": "new_pr", "payload": {}},
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json", "X-Gateway-Token": GWTOK},
+    )
     with urllib.request.urlopen(req, timeout=200) as r:
         return json.load(r).get("answer", "")
 
 
 def main() -> int:
     if not TOKEN:
-        print("no GITHUB_TOKEN in .env"); return 2
+        print("no GITHUB_TOKEN in .env")
+        return 2
     ok = True
 
     def check(name, cond, detail=""):
@@ -85,13 +96,15 @@ def main() -> int:
     # 2) find a REAL open PR (pinned via E2E_PR, else first candidate with one)
     target = os.environ.get("E2E_PR")
     if target and "#" in target:
-        rp, n = target.split("#"); num = int(n)
+        rp, n = target.split("#")
+        num = int(n)
     else:
         rp = num = None
         for cand in CANDIDATES:
             s, prs = _gh(f"/repos/{cand}/pulls?state=open&per_page=1")
             if s == 200 and isinstance(prs, list) and prs:
-                rp, num = cand, prs[0]["number"]; break
+                rp, num = cand, prs[0]["number"]
+                break
     check("found a real open PR to review", bool(rp and num), f"{rp}#{num}" if rp else "none found")
     if not rp:
         return 1
@@ -104,15 +117,21 @@ def main() -> int:
     check("fetched the real diff", bool(diff), f"{len(diff)} chars")
 
     # 4) the agent reviews the REAL PR
-    text = (f"Review this pull request '{pr.get('title')}' on {rp}. Summarize what it changes in a "
-            f"sentence or two and flag any risks.\n\nDIFF:\n{diff}")
+    text = (
+        f"Review this pull request '{pr.get('title')}' on {rp}. Summarize what it changes in a "
+        f"sentence or two and flag any risks.\n\nDIFF:\n{diff}"
+    )
     print("  … running pr_reviewer on the real diff (≈15s)")
     answer = _invoke("pr_reviewer", text)
     print("  reviewer:", (answer or "")[:300].replace("\n", " "))
-    check("pr_reviewer returned a substantive review of the real PR",
-          len(answer or "") > 60 and not answer.lower().startswith(("error", "i can't", "i cannot")))
+    check(
+        "pr_reviewer returned a substantive review of the real PR",
+        len(answer or "") > 60 and not answer.lower().startswith(("error", "i can't", "i cannot")),
+    )
 
-    print(f"\nRESULT: {'PASS — GitHub integration e2e green (real PR reviewed by the agent)' if ok else 'FAIL'}")
+    print(
+        f"\nRESULT: {'PASS — GitHub integration e2e green (real PR reviewed by the agent)' if ok else 'FAIL'}"
+    )
     print(f"  reviewed: https://github.com/{rp}/pull/{num}")
     return 0 if ok else 1
 
@@ -121,4 +140,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except urllib.error.URLError as e:
-        print(f"cannot reach {SERVER} ({e})"); sys.exit(2)
+        print(f"cannot reach {SERVER} ({e})")
+        sys.exit(2)

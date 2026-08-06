@@ -15,6 +15,7 @@ Setup (Slack app at api.slack.com/apps):
   • Invite the bot to the channel.
 Env: SLACK_BOT_TOKEN (required) · SLACK_SIGNING_SECRET (recommended — verifies requests are Slack's).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -53,7 +54,7 @@ def verify_signature(headers, raw_body: str) -> tuple[bool, str]:
     if not ts or not sig:
         return False, "missing signature headers"
     try:
-        if abs(time.time() - int(ts)) > 60 * 5:      # replay window
+        if abs(time.time() - int(ts)) > 60 * 5:  # replay window
             return False, "stale timestamp"
     except ValueError:
         return False, "bad timestamp"
@@ -66,7 +67,7 @@ def should_process(event: dict) -> bool:
     """A real human message we should answer — not the bot's own posts, edits, joins, etc."""
     if not event or event.get("type") != "message":
         return False
-    if event.get("bot_id") or event.get("subtype"):     # bot messages / edits / joins have a subtype
+    if event.get("bot_id") or event.get("subtype"):  # bot messages / edits / joins have a subtype
         return False
     if not (event.get("text") and event.get("channel")):
         return False
@@ -95,8 +96,7 @@ async def bot_user_id() -> str:
         return ""
     try:
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post("https://slack.com/api/auth.test",
-                             headers={"Authorization": f"Bearer {tok}"})
+            r = await c.post("https://slack.com/api/auth.test", headers={"Authorization": f"Bearer {tok}"})
             _BOT_UID["id"] = (r.json() or {}).get("user_id", "") or ""
     except Exception:  # noqa: BLE001
         return ""
@@ -112,7 +112,7 @@ async def mention_gate(event: dict) -> tuple[bool, str]:
     'watch #incidents' and enabling mention mode would silently kill the watcher."""
     text = event.get("text") or ""
     if chat_mode() != "mention" or event.get("channel_type") == "im":
-        return True, text                     # a Slack `im` is strictly 1:1 with the bot
+        return True, text  # a Slack `im` is strictly 1:1 with the bot
     uid = await bot_user_id()
     tok = f"<@{uid}>"
     if uid and tok in text:
@@ -126,8 +126,11 @@ async def mention_gate(event: dict) -> tuple[bool, str]:
     # "what about NYC?") — the mention rooted the thread at the USER's message, so
     # parent_user_id is the user; what makes it a conversation is that the bot replied.
     # send_message records those threads; the API fallback survives a reload.
-    if uid and event.get("thread_ts") and await _bot_in_thread(
-            str(event.get("channel") or ""), str(event.get("thread_ts")), uid):
+    if (
+        uid
+        and event.get("thread_ts")
+        and await _bot_in_thread(str(event.get("channel") or ""), str(event.get("thread_ts")), uid)
+    ):
         return True, text
     return False, text
 
@@ -139,7 +142,7 @@ _THREAD_TTL_SECS = 24 * 3600
 
 
 def remember_thread(channel: str, thread_ts: str) -> None:
-    if len(_THREADS) > 4000:                              # bounded: drop expired, then oldest
+    if len(_THREADS) > 4000:  # bounded: drop expired, then oldest
         now = time.time()
         for k in [k for k, exp in _THREADS.items() if exp < now][:2000] or list(_THREADS)[:2000]:
             _THREADS.pop(k, None)
@@ -155,9 +158,11 @@ async def _bot_in_thread(channel: str, thread_ts: str, uid: str) -> bool:
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get("https://slack.com/api/conversations.replies",
-                            params={"channel": channel, "ts": thread_ts, "limit": 30},
-                            headers={"Authorization": f"Bearer {tok}"})
+            r = await c.get(
+                "https://slack.com/api/conversations.replies",
+                params={"channel": channel, "ts": thread_ts, "limit": 30},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
             msgs = (r.json() or {}).get("messages") or []
     except Exception:  # noqa: BLE001
         return False
@@ -177,12 +182,13 @@ async def send_message(channel: str, text: str, thread_ts: str | None = None) ->
     body = {"channel": channel, "text": text}
     if thread_ts:
         body["thread_ts"] = thread_ts
-        remember_thread(channel, thread_ts)   # follow-ups in this thread reach chat sans mention
+        remember_thread(channel, thread_ts)  # follow-ups in this thread reach chat sans mention
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post("https://slack.com/api/chat.postMessage",
-                         headers={"Authorization": f"Bearer {tok}",
-                                  "content-type": "application/json; charset=utf-8"},
-                         json=body)
+        r = await c.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {tok}", "content-type": "application/json; charset=utf-8"},
+            json=body,
+        )
         try:
             return r.json()
         except Exception:  # noqa: BLE001

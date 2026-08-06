@@ -20,6 +20,7 @@ def _builtins():
     def current_time() -> str:
         """Return the current UTC time in ISO-8601 format."""
         from datetime import datetime, timezone
+
         return datetime.now(timezone.utc).isoformat()
 
     @tool
@@ -35,11 +36,18 @@ def _builtins():
     def arxiv_search(query: str, max_results: int = 5) -> str:
         """Search arXiv for recent papers matching a query. Returns title lines."""
         import re
+
         try:
-            r = httpx.get("http://export.arxiv.org/api/query",
-                          params={"search_query": f"all:{query}", "max_results": max_results,
-                                  "sortBy": "submittedDate", "sortOrder": "descending"},
-                          timeout=20)
+            r = httpx.get(
+                "http://export.arxiv.org/api/query",
+                params={
+                    "search_query": f"all:{query}",
+                    "max_results": max_results,
+                    "sortBy": "submittedDate",
+                    "sortOrder": "descending",
+                },
+                timeout=20,
+            )
             titles = re.findall(r"<title>(.*?)</title>", r.text, re.S)[1:]
             return "\n".join(f"- {t.strip()}" for t in titles[:max_results]) or "no results"
         except Exception as e:  # noqa: BLE001
@@ -54,6 +62,7 @@ async def load_mcp_tools(mcp_servers: dict) -> list:
         return []
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
+
         client = MultiServerMCPClient(mcp_servers)
         tools = await client.get_tools()
         log.info("loaded %d MCP tools from %s", len(tools), list(mcp_servers))
@@ -63,8 +72,9 @@ async def load_mcp_tools(mcp_servers: dict) -> list:
         return []
 
 
-async def build_tools(builtin_names: list, mcp_servers: dict | None = None,
-                      tool_filter: list | None = None) -> list:
+async def build_tools(
+    builtin_names: list, mcp_servers: dict | None = None, tool_filter: list | None = None
+) -> list:
     """Merge built-in tools + MCP-server tools into one list."""
     builtins = _builtins()
     tools = [builtins[n] for n in (builtin_names or []) if n in builtins]

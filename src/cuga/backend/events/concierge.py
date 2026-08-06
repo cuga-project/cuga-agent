@@ -49,8 +49,9 @@ _principal: contextvars.ContextVar = contextvars.ContextVar("principal", default
 # from their `prompt` argument, which the LLM routinely rewrites (and drops qualifiers from)
 _utterance: contextvars.ContextVar[str] = contextvars.ContextVar("utterance", default="")
 
-CHAT_STYLE = ("\n\nReply for a chat app: short plain-text lines or simple '- ' bullets. "
-              "No markdown tables/headings.")
+CHAT_STYLE = (
+    "\n\nReply for a chat app: short plain-text lines or simple '- ' bullets. No markdown tables/headings."
+)
 
 CONCIERGE_PROMPT = (
     "You are the runtime concierge for an event-driven agent platform. There is exactly ONE "
@@ -81,8 +82,9 @@ CONCIERGE_PROMPT = (
     "  Format: app: event(needs <slot>) … ; * = that app's default event.\n"
     "  " + trigger_registry.prompt_vocabulary() + "\n"
     "  Slots: repo='owner/repo' (every github event) · label=<gmail label> (new_labeled_email) · "
-    "emoji / pattern / watch_channel (slack + discord filters) · folder (box).\n"
-    + CHAT_STYLE)
+    "emoji / pattern / watch_channel (slack + discord filters) · folder (box).\n" + CHAT_STYLE
+)
+
 
 def _concierge_prompt() -> str:
     """The system prompt for the concierge react-agent. Triggers-only: the events layer never runs
@@ -99,6 +101,7 @@ def _slash_parse(text: str) -> dict | None:
     FORCE a mode. DETERMINISTIC either way — the arm bypasses the LLM entirely (no flaky mode pick, no
     decline). Returns None when it isn't a slash command (normal NL routing then applies)."""
     import re
+
     try:
         from . import classify
     except ImportError:  # flat load (offline tests put the events dir on sys.path)
@@ -109,14 +112,19 @@ def _slash_parse(text: str) -> dict | None:
     # tolerated a mention and this did NOT, a mention-prefixed "/automate …" was forwarded here,
     # missed by this parser, and armed by the NL path WITHOUT the confirmation card. The HITL gate
     # leaked: a flow armed that no human had approved.
-    m = re.match(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)",
-                 text or "", re.I | re.S)
+    m = re.match(
+        r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S
+    )
     if not m:
         return None
     cmd, rest = m.group(1).lower(), (m.group(2) or "").strip()
     if not rest:
-        return {"cmd": cmd, "error": (f"/{cmd}: tell me WHAT to automate — e.g. "
-                                      f"`/{cmd} summarize new emails and message me`.")}
+        return {
+            "cmd": cmd,
+            "error": (
+                f"/{cmd}: tell me WHAT to automate — e.g. `/{cmd} summarize new emails and message me`."
+            ),
+        }
     # /automate and /watch let the router decide; the rest force a specific mode.
     forced = {"cron": "CRON", "schedule": "CRON", "poll": "POLL", "push": "PUSH"}.get(cmd)
     d = classify.decision(rest)
@@ -127,7 +135,7 @@ def _slash_parse(text: str) -> dict | None:
         # /watch may force PUSH even when the classifier read the phrasing as NOW, so run the
         # source detector directly (not via decision(), which only fills source when mode==PUSH).
         se = d.get("source") and (d.get("source"), d.get("event")) or classify.source_of(rest)
-        out["source"], out["event"] = (se if se else (None, None))
+        out["source"], out["event"] = se if se else (None, None)
     else:
         cad = d.get("cadence") or {}
         if cad.get("cron"):
@@ -147,8 +155,12 @@ def _strip_cadence(prompt: str) -> str:
     t = re.sub(r"\b(hourly|daily|weekly|continuously|periodically|repeatedly)\b", "", t, flags=re.I)
     t = re.sub(r"\bat\s+\d{1,2}(:\d\d)?\s*(am|pm)?\b", "", t, flags=re.I)
     # imperative recurrence verbs → single-check phrasing
-    t = re.sub(r"\b(keep (an eye on|watching|monitoring|checking)|continuously (watch|monitor|check))\b",
-               "check", t, flags=re.I)
+    t = re.sub(
+        r"\b(keep (an eye on|watching|monitoring|checking)|continuously (watch|monitor|check))\b",
+        "check",
+        t,
+        flags=re.I,
+    )
     t = re.sub(r"\bmonitor(ing)?\b", "check", t, flags=re.I)
     t = re.sub(r"\s{2,}", " ", t).strip(" ,.;:")
     return t or prompt
@@ -160,7 +172,9 @@ def _strip_cadence(prompt: str) -> str:
 _CADENCE_LEAK = re.compile(
     r"\b(every\s+(\d+|second|minute|hour|day|morning|weekday|week|month|monday|tuesday|wednesday|"
     r"thursday|friday|saturday|sunday)|hourly|daily|weekly|monthly|continuously|periodically|"
-    r"repeatedly|keep\s+(watching|checking|monitoring|an\s+eye)|monitor(ing)?)\b", re.I)
+    r"repeatedly|keep\s+(watching|checking|monitoring|an\s+eye)|monitor(ing)?)\b",
+    re.I,
+)
 
 _REWRITE_SYSTEM = (
     "You rewrite a user's recurring-task request into the instruction for ONE run of that task. "
@@ -171,6 +185,7 @@ _REWRITE_SYSTEM = (
     "changes'), and any delivery instruction (where/how to send the result). Do NOT answer the "
     "request or add commentary. Reply with ONLY the rewritten instruction, no quotes."
 )
+
 
 def _looks_truncated(out: str, src: str) -> bool:
     """True when a rewrite ends mid-word — the model stopped early (token cap, cut stream).
@@ -211,6 +226,7 @@ async def _single_shot_task(prompt: str) -> str:
     global _cadence_model
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
+
         if _cadence_model is None:
             try:
                 from .llm import default_model_factory
@@ -218,15 +234,18 @@ async def _single_shot_task(prompt: str) -> str:
                 from llm import default_model_factory
             _cadence_model = default_model_factory(None)
         res = await asyncio.wait_for(
-            _cadence_model.ainvoke(
-                [SystemMessage(content=_REWRITE_SYSTEM), HumanMessage(content=prompt)]),
-            timeout=float(os.environ.get("EVENTS_CADENCE_LLM_TIMEOUT", "20")))
+            _cadence_model.ainvoke([SystemMessage(content=_REWRITE_SYSTEM), HumanMessage(content=prompt)]),
+            timeout=float(os.environ.get("EVENTS_CADENCE_LLM_TIMEOUT", "20")),
+        )
         out = (res.content or "").strip().strip('"').strip()
-        if (out and len(out) <= 4 * max(len(prompt), 40)
-                and not _CADENCE_LEAK.search(out) and not _looks_truncated(out, prompt)):
+        if (
+            out
+            and len(out) <= 4 * max(len(prompt), 40)
+            and not _CADENCE_LEAK.search(out)
+            and not _looks_truncated(out, prompt)
+        ):
             return out
-        log.warning("cadence LLM rewrite rejected (leak/size/truncation) — regex fallback: %r",
-                    out[:120])
+        log.warning("cadence LLM rewrite rejected (leak/size/truncation) — regex fallback: %r", out[:120])
     except Exception as e:  # noqa: BLE001
         log.warning("cadence LLM rewrite failed (%s) — regex fallback", str(e)[:120])
     return _strip_cadence(prompt)
@@ -235,13 +254,11 @@ async def _single_shot_task(prompt: str) -> str:
 def _owner_scope(spec, p: Principal) -> str:
     """Grain follows credentials: tenant-wide if all connectors are shared, else the full user
     scope when any integration is per-user (that flow is necessarily per-user)."""
-    per_user = any(credentials.is_per_user(i.get("ownership", "per-user"))
-                   for i in (spec.integrations or []))
+    per_user = any(credentials.is_per_user(i.get("ownership", "per-user")) for i in (spec.integrations or []))
     return p.scope if per_user else p.tenant_id
 
 
-async def _connect_needed(spec, p: Principal, engine,
-                          only_app: str | None = None) -> tuple[str, str] | None:
+async def _connect_needed(spec, p: Principal, engine, only_app: str | None = None) -> tuple[str, str] | None:
     """First per-user integration on the agent the user hasn't connected → (app, connect_msg).
 
     ``only_app`` scopes the gate to ONE app (the push source): the agent holds no credentials, so
@@ -254,17 +271,20 @@ async def _connect_needed(spec, p: Principal, engine,
     # instead of silently falling through to a generic poll. Skip pieces that need NO connection
     # (youtube = public feed → connect_kind 'none'; direct sources have no AP connection).
     integs = list(spec.integrations or [])
-    if only_app and oauth.connect_kind(only_app) in ("oauth", "token") \
-            and not any((i.get("app") == only_app) for i in integs):
+    if (
+        only_app
+        and oauth.connect_kind(only_app) in ("oauth", "token")
+        and not any((i.get("app") == only_app) for i in integs)
+    ):
         integs = integs + [{"app": only_app, "ownership": "per-user"}]
     for integ in integs:
         app, ownership = integ.get("app"), integ.get("ownership", "per-user")
         if only_app is not None and app != only_app:
             continue
         if not credentials.is_per_user(ownership):
-            continue                       # shared → the builder connected it once
+            continue  # shared → the builder connected it once
         if app == "box" and os.environ.get("EVENTS_BOX_BACKEND") == "direct":
-            continue                       # DIRECT box polls with BOX_DEV_TOKEN — no AP connection
+            continue  # DIRECT box polls with BOX_DEV_TOKEN — no AP connection
         ext = credentials.connection_external_id(app, ownership, p)
         # Ask AP whether the connection exists — and DISTINGUISH "no" from "AP didn't answer".
         # A bare `except: exists = False` made an unreachable/slow/rate-limited AP look exactly
@@ -282,16 +302,20 @@ async def _connect_needed(spec, p: Principal, engine,
                 ap_error = str(e)
                 await asyncio.sleep(0.4)
         if ap_error:
-            log.warning("connect gate: AP unreachable checking %s (%s) — NOT reporting "
-                        "connect-needed", app, ap_error[:120])
-            return app, (f"I couldn't verify your {app} connection because Activepieces didn't "
-                         f"answer ({ap_error[:120]}). This is NOT a missing credential — check AP "
-                         f"is up (`make status` / `make tunnels`) and try again.")
+            log.warning(
+                "connect gate: AP unreachable checking %s (%s) — NOT reporting connect-needed",
+                app,
+                ap_error[:120],
+            )
+            return app, (
+                f"I couldn't verify your {app} connection because Activepieces didn't "
+                f"answer ({ap_error[:120]}). This is NOT a missing credential — check AP "
+                f"is up (`make status` / `make tunnels`) and try again."
+            )
         if exists:
             continue
         if oauth.connect_kind(app) == "oauth" and oauth.is_configured(app):
-            url = (f"{oauth.public_base()}/api/events/connect/{app}"
-                   f"?scope={p.scope}&agent={spec.name}")
+            url = f"{oauth.public_base()}/api/events/connect/{app}?scope={p.scope}&agent={spec.name}"
             return app, f"connect your {app}: {url}"
         if oauth.connect_kind(app) == "token":
             hint = ""
@@ -299,16 +323,22 @@ async def _connect_needed(spec, p: Principal, engine,
                 # PR/issue triggers create a repo WEBHOOK, so the token must be able to manage hooks.
                 # Give the EXACT, correct guidance (classic uses scopes, fine-grained uses named
                 # permissions — don't mix them) so it can't be relayed as misleading instructions.
-                hint = (" — for PR/issue watchers the token must manage repo webhooks. Easiest: a "
-                        "CLASSIC PAT at github.com/settings/tokens/new with the **`repo`** scope "
-                        "(covers webhooks + PR read). Or a FINE-GRAINED PAT at "
-                        "github.com/settings/personal-access-tokens/new, resource owner = the repo's "
-                        "owner, Only-select-repositories = that repo, then Repository permissions → "
-                        "**Webhooks: Read and write** + **Pull requests: Read** (+ Contents: Read)")
-            return app, (f"connect your {app}: paste your {app} token in the Studio "
-                         f"(Integrations → {app} → Connect){hint}")
-        return app, (f"{app} isn't configured for OAuth on this deployment "
-                     f"(set EVENTS_OAUTH_{app.upper()}_CLIENT_ID/SECRET)")
+                hint = (
+                    " — for PR/issue watchers the token must manage repo webhooks. Easiest: a "
+                    "CLASSIC PAT at github.com/settings/tokens/new with the **`repo`** scope "
+                    "(covers webhooks + PR read). Or a FINE-GRAINED PAT at "
+                    "github.com/settings/personal-access-tokens/new, resource owner = the repo's "
+                    "owner, Only-select-repositories = that repo, then Repository permissions → "
+                    "**Webhooks: Read and write** + **Pull requests: Read** (+ Contents: Read)"
+                )
+            return app, (
+                f"connect your {app}: paste your {app} token in the Studio "
+                f"(Integrations → {app} → Connect){hint}"
+            )
+        return app, (
+            f"{app} isn't configured for OAuth on this deployment "
+            f"(set EVENTS_OAUTH_{app.upper()}_CLIENT_ID/SECRET)"
+        )
     return None
 
 
@@ -328,15 +358,17 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
         """What the ONE agent ('cuga') can do: its specialists' domains and the trigger vocabulary
         live in your instructions. Kept for compatibility; there is nothing to pick."""
         n = len(runtime.list_agents(scope=_principal.get().agent_scope))
-        return ("ONE agent: 'cuga' — it routes internally"
-                + (f" across {n} specialists" if n > 1 else "")
-                + ". Always use agent='cuga'.")
+        return (
+            "ONE agent: 'cuga' — it routes internally"
+            + (f" across {n} specialists" if n > 1 else "")
+            + ". Always use agent='cuga'."
+        )
 
     @tool
     async def answer_now(agent: str, task: str) -> str:
         """Run THE agent ('cuga') ONCE now and return its answer (the immediate-question path)."""
         p = _principal.get()
-        agent = THE_AGENT                       # single-agent world: the id is not a choice
+        agent = THE_AGENT  # single-agent world: the id is not a choice
         origin = _origin.get()
         try:
             # memory is per-USER conversation (thread_id carries p.scope)
@@ -354,17 +386,26 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
     if store is not None:
         try:
             from .subscriptions import Subscription, DuplicateSubscription
-        except ImportError:                       # flat load (offline tests put events dir on path)
+        except ImportError:  # flat load (offline tests put events dir on path)
             from subscriptions import Subscription, DuplicateSubscription
 
         @tool
-        async def find_or_create_flow(agent: str, kind: str, prompt: str,
-                                      every_minutes: int | None = None, cron: str | None = None,
-                                      source: str | None = None, event: str | None = None,
-                                      deliver_to: str | None = None, repo: str | None = None,
-                                      label: str | None = None, folder: str | None = None,
-                                      emoji: str | None = None, pattern: str | None = None,
-                                      watch_channel: str | None = None) -> str:
+        async def find_or_create_flow(
+            agent: str,
+            kind: str,
+            prompt: str,
+            every_minutes: int | None = None,
+            cron: str | None = None,
+            source: str | None = None,
+            event: str | None = None,
+            deliver_to: str | None = None,
+            repo: str | None = None,
+            label: str | None = None,
+            folder: str | None = None,
+            emoji: str | None = None,
+            pattern: str | None = None,
+            watch_channel: str | None = None,
+        ) -> str:
             """Reuse-or-create a STANDING flow for an EXISTING agent. kind='cron'|'poll'|'push'.
             cron/poll: every_minutes OR cron (UTC). push: source (the app) + event (WHICH of the
             app's triggers — see the trigger vocabulary in your instructions; omit for the app's
@@ -405,27 +446,51 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # a missing required slot comes back as a message BEFORE anything is built — the old
             # path silently armed a flow on a nonexistent trigger that could never publish.
             trig_row = None
-            config: dict = {k: v for k, v in (("repo", repo), ("label", label), ("folder", folder),
-                                              ("emoji", emoji), ("pattern", pattern),
-                                              ("channel", watch_channel)) if v}
+            config: dict = {
+                k: v
+                for k, v in (
+                    ("repo", repo),
+                    ("label", label),
+                    ("folder", folder),
+                    ("emoji", emoji),
+                    ("pattern", pattern),
+                    ("channel", watch_channel),
+                )
+                if v
+            }
             if kind == "push" and source:
                 # slot back-fill from the utterance (deterministic, before the gate asks)
                 if "repo" not in config:
                     m = re.search(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b", prompt or "")
-                    if m and "." not in m.group(0).split("/")[0]:      # skip URLs/filenames
+                    if m and "." not in m.group(0).split("/")[0]:  # skip URLs/filenames
                         config["repo"] = m.group(0)
                 if "label" not in config and source == "gmail":
                     # A QUOTED label is the reliable signal ("when I label an email 'Read-later'").
                     # The old unquoted pattern captured the words right after "label", so
                     # "…label an email 'Read-later'" became label="an email" — a garbage value that
                     # would be sent to Gmail's trigger verbatim.
-                    m = re.search(r"['\"\u2018\u2019\u201c\u201d]([\w][\w .\-/]{1,38})"
-                                  r"['\"\u2018\u2019\u201c\u201d]", prompt or "")
+                    m = re.search(
+                        r"['\"\u2018\u2019\u201c\u201d]([\w][\w .\-/]{1,38})"
+                        r"['\"\u2018\u2019\u201c\u201d]",
+                        prompt or "",
+                    )
                     if not m:
-                        m = re.search(r"label(?:ed)?\s+(?:as\s+|it\s+)?([\w-]{2,30})",
-                                      prompt or "", re.I)
-                        _STOP = {"an", "a", "the", "my", "this", "it", "email", "emails",
-                                 "message", "messages", "is", "was", "gets"}
+                        m = re.search(r"label(?:ed)?\s+(?:as\s+|it\s+)?([\w-]{2,30})", prompt or "", re.I)
+                        _STOP = {
+                            "an",
+                            "a",
+                            "the",
+                            "my",
+                            "this",
+                            "it",
+                            "email",
+                            "emails",
+                            "message",
+                            "messages",
+                            "is",
+                            "was",
+                            "gets",
+                        }
                         if m and m.group(1).lower() in _STOP:
                             m = None
                     if m:
@@ -443,7 +508,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 trig_row, problem = _tr.validate(source, event or "", config)
                 if trig_row is None:
                     return f"error: {problem}"
-                if problem:                          # a required slot is missing → ask, don't arm
+                if problem:  # a required slot is missing → ask, don't arm
                     return problem
                 # normalize to the registry's canonical names for everything downstream
                 source, event = trig_row.app, trig_row.event
@@ -471,11 +536,14 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # step; a DIRECT channel (e.g. Slack) has CUGA send it — no AP connection, no send step.
             _chan_sink = sink if (sink in flows.CHANNELS and sink == o_channel and o_native) else None
             _direct = bool(_chan_sink and delivery.is_direct(_chan_sink))
-            deliver_channel = None if _direct else _chan_sink          # AP send step (ap channels)
+            deliver_channel = None if _direct else _chan_sink  # AP send step (ap channels)
             deliver_target = o_native if deliver_channel else None
-            deliver_connection = (credentials.connection_external_id(deliver_channel, "per-user", p)
-                                  if deliver_channel else None)
-            deliver_direct_channel = _chan_sink if _direct else None   # CUGA-side send (direct)
+            deliver_connection = (
+                credentials.connection_external_id(deliver_channel, "per-user", p)
+                if deliver_channel
+                else None
+            )
+            deliver_direct_channel = _chan_sink if _direct else None  # CUGA-side send (direct)
             deliver_direct_target = o_native if _direct else None
             # just-in-time connect for a per-user integration the flow needs. PUSH gates only
             # on the SOURCE app: the agent holds no credentials (AP owns trigger + sink), so a
@@ -505,11 +573,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     _ap_down = True
             if kind == "push" and trig_row is not None and trig_row.backend != "direct":
                 if engine is None or _ap_down:
-                    return (f"Watching **{source}** ({event or 'events'}) needs Activepieces, which "
-                            f"isn't reachable right now. Start it with `make up` to use {source} "
-                            f"triggers — or, for a schedule or to watch one of my own tools, just ask "
-                            f"(e.g. 'every 5 minutes …' or 'watch <tool> …') and I'll set it up "
-                            f"natively — no AP needed.")
+                    return (
+                        f"Watching **{source}** ({event or 'events'}) needs Activepieces, which "
+                        f"isn't reachable right now. Start it with `make up` to use {source} "
+                        f"triggers — or, for a schedule or to watch one of my own tools, just ask "
+                        f"(e.g. 'every 5 minutes …' or 'watch <tool> …') and I'll set it up "
+                        f"natively — no AP needed."
+                    )
             connect = await _connect_needed(spec, p, engine, only_app=_gate_app)
             if connect:
                 return f"CONNECT NEEDED — {connect[1]}"
@@ -527,15 +597,20 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             _task_tag = ""
             if kind in ("cron", "poll"):
                 import hashlib as _hl
+
                 _norm = " ".join((_utterance.get("") or prompt or "").lower().split())
                 _task_tag = _hl.sha1(_norm.encode()).hexdigest()[:10]
-            dedup_key = (f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
-                         f"{_task_tag}|{_owner_scope(spec, p)}")
+            dedup_key = (
+                f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
+                f"{_task_tag}|{_owner_scope(spec, p)}"
+            )
             existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
             if existing:
                 nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
-                return (f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
-                        f"(subscription {existing.id}). Nothing new created.")
+                return (
+                    f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
+                    f"(subscription {existing.id}). Nothing new created."
+                )
             origin = _origin.get()
             if kind == "push":
                 if not source:
@@ -556,32 +631,55 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     # baseline the watermark so ONLY files added AFTER arming fire (not the backlog)
                     try:
                         from . import box_direct
+
                         seen = await box_direct.new_files_since(folder, None)
-                        box_direct.save_since(folder, max((f.get("created_at", "") for f in seen), default=""))
+                        box_direct.save_since(
+                            folder, max((f.get("created_at", "") for f in seen), default="")
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     flow_name = f"box-poll-{agent}"
                     try:
                         grain = getattr(engine, "project_grain", "tenant")
                         ap_flow_id = await engine.create_box_poll_flow(
-                            name=flow_name, agent=agent, folder_id=folder,
+                            name=flow_name,
+                            agent=agent,
+                            folder_id=folder,
                             deliver_to=(deliver_direct_channel or (sink if sink in flows.CHANNELS else None)),
-                            deliver_target=deliver_direct_target, interval_seconds=every * 60,
-                            scope=p.scope, project_name=p.ap_project_name(grain))
+                            deliver_target=deliver_direct_target,
+                            interval_seconds=every * 60,
+                            scope=p.scope,
+                            project_name=p.ap_project_name(grain),
+                        )
                     except Exception as e:  # noqa: BLE001
                         return f"error: couldn't arm box watcher ({e})."
-                    sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="POLL",
-                                       target_agent=agent, tenant=p.scope, backend=spec.backend,
-                                       source_type="integration", source_connector="box",
-                                       ap_flow_id=ap_flow_id, deliver_to=[sink],
-                                       thread_id=p.thread(origin), prompt=prompt, dedup_key=dedup_key,
-                                       flow_name=flow_name)
+                    sub = Subscription(
+                        id=f"{agent}-{uuid.uuid4().hex[:6]}",
+                        mode="POLL",
+                        target_agent=agent,
+                        tenant=p.scope,
+                        backend=spec.backend,
+                        source_type="integration",
+                        source_connector="box",
+                        ap_flow_id=ap_flow_id,
+                        deliver_to=[sink],
+                        thread_id=p.thread(origin),
+                        prompt=prompt,
+                        dedup_key=dedup_key,
+                        flow_name=flow_name,
+                    )
                     store.upsert(sub)
-                    log.info("concierge armed DIRECT box watcher agent=%s folder=%s flow=%s",
-                             agent, folder, ap_flow_id)
-                    return (f"ARMED box watcher (direct poll every {every}m, folder {folder}) for "
-                            f"{agent} → {sink}. Flow: \"{flow_name}\" · flow id {ap_flow_id} "
-                            f"(subscription {sub.id}).")
+                    log.info(
+                        "concierge armed DIRECT box watcher agent=%s folder=%s flow=%s",
+                        agent,
+                        folder,
+                        ap_flow_id,
+                    )
+                    return (
+                        f"ARMED box watcher (direct poll every {every}m, folder {folder}) for "
+                        f"{agent} → {sink}. Flow: \"{flow_name}\" · flow id {ap_flow_id} "
+                        f"(subscription {sub.id})."
+                    )
                 # ── DIRECT triggers (slack / discord / telegram watchers) ────────────────
                 # CUGA already receives these transports itself (Slack Events API, Discord Gateway,
                 # the telegram message stream) — there is NO AP flow and NO AP connection. Arming is
@@ -590,33 +688,59 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 if trig_row is not None and trig_row.backend == "direct" and base_app != "box":
                     if base_app == "webhook":
                         hookname = (config.get("pattern") or "my-hook").replace(" ", "-")
-                        return ("No arming needed — the generic webhook endpoint is always live. "
-                                f"POST JSON to /api/events/hook/{hookname}?agent={agent} (pinned) "
-                                "or ?route=1 (concierge picks the agent).")
-                    sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",
-                                       target_agent=agent, tenant=p.scope, backend=spec.backend,
-                                       source_type="integration", source_connector=base_app,
-                                       ap_flow_id=None, deliver_to=[sink],
-                                       thread_id=p.thread(origin), prompt=prompt,
-                                       dedup_key=dedup_key, flow_name=f"direct-{base_app}-"
-                                       f"{(event or 'default').replace('_', '-')}-{agent}",
-                                       event=event or "", config=config)
+                        return (
+                            "No arming needed — the generic webhook endpoint is always live. "
+                            f"POST JSON to /api/events/hook/{hookname}?agent={agent} (pinned) "
+                            "or ?route=1 (concierge picks the agent)."
+                        )
+                    sub = Subscription(
+                        id=f"{agent}-{uuid.uuid4().hex[:6]}",
+                        mode="PUSH",
+                        target_agent=agent,
+                        tenant=p.scope,
+                        backend=spec.backend,
+                        source_type="integration",
+                        source_connector=base_app,
+                        ap_flow_id=None,
+                        deliver_to=[sink],
+                        thread_id=p.thread(origin),
+                        prompt=prompt,
+                        dedup_key=dedup_key,
+                        flow_name=f"direct-{base_app}-{(event or 'default').replace('_', '-')}-{agent}",
+                        event=event or "",
+                        config=config,
+                    )
                     try:
                         store.upsert(sub)
                     except DuplicateSubscription:
                         ex = store.find_by_dedup_key(dedup_key, scope=p.scope)
-                        return (f"REUSING existing watcher ({ex.id})." if ex
-                                else "REUSING an existing identical watcher.")
-                    log.info("concierge armed DIRECT watcher app=%s event=%s agent=%s",
-                             base_app, event, agent)
-                    _cfg = (f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else "")
-                    _act = ("" if base_app != "slack" else
-                            " (the Slack app must be subscribed to this event type — see "
-                            "events_docs/setup/SLACK.md)")
-                    return (f"ARMED direct watcher ({base_app}/{event}{_cfg}) for {agent} → {sink}"
-                            f"{_act}. Subscription {sub.id}.")
-                _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
-                             if i.get("app") == base_app), "per-user")
+                        return (
+                            f"REUSING existing watcher ({ex.id})."
+                            if ex
+                            else "REUSING an existing identical watcher."
+                        )
+                    log.info(
+                        "concierge armed DIRECT watcher app=%s event=%s agent=%s", base_app, event, agent
+                    )
+                    _cfg = f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else ""
+                    _act = (
+                        ""
+                        if base_app != "slack"
+                        else " (the Slack app must be subscribed to this event type — see "
+                        "events_docs/setup/SLACK.md)"
+                    )
+                    return (
+                        f"ARMED direct watcher ({base_app}/{event}{_cfg}) for {agent} → {sink}"
+                        f"{_act}. Subscription {sub.id}."
+                    )
+                _own = next(
+                    (
+                        i.get("ownership", "per-user")
+                        for i in (spec.integrations or [])
+                        if i.get("app") == base_app
+                    ),
+                    "per-user",
+                )
                 push_conn = credentials.connection_external_id(base_app, _own, p)
                 # github triggers REQUIRE a repository (owner/repo) — the registry gate already
                 # collected it into config["repo"] (param or utterance) or asked for it.
@@ -624,8 +748,10 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 if base_app == "github":
                     repo_label = config.get("repo", "")
                     if not repo_label or "/" not in repo_label:
-                        return ("Which repo? Name it as owner/repo — e.g. "
-                                "`/automate new PRs on psf/requests and summarize them`.")
+                        return (
+                            "Which repo? Name it as owner/repo — e.g. "
+                            "`/automate new PRs on psf/requests and summarize them`."
+                        )
                     _owner_part, _repo_part = repo_label.split("/", 1)
                     src_input = {"repository": {"owner": _owner_part, "repo": _repo_part}}
                 if base_app == "gmail" and config.get("label"):
@@ -656,43 +782,68 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # |owner) — distinct subscriptions differ here; re-arming the SAME intent is caught by
                 # the dedup-reuse check above BEFORE flow creation, so this hash never blocks a reuse.
                 import hashlib
+
                 _disc = hashlib.sha1(dedup_key.encode()).hexdigest()[:8]
                 flow_name = f"push-{source}-{(event or 'default').replace('_', '-')}-{agent}-{_disc}"
                 # NATIVE-vs-AP routing (Phase 2): a PUSH on an integration IS an AP piece. Without the
                 # AP engine we can't watch it — decline clearly, naming the integration, and point at
                 # what works AP-free, rather than failing with a cryptic connection error later.
                 if engine is None:
-                    return (f"Watching **{source}** ({event or 'events'}) needs the Activepieces "
-                            f"integration engine, which isn't running. Start it with `make up` to use "
-                            f"{source} triggers — or, for a schedule or to watch one of my own tools, "
-                            f"I can do that natively without AP (just say 'every N minutes …' or "
-                            f"'watch <tool> …').")
+                    return (
+                        f"Watching **{source}** ({event or 'events'}) needs the Activepieces "
+                        f"integration engine, which isn't running. Start it with `make up` to use "
+                        f"{source} triggers — or, for a schedule or to watch one of my own tools, "
+                        f"I can do that natively without AP (just say 'every N minutes …' or "
+                        f"'watch <tool> …')."
+                    )
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     ap_flow_id = await engine.create_push_flow(
-                        source=source, event=event or "new_file", agent=agent,
-                        thread_id=p.thread(origin), prompt=prompt,
-                        project_name=p.ap_project_name(grain), scope=p.scope,
-                        connection=push_conn, source_input=src_input, name=flow_name,
+                        source=source,
+                        event=event or "new_file",
+                        agent=agent,
+                        thread_id=p.thread(origin),
+                        prompt=prompt,
+                        project_name=p.ap_project_name(grain),
+                        scope=p.scope,
+                        connection=push_conn,
+                        source_input=src_input,
+                        name=flow_name,
                         # return-to-caller for an AP-backed origin channel (Telegram); direct
                         # channels (Slack/Discord) are handled by /invoke's deliver=True path.
-                        deliver_channel=deliver_channel, deliver_target=deliver_target,
-                        deliver_connection=deliver_connection)
+                        deliver_channel=deliver_channel,
+                        deliver_target=deliver_target,
+                        deliver_connection=deliver_connection,
+                    )
                 except Exception as e:  # noqa: BLE001
                     msg = str(e)
                     # AP configured but UNREACHABLE (e.g. running up-noap with AP down): give the same
                     # clear "start AP or go native" guidance as the engine-None case, not a raw error.
-                    if any(s in msg.lower() for s in ("connection refused", "max retries", "timed out",
-                                                      "nodename nor servname", "connect call failed",
-                                                      "cannot connect", "connection error")):
-                        return (f"Couldn't reach Activepieces to arm the **{source}** watcher. Start it "
-                                f"with `make up` — or, for a schedule or watching one of my own tools, "
-                                f"ask for that and I'll do it natively (no AP needed).")
+                    if any(
+                        s in msg.lower()
+                        for s in (
+                            "connection refused",
+                            "max retries",
+                            "timed out",
+                            "nodename nor servname",
+                            "connect call failed",
+                            "cannot connect",
+                            "connection error",
+                        )
+                    ):
+                        return (
+                            f"Couldn't reach Activepieces to arm the **{source}** watcher. Start it "
+                            f"with `make up` — or, for a schedule or watching one of my own tools, "
+                            f"ask for that and I'll do it natively (no AP needed)."
+                        )
                     # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
                     # the token can't manage webhooks (fine-grained PAT missing "Webhooks" permission,
                     # surfaced by AP as TRIGGER_UPDATE_STATUS / bad credentials). Make that actionable.
-                    if base_app == "github" and ("TRIGGER_UPDATE_STATUS" in msg
-                            or "credential" in msg.lower() or "webhook" in msg.lower()):
+                    if base_app == "github" and (
+                        "TRIGGER_UPDATE_STATUS" in msg
+                        or "credential" in msg.lower()
+                        or "webhook" in msg.lower()
+                    ):
                         # The usual cause is NOT the token's scopes, however much it looks like it.
                         # `@activepieces/piece-github` accepts only OAUTH2 or CUSTOM_AUTH (GitHub
                         # App); it does not accept SECRET_TEXT. CUGA stores a PAT as SECRET_TEXT, AP
@@ -703,23 +854,36 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         # ALWAYS carry the underlying error: this branch fires on any message merely
                         # containing "webhook", so it will otherwise blame the token for a missing
                         # piece, an unreachable AP, or a bad repo name.
-                        return (f"GitHub wouldn't arm the watcher on {repo_label}. The most likely "
-                                f"cause is that Activepieces' github piece accepts only an OAuth2 (or "
-                                f"GitHub App) connection, while this deployment stores a PAT as "
-                                f"SECRET_TEXT — the piece then authenticates with nothing and GitHub "
-                                f"replies 401, which looks exactly like a scope problem. Check "
-                                f"`GET {getattr(engine, 'base', '<AP>')}/api/v1/pieces/"
-                                f"@activepieces/piece-github`. If it does list SECRET_TEXT, then the "
-                                f"token really does lack **Webhooks: Read and write** (fine-grained) "
-                                f"or `admin:repo_hook` + `repo` (classic). "
-                                f"Activepieces said: {msg[:250]}")
+                        return (
+                            f"GitHub wouldn't arm the watcher on {repo_label}. The most likely "
+                            f"cause is that Activepieces' github piece accepts only an OAuth2 (or "
+                            f"GitHub App) connection, while this deployment stores a PAT as "
+                            f"SECRET_TEXT — the piece then authenticates with nothing and GitHub "
+                            f"replies 401, which looks exactly like a scope problem. Check "
+                            f"`GET {getattr(engine, 'base', '<AP>')}/api/v1/pieces/"
+                            f"@activepieces/piece-github`. If it does list SECRET_TEXT, then the "
+                            f"token really does lack **Webhooks: Read and write** (fine-grained) "
+                            f"or `admin:repo_hook` + `repo` (classic). "
+                            f"Activepieces said: {msg[:250]}"
+                        )
                     return f"error: couldn't arm push flow ({e})."
-                sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",
-                                   target_agent=agent, tenant=p.scope, backend=spec.backend,
-                                   source_type="integration", source_connector=source,
-                                   ap_flow_id=ap_flow_id, deliver_to=[sink],
-                                   thread_id=p.thread(origin), prompt=prompt, dedup_key=dedup_key,
-                                   flow_name=flow_name, event=event or "", config=config)
+                sub = Subscription(
+                    id=f"{agent}-{uuid.uuid4().hex[:6]}",
+                    mode="PUSH",
+                    target_agent=agent,
+                    tenant=p.scope,
+                    backend=spec.backend,
+                    source_type="integration",
+                    source_connector=source,
+                    ap_flow_id=ap_flow_id,
+                    deliver_to=[sink],
+                    thread_id=p.thread(origin),
+                    prompt=prompt,
+                    dedup_key=dedup_key,
+                    flow_name=flow_name,
+                    event=event or "",
+                    config=config,
+                )
                 try:
                     store.upsert(sub)
                 except DuplicateSubscription:
@@ -730,16 +894,19 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     except Exception:  # noqa: BLE001
                         pass
                     ex = store.find_by_dedup_key(dedup_key, scope=p.scope)
-                    return (f"REUSING existing flow ({ex.mode}) for {agent} → {sink} "
-                            f"(subscription {ex.id})." if ex else
-                            "REUSING an existing identical flow. Nothing new created.")
-                log.info("concierge armed push agent=%s src=%s/%s flow=%s",
-                         agent, source, event, ap_flow_id)
+                    return (
+                        f"REUSING existing flow ({ex.mode}) for {agent} → {sink} (subscription {ex.id})."
+                        if ex
+                        else "REUSING an existing identical flow. Nothing new created."
+                    )
+                log.info("concierge armed push agent=%s src=%s/%s flow=%s", agent, source, event, ap_flow_id)
                 _cfg_note = f" [{', '.join(f'{k}={v}' for k, v in config.items())}]" if config else ""
                 _dest = f" → {sink}"
-                return (f"ARMED push ({source}/{event or 'new_file'}{_cfg_note}) for {agent}"
-                        f"{_dest}. Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
-                        f"(subscription {sub.id}).")
+                return (
+                    f"ARMED push ({source}/{event or 'new_file'}{_cfg_note}) for {agent}"
+                    f"{_dest}. Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
+                    f"(subscription {sub.id})."
+                )
             if kind not in ("cron", "poll"):
                 return "error: kind must be cron, poll, or push."
             # THE FIRED PROMPT IS SINGLE-SHOT. The SCHEDULE owns the recurrence — the agent runs
@@ -749,11 +916,16 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             task = await _single_shot_task(prompt)
             run_prompt = (
                 "This is ONE run of a scheduled task (the schedule handles recurrence — do NOT "
-                "loop, sleep, or wait). Do the check ONCE, right now, and report:\n" + task
-                + ("" if kind == "cron" else
-                   "\nThis is a POLL: just report the current value/state plainly. Do NOT decide "
-                   "whether to notify — a change gate downstream compares it to last time and only "
-                   "forwards it if it actually changed (via the SIGNAL line you'll be asked for)."))
+                "loop, sleep, or wait). Do the check ONCE, right now, and report:\n"
+                + task
+                + (
+                    ""
+                    if kind == "cron"
+                    else "\nThis is a POLL: just report the current value/state plainly. Do NOT decide "
+                    "whether to notify — a change gate downstream compares it to last time and only "
+                    "forwards it if it actually changed (via the SIGNAL line you'll be asked for)."
+                )
+            )
             origin = _origin.get()
             interval = (every_minutes * 60) if every_minutes else None
             cadence_tag = cron.replace(" ", "_") if cron else (f"{every_minutes}m" if every_minutes else kind)
@@ -762,6 +934,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             # is enforced on OUR side — expires_at is baked into the flow's /invoke body and the
             # first tick past it deletes the flow + subscription (app.py expiry gate).
             import time as _time
+
             try:
                 from . import classify as _classify
             except ImportError:  # flat load (offline tests)
@@ -771,8 +944,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             ttl = _classify.ttl_of(_utterance.get("") or prompt)
             expires_at = (_time.time() + ttl) if ttl else None
             sub_id = f"{agent}-{uuid.uuid4().hex[:6]}"
-            until = (f" It stops itself after {ttl // 3600}h" if ttl and ttl % 3600 == 0 else
-                     f" It stops itself after {ttl // 60} min" if ttl else "")
+            until = (
+                f" It stops itself after {ttl // 3600}h"
+                if ttl and ttl % 3600 == 0
+                else f" It stops itself after {ttl // 60} min"
+                if ttl
+                else ""
+            )
             until = until and until + f" (~{_time.strftime('%H:%M', _time.localtime(expires_at))})."
             # ── NATIVE vs AP routing (Phase 2) ───────────────────────────────────────────────────
             # cron/poll are TIMERS — no integration piece is involved — so by default they run on OUR
@@ -786,14 +964,25 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 _now = _time.time()
                 _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
                 sub = Subscription(
-                    id=sub_id, mode=kind.upper(), target_agent=agent, tenant=p.scope,
-                    backend="native", source_type="time",
-                    source_connector=("cron" if cron else "interval"), ap_flow_id=None,
-                    deliver_to=[sink], thread_id=p.thread(origin), prompt=run_prompt,
-                    dedup_key=dedup_key, flow_name=flow_name,
-                    interval_seconds=(interval or 0), cron_expr=(cron or ""),
-                    next_fire=_next, expires_at=(expires_at or 0.0),
-                    config=({"expires_at": expires_at} if expires_at else {}))
+                    id=sub_id,
+                    mode=kind.upper(),
+                    target_agent=agent,
+                    tenant=p.scope,
+                    backend="native",
+                    source_type="time",
+                    source_connector=("cron" if cron else "interval"),
+                    ap_flow_id=None,
+                    deliver_to=[sink],
+                    thread_id=p.thread(origin),
+                    prompt=run_prompt,
+                    dedup_key=dedup_key,
+                    flow_name=flow_name,
+                    interval_seconds=(interval or 0),
+                    cron_expr=(cron or ""),
+                    next_fire=_next,
+                    expires_at=(expires_at or 0.0),
+                    config=({"expires_at": expires_at} if expires_at else {}),
+                )
                 store.upsert(sub)
                 # STATEFUL POLL (Phase 3): a POLL reports only on a change, so seed its delta state
                 # (watch_state). CRON has none → Tier-0 'always report'. The spec (threshold/identity/
@@ -817,49 +1006,91 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         _spec_text = _raw or prompt or ""
                         _spec = await _ps.extract_spec(_spec_text)
                         store.set_watch_state(_ps.spec_to_state(sub.id, _spec))
-                        log.info("poll %s delta kind=%s thr=%s src=%s text=%r", sub.id,
-                                 _spec.get("kind"), _spec.get("threshold"), _spec_src,
-                                 _spec_text[:160])
+                        log.info(
+                            "poll %s delta kind=%s thr=%s src=%s text=%r",
+                            sub.id,
+                            _spec.get("kind"),
+                            _spec.get("threshold"),
+                            _spec_src,
+                            _spec_text[:160],
+                        )
                     except Exception as e:  # noqa: BLE001 — a spec miss degrades to fuzzy, never blocks arm
                         log.warning("poll-spec seed failed for %s (%s) — defaulting fuzzy", sub.id, e)
                         store.set_watch_state(_ps.spec_to_state(sub.id, {"kind": "fuzzy"}))
-                log.info("concierge armed NATIVE %s agent=%s next=%.0f tenant=%s",
-                         kind, agent, _next, p.scope)
-                _cad = (f"every {interval // 60} min" if interval and interval % 60 == 0
-                        else f"every {interval}s" if interval else f"on cron '{cron}'")
-                return (f"ARMED {kind} for {agent} → {sink} (native · no AP). Runs {_cad}. "
-                        f"Watch id {sub.id}.{until}")
+                log.info(
+                    "concierge armed NATIVE %s agent=%s next=%.0f tenant=%s", kind, agent, _next, p.scope
+                )
+                _cad = (
+                    f"every {interval // 60} min"
+                    if interval and interval % 60 == 0
+                    else f"every {interval}s"
+                    if interval
+                    else f"on cron '{cron}'"
+                )
+                return (
+                    f"ARMED {kind} for {agent} → {sink} (native · no AP). Runs {_cad}. "
+                    f"Watch id {sub.id}.{until}"
+                )
             # legacy AP-schedule path (EVENTS_SCHEDULER=ap)
             if engine is None:
-                return ("Scheduled runs are pinned to Activepieces (EVENTS_SCHEDULER=ap) but AP "
-                        "isn't configured. Unset it (or EVENTS_SCHEDULER=native) to run schedules "
-                        "in-process — no AP needed.")
+                return (
+                    "Scheduled runs are pinned to Activepieces (EVENTS_SCHEDULER=ap) but AP "
+                    "isn't configured. Unset it (or EVENTS_SCHEDULER=native) to run schedules "
+                    "in-process — no AP needed."
+                )
             try:
                 grain = getattr(engine, "project_grain", "tenant")
                 ap_flow_id = await engine.create_schedule_flow(
-                    name=flow_name, agent=agent,
-                    thread_id=p.thread(origin), prompt=run_prompt, cron=cron,
-                    interval_seconds=interval, deliver=True,
-                    project_name=p.ap_project_name(grain), scope=p.scope,
-                    deliver_channel=deliver_channel, deliver_target=deliver_target,
+                    name=flow_name,
+                    agent=agent,
+                    thread_id=p.thread(origin),
+                    prompt=run_prompt,
+                    cron=cron,
+                    interval_seconds=interval,
+                    deliver=True,
+                    project_name=p.ap_project_name(grain),
+                    scope=p.scope,
+                    deliver_channel=deliver_channel,
+                    deliver_target=deliver_target,
                     deliver_connection=deliver_connection,
                     deliver_direct_channel=deliver_direct_channel,
                     deliver_direct_target=deliver_direct_target,
-                    subscription_id=sub_id, expires_at=expires_at)
+                    subscription_id=sub_id,
+                    expires_at=expires_at,
+                )
             except Exception as e:  # noqa: BLE001
                 return f"error: couldn't arm flow ({e})."
             cfg = {"expires_at": expires_at} if expires_at else {}
-            sub = Subscription(id=sub_id, mode=kind.upper(),
-                               target_agent=agent, tenant=p.scope, backend=spec.backend,
-                               source_type="time", source_connector="cron", ap_flow_id=ap_flow_id,
-                               deliver_to=[sink], thread_id=p.thread(origin), prompt=run_prompt,
-                               dedup_key=dedup_key, flow_name=flow_name, config=cfg)
+            sub = Subscription(
+                id=sub_id,
+                mode=kind.upper(),
+                target_agent=agent,
+                tenant=p.scope,
+                backend=spec.backend,
+                source_type="time",
+                source_connector="cron",
+                ap_flow_id=ap_flow_id,
+                deliver_to=[sink],
+                thread_id=p.thread(origin),
+                prompt=run_prompt,
+                dedup_key=dedup_key,
+                flow_name=flow_name,
+                config=cfg,
+            )
             store.upsert(sub)
-            log.info("concierge armed %s agent=%s flow=%s tenant=%s expires=%s",
-                     kind, agent, ap_flow_id, p.scope, expires_at or "-")
-            return (f"ARMED {kind} for {agent} → {sink}. "
-                    f"Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
-                    f"(subscription {sub.id}).{until}")
+            log.info(
+                "concierge armed %s agent=%s flow=%s tenant=%s expires=%s",
+                kind,
+                agent,
+                ap_flow_id,
+                p.scope,
+                expires_at or "-",
+            )
+            return (
+                f"ARMED {kind} for {agent} → {sink}. "
+                f"Flow name: \"{flow_name}\" · flow id {ap_flow_id} "
+                f"(subscription {sub.id}).{until}"
+            )
 
         tools.append(find_or_create_flow)
 
@@ -872,25 +1103,29 @@ class Concierge:
     def __init__(self, runtime, store=None, engine=None, model_factory=None, users=None):
         self._runtime = runtime
         self._model_factory = model_factory
-        self._store = store          # HITL arming parks its dialogue here (durable, see arming.py)
+        self._store = store  # HITL arming parks its dialogue here (durable, see arming.py)
         self._tools = make_concierge_tools(runtime, store, engine, users=users)
         self._graph = None
 
     def _build(self):
         from langgraph.checkpoint.memory import MemorySaver
         from langgraph.prebuilt import create_react_agent
+
         if self._model_factory is None:
             from .llm import default_model_factory
+
             self._model_factory = default_model_factory
         model = self._model_factory(None)
-        self._graph = create_react_agent(model, self._tools, prompt=_concierge_prompt(),
-                                         checkpointer=MemorySaver())
+        self._graph = create_react_agent(
+            model, self._tools, prompt=_concierge_prompt(), checkpointer=MemorySaver()
+        )
 
     async def run(self, thread_id: str, text: str, principal: Principal | None = None) -> str:
         from langchain_core.messages import HumanMessage
+
         p = principal or DEFAULT_PRINCIPAL
         arming.reset()
-        _utterance.set(text)    # tools read arm-time qualifiers from the RAW text (see ttl_of)
+        _utterance.set(text)  # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # HITL ARMING GATE. An in-flight arming dialogue on this thread owns the next message —
         # it is answering a question or standing at the CONFIRM gate. Checked FIRST so a bare
         # "yes" is read as approval, not as a fresh chat message.
@@ -917,24 +1152,25 @@ class Concierge:
             from . import classify
         except ImportError:  # flat load (offline tests)
             import classify
-        if (os.environ.get("EVENTS_NOW_FASTPATH", "1") == "1"
-                and classify.classify(text) == "NOW"):
+        if os.environ.get("EVENTS_NOW_FASTPATH", "1") == "1" and classify.classify(text) == "NOW":
             try:
                 # same memory key answer_now uses (origin == thread_id inside run())
                 answer = await self._runtime.run(
-                    THE_AGENT, p.thread(f"{thread_id}:{THE_AGENT}"), text, scope=p.agent_scope)
+                    THE_AGENT, p.thread(f"{thread_id}:{THE_AGENT}"), text, scope=p.agent_scope
+                )
                 log.info("concierge NOW fast-path scope=%s", p.scope)
                 return answer
             except Exception as e:  # noqa: BLE001
                 log.warning("NOW fast-path failed (%s) — falling back to the LLM path", e)
-        if self._graph is None:      # built LAZILY: a NOW fast-path message never needs the LLM
+        if self._graph is None:  # built LAZILY: a NOW fast-path message never needs the LLM
             self._build()
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:
             res = await self._graph.ainvoke(
                 {"messages": [HumanMessage(content=text)]},
-                config={"configurable": {"thread_id": p.thread(thread_id)}})
+                config={"configurable": {"thread_id": p.thread(thread_id)}},
+            )
         finally:
             _origin.reset(t_origin)
             _principal.reset(t_princ)
@@ -962,7 +1198,7 @@ class Concierge:
         return arming.render_card(summary)
 
     def _park_arm(self, tkey: str, state: str, payload: dict) -> None:
-        if self._store is None:      # no store (bare unit test) → the dialogue is best-effort
+        if self._store is None:  # no store (bare unit test) → the dialogue is best-effort
             return
         try:
             self._store.set_pending_arm(tkey, state, payload, arming.ARM_TTL_SECS)
@@ -1036,6 +1272,7 @@ class Concierge:
                 sub_id = ""
                 try:
                     from . import runmeta
+
                     sub_id = (runmeta.get() or {}).get("subscription_id") or ""
                 except Exception:  # noqa: BLE001
                     pass
@@ -1043,9 +1280,10 @@ class Concierge:
                 return reply
             # Unclear → re-ask rather than guess. Guessing "yes" arms something unapproved.
             arming.set_state(arming.CONFIRM, summary=payload.get("summary"))
-            return ("I didn't catch that — reply **yes** to arm, **cancel** to drop it, or "
-                    "**change the prompt to …** to edit.\n\n"
-                    + arming.render_card(payload.get("summary") or {}))
+            return (
+                "I didn't catch that — reply **yes** to arm, **cancel** to drop it, or "
+                "**change the prompt to …** to edit.\n\n" + arming.render_card(payload.get("summary") or {})
+            )
         return None
 
     def _clear_arm(self, tkey: str) -> None:
@@ -1075,7 +1313,7 @@ class Concierge:
             spec0, utter0 = parked
             filled = flowspec.fill(spec0, text)
             if filled is not None:
-                if filled.ask:                       # still one short (multi-slot triggers)
+                if filled.ask:  # still one short (multi-slot triggers)
                     flowspec.park(tkey, filled, utter0)
                     return filled.ask
                 return await self._arm_spec(thread_id, p, filled, utter0)
@@ -1103,10 +1341,15 @@ class Concierge:
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
         if tool is None:
             return None
-        args = {"agent": THE_AGENT, "kind": "push", "prompt": utterance,
-                "source": spec.source, "event": spec.event,
-                **{k: v for k, v in spec.config.items() if k != "channel"},
-                **({"watch_channel": spec.config["channel"]} if "channel" in spec.config else {})}
+        args = {
+            "agent": THE_AGENT,
+            "kind": "push",
+            "prompt": utterance,
+            "source": spec.source,
+            "event": spec.event,
+            **{k: v for k, v in spec.config.items() if k != "channel"},
+            **({"watch_channel": spec.config["channel"]} if "channel" in spec.config else {}),
+        }
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:
@@ -1140,8 +1383,7 @@ class Concierge:
             except ImportError:  # flat load (offline tests)
                 import classify
             cad = classify.cadence_of(parsed.get("utterance") or "") or {}
-            args = {"agent": THE_AGENT, "kind": kind,
-                    "prompt": approved_prompt or parsed["utterance"]}
+            args = {"agent": THE_AGENT, "kind": kind, "prompt": approved_prompt or parsed["utterance"]}
             if cad.get("cron"):
                 args["cron"] = cad["cron"]
             else:
@@ -1158,14 +1400,21 @@ class Concierge:
         source = parsed.get("source")
         if not source:
             from . import classify
+
             se = classify.source_of(parsed["utterance"])
             source = se[0] if se else None
         if not source:
-            return (f"/{parsed['cmd']}: tell me WHAT to watch (e.g. github/gmail/box/slack) — "
-                    f"e.g. `/push when a PR opens on owner/repo, review it`.")
-        args = {"agent": THE_AGENT, "kind": "push",
-                "prompt": approved_prompt or parsed["utterance"],
-                "source": source, "event": parsed.get("event")}
+            return (
+                f"/{parsed['cmd']}: tell me WHAT to watch (e.g. github/gmail/box/slack) — "
+                f"e.g. `/push when a PR opens on owner/repo, review it`."
+            )
+        args = {
+            "agent": THE_AGENT,
+            "kind": "push",
+            "prompt": approved_prompt or parsed["utterance"],
+            "source": source,
+            "event": parsed.get("event"),
+        }
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:

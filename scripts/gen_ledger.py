@@ -22,15 +22,20 @@ OUT = ROOT / "events_docs" / "verification.html"
 
 # The matrix shape: (section, surface key, display, [capability columns])
 INTEGRATIONS = [
-    ("github", "GitHub (14 triggers)"), ("box", "Box (3 triggers)"),
-    ("gmail", "Gmail (4 triggers)"), ("slack", "Slack watchers (8)"),
-    ("discord", "Discord watchers (2)"), ("telegram", "Telegram watcher (1)"),
+    ("github", "GitHub (14 triggers)"),
+    ("box", "Box (3 triggers)"),
+    ("gmail", "Gmail (4 triggers)"),
+    ("slack", "Slack watchers (8)"),
+    ("discord", "Discord watchers (2)"),
+    ("telegram", "Telegram watcher (1)"),
     ("webhook", "Webhook (pinned + routed)"),
 ]
 PLATFORM = [
-    ("cron", "CRON (real schedule ticks)"), ("poll", "POLL (real interval ticks)"),
+    ("cron", "CRON (real schedule ticks)"),
+    ("poll", "POLL (real interval ticks)"),
     ("channels", "Channels chat (web·Slack·Discord·Telegram)"),
-    ("nlflow", "NL→Flow (the compiler)"), ("delegation", "Supervisor routing"),
+    ("nlflow", "NL→Flow (the compiler)"),
+    ("delegation", "Supervisor routing"),
     ("offline", "Offline invariants (make test)"),
 ]
 CAPS = [("arm", "Arm"), ("fire_synth", "Fire — synthetic"), ("fire_real", "Fire — real event")]
@@ -42,8 +47,10 @@ def _cell(rec) -> str:
         return '<td class="dim">— unproven</td>'
     sym, cls = BADGE.get(rec["verdict"], ("?", "dim"))
     note = html.escape(rec.get("note") or "")
-    return (f'<td><span class="{cls}">{sym} {rec["date"][:10]}</span>'
-            f'<div class="how">{note} <i>({html.escape(rec.get("source", ""))})</i></div></td>')
+    return (
+        f'<td><span class="{cls}">{sym} {rec["date"][:10]}</span>'
+        f'<div class="how">{note} <i>({html.escape(rec.get("source", ""))})</i></div></td>'
+    )
 
 
 def main() -> int:

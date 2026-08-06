@@ -8,6 +8,7 @@ Usage:
     python3 check_all.py                 # every check
     python3 check_all.py box gmail       # just these
 """
+
 import os
 import subprocess
 import sys

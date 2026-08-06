@@ -9,6 +9,7 @@ data array is spliced in, so the doc board can never drift from the Studio Examp
 The catalog carries extra keys (`outcome`, `star`) the board also uses; we emit the full record so the
 board and the Studio stay byte-identical on the shared fields.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,14 +20,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HTML = ROOT / "events_docs" / "api" / "examples.html"
 # keys the board renders, in a stable order → deterministic diff
-KEYS = ["id", "title", "trigger", "outcome", "utterance", "agent", "channel",
-        "integration", "phase", "live", "note", "star", "ap_trigger", "feasibility", "needs"]
+KEYS = [
+    "id",
+    "title",
+    "trigger",
+    "outcome",
+    "utterance",
+    "agent",
+    "channel",
+    "integration",
+    "phase",
+    "live",
+    "note",
+    "star",
+    "ap_trigger",
+    "feasibility",
+    "needs",
+]
 MARKER = re.compile(r"const EX = (\[.*?\]);", re.S)
 
 
 def _catalog():
     sys.path.insert(0, str(ROOT))
     from src.cuga.backend.events import catalog  # noqa: E402
+
     return [{k: e[k] for k in KEYS} for e in catalog.EXAMPLES]
 
 
@@ -48,7 +65,7 @@ def main() -> int:
     if check:
         print("✗ examples.html is stale — run: python scripts/gen_examples.py", file=sys.stderr)
         return 1
-    HTML.write_text(html[:m.start()] + fresh + html[m.end():])
+    HTML.write_text(html[: m.start()] + fresh + html[m.end() :])
     print(f"✓ wrote examples.html — {len(_catalog())} examples from catalog.py")
     return 0
 

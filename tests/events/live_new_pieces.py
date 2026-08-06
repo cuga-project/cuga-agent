@@ -16,6 +16,7 @@ what each piece still needs from you.
 Run:  EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_new_pieces.py
 Reads .env for GATEWAY_TOKEN. Cleans up every subscription it arms.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,7 +43,10 @@ def _env(key: str) -> str:
 
 GW = _env("GATEWAY_TOKEN")
 H = {"Content-Type": "application/json", "X-Gateway-Token": GW}
-G = "\033[32m"; R = "\033[31m"; Y = "\033[33m"; X = "\033[0m"
+G = "\033[32m"
+R = "\033[31m"
+Y = "\033[33m"
+X = "\033[0m"
 
 
 def _post(path: str, body: dict) -> dict:
@@ -59,8 +63,9 @@ def _post(path: str, body: dict) -> dict:
 
 
 def _delete(sub_id: str) -> None:
-    req = urllib.request.Request(f"{SERVER}/api/events/subscriptions/{sub_id}",
-                                 headers={"X-Gateway-Token": GW}, method="DELETE")
+    req = urllib.request.Request(
+        f"{SERVER}/api/events/subscriptions/{sub_id}", headers={"X-Gateway-Token": GW}, method="DELETE"
+    )
     try:
         urllib.request.urlopen(req, timeout=15)
     except Exception:  # noqa: BLE001
@@ -72,8 +77,16 @@ def _quality(ans: str) -> bool:
     if len(a) < 15:
         return False
     low = a.lower()
-    bad = ("i'm unable", "i am unable", "i cannot", "connect needed", "http 0", "timed out",
-           "'error':", "while true")
+    bad = (
+        "i'm unable",
+        "i am unable",
+        "i cannot",
+        "connect needed",
+        "http 0",
+        "timed out",
+        "'error':",
+        "while true",
+    )
     return not any(b in low for b in bad)
 
 
@@ -81,9 +94,21 @@ def _quality(ans: str) -> bool:
 SYNTH = ["google_calendar", "pinterest", "youtube", "rss"]
 ARMS = [
     ("youtube", "/push when @Fireship posts a new video, summarize it in slack", "ARMED"),
-    ("rss", "/push when a new item appears in https://news.ycombinator.com/rss, summarize it in slack", "ARMED"),
-    ("google_calendar", "/push when a new event is added to my google calendar, brief me in slack", "CONNECT"),
-    ("pinterest", "/push when there's a new pin on my pinterest board 549755885175, share it in slack", "CONNECT"),
+    (
+        "rss",
+        "/push when a new item appears in https://news.ycombinator.com/rss, summarize it in slack",
+        "ARMED",
+    ),
+    (
+        "google_calendar",
+        "/push when a new event is added to my google calendar, brief me in slack",
+        "CONNECT",
+    ),
+    (
+        "pinterest",
+        "/push when there's a new pin on my pinterest board 549755885175, share it in slack",
+        "CONNECT",
+    ),
     ("discord", "/push when someone reacts with :bug: in #incidents on discord, triage it", "ARMED"),
 ]
 
@@ -94,8 +119,9 @@ def main() -> int:
 
     print("[SYNTH] connection-free fire at the /invoke seam (piece-exact synth payload)")
     for src in SYNTH:
-        r = _post("/api/events/synth-fire", {"source": src,
-                                             "prompt": f"Summarize this {src} event in one line."})
+        r = _post(
+            "/api/events/synth-fire", {"source": src, "prompt": f"Summarize this {src} event in one line."}
+        )
         ok = bool(r.get("ok")) and _quality(r.get("answer", ""))
         fails += 0 if ok else 1
         tag = f"{G}PASS{X}" if ok else f"{R}FAIL{X}"
@@ -106,8 +132,7 @@ def main() -> int:
     for src, utter, want in ARMS:
         r = _post("/api/concierge", {"text": utter, "thread_id": "gw:slack:C0LIVECHK#np"})
         reply = r.get("reply", "") or ""
-        got = "ARMED" if reply.startswith("ARMED") else ("CONNECT" if "CONNECT NEEDED" in reply
-                                                         else "OTHER")
+        got = "ARMED" if reply.startswith("ARMED") else ("CONNECT" if "CONNECT NEEDED" in reply else "OTHER")
         ok = (got == want) or (want == "ARMED" and src == "rss" and "invalid" in reply.lower())
         fails += 0 if ok else 1
         tag = f"{G}PASS{X}" if ok else (f"{Y}WARN{X}" if got == "OTHER" else f"{R}FAIL{X}")

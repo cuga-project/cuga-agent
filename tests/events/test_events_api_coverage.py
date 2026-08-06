@@ -20,7 +20,6 @@ if "events" not in sys.modules:
     sys.modules["events"] = _pkg
     _spec.loader.exec_module(_pkg)
 
-import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -283,7 +282,7 @@ def test_gmail_push_declines_over_http_with_no_ap():
     c, store = _concierge_client(engine=None)
     r = c.post("/api/concierge", json={"text": "/push when a new gmail arrives, summarize it"})
     assert r.status_code == 200
-    assert r.json().get("state") == "confirm"      # proposed, not armed
+    assert r.json().get("state") == "confirm"  # proposed, not armed
     r2 = c.post("/api/concierge", json={"text": "yes"})
     low = (r2.json().get("answer") or r2.json().get("reply") or "").lower()
     assert "activepieces" in low or "make up" in low  # honest decline, nothing armed

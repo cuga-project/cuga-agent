@@ -48,8 +48,9 @@ GH = {"Authorization": f"token {TOKEN}", "Accept": "application/vnd.github+json"
 
 def http(method: str, url: str, body=None, headers=None, timeout=120):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"Content-Type": "application/json", **(headers or {})})
+    req = urllib.request.Request(
+        url, data=data, method=method, headers={"Content-Type": "application/json", **(headers or {})}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode() or "{}")
@@ -69,14 +70,20 @@ def main() -> int:
     ok = False
     try:
         # 1) ARM — through the concierge, like a user would
-        code, rep = http("POST", f"{SERVER}/api/concierge",
-                         {"text": f"when a PR is opened on {ALLOWED_REPO}, review it and "
-                                  f"summarize the risk", "thread_id": f"real-fire-{stamp}"},
-                         timeout=240)
+        code, rep = http(
+            "POST",
+            f"{SERVER}/api/concierge",
+            {
+                "text": f"when a PR is opened on {ALLOWED_REPO}, review it and summarize the risk",
+                "thread_id": f"real-fire-{stamp}",
+            },
+            timeout=240,
+        )
         reply = str(rep.get("reply", ""))
         print(f"  arm: {reply[:110]}")
         assert code == 200 and ("ARMED" in reply or "REUSING" in reply), "arm failed"
         import re
+
         sub_id = re.search(r"subscription ([\w-]+)", reply).group(1)
 
         # give AP a beat to finish webhook registration on the repo
@@ -90,21 +97,40 @@ def main() -> int:
         default = repo.get("default_branch", "master")
         _, ref = http("GET", f"{API}/repos/{ALLOWED_REPO}/git/ref/heads/{default}", headers=GH)
         base_sha = ref["object"]["sha"]
-        c, ref_resp = http("POST", f"{API}/repos/{ALLOWED_REPO}/git/refs", headers=GH,
-                           body={"ref": f"refs/heads/{branch}", "sha": base_sha})
-        assert c in (200, 201), (f"branch create failed HTTP {c}: {ref_resp} — the fine-grained "
-                                 f"PAT needs 'Contents: Read and write'")
+        c, ref_resp = http(
+            "POST",
+            f"{API}/repos/{ALLOWED_REPO}/git/refs",
+            headers=GH,
+            body={"ref": f"refs/heads/{branch}", "sha": base_sha},
+        )
+        assert c in (200, 201), (
+            f"branch create failed HTTP {c}: {ref_resp} — the fine-grained "
+            f"PAT needs 'Contents: Read and write'"
+        )
         content = base64.b64encode(
-            (f"# e2e real-fire probe {stamp}\n\nThis file exists only to open a real PR that "
-             f"fires the armed watcher. It is deleted with the branch.\n").encode()).decode()
-        c, put_resp = http("PUT", f"{API}/repos/{ALLOWED_REPO}/contents/e2e/real-fire-{stamp}.md",
-                           headers=GH, body={"message": f"e2e: real-fire probe {stamp}",
-                                             "content": content, "branch": branch})
+            (
+                f"# e2e real-fire probe {stamp}\n\nThis file exists only to open a real PR that "
+                f"fires the armed watcher. It is deleted with the branch.\n"
+            ).encode()
+        ).decode()
+        c, put_resp = http(
+            "PUT",
+            f"{API}/repos/{ALLOWED_REPO}/contents/e2e/real-fire-{stamp}.md",
+            headers=GH,
+            body={"message": f"e2e: real-fire probe {stamp}", "content": content, "branch": branch},
+        )
         assert c in (200, 201), f"commit failed HTTP {c}: {put_resp}"
-        c, pr = http("POST", f"{API}/repos/{ALLOWED_REPO}/pulls", headers=GH,
-                     body={"title": f"e2e: add retry/backoff notes (real-fire probe {stamp})",
-                           "head": branch, "base": default,
-                           "body": "Probe PR for the real-webhook fire test. Auto-closed."})
+        c, pr = http(
+            "POST",
+            f"{API}/repos/{ALLOWED_REPO}/pulls",
+            headers=GH,
+            body={
+                "title": f"e2e: add retry/backoff notes (real-fire probe {stamp})",
+                "head": branch,
+                "base": default,
+                "body": "Probe PR for the real-webhook fire test. Auto-closed.",
+            },
+        )
         pr_num = pr.get("number")
         print(f"  REAL PR opened: #{pr_num}  {pr.get('html_url')}")
         assert c == 201 and pr_num, f"PR create failed HTTP {c}: {pr}"
@@ -116,7 +142,7 @@ def main() -> int:
         while time.time() < deadline and not answer:
             time.sleep(10)
             _, runs = http("GET", f"{SERVER}/api/events/runs", timeout=60)
-            for r in (runs.get("runs") or []):
+            for r in runs.get("runs") or []:
                 if r.get("subscription_id") == sub_id and r.get("status") == "SUCCEEDED":
                     _, det = http("GET", f"{SERVER}/api/events/runs/{r['id']}", timeout=60)
                     answer = str(det.get("answer") or "")
@@ -127,8 +153,7 @@ def main() -> int:
     finally:
         # 4) CLEANUP — PR closed, branch gone, subscription + repo webhooks removed
         if pr_num:
-            http("PATCH", f"{API}/repos/{ALLOWED_REPO}/pulls/{pr_num}", headers=GH,
-                 body={"state": "closed"})
+            http("PATCH", f"{API}/repos/{ALLOWED_REPO}/pulls/{pr_num}", headers=GH, body={"state": "closed"})
         http("DELETE", f"{API}/repos/{ALLOWED_REPO}/git/refs/heads/{branch}", headers=GH)
         if sub_id:
             http("DELETE", f"{SERVER}/api/events/subscriptions/{sub_id}", timeout=60)
@@ -137,17 +162,25 @@ def main() -> int:
             http("DELETE", f"{API}/repos/{ALLOWED_REPO}/hooks/{h['id']}", headers=GH)
         _, hooks2 = http("GET", f"{API}/repos/{ALLOWED_REPO}/hooks", headers=GH)
         _, prs = http("GET", f"{API}/repos/{ALLOWED_REPO}/pulls?state=open", headers=GH)
-        print(f"  cleanup: PR closed · branch deleted · webhooks left: "
-              f"{len(hooks2) if isinstance(hooks2, list) else '?'} · open PRs: "
-              f"{len(prs) if isinstance(prs, list) else '?'}")
+        print(
+            f"  cleanup: PR closed · branch deleted · webhooks left: "
+            f"{len(hooks2) if isinstance(hooks2, list) else '?'} · open PRs: "
+            f"{len(prs) if isinstance(prs, list) else '?'}"
+        )
     print(f"\nRESULT: {'PASS — a REAL GitHub event fired the flow end-to-end' if ok else 'FAIL'}")
     if ok:
         try:
             import sys as _s
+
             _s.path.insert(0, os.path.dirname(__file__))
             from _ledger import record as _lrec
-            _lrec("github", "fire_real", "ok",
-                  "REAL PR opened on the pinned repo → genuine webhook fired the flow → cleaned")
+
+            _lrec(
+                "github",
+                "fire_real",
+                "ok",
+                "REAL PR opened on the pinned repo → genuine webhook fired the flow → cleaned",
+            )
         except Exception:  # noqa: BLE001
             pass
     return 0 if ok else 1

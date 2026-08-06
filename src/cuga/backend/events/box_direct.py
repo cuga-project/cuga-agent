@@ -14,6 +14,7 @@ no OAuth app/redirect-URI needed) or, later, a stored OAuth access token via ``E
 This is a POLLING trigger (Box has no free push): CUGA lists a folder's items and fires on files
 whose ``created_at`` is newer than the last poll. Emit-on-change is caller-tracked (``since``).
 """
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,7 @@ API = "https://api.box.com/2.0"
 # Server-tracked per-folder "last created_at seen" — so a STANDING scheduled poll fires only on
 # files added since the previous run (an AP schedule flow carries no state between runs). File-backed
 # so it survives restarts (else every file re-fires on reboot). One tiny JSON: {folder_id: created_at}.
-_SINCE_FILE = (os.environ.get("EVENTS_BOX_SINCE_FILE", "") or ".box_since.json")
+_SINCE_FILE = os.environ.get("EVENTS_BOX_SINCE_FILE", "") or ".box_since.json"
 
 
 def load_since(folder_id: str) -> str | None:
@@ -90,9 +91,11 @@ async def list_folder_items(folder_id: str, tok: str | None = None) -> list[dict
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get(f"{API}/folders/{folder_id}/items",
-                        params={"fields": "id,name,type,created_at", "limit": 200},
-                        headers={"Authorization": f"Bearer {tok}"})
+        r = await c.get(
+            f"{API}/folders/{folder_id}/items",
+            params={"fields": "id,name,type,created_at", "limit": 200},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
         if r.status_code != 200:
             raise RuntimeError(f"Box list folder {folder_id} failed: HTTP {r.status_code} {r.text[:200]}")
         return (r.json() or {}).get("entries", []) or []
@@ -108,12 +111,10 @@ async def new_files_since(folder_id: str, since_iso: str | None, tok: str | None
     return items
 
 
-async def new_folders_since(folder_id: str, since_iso: str | None,
-                            tok: str | None = None) -> list[dict]:
+async def new_folders_since(folder_id: str, since_iso: str | None, tok: str | None = None) -> list[dict]:
     """Subfolders of ``folder_id`` created strictly after ``since_iso`` — the box/new_folder
     trigger. Same watermark mechanics as files (the poller stores max created_at seen)."""
-    items = [i for i in await list_folder_items(folder_id, tok)
-             if i.get("type") == "folder" and i.get("id")]
+    items = [i for i in await list_folder_items(folder_id, tok) if i.get("type") == "folder" and i.get("id")]
     if since_iso:
         items = [i for i in items if (i.get("created_at") or "") > since_iso]
     return items
@@ -125,16 +126,17 @@ async def file_comments(file_id: str, tok: str | None = None) -> list[dict]:
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get(f"{API}/files/{file_id}/comments",
-                        params={"fields": "id,message,created_by,created_at,item", "limit": 100},
-                        headers={"Authorization": f"Bearer {tok}"})
+        r = await c.get(
+            f"{API}/files/{file_id}/comments",
+            params={"fields": "id,message,created_by,created_at,item", "limit": 100},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
         if r.status_code != 200:
             raise RuntimeError(f"Box comments {file_id} failed: HTTP {r.status_code} {r.text[:200]}")
         return (r.json() or {}).get("entries", []) or []
 
 
-async def new_comments_since(folder_id: str, since_iso: str | None,
-                             tok: str | None = None) -> list[dict]:
+async def new_comments_since(folder_id: str, since_iso: str | None, tok: str | None = None) -> list[dict]:
     """Comments (across the folder's files) created strictly after ``since_iso``.
 
     Box has no folder-level comments feed, so this walks the folder's files and collects each
@@ -147,15 +149,25 @@ async def new_comments_since(folder_id: str, since_iso: str | None,
         try:
             comments = await file_comments(f["id"], tok)
         except RuntimeError:
-            continue                      # one file 403ing must not kill the sweep
+            continue  # one file 403ing must not kill the sweep
         for cm in comments:
             created = cm.get("created_at") or ""
             if since_iso and created <= since_iso:
                 continue
-            out.append({"id": cm.get("id"), "message": cm.get("message"),
-                        "by": ((cm.get("created_by") or {}).get("name")
-                               or (cm.get("created_by") or {}).get("login") or ""),
-                        "created_at": created, "file": f.get("name"), "file_id": f.get("id")})
+            out.append(
+                {
+                    "id": cm.get("id"),
+                    "message": cm.get("message"),
+                    "by": (
+                        (cm.get("created_by") or {}).get("name")
+                        or (cm.get("created_by") or {}).get("login")
+                        or ""
+                    ),
+                    "created_at": created,
+                    "file": f.get("name"),
+                    "file_id": f.get("id"),
+                }
+            )
     out.sort(key=lambda x: x.get("created_at") or "")
     return out
 
@@ -183,16 +195,16 @@ def download_enabled() -> bool:
     return os.environ.get("EVENTS_BOX_DOWNLOAD", "1") != "0"
 
 
-async def download_file(file_id: str, tok: str | None = None,
-                        max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
+async def download_file(file_id: str, tok: str | None = None, max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
     """Fetch a file's bytes. Raises on a non-200 so an expired token is loud, and refuses anything
     over ``max_bytes`` rather than streaming it into memory."""
     tok = tok or token()
     if not tok:
         raise RuntimeError("no Box token (set BOX_DEV_TOKEN or EVENTS_BOX_TOKEN)")
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-        async with c.stream("GET", f"{API}/files/{file_id}/content",
-                            headers={"Authorization": f"Bearer {tok}"}) as r:
+        async with c.stream(
+            "GET", f"{API}/files/{file_id}/content", headers={"Authorization": f"Bearer {tok}"}
+        ) as r:
             if r.status_code != 200:
                 body = (await r.aread())[:200].decode(errors="replace")
                 raise RuntimeError(f"Box download {file_id} failed: HTTP {r.status_code} {body}")

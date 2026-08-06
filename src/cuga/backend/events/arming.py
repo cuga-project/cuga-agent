@@ -28,6 +28,7 @@ The structured ``{state, question, summary, subscription_id}`` reply rides a con
 idiom as runmeta.py), so ``Concierge.run`` keeps returning human text while /invoke and
 /api/concierge can surface the machine-readable state that drives edge stickiness and the UI.
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -50,11 +51,18 @@ STICKY = (NEEDS_INPUT, CONFIRM)
 _state: contextvars.ContextVar[dict | None] = contextvars.ContextVar("arm_state", default=None)
 
 
-def set_state(state: str, *, question: str = "", summary: dict | None = None,
-              subscription_id: str = "") -> None:
+def set_state(
+    state: str, *, question: str = "", summary: dict | None = None, subscription_id: str = ""
+) -> None:
     """Record the structured arming state for this request (routes read it after run())."""
-    _state.set({"state": state, "question": question or "",
-                "summary": summary or None, "subscription_id": subscription_id or ""})
+    _state.set(
+        {
+            "state": state,
+            "question": question or "",
+            "summary": summary or None,
+            "subscription_id": subscription_id or "",
+        }
+    )
 
 
 def get() -> dict | None:
@@ -66,19 +74,59 @@ def reset() -> None:
 
 
 # ── reading the user's reply at the CONFIRM gate ────────────────────────────────────────────────
-_YES = {"y", "yes", "yeah", "yep", "yup", "ok", "okay", "sure", "confirm", "confirmed", "arm",
-        "arm it", "go", "go ahead", "do it", "approve", "approved", "looks good", "lgtm", "send it"}
-_NO = {"n", "no", "nope", "cancel", "stop", "abort", "nevermind", "never mind", "forget it",
-       "don't", "dont", "no thanks"}
+_YES = {
+    "y",
+    "yes",
+    "yeah",
+    "yep",
+    "yup",
+    "ok",
+    "okay",
+    "sure",
+    "confirm",
+    "confirmed",
+    "arm",
+    "arm it",
+    "go",
+    "go ahead",
+    "do it",
+    "approve",
+    "approved",
+    "looks good",
+    "lgtm",
+    "send it",
+}
+_NO = {
+    "n",
+    "no",
+    "nope",
+    "cancel",
+    "stop",
+    "abort",
+    "nevermind",
+    "never mind",
+    "forget it",
+    "don't",
+    "dont",
+    "no thanks",
+}
 
 # "change the prompt to X" / "edit prompt: X" / "prompt = X" — the field, then the new value.
 _EDIT_RX = re.compile(
     r"^\s*(?:/edit\s+)?(?:edit|change|update|set|make)?\s*(?:the\s+)?"
     r"(prompt|instruction|schedule|cadence|interval|delivery|destination|target|sink)\s*"
-    r"(?:to|=|:|as)?\s*(.+)$", re.I | re.S)
+    r"(?:to|=|:|as)?\s*(.+)$",
+    re.I | re.S,
+)
 
-_FIELD_ALIAS = {"instruction": "prompt", "cadence": "schedule", "interval": "schedule",
-                "destination": "delivery", "target": "delivery", "sink": "delivery"}
+_FIELD_ALIAS = {
+    "instruction": "prompt",
+    "cadence": "schedule",
+    "interval": "schedule",
+    "destination": "delivery",
+    "target": "delivery",
+    "sink": "delivery",
+}
 
 
 def read_reply(text: str) -> tuple[str, str, str]:
@@ -111,10 +159,14 @@ def read_reply(text: str) -> tuple[str, str, str]:
 _CADENCE_STRIP = re.compile(
     r"\b(every|each)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|half)?\s*"
     r"(second|sec|minute|min|hour|hr|day|week|weekday|morning|evening|night|monday|tuesday|"
-    r"wednesday|thursday|friday|saturday|sunday)s?\b(\s+at\s+[\d:apm\.]+)?", re.I)
+    r"wednesday|thursday|friday|saturday|sunday)s?\b(\s+at\s+[\d:apm\.]+)?",
+    re.I,
+)
 _DELIVERY_STRIP = re.compile(
     r"\b(and\s+)?(send|message|dm|post|notify|tell|ping|email)\s+(me|us|it|them)?\s*"
-    r"(on|to|via|in)?\s*(slack|telegram|discord|whatsapp|email|web|here|this chat)?\b", re.I)
+    r"(on|to|via|in)?\s*(slack|telegram|discord|whatsapp|email|web|here|this chat)?\b",
+    re.I,
+)
 
 
 def compose_prompt(utterance: str, kind: str = "cron") -> str:
@@ -133,7 +185,7 @@ def compose_prompt(utterance: str, kind: str = "cron") -> str:
     core = _DELIVERY_STRIP.sub(" ", core)
     core = re.sub(r"\s+", " ", core).strip(" ,.;:-—and").strip()
     if not core:
-        core = t                                  # the whole utterance WAS the cadence — keep it
+        core = t  # the whole utterance WAS the cadence — keep it
     core = core[0].upper() + core[1:] if core else core
     if not core.endswith((".", "?", "!")):
         core += "."
@@ -147,6 +199,7 @@ def compose_prompt(utterance: str, kind: str = "cron") -> str:
 
 def _llm_compose(utterance: str, fallback: str, kind: str) -> str:
     from .llm import default_model_factory
+
     model = default_model_factory()
     msg = (
         "Rewrite the user's automation request as a single, self-contained instruction that an "
@@ -174,8 +227,10 @@ def validate(parsed: dict, origin_thread: str = "") -> tuple[str, str]:
             import classify
         cad = classify.cadence_of(parsed.get("utterance") or "")
         if not cad or not (cad.get("interval_seconds") or cad.get("cron")):
-            return ("How often should this run? e.g. `every 5 minutes`, `every hour`, "
-                    "or `every weekday at 9am`.", "schedule")
+            return (
+                "How often should this run? e.g. `every 5 minutes`, `every hour`, or `every weekday at 9am`.",
+                "schedule",
+            )
     if kind == "push" and not parsed.get("source"):
         return ("What should I watch? Name the app — e.g. github, gmail, box, or slack.", "source")
     return "", ""
@@ -226,8 +281,12 @@ def describe_trigger(parsed: dict) -> str:
 
 
 def summarize(parsed: dict, prompt: str, origin_thread: str, agent: str) -> dict:
-    return {"trigger": describe_trigger(parsed), "prompt": prompt,
-            "delivery": describe_delivery(origin_thread), "agent": agent}
+    return {
+        "trigger": describe_trigger(parsed),
+        "prompt": prompt,
+        "delivery": describe_delivery(origin_thread),
+        "agent": agent,
+    }
 
 
 def render_card(summary: dict) -> str:

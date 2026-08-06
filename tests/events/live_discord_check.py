@@ -23,6 +23,7 @@ Run:
 Reads .env for DISCORD_BOT_TOKEN, AP_EMAIL/AP_PASSWORD, AP_BASE_URL. DISCORD_CHANNEL_ID may also be
 auto-discovered from the bot's first guild's first text channel if not set.
 """
+
 import json
 import os
 import sys
@@ -70,7 +71,8 @@ def _http(method, url, body=None, headers=None, timeout=30):
 def main():
     tok = _env("DISCORD_BOT_TOKEN")
     if not tok:
-        print("SKIP — no DISCORD_BOT_TOKEN in env/.env"); return 0
+        print("SKIP — no DISCORD_BOT_TOKEN in env/.env")
+        return 0
     dhdr = {"Authorization": f"Bot {tok}", "User-Agent": "DiscordBot"}
     checks, ok = [], True
 
@@ -91,25 +93,37 @@ def main():
                 chan = text[0]["id"]
                 print(f"  (auto-discovered channel #{text[0]['name']} = {chan})")
     if not chan:
-        print("FAIL — set DISCORD_CHANNEL_ID (a text channel the bot can see)"); return 1
+        print("FAIL — set DISCORD_CHANNEL_ID (a text channel the bot can see)")
+        return 1
 
     print(f"server={SERVER}  channel={chan}\n")
 
     # 1) connect the bot token
-    st, r = _http("POST", f"{SERVER}/api/events/connect/discord/token",
-                  {"token": tok, "scope": "default/default"}, {"x-user-id": "admin"})
+    st, r = _http(
+        "POST",
+        f"{SERVER}/api/events/connect/discord/token",
+        {"token": tok, "scope": "default/default"},
+        {"x-user-id": "admin"},
+    )
     check("connect bot token", st == 200 and r.get("ok"), r.get("connection") or str(r)[:80])
 
     # 2) arm the inbound flow watching the channel
-    st, r = _http("POST", f"{SERVER}/api/events/admin/channels/discord/arm",
-                  {"scope": "default/default", "channel": chan}, {"x-user-id": "admin"})
+    st, r = _http(
+        "POST",
+        f"{SERVER}/api/events/admin/channels/discord/arm",
+        {"scope": "default/default", "channel": chan},
+        {"x-user-id": "admin"},
+    )
     flow_id = r.get("ap_flow_id")
     check("arm inbound flow", st == 200 and r.get("ok"), flow_id or str(r)[:120])
 
     # 3) verify the flow shape in AP
     if flow_id:
-        _, auth = _http("POST", f"{APBASE}/api/v1/authentication/sign-in",
-                        {"email": _env("AP_EMAIL"), "password": _env("AP_PASSWORD")})
+        _, auth = _http(
+            "POST",
+            f"{APBASE}/api/v1/authentication/sign-in",
+            {"email": _env("AP_EMAIL"), "password": _env("AP_PASSWORD")},
+        )
         bt = auth.get("token")
         _, fl = _http("GET", f"{APBASE}/api/v1/flows/{flow_id}", headers={"authorization": f"Bearer {bt}"})
         v = (fl or {}).get("version", {})
@@ -120,20 +134,27 @@ def main():
         sin = send.get("settings", {}).get("input", {})
         check("trigger watches the channel", tin.get("channel") == chan, f"channel={tin.get('channel')}")
         check("trigger valid", t.get("valid") is True)
-        check("send targets the message's channel_id (thread-safe)",
-              sin.get("channel_id") == "{{trigger.channel_id}}", sin.get("channel_id"))
+        check(
+            "send targets the message's channel_id (thread-safe)",
+            sin.get("channel_id") == "{{trigger.channel_id}}",
+            sin.get("channel_id"),
+        )
         check("flow ENABLED", fl.get("status") == "ENABLED", fl.get("status"))
 
     # 4) the delivery leg — can the bot post to the channel?
-    st, r = _http("POST", f"{DISCORD_API}/channels/{chan}/messages",
-                  {"content": "✅ live_discord_check: delivery leg OK"}, dhdr)
+    st, r = _http(
+        "POST",
+        f"{DISCORD_API}/channels/{chan}/messages",
+        {"content": "✅ live_discord_check: delivery leg OK"},
+        dhdr,
+    )
     check("bot can POST to the channel", bool(r.get("id")), r.get("id") or str(r)[:80])
 
-    print(f"\n{sum(1 for c,_,_ in checks if c)}/{len(checks)} checks passed")
+    print(f"\n{sum(1 for c, _, _ in checks if c)}/{len(checks)} checks passed")
     print("RESULT:", "PASS — wiring confirmed" if ok else "FAIL")
     print("\nManual step to see a full round-trip:")
     print("  1. Discord Developer Portal → your bot → enable **Message Content Intent**.")
-    print(f"  2. In the watched channel, post e.g. 'what is the price of bitcoin?'")
+    print("  2. In the watched channel, post e.g. 'what is the price of bitcoin?'")
     print("  3. Wait for AP's poll (~up to 5 min) → the reply posts back in the channel/thread.")
     print("  (Check the run in AP → project ea::default-default → the inbound-discord flow.)")
     return 0 if ok else 1

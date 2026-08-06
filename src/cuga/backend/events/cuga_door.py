@@ -39,12 +39,14 @@ def cuga_url() -> str:
 
 
 def _token() -> str:
-    return ((os.environ.get("CUGA_RUN_TOKEN") or os.environ.get("GATEWAY_TOKEN") or "")
-            .split(" #", 1)[0].strip())
+    return (
+        (os.environ.get("CUGA_RUN_TOKEN") or os.environ.get("GATEWAY_TOKEN") or "").split(" #", 1)[0].strip()
+    )
 
 
-async def ask(text: str, *, channel: str, native_id: str, user: str = "",
-              locus: str = "", timeout: float = 180.0) -> str:
+async def ask(
+    text: str, *, channel: str, native_id: str, user: str = "", locus: str = "", timeout: float = 180.0
+) -> str:
     """Send one channel utterance to CUGA and return the answer text ("" if none).
 
     ``locus`` is the in-channel conversation anchor (a Slack thread_ts, a Discord thread id) — it

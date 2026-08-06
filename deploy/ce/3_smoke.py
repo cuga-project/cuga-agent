@@ -9,6 +9,7 @@ Reads the URL from deploy/ce/.ce_urls.env (CUGA_CE_URL) or $CUGA_CE_URL, then:
 No creds needed; it only talks to the public route.
     python deploy/ce/3_smoke.py
 """
+
 import json
 import os
 import sys
@@ -66,7 +67,7 @@ def main() -> int:
         st, data = _get(f"{base}/api/events/channels")
         print(f"\n[2] /api/events/channels -> {st}")
         for c in data.get("channels", []):
-            print(f"    {c.get('name','?'):<9} {c.get('status','?'):<14} {c.get('backend','?')}")
+            print(f"    {c.get('name', '?'):<9} {c.get('status', '?'):<14} {c.get('backend', '?')}")
     except Exception as e:  # noqa: BLE001
         print(f"\n[2] channels: {e} (non-fatal)")
 
@@ -83,14 +84,16 @@ def main() -> int:
     if not gw:
         print("    -> skipped (no GATEWAY_TOKEN in env or .env.ce)")
     else:
-        env = {"agent": "cuga",
-               "source": {"type": "channel", "name": "web", "thread_id": "ce-smoke"},
-               "event": {"kind": "message"},
-               "text": "What is the capital of France? Answer in one word."}
+        env = {
+            "agent": "cuga",
+            "source": {"type": "channel", "name": "web", "thread_id": "ce-smoke"},
+            "event": {"kind": "message"},
+            "text": "What is the capital of France? Answer in one word.",
+        }
         data = json.dumps(env).encode()
-        req = urllib.request.Request(f"{base}/invoke", data=data,
-                                     headers={"Content-Type": "application/json",
-                                              "X-Gateway-Token": gw})
+        req = urllib.request.Request(
+            f"{base}/invoke", data=data, headers={"Content-Type": "application/json", "X-Gateway-Token": gw}
+        )
         try:
             with urllib.request.urlopen(req, timeout=200) as r:
                 d = json.loads(r.read().decode() or "{}")

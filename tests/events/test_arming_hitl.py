@@ -4,14 +4,22 @@ Covers the whole dialogue over the real HTTP surface: propose → (clarify) → 
 yes / edit / cancel, plus the two properties that make it trustworthy — the parked dialogue is
 DURABLE (survives a process restart) and an unclear reply never counts as approval.
 """
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.events.agent_store import AgentStore
 from cuga.backend.events.app import register_events_routes
-from cuga.backend.events.arming import (ARMED, CANCELLED, CONFIRM, NEEDS_INPUT, compose_prompt,
-                                        read_reply, validate)
+from cuga.backend.events.arming import (
+    ARMED,
+    CANCELLED,
+    CONFIRM,
+    NEEDS_INPUT,
+    compose_prompt,
+    read_reply,
+    validate,
+)
 from cuga.backend.events.concierge import Concierge
 from cuga.backend.events.runtime import AgentSpec, AgentStoreRuntime, StubRuntime
 from cuga.backend.events.subscriptions import SubscriptionStore
@@ -36,13 +44,25 @@ def _say(c, text, thread="web:local"):
 
 
 # ── the pure state machine ─────────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("text,action", [
-    ("yes", "yes"), ("Yes.", "yes"), ("ok", "yes"), ("arm it", "yes"), ("lgtm", "yes"),
-    ("cancel", "cancel"), ("no", "cancel"), ("/cancel", "cancel"), ("never mind", "cancel"),
-    ("change the prompt to fetch IBM", "edit"), ("edit schedule: every 9 minutes", "edit"),
-    ("every 10 minutes", "edit"),
-    ("what's the weather?", "unclear"), ("", "unclear"),
-])
+@pytest.mark.parametrize(
+    "text,action",
+    [
+        ("yes", "yes"),
+        ("Yes.", "yes"),
+        ("ok", "yes"),
+        ("arm it", "yes"),
+        ("lgtm", "yes"),
+        ("cancel", "cancel"),
+        ("no", "cancel"),
+        ("/cancel", "cancel"),
+        ("never mind", "cancel"),
+        ("change the prompt to fetch IBM", "edit"),
+        ("edit schedule: every 9 minutes", "edit"),
+        ("every 10 minutes", "edit"),
+        ("what's the weather?", "unclear"),
+        ("", "unclear"),
+    ],
+)
 def test_read_reply(text, action):
     assert read_reply(text)[0] == action
 
@@ -87,7 +107,7 @@ def test_confirm_then_yes_arms(monkeypatch):
 
 def test_cancel_arms_nothing(monkeypatch):
     monkeypatch.setenv("EVENTS_SCHEDULER", "native")
-    c, store = _client(stub=True)   # this one also sends plain chat at the end
+    c, store = _client(stub=True)  # this one also sends plain chat at the end
     assert _say(c, "/automate every 5 minutes send IBM stock price")["state"] == CONFIRM
     assert _say(c, "cancel")["state"] == CANCELLED
     assert store.list() == []
@@ -144,7 +164,7 @@ def test_parked_dialogue_survives_a_restart(tmp_path, monkeypatch):
     db = str(tmp_path / "events.db")
     c1, _ = _client(db)
     assert _say(c1, "/automate every 5 minutes send IBM stock price")["state"] == CONFIRM
-    c2, store2 = _client(db)          # a brand-new process against the same store
+    c2, store2 = _client(db)  # a brand-new process against the same store
     assert _say(c2, "yes")["state"] == ARMED
     assert len(store2.list()) == 1
 
@@ -164,10 +184,16 @@ def test_plain_chat_never_enters_the_arming_dialogue():
 # ── channels: the SAME dialogue over /invoke ───────────────────────────────────────────────────
 def _channel_say(c, text, thread="gw:slack:C42#170.1"):
     """What a channel adapter posts after its @mention gate has stripped the mention."""
-    r = c.post("/invoke", json={
-        "text": text, "agent": "concierge", "deliver": False,
-        "source": {"type": "channel", "name": "slack", "thread_id": thread, "user": "U1"},
-        "event": {"kind": "message", "payload": {}}})
+    r = c.post(
+        "/invoke",
+        json={
+            "text": text,
+            "agent": "concierge",
+            "deliver": False,
+            "source": {"type": "channel", "name": "slack", "thread_id": thread, "user": "U1"},
+            "event": {"kind": "message", "payload": {}},
+        },
+    )
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -203,8 +229,9 @@ def _door_pattern():
     import pathlib
     import re
 
-    src = (pathlib.Path(__file__).resolve().parents[2]
-           / "src" / "cuga" / "backend" / "server" / "main.py").read_text()
+    src = (
+        pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga" / "backend" / "server" / "main.py"
+    ).read_text()
     m = re.search(r"_SLASH_VERBS = re\.compile\(\s*(r\"[^\"]+\")", src)
     assert m, "could not find _SLASH_VERBS in server/main.py — did it move or get renamed?"
     return re.compile(eval(m.group(1)), re.I)
@@ -235,7 +262,8 @@ def test_the_door_and_the_concierge_agree_on_what_a_slash_command_is():
         assert _SLASH_VERBS.match(text), f"door should forward: {text!r}"
         assert _slash_parse(text) is not None, (
             f"door forwards {text!r} but _slash_parse misses it → the NL path arms it with no "
-            f"confirmation. The gate leaks.")
+            f"confirmation. The gate leaks."
+        )
 
     # and neither side may claim ordinary chat
     for text in ("what is /automate?", "hello", "tell me about /cron jobs"):

@@ -14,8 +14,14 @@ except ImportError:  # pragma: no cover
     import flows
 
 
-def plan(text: str, *, agent: str = "worker", thread_id: str = "web:local",
-         deliver_to: list | None = None, sink: dict | None = None) -> dict:
+def plan(
+    text: str,
+    *,
+    agent: str = "worker",
+    thread_id: str = "web:local",
+    deliver_to: list | None = None,
+    sink: dict | None = None,
+) -> dict:
     """Return ``{decision, flow}`` for an utterance — no side effects.
 
     ``flow`` is the would-be AP flow JSON, or ``None`` for a channel-NOW (which rides the
@@ -25,21 +31,27 @@ def plan(text: str, *, agent: str = "worker", thread_id: str = "web:local",
 
     if mode == "NOW":
         # channel-NOW needs no new flow; return the decision + a run-once shape for reference
-        return {"decision": d, "flow": None,
-                "note": "channel-NOW rides the inbound flow; run via /invoke"}
+        return {"decision": d, "flow": None, "note": "channel-NOW rides the inbound flow; run via /invoke"}
 
     if mode in ("CRON", "POLL"):
         cad = d.get("cadence") or {}
-        flow = flows.build_flow(mode, agent=agent, thread_id=thread_id, prompt=text,
-                                cron=cad.get("cron"), interval_seconds=cad.get("interval_seconds"),
-                                sink=sink)
+        flow = flows.build_flow(
+            mode,
+            agent=agent,
+            thread_id=thread_id,
+            prompt=text,
+            cron=cad.get("cron"),
+            interval_seconds=cad.get("interval_seconds"),
+            sink=sink,
+        )
         return {"decision": d, "flow": flow}
 
     if mode == "PUSH":
         source = d.get("source", "webhook")
         event = d.get("event", "new_item")
-        flow = flows.build_push_flow(agent=agent, thread_id=thread_id, prompt=text,
-                                     source=source, event_kind=event, sink=sink)
+        flow = flows.build_push_flow(
+            agent=agent, thread_id=thread_id, prompt=text, source=source, event_kind=event, sink=sink
+        )
         return {"decision": d, "flow": flow}
 
     raise ValueError(f"unhandled mode {mode!r}")

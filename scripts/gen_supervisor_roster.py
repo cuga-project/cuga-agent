@@ -39,8 +39,7 @@ def _handles(spec, tr) -> str:
         declared = integ.get("triggers")
         rows = [t for t in tr.events_for(app) if (not declared or t.event in declared)]
         if rows:
-            lines.append("HANDLES TRIGGERS: " + ", ".join(
-                f"{t.app}/{t.event} ({t.title})" for t in rows))
+            lines.append("HANDLES TRIGGERS: " + ", ".join(f"{t.app}/{t.event} ({t.title})" for t in rows))
     return "\n".join(lines)
 
 
@@ -48,16 +47,18 @@ def main() -> int:
     from cuga.backend.events import seed, triggers as tr
 
     agents = seed.default_agents()
-    blocks = ["# GENERATED once by scripts/gen_supervisor_roster.py — now the SOURCE OF TRUTH.",
-              "# Edit by hand; `make reload` rebuilds the supervisor. HANDLES lines mirror the",
-              "# trigger registry (events/triggers.py); keep them in sync when editing triggers.",
-              "",
-              "supervisor:",
-              "  name: cuga",
-              "  special_instructions: |",
-              *(f"    {ln}" for ln in SUPERVISOR_INSTRUCTIONS.splitlines()),
-              "",
-              "agents:"]
+    blocks = [
+        "# GENERATED once by scripts/gen_supervisor_roster.py — now the SOURCE OF TRUTH.",
+        "# Edit by hand; `make reload` rebuilds the supervisor. HANDLES lines mirror the",
+        "# trigger registry (events/triggers.py); keep them in sync when editing triggers.",
+        "",
+        "supervisor:",
+        "  name: cuga",
+        "  special_instructions: |",
+        *(f"    {ln}" for ln in SUPERVISOR_INSTRUCTIONS.splitlines()),
+        "",
+        "agents:",
+    ]
     for a in agents:
         if a.name == "concierge":
             continue

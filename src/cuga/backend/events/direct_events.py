@@ -56,21 +56,20 @@ def _cfg_match(cfg: dict, *, channel: str = "", text: str = "", emoji: str = "")
         try:
             if not re.search(pattern, text or "", re.I):
                 return False
-        except re.error:                      # a bad user regex degrades to substring match
+        except re.error:  # a bad user regex degrades to substring match
             if pattern.lower() not in (text or "").lower():
                 return False
     return True
 
 
-def match(store, app: str, event: str, *, channel: str = "", text: str = "",
-          emoji: str = "") -> list:
+def match(store, app: str, event: str, *, channel: str = "", text: str = "", emoji: str = "") -> list:
     """Active DIRECT watcher subscriptions for (app, event) whose config filters accept this
     occurrence. Store may be None (events layer without a subscription store) → []."""
     if store is None or not event:
         return []
     out = []
     for sub in store.list(status="active"):
-        if sub.ap_flow_id:                    # AP-armed flows are AP's to fire, not ours
+        if sub.ap_flow_id:  # AP-armed flows are AP's to fire, not ours
             continue
         if sub.source_connector != app or (sub.event or "") != event:
             continue
@@ -96,6 +95,7 @@ async def dispatch_all(subs: list, *, app: str, event: str, payload: dict, engin
     deliver=True → the answer goes back to the origin the watcher was armed from, via the
     existing direct-channel delivery). Returns how many dispatched; never raises."""
     import httpx
+
     try:
         from .secret_seam import secret as _secret
     except ImportError:
@@ -104,17 +104,19 @@ async def dispatch_all(subs: list, *, app: str, event: str, payload: dict, engin
     gw = _secret("GATEWAY_TOKEN")
     n = 0
     for sub in subs:
-        text = (f"{sub.prompt}\n\nThe watched event just happened: "
-                f"{describe(app, event, payload)}")
-        inv = {"agent": sub.target_agent, "text": text, "deliver": True, "scope": sub.tenant,
-               "source": {"type": "integration", "name": app, "thread_id": sub.thread_id},
-               "event": {"kind": event, "payload": dict(payload or {})}}
+        text = f"{sub.prompt}\n\nThe watched event just happened: {describe(app, event, payload)}"
+        inv = {
+            "agent": sub.target_agent,
+            "text": text,
+            "deliver": True,
+            "scope": sub.tenant,
+            "source": {"type": "integration", "name": app, "thread_id": sub.thread_id},
+            "event": {"kind": event, "payload": dict(payload or {})},
+        }
         try:
             async with httpx.AsyncClient(timeout=180) as c:
-                r = await c.post(f"http://127.0.0.1:{port}/invoke",
-                                 headers={"X-Gateway-Token": gw}, json=inv)
-            log.info("direct dispatch %s/%s → %s (HTTP %s)", app, event, sub.target_agent,
-                     r.status_code)
+                r = await c.post(f"http://127.0.0.1:{port}/invoke", headers={"X-Gateway-Token": gw}, json=inv)
+            log.info("direct dispatch %s/%s → %s (HTTP %s)", app, event, sub.target_agent, r.status_code)
             n += 1
         except Exception as e:  # noqa: BLE001 — one broken watcher must not drop the others
             log.warning("direct dispatch %s/%s → %s failed: %s", app, event, sub.target_agent, e)

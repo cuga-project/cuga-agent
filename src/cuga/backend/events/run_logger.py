@@ -35,10 +35,28 @@ def dump(**record) -> str:
         fname = f"{time.strftime('%H-%M-%S')}_{rid}.json"
         (day / fname).write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str))
         with open(day / "index.jsonl", "a") as f:
-            f.write(json.dumps({k: record.get(k) for k in
-                                ("run_log_id", "when", "kind", "agent", "channel", "thread_id",
-                                 "subscription_id", "status", "ms", "trace_id")},
-                               ensure_ascii=False, default=str) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        k: record.get(k)
+                        for k in (
+                            "run_log_id",
+                            "when",
+                            "kind",
+                            "agent",
+                            "channel",
+                            "thread_id",
+                            "subscription_id",
+                            "status",
+                            "ms",
+                            "trace_id",
+                        )
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
         return rid
     except Exception:  # noqa: BLE001
         return ""

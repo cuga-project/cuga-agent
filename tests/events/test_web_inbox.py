@@ -23,22 +23,22 @@ import os
 import sys
 import tempfile
 
-_EV = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                   "..", "..", "src", "cuga", "backend", "events"))
+_EV = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src", "cuga", "backend", "events"))
 if "events" not in sys.modules:
-    _spec = importlib.util.spec_from_file_location("events", os.path.join(_EV, "__init__.py"),
-                                                   submodule_search_locations=[_EV])
+    _spec = importlib.util.spec_from_file_location(
+        "events", os.path.join(_EV, "__init__.py"), submodule_search_locations=[_EV]
+    )
     _pkg = importlib.util.module_from_spec(_spec)
     sys.modules["events"] = _pkg
     _spec.loader.exec_module(_pkg)
 
-from fastapi import FastAPI                                  # noqa: E402
-from fastapi.testclient import TestClient                    # noqa: E402
-from events import delivery, web_inbox                       # noqa: E402
-from events.app import register_events_routes                # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from events import delivery, web_inbox  # noqa: E402
+from events.app import register_events_routes  # noqa: E402
 from events.principal import channel_origin, unscoped_thread  # noqa: E402
-from events.subscriptions import SubscriptionStore           # noqa: E402
-from events.web_inbox import WebInbox                        # noqa: E402
+from events.subscriptions import SubscriptionStore  # noqa: E402
+from events.web_inbox import WebInbox  # noqa: E402
 
 
 def _tmpdb(name="inbox.db"):
@@ -46,6 +46,7 @@ def _tmpdb(name="inbox.db"):
 
 
 # ── 1. web is a real direct channel ───────────────────────────────────────────────────────────────
+
 
 def test_web_is_a_direct_channel():
     """The bug in one assertion: is_direct('web') was False, so /invoke skipped delivery entirely."""
@@ -55,10 +56,20 @@ def test_web_is_a_direct_channel():
 
 def test_send_direct_web_lands_in_the_mailbox():
     web_inbox.init(_tmpdb())
-    ok, why = asyncio.run(delivery.send_direct(
-        "web", "web:studio", "⚡ flow fired · cron tick\nIBM is at $291.40.",
-        scope="t/u/local", meta={"agent": "pricebot", "subscription_id": "cuga-1",
-                                 "flow_name": "IBM price", "event_kind": "tick"}))
+    ok, why = asyncio.run(
+        delivery.send_direct(
+            "web",
+            "web:studio",
+            "⚡ flow fired · cron tick\nIBM is at $291.40.",
+            scope="t/u/local",
+            meta={
+                "agent": "pricebot",
+                "subscription_id": "cuga-1",
+                "flow_name": "IBM price",
+                "event_kind": "tick",
+            },
+        )
+    )
     assert (ok, why) == (True, "ok")
     msgs = web_inbox.list_since(thread_id="web:studio")
     assert len(msgs) == 1
@@ -90,6 +101,7 @@ def test_an_unknown_channel_is_still_refused():
 
 # ── 2. a gw-less thread resolves to web ───────────────────────────────────────────────────────────
 
+
 def test_browser_thread_ids_have_no_gw_origin():
     """Why the fallback in app.py is needed at all — pin the premise so it can't silently change."""
     assert channel_origin("web:studio") is None
@@ -107,11 +119,12 @@ def test_the_scope_prefix_is_stripped_from_a_web_delivery_address():
     a bug indistinguishable from the one being fixed."""
     assert unscoped_thread("default/default/local::web:studio") == "web:studio"
     assert unscoped_thread("t/i/u::3f7a9c12-0b44-4c7e") == "3f7a9c12-0b44-4c7e"
-    assert unscoped_thread("web:studio") == "web:studio"          # unscoped input is left alone
+    assert unscoped_thread("web:studio") == "web:studio"  # unscoped input is left alone
     assert unscoped_thread("") == ""
 
 
 # ── 3. the mailbox is a cursor feed ───────────────────────────────────────────────────────────────
+
 
 def test_messages_come_back_oldest_first():
     inbox = WebInbox(_tmpdb())
@@ -125,10 +138,10 @@ def test_since_is_exclusive_so_a_poller_never_re_renders():
     inbox.put(scope="s", thread_id="t1", text="old")
     first = inbox.list(thread_id="t1")
     cursor = first[-1]["ts"]
-    assert inbox.list(thread_id="t1", since=cursor) == []      # nothing new yet
+    assert inbox.list(thread_id="t1", since=cursor) == []  # nothing new yet
     inbox.put(scope="s", thread_id="t1", text="new")
     fresh = inbox.list(thread_id="t1", since=cursor)
-    assert [m["text"] for m in fresh] == ["new"]               # only the new one
+    assert [m["text"] for m in fresh] == ["new"]  # only the new one
 
 
 def test_threads_are_isolated():
@@ -157,10 +170,12 @@ def test_the_backlog_survives_a_reopened_store():
 
 # ── the endpoint ──────────────────────────────────────────────────────────────────────────────────
 
+
 def _client():
     app = FastAPI()
-    register_events_routes(app, runtime=object(), store=SubscriptionStore(_tmpdb("subs.db")),
-                           concierge=None, engine=None)
+    register_events_routes(
+        app, runtime=object(), store=SubscriptionStore(_tmpdb("subs.db")), concierge=None, engine=None
+    )
     # AFTER register_events_routes, which mounts the process-wide mailbox from $EVENTS_DB — a path
     # the suite shares, so initing first would leave every test reading the previous one's fires.
     web_inbox.init(_tmpdb("api.db"))
@@ -173,7 +188,7 @@ def test_inbox_endpoint_returns_a_usable_cursor():
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 0 and body["messages"] == []
-    assert body["cursor"] == 0.0                      # empty ⇒ the cursor you sent, so polling is stable
+    assert body["cursor"] == 0.0  # empty ⇒ the cursor you sent, so polling is stable
 
     scope = body["scope"]
     web_inbox.put(scope=scope, thread_id="web:studio", text="⚡ flow fired · cron tick\nhello")
@@ -181,8 +196,7 @@ def test_inbox_endpoint_returns_a_usable_cursor():
     assert body["count"] == 1 and body["messages"][0]["text"].endswith("hello")
 
     # replay with the returned cursor: nothing new, cursor preserved
-    again = c.get("/api/events/inbox",
-                  params={"thread_id": "web:studio", "since": body["cursor"]}).json()
+    again = c.get("/api/events/inbox", params={"thread_id": "web:studio", "since": body["cursor"]}).json()
     assert again["count"] == 0 and again["cursor"] == body["cursor"]
 
 
@@ -191,6 +205,7 @@ def test_max_age_bounds_the_first_load(monkeypatch):
     is a flood, not a recovery — so a first load asks for a bounded window, computed with the
     SERVER's clock (the cursor is a server timestamp; trusting the browser's would skip or repeat)."""
     import time as _t
+
     c = _client()
     scope = c.get("/api/events/inbox", params={"thread_id": "t"}).json()["scope"]
     now = _t.time()
@@ -208,8 +223,9 @@ def test_max_age_bounds_the_first_load(monkeypatch):
 
     # …and max_age is ignored once a real cursor exists, so polling never re-bounds
     cur = bounded["cursor"]
-    assert c.get("/api/events/inbox",
-                 params={"thread_id": "t", "since": cur, "max_age": 1}).json()["count"] == 0
+    assert (
+        c.get("/api/events/inbox", params={"thread_id": "t", "since": cur, "max_age": 1}).json()["count"] == 0
+    )
 
 
 def test_inbox_endpoint_requires_a_thread_id():
@@ -226,12 +242,13 @@ def test_inbox_endpoint_does_not_leak_another_scope():
 
 # ── the boot log must not contain the database password ───────────────────────────────────────────
 
+
 def test_the_boot_log_never_prints_the_database_password(caplog):
     """A real leak, found in the deployed logs: the events service logged its store location
     verbatim, so every boot wrote ``postgres://user:PASSWORD@host/db`` into the platform log —
     readable by anyone with log access, and retained after the password is rotated."""
     import logging
-    from events.service import _db_path                      # noqa: F401  (import proves the module loads)
+    from events.service import _db_path  # noqa: F401  (import proves the module loads)
     from events.db import _redact
 
     dsn = "postgres://ibm_cloud_abc:sup3r-s3cret-pw@pg.example.cloud:32294/ibmclouddb?sslmode=verify-full"
@@ -249,13 +266,14 @@ def test_the_boot_log_never_prints_the_database_password(caplog):
 
 def test_redact_leaves_a_plain_sqlite_path_alone():
     from events.db import _redact
+
     assert _redact("/root/.cuga/events.db") == "/root/.cuga/events.db"
     assert _redact(":memory:") == ":memory:"
 
 
 # ── the whole path: a fire on a web thread reaches the browser ────────────────────────────────────
 
-GW = "test-gateway-token"          # the /invoke seam's shared secret, pinned for these tests
+GW = "test-gateway-token"  # the /invoke seam's shared secret, pinned for these tests
 
 
 class _Runtime:
@@ -270,20 +288,32 @@ def _fire_client():
     """A client whose store holds one armed CRON, scoped exactly the way the concierge arms it."""
     from events.subscriptions import Subscription
     from events.runtime import DEFAULT_SCOPE
+
     db = _tmpdb("fire-subs.db")
     w = SubscriptionStore(db)
-    w.upsert(Subscription(id="s-web", mode="CRON", target_agent="pricebot", tenant=DEFAULT_SCOPE,
-                          deliver_to=[], prompt="the price of bitcoin", status="active",
-                          backend="native", flow_name="bitcoin price",
-                          # exactly what Principal.thread() stores for a Studio-armed flow
-                          thread_id=f"{DEFAULT_SCOPE}::web:studio"))
+    w.upsert(
+        Subscription(
+            id="s-web",
+            mode="CRON",
+            target_agent="pricebot",
+            tenant=DEFAULT_SCOPE,
+            deliver_to=[],
+            prompt="the price of bitcoin",
+            status="active",
+            backend="native",
+            flow_name="bitcoin price",
+            # exactly what Principal.thread() stores for a Studio-armed flow
+            thread_id=f"{DEFAULT_SCOPE}::web:studio",
+        )
+    )
     app = FastAPI()
     # gateway_token is EXPLICIT: unset, register_events_routes falls back to $GATEWAY_TOKEN, which
     # another test module may have left in the environment — /invoke would then 401 here and only
     # when the suite runs in that order.
-    register_events_routes(app, runtime=_Runtime(), store=SubscriptionStore(db),
-                           concierge=None, engine=None, gateway_token=GW)
-    web_inbox.init(_tmpdb("fire-inbox.db"))       # after register — see _client()
+    register_events_routes(
+        app, runtime=_Runtime(), store=SubscriptionStore(db), concierge=None, engine=None, gateway_token=GW
+    )
+    web_inbox.init(_tmpdb("fire-inbox.db"))  # after register — see _client()
     return TestClient(app)
 
 
@@ -294,14 +324,20 @@ def test_a_cron_tick_on_a_web_thread_is_delivered_to_the_browser():
     try:
         c = _fire_client()
         from events.runtime import DEFAULT_SCOPE
+
         # the exact body the native scheduler posts for a due subscription
-        r = c.post("/invoke", headers={"X-Gateway-Token": GW}, json={
-            "text": "the price of bitcoin", "agent": "pricebot", "deliver": True,
-            "source": {"type": "time", "name": "cron",
-                       "thread_id": f"{DEFAULT_SCOPE}::web:studio"},
-            "event": {"kind": "tick", "payload": {}},
-            "subscription_id": "s-web",
-        })
+        r = c.post(
+            "/invoke",
+            headers={"X-Gateway-Token": GW},
+            json={
+                "text": "the price of bitcoin",
+                "agent": "pricebot",
+                "deliver": True,
+                "source": {"type": "time", "name": "cron", "thread_id": f"{DEFAULT_SCOPE}::web:studio"},
+                "event": {"kind": "tick", "payload": {}},
+                "subscription_id": "s-web",
+            },
+        )
         assert r.status_code == 200 and r.json()["ok"] is True
 
         body = c.get("/api/events/inbox", params={"thread_id": "web:studio"}).json()
@@ -318,8 +354,10 @@ def test_a_plain_chat_answer_is_not_mailed_to_the_browser():
     """NOW answers are returned in the response the browser is already awaiting. Mailing them too
     would double every message in the transcript."""
     c = _fire_client()
-    r = c.post("/invoke", headers={"X-Gateway-Token": GW},
-               json={"agent": "pricebot", "text": "what is bitcoin worth?",
-                     "thread_id": "web:studio"})
+    r = c.post(
+        "/invoke",
+        headers={"X-Gateway-Token": GW},
+        json={"agent": "pricebot", "text": "what is bitcoin worth?", "thread_id": "web:studio"},
+    )
     assert r.status_code == 200
     assert c.get("/api/events/inbox", params={"thread_id": "web:studio"}).json()["count"] == 0

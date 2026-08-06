@@ -26,7 +26,7 @@ def _load_dotenv(path: str) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        v = v.split(" #", 1)[0]                 # strip trailing inline comment
+        v = v.split(" #", 1)[0]  # strip trailing inline comment
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
@@ -40,6 +40,7 @@ async def main() -> int:
     # real app_context → forces the CUGA path (policy_system present). langfuse off; no tool
     # includes (a plain worker). This mirrors main.py's _cuga_app_context.
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
     policy = PolicyConfigurable.get_instance()
     try:
         await policy.initialize()
@@ -47,18 +48,18 @@ async def main() -> int:
         pass
 
     def app_context():
-        return {"policy_system": policy, "langfuse_handler": None,
-                "get_include_by_app": None}
+        return {"policy_system": policy, "langfuse_handler": None, "get_include_by_app": None}
 
     # cuga executes the work; no react fallback here — a failure must surface, not be masked.
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
 
     # provision a plain worker (no MCP) — the point is to prove the CUGA graph builds + answers
-    rt.upsert_agent(AgentSpec(name="helper", prompt="You are a concise, helpful assistant."),
-                    scope=DEFAULT_SCOPE)
+    rt.upsert_agent(
+        AgentSpec(name="helper", prompt="You are a concise, helpful assistant."), scope=DEFAULT_SCOPE
+    )
     print("provisioned worker 'helper' · backend =", rt.get_agent("helper", scope=DEFAULT_SCOPE).backend)
 
-    q = "Briefly, what is your role?"     # a no-tool worker answers from reasoning
+    q = "Briefly, what is your role?"  # a no-tool worker answers from reasoning
     print("Q:", q)
     print("… building DynamicAgentGraph on demand + running (first build is slow) …")
     answer = await rt.run("helper", "cuga-smoke-1", q, scope=DEFAULT_SCOPE)
@@ -71,12 +72,17 @@ async def main() -> int:
     # the real AgentLoop to a final answer. Tool-backed answering needs the worker's MCP servers
     # attached to the CUGA graph (CombinedToolProvider) — the next wiring step (see TODO.md).
     ok = used_cuga and bool((answer or "").strip())
-    print("RESULT:", "PASS — CUGA DynamicAgentGraph executed + answered via the real AgentLoop"
-          if ok else ("ANSWERED but via REACT fallback (no CUGA stack?)"
-                      if answer else "FAIL — no answer"))
+    print(
+        "RESULT:",
+        "PASS — CUGA DynamicAgentGraph executed + answered via the real AgentLoop"
+        if ok
+        else ("ANSWERED but via REACT fallback (no CUGA stack?)" if answer else "FAIL — no answer"),
+    )
     if ok:
-        print("NOTE: worker had no MCP tools; attaching spec.mcp_servers to the CUGA graph "
-              "(CombinedToolProvider) is the next step for tool-backed answers.")
+        print(
+            "NOTE: worker had no MCP tools; attaching spec.mcp_servers to the CUGA graph "
+            "(CombinedToolProvider) is the next step for tool-backed answers."
+        )
     return 0 if ok else 1
 
 

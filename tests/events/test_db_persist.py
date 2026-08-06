@@ -17,11 +17,25 @@ from cuga.backend.events.subscriptions import Subscription, SubscriptionStore
 def _cron(sub_id="cuga-043b82", tenant="default/default/admin"):
     now = time.time()
     return Subscription(
-        id=sub_id, mode="CRON", target_agent="cuga", tenant=tenant, backend="native",
-        source_type="time", source_connector="interval", ap_flow_id=None, deliver_to=["slack"],
-        thread_id=f"{tenant}::gw:slack:C0BEYJ9NATB#1785942739", prompt="The IBM stock price.",
-        dedup_key=f"cuga|interval|300|{sub_id}", flow_name=f"native-cron-{sub_id}",
-        interval_seconds=300, cron_expr="", next_fire=now + 300, expires_at=0.0, config={})
+        id=sub_id,
+        mode="CRON",
+        target_agent="cuga",
+        tenant=tenant,
+        backend="native",
+        source_type="time",
+        source_connector="interval",
+        ap_flow_id=None,
+        deliver_to=["slack"],
+        thread_id=f"{tenant}::gw:slack:C0BEYJ9NATB#1785942739",
+        prompt="The IBM stock price.",
+        dedup_key=f"cuga|interval|300|{sub_id}",
+        flow_name=f"native-cron-{sub_id}",
+        interval_seconds=300,
+        cron_expr="",
+        next_fire=now + 300,
+        expires_at=0.0,
+        config={},
+    )
 
 
 # ── the headline case ─────────────────────────────────────────────────────────────────────────
@@ -44,7 +58,7 @@ def test_armed_flow_survives_instance_replacement(tmp_path):
     revived = SubscriptionStore(pod_b).list(status="active")
     assert len(revived) == 1
     assert revived[0].id == "cuga-043b82"
-    assert revived[0].interval_seconds == 300          # still schedulable → the scheduler resumes it
+    assert revived[0].interval_seconds == 300  # still schedulable → the scheduler resumes it
     assert revived[0].prompt == "The IBM stock price."
 
 
@@ -55,7 +69,7 @@ def test_without_backup_configured_the_flow_is_lost(tmp_path):
     SubscriptionStore(pod_a).upsert(_cron())
 
     pod_b = str(tmp_path / "podB" / "events.db")
-    assert db_persist.restore(pod_b, "") is False       # no EVENTS_DB_BACKUP → nothing to restore
+    assert db_persist.restore(pod_b, "") is False  # no EVENTS_DB_BACKUP → nothing to restore
     os.makedirs(os.path.dirname(pod_b), exist_ok=True)
     assert SubscriptionStore(pod_b).list(status="active") == []
 
@@ -111,7 +125,7 @@ def test_corrupt_snapshot_does_not_block_boot(tmp_path):
     with open(backup, "wb") as fh:
         fh.write(b"this is not a sqlite database, not even close")
     local = str(tmp_path / "pod" / "events.db")
-    assert db_persist.restore(local, backup) is False   # no exception
+    assert db_persist.restore(local, backup) is False  # no exception
 
 
 def test_tenant_scope_survives_the_round_trip(tmp_path):
@@ -140,7 +154,7 @@ def test_snapshot_loop_persists_a_change(tmp_path):
     async def drive():
         task = asyncio.create_task(db_persist.run_snapshot_loop(local, backup, interval=0.05))
         await asyncio.sleep(0.15)
-        store.upsert(_cron("cuga-late"))            # armed AFTER the loop started
+        store.upsert(_cron("cuga-late"))  # armed AFTER the loop started
         await asyncio.sleep(0.4)
         task.cancel()
         try:
@@ -205,7 +219,7 @@ def test_sqlite_without_backup_reports_not_durable(tmp_path, monkeypatch):
     monkeypatch.delenv("EVENTS_DB_BACKUP", raising=False)
     st = db_persist.status(str(tmp_path / "events.db"))
     assert st["durable"] is False and st["backend"] == "sqlite"
-    assert "postgresql://" in st["reason"]          # points at the real fix
+    assert "postgresql://" in st["reason"]  # points at the real fix
 
 
 def test_snapshot_loop_is_a_noop_on_postgres(monkeypatch):
