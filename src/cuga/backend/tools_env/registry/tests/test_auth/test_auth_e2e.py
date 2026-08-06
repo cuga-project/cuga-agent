@@ -266,12 +266,13 @@ class TestAuthenticationE2E:
 
             data = response.json()
             print(f"DEBUG: Response type: {type(data)}, value: {data}")
-            
+
             # Handle case where response is a JSON string instead of dict
             if isinstance(data, str):
                 import json
+
                 data = json.loads(data)
-            
+
             assert "items" in data
             assert data["auth_method"] == "header"
             assert isinstance(data["items"], list)
