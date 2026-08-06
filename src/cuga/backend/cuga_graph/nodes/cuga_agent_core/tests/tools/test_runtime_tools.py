@@ -20,8 +20,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     RuntimeBackends,
     ToolBundle,
@@ -29,6 +27,8 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     prompt_tool_dicts,
     resolve_runtime_backends,
 )
+
+pytestmark = pytest.mark.unit
 
 
 # ─── prompt_tool_dicts (Phase 5: expose runtime tools in Supervisor prompt) ──
