@@ -99,16 +99,9 @@ jobs:
             tests/unit/test_embedder_cache_resilience.py \
             tests/unit/test_knowledge_copy_source_files.py \
             tests/unit/test_knowledge_envelope_rank_fields.py
-          uv run pytest tests/unit/test_cuga_lite_bind_tools.py
-
-      # Event-driven agents layer — the OFFLINE suite. Every test uses a TestClient
-      # with fake creds + engine=None (Activepieces off), so it needs NO secrets and
-      # is safe in CI. The events layer is triggers-only; the live channel/AP
-      # integration harnesses (tests/events/live_*.py) are LOCAL-only and are never
-      # run here — they require real Slack/Telegram/Discord/AP credentials.
-      - name: Run events tests (offline, no creds)
-        run: |
-          uv run pytest tests/events -q
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \
@@ -122,6 +115,17 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           CUGA_THREAD_WORKSPACE_SEED: crm
+
+      # Event-driven agents layer — the OFFLINE suite. Every test uses a TestClient
+      # with fake creds + engine=None (Activepieces off), so it needs NO secrets and
+      # is safe in CI. The events layer is triggers-only; the live channel/AP
+      # integration harnesses (tests/events/live_*.py) are LOCAL-only and are never
+      # run here — they require real Slack/Telegram/Discord/AP credentials.
+      - name: Run events tests (offline, no creds)
+        run: |
+          uv run pytest tests/events -q
+        env:
+          PYTHONUNBUFFERED: "1"
 
       - name: Run policy and SDK integration tests
         run: |
