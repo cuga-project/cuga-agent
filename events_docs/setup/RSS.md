@@ -29,7 +29,7 @@ New feed item ─▶ AP (rss piece, poll) ─▶ /invoke (agent) ─▶ [deliver
 Arm it against an active feed, then wait for the feed to publish (or use a high-frequency feed). Or
 test instantly with a synthetic fire (no waiting, no live flow):
 ```bash
-curl -s -X POST localhost:7860/api/events/synth-fire \
+curl -s -X POST localhost:8100/api/events/synth-fire \
   -H "x-gateway-token: $GATEWAY_TOKEN" -H "content-type: application/json" \
   -d '{"source":"rss","prompt":"Summarize this feed item."}'
 ```

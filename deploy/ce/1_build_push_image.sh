@@ -70,4 +70,4 @@ STATUS=$(ibmcloud ce buildrun get -n "$BUILD_NAME" -o json 2>/dev/null \
 echo ""
 echo "Buildrun status: ${STATUS:-see logs above}"
 echo "Image: $IMAGE_REF"
-echo "Next:  CUGA_CE_ADMIN=1 ./2_deploy_app.sh"
+echo "Next:  CUGA_CE_ADMIN=1 ./2_deploy.sh"

@@ -54,10 +54,36 @@ run shows one webhook failure, re-run before believing it.
 ## 1. Local — the 10-minute pass
 
 ```bash
+make pg                      # the events DATABASE — PostgreSQL 16 in a container (first time only)
 make up-noap                 # BOTH services: CUGA :7860 + eventing :8100, no Activepieces
 make test                    # offline suite — run it with the stack DOWN (see below)
+make test-pg                 # the store tests against REAL PostgreSQL (the deployed SQL path)
 make test-e2e                # REAL channels + native cron/poll fire
 ```
+
+### The database — why `make pg` comes first
+
+`EVENTS_DB` takes a **`postgresql://` URL**, and local dev runs the **same engine as Code Engine**.
+That is deliberate. Local used to be a SQLite file that survives everything while the deployment ran
+SQLite on an ephemeral disk — two different durability stories, and the fragile one was the only one
+nobody exercised. A pod replacement on 2026-08-05 silently deleted a cron armed from Slack twelve
+minutes earlier, and no local test could have caught it, because locally that failure mode did not
+exist.
+
+| Command | Does |
+|---|---|
+| `make pg` | start Postgres 16 (podman, `:5433`) and print the DSN — idempotent |
+| `make pg-psql` | a `psql` shell on the local events DB |
+| `make pg-stop` | stop it, keep the data |
+| `make pg-reset` | **destroy** and recreate — drops every locally armed flow |
+| `make test-pg` | 20 store tests against the real engine |
+
+Put the printed DSN in `.env` as `EVENTS_DB`. There is **no Postgres installed on your machine** —
+it is a container (`cuga-events-pg`), and the data lives in a podman volume, so `podman rm` without
+`-v` keeps it.
+
+SQLite still works (`EVENTS_DB=/abs/path/events.db`) and is what the hermetic offline suite uses, but
+it is **not** what we deploy — see [ARCHITECTURE.md](ARCHITECTURE.md) §7.
 
 `make test` is hermetic — `tests/events/conftest.py` points every loopback seam at a closed port
 for the session, so it behaves identically whether or not a dev stack is running. (It did not use
@@ -103,7 +129,7 @@ CUGA_SUPERVISOR_ROSTER=supervisor_agents.yaml \
 MCP_SERVERS_FILE=src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml \
   .venv/bin/cuga start demo                    # :7860
 
-# 2. The eventing service beside it
+# 2. The eventing service beside it (EVENTS_DB comes from .env — make pg prints it)
 CUGA_URL=http://localhost:7860 make run-events # :8100
 
 make test-e2e
@@ -127,6 +153,28 @@ make ce-smoke                 # status + channels + one authenticated web-chat t
 make test-e2e-ce              # the SAME channel + fire e2e against the deployed app
 make ce-logs GREP=launched    # expect: "events service: launched N background task(s)"
 ```
+
+**First-time deploy** needs the database provisioned once — details in
+[`deploy/ce/README.md`](../deploy/ce/README.md):
+```bash
+cd deploy/ce && YES=1 ./4_postgres.sh    # managed PostgreSQL + DSN into the CE secret (billable)
+make ce-build && make ce-deploy
+```
+
+**Two things that fail silently** — `2_deploy.sh` now asserts both after every deploy, and you should
+read them:
+```
+== post-deploy checks ==
+  ✓ roster: 9 agents on cuga-core              # 1 agent → every fire runs the bare default agent
+  ✓ durability: PostgreSQL — an instance replace is a non-event
+```
+Check durability any time:
+```bash
+curl -s "$URL/api/events/status" -H "X-Gateway-Token: $TOK" | jq .durability
+# {"durable": true, "backend": "postgres", "mechanism": "database"}
+```
+If that ever reads `"durable": false`, armed flows are one instance-replace away from being deleted
+— and Code Engine records **no restart** when it replaces an instance, so nothing will tell you.
 
 **HITL against the deployed app** (`$TOK` = `GATEWAY_TOKEN` from `.env`):
 ```bash

@@ -130,8 +130,8 @@ else:                                          <span class="c"># a concrete agen
    bubbles up. The three entry points differ only in the door; the agent is never forked:</p>
 <div class="wrap"><table>
   <tr><th>Door</th><th>Entry</th><th>How it reaches the agent</th></tr>
-  <tr><td class="k">Channels</td><td><code>/invoke</code> (agent="concierge")</td><td>concierge &rarr; NOW fast-path or <code>answer_now</code> tool &rarr; <code>runtime.run("cuga")</code></td></tr>
-  <tr><td class="k">Web chat</td><td><code>/stream</code> · <code>/api/concierge</code></td><td>plain question streams the agent directly; standing intent &rarr; concierge &rarr; same <code>runtime.run</code></td></tr>
+  <tr><td class="k">Channels</td><td><b>CUGA <code>/run</code></b> via <code>cuga_door.ask()</code></td><td>CUGA decides: plain chat &rarr; the supervisor answers directly. A slash verb (or an open arming dialogue) &rarr; forwarded to <code>/api/concierge</code>. Channels no longer touch <code>/invoke</code>.</td></tr>
+  <tr><td class="k">Web chat</td><td><code>/stream</code> (same rule) · <code>/api/concierge</code></td><td>plain question streams the agent directly; a slash verb &rarr; concierge, returned as one SSE <code>Answer</code> frame</td></tr>
   <tr><td class="k">Flows</td><td><code>/invoke</code> (concrete agent)</td><td>a tick/webhook &rarr; <code>runtime.run(agent)</code> directly on the payload</td></tr>
 </table></div>
 <div class="note"><b>The whole path, one line:</b> envelope &rarr; <code>/invoke</code> (auth &middot; scope &middot;

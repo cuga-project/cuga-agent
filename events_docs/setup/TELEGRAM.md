@@ -49,7 +49,7 @@ backend surfaces (it drives chat, and any `new_channel_message` watcher armed on
 
 4. **(Optional) link your account** — so the agent knows *who* you are (per-user creds, memory):
    ```bash
-   curl -s -X POST localhost:7860/api/events/link/telegram \
+   curl -s -X POST localhost:8100/api/events/link/telegram \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    # → {"token":"…","how":"open https://t.me/<bot>?start=<token>"}
    ```
@@ -83,13 +83,13 @@ require it). Send fields are verified against `telegram-bot@0.6.4` (`send_text_m
 2. **Arm the inbound flow** — `make channels` connects + arms every channel you have a token for
    (idempotent). Or by hand:
    ```bash
-   curl -s -X POST localhost:7860/api/events/admin/channels/telegram/arm \
+   curl -s -X POST localhost:8100/api/events/admin/channels/telegram/arm \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    ```
    The bot **connection** in AP (`ea::<tenant>::<user>::telegram`) is auto-created on server startup
    from `TELEGRAM_BOT_TOKEN`. If you added the token *after* boot, restart first, or create it live:
    ```bash
-   curl -s -X POST localhost:7860/api/events/connect/telegram/token \
+   curl -s -X POST localhost:8100/api/events/connect/telegram/token \
         -H "content-type: application/json" -H "x-user-id: admin" \
         -d "{\"token\":\"$TELEGRAM_BOT_TOKEN\"}"
    ```

@@ -25,11 +25,16 @@
 </div>
 
 <h2 id="summary">The one rule that makes all four the same</h2>
-<p>The three <b>network</b> channels (Slack, Discord, Telegram) do the identical thing: normalize their
-   native message into <b>one Envelope</b> and <code>POST /invoke</code> with
-   <code>agent:"concierge"</code> and <code>deliver:false</code> &mdash; then take the returned
-   <code>answer</code> and send it back over their own transport. <b>Web</b> is the exception: it calls
-   <code>concierge.run(&hellip;)</code> <b>in-process</b>, no envelope, no <code>/invoke</code> hop.</p>
+<p>All four channels do the identical thing: normalize their native message and hand it to
+   <b>CUGA's <code>POST /run</code></b> via <code>cuga_door.ask()</code> &mdash; then take the returned
+   <code>answer</code> and send it back over their own transport. <b>The adapter makes no routing
+   decision at all.</b> CUGA decides whether the utterance is ordinary chat or an attempt to arm
+   something; only in the second case does the eventing service's concierge get involved.</p>
+<p class="dim">This is an inversion of the earlier design, in which each adapter POSTed
+   <code>/invoke</code> with <code>agent:"concierge"</code> and the eventing layer decided
+   chat-vs-arming. That made eventing the front door for ordinary chat, so chat inherited the
+   availability of a feature it does not use. Web previously called <code>concierge.run(&hellip;)</code>
+   in-process; it now goes through <code>/stream</code>, which applies the same rule.</p>
 <div class="wrap"><table>
   <tr><th>Channel</th><th>Inbound transport</th><th>Direction</th><th>Public URL?</th><th>Inbound API</th><th>Outbound API</th></tr>
   <tr><td class="k"><span class="pill web">web</span></td><td>HTTP request/response</td><td>&mdash;</td><td><span class="pill ok">no</span></td><td><code>/stream</code> · <code>/api/concierge</code></td><td>same HTTP response</td></tr>
@@ -42,26 +47,28 @@
    outside world to reach CUGA, hence a public route. On Code Engine the platform route <em>is</em> that URL,
    so even Slack is tunnel-free.</p>
 
-<h2 id="envelope">The shared envelope (what the three network channels POST)</h2>
-<p>Every channel handler builds this and POSTs it to the internal seam. The full schema and what happens
-   after it lands is in <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>; here is the channel's view.</p>
-<pre><span class="k">POST</span> http://127.0.0.1:7860/invoke        <span class="c"># header: X-Gateway-Token: &lt;GATEWAY_TOKEN&gt;</span>
+<h2 id="envelope">The shared call (what all four channels send)</h2>
+<p><b>Channels no longer POST <code>/invoke</code>.</b> Every adapter calls
+   <code>cuga_door.ask()</code>, which POSTs <b>CUGA's <code>/run</code></b> — CUGA is the door, and it
+   decides chat-vs-arming. <code>/invoke</code> is now only the <i>fire</i> seam (scheduler, webhooks);
+   see <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>.</p>
+<pre><span class="k">POST</span> http://127.0.0.1:7860/run        <span class="c"># CUGA — header: X-Gateway-Token: &lt;GATEWAY_TOKEN&gt;</span>
 {
-  <span class="k">"text"</span>:    <span class="s">"what's the price of bitcoin?"</span>,  <span class="c"># user message, mention stripped by the gate</span>
-  <span class="k">"agent"</span>:   <span class="s">"concierge"</span>,                    <span class="c"># channels always route to the concierge</span>
-  <span class="k">"deliver"</span>: <span class="v">false</span>,                          <span class="c"># the channel handler sends the reply itself</span>
-  <span class="k">"source"</span>: {
-    <span class="k">"type"</span>: <span class="s">"channel"</span>,
-    <span class="k">"name"</span>: <span class="s">"telegram"</span>,                       <span class="c"># telegram | discord | slack</span>
-    <span class="k">"thread_id"</span>: <span class="s">"gw:telegram:&lt;chat_id&gt;"</span>,     <span class="c"># gw:&lt;channel&gt;:&lt;native_id&gt; — keys per-conversation memory</span>
-    <span class="k">"user"</span>: <span class="s">"&lt;sender_id&gt;"</span>                      <span class="c"># the AUTHOR's native id → per-user identity/scope</span>
-  },
-  <span class="k">"event"</span>: { <span class="k">"kind"</span>: <span class="s">"message"</span>, <span class="k">"payload"</span>: { <span class="k">"telegram_user"</span>: <span class="s">"&lt;sender_id&gt;"</span> } }
+  <span class="k">"query"</span>:     <span class="s">"what's the price of bitcoin?"</span>,  <span class="c"># user message, mention stripped by the gate</span>
+  <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123#1712…"</span>,           <span class="c"># memory locus AND delivery address</span>
+  <span class="k">"channel"</span>: {                              <span class="c"># identity + delivery target ride together</span>
+    <span class="k">"name"</span>:      <span class="s">"slack"</span>,                    <span class="c"># slack | discord | telegram | web</span>
+    <span class="k">"native_id"</span>: <span class="s">"C123"</span>,                     <span class="c"># the DELIVERY address (channel/chat id)</span>
+    <span class="k">"user"</span>:      <span class="s">"U456"</span>,                     <span class="c"># the AUTHOR's native id → per-user identity/scope</span>
+    <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123#1712…"</span>
+  }
 }
-<span class="c">// response →</span> { <span class="k">"ok"</span>: <span class="v">true</span>, <span class="k">"agent"</span>: <span class="s">"cuga"</span>, <span class="k">"answer"</span>: <span class="s">"Bitcoin is trading at …"</span>, <span class="k">"trace_id"</span>: <span class="s">"…"</span> }</pre>
-<p class="dim">The only per-channel differences are <code>source.name</code>, the <code>thread_id</code> prefix,
-   and the one <code>event.payload</code> key (<code>telegram_user</code> / <code>discord_user</code> /
-   <code>slack_user</code>). Everything downstream is channel-agnostic.</p>
+<span class="c">// response →</span> { <span class="k">"ok"</span>: <span class="v">true</span>, <span class="k">"answer"</span>: <span class="s">"Bitcoin is trading at …"</span>, <span class="k">"thread_id"</span>: <span class="s">"…"</span> }
+<span class="c">//   plus "routed_to": "events" when CUGA forwarded it to the concierge instead of answering</span></pre>
+<p class="dim">The only per-channel differences are <code>channel.name</code>, the <code>thread_id</code>
+   prefix, and what <code>native_id</code> means natively (a Slack channel, a Telegram chat, a Discord
+   channel). Everything downstream is channel-agnostic. The <code>#&lt;locus&gt;</code> suffix keys
+   per-topic memory; <code>channel_native_id</code> strips it so delivery is unaffected by threading.</p>
 
 <h2 id="telegram">Telegram <span class="pill tg">direct · long-poll</span></h2>
 <p>CUGA runs an outbound <code>getUpdates</code> loop as a boot background task. No webhook, no public URL.</p>
@@ -76,9 +83,9 @@
     <div class="api">200 { ok, result: [ { update_id, message } ] }</div>
     <div class="desc">Filtered by <code>should_process</code> (has <code>text</code> + <code>chat.id</code>, sender not a bot) then <code>mention_gate</code> (private chat always passes; a group needs <code>@&lt;bot&gt;</code> under <code>EVENTS_TELEGRAM_CHAT=mention</code>).</div></div></div>
   <div class="step"><div class="num">3</div><div>
-    <div class="flow"><b>CUGA handler</b> <span class="arrow">──▶</span> <b>CUGA /invoke</b></div>
-    <div class="api">POST 127.0.0.1:7860/invoke · source.name="telegram", thread_id="gw:telegram:&lt;chat_id&gt;", user=&lt;sender_id&gt;</div>
-    <div class="desc">The shared envelope (&sect;the shared envelope). Concierge runs; returns <code>{answer}</code>.</div></div></div>
+    <div class="flow"><b>adapter</b> <span class="arrow">──▶</span> <b>CUGA /run (the door)</b></div>
+    <div class="api">cuga_door.ask() → POST 127.0.0.1:7860/run · channel.name="telegram", thread_id="gw:telegram:&lt;chat_id&gt;", user=&lt;sender_id&gt;</div>
+    <div class="desc">CUGA decides: plain chat → the supervisor answers; a slash verb (or an open arming dialogue) → forwarded to the eventing service. Returns <code>{answer}</code>.</div></div></div>
   <div class="step"><div class="num">4</div><div>
     <div class="flow"><b>CUGA</b> <span class="arrow">──▶</span> <b>Telegram</b></div>
     <div class="api">POST api.telegram.org/bot&lt;token&gt;/sendMessage { chat_id, text, reply_to_message_id }</div>
@@ -118,8 +125,8 @@
     <div class="api">op 0 t=MESSAGE_CREATE { d: { id, channel_id, guild_id, content, author:{id,bot}, mentions } }</div>
     <div class="desc">Filtered by <code>should_process</code> (content + channel, author not a bot) and <code>mention_gate</code> (DM = no <code>guild_id</code> passes; else <code>@bot</code> or a reply to the bot).</div></div></div>
   <div class="step"><div class="num">3</div><div>
-    <div class="flow"><b>CUGA handler</b> <span class="arrow">──▶</span> <b>CUGA /invoke</b></div>
-    <div class="api">POST 127.0.0.1:7860/invoke · source.name="discord", thread_id="gw:discord:&lt;channel_id&gt;", user=&lt;author_id&gt;</div>
+    <div class="flow"><b>adapter</b> <span class="arrow">──▶</span> <b>CUGA /run (the door)</b></div>
+    <div class="api">cuga_door.ask() → POST 127.0.0.1:7860/run · channel.name="discord", thread_id="gw:discord:&lt;channel_id&gt;", user=&lt;author_id&gt;</div>
     <div class="desc">Shared envelope; <code>event.payload.discord_user</code>.</div></div></div>
   <div class="step"><div class="num">4</div><div>
     <div class="flow"><b>CUGA</b> <span class="arrow">──▶</span> <b>Discord REST</b></div>
@@ -174,8 +181,8 @@
     <div class="api">200 {ok:true} — returned at once; <code>_slack_answer</code> runs in the background</div>
     <div class="desc">Slack's ACK deadline is ~3&thinsp;s, so CUGA acks first and posts the reply out-of-band. Slack never times out and retries.</div></div></div>
   <div class="step"><div class="num">3</div><div>
-    <div class="flow"><b>CUGA handler</b> <span class="arrow">──▶</span> <b>CUGA /invoke</b></div>
-    <div class="api">POST 127.0.0.1:7860/invoke · source.name="slack", thread_id="gw:slack:&lt;channel&gt;#&lt;thread_ts&gt;", user=&lt;U…&gt;</div>
+    <div class="flow"><b>adapter</b> <span class="arrow">──▶</span> <b>CUGA /run (the door)</b></div>
+    <div class="api">cuga_door.ask() → POST 127.0.0.1:7860/run · channel.name="slack", thread_id="gw:slack:&lt;channel&gt;#&lt;thread_ts&gt;", user=&lt;U…&gt;</div>
     <div class="desc">The <code>#&lt;thread_ts&gt;</code> suffix scopes memory per-thread; the bare channel is used for identity/delivery.</div></div></div>
   <div class="step"><div class="num">4</div><div>
     <div class="flow"><b>CUGA</b> <span class="arrow">──▶</span> <b>Slack Web API</b></div>
@@ -256,7 +263,7 @@
   <tr><th>&nbsp;</th><th class="k">web</th><th class="k">telegram</th><th class="k">discord</th><th class="k">slack</th></tr>
   <tr><td class="k">Backend flag (default)</td><td>&mdash;</td><td colspan="3">EVENTS_&lt;CHANNEL&gt;_BACKEND=<b>direct</b> (an <code>=ap</code> escape hatch exists; out of scope here)</td></tr>
   <tr><td class="k">Transport</td><td>HTTP</td><td>long-poll (out)</td><td>WebSocket (out)</td><td>webhook (in)</td></tr>
-  <tr><td class="k">Reaches the seam via</td><td>in-process <code>concierge.run</code></td><td>POST /invoke</td><td>POST /invoke</td><td>POST /invoke</td></tr>
+  <tr><td class="k">Reaches CUGA via</td><td colspan="4"><b><code>cuga_door.ask()</code> &rarr; POST <code>cuga-core/run</code></b> &mdash; identical for all four. The adapter makes NO routing decision; <code>/run</code> decides chat-vs-arming. (Channels used to POST <code>/invoke</code> with <code>agent=concierge</code>; that is gone.)</td></tr>
   <tr><td class="k">Inbound API</td><td>/api/concierge · /stream</td><td>getUpdates</td><td>Gateway MESSAGE_CREATE</td><td>/api/events/slack/events</td></tr>
   <tr><td class="k">Outbound API</td><td>HTTP response</td><td>sendMessage</td><td>REST /messages</td><td>chat.postMessage</td></tr>
   <tr><td class="k"><code>thread_id</code></td><td>web:local (or client)</td><td>gw:telegram:&lt;chat&gt;</td><td>gw:discord:&lt;channel&gt;</td><td>gw:slack:&lt;channel&gt;#&lt;ts&gt;</td></tr>

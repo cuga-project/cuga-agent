@@ -8,7 +8,7 @@
 # This is an ADDITIONAL, admin-only path. It never touches local dev (`make up*`),
 # never starts Activepieces, and creates exactly ONE Code Engine app.
 #
-# Override anything via env, e.g.:  CPU=1 MEMORY=4G ./2_deploy_app.sh
+# Override anything via env, e.g.:  CPU=1 MEMORY=4G ./2_deploy.sh
 # ============================================================
 
 # ---- Account / region / project (reused from the routing account) ----------
@@ -47,11 +47,18 @@ export EVENTS_SLACK_BACKEND="${EVENTS_SLACK_BACKEND:-direct}"
 # The registry inside the container points at the already-deployed remote MCP servers.
 export MCP_SERVERS_FILE_IN_IMAGE="${MCP_SERVERS_FILE_IN_IMAGE:-/app/src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml}"
 
-# Agent model: classic generalist (default, simplest) OR supervisor + a roster.
-#   Deploy classic first to prove the pipeline, then flip WITHOUT a rebuild:
-#     CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy_app.sh
-export CE_EVENTS_SUPERVISOR="${CE_EVENTS_SUPERVISOR:-}"      # "" = classic, "1" = supervisor
-export CE_ROSTER="${CE_ROSTER:-rosters/no_ap_research_desk.yaml}"
+# Agent model: the supervisor + its roster. DEFAULTS TO ON, deliberately.
+#
+# This used to default to "" (classic single generalist), and that default was a trap: a plain
+# ./2_deploy.sh produced a CUGA whose /run/agents reported ONE agent, so every fired flow ran as the
+# bare default agent with no sub-agents and no scoped tools. Nothing errors — the answers are just
+# quietly worse, and the only visible symptom is a preflight line reading "agent fleet seeded —
+# 1 agents". The events layer always targets the single agent "cuga" and lets the supervisor route
+# internally, so shipping without the roster is never what you want here.
+#
+# Set CE_EVENTS_SUPERVISOR=0 explicitly if you really want the classic generalist.
+export CE_EVENTS_SUPERVISOR="${CE_EVENTS_SUPERVISOR:-1}"     # "0" = classic, "1" = supervisor
+export CE_ROSTER="${CE_ROSTER:-supervisor_agents.yaml}"      # the 8-agent no-AP roster
 
 # ---- Secrets: pulled from a gitignored .env.ce into a CE secret -------------
 export SECRET_NAME="${SECRET_NAME:-cuga-events-secrets}"
@@ -87,4 +94,12 @@ function admin_guard() {
   echo "   app=$APP_NAME  scale=${MIN_SCALE}-${MAX_SCALE}  cpu=$CPU mem=$MEMORY"
   read -r -p "Proceed? [y/N] " ans
   [[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "Aborted."; exit 1; }
+}
+
+# Does a Code Engine secret define KEY? Used to decide whether the events DB is PostgreSQL (DSN
+# supplied via the secret, because it carries a password) or the SQLite+COS fallback. `secret get`
+# prints key NAMES but never values, so this leaks nothing.
+secret_has_key() {
+  local secret="$1" key="$2"
+  ibmcloud ce secret get --name "$secret" 2>/dev/null | grep -qE "^[[:space:]]*${key}([[:space:]]|:|$)"
 }

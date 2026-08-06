@@ -6,7 +6,7 @@ SSO deployments this store is bypassed (the OIDC ``sub`` is the user); here it l
 users and lets us e2e real two-user isolation.
 
 Passwords (optional) are PBKDF2-hashed (stdlib ``hashlib``). Roles gate agent access + admin.
-Stdlib ``sqlite3`` only → flat-loadable + offline-testable.
+SQLite or Postgres via ``db.connect`` → flat-loadable + offline-testable.
 """
 
 from __future__ import annotations
@@ -14,7 +14,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
 import time
 from dataclasses import dataclass, field
 
@@ -36,8 +39,7 @@ class User:
 
 class UserStore:
     def __init__(self, db_path: str = ":memory:"):
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = _db.connect(db_path)
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS app_user (
                  tenant TEXT NOT NULL,
@@ -67,7 +69,7 @@ class UserStore:
         self._db.commit()
         return User(user_id=user_id, email=email, roles=roles or ["user"], tenant=tenant)
 
-    def _row(self, r: sqlite3.Row) -> User:
+    def _row(self, r: _db.Row) -> User:
         return User(user_id=r["user_id"], email=r["email"], roles=json.loads(r["roles"]),
                     tenant=r["tenant"])
 

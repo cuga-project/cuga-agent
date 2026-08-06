@@ -62,9 +62,13 @@
 <body>
 <header class="top">
   <h1>CUGA Event-Driven Agents — API Reference</h1>
-  <div class="sub">Every HTTP endpoint the events layer exposes on CUGA's FastAPI server (behind
-    <code style="color:#9cf">EVENTS_ENABLED</code>): the <code style="color:#9cf">/invoke</code> seam, the concierge,
+  <div class="sub">Every HTTP endpoint the <b>eventing service</b> (<code style="color:#9cf">cuga-events-svc</code>, :8100)
+    exposes: the <code style="color:#9cf">/invoke</code> fire seam, the concierge,
     the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.
+    <br><b style="color:#fff">These are NOT on CUGA.</b> CUGA (:7860) exposes the door
+    (<code style="color:#9cf">POST /run</code>), <code style="color:#9cf">/stream</code> and
+    <code style="color:#9cf">GET /run/agents</code>; channel messages go there and CUGA forwards to
+    <code style="color:#9cf">/api/concierge</code> only for arming.
     <br><b style="color:#fff">The action half (trigger ▸ agent ▸ ACTION) added no new endpoints</b> — it rides
     <code style="color:#9cf">POST /api/concierge</code> at arm time; direct-trigger actions fire a reusable executor flow
     internally. So this reference stays complete.</div>

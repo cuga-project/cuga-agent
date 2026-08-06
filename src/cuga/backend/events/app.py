@@ -1040,6 +1040,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         except Exception:  # noqa: BLE001
             return []
 
+    def _durability():
+        """Whether armed flows survive the instance being replaced. See db_persist.py."""
+        try:
+            from . import db_persist
+            return db_persist.status(os.environ.get("EVENTS_DB", ":memory:"))
+        except Exception:  # noqa: BLE001 — diagnostics must never break /status
+            return {"durable": False, "reason": "unavailable"}
+
     @app.get("/api/events/status")
     async def events_status(request: Request):
         """What the events layer can do right now — the UI uses this to decide what to show."""
@@ -1059,7 +1067,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                              "channels_inbound": engine is not None},
                 # the same tiered capability report printed at startup — queryable, so the Studio
                 # (or a smoke test) can show exactly what's live vs what needs infra.
-                "capability": _capability_lines()}
+                "capability": _capability_lines(),
+                # Are armed flows durable? On an ephemeral filesystem the answer is NO, and that is
+                # invisible until the day an instance is replaced and every subscription is gone.
+                # Surfaced so a smoke test can assert it instead of discovering it in production.
+                "durability": _durability()}
 
     @app.get("/api/events/channels")
     async def events_channels(request: Request):

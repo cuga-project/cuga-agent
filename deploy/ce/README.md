@@ -1,10 +1,18 @@
 # Deploy CUGA (events, no Activepieces) to IBM Code Engine
 
-One self-contained Code Engine app running `cuga start demo --events` — the SAME
-command as `make up-noap`, minus the tunnel (**on CE the app's route _is_ the public
-URL**). Registry + agent + the events layer boot as children of one process; the
-registry connects out to the already-deployed `cuga-apps-mcp-*` tool servers. The
-only external dependencies are the **LLM** and those (public, keyless) MCP routes.
+**Two Code Engine apps, one image, one managed database:**
+
+| App | Is | Port |
+|---|---|---|
+| `cuga-core` | vanilla CUGA — **the door** (`/run`, `/stream`, `/run/agents`, the Studio UI) | 7860 |
+| `cuga-events-svc` | the eventing service — channel adapters, concierge, scheduler, `/invoke` | 8100 |
+| `cuga-events-pg` | **IBM Cloud Databases for PostgreSQL** — where armed flows live | — |
+
+On CE the app routes _are_ the public URLs, so there is no tunnel. The registry connects out to the
+already-deployed `cuga-apps-mcp-*` tool servers; the only external dependencies are the **LLM**,
+those (public, keyless) MCP routes, and the database.
+
+The old single-app "combined" mode (`cuga start demo --events`) is **gone** — there is one topology.
 
 Mirrors the routing team's CE conventions (same account/region/project/registry as
 VAKRA). Admin-gated; nothing runs without `CUGA_CE_ADMIN=1`.
@@ -25,13 +33,13 @@ targets are unchanged; these are the CE parallels — `[CE]` in `make help`.**
 | Target | Does |
 |---|---|
 | `make ce-build` | cloud buildrun → ICR (`1_build_push_image.sh`) |
-| `make ce-deploy` | deploy/redeploy (supervisor + 27-agent roster; `CE_ROSTER=…` to change) |
+| `make ce-deploy` | deploy/redeploy BOTH apps (supervisor + the 8-agent `supervisor_agents.yaml`; `CE_ROSTER=…` to change) |
 | `make ce-smoke` | capability report + channels + a web-chat turn (`3_smoke.py`) |
 | **`make test-e2e-ce`** | **the CE parallel of `make test-e2e`** — real channel + fire e2e against the deployed app |
 | `make ce-status` | deploy status + the live capability report |
 | `make ce-logs` | container logs — `FOLLOW=1` to stream · `GREP=telegram` to filter · `TAIL=n` |
 | `make ce-url` | print the deployed URL |
-| `make ce-teardown` | delete the app (keeps image + registry secret) |
+| `make ce-teardown` | delete both apps (keeps image, registry secret, **and the database**) |
 
 `test-e2e-ce` runs the **same harness** as `test-e2e`, only with `EVENTS_SERVER_URL`
 pointed at the CE route; channel creds + `GATEWAY_TOKEN` come from your `.env` (they
@@ -54,29 +62,73 @@ the native scheduler only run if the events-background launcher fires at boot �
 `make ce-logs GREP=launched` → `events: launched N background task(s)`. (That launcher was once
 dropped in a merge, silently breaking Telegram/Discord + cron/poll; it's restored in `server/main.py`.)
 
+## The events database (do this ONCE, before the first deploy)
+
+Armed flows live in PostgreSQL. **This is not optional infrastructure** — without it, Code Engine
+replacing the instance (a new revision, a node drain, a reschedule) silently deletes every armed
+flow, with *no restart recorded*. On 2026-08-05 a cron armed from Slack at 11:12 was gone when a new
+pod started at 11:24, and `ibmcloud ce app get` still read `Restarts: 0` throughout.
+
+```bash
+cd deploy/ce
+YES=1 ./4_postgres.sh          # provisions the DB + credentials, writes the DSN into the CE secret
+```
+
+It creates an IBM Cloud Databases for PostgreSQL instance (**billable**; 8 GB RAM is the enforced
+minimum), service credentials, and writes `EVENTS_DB` + `EVENTS_DB_CA_B64` into the existing
+`cuga-events-secrets` — with `secret update`, so your bot tokens and watsonx keys are preserved.
+`2_deploy.sh` then detects `EVENTS_DB` in the secret and wires it automatically.
+
+- **Same engine as local dev** (`make pg`), which is the point: local testing now exercises the
+  storage path that actually ships.
+- **TLS is `verify-full`** — the CA rides in the secret as `EVENTS_DB_CA_B64` and is written to a
+  0600 file at first connect. Do not "fix" a TLS error by dropping to `sslmode=require`; that keeps
+  encryption but stops verifying the peer.
+- **Cheaper fallback** if you don't want a managed DB: `./3_state_store.sh` keeps SQLite on local
+  disk and snapshots it to a COS-backed data store. Single-writer, whole-file snapshots — it works,
+  but it does not scale and local ≠ cloud again.
+- Teardown commands are printed at the end of the script.
+
 ## Sequence (the scripts underneath)
 ```bash
 cd deploy/ce
 ./make_env_ce.sh                        # .env.ce from ../../.env (gitignored, chmod 600)
+YES=1 ./4_postgres.sh                   # ONCE: the events database (see above)
 
-CUGA_CE_ADMIN=1 ./1_build_push_image.sh # cloud buildrun -> icr.io/.../cuga-events:latest  (~10-20 min)
-CUGA_CE_ADMIN=1 ./2_deploy_app.sh       # create the app; prints the route + Slack step
+CUGA_CE_ADMIN=1 ./1_build_push_image.sh # cloud buildrun -> icr.io/.../cuga-events:latest (~10-20 min)
+CUGA_CE_ADMIN=1 ./2_deploy.sh           # create BOTH apps; prints the routes + Slack step
 python 3_smoke.py                       # capability report + channels + a web-chat turn
 ```
-Redeploy after a code change: re-run steps 1 then 2. Change only env/roster (no
-rebuild): re-run step 2. Tear down: `CUGA_CE_ADMIN=1 ./teardown.sh`.
+Redeploy after a code change: re-run 1 then 2. Change only env/roster (no rebuild): re-run 2 alone.
+Tear down the apps: `CUGA_CE_ADMIN=1 ./teardown.sh` (leaves the database intact).
 
 ### The exact commands the live deploy used (copy-paste to reproduce)
 ```bash
 cd deploy/ce
 ./make_env_ce.sh                                    # .env.ce from ../../.env
+YES=1 ./4_postgres.sh                               # once — skips anything already there
 CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh       # ~10-20 min
-CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 \
-    CE_ROSTER=supervisor_agents.yaml ./2_deploy_app.sh
+CUGA_CE_ADMIN=1 YES=1 ./2_deploy.sh                 # supervisor roster is ON by default
 python 3_smoke.py
 ```
 `YES=1` skips the interactive "Proceed? [y/N]" confirm (for automation); drop it to
 be prompted. `CUGA_CE_ADMIN=1` is the required admin opt-in on every step.
+
+### `2_deploy.sh` checks two things that fail SILENTLY
+
+Both of these have shipped broken. Neither raises an error at runtime — they just make every answer
+quietly worse, so the script asserts them while you are still watching:
+
+```
+== post-deploy checks ==
+  ✓ roster: 9 agents on cuga-core
+  ✓ durability: PostgreSQL — an instance replace is a non-event
+```
+
+- **roster: 1 agent** → `CUGA_SUPERVISOR_ROSTER` never reached `cuga-core`, so every fired flow runs
+  the bare default agent with no sub-agents and no scoped tools. (`CE_EVENTS_SUPERVISOR` used to
+  default to off, which caused exactly this; it now defaults to **on**.)
+- **durability: false** → armed flows will be lost on the next instance replace. Run `./4_postgres.sh`.
 
 ## How environment variables get set (three sources)
 
@@ -86,10 +138,10 @@ The container's env comes from three places, applied in this order — **last wi
 |---|---|---|---|---|
 | 1 | **Dockerfile `ENV`** ([Dockerfile.events](Dockerfile.events)) | **build time** | rarely-changing non-secret defaults: `CUGA_HOST=0.0.0.0`, `DYNACONF_SERVER_PORTS__DEMO=7860`, `MCP_SERVERS_FILE`, `EVENTS_SCHEDULER=native`, the direct channel backends | edit the Dockerfile → rebuild (step 1) |
 | 2 | **CE secret** `cuga-events-secrets` via `--env-from-secret` | **deploy time** (from `.env.ce`) | credentials + config-from-.env: `AGENT_SETTING_CONFIG`, `WATSONX_*`, `LLM_*`, `GATEWAY_TOKEN`, the channel tokens | edit `.env` → `./make_env_ce.sh` → step 2 |
-| 3 | **Deploy-time `--env` literals** ([2_deploy_app.sh](2_deploy_app.sh)) | **deploy time** | per-deploy runtime knobs: `EVENTS_WORKER_BACKEND`, `EVENTS_SCHEDULER`, the backends, `MCP_SERVERS_FILE`, `EVENTS_SUPERVISOR`(+roster), `DEPLOY_REV`, and **`EVENTS_PUBLIC_URL`** (see below) | env vars on the `2_deploy_app.sh` command line, or edit the script |
+| 3 | **Deploy-time `--env` literals** ([2_deploy.sh](2_deploy.sh)) | **deploy time** | per-deploy runtime knobs: `EVENTS_WORKER_BACKEND`, `EVENTS_SCHEDULER`, the backends, `MCP_SERVERS_FILE`, `EVENTS_SUPERVISOR`(+roster), `DEPLOY_REV`, and **`EVENTS_PUBLIC_URL`** (see below) | env vars on the `2_deploy.sh` command line, or edit the script |
 
 Precedence: a deploy-time `--env` (source 3) **overrides** the same key baked into the
-image (source 1). That's why `2_deploy_app.sh` re-passes `EVENTS_SCHEDULER=native`,
+image (source 1). That's why `2_deploy.sh` re-passes `EVENTS_SCHEDULER=native`,
 the backends, and `MCP_SERVERS_FILE` even though the Dockerfile already bakes them —
 the deploy-time value is the source of truth, and the image `ENV` is just a sane
 default if someone runs the container by hand. **Secrets are injected as env at
@@ -100,7 +152,7 @@ never in git.
 
 **Your exact question:** the route only exists *after* the app is created, so how does
 `EVENTS_PUBLIC_URL` get set ahead of time? It doesn't — it's set in a **second pass in
-the same script run** ([2_deploy_app.sh](2_deploy_app.sh)):
+the same script run** ([2_deploy.sh](2_deploy.sh)):
 
 ```
 1. ce app create   …  (NO EVENTS_PUBLIC_URL)      → CE assigns the route
@@ -164,13 +216,13 @@ never changes):
 
 ```bash
 # classic single generalist (script default)
-CUGA_CE_ADMIN=1 ./2_deploy_app.sh
+CUGA_CE_ADMIN=1 ./2_deploy.sh
 
 # supervisor over the full 27-agent roster (what the live deploy uses)
-CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=supervisor_agents.yaml ./2_deploy_app.sh
+CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=supervisor_agents.yaml ./2_deploy.sh
 
 # supervisor over a focused, curated roster
-CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy_app.sh
+CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy.sh
 ```
 `CE_EVENTS_SUPERVISOR=1` sets `EVENTS_SUPERVISOR=1`; `CE_ROSTER` sets
 `EVENTS_SUPERVISOR_ROSTER`. Every roster (`supervisor_agents.yaml` + all of `rosters/`)
@@ -185,7 +237,7 @@ only light up their SaaS triggers once Activepieces is deployed.
 | `Dockerfile.events` | the image (`cuga start demo --events`) |
 | `make_env_ce.sh` | build the gitignored `.env.ce` from your local `.env` |
 | `1_build_push_image.sh` | cloud buildrun → ICR |
-| `2_deploy_app.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |
+| `2_deploy.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |
 | `3_smoke.py` | capability report + channels + a web-chat probe |
 | `teardown.sh` | delete the app (optionally the secret) |
 | `.env.ce.example` | placeholder template (real `.env.ce` is gitignored) |

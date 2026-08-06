@@ -27,7 +27,7 @@ def _url() -> str:
         for line in open(envf):
             if "CUGA_CE_URL" in line and "=" in line:
                 return line.split("=", 1)[1].strip().strip('"').rstrip("/")
-    sys.exit("No CUGA_CE_URL — run deploy/ce/2_deploy_app.sh first, or set CUGA_CE_URL.")
+    sys.exit("No CUGA_CE_URL — run deploy/ce/2_deploy.sh first, or set CUGA_CE_URL.")
 
 
 def _get(url: str, timeout: int = 30):

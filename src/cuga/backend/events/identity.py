@@ -8,13 +8,16 @@ Linking is initiated from the **authenticated profile** (so the binding is trust
 profile issues a short-lived **link token**; the user sends it to the bot (Telegram deep-link
 `?start=<token>`, Discord code); the inbound flow posts it to `/invoke`, which redeems it → binds.
 
-Stdlib ``sqlite3`` only → flat-loadable + offline-testable.
+SQLite or Postgres via ``db.connect`` → flat-loadable + offline-testable.
 """
 
 from __future__ import annotations
 
 import secrets
-import sqlite3
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
 import time
 
 _TOKEN_TTL = 15 * 60     # link tokens are valid 15 minutes
@@ -22,8 +25,7 @@ _TOKEN_TTL = 15 * 60     # link tokens are valid 15 minutes
 
 class IdentityMap:
     def __init__(self, db_path: str = ":memory:"):
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = _db.connect(db_path)
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS identity (
                  tenant TEXT NOT NULL, channel TEXT NOT NULL, native_id TEXT NOT NULL,

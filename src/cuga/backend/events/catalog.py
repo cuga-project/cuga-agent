@@ -159,8 +159,9 @@ EXAMPLES = [
         note="Box new_file → resume_judge → Gmail; wired, not live-verified"),
     _ex("push-github-pr", "GitHub PR reviewer", "push",
         "when a new PR opens on psf/requests, summarize it and flag risks",
-        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=True,
-        note="GitHub PUSH → pr_reviewer reads the real diff (recommended FIRST push test)"),
+        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False,
+        note="GitHub PUSH → pr_reviewer reads the real diff (the recommended FIRST push test once "
+             "Activepieces is on — GitHub triggers are AP-backed, so this cannot arm today)"),
     _ex("push-github-issue", "GitHub issue triage", "push",
         "when a new issue is filed, label it and post a summary to Slack",
         agent="—", channel="slack", integration="github", phase="run", live=False),
@@ -224,8 +225,9 @@ EXAMPLES = [
         note="AP CRON → github_trending (browses the web) → direct Slack delivery"),
     _ex("now-email-summary", "Summarize a new email", "push",
         "when a new email arrives in my inbox, summarize it and message me",
-        agent="mailbot", channel="telegram", integration="gmail", phase="run", live=True,
-        note="Gmail new-email PUSH → mailbot summarizes the payload (per-user OAuth)"),
+        agent="mailbot", channel="telegram", integration="gmail", phase="run", live=False,
+        note="Gmail new-email PUSH → mailbot summarizes the payload (per-user OAuth). "
+             "Gmail triggers are AP-backed — needs Activepieces on."),
     _ex("push-notion", "Notion task watcher", "push",
         "when a task is added to my Notion board, draft a plan and DM me",
         agent="—", channel="telegram", integration="notion", phase="sprint", live=False,
@@ -291,8 +293,9 @@ EXAMPLES = [
     # set: a standing flow for each integration plus a cron + poll, all through the one command.)
     _ex("automate-gmail", "⭐ Gmail — summarize new email", "push",
         "/automate summarize new emails and message me",
-        agent="mailbot", channel="web", integration="gmail", phase="run", live=True, star=True,
-        note="Gmail PUSH → mailbot summarizes each new email and delivers it to you"),
+        agent="mailbot", channel="web", integration="gmail", phase="run", live=False, star=True,
+        note="Gmail PUSH → mailbot summarizes each new email and delivers it to you. "
+             "AP-backed — needs Activepieces on; arming today returns CONNECT NEEDED."),
     _ex("automate-box", "⭐ Box — judge new resumes", "push",
         "/automate when a resume lands in Box, judge it and message me",
         agent="resume_judge", channel="web", integration="box", phase="run", live=False, star=True,
@@ -300,7 +303,7 @@ EXAMPLES = [
              "OAuth, no AP box connection. Set BOX_FOLDER_ID + a fresh BOX_DEV_TOKEN; fires resume_judge per new file"),
     _ex("automate-pr", "⭐ GitHub — watch a repo's PRs", "push",
         "/automate new pull requests on psf/requests and summarize them",
-        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=True, star=True,
+        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False, star=True,
         note="GitHub PUSH → pr_reviewer. Name the repo owner/repo. Connect GitHub via OAuth "
              "(scopes repo + admin:repo_hook) — a pasted PAT is not accepted by AP's github piece"),
     _ex("automate-brief", "⭐ Schedule — weekday market brief", "cron",

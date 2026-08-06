@@ -10,7 +10,18 @@
 
 <div class="kicker">CUGA · events · the roster</div>
 <h1>Agents &amp; examples per agent</h1>
-<p class="lede">The 27 specialists the <code>cuga</code> supervisor routes to, and ~10 things to try with each.
+<div class="note" style="border-left:4px solid #b5651d;padding:10px 14px;margin:14px 0">
+<b>Which roster is this?</b> This page documents the <b>full 27-agent example roster</b>
+(<code>rosters/supervisor_agents_full.yaml</code>). <b>What actually ships and deploys is the
+8-agent no-AP roster</b> in <code>supervisor_agents.yaml</code>: <code>pricebot</code> ·
+<code>weatherbot</code> · <code>geobot</code> · <code>wiki_dive</code> ·
+<code>webpage_summarizer</code> · <code>code_auditor</code> · <code>pr_reviewer</code> ·
+<code>incident_triage</code>. Ask the running server which one it loaded:
+<code>GET /run/agents</code> on cuga-core &mdash; the roster belongs to whoever executes.
+For what to type against the shipped 8, see
+<a href="../AUTOMATION_COOKBOOK.md">AUTOMATION_COOKBOOK.md</a>.</div>
+
+<p class="lede">The 27 specialists in the FULL example roster, and ~10 things to try with each.
    Every example below is <b>chattable with zero Activepieces</b> &mdash; you just say it in any channel and
    the supervisor picks the agent. Where an agent also has a <b>trigger</b>, it's marked no-AP or (needs AP).</p>
 

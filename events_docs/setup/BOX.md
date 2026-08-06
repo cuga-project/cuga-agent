@@ -52,7 +52,7 @@ run `GET /api/events/connect/box` (consent → AP holds the token), then the con
 5. **Poll it** — the watcher lists new files and fires `resume_judge` on each:
    ```bash
    GW=$(grep '^GATEWAY_TOKEN=' .env | cut -d= -f2- | sed 's/ *#.*//' | tr -d ' "')
-   curl -s -X POST localhost:7860/api/events/box/poll \
+   curl -s -X POST localhost:8100/api/events/box/poll \
         -H "content-type: application/json" -H "X-Gateway-Token: $GW" \
         -d '{"folder_id":"<FOLDER_ID>","since":null,"agent":"resume_judge","deliver_to":"slack"}'
    # → {"ok":true,"processed":[{"id":"9","name":"resume.pdf"}],"newest":"2026-07-06T11:00:00-07:00"}

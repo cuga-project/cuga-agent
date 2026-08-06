@@ -6,14 +6,17 @@ doesn't know about a user's agents, so an AP callback could hit a replica that c
 target agent. With a shared store (same sqlite file / Postgres), any replica rebuilds any
 (scope, agent) on demand. Keyed by ``scope`` (Principal.scope) for isolation.
 
-Stdlib ``sqlite3``. For the ``cuga`` backend, CUGA's own ``config_store`` is the equivalent
+SQLite or Postgres via ``db.connect``. For the ``cuga`` backend, CUGA's own ``config_store`` is the equivalent
 (agents as versioned configs) — this is the lightweight store for the ``react`` backend.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
 
 try:
     from .runtime import AgentSpec
@@ -24,8 +27,7 @@ except ImportError:  # flat load (offline tests put the events dir on sys.path)
 class AgentStore:
     def __init__(self, db_path: str = ":memory:"):
         # check_same_thread=False: shared by an async web server (handlers may run off-thread).
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = _db.connect(db_path)
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS agent (
                  scope TEXT NOT NULL,
@@ -40,7 +42,7 @@ class AgentStore:
                  PRIMARY KEY (scope, name)
                )""")
         # migrate: add columns older DBs predate
-        cols = {r[1] for r in self._db.execute("PRAGMA table_info(agent)").fetchall()}
+        cols = self._db.columns("agent")
         for col in ("integrations", "access"):
             if col not in cols:
                 self._db.execute(f"ALTER TABLE agent ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
@@ -60,7 +62,7 @@ class AgentStore:
              json.dumps(spec.integrations), json.dumps(spec.access)))
         self._db.commit()
 
-    def _row(self, r: sqlite3.Row) -> AgentSpec:
+    def _row(self, r: _db.Row) -> AgentSpec:
         k = r.keys()
         return AgentSpec(name=r["name"], prompt=r["prompt"] or "", backend=r["backend"],
                          mcp_servers=json.loads(r["mcp_servers"]),

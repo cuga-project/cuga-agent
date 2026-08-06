@@ -30,6 +30,11 @@ so the layer degrades gracefully.
 
 from __future__ import annotations
 
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
+
 import base64
 import hashlib
 import hmac
@@ -126,12 +131,11 @@ def _env(app: str, key: str) -> str:
 
 class OAuthAppStore:
     """Admin-entered OAuth app credentials (client id/secret per provider), so setup is UI-only.
-    NOTE: sqlite plaintext at rest (parity with .env). Production TODO: back with CUGA's Fernet
-    secrets. Stdlib sqlite → flat-loadable + offline-testable."""
+    NOTE: plaintext at rest (parity with .env). Production TODO: back with CUGA's Fernet
+    secrets. Runs on SQLite or Postgres via db.connect."""
 
     def __init__(self, db_path: str = ":memory:"):
-        import sqlite3
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
+        self._db = _db.connect(db_path)
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS oauth_app (
                  tenant TEXT NOT NULL, app TEXT NOT NULL,

@@ -760,6 +760,14 @@ ENDPOINTS = [
                   "Drives the agent-editor form, so the UI never hardcodes the catalog.")]),
 
     # ── inbound ───────────────────────────────────────────────────────────────
+    E("GET", "/api/events/slack/events", "inbound",
+      "Friendly probe for the Slack Request URL. Slack itself only ever POSTs here; this GET exists "
+      "purely so that pasting the URL into a browser returns a useful explanation instead of a bare "
+      "405, which reads as 'wrong host' and cost real debugging time. Returns the endpoint's health, "
+      "a copy-pasteable curl that exercises the real handshake, and a reminder that the Request URL "
+      "points at the EVENTING service (cuga-events-svc), never at CUGA (cuga-core).",
+      tier="edge", callers=["browser", "operator"], auth="none", try_it=False),
+
     E("POST", "/api/events/slack/events", "inbound",
       "Slack Events API receiver. This is CUGA, not Activepieces.",
       tier="edge", callers=["channel"], auth="slack", try_it=False,

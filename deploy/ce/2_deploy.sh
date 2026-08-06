@@ -17,9 +17,19 @@
 #   ./2_deploy.sh                 # deploy both
 #   CUGA_CE_ADMIN=1 YES=1 ./2_deploy.sh
 #
-# Known limits (same as combined): single instance each (the scheduler and channel loops are
-# process-wide singletons, so min=max=1), and the container filesystem is ephemeral — EVENTS_DB
-# survives a restart but not a revision replace.
+# Known limits: single instance each (the scheduler and channel loops are process-wide singletons,
+# so min=max=1).
+#
+# DURABLE STATE. The container filesystem is ephemeral, and it is worse than "survives a restart
+# but not a revision replace" — the platform can replace the instance at any time (node drain,
+# reschedule) with NO restart recorded, and the new pod starts with an empty disk. On 2026-08-05 a
+# cron armed from Slack at 11:12 was gone when a new pod started at 11:24.
+#
+# The fix: set EVENTS_STATE_STORE to a Code Engine persistent data store (see 3_state_store.sh,
+# which provisions one idempotently). This script then mounts it and points EVENTS_DB_BACKUP at it.
+# The live SQLite DB deliberately stays on LOCAL disk — CE data stores are COS-backed, and SQLite
+# on object storage corrupts — so the service snapshots to the mount instead (db_persist.py).
+# Leave EVENTS_STATE_STORE unset and you get the old ephemeral behaviour, with a loud warning.
 # ============================================================
 set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -104,13 +114,46 @@ ev_args=(
   --env "EVENTS_DISCORD_BACKEND=$EVENTS_DISCORD_BACKEND"
   --env "EVENTS_SLACK_BACKEND=$EVENTS_SLACK_BACKEND"
   --env "EVENTS_DISCORD_MEMBERS_INTENT=1"
-  --env "EVENTS_DB=/app/.cuga/events.db"
   --env "DEPLOY_REV=$DEPLOY_REV"
   # The Studio UI is served by cuga-core and calls this service cross-origin — allow it.
   --env "EVENTS_CORS_ORIGINS=$CORE_URL"
   --command "uv" --argument "run" --argument "python" --argument "-m"
   --argument "cuga.backend.events.service"
 )
+
+# ---- THE EVENTS DATABASE ----------------------------------------------------
+# PREFERRED: PostgreSQL, the same engine local dev runs (`make pg`). Durability is then a property
+# of the database — no mount, no snapshot loop, and a pod replace is a non-event. The DSN carries a
+# password, so it lives in the Code Engine SECRET ($SECRET_NAME), not in a literal --env. Provision
+# with ./4_postgres.sh, which creates the instance, reads the credentials and writes them there.
+#
+# FALLBACK: SQLite on the local disk plus COS snapshots (EVENTS_STATE_STORE). Kept because it needs
+# no paid database, but it is single-writer and the snapshot is whole-file, so it does not scale.
+STATE_MOUNT="${EVENTS_STATE_MOUNT:-/mnt/state}"
+if secret_has_key "$SECRET_NAME" EVENTS_DB; then
+  echo "== events DB: PostgreSQL (DSN from secret '$SECRET_NAME') — no mount, no snapshots =="
+  # EVENTS_DB arrives via --env-from-secret; setting a literal here would shadow it.
+elif [[ -n "${EVENTS_STATE_STORE:-}" ]]; then
+  ev_args+=( --env "EVENTS_DB=/app/.cuga/events.db" )
+  if ibmcloud ce pds get --name "$EVENTS_STATE_STORE" >/dev/null 2>&1; then
+    ev_args+=(
+      --mount-data-store "${STATE_MOUNT}=${EVENTS_STATE_STORE}"
+      --env "EVENTS_DB_BACKUP=${STATE_MOUNT}/events.db"
+    )
+    echo "== durable state: ON — snapshots to ${STATE_MOUNT}/events.db (store '$EVENTS_STATE_STORE') =="
+  else
+    echo "!! EVENTS_STATE_STORE='$EVENTS_STATE_STORE' does not exist in this project."
+    echo "!! Create it with ./3_state_store.sh, or unset it to deploy without durable state."
+    exit 1
+  fi
+else
+  ev_args+=( --env "EVENTS_DB=/app/.cuga/events.db" )
+  echo "!! WARNING: no events database configured — armed flows will be LOST when Code Engine"
+  echo "!!          replaces the instance (which happens with NO restart recorded)."
+  echo "!!          Preferred fix:  ./4_postgres.sh          (managed PostgreSQL, same as local)"
+  echo "!!          Cheap fallback: ./3_state_store.sh && EVENTS_STATE_STORE=cuga-events-state ./2_deploy.sh"
+fi
+
 # NB: no EVENTS_SUPERVISOR here — see the note on core_args. The roster belongs to cuga-core.
 if ibmcloud ce app get -n "$EVENTS_APP" >/dev/null 2>&1; then
   echo "Deleting existing app '$EVENTS_APP' for a clean redeploy ..."
@@ -135,6 +178,36 @@ ibmcloud ce app update --name "$CORE_APP" --env "EVENTS_API_URL=$EVENTS_URL" >/d
   echo "export CUGA_CE_CORE_URL=\"$CORE_URL\""
   echo "export CUGA_CE_URL=\"$EVENTS_URL\""      # the events front door — what the harness targets
 } > "${SCRIPT_DIR}/.ce_urls.env"
+
+# ---- POST-DEPLOY ASSERTIONS -------------------------------------------------
+# Both of these have shipped broken before, and neither raises an error at runtime — they just make
+# every answer quietly worse. Check them here, while the operator is still watching.
+echo
+echo "== post-deploy checks =="
+_gw=$(grep -E '^GATEWAY_TOKEN=' "${SCRIPT_DIR}/.env.ce" 2>/dev/null | cut -d= -f2- | cut -d' ' -f1)
+
+# 1. The roster. /run/agents is the authority (the roster belongs to whoever EXECUTES). One agent
+#    means CUGA_SUPERVISOR_ROSTER never reached cuga-core and every fire runs the bare default.
+_n=$(curl -s -m 90 -H "X-Gateway-Token: ${_gw}" "$CORE_URL/run/agents" 2>/dev/null \
+     | python3 -c 'import sys,json;print(len((json.load(sys.stdin) or {}).get("agents",[])))' 2>/dev/null || echo 0)
+if [[ "${_n:-0}" -gt 1 ]]; then
+  echo "  ✓ roster: $_n agents on cuga-core"
+else
+  echo "  ✗ roster: $_n agent(s) — the supervisor roster did NOT load."
+  echo "    Every fired flow will run as the bare default agent with no sub-agents or scoped tools."
+  echo "    Fix: CE_EVENTS_SUPERVISOR=1 CE_ROSTER=supervisor_agents.yaml ./2_deploy.sh"
+fi
+
+# 2. Durability. "durable: false" means an instance replace silently deletes every armed flow.
+_d=$(curl -s -m 60 -H "X-Gateway-Token: ${_gw}" "$EVENTS_URL/api/events/status" 2>/dev/null \
+     | python3 -c 'import sys,json;d=(json.load(sys.stdin) or {}).get("durability",{});print(f"{d.get(\"durable\")}|{d.get(\"backend\",\"?\")}")' 2>/dev/null || echo "?|?")
+case "$_d" in
+  True\|postgres) echo "  ✓ durability: PostgreSQL — an instance replace is a non-event" ;;
+  True\|sqlite)   echo "  ✓ durability: SQLite + snapshots (consider ./4_postgres.sh)" ;;
+  *)              echo "  ✗ durability: $_d — ARMED FLOWS WILL BE LOST on an instance replace."
+                  echo "    Fix: ./4_postgres.sh   (or ./3_state_store.sh for the COS fallback)" ;;
+esac
+unset _gw _n _d
 
 cat <<EOF
 

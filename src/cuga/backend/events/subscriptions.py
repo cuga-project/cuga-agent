@@ -4,14 +4,17 @@ Agents live in CUGA's ``agent_configs``; connections/triggers/runs live in Activ
 All we keep is a small index of the AP flows the concierge built, so the UI and the
 concierge's reuse logic can list/inspect them without hitting AP every time.
 
-stdlib ``sqlite3`` + JSON columns, mirroring CUGA's storage conventions
+SQLite **or** Postgres via ``db.connect`` (see db.py) + JSON columns, mirroring CUGA's conventions
 (upsert-by-PK, migrate-on-open). Dependency-free → unit-testable in isolation.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
 import time
 from dataclasses import dataclass, field, asdict
 
@@ -62,14 +65,14 @@ class Subscription:
 
 
 class SubscriptionStore:
-    """SQLite-backed index. Pass ``":memory:"`` for tests."""
+    """The subscription index. ``db_path`` is a SQLite path or a ``postgresql://`` URL
+    (see db.py); ``":memory:"`` for tests."""
 
     def __init__(self, db_path: str = ":memory:"):
         # check_same_thread=False: the store is shared by an async web server whose handlers may
         # run on a threadpool (and TestClient does). Ops here are short + low-concurrency (a thin
         # index), so a single shared connection is fine.
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = _db.connect(db_path)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -91,7 +94,7 @@ class SubscriptionStore:
                  dedup_key TEXT NOT NULL DEFAULT '',
                  flow_name TEXT NOT NULL DEFAULT ''
                )""")
-        cols = {r[1] for r in self._db.execute("PRAGMA table_info(subscription)").fetchall()}
+        cols = self._db.columns("subscription")
         if "dedup_key" not in cols:
             self._db.execute("ALTER TABLE subscription ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''")
         if "flow_name" not in cols:
@@ -151,7 +154,7 @@ class SubscriptionStore:
             self._db.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_dedup
                      ON subscription(dedup_key) WHERE dedup_key != '' AND status != 'deleted'""")
-        except sqlite3.OperationalError as e:                    # legacy dupes present
+        except _db.OperationalError as e:                    # legacy dupes present
             import logging
             logging.getLogger("events.subscriptions").warning(
                 "could not create the dedup unique index (%s) — legacy duplicate rows exist; "
@@ -185,7 +188,7 @@ class SubscriptionStore:
                  sub.flow_name, sub.event, json.dumps(sub.config or {}),
                  sub.interval_seconds, sub.cron_expr, sub.next_fire, sub.last_fire,
                  sub.fire_count, sub.expires_at))
-        except sqlite3.IntegrityError as e:
+        except _db.IntegrityError as e:
             if "uq_subscription_dedup" in str(e) or "dedup" in str(e):
                 raise DuplicateSubscription(sub.dedup_key) from e
             raise
@@ -224,7 +227,7 @@ class SubscriptionStore:
         self._db.commit()
 
     # ---- reads -----------------------------------------------------------
-    def _row(self, r: sqlite3.Row) -> Subscription:
+    def _row(self, r: _db.Row) -> Subscription:
         d = dict(r)
         d["deliver_to"] = json.loads(d.get("deliver_to") or "[]")
         d["config"] = json.loads(d.get("config") or "{}")

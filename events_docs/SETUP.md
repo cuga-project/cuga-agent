@@ -77,11 +77,16 @@ restart. Without it you get an ephemeral cloudflared tunnel that changes each ru
 - **LLM:** `WATSONX_APIKEY` / `WATSONX_URL` / `WATSONX_PROJECT_ID` (or `OPENAI_API_KEY`) + `LLM_PROVIDER`/`LLM_MODEL`.
 - **AP:** `AP_BASE_URL`, `AP_EMAIL` + `AP_PASSWORD` (**you invent** these; the admin created on AP's
   first boot and your AP-UI login), `EVENTS_AP_PROJECT_GRAIN=shared`.
-- **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SUPERVISOR=1` (the agent
+- **Events:** `CUGA_URL` (where the eventing service finds CUGA) and `EVENTS_API_URL` (where CUGA
+  finds the eventing service — unset it and CUGA runs standalone), `EVENTS_WORKER_BACKEND=http`,
+  `EVENTS_SUPERVISOR=1` (the agent
   model — one `cuga` supervising `supervisor_agents.yaml`; see below), `EVENTS_SEED_AGENTS=1` (seeds
   the demo **users** for identity/permissions — despite the name, the agent fleet it once seeded is
-  retired), `EVENTS_DB=<abs path>.db`, `GATEWAY_TOKEN`,
-  `HOST_CALLBACK_URL=http://host.containers.internal:7860/invoke` (podman host alias).
+  retired), `EVENTS_DB` (**a `postgresql://` URL** — local dev runs the same engine as the deploy;
+  `make pg` starts one. A filesystem path selects SQLite, for the offline suite and a
+  zero-infra quickstart only), `GATEWAY_TOKEN`,
+  `HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke` (podman host alias — `/invoke`
+  lives on the **eventing** service, not on CUGA).
 - **Public URL:** `EVENTS_NGROK_DOMAIN` (recommended, above).
 - **Channels:** `TELEGRAM_BOT_TOKEN` (+ `EVENTS_TELEGRAM_BOT_USERNAME`), `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`.
 - **Mention gates:** `EVENTS_SLACK_CHAT=mention` / `EVENTS_DISCORD_CHAT=mention` — only @bot
@@ -98,12 +103,11 @@ Two AP gotchas that bite hard:
 
 ## Bring it up
 
-The one server command is **`cuga start demo --events`** — same style as `cuga start demo`. `make up`
-is just the wrapper that provisions the infra that command needs (Activepieces + tunnels) and then runs
-it (see [Starting the server](#starting-the-server--one-entry-point)).
+There are **two services**: CUGA on `:7860` and the eventing service on `:8100`. `make up` brings up
+both, plus the Activepieces infra (see [Starting the servers](#starting-the-servers--two-processes)).
 
 ```bash
-make up                 # provisions AP (container + tunnel) + registry, then runs `cuga start demo --events`. AP before CUGA.
+make up                 # AP (container + tunnel) + registry, then BOTH services. AP before CUGA.
 make channels           # arm inbound channels for every bot token in .env (idempotent)
 make public-url         # prints the public URL + the exact strings to paste into Slack/Gmail consoles
 ```
@@ -159,22 +163,30 @@ public URL, so even Slack/OAuth work by pointing at the app's route. Two caveats
 channels: don't scale to zero, and run the poller/Gateway as a single instance (they're persistent
 loops; N replicas double-process). Details in the reference doc's cloud section.
 
-## Starting the server — one entry point
+## Starting the servers — two processes
 
-There is ONE command; `make up` is just the infra-provisioning wrapper around it:
+The `--events` flag is **gone**, along with the "combined" mode that mounted the events layer onto
+CUGA's FastAPI app. There are two services now, and `make` brings up both:
 
 ```bash
-cuga start demo --events          # THE server with the event-driven layer on (bare — no AP/tunnels)
-make up                           # provisions Activepieces + MCP registry + tunnels, then runs the
-                                  #   SAME `cuga start … --events` server (the full dev stack)
+make up-noap        # BOTH services, no Activepieces, no tunnel  (the usual dev loop)
+make up             # BOTH services + Activepieces + tunnels     (the full stack)
+
+# or drive them individually:
+cuga start demo     # just CUGA on :7860 — vanilla, no events code, no bot tokens
+make run-events     # just the eventing service on :8100 (needs CUGA up; override CUGA_URL=…)
 ```
 
-`--events` sets `EVENTS_ENABLED=1` and mounts channels, webhooks, standing flows, the concierge and
-the Studio events tabs onto the normal CUGA server. **One port everywhere: CUGA's native 7860** —
-with or without `--events`, and all events infra (tunnels, channels, AP callbacks, tests) targets
-it. Override with `EVENTS_CUGA_PORT` if 7860 is taken. At startup it prints a **capability report** —
-also at `GET /api/events/status` (`capability` field) — telling you exactly what's live and what
-still needs infra, each with its one-line fix:
+**Ports:** CUGA `:7860` (override `CUGA_PORT`), eventing `:8100` (override `EVENTS_PORT`). The
+eventing service finds CUGA via `CUGA_URL`; CUGA finds the eventing service via `EVENTS_API_URL` —
+and if that is unset, CUGA is exactly upstream CUGA and a slash verb is just text.
+
+**Slack's Request URL points at the EVENTING service (`:8100`), never at CUGA.** "CUGA is the door"
+describes where the *decision* happens, one hop later; the receiver did not move.
+
+At startup the eventing service prints a **capability report** — also at `GET /api/events/status`
+(`capability` field) — telling you exactly what's live and what still needs infra, each with its
+one-line fix:
 
 ```
 events layer ENABLED — capability report:
@@ -185,13 +197,14 @@ events layer ENABLED — capability report:
   ✗ no EVENTS_PUBLIC_URL → Slack events, OAuth callbacks unreachable (`make tunnels`, then `make channels`)  [Telegram chat still works — it's direct/outbound]
 ```
 
-The tiers are real: `--events` **alone** gives web chat, webhooks, direct watchers, Telegram/Discord
-chat, **and cron/poll (native scheduler)** with zero extra infrastructure. Only the AP-backed
-integration push triggers (Gmail/GitHub/Box) need Activepieces; Slack events / OAuth callbacks need a
-public URL. `make up` provisions both.
+The tiers are real: the eventing service **alone** gives web chat, webhooks, direct watchers,
+Telegram/Discord chat, **and cron/poll (native scheduler)** with zero extra infrastructure. Only the
+AP-backed integration push triggers (Gmail/GitHub/Box) need Activepieces; Slack events / OAuth
+callbacks need a public URL. `make up` provisions both.
 
-> **`make` commands are for INFRA and TESTS only** — `ap`, `tunnels`, `channels`, `test-*`,
-> `doctor`, `report`. Server startup is the CLI. There is no second server entry point to maintain.
+> **`make up` / `make up-noap` are the supported way to boot both services.** `cuga start demo` and
+> `make run-events` exist for driving one at a time. Everything else in the Makefile is infra and
+> tests — `ap`, `tunnels`, `channels`, `test-*`, `doctor`, `report`.
 
 ## The agent model (one switch)
 
@@ -212,8 +225,11 @@ platform assumes nothing about it. Point `EVENTS_SUPERVISOR_ROSTER` at *your* ro
 CUGA-main supervisor schema) and the same event-driven layer serves *your* agents:
 
 ```bash
-EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=rosters/ap_devops.yaml  cuga start demo --events
+EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=rosters/ap_devops.yaml  cuga start demo
 ```
+
+The roster is loaded by **CUGA**, not by the eventing service — the roster belongs to whoever
+executes. CUGA publishes it at `GET /run/agents`, and the eventing service reads it from there.
 
 Nothing in the channels, triggers, flows, or NL→Flow compiler is tied to the demo agents — they
 route to whatever your roster's HANDLES lines declare.
@@ -297,7 +313,7 @@ make test          # 4. the full offline suite (no stack or creds needed — mus
    **not** a pasted PAT.
 
    Verify all connected: **Studio → Integrations** (green), or
-   `curl -s localhost:7860/api/events/integrations` → gmail · github · box · google_calendar ·
+   `curl -s localhost:8100/api/events/integrations` → gmail · github · box · google_calendar ·
    pinterest = `connected`, youtube · rss = `ready`. *(CLI alternative to the buttons: open
    `https://<domain>/api/events/connect/<app>` directly — but the Studio is the intended path.)*
 

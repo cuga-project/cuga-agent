@@ -77,7 +77,7 @@ while not stopped:
 <span class="c">// A non-message fire is labelled "⚡ flow fired · cron tick · &lt;flow_name&gt;" and logged to the Runs table.</span></pre>
 
 <h2 id="store">State &mdash; the <code>subscription</code> table</h2>
-<p>Everything is one SQLite file (<code>events.db</code>). The native scheduler reads and writes these
+<p>All of this lives in <b>one database</b> &mdash; PostgreSQL in every real deployment and in local dev (<code>make pg</code>); SQLite only for the hermetic offline suite. The native scheduler reads and writes these
    columns; the AP columns (<code>ap_flow_id</code>) stay empty on the no-AP path.</p>
 <div class="wrap"><table>
   <tr><th>Column</th><th>Meaning</th></tr>

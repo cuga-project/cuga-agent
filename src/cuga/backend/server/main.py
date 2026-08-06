@@ -2552,7 +2552,12 @@ async def _get_supervisor():
     from cuga.sdk import CugaSupervisor
     from cuga.supervisor_utils.supervisor_config import load_supervisor_config
 
-    cfg = await load_supervisor_config(path)
+    # auto_load_policies=False: everything this supervisor runs is HEADLESS — a scheduled tick, a
+    # webhook, a channel message. Nobody is present to answer an approval interrupt, and one would
+    # hang the run until the caller times out. Asked for HERE rather than defaulted inside
+    # load_supervisor_config, so CugaSupervisor.from_yaml and every other caller keep the upstream
+    # behaviour of honouring settings.policy.auto_load_policies. A roster entry can opt back in.
+    cfg = await load_supervisor_config(path, auto_load_policies=False)
     sup = CugaSupervisor(
         agents=cfg.agents,
         special_instructions=(cfg.supervisor or {}).get("special_instructions"),

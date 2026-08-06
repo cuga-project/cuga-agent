@@ -40,6 +40,30 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
+## ---- the events database --------------------------------------------------
+# Local dev and Code Engine run the SAME engine (PostgreSQL) so local testing actually exercises
+# the deployed storage path. SQLite remains supported (EVENTS_DB=<path>) for the hermetic offline
+# suite and a zero-infrastructure quickstart, but it is NOT what we deploy.
+PG_CONTAINER ?= cuga-events-pg
+PG_PORT      ?= 5433
+PG_DSN       ?= postgresql://cuga:cuga_dev_pw@localhost:$(PG_PORT)/cuga_events
+
+pg: ## Start the local events PostgreSQL (matches the deployed engine)
+	@scripts/events_pg.sh up
+
+pg-stop: ## Stop the local events PostgreSQL (data is kept in the container volume)
+	@scripts/events_pg.sh stop
+
+pg-psql: ## Open a psql shell on the local events database
+	@podman exec -it $(PG_CONTAINER) psql -U cuga -d cuga_events
+
+pg-reset: ## DESTROY and recreate the local events database (drops every armed flow)
+	@scripts/events_pg.sh reset
+
+test-pg: ## Run the store tests against the REAL PostgreSQL (proves the deployed SQL path)
+	@scripts/events_pg.sh up >/dev/null
+	EVENTS_TEST_PG_DSN=$(PG_DSN) $(PY) -m pytest tests/events/test_db_postgres.py -q
+
 ## ---- start / stop ---------------------------------------------------------
 ap: ## Start Activepieces (app + postgres + redis + tunnel)
 	scripts/ap_up.sh

@@ -1,7 +1,19 @@
 # CUGA Eventing Split + Human-in-the-Loop Arming — Spec & Plan
 
-**Status:** IMPLEMENTED (2026-08-04) — see §13 for what shipped vs what did not.
+**Status:** IMPLEMENTED (2026-08-04), then **superseded in part** (2026-08-05) — see §20–§22.3.
 **Scope:** the service split (S1) + **arm-time** human-in-the-loop. Fire-time robustness is **explicitly descoped** (we rely on the agent at fire time) and documented as a known gap (§8).
+
+> ### ⚠ How to read this document
+> **§1–§19 are the ORIGINAL PLAN**, written before implementation. Two of its decisions were
+> reversed during the build, so those sections are a **historical record, not the current design**:
+>
+> | The plan said (§1–§19) | What actually shipped |
+> |---|---|
+> | Keep **combined mode** for local dev (§1, §9.1, §11, §12, §14.2) | **Combined mode was removed entirely**, along with `SupervisorRuntime`, `ClassicRuntime` and `_cuga_bridge`. There is one topology. |
+> | The **eventing service is the front door** for channels; adapters POST `/invoke` with `agent=concierge` | **CUGA is the door.** Every channel message goes to CUGA's `POST /run`, which decides chat-vs-arming. `/invoke` is now only the *fire* seam. |
+>
+> **§20 onward is the current design of record.** For the architecture as built, read
+> [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 

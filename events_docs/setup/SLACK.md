@@ -43,7 +43,7 @@ Slack channel message ─▶ Slack Events API ─▶ POST /api/events/slack/even
 
 5. **Get the events URL** — arm returns the exact URL to paste (nothing is created in AP):
    ```bash
-   curl -s -X POST localhost:7860/api/events/admin/channels/slack/arm \
+   curl -s -X POST localhost:8100/api/events/admin/channels/slack/arm \
         -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
    # → {"ok":true,"backend":"direct","events_url":"https://<tunnel>/api/events/slack/events", …}
    ```
@@ -123,7 +123,7 @@ EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_slack
 
 To simulate a message without Slack (when the signing secret is unset):
 ```bash
-curl -s -X POST localhost:7860/api/events/slack/events -H "content-type: application/json" \
+curl -s -X POST localhost:8100/api/events/slack/events -H "content-type: application/json" \
   -d '{"type":"event_callback","event":{"type":"message","text":"what is the capital of Japan?","channel":"<CHANNEL_ID>","user":"U1"}}'
 ```
 

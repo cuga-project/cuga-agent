@@ -22,13 +22,21 @@ class SupervisorConfig(BaseModel):
     a2a: Dict[str, Any] = {}
 
 
-async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+async def load_supervisor_config(
+    yaml_path: str, *, auto_load_policies: Optional[bool] = None
+) -> SupervisorConfig:
     """
     Load and parse supervisor YAML configuration.
     Creates internal CugaAgent instances from YAML config.
 
     Args:
         yaml_path: Path to YAML configuration file
+        auto_load_policies: Default for sub-agents that do not set it themselves.
+            ``None`` (the default) preserves existing behaviour — each CugaAgent falls back to
+            ``settings.policy.auto_load_policies``. Pass ``False`` for HEADLESS callers (scheduled
+            flows, webhooks, channel events): nobody is present to answer an approval interrupt, so
+            one would hang the run until the caller times out. A per-agent ``auto_load_policies:``
+            key in the YAML always wins over this.
 
     Returns:
         SupervisorConfig with loaded configuration
@@ -109,16 +117,21 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             # Get model config if specified
             model = _get_model_from_config(agent_config.get("model"))
 
-            # Create agent. Supervisor delegates run HEADLESS (flows, webhooks, channel events) —
-            # nobody is present to click an approval, so interactive policy auto-load defaults OFF
-            # (an approval interrupt in a headless run hangs it until the caller times out).
-            # A YAML entry can opt back in with `auto_load_policies: true`.
+            # Policy auto-load. Precedence: the YAML entry wins; otherwise the caller's default;
+            # otherwise None, which lets CugaAgent fall back to `settings.policy.auto_load_policies`
+            # exactly as it always has.
+            #
+            # This defaulted to False for a while, which was a silent regression for everyone else:
+            # `load_supervisor_config` is public API (CugaSupervisor.from_yaml, documented in the
+            # README, plus cuga_graph/graph.py), so hardcoding False disabled policy loading for
+            # every downstream supervisor user regardless of their settings — with no error to
+            # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
-                auto_load_policies=agent_config.get("auto_load_policies", False),
+                auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
             )
 
             agents[agent_name] = agent

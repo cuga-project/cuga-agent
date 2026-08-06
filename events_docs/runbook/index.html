@@ -25,10 +25,12 @@
 </div>
 
 <h2 id="oneline">The whole thing in one line</h2>
-<p>Every trigger &mdash; a chat message, a scheduler tick, an inbound webhook &mdash; is normalized into
-   <b>one envelope</b> and POSTed to <b>one internal seam</b>, <code>POST /invoke</code>. The seam runs
-   either the <b>concierge</b> (the router) or a concrete agent, then delivers the answer back to wherever
-   the trigger came from. Adding a channel or a trigger never touches the agent, delivery, or the Studio &mdash;
+<p><b>Humans enter at <code>/run</code>; time and external systems enter at <code>/invoke</code>.</b>
+   A chat message from any channel goes to CUGA's <code>POST /run</code>, which applies the one rule and
+   involves the eventing layer only for a slash verb or an open arming dialogue. A scheduler tick, an
+   inbound webhook or a matched watcher is normalized into <b>one envelope</b> and POSTed to
+   <code>POST /invoke</code>, which executes it by calling <code>/run</code> and delivers the answer back
+   to wherever the trigger came from. (Chat used to go through <code>/invoke</code> too; it no longer does.) Adding a channel or a trigger never touches the agent, delivery, or the Studio &mdash;
    they all sit behind that contract.</p>
 <pre><span class="c"># the universal lifecycle — identical for chat, cron, poll, webhook</span>
 trigger  ─▶  <span class="k">normalize to Envelope</span>  ─▶  <span class="k">POST /invoke</span>  (X-Gateway-Token)
@@ -40,9 +42,13 @@ trigger  ─▶  <span class="k">normalize to Envelope</span>  ─▶  <span cla
              ─▶  metadata footer · poll-delta gate · <span class="s">deliver</span> back over the origin transport</pre>
 
 <h2 id="planes">The moving parts</h2>
-<p>One FastAPI process (the same CUGA server, with <code>EVENTS_ENABLED=1</code>). The events layer mounts
-   its whole surface onto it via <code>register_events_routes(app, …)</code>; when the flag is off, none of
-   this exists and CUGA is unchanged.</p>
+<p><b>Two FastAPI services.</b> <code>cuga-core</code> (:7860) is vanilla CUGA and owns
+   <b>the door</b>, <code>POST /run</code> &mdash; every channel message lands there and CUGA decides
+   chat-vs-arming. <code>cuga-events-svc</code> (:8100) owns the channel adapters, the concierge, the
+   scheduler and <code>/invoke</code>. The old &ldquo;combined&rdquo; mode (events mounted onto CUGA&rsquo;s app
+   via <code>register_events_routes</code>, behind <code>EVENTS_ENABLED</code>) has been
+   <b>removed entirely</b> &mdash; there is one topology. Don&rsquo;t deploy the events service, or unset
+   <code>EVENTS_API_URL</code>, and CUGA is unchanged. See <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
 <div class="wrap"><table>
   <tr><th>Plane</th><th>What it is</th><th>Key pieces</th><th>Doc</th></tr>
   <tr><td class="k">Channels</td><td>how a human message reaches CUGA and how the reply gets back</td>
@@ -55,13 +61,13 @@ trigger  ─▶  <span class="k">normalize to Envelope</span>  ─▶  <span cla
       <td><b>concierge</b> (slash · heuristic NOW fast-path · <b>LLM react-agent</b> with tools <code>answer_now</code>/<code>find_or_create_flow</code>)</td>
       <td><a href="nl-to-flow.html">NL&rarr;Flow</a></td></tr>
   <tr><td class="k">Execution</td><td>the real agent that answers</td>
-      <td>one addressable agent <b><code>cuga</code></b> (a supervisor over a YAML roster) &rarr; <code>DynamicAgentGraph</code> &rarr; remote MCP tool servers</td>
+      <td>one addressable agent <b><code>cuga</code></b> — a supervisor over <b>8 sub-agents</b> (<code>supervisor_agents.yaml</code>) &rarr; <code>DynamicAgentGraph</code> &rarr; remote MCP tool servers. The roster lives on <b>cuga-core</b>, which executes; the events side reads it from <code>GET /run/agents</code>.</td>
       <td><a href="invoke-and-concierge.html#brain">/invoke &sect;brain</a></td></tr>
   <tr><td class="k">Scheduling</td><td>recurring triggers with no external scheduler</td>
-      <td><b>native scheduler</b> — an in-process 10&thinsp;s loop over a SQLite <code>next_fire</code> column; cron + poll; <b>poll-state</b> delta gate</td>
+      <td><b>native scheduler</b> — an in-process 10&thinsp;s loop over the <code>next_fire</code> column; cron + poll; <b>poll-state</b> delta gate</td>
       <td><a href="scheduler-and-polling.html">Scheduler</a></td></tr>
-  <tr><td class="k">State</td><td>everything is one SQLite file</td>
-      <td><code>events.db</code>: <code>subscription</code> · <code>watch_state</code> · runs · identity map</td>
+  <tr><td class="k">State</td><td><b>PostgreSQL</b> — the same engine local dev runs (<code>make pg</code>)</td>
+      <td><code>subscription</code> · <code>watch_state</code> · runs · identity map. SQLite still works for the offline suite; it is not what we deploy.</td>
       <td><a href="scheduler-and-polling.html#store">Scheduler &sect;store</a></td></tr>
   <tr><td class="k">API surface</td><td>41 routes: the seam, chat, subscriptions, runs, status, webhooks, admin</td>
       <td>read endpoints + the run-an-agent seams (gateway-token)</td>
@@ -91,7 +97,7 @@ trigger  ─▶  <span class="k">normalize to Envelope</span>  ─▶  <span cla
     <div class="t">Every endpoint, exact shapes</div>
     <div class="d">The seam, chat surfaces, subscriptions/runs, status/capability, webhooks, admin &mdash; method, path, request/response, and auth for each.</div></a>
   <a class="cardlink" href="agents.html"><div class="n">Agents</div>
-    <div class="t">The 27 specialists, ~10 examples each</div>
+    <div class="t">The supervisor's sub-agents, with examples</div>
     <div class="d">The supervisor's roster: what each agent does, its tools and triggers (no-AP vs AP), and a grounded set of things to try with it.</div></a>
   <a class="cardlink" href="examples.html"><div class="n">Examples</div>
     <div class="t">Things to try from the deployed app</div>
@@ -114,7 +120,7 @@ trigger  ─▶  <span class="k">normalize to Envelope</span>  ─▶  <span cla
 
 <p class="src">Sources: <code>events/app.py</code> · <code>events/concierge.py</code> · <code>events/envelope.py</code> ·
    <code>events/native_scheduler.py</code> · <code>events/poll_state.py</code> · <code>events/{telegram,discord,slack}_direct.py</code> ·
-   <code>events/classify.py</code> · <code>server/main.py</code> · <code>events_docs/features.md</code>.
+   <code>events/classify.py</code> · <code>server/main.py</code> · <code>events_docs/ARCHITECTURE.md</code>.
    Verified against the working tree on 2026-07-31. Companion (older, single-file): <code>events_docs/latest/channels_without_ap.html</code>.</p>
 
 </body></html>

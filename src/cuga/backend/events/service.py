@@ -106,6 +106,13 @@ def create_app():
     db = _db_path()
     log.info("events service: store = %s", db)
 
+    # DURABILITY. The container filesystem is ephemeral: when the platform replaces the instance,
+    # the new pod gets an empty disk and every armed flow is gone with no restart recorded. Restore
+    # the durable snapshot BEFORE any store opens the file, or the stores create fresh empty tables
+    # and the restore has nothing to put back. See db_persist.py for why the live DB stays local.
+    from . import db_persist
+    db_persist.restore(db)
+
     # WHERE /invoke LIVES. Every trigger source (native scheduler, Slack/Discord/Telegram loops,
     # box poll, webhooks) fires by POSTing an envelope to `http://127.0.0.1:$EVENTS_CUGA_PORT/invoke`.
     # Mounted on CUGA, that port IS CUGA's — same process, so the name reads fine. Split out, /invoke
@@ -148,6 +155,11 @@ def create_app():
         tasks = []
         for factory in getattr(app.state, "events_background", []) or []:
             tasks.append(asyncio.create_task(factory()))
+        # Snapshot the store to durable storage whenever it changes. Started here rather than
+        # registered as an events_background factory so it runs even if the events routes register
+        # nothing — losing armed flows must not depend on which channels happen to be configured.
+        if db_persist.backup_path():
+            tasks.append(asyncio.create_task(db_persist.run_snapshot_loop(db)))
         if tasks:
             log.info("events service: launched %d background task(s)", len(tasks))
         try:

@@ -85,7 +85,7 @@ curl -s "$AP_BASE_URL/api/v1/app-connections?projectId=<pid>" | jq '.data[] | se
 curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/<owner>/<name>/hooks | jq length
 
 # fire it WITHOUT opening a real PR (a push flow's body becomes the trigger output):
-curl -s -X POST "localhost:7860/api/events/subscriptions/<sub_id>/run?timeout=180" \
+curl -s -X POST "localhost:8100/api/events/subscriptions/<sub_id>/run?timeout=180" \
   -H "X-Gateway-Token: $GATEWAY_TOKEN" -H 'content-type: application/json' -d '{
     "title":"Fix race in shutdown","html_url":"https://github.com/owner/name/pull/1",
     "body":"Adds a WaitGroup and a drain timeout.",

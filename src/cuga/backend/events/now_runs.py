@@ -5,14 +5,17 @@ reads those from AP. But a NOW answer — a human chatting in the Studio Concier
 a channel — never becomes an AP flow, so it has no AP run. This store captures those, so the unified
 Runs log can show *every* execution: NOW answers here + AP flow-runs from the engine.
 
-stdlib ``sqlite3`` + JSON columns, same conventions as ``subscriptions.py`` (migrate-on-open,
+SQLite or Postgres via ``db.connect`` + JSON columns, same conventions as ``subscriptions.py`` (migrate-on-open,
 single shared connection). Dependency-free → unit-testable in isolation.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
+try:
+    from . import db as _db
+except ImportError:  # flat load (tests put the events dir on sys.path)
+    import db as _db
 import time
 import uuid
 
@@ -25,8 +28,7 @@ class NowRunStore:
 
     def __init__(self, db_path: str = ":memory:"):
         # check_same_thread=False: shared by an async server whose handlers may run on a threadpool.
-        self._db = sqlite3.connect(db_path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = _db.connect(db_path)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -47,7 +49,7 @@ class NowRunStore:
                )""")
         # migrate-on-open: mode/backend/subscription_id let a run carry its TRIGGER TYPE (cron/poll/
         # push/now · native/ap) so the Runs API can filter and the UI can group — not just "NOW".
-        cols = {r[1] for r in self._db.execute("PRAGMA table_info(now_run)").fetchall()}
+        cols = self._db.columns("now_run")
         for _c, _d in (("mode", "TEXT NOT NULL DEFAULT 'NOW'"),
                        ("backend", "TEXT NOT NULL DEFAULT 'direct'"),
                        ("subscription_id", "TEXT NOT NULL DEFAULT ''"),
@@ -108,7 +110,7 @@ class NowRunStore:
         return self._row(r) if r else None
 
     @staticmethod
-    def _row(r: sqlite3.Row) -> dict:
+    def _row(r: _db.Row) -> dict:
         d = dict(r)
         d["mcp"] = json.loads(d.get("mcp") or "[]")
         d["tools"] = json.loads(d.get("tools") or "[]")

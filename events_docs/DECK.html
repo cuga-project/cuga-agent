@@ -173,10 +173,10 @@
   chat or an attempt to arm something. That inversion is the change that matters most here.</p>
 
   <div class="kpi">
-    <div><b>2</b><span>CUGA CORE FILES TOUCHED</span></div>
-    <div><b>−2</b><span>UPSTREAM LINES DELETED</span></div>
+    <div><b>4</b><span>CUGA CORE FILES TOUCHED</span></div>
+    <div><b>−17</b><span>UPSTREAM LINES DELETED</span></div>
     <div><b>2</b><span>SERVICES, ONE IMAGE</span></div>
-    <div><b>345</b><span>OFFLINE TESTS GREEN</span></div>
+    <div><b>364</b><span>OFFLINE TESTS GREEN</span></div>
   </div>
 
   <p class="note">Design record: <code>events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md</code> ·
@@ -290,7 +290,9 @@
           </tr>
           <tr>
             <td>Subscription store</td>
-            <td><code>events.db</code>, tenant-scoped. The armed flows and their parked drafts (10-min TTL).</td>
+            <td><b>PostgreSQL</b>, tenant-scoped &mdash; the armed flows and their parked drafts (10-min TTL).
+                The <i>same engine</i> local dev runs (<code>make pg</code>), so local testing exercises the
+                storage path that ships. SQLite remains for the hermetic test suite only.</td>
             <td>—</td>
           </tr>
           <tr>
@@ -364,6 +366,19 @@
         <div class="box k-amber"><b>Activepieces</b><span>IN, but OFF today</span></div>
         <div class="box k-teal"><b>Direct watchers</b><span>Slack · Discord · Box</span></div>
         <div class="box k-teal"><b>Poll state</b><span>did it actually change?</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">↓ &nbsp; the only thing that outlives the process &nbsp; ↓</div>
+
+    <div class="tier" style="border-color:var(--blue);box-shadow:inset 0 3px 0 var(--blue)">
+      <div class="tier-h">PostgreSQL &nbsp;— IBM Cloud Databases. The SAME engine local dev runs.</div>
+      <div class="row">
+        <div class="box k-blue"><b>Armed flows</b><span>tenant-scoped</span></div>
+        <div class="box k-blue"><b>Runs log</b><span>what fired, when</span></div>
+        <div class="box k-blue"><b>Identity</b><span>channel → user</span></div>
+        <div class="box k-blue"><b>Parked drafts</b><span>HITL, 10-min TTL</span></div>
+        <div class="box"><b>sslmode</b><span>verify-full</span></div>
       </div>
     </div>
 
@@ -600,16 +615,19 @@ everything else                                                     → the agen
 <section>
   <p class="eyebrow">Blast radius</p>
   <h2>Are we touching core? Barely.</h2>
-  <p>Across the entire branch we delete <b>two</b> lines of upstream CUGA, and both are one-line
-  replacements rather than removals.</p>
+  <p>Across the entire branch we delete <b>17</b> lines of upstream CUGA. Two are in
+  <code>server/main.py</code>/<code>cli/main.py</code> and are one-line <i>replacements</i>; the other
+  15 are in <code>supervisor_config.py</code> &mdash; the one place we changed existing CUGA
+  <b>behaviour</b> rather than adding to it, and the change most worth a reviewer's attention.</p>
 
   <div class="scroll">
   <table>
     <thead><tr><th>Area</th><th>Files</th><th>Added</th><th>Deleted</th><th>What it is</th></tr></thead>
     <tbody>
-      <tr><td><b>CUGA core</b> (server + CLI)</td><td class="num">2</td><td class="num">+536</td><td class="num"><b>−2</b></td><td>New endpoints + the door. Additive.</td></tr>
-      <tr><td>Events layer</td><td class="num">42</td><td class="num">+11,235</td><td class="num">−0</td><td>Entirely new subsystem</td></tr>
-      <tr><td>Tests</td><td class="num">50</td><td class="num">+11,414</td><td class="num">−0</td><td>Offline suite + live harnesses</td></tr>
+      <tr><td><b>CUGA core</b> (server + CLI)</td><td class="num">2</td><td class="num">+465</td><td class="num"><b>−2</b></td><td>New endpoints + the door. Additive.</td></tr>
+      <tr><td><b>CUGA core</b> (supervisor_config + roster yaml)</td><td class="num">2</td><td class="num">+56</td><td class="num"><b>−15</b></td><td>Headless policy default + real tool scoping. <b>The one behaviour change.</b></td></tr>
+      <tr><td>Events layer</td><td class="num">44</td><td class="num">+11,561</td><td class="num">−35</td><td>Entirely new subsystem</td></tr>
+      <tr><td>Tests</td><td class="num">54</td><td class="num">+12,266</td><td class="num">−0</td><td>Offline suite + live harnesses</td></tr>
       <tr><td>Docs</td><td class="num">40</td><td class="num">+7,565</td><td class="num">−0</td><td>Specs, runbooks, setup guides</td></tr>
       <tr><td>Config / rosters / make</td><td class="num">32</td><td class="num">+5,800</td><td class="num">−0</td><td>Agent rosters, targets</td></tr>
       <tr><td>Frontend (UI source)</td><td class="num">9</td><td class="num">+2,092</td><td class="num">−6</td><td>Studio tabs, confirm card</td></tr>
@@ -618,15 +636,32 @@ everything else                                                     → the agen
   </table>
   </div>
 
-  <h3>The only two upstream lines removed</h3>
+  <h3>The two lines removed from <code>server/main.py</code> · <code>cli/main.py</code></h3>
   <pre>- return JSONResponse({"hide_cuga_logo": …, "brand_name": …})
 + return JSONResponse({… , "events_api_url": …})     # the UI needs to find the events service
 
 - os.environ["MCP_SERVERS_FILE"] = "none"
 + if not wants_roster: os.environ["MCP_SERVERS_FILE"] = "none"   # was clobbering CE's value</pre>
-  <p><b>Everything lives on top of CUGA core.</b> Core gains <code>/run</code>,
+  <p><b>Everything else lives on top of CUGA core.</b> Core gains <code>/run</code>,
   <code>/run/agents</code>, an optional preloaded supervisor, one extra field on a config response,
   and a ~55-line HTTP forwarder.</p>
+
+  <h3 style="color:var(--amber)">The honest asterisk — <code>supervisor_config.py</code></h3>
+  <p>One file where we changed <b>existing behaviour</b> rather than adding to it. Flagged here
+  because a reviewer skimming "17 lines" should not skim past it:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Change</th><th>Why</th><th>Who it affects</th></tr></thead>
+    <tbody>
+      <tr><td><code>auto_load_policies=False</code> for sub-agents</td>
+          <td>Supervisor delegates run <b>headless</b> (flows, webhooks, channel events). Nobody is present to click an approval, and an approval interrupt in a headless run hangs until the caller times out. A YAML entry can opt back in.</td>
+          <td><span class="pill warn">anyone already calling <code>load_supervisor_config</code></span></td></tr>
+      <tr><td><code>CombinedToolProvider</code> is now actually <b>scoped</b></td>
+          <td>The old filter was a no-op that logged intent and loaded everything. Hyphenated names are also mapped (<code>cuga-finance</code> → <code>cuga_finance</code>; the hyphen form composed invalid Python identifiers — <code>cuga-finance_get_price</code> parses as subtraction).</td>
+          <td>agents that name servers; an agent naming nothing still gets all tools</td></tr>
+    </tbody>
+  </table>
+  </div>
 </section>
 
 <!-- ─────────────────────────────────────────── -->
@@ -637,7 +672,9 @@ everything else                                                     → the agen
   <table>
     <thead><tr><th>Check</th><th>Result</th></tr></thead>
     <tbody>
-      <tr><td>Offline suite (hermetic — passes with the stack up)</td><td class="num"><b>345 passed · 59 s</b></td></tr>
+      <tr><td>Offline suite (hermetic — passes with the stack up)</td><td class="num"><b>364 passed · 86 s</b></td></tr>
+      <tr><td>Store tests against <b>real PostgreSQL</b> (<code>make test-pg</code>)</td><td class="num"><b>20 passed</b></td></tr>
+      <tr><td><b>Durability</b>: armed flow survived a real Code Engine pod replacement</td><td class="num"><b>PASS</b></td></tr>
       <tr><td>Local e2e (chat · arm · webhook × 3 modes)</td><td class="num">30 ✓ · 2 ✗ (AP down)</td></tr>
       <tr><td>Fire: cron + poll, real ticks + live answers</td><td class="num"><b>2 / 2</b></td></tr>
       <tr><td><b>Slack channel-arm</b>: @mention → card in-thread → bare "yes" → armed → tick delivered back</td><td class="num"><b>PASS</b></td></tr>
@@ -678,8 +715,8 @@ everything else                                                     → the agen
     </div>
     <div class="card">
       <h3>Mid</h3>
-      <p>Durable state (events.db is ephemeral on CE — a redeploy forgets armed flows) · split the
-      secret so <code>cuga-core</code> never sees a bot token · fire-time robustness.</p>
+      <p>Split the secret so <code>cuga-core</code> never sees a bot token · fire-time robustness ·
+      restrict the database's public endpoint to the Code Engine egress range.</p>
     </div>
     <div class="card">
       <h3>Later</h3>

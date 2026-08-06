@@ -151,9 +151,10 @@ if _exp and time.time() &gt; float(_exp):
 </div>
 
 <h2 id="worked">Worked example, end to end</h2>
-<p>"<b>watch bitcoin every 2 minutes and ping me on any move</b>", said in Telegram:</p>
-<pre><span class="v">1.</span> Telegram getUpdates → /invoke (agent="concierge", text="watch bitcoin every 2 minutes …")
-<span class="v">2.</span> concierge.run → not slash, not pre-route, classify → POLL (not NOW) → LLM react-agent
+<p>"<b>/watch bitcoin every 2 minutes and ping me on any move</b>", said in Telegram:</p>
+<pre><span class="v">1.</span> Telegram getUpdates → cuga_door.ask() → POST cuga-core/run
+<span class="v">1b.</span> CUGA's door: slash verb → POST events/api/concierge (a plain question would stop here and answer)
+<span class="v">2.</span> concierge.run → slash-parsed → POLL (not NOW) → LLM react-agent
 <span class="v">3.</span> LLM calls find_or_create_flow(kind="poll", prompt=…, every_minutes=2, deliver_to="telegram")
 <span class="v">4.</span> _single_shot_task → "Check the price of bitcoin now"; write native Subscription(interval=120s);
        poll_state.extract_spec → watch_state(kind="threshold" or "fuzzy")
