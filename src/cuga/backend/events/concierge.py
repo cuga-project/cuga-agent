@@ -172,6 +172,30 @@ _REWRITE_SYSTEM = (
     "request or add commentary. Reply with ONLY the rewritten instruction, no quotes."
 )
 
+def _looks_truncated(out: str, src: str) -> bool:
+    """True when a rewrite ends mid-word — the model stopped early (token cap, cut stream).
+
+    Observed live: "every minute send me the price of bitcoin" came back as "The price of bitcoi."
+    The existing guards both passed — no cadence word leaked and it was not oversized — so that
+    string became the flow's prompt, and the confirm card (whose entire job is to show the human the
+    EXACT instruction the agent will get, forever) displayed the corrupted version as if it were
+    intended.
+
+    The test is deliberately narrow: the final word must be a **strict prefix of a longer word in
+    the input**. "bitcoi" against "bitcoin" is truncation; a legitimate rephrasing that happens to
+    end in a short word is not, because that word appears in full or not at all. Trailing
+    punctuation the model added is ignored when comparing.
+    """
+    tail = re.sub(r"[^\w]+$", "", (out or "").split()[-1] if (out or "").split() else "")
+    if not tail:
+        return False
+    low = tail.lower()
+    for w in re.findall(r"\w+", src or ""):
+        if len(w) > len(low) and w.lower().startswith(low):
+            return True
+    return False
+
+
 _cadence_model = None  # cached chat model; tests inject a fake here
 
 
@@ -198,9 +222,11 @@ async def _single_shot_task(prompt: str) -> str:
                 [SystemMessage(content=_REWRITE_SYSTEM), HumanMessage(content=prompt)]),
             timeout=float(os.environ.get("EVENTS_CADENCE_LLM_TIMEOUT", "20")))
         out = (res.content or "").strip().strip('"').strip()
-        if out and len(out) <= 4 * max(len(prompt), 40) and not _CADENCE_LEAK.search(out):
+        if (out and len(out) <= 4 * max(len(prompt), 40)
+                and not _CADENCE_LEAK.search(out) and not _looks_truncated(out, prompt)):
             return out
-        log.warning("cadence LLM rewrite rejected (leak/size) — regex fallback: %r", out[:120])
+        log.warning("cadence LLM rewrite rejected (leak/size/truncation) — regex fallback: %r",
+                    out[:120])
     except Exception as e:  # noqa: BLE001
         log.warning("cadence LLM rewrite failed (%s) — regex fallback", str(e)[:120])
     return _strip_cadence(prompt)
@@ -778,10 +804,22 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     except ImportError:  # flat load (offline tests)
                         import poll_state as _ps
                     try:
-                        _spec = await _ps.extract_spec(_utterance.get("") or prompt)
+                        # WHICH TEXT the tier is derived from matters and is not obvious. The raw
+                        # utterance comes from a ContextVar set in run(); if that does not reach
+                        # here (the react-agent may execute tools in a different context) we fall
+                        # back to `prompt`, which the router may already have rewritten — dropping
+                        # the very "…more than 2%" clause that selects `threshold`. Observed:
+                        # local runs pick threshold for a phrasing that picks fuzzy on Code Engine,
+                        # with no error either side. Log the source and the text so the next
+                        # occurrence explains itself instead of needing a bisect.
+                        _raw = _utterance.get("")
+                        _spec_src = "utterance" if _raw else "prompt"
+                        _spec_text = _raw or prompt or ""
+                        _spec = await _ps.extract_spec(_spec_text)
                         store.set_watch_state(_ps.spec_to_state(sub.id, _spec))
-                        log.info("poll %s delta kind=%s thr=%s", sub.id, _spec.get("kind"),
-                                 _spec.get("threshold"))
+                        log.info("poll %s delta kind=%s thr=%s src=%s text=%r", sub.id,
+                                 _spec.get("kind"), _spec.get("threshold"), _spec_src,
+                                 _spec_text[:160])
                     except Exception as e:  # noqa: BLE001 — a spec miss degrades to fuzzy, never blocks arm
                         log.warning("poll-spec seed failed for %s (%s) — defaulting fuzzy", sub.id, e)
                         store.set_watch_state(_ps.spec_to_state(sub.id, {"kind": "fuzzy"}))

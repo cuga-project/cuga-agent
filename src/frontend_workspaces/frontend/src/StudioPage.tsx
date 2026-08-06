@@ -80,9 +80,26 @@ function useEndpoint<T>(fn: () => Promise<Response>, pick: (d: any) => T, dep: n
     let cancelled = false;
     setLoading(true); setError(null);
     fn()
-      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      // Name the STATUS and the PATH. "error fetching" on its own sent us to the browser console
+      // and then to the server logs to discover a 500 from a dropped database connection; the
+      // status code alone would have said "server-side, not your session" immediately.
+      .then((r) => {
+        if (!r.ok) {
+          const where = (() => { try { return new URL(r.url).pathname; } catch { return ""; } })();
+          throw new Error(`HTTP ${r.status}${r.statusText ? " " + r.statusText : ""}${where ? ` — ${where}` : ""}`);
+        }
+        return r.json();
+      })
       .then((d) => { if (!cancelled) setData(pick(d)); })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load"); })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : "Failed to load";
+        // A bare TypeError from fetch means the request never completed: CORS, DNS, or the events
+        // service being down — all of which look identical to the user without saying so.
+        setError(/failed to fetch|networkerror|load failed/i.test(msg)
+          ? `${msg} — the eventing service may be unreachable (check EVENTS_API_URL and CORS)`
+          : msg);
+      })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -839,17 +856,35 @@ function DashboardTab({ refresh }: { refresh: number }) {
           <h4 style={{ margin: "1.6rem 0 .5rem" }}>Recent runs</h4>
           {runs.length === 0 ? (
             <InlineNotification kind="info" lowContrast hideCloseButton title="No runs yet"
-              subtitle="Arm a watcher; each fire shows here with the sub-agent, tools, and the answer." />
+              subtitle="Every agent run lands here — a direct chat message as well as each fire of an armed flow. The Source column tells them apart." />
           ) : (
             <Table size="sm">
               <TableHead><TableRow>
-                <TableHeader>When</TableHeader><TableHeader>Agent</TableHeader><TableHeader>Type</TableHeader>
+                <TableHeader>When</TableHeader><TableHeader>Source</TableHeader>
+                <TableHeader>Agent</TableHeader><TableHeader>Type</TableHeader>
                 <TableHeader>Tools</TableHeader><TableHeader>Answer</TableHeader><TableHeader>Status</TableHeader>
               </TableRow></TableHead>
               <TableBody>
                 {runs.slice(0, 30).map((r) => (
                   <TableRow key={r.id}>
                     <TableCell style={{ whiteSpace: "nowrap" }}>{fmtTime(r.started_at)}</TableCell>
+                    {/* SOURCE — which flow produced this run, or "chat" if a human asked directly.
+                        Without it the dashboard shows "a bunch of runs" while the Flows tab is
+                        empty, and there is no way to tell whether that is correct (chat runs, which
+                        have no flow) or a bug (a flow fired then got deleted). The id is the one you
+                        match against the Flows tab and against `watch id …` in an ARMED reply. */}
+                    <TableCell style={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: ".72rem" }}>
+                      {r.subscription_id || r.flow_id ? (
+                        <span title={r.flow_name || undefined}>
+                          <Tag type="blue" size="sm">flow</Tag>{" "}
+                          {r.subscription_id || r.flow_id}
+                        </span>
+                      ) : (
+                        <span title={`direct ${r.channel || "web"} message — no flow involved`} style={{ opacity: .6 }}>
+                          <Tag type="gray" size="sm">chat</Tag>{" "}{r.channel || "web"}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell><b>{r.agent}</b></TableCell>
                     <TableCell><Tag type={(MODE_TAG_D[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag>{" "}
                       <Tag type={bkTag(r.backend) as any} size="sm">{r.backend}</Tag></TableCell>

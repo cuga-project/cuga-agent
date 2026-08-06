@@ -342,6 +342,40 @@ sequenceDiagram
 The delivery address rides on `thread_id` (`gw:<channel>:<native>#<locus>`), so a flow armed from
 Slack fires back into that Slack thread without anyone passing a "reply to" anywhere.
 
+### 4b. Delivering to a surface that can't be pushed to
+
+Slack, Discord and Telegram each give CUGA a socket it can push into at any moment. **A browser does
+not.** A flow armed in the Studio chat fires at 09:05 with no request in flight and possibly no tab
+open — there is nothing to answer into.
+
+So `web` is a direct channel whose *transport is a durable mailbox*: the fire is written to a
+per-thread table and the chat surface drains it by cursor.
+
+```mermaid
+flowchart LR
+    T["cron tick<br/><i>nobody is waiting</i>"] --> INV["POST /invoke<br/>deliver=true"]
+    INV --> O{"channel_origin(thread_id)"}
+    O -->|"gw:slack:C123"| PUSH["send_direct → chat.postMessage<br/><i>pushed into the thread</i>"]
+    O -->|"no gw: prefix<br/>(a browser thread)"| WEB["send_direct('web', …)<br/>→ web_inbox table"]
+    WEB --> POLL["GET /api/events/inbox?thread_id=…&since=…"]
+    POLL --> UI["⚡ flow fired · appears in the transcript"]
+```
+
+Two details carry the whole design:
+
+- **The thread id is the delivery address.** A browser thread has no `gw:` prefix, so `/invoke`
+  falls back to treating it as the web channel with the thread itself as the target. Before that
+  fallback existed, `is_direct("web")` was false, the delivery branch was skipped entirely, and the
+  answer went to the runs log and nowhere else.
+- **The `<scope>::` prefix must be stripped.** `Principal.thread()` stores an armed thread as
+  `default/default/local::web:studio` while the tab polls for `web:studio`. Deliver to the stored
+  string and every fire lands in a mailbox nobody reads — a bug that looks exactly like no delivery
+  at all. Isolation is kept by the mailbox's own `scope` column instead.
+
+Because the mailbox is durable (same PostgreSQL as the subscription index), a fire that happens
+while the tab is **closed** is still waiting when it reopens — the client passes `since=0` and
+recovers the backlog.
+
 ---
 
 ## 5. Flow D — inbound webhook (an external system starts it)

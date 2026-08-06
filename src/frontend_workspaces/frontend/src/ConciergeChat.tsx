@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   TextArea,
   Button,
@@ -26,7 +26,12 @@ export interface ConciergeMessage {
   state?: string;
   /** The proposal shown at the CONFIRM gate: what will run, when, where it goes. */
   summary?: { trigger?: string; prompt?: string; delivery?: string; agent?: string };
+  /** True for a message the server pushed later — an armed flow firing, not a reply to anything. */
+  fire?: boolean;
 }
+
+/** The thread this surface talks on. It is also the delivery address a fire comes back to. */
+const THREAD_ID = "web:studio";
 
 export function ConciergeChat({
   draft,
@@ -39,6 +44,44 @@ export function ConciergeChat({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dryRun, setDryRun] = useState(false);
+  /** Mailbox cursor — the ts of the last fire rendered. Ref, not state: it must not re-trigger the poll. */
+  const cursor = useRef(0);
+
+  // ── Asynchronous flow fires ─────────────────────────────────────────────────
+  // Arming is only half the loop. The flow fires later — a cron tick at 09:05, a poll that finally
+  // saw a change — with no request in flight to answer. Slack gets a push; a browser can only be
+  // drained, so the server delivers into a per-thread mailbox and we poll it. Without this the flow
+  // ran, the dashboard knew, and this chat never heard back.
+  //
+  // `since=0` on the first pass is deliberate: it recovers everything that fired while the tab was
+  // closed, so a reopened Studio shows the fires it missed instead of losing them.
+  useEffect(() => {
+    let cancelled = false;
+    const drain = async () => {
+      try {
+        const res = await api.getEventsInbox(THREAD_ID, cursor.current);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const msgs: any[] = data?.messages ?? [];
+        if (!msgs.length || cancelled) return;
+        cursor.current = data.cursor ?? cursor.current;
+        setMessages((m) => [
+          ...m,
+          ...msgs.map((x) => ({
+            role: "concierge" as const,
+            text: String(x.text ?? ""),
+            meta: x.flow_name ? `flow · ${x.flow_name}` : "flow fired",
+            fire: true,
+          })),
+        ]);
+      } catch {
+        /* a mailbox that is unreachable must never break the chat */
+      }
+    };
+    drain();
+    const id = setInterval(drain, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   const send = async (override?: string) => {
     const text = (override ?? draft).trim();
@@ -48,7 +91,7 @@ export function ConciergeChat({
     setMessages((m) => [...m, { role: "user", text }]);
     if (override === undefined) setDraft("");
     try {
-      const res = await api.postConcierge(text, { threadId: "web:studio", dryRun });
+      const res = await api.postConcierge(text, { threadId: THREAD_ID, dryRun });
       const data = await res.json();
       if (!res.ok && !data?.plan && !data?.reply) {
         throw new Error(data?.error || res.statusText);
@@ -78,6 +121,9 @@ export function ConciergeChat({
     }
   };
 
+  // The newest message that is part of the arming dialogue (fires arrive out-of-band and don't count).
+  const lastDialogueIndex = messages.reduce((best, m, i) => (m.fire ? best : i), -1);
+
   return (
     <div className="studio-chat">
       <div className="studio-chat-log">
@@ -94,17 +140,20 @@ export function ConciergeChat({
           </p>
         )}
         {messages.map((m, i) => (
-          <div key={i} className={`studio-msg studio-msg-${m.role}`}>
+          <div key={i} className={`studio-msg studio-msg-${m.role}${m.fire ? " studio-msg-fire" : ""}`}>
             <div className="studio-msg-role">
-              {m.role === "user" ? "You" : "Concierge"}
+              {m.role === "user" ? "You" : m.fire ? "⚡ Flow" : "Concierge"}
               {m.meta && (
-                <Tag type={m.role === "user" ? "gray" : "green"} size="sm" style={{ marginLeft: 8 }}>
+                <Tag type={m.role === "user" ? "gray" : m.fire ? "purple" : "green"} size="sm"
+                     style={{ marginLeft: 8 }}>
                   {m.meta}
                 </Tag>
               )}
             </div>
             {m.state === "confirm" && m.summary ? (
-              <ArmConfirmCard summary={m.summary} busy={busy} live={i === messages.length - 1}
+              // "live" is the newest message of the DIALOGUE — a flow firing mid-arming is not a
+              // reply and must not retire the card the human is still looking at.
+              <ArmConfirmCard summary={m.summary} busy={busy} live={i === lastDialogueIndex}
                               onSay={(t) => send(t)} setDraft={setDraft} />
             ) : (
               <pre className="studio-msg-text">{m.text}</pre>

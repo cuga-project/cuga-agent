@@ -201,6 +201,11 @@ def classify(reply: str, sub, is_new, app: str | None, ap_live: bool) -> tuple[s
     failure this symbol set exists to expose."""
     low = reply.lower()
     if sub:
+        # A NATIVE cron/poll has no AP flow BY DESIGN — the in-process scheduler owns the schedule
+        # and fires it via /invoke. Demanding an ap_flow_id here predates that scheduler and marks
+        # every working native flow as an error.
+        if (sub.get("backend") or "") == "native":
+            return (ARMED if is_new else REUSED), "native"
         if not sub.get("ap_flow_id"):
             return ERROR, "armed but no ap_flow_id"
         # An ap_flow_id proves nothing on its own — the flow may have been deleted out from under the
@@ -307,7 +312,12 @@ def run_standing(g: Grid, targets: dict, ap_live: bool, created: list):
             sym, note = classify(reply, sub, is_new, None, ap_live)
             if sym == STALE:
                 sym, note = wrong_sink(before, ch, mode=mode) or (sym, note)
-            if sub and not ap_live:
+            # A NATIVE cron/poll needs no Activepieces at all — it arms into the subscription store
+            # and the in-process scheduler fires it (live_fire.py proves both against this same
+            # deployment). Only an AP-BACKED flow is broken when AP is down. Without this test the
+            # whole cron/poll half of the matrix reported ✗ on a stack where it demonstrably works,
+            # which is worse than a gap: a red cell nobody believes hides the next real regression.
+            if sub and not ap_live and (sub.get("backend") or "") != "native":
                 sym, note = ERROR, "armed but AP is down"
             g.put(row, ch, sym, note)
 

@@ -107,6 +107,20 @@ def channel_native_id(source) -> str | None:
     return None
 
 
+def unscoped_thread(thread_id: str) -> str:
+    """The caller's OWN thread id, with the ``<scope>::`` namespace prefix stripped.
+
+    ``Principal.thread()`` prefixes every armed thread with the principal's scope so per-thread
+    memory can't cross principals. ``channel_origin`` already tolerates that prefix by searching for
+    ``gw:``; the WEB channel has no such marker — its thread id is whatever the browser sent — so it
+    needs this explicit strip. Without it a web-armed flow delivers to the key
+    ``default/default/local::web:studio`` while the tab polls ``web:studio``, and every fire is
+    written to a mailbox nobody reads. Isolation is not weakened: the mailbox keeps ``scope`` as its
+    own column and filters on it."""
+    tid = thread_id or ""
+    return tid.split("::", 1)[1] if "::" in tid else tid
+
+
 def channel_origin(thread_id: str) -> tuple[str, str] | None:
     """Extract ``(channel, native_id)`` from a thread_id's ``gw:<channel>:<native>`` origin, tolerating
     a scope prefix (``<scope>::gw:slack:C123#locus``). This is the DELIVERY target — where a reply goes

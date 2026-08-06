@@ -36,17 +36,26 @@ extra field on a config response, and a ~55-line HTTP forwarder (`_SLASH_VERBS`,
 
 ## The honest asterisk — `supervisor_config.py`
 
-This is the one place we changed **existing CUGA behaviour** rather than adding to it. 18 added, 15
-removed, and both changes are semantic:
+This is the one place we touched **existing CUGA behaviour** rather than only adding to it. Two
+changes live here; **only the second one is a behaviour change**, and this doc was wrong about that
+for a while — see below.
 
-1. **Sub-agents no longer auto-load interactive policies.**
+1. **Policy auto-loading — NOT a behaviour change (this doc used to say otherwise).**
    ```python
-   auto_load_policies=agent_config.get("auto_load_policies", False)
+   async def load_supervisor_config(yaml_path: str, *, auto_load_policies: bool | None = None)
    ```
-   Supervisor delegates run headless (flows, webhooks, channel events). Nobody is present to click
-   an approval, and an approval interrupt in a headless run hangs it until the caller times out. A
-   YAML entry can opt back in. **This changes behaviour for anyone already using
-   `load_supervisor_config`**, and is the single change most worth a reviewer's attention.
+   Precedence: a per-agent `auto_load_policies:` key in the YAML wins; else the caller's default;
+   else `None`, which lets `CugaAgent` fall back to `settings.policy.auto_load_policies` exactly as
+   it always has. `CugaSupervisor.from_yaml()` and `cuga_graph/graph.py` pass nothing and are
+   untouched. Only the headless caller opts out, at its own call site — `server/main.py` passes
+   `auto_load_policies=False` because everything that supervisor runs is a scheduled tick, a webhook
+   or a channel event, and an approval interrupt with nobody present hangs the run until the caller
+   times out.
+
+   An earlier cut hardcoded `False` *inside* `load_supervisor_config`, silently disabling policy
+   auto-loading for every downstream supervisor user regardless of their settings. That is fixed;
+   `src/cuga/sdk_core/tests/test_supervisor_policy_default.py` pins the contract, including that the
+   parameter stays keyword-only with a `None` default.
 
 2. **`CombinedToolProvider` is now actually scoped** to the named apps/servers, and hyphenated names
    are mapped to underscores (`cuga-finance` → `cuga_finance`; the hyphenated form composed invalid

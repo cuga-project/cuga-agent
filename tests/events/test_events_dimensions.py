@@ -430,6 +430,50 @@ def test_single_shot_task_llm_rewrite_with_regex_fallback():
         concierge._cadence_model = old
 
 
+def test_a_truncated_llm_rewrite_is_rejected():
+    """A rewrite that stops mid-word must never become the flow's prompt.
+
+    Seen live on the deployed stack: "every minute send me the price of bitcoin" came back as
+    "The price of bitcoi." Neither existing guard fires — no cadence word leaked, and it is far
+    from oversized — so that string was armed as the flow's PERMANENT instruction and shown on the
+    confirm card, whose whole job is to display the exact prompt the agent will be handed.
+    """
+    import asyncio
+    import concierge
+
+    class _Fake:
+        def __init__(self, reply):
+            self.reply = reply
+
+        async def ainvoke(self, _msgs):
+            class R:
+                content = self.reply
+            return R()
+
+    utt = "every minute send me the price of bitcoin"
+    old = concierge._cadence_model
+    try:
+        concierge._cadence_model = _Fake("The price of bitcoi.")
+        assert asyncio.run(concierge._single_shot_task(utt)) == concierge._strip_cadence(utt)
+        # …while a clean rewrite of the same utterance is still used verbatim
+        concierge._cadence_model = _Fake("Send me the price of bitcoin.")
+        assert asyncio.run(concierge._single_shot_task(utt)) == "Send me the price of bitcoin."
+    finally:
+        concierge._cadence_model = old
+
+
+def test_truncation_detector_precision():
+    """Narrow by construction: only a final word that is a strict PREFIX of a longer input word
+    counts. A genuine rephrase, or one ending in a word present in full, must pass."""
+    import concierge
+    t = concierge._looks_truncated
+    assert t("The price of bitcoi.", "every minute send me the price of bitcoin")
+    assert t("Summarize the docum", "every day summarize the document")
+    assert not t("Check the weather in Tokyo", "every minute check the weather in Tokyo")
+    assert not t("Report the current bitcoin valuation", "every minute send me the price of bitcoin")
+    assert not t("", "anything") and not t("...", "anything") and not t("hi", "")
+
+
 # ---- oauth connect registry (CUGA hosts connect) -------------------------
 def test_oauth_registry_and_authorize_url():
     import oauth

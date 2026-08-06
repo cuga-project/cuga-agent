@@ -82,7 +82,9 @@ def test_invoke_direct_channel_delivery():
 
     sent = []
 
-    async def _fake_send_direct(channel, target, text, locus=""):
+    async def _fake_send_direct(channel, target, text, locus="", **kw):
+        # **kw: the real sender also takes scope/meta (the web mailbox needs them). A double
+        # with a frozen signature turns an additive change into a fake TypeError failure.
         sent.append((channel, target, text, locus))
         return True, "ok"
 
@@ -124,7 +126,9 @@ def test_invoke_push_flow_delivers_to_direct_channel():
 
     sent = []
 
-    async def _fake_send_direct(channel, target, text, locus=""):
+    async def _fake_send_direct(channel, target, text, locus="", **kw):
+        # **kw: the real sender also takes scope/meta (the web mailbox needs them). A double
+        # with a frozen signature turns an additive change into a fake TypeError failure.
         sent.append((channel, target, text, locus))
         return True, "ok"
 

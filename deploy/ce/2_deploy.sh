@@ -199,8 +199,17 @@ else
 fi
 
 # 2. Durability. "durable: false" means an instance replace silently deletes every armed flow.
-_d=$(curl -s -m 60 -H "X-Gateway-Token: ${_gw}" "$EVENTS_URL/api/events/status" 2>/dev/null \
-     | python3 -c 'import sys,json;d=(json.load(sys.stdin) or {}).get("durability",{});print(f"{d.get(\"durable\")}|{d.get(\"backend\",\"?\")}")' 2>/dev/null || echo "?|?")
+#    RETRY: the app was created seconds ago and may still be booting. A one-shot check reported
+#    "?|?" — indistinguishable from a real failure — and a check that cries wolf gets ignored,
+#    which defeats the point of having it.
+_d="?|?"
+for _i in $(seq 1 12); do
+  _d=$(curl -s -m 30 -H "X-Gateway-Token: ${_gw}" "$EVENTS_URL/api/events/status" 2>/dev/null \
+       | python3 -c 'import sys,json;d=(json.load(sys.stdin) or {}).get("durability",{});print(f"{d.get(\"durable\")}|{d.get(\"backend\",\"?\")}")' 2>/dev/null || echo "?|?")
+  [[ "$_d" != "?|?" ]] && break
+  sleep 10
+done
+[[ "$_d" == "?|?" ]] && echo "  · events service did not answer /status within 2 min — check below"
 case "$_d" in
   True\|postgres) echo "  ✓ durability: PostgreSQL — an instance replace is a non-event" ;;
   True\|sqlite)   echo "  ✓ durability: SQLite + snapshots (consider ./4_postgres.sh)" ;;

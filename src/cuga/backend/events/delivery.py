@@ -24,6 +24,8 @@ _DEFAULT_BACKEND = {
     "slack": "direct",     # direct is the default (bot token); AP path behind EVENTS_SLACK_BACKEND=ap
     "telegram": "direct",  # direct long-poll (getUpdates/sendMessage, no AP); AP webhook behind EVENTS_TELEGRAM_BACKEND=ap
     "discord": "direct",   # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
+    "web": "direct",       # the browser: no socket to push into, so its transport is a durable
+                           # per-thread mailbox the UI drains by cursor — see web_inbox.
 }
 
 
@@ -41,13 +43,31 @@ def is_direct(channel: str) -> bool:
     return channel_backend(channel) == "direct"
 
 
-async def send_direct(channel: str, target: str, text: str, locus: str = "") -> tuple[bool, str]:
+async def send_direct(channel: str, target: str, text: str, locus: str = "",
+                      scope: str = "", meta: dict | None = None) -> tuple[bool, str]:
     """CUGA-side outbound send for a direct channel. Returns (ok, reason).
 
     ``locus`` is the thread anchor from the gw thread id (principal.channel_locus): Slack posts
     into that thread (thread_ts), Discord replies to that message id — a flow armed in a thread
-    delivers INTO the thread instead of the channel root."""
+    delivers INTO the thread instead of the channel root.
+
+    ``scope``/``meta`` are only consumed by the ``web`` mailbox, whose "send" is a durable row that
+    has to remember whose it is and which flow produced it."""
     ch = (channel or "").lower()
+    if ch == "web":
+        # The browser has no socket, so delivery is a row keyed by the thread that armed the flow.
+        # ``target`` IS the thread id here (app.py falls back to it when a thread has no gw origin).
+        if not target:
+            return False, "web: no thread_id to deliver to"
+        from . import web_inbox
+        if web_inbox.store() is None:
+            return False, "web: no mailbox mounted"
+        m = meta or {}
+        web_inbox.put(scope=scope, thread_id=target, text=text, agent=str(m.get("agent") or ""),
+                      subscription_id=str(m.get("subscription_id") or ""),
+                      flow_name=str(m.get("flow_name") or ""),
+                      event_kind=str(m.get("event_kind") or ""))
+        return True, "ok"
     if ch == "slack":
         from . import slack_direct
         res = await slack_direct.send_message(target, text, thread_ts=locus or None)

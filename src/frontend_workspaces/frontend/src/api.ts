@@ -539,6 +539,30 @@ export async function getEventsRunDetail(id: string): Promise<Response> {
   return apiFetch(`/api/events/runs/${encodeURIComponent(id)}`);
 }
 
+/**
+ * The web channel's mailbox — asynchronous flow fires waiting for this browser.
+ *
+ * A flow armed in a chat here fires minutes or days later, when no request is in flight. Slack gets
+ * a push; a tab can only be drained. So the server delivers into a per-thread mailbox and the chat
+ * surface polls this. `since` is EXCLUSIVE — send back the `cursor` you were given and a message is
+ * never rendered twice; send `0` to recover the backlog after a reload.
+ *
+ * `maxAgeSeconds` bounds that first load. A minute-by-minute cron piles up hundreds of fires, and
+ * replaying all of them is a flood, not a recovery. The server applies the cutoff with its own
+ * clock — deliberately not ours, since the cursor is a server timestamp and any disagreement
+ * between the two clocks would skip or repeat messages.
+ */
+export async function getEventsInbox(
+  threadId: string,
+  since = 0,
+  maxAgeSeconds = 86400,
+): Promise<Response> {
+  const age = since > 0 ? "" : `&max_age=${encodeURIComponent(String(maxAgeSeconds))}`;
+  return apiFetch(
+    `/api/events/inbox?thread_id=${encodeURIComponent(threadId)}&since=${encodeURIComponent(String(since))}${age}`,
+  );
+}
+
 // The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
 // them internally. Source: supervisor_agents.yaml.
 export async function getEventsAgents(): Promise<Response> {

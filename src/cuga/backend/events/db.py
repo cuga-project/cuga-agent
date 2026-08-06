@@ -52,6 +52,9 @@ log = logging.getLogger("events.db")
 
 _PG_PREFIXES = ("postgresql://", "postgres://", "postgresql+psycopg://")
 
+# Set once the float4→float8 repair has run for this process (see connect()).
+_WIDENED = False
+
 
 class Row(dict):
     """A result row addressable by name **or** position.
@@ -151,6 +154,51 @@ def _to_pg_placeholders(sql: str) -> str:
     return "".join(out)
 
 
+def _to_pg_types(sql: str) -> str:
+    """``REAL`` → ``DOUBLE PRECISION`` in DDL. The single most damaging portability trap here.
+
+    ``REAL`` means different things in the two engines: SQLite's REAL is an **8-byte** IEEE double,
+    Postgres's REAL is **float4** — about 7 significant digits. Every timestamp in this schema is a
+    Unix epoch (~1.79e9, ten significant digits), so on Postgres the low bits were thrown away and
+    every stored instant snapped to a ~100-second grid, off by up to ±50s. Measured, not theorised:
+    five instants spanning 66 seconds came back as **two** distinct values.
+
+    What that broke, silently, only in the cloud:
+      · ``next_fire``/``last_fire`` — a "1 minute" cron actually fired on a ~100s grid
+      · ``now_run.ts``              — the Runs log's ordering and times were wrong by up to a minute
+      · ``web_inbox.ts``            — the browser's delivery cursor is a ts and ``since`` is
+                                      EXCLUSIVE, so two fires landing in one bucket meant the second
+                                      was skipped forever: a dropped message, no error anywhere
+
+    SQLite is unaffected, which is exactly why the offline suite never saw it.
+
+    Applied to DDL only (CREATE TABLE / ALTER TABLE), word-boundary and quote-aware, so a column
+    named ``real_name`` or the string ``'REAL'`` is untouched.
+    """
+    head = sql.lstrip()[:12].upper()
+    if not (head.startswith("CREATE TABL") or head.startswith("ALTER TABLE")):
+        return sql
+    out, in_str, i = [], False, 0
+    while i < len(sql):
+        c = sql[i]
+        if c == "'":
+            in_str = not in_str
+            out.append(c)
+            i += 1
+            continue
+        if not in_str and (c in "rR") and sql[i:i + 4].upper() == "REAL":
+            before_ok = i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")
+            after = sql[i + 4:i + 5]
+            after_ok = after == "" or not (after.isalnum() or after == "_")
+            if before_ok and after_ok:
+                out.append("DOUBLE PRECISION")
+                i += 4
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 class _Connection:
     """Shared surface: execute / commit / close / columns."""
 
@@ -216,44 +264,126 @@ class _PostgresConnection(_Connection):
 
     def __init__(self, dsn: str):
         super().__init__()
-        import psycopg
-
         self.dsn = dsn
-        # autocommit=False so the stores' explicit commit() keeps meaning what it meant on SQLite.
-        self._db = psycopg.connect(dsn, autocommit=False)
+        self._db = None
+        self._connect()
         log.info("events db: postgres @ %s", _redact(dsn))
 
+    def _connect(self):
+        import psycopg
+
+        # autocommit=False so the stores' explicit commit() keeps meaning what it meant on SQLite.
+        self._db = psycopg.connect(self.dsn, autocommit=False)
+
+    def _dead(self) -> bool:
+        return self._db is None or getattr(self._db, "closed", 0)
+
     def execute(self, sql, params=()):
+        """Run one statement, reconnecting once if the server has dropped the connection.
+
+        WHY THE RETRY. A managed Postgres closes idle connections (and a failover or a restart
+        closes all of them). We hold ONE long-lived connection per store, so without this the first
+        query after an idle period raises ``the connection is closed`` and — because nothing ever
+        reconnected — that store stayed broken for the life of the process. It surfaced as the
+        Studio's Agents tab returning 500 while other tabs worked, since each store has its own
+        connection and they go idle at different rates. Reconnect-and-retry is deliberately limited
+        to ONE attempt and only for connection-level failures: a genuine SQL error must still
+        propagate on the first try rather than being run twice.
+        """
+        import psycopg
+
         with self._lock:
-            try:
-                with self._db.cursor() as cur:
-                    cur.execute(_to_pg_placeholders(sql), tuple(params))
-                    if cur.description:
-                        names = [d.name for d in cur.description]
-                        return Result([Row(zip(names, r)) for r in cur.fetchall()])
-                    return Result([])
-            except Exception:
-                # A failed statement poisons the transaction in Postgres ("current transaction is
-                # aborted") and every later query fails with a misleading error. Roll back so the
-                # real exception is the one the caller sees.
+            for attempt in (0, 1):
+                if self._dead():
+                    self._connect()
                 try:
-                    self._db.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
-                raise
+                    with self._db.cursor() as cur:
+                        cur.execute(_to_pg_placeholders(_to_pg_types(sql)), tuple(params))
+                        if cur.description:
+                            names = [d.name for d in cur.description]
+                            return Result([Row(zip(names, r)) for r in cur.fetchall()])
+                        return Result([])
+                except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+                    # Connection-level: the socket is gone. Retry once on a fresh connection.
+                    if attempt == 0:
+                        log.warning("postgres connection lost (%s) — reconnecting", e)
+                        try:
+                            self._db.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        self._db = None
+                        continue
+                    raise
+                except Exception:
+                    # A failed statement poisons the transaction in Postgres ("current transaction
+                    # is aborted") and every later query fails with a misleading error. Roll back so
+                    # the real exception is the one the caller sees.
+                    try:
+                        self._db.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    raise
 
     def commit(self):
+        # A commit on a dropped connection is not an error worth raising: execute() already
+        # reconnected and re-ran the statement, and a fresh connection has nothing to commit.
         with self._lock:
-            self._db.commit()
+            if self._dead():
+                return
+            try:
+                self._db.commit()
+            except Exception as e:  # noqa: BLE001
+                import psycopg
+
+                if isinstance(e, (psycopg.OperationalError, psycopg.InterfaceError)):
+                    log.warning("postgres commit on a lost connection (%s) — dropping it", e)
+                    self._db = None
+                    return
+                raise
 
     def close(self):
         with self._lock:
-            self._db.close()
+            if not self._dead():
+                self._db.close()
+            self._db = None
 
     def columns(self, table: str) -> set:
         res = self.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,))
         return {r["column_name"] for r in res.fetchall()}
+
+    def widen_real_columns(self) -> list[str]:
+        """Repair columns an OLDER build already created as ``real`` (float4).
+
+        ``_to_pg_types`` only fixes tables created from now on. A database that has been running has
+        float4 timestamp columns already, and ``CREATE TABLE IF NOT EXISTS`` will never revisit them
+        — so without this the deployed schedule stays on its ~100-second grid forever. Widening is
+        safe and online (float4 → float8 is a lossless widening; Postgres rewrites the table, which
+        for an index this size is milliseconds).
+
+        It does NOT recover precision already lost: rows written as float4 keep their rounded value.
+        Only new writes are exact. Returns the columns it altered, for the boot log.
+        """
+        fixed: list[str] = []
+        try:
+            rows = self.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND data_type = 'real'").fetchall()
+        except Exception as e:  # noqa: BLE001 — a permissions-limited role must not break boot
+            log.warning("could not inspect column types (%s) — skipping the float4 repair", e)
+            return fixed
+        for r in rows:
+            t, c = r["table_name"], r["column_name"]
+            try:
+                self.execute(f'ALTER TABLE "{t}" ALTER COLUMN "{c}" TYPE DOUBLE PRECISION')
+                fixed.append(f"{t}.{c}")
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not widen %s.%s to double precision: %s", t, c, e)
+        if fixed:
+            self.commit()
+            log.info("events db: widened %d float4 column(s) to double precision — %s",
+                     len(fixed), ", ".join(fixed))
+        return fixed
 
 
 def _redact(dsn: str) -> str:
@@ -310,7 +440,16 @@ def connect(dsn: str = ":memory:") -> _Connection:
     """Open the events database. A ``postgres(ql)://`` URL gets Postgres; anything else is a path."""
     dsn = (dsn or ":memory:").strip()
     if is_postgres(dsn):
-        return _PostgresConnection(_with_ca(dsn))
+        conn = _PostgresConnection(_with_ca(dsn))
+        # Once per process, on the FIRST Postgres connection: repair float4 timestamp columns left
+        # by an older build (see widen_real_columns). Guarded because every store opens its own
+        # connection and the scan is pointless after the first — but it must run before any store
+        # reads a timestamp, so connect() is the right seam.
+        global _WIDENED
+        if not _WIDENED:
+            _WIDENED = True
+            conn.widen_real_columns()
+        return conn
     if dsn != ":memory:":
         d = os.path.dirname(dsn)
         if d:

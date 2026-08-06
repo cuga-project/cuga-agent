@@ -262,3 +262,128 @@ def test_two_processes_share_one_database(dsn):
     assert {s.id for s in b.list(status="active")} == {"cuga-x"}
     b.delete("cuga-x")
     assert a.list(status="active") == []
+
+
+# ── liveness: the connection WILL be dropped, and that must not be terminal ────────────────────
+def test_survives_the_server_closing_the_connection(dsn):
+    """Managed Postgres closes idle connections. Without reconnect, a store stays broken forever.
+
+    This shipped: `/api/events/agents` returned 500 with `psycopg.OperationalError: the connection
+    is closed` while other tabs worked, because each store holds its own connection and they go
+    idle at different rates. Simulated here by closing the socket underneath the wrapper.
+    """
+    conn = _db.connect(dsn)
+    assert conn.execute("SELECT 1 AS n").fetchone()["n"] == 1
+    conn._db.close()                                   # the server dropping us looks like this
+    assert conn.execute("SELECT 2 AS n").fetchone()["n"] == 2, "must reconnect and retry once"
+    conn.commit()                                      # and a commit afterwards must not raise
+
+
+def test_store_keeps_working_after_a_drop(dsn):
+    """End-to-end via a real store, not just a bare SELECT."""
+    s = SubscriptionStore(dsn)
+    s.upsert(_sub("cuga-live", dedup="live"))
+    s._db._db.close()
+    assert {x.id for x in s.list(status="active")} == {"cuga-live"}
+    s.upsert(_sub("cuga-live2", dedup="live2"))        # a WRITE after the drop, incl. commit
+    assert len(s.list(status="active")) == 2
+
+
+def test_a_real_sql_error_is_not_retried_or_masked(dsn):
+    """Reconnect-and-retry must apply ONLY to connection loss — a bad statement still raises."""
+    conn = _db.connect(dsn)
+    with pytest.raises(Exception) as ei:
+        conn.execute("SELECT * FROM a_table_that_does_not_exist")
+    assert "does not exist" in str(ei.value).lower()
+    assert conn.execute("SELECT 3 AS n").fetchone()["n"] == 3    # connection still usable
+
+
+# ── float4 vs float8: the timestamp-precision bug ─────────────────────────────────────────────────
+
+def test_epoch_timestamps_survive_a_round_trip(dsn):
+    """The bug this pins, measured on the deployed database before it was fixed.
+
+    SQLite's REAL is an 8-byte double; Postgres's REAL is float4 (~7 significant digits). A Unix
+    epoch needs ten, so every stored instant snapped to a ~100-second grid — five instants spanning
+    66 seconds came back as TWO distinct values. It only ever manifested in the cloud, which is why
+    the offline suite never saw it.
+    """
+    conn = _db.connect(dsn)
+    conn.execute("DROP TABLE IF EXISTS _ts_fidelity")
+    conn.execute("CREATE TABLE _ts_fidelity (id INTEGER, ts REAL)")   # REAL must become float8
+    now = time.time()
+    instants = [now, now + 1, now + 7, now + 30, now + 66]
+    for i, v in enumerate(instants):
+        conn.execute("INSERT INTO _ts_fidelity VALUES (?,?)", (i, v))
+    conn.commit()
+    got = [r["ts"] for r in conn.execute("SELECT ts FROM _ts_fidelity ORDER BY id").fetchall()]
+
+    assert len(set(got)) == 5, f"distinct instants collapsed: {sorted(set(got))}"
+    for want, have in zip(instants, got):
+        assert abs(have - want) < 0.001, f"{have} drifted {have - want:+.3f}s from {want}"
+    conn.execute("DROP TABLE _ts_fidelity")
+    conn.commit()
+
+
+def test_the_ddl_translation_is_word_boundary_and_quote_aware(dsn):
+    """REAL is rewritten as a TYPE, never inside an identifier or a string literal."""
+    from cuga.backend.events.db import _to_pg_types
+    assert _to_pg_types("CREATE TABLE t (ts REAL)") == "CREATE TABLE t (ts DOUBLE PRECISION)"
+    assert _to_pg_types("ALTER TABLE t ADD COLUMN ts REAL NOT NULL DEFAULT 0") == \
+        "ALTER TABLE t ADD COLUMN ts DOUBLE PRECISION NOT NULL DEFAULT 0"
+    # an identifier that merely CONTAINS 'real'
+    assert "realm TEXT" in _to_pg_types("CREATE TABLE t (realm TEXT, unreal TEXT)")
+    assert "unreal TEXT" in _to_pg_types("CREATE TABLE t (realm TEXT, unreal TEXT)")
+    # a string literal
+    assert "'REAL'" in _to_pg_types("CREATE TABLE t (kind TEXT DEFAULT 'REAL')")
+    # non-DDL is never touched — a SELECT must not be rewritten
+    assert _to_pg_types("SELECT real FROM t") == "SELECT real FROM t"
+
+
+def test_an_existing_float4_column_is_widened_on_connect(dsn):
+    """A database created by an OLDER build already has float4 columns, and CREATE TABLE IF NOT
+    EXISTS never revisits them — so without the repair the deployed schedule stays on its grid."""
+    import cuga.backend.events.db as dbmod
+    conn = _db.connect(dsn)
+    conn.execute("DROP TABLE IF EXISTS _legacy_f4")
+    # deliberately create the OLD way, bypassing the DDL translation
+    conn._db.cursor().execute("CREATE TABLE _legacy_f4 (id integer, ts real)")
+    conn.commit()
+
+    def _type_of():
+        return conn.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = '_legacy_f4' AND column_name = 'ts'").fetchone()["data_type"]
+
+    assert _type_of() == "real", "precondition: the column starts as float4"
+    dbmod._WIDENED = False                       # let the once-per-process repair run again
+    _db.connect(dsn)                             # connecting is what triggers it
+    assert _type_of() == "double precision", "the legacy column was not widened"
+
+    conn.execute("DROP TABLE _legacy_f4")
+    conn.commit()
+
+
+def test_the_web_mailbox_cursor_does_not_drop_a_message_on_postgres(dsn):
+    """Where the two bugs meet, and the reason the float4 fix is not cosmetic.
+
+    The browser drains its mailbox with ``since=<last ts>``, EXCLUSIVE. Under float4 two fires a
+    few seconds apart collapsed to the SAME stored ts, so the second was silently skipped forever —
+    a lost message with no error anywhere. This is that exact sequence against real Postgres.
+    """
+    from cuga.backend.events.web_inbox import WebInbox
+
+    inbox = WebInbox(dsn)
+    thread = f"web:cursor-{uuid.uuid4().hex[:8]}"
+    inbox.put(scope="s", thread_id=thread, text="first fire")
+    time.sleep(0.05)
+    inbox.put(scope="s", thread_id=thread, text="second fire")     # seconds apart in the real world
+
+    msgs = inbox.list(thread_id=thread)
+    assert [m["text"] for m in msgs] == ["first fire", "second fire"]
+    assert msgs[0]["ts"] != msgs[1]["ts"], "two fires collapsed to one timestamp — float4 is back"
+
+    # drain the way the browser does: render #1, then poll with its ts as the cursor
+    after_first = inbox.list(thread_id=thread, since=msgs[0]["ts"])
+    assert [m["text"] for m in after_first] == ["second fire"], "the second fire was dropped"
+    assert inbox.list(thread_id=thread, since=msgs[1]["ts"]) == []

@@ -184,8 +184,10 @@ def validate(parsed: dict, origin_thread: str = "") -> tuple[str, str]:
 # ── the human-facing confirmation card ──────────────────────────────────────────────────────────
 def describe_delivery(origin_thread: str) -> str:
     """Where results will land, in the user's words. Mirrors the sink the arm will store: a
-    channel-originated arm replies into that same conversation; the web has no push channel, so
-    results land in the Runs inbox."""
+    channel-originated arm replies into that same conversation, and a web arm now does too — a
+    browser cannot be pushed to, so the fire is delivered to a durable per-thread mailbox this
+    chat drains (see web_inbox). It used to say "your Runs inbox", which was accurate when the
+    answer went only to the runs log, and became a lie the moment delivery existed."""
     try:
         from .principal import channel_origin
     except ImportError:  # flat load
@@ -196,7 +198,7 @@ def describe_delivery(origin_thread: str) -> str:
         origin = None
     if origin and origin[0]:
         return f"this {origin[0]} conversation"
-    return "your Runs inbox (web)"
+    return "this chat (and the Runs tab)"
 
 
 def describe_trigger(parsed: dict) -> str:

@@ -200,11 +200,11 @@ CONFIRM only ever shows an **armable** spec; any validation failure becomes a NE
 ### Target design
 1. **Delivery sink = the origin conversation, captured fully at arm time** (channel + chat/DM id + in-thread locus). Preserve today's channel behavior through the split.
 2. **Execution thread = a dedicated per-subscription id, decoupled from the chat thread.** KB attaches here. **Memory policy: stateless-per-fire by default** (each fire independent — correct for "get current price"), opt-in **continuous** for tasks that benefit from memory. (Current default = continuous/accumulating = wrong for most watches.)
-3. **CONFIRM surfaces the delivery target** — "…and send it to *this chat*" (channel) vs. "…to your *Runs inbox* / your *linked Slack*" (web) — so the user approves *where* results go, not just the prompt.
-4. **Web same-thread is a known limitation** (no async connection). v1: **Runs inbox + fix the toast** so web fires notify; offer **"post to my Slack/email"** as the real async path. (Live SSE only while the tab is open is a non-goal.)
+3. **CONFIRM surfaces the delivery target** — "…and send it to *this chat*" — so the user approves *where* results go, not just the prompt. (Since the web mailbox landed, every surface says "this chat"; the web card adds "(and the Runs tab)".)
+4. ~~**Web same-thread is a known limitation** (no async connection).~~ **CLOSED (2026-08-06).** A browser genuinely cannot be pushed to, but it *can* be drained: `web` is now a direct channel whose transport is a durable per-thread mailbox (`web_inbox`), and both chat surfaces poll `GET /api/events/inbox?thread_id=…&since=…`. A fire therefore lands **in the same thread it was armed from**, on the web too, and survives a closed tab (the backlog is recovered with `since=0`). Live SSE remains a non-goal — polling a durable mailbox is strictly better, because it does not require the tab to have been open.
 5. **Split note:** all thread/delivery logic lives in the **eventing service** (sink capture, `send_direct`, channel adapters). Only *execution* crosses to CUGA via `/run` under the execution thread. The split does not touch delivery.
 
-Per-surface answer to "same thread as I armed from": **Slack/Discord/Telegram (direct): YES** (today + preserved). **Web: NO today** (Runs-tab only); v1 adds inbox notify + optional linked channel.
+Per-surface answer to "same thread as I armed from": **Slack/Discord/Telegram (direct): YES** (today + preserved). **Web: YES** as of 2026-08-06 — the fire is delivered to a durable per-thread mailbox the chat drains, so it appears in the arming thread and survives a closed tab.
 
 ## 6·0 Current-state vs new-state (functionality + implementation)
 
@@ -216,7 +216,7 @@ Legend: 🟢 new user-facing capability · 🔵 same behavior, implementation ch
 | Clarify missing info | PUSH required-slots only; cron/poll silently default | widened to cron/poll cadence + delivery; validate-before-confirm | 🟢 |
 | Cancel an in-progress arm | none | `/cancel` | 🟢 |
 | Automations survive restart/deploy | **No** (`events.db` `:memory:` → fleet vanishes) | **Yes** (durable store) | 🟢 |
-| Web: see a fire result | Runs tab only; toast broken for cron/poll | Runs inbox + fixed toast; optional "post to my Slack/email" | 🟢 |
+| Web: see a fire result | Runs tab only — the fire ran, the dashboard knew, the chat never heard back | **delivered into the arming thread** as a `⚡ flow fired` message, via a durable mailbox (`web_inbox`) the chat polls; backlog recovered after a closed tab | 🟢 |
 | Channel: fire replies to same DM/thread | Yes | Yes — preserved | ⚪ |
 | Plain chat | POST `/stream` with chat-vs-events fork inside it | POST `/stream` — pure chat, fork removed; edge routes slash→eventing | 🔵 (minor UX: NL auto-detect → explicit slash) |
 | Where the agent runs | in-process `_cuga_bridge` (needs `app_state`) | HTTP `/run` on CUGA (wraps `AgentLoop.run`) | 🔵 |

@@ -203,12 +203,21 @@ inbound to localhost; on CE the platform route is already public.
   Discord Gateway, and the native scheduler are persistent *single-owner* loops —
   more than one instance double-processes events, and scale-to-zero kills the loops.
   This is a correctness constraint, not a cost knob.
-- **Ephemeral state.** `events.db` (armed flows) and the SQLite checkpointer
-  (conversation memory) live on the container's ephemeral disk → **lost on restart /
-  redeploy**. Fine for a test. For durability, mount a COS persistent data store at
-  the DB path (VAKRA's pattern) or move to Postgres.
+- **State is durable — armed flows live in PostgreSQL** (`EVENTS_DB`), so an instance
+  replace is a non-event. The container disk is still ephemeral, which is why nothing
+  that must survive may be written to it. *(Conversation memory in the SQLite
+  checkpointer is the remaining exception and is still lost on redeploy.)*
 - **Remote MCP servers scale to zero** → the first tool call after idle has cold-start
   lag. Warm them before a demo.
+- **`REAL` is not the same type in SQLite and Postgres.** SQLite's `REAL` is an 8-byte
+  double; Postgres's is `float4`, ~7 significant digits. Every timestamp here is a Unix
+  epoch (10 digits), so on Postgres they were silently rounded to a **~100-second grid**
+  — a "1 minute" cron drifted onto that grid, the Runs log's times were wrong by up to
+  ±50s, and the web mailbox's `since` cursor skipped messages that shared a bucket.
+  `db._to_pg_types` now emits `DOUBLE PRECISION`, and `widen_real_columns()` repairs a
+  database an older build already created (it logs `widened N float4 column(s)` once at
+  boot). **The offline suite cannot catch this class of bug** — SQLite is unaffected —
+  so schema changes want a run of `make test-pg` against a real PostgreSQL.
 
 ## Agent model (a `--env` change, no rebuild)
 The agent model is pure env, so switching is just a **re-run of step 2** (the image

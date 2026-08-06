@@ -104,7 +104,12 @@ def create_app():
     from .users import UserStore
 
     db = _db_path()
-    log.info("events service: store = %s", db)
+    # REDACTED. This logged the DSN verbatim: harmless for a SQLite path, but for the managed
+    # PostgreSQL it is postgres://user:PASSWORD@host/db — so every boot wrote live database
+    # credentials in plaintext to the platform log, readable by anyone with log access to the
+    # project and retained long after a rotation. db._redact keeps the shape, drops the secret.
+    from .db import _redact as _redact_dsn
+    log.info("events service: store = %s", _redact_dsn(db))
 
     # DURABILITY. The container filesystem is ephemeral: when the platform replaces the instance,
     # the new pod gets an empty disk and every armed flow is gone with no restart recorded. Restore

@@ -10761,6 +10761,8 @@ function ChatLanding() {
  * lifted so the Examples tab can prefill this box.
  */
 
+/** The thread this surface talks on. It is also the delivery address a fire comes back to. */
+const THREAD_ID = "web:studio";
 function ConciergeChat({
   draft,
   setDraft
@@ -10769,6 +10771,44 @@ function ConciergeChat({
   const [busy, setBusy] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
   const [error, setError] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(null);
   const [dryRun, setDryRun] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  /** Mailbox cursor — the ts of the last fire rendered. Ref, not state: it must not re-trigger the poll. */
+  const cursor = (0,react__WEBPACK_IMPORTED_MODULE_0__.useRef)(0);
+
+  // ── Asynchronous flow fires ─────────────────────────────────────────────────
+  // Arming is only half the loop. The flow fires later — a cron tick at 09:05, a poll that finally
+  // saw a change — with no request in flight to answer. Slack gets a push; a browser can only be
+  // drained, so the server delivers into a per-thread mailbox and we poll it. Without this the flow
+  // ran, the dashboard knew, and this chat never heard back.
+  //
+  // `since=0` on the first pass is deliberate: it recovers everything that fired while the tab was
+  // closed, so a reopened Studio shows the fires it missed instead of losing them.
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    let cancelled = false;
+    const drain = async () => {
+      try {
+        const res = await _api__WEBPACK_IMPORTED_MODULE_3__.getEventsInbox(THREAD_ID, cursor.current);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const msgs = data?.messages ?? [];
+        if (!msgs.length || cancelled) return;
+        cursor.current = data.cursor ?? cursor.current;
+        setMessages(m => [...m, ...msgs.map(x => ({
+          role: "concierge",
+          text: String(x.text ?? ""),
+          meta: x.flow_name ? `flow · ${x.flow_name}` : "flow fired",
+          fire: true
+        }))]);
+      } catch {
+        /* a mailbox that is unreachable must never break the chat */
+      }
+    };
+    drain();
+    const id = setInterval(drain, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
   const send = async override => {
     const text = (override ?? draft).trim();
     if (!text || busy) return;
@@ -10781,7 +10821,7 @@ function ConciergeChat({
     if (override === undefined) setDraft("");
     try {
       const res = await _api__WEBPACK_IMPORTED_MODULE_3__.postConcierge(text, {
-        threadId: "web:studio",
+        threadId: THREAD_ID,
         dryRun
       });
       const data = await res.json();
@@ -10815,6 +10855,9 @@ function ConciergeChat({
       setBusy(false);
     }
   };
+
+  // The newest message that is part of the arming dialogue (fires arrive out-of-band and don't count).
+  const lastDialogueIndex = messages.reduce((best, m, i) => m.fire ? best : i, -1);
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-chat"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -10823,19 +10866,23 @@ function ConciergeChat({
     className: "studio-muted"
   }, "Tell the concierge what you want \u2014 e.g. ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"every 1 minute send me new arXiv papers on mixture-of-experts\""), ". It reuses or creates a worker and arms the trigger. Toggle ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Preview"), " to see the plan without side effects.", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("br", null), "Or type ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, "/automate <what>"), " \u2014 one command whose router picks push / cron / poll for you: ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate summarize new emails\""), " (push),", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate the market brief every weekday 8am\""), " (cron),", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate check bitcoin every 5 min on a move\""), " (poll)."), messages.map((m, i) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     key: i,
-    className: `studio-msg studio-msg-${m.role}`
+    className: `studio-msg studio-msg-${m.role}${m.fire ? " studio-msg-fire" : ""}`
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-msg-role"
-  }, m.role === "user" ? "You" : "Concierge", m.meta && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Tag, {
-    type: m.role === "user" ? "gray" : "green",
+  }, m.role === "user" ? "You" : m.fire ? "⚡ Flow" : "Concierge", m.meta && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.Tag, {
+    type: m.role === "user" ? "gray" : m.fire ? "purple" : "green",
     size: "sm",
     style: {
       marginLeft: 8
     }
-  }, m.meta)), m.state === "confirm" && m.summary ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ArmConfirmCard, {
+  }, m.meta)), m.state === "confirm" && m.summary ?
+  /*#__PURE__*/
+  // "live" is the newest message of the DIALOGUE — a flow firing mid-arming is not a
+  // reply and must not retire the card the human is still looking at.
+  react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ArmConfirmCard, {
     summary: m.summary,
     busy: busy,
-    live: i === messages.length - 1,
+    live: i === lastDialogueIndex,
     onSay: t => send(t),
     setDraft: setDraft
   }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("pre", {
@@ -14496,13 +14543,30 @@ function useEndpoint(fn, pick, dep) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fn().then(r => {
-      if (!r.ok) throw new Error(r.statusText);
+    fn()
+    // Name the STATUS and the PATH. "error fetching" on its own sent us to the browser console
+    // and then to the server logs to discover a 500 from a dropped database connection; the
+    // status code alone would have said "server-side, not your session" immediately.
+    .then(r => {
+      if (!r.ok) {
+        const where = (() => {
+          try {
+            return new URL(r.url).pathname;
+          } catch {
+            return "";
+          }
+        })();
+        throw new Error(`HTTP ${r.status}${r.statusText ? " " + r.statusText : ""}${where ? ` — ${where}` : ""}`);
+      }
       return r.json();
     }).then(d => {
       if (!cancelled) setData(pick(d));
     }).catch(e => {
-      if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
+      if (cancelled) return;
+      const msg = e instanceof Error ? e.message : "Failed to load";
+      // A bare TypeError from fetch means the request never completed: CORS, DNS, or the events
+      // service being down — all of which look identical to the user without saying so.
+      setError(/failed to fetch|networkerror|load failed/i.test(msg) ? `${msg} — the eventing service may be unreachable (check EVENTS_API_URL and CORS)` : msg);
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -15647,16 +15711,35 @@ function DashboardTab({
     lowContrast: true,
     hideCloseButton: true,
     title: "No runs yet",
-    subtitle: "Arm a watcher; each fire shows here with the sub-agent, tools, and the answer."
+    subtitle: "Every agent run lands here \u2014 a direct chat message as well as each fire of an armed flow. The Source column tells them apart."
   }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Table, {
     size: "sm"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "When"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Agent"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Type"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Tools"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Answer"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Status"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, runs.slice(0, 30).map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "When"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Source"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Agent"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Type"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Tools"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Answer"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Status"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, runs.slice(0, 30).map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
     key: r.id
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, {
     style: {
       whiteSpace: "nowrap"
     }
-  }, fmtTime(r.started_at)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, r.agent)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+  }, fmtTime(r.started_at)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, {
+    style: {
+      whiteSpace: "nowrap",
+      fontFamily: "monospace",
+      fontSize: ".72rem"
+    }
+  }, r.subscription_id || r.flow_id ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    title: r.flow_name || undefined
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "blue",
+    size: "sm"
+  }, "flow"), " ", r.subscription_id || r.flow_id) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    title: `direct ${r.channel || "web"} message — no flow involved`,
+    style: {
+      opacity: .6
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "gray",
+    size: "sm"
+  }, "chat"), " ", r.channel || "web")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, r.agent)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: MODE_TAG_D[r.mode] ?? "gray",
     size: "sm"
   }, r.mode), " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
@@ -16851,6 +16934,7 @@ function UnauthorizedPage() {
 /* harmony export */   getEventsChannels: function() { return /* binding */ getEventsChannels; },
 /* harmony export */   getEventsExamples: function() { return /* binding */ getEventsExamples; },
 /* harmony export */   getEventsFlowDetail: function() { return /* binding */ getEventsFlowDetail; },
+/* harmony export */   getEventsInbox: function() { return /* binding */ getEventsInbox; },
 /* harmony export */   getEventsIntegrations: function() { return /* binding */ getEventsIntegrations; },
 /* harmony export */   getEventsMcpServers: function() { return /* binding */ getEventsMcpServers; },
 /* harmony export */   getEventsMe: function() { return /* binding */ getEventsMe; },
@@ -17433,6 +17517,24 @@ async function getEventsRuns() {
 }
 async function getEventsRunDetail(id) {
   return apiFetch(`/api/events/runs/${encodeURIComponent(id)}`);
+}
+
+/**
+ * The web channel's mailbox — asynchronous flow fires waiting for this browser.
+ *
+ * A flow armed in a chat here fires minutes or days later, when no request is in flight. Slack gets
+ * a push; a tab can only be drained. So the server delivers into a per-thread mailbox and the chat
+ * surface polls this. `since` is EXCLUSIVE — send back the `cursor` you were given and a message is
+ * never rendered twice; send `0` to recover the backlog after a reload.
+ *
+ * `maxAgeSeconds` bounds that first load. A minute-by-minute cron piles up hundreds of fires, and
+ * replaying all of them is a flood, not a recovery. The server applies the cutoff with its own
+ * clock — deliberately not ours, since the cursor is a server timestamp and any disagreement
+ * between the two clocks would skip or repeat messages.
+ */
+async function getEventsInbox(threadId, since = 0, maxAgeSeconds = 86400) {
+  const age = since > 0 ? "" : `&max_age=${encodeURIComponent(String(maxAgeSeconds))}`;
+  return apiFetch(`/api/events/inbox?thread_id=${encodeURIComponent(threadId)}&since=${encodeURIComponent(String(since))}${age}`);
 }
 
 // The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
@@ -18605,6 +18707,69 @@ const CarbonChat = ({
       }
     }
   }, [threadId]);
+
+  // ── Asynchronous flow fires land in the transcript ──────────────────────────────────────────────
+  // Arming a flow is only half the loop. It fires LATER — a cron tick at 09:05, a poll that finally
+  // saw a change — when no request is in flight to answer into. Slack and Discord get pushed into;
+  // a browser can only be drained, so the server delivers each fire to a per-thread mailbox and we
+  // poll it. Without this the flow ran and answered, the dashboard knew, and the chat that armed it
+  // never heard back: "it fired but I don't see it".
+  //
+  // Deliberately the ONLY renderer of fires — customLoadHistory does not include them. One path
+  // means no double-render on reload: a reopened tab starts at cursor 0, drains the whole backlog,
+  // and appends it. Fires therefore land at the END of the transcript rather than interleaved by
+  // time, which is nearly always the true order anyway (a flow fires after the chat that armed it).
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+    if (!threadId) return;
+    let cancelled = false;
+    let cursor = 0;
+    const drain = async () => {
+      const instance = chatInstanceRef.current;
+      if (!instance || cancelled) return;
+      try {
+        const res = await _api__WEBPACK_IMPORTED_MODULE_4__.getEventsInbox(threadId, cursor);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages = data?.messages ?? [];
+        if (!messages.length) return;
+        cursor = data.cursor ?? cursor;
+        const profile = await (0,_carbonChatHelpers__WEBPACK_IMPORTED_MODULE_8__.getResponseUserProfile)(useDraft);
+        for (const m of messages) {
+          if (cancelled) break;
+          await instance.messaging.addMessage({
+            id: `fire-${m.id}`,
+            output: {
+              generic: [{
+                response_type: _carbon_ai_chat__WEBPACK_IMPORTED_MODULE_1__.MessageResponseTypes.TEXT,
+                text: String(m.text ?? '')
+              }]
+            },
+            message_options: {
+              response_user_profile: profile
+            }
+          });
+        }
+      } catch {
+        /* an unreachable mailbox must never break the chat */
+      }
+    };
+
+    // Only poll when the events layer is mounted — vanilla CUGA has no /api/events/*.
+    let timer = null;
+    let first = null;
+    _api__WEBPACK_IMPORTED_MODULE_4__.getEventsStatus().then(s => {
+      if (cancelled || !s) return;
+      // Hold the first drain briefly. Switching threads runs clearConversation() → insertHistory()
+      // asynchronously; injecting a fire into that window gets it wiped by the clear.
+      first = setTimeout(drain, 2500);
+      timer = setInterval(drain, 15000);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      if (first) clearTimeout(first);
+      if (timer) clearInterval(timer);
+    };
+  }, [threadId, useDraft]);
 
   // Wrap customLoadHistory to pass threadId and disableHistory
   const handleCustomLoadHistory = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(async instance => {
@@ -22599,4 +22764,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.3393cbfe972f88786e00.js.map
+//# sourceMappingURL=main.9fe6e4c2651553717c1f.js.map

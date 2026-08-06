@@ -117,6 +117,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     from .now_runs import NowRunStore
     now_runs = NowRunStore(os.environ.get("EVENTS_DB", ":memory:"))
 
+    # The WEB channel's outbound transport. Slack/Discord/Telegram get pushed into; a browser can
+    # only be drained, so a web-armed flow's fire lands in this per-thread mailbox and the chat
+    # surface polls GET /api/events/inbox. Same DB as the subscription index → a fire survives an
+    # instance replace and is still waiting when the tab comes back.
+    from . import web_inbox
+    web_inbox.init(os.environ.get("EVENTS_DB", ":memory:"))
+
     def _log_now(*, scope, agent, channel, prompt, answer, status, ms=0, meta=None, trace_id="",
                  thread_id="", kind="chat", subscription_id="", event_kind="", db=True,
                  mode="NOW", backend="direct"):
@@ -369,23 +376,36 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             from .principal import channel_origin, channel_locus
             direct_done = False
             origin = channel_origin(env.thread_id)     # (channel, native) from the thread_id
+            # A browser thread has no gw: origin — the Studio and the main chat pass their own
+            # conversation id. Treat that as the WEB channel, whose delivery address IS the thread
+            # id: the fire lands in the mailbox the chat surface drains. Without this a web-armed
+            # flow ran, logged, and told nobody (the "it fired but I don't see it" gap).
+            if origin is None and env.thread_id and not is_now:
+                from .principal import unscoped_thread
+                origin = ("web", unscoped_thread(env.thread_id))
             if origin and delivery.is_direct(origin[0]) and origin[1] and isinstance(answer, str):
                 # a FIRE (not a chat message) is labeled so the reader knows WHY the bot spoke:
                 # which flow/trigger produced this, at a glance. Chat replies stay unlabeled.
                 out_text = answer
+                _flow_name = ""
+                _sid = str(body.get("subscription_id") or "")
                 if env.event.kind != "message":
-                    _flow = ""
-                    _sid = str(body.get("subscription_id") or "")
                     if _sid and store is not None:
                         _s = store.get(_sid)
-                        _flow = f" · {_s.flow_name}" if _s is not None and _s.flow_name else ""
+                        _flow_name = (_s.flow_name or "") if _s is not None else ""
+                    _flow = f" · {_flow_name}" if _flow_name else ""
                     _what = ("cron tick" if env.event.kind == "tick"
                              else f"{env.source.name}/{env.event.kind}")
                     out_text = f"⚡ flow fired · {_what}{_flow}\n{answer}"
                 # locus = the in-channel anchor (Slack thread_ts / Discord message id): deliver
                 # INTO the thread the flow was armed from, not to the channel root
                 ok, why = await delivery.send_direct(origin[0], origin[1], out_text,
-                                                     locus=channel_locus(env.thread_id))
+                                                     locus=channel_locus(env.thread_id),
+                                                     scope=scope,
+                                                     meta={"agent": meta.get("agent") or agent,
+                                                           "subscription_id": _sid,
+                                                           "flow_name": _flow_name,
+                                                           "event_kind": str(getattr(env.event, "kind", "") or "")})
                 tr("deliver", via="direct", channel=origin[0], ok=ok, reason=why)
                 direct_done = ok
             cap = os.environ.get("EA_CAPTURE_URL")
@@ -754,6 +774,39 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         /api/events/* APIs; no build step, so it can't break the pre-built Studio bundle."""
         from .events_dashboard import DASHBOARD_HTML
         return HTMLResponse(DASHBOARD_HTML)
+
+    # --- the web channel's mailbox: fires waiting for a browser to come and collect them ----------
+    @app.get("/api/events/inbox")
+    async def web_inbox_read(request: Request, thread_id: str, since: float = 0.0,
+                             limit: int = 50, max_age: float = 0.0):
+        """Messages delivered to ONE web thread, **oldest first**, newer than ``since``.
+
+        This is how a browser receives an asynchronous fire. A flow armed in the Studio chat or the
+        main chat fires minutes or days later, with no request in flight — Slack would get a push,
+        a tab can only be drained. So ``delivery.send_direct("web", …)`` writes the answer here and
+        the chat surface polls this endpoint with the ``ts`` of the last message it rendered.
+
+        ``since`` is EXCLUSIVE (pass back the last ``ts`` you saw and you will never re-render it).
+        Pass ``since=0`` to get the thread's whole backlog — which is what a reloaded tab does, so
+        the fires it missed while closed appear in the transcript rather than being lost.
+
+        ``max_age`` (seconds) bounds that backlog on a FIRST load, and the cutoff is computed with
+        the SERVER's clock. A minute-by-minute cron accumulates hundreds of fires; replaying all of
+        them into a chat window is not "recovering what you missed", it is a flood. The clients ask
+        for a day. It is a server-side parameter on purpose: the cursor is a server timestamp, so
+        letting a browser subtract from its own clock would skip or repeat messages whenever the two
+        disagree. Ignored once ``since`` is set, which is every poll after the first.
+
+        Isolation: only this caller's messages, and only for the thread asked for.
+        """
+        scope = resolve_principal(headers=request.headers).scope
+        if max_age > 0 and since <= 0:
+            since = max(0.0, time_module.time() - max_age)
+        msgs = web_inbox.list_since(thread_id=thread_id, since=since, scope=scope, limit=limit)
+        return {"thread_id": thread_id, "count": len(msgs), "scope": scope,
+                # the cursor to send back next time — the client never has to compute it
+                "cursor": (msgs[-1]["ts"] if msgs else since),
+                "messages": msgs}
 
     # --- execution log: which flows RAN, succeeded/failed, and their output -----------------------
     @app.get("/api/events/runs")

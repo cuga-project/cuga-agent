@@ -563,6 +563,33 @@ ENDPOINTS = [
             "use <code>GET /api/events/subscriptions</code> — the schedule lives on the watcher. "
             "Runs whose flow isn't yours are skipped, not 403'd."),
 
+    E("GET", "/api/events/inbox", "runs",
+      "The <b>web channel's mailbox</b> — fires waiting for a browser to collect them. Slack and "
+      "Discord get pushed into; a tab can only be drained, so a flow armed in a web chat delivers "
+      "here and the chat surface polls this endpoint.",
+      tier="ui", callers=["studio"],
+      query=[("thread_id", "the web conversation to read (required)", "web:studio"),
+             ("since", "EXCLUSIVE epoch-seconds cursor; 0 ⇒ the whole backlog", "0"),
+             ("max_age", "seconds — bound a FIRST load (ignored once <code>since</code> is set); "
+                         "cutoff uses the SERVER clock", "86400"),
+             ("limit", "max messages (default 50, cap 200)", "50")],
+      responses=[(200, {"thread_id": "web:studio", "count": 1,
+                        "scope": "default/default/local", "cursor": 1785312000.4,
+                        "messages": [
+          {"id": "9f2c…", "ts": 1785312000.4, "scope": "default/default/local",
+           "thread_id": "web:studio",
+           "text": "⚡ flow fired · cron tick · IBM price\nIBM is trading at $291.40.",
+           "agent": "pricebot", "subscription_id": "cuga-50993d",
+           "flow_name": "IBM price", "event_kind": "tick"}]},
+        "Oldest first — the order a chat log appends them in. Send <code>cursor</code> back as the "
+        "next <code>since</code> and a message is never rendered twice.")],
+      notes="Why it exists: a cron armed at 09:00 fires at 09:05, with no request in flight and "
+            "possibly no tab open. Before this the answer went to the runs log and nowhere else — "
+            "the flow fired, the dashboard knew, and the chat that armed it never heard back. "
+            "Messages are durable (same store as the subscription index), so a reloaded tab passing "
+            "<code>since=0</code> recovers the fires it missed while closed. Channel-armed flows "
+            "never land here (their thread resolves to a real channel), so there are no duplicates."),
+
     E("GET", "/api/events/runs/{run_id}", "runs",
       "One run, with the agent's answer lifted out of the AP step tree.",
       tier="ui", callers=["studio"], path_params=[("run_id", "Activepieces run id", "r1")],
