@@ -42,6 +42,7 @@ def _get_prompt_template():
 def test_agent_spawn_defaults():
     from cuga.config import settings
 
+    assert settings.agent_spawn.enabled is False
     assert settings.agent_spawn.max_spawn_depth == 2
     assert settings.agent_spawn.forward_sync_subagent_events is True
 
