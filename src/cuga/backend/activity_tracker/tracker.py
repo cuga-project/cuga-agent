@@ -42,7 +42,7 @@ class Step(BaseModel):
     name: Optional[str] = ""
     plan: Optional[str] = ""
     prompts: List[Prompt] = Field(default_factory=list)
-    data: Optional[str] = ""
+    data: Optional[Any] = ""
     task_decomposition: Optional[str] = ""
     current_url: Optional[str] = ""
     action_formatted: Optional[str] = ""
@@ -50,6 +50,53 @@ class Step(BaseModel):
     action_args: Optional[Any] = ""
     observation_before: Optional[str] = ""
     image_before: Optional[str] = ""
+
+
+def to_json_safe(value: Any, _seen: Optional[set[int]] = None) -> Any:
+    """Recursively normalize *value* to JSON-safe primitives without mutating the source."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if _seen is None:
+        _seen = set()
+    if isinstance(value, BaseModel):
+        return to_json_safe(value.model_dump(mode="python"), _seen)
+    if isinstance(value, dict):
+        identity = id(value)
+        if identity in _seen:
+            return "<cyclic reference>"
+        _seen.add(identity)
+        try:
+            return {str(key): to_json_safe(item, _seen) for key, item in value.items()}
+        finally:
+            _seen.remove(identity)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        identity = id(value)
+        if identity in _seen:
+            return "<cyclic reference>"
+        _seen.add(identity)
+        try:
+            return [to_json_safe(item, _seen) for item in value]
+        finally:
+            _seen.remove(identity)
+    return str(value)
+
+
+def decode_step_data(
+    data: Any,
+    *,
+    expected_type: "type | tuple[type, ...] | None" = None,
+) -> Any:
+    """Return *data* as a native object, parsing from JSON string if needed."""
+    if isinstance(data, str):
+        try:
+            decoded = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Step data is not valid JSON") from exc
+    else:
+        decoded = data
+    if expected_type is not None and not isinstance(decoded, expected_type):
+        raise TypeError(f"Decoded step data must be {expected_type}, got {type(decoded).__name__}")
+    return decoded
 
 
 class TasksMetadata(BaseModel):
@@ -547,9 +594,8 @@ class ActivityTracker(object):
 
         data_json = None
         try:
-            data_json = json.loads(step.data)
-
-        except Exception:
+            data_json = decode_step_data(step.data, expected_type=dict)
+        except (ValueError, TypeError):
             pass
 
         # Attach any collected prompts to this step so they are persisted
@@ -575,7 +621,7 @@ class ActivityTracker(object):
                     annotation_content=self.intent,
                 )
             if step.name == "CodeAgent":
-                res_obj = CodeAgentOutput(**json.loads(step.data))
+                res_obj = CodeAgentOutput(**decode_step_data(step.data, expected_type=dict))
                 AIEventRecorder.record_data_annotation(
                     name="CodeAgent",
                     annotation_type=DataAnnotation.Type.CODE_GENERATION,
@@ -714,12 +760,12 @@ class ActivityTracker(object):
                     "actions_count": self.actions_count,
                     "task_id": self.task_id,
                     "eval": self.eval,
-                    "steps": [new_step.model_dump()],
+                    "steps": [new_step.model_dump(mode="python")],
                     "score": self.score,
                 }
             else:
                 # Update existing data with new step
-                existing_data["steps"].append(new_step.model_dump())
+                existing_data["steps"].append(new_step.model_dump(mode="python"))
                 # Update other fields that might have changed
                 existing_data.update(
                     {
@@ -736,7 +782,7 @@ class ActivityTracker(object):
             # Write the updated data back to file
             with open(full_path, 'w', encoding='utf-8') as f:
                 json.dump(
-                    data_to_save,
+                    to_json_safe(data_to_save),
                     f,
                     ensure_ascii=False,
                     indent=4,
@@ -779,15 +825,17 @@ class ActivityTracker(object):
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(
-                {
-                    "intent": self.intent,
-                    "dataset_name": self.dataset_name,
-                    "actions_count": self.actions_count,
-                    "task_id": self.task_id,
-                    "eval": self.eval,
-                    "steps": [d.model_dump() for d in self.steps],
-                    "score": self.score,
-                },
+                to_json_safe(
+                    {
+                        "intent": self.intent,
+                        "dataset_name": self.dataset_name,
+                        "actions_count": self.actions_count,
+                        "task_id": self.task_id,
+                        "eval": self.eval,
+                        "steps": [d.model_dump(mode="python") for d in self.steps],
+                        "score": self.score,
+                    }
+                ),
                 f,
                 ensure_ascii=False,
                 indent=4,
