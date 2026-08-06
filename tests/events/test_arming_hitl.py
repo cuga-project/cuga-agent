@@ -21,15 +21,25 @@ from cuga.backend.events.arming import (
     validate,
 )
 from cuga.backend.events.concierge import Concierge
+from cuga.backend.events.principal import DEFAULT as DEFAULT_PRINCIPAL
 from cuga.backend.events.runtime import AgentSpec, AgentStoreRuntime, StubRuntime
 from cuga.backend.events.subscriptions import SubscriptionStore
 
 
 def _client(db=":memory:", stub=False):
     """stub=True swaps in the deterministic runtime — used by the tests that send PLAIN CHAT,
-    which would otherwise build the real CUGA worker graph (slow, needs a live model)."""
+    which would otherwise build the real CUGA worker graph (slow, needs a live model).
+
+    The agent MUST be registered under ``Principal.agent_scope`` (``<tenant>/<instance>``), which is
+    where the concierge's NOW fast-path looks it up — not under a bare ``"default"``. Registering it
+    anywhere else makes the fast-path miss, and the concierge then *silently falls back to the real
+    LLM*: locally that quietly succeeds on the developer's key, so the stub looks like it works while
+    every plain-chat test is making a live model call. In CI, with no valid key, the same fallback
+    returns 401 and the test fails — which is how this was found. Derived from the code rather than
+    hardcoded so the two can't drift apart again.
+    """
     rt = StubRuntime() if stub else AgentStoreRuntime(agent_store=AgentStore(":memory:"))
-    rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope="default")
+    rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope=DEFAULT_PRINCIPAL.agent_scope)
     store = SubscriptionStore(db)
     cg = Concierge(rt, store=store, engine=None)
     app = FastAPI()
@@ -179,6 +189,26 @@ def test_plain_chat_never_enters_the_arming_dialogue():
     c, store = _client(stub=True)
     assert _say(c, "what is the capital of Japan?").get("state") in (None, "")
     assert store.list() == []
+
+
+def test_the_stub_actually_answers_plain_chat_without_any_model(caplog):
+    """The suite's own offline guarantee, asserted instead of assumed.
+
+    ``stub=True`` exists so plain chat never builds the real worker graph. But the stub is only
+    consulted if the agent is registered where the concierge looks (``Principal.agent_scope``); when
+    it wasn't, the concierge logged 'NOW fast-path failed … falling back to the LLM path' and made a
+    **live model call**. On a developer machine that succeeds against the .env key and the test still
+    passes — so the regression is invisible locally and only fails in CI. Assert on the log line, so
+    a future scope change breaks this test rather than quietly restoring the network call.
+    """
+    import logging
+
+    c, _ = _client(stub=True)
+    with caplog.at_level(logging.WARNING, logger="cuga.events.concierge"):
+        assert _say(c, "what is the capital of Japan?").get("state") in (None, "")
+    assert "fast-path failed" not in caplog.text, (
+        "plain chat fell back to the real LLM — the stub agent is registered under the wrong scope"
+    )
 
 
 # ── channels: the SAME dialogue over /invoke ───────────────────────────────────────────────────

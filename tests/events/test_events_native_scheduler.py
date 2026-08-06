@@ -180,7 +180,11 @@ def _tools(engine):
     import principal as _principal_mod
 
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
-    rt.upsert_agent(AgentSpec(name="cuga", prompt="x", integrations=[]), scope="default")
+    # agent_scope (<tenant>/<instance>) is where lookups happen; a bare "default" never matches and
+    # sends the concierge down its live-LLM fallback. See test_arming_hitl._client.
+    rt.upsert_agent(
+        AgentSpec(name="cuga", prompt="x", integrations=[]), scope=_principal_mod.DEFAULT.agent_scope
+    )
     store = _S(":memory:")
     tools = concierge.make_concierge_tools(rt, store=store, engine=engine, users=None)
     focf = next(t for t in tools if t.name == "find_or_create_flow")

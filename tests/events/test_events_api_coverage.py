@@ -253,9 +253,12 @@ def _concierge_client(engine=None):
     from events.agent_store import AgentStore
     from events.runtime import AgentStoreRuntime, AgentSpec
     from events.concierge import Concierge
+    from events.principal import DEFAULT as _DEFAULT_PRINCIPAL
 
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
-    rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope="default")
+    # agent_scope (<tenant>/<instance>) is where lookups happen; a bare "default" never matches and
+    # sends the concierge down its live-LLM fallback. See test_arming_hitl._client.
+    rt.upsert_agent(AgentSpec(name="cuga", prompt="c", integrations=[]), scope=_DEFAULT_PRINCIPAL.agent_scope)
     store = SubscriptionStore(":memory:")
     cg = Concierge(rt, store=store, engine=engine)
     app = FastAPI()
