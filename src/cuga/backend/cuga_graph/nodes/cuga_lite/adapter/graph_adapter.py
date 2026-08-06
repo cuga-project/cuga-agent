@@ -179,7 +179,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         try:
             self._tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
             if code:
-                self._tracker.collect_step(step=Step(name="Assistant_code", data=content))
+                self._tracker.collect_step(step=Step(name="Assistant_code", data=code))
             else:
                 self._tracker.collect_step(step=Step(name="Assistant_nl", data=content))
         except Exception as exc:
