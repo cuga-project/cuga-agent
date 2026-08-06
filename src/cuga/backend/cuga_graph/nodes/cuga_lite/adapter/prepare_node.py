@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Optional
+from inspect import iscoroutinefunction
+from typing import Any, Callable, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -33,6 +34,9 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
     _knowledge_scope_instruction,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import make_recording_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     PromptUtils,
     create_mcp_prompt,
@@ -50,6 +54,20 @@ from cuga.backend.skills import (
 )
 from cuga.backend.server.workspace_sandbox import get_sandbox_env_description
 from cuga.config import settings
+
+
+def _tool_param_names(tool: Any) -> List[str]:
+    """Derive parameter names from a LangChain tool args schema (mirrors toolguard)."""
+    args_schema = getattr(tool, "args_schema", None)
+    if args_schema is None:
+        return []
+    model_fields = getattr(args_schema, "model_fields", None)
+    if model_fields:
+        return list(model_fields.keys())
+    legacy_fields = getattr(args_schema, "__fields__", None)
+    if legacy_fields:
+        return list(legacy_fields.keys())
+    return []
 
 
 def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -> Callable:
@@ -359,6 +377,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _af = getattr(settings, "advanced_features", None)
         _warn_args = bool(getattr(_af, "cuga_lite_warn_suspect_args", True))
 
+        # Direct LangChain tools have no built-in recorder (registry/combined
+        # provider tools record inside their own wrappers), so wrap them for
+        # ToolCallTracker — otherwise track_tool_calls=True yields no trace
+        # unless every tool is hand-decorated with @tracked_tool.
+        # The SDK installs decorators around the base provider (e.g. ToolGuard),
+        # so unwrap before detecting the direct provider.
+        _provider = adapter._base_tool_provider
+        while isinstance(_provider, ToolGuardingToolProvider):
+            _provider = _provider.unwrap()
+        _direct_tool_names = (
+            {t.name for t in _provider.tools}
+            if isinstance(_provider, DirectLangChainToolsProvider)
+            else set()
+        )
+
         for tool in tools_for_execution:
             # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
             # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
@@ -373,12 +406,28 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 tool_func = getattr(tool, '_run', None)
 
             if tool_func:
+                # @tracked_tool already records — but only for async tools. Its
+                # sync wrapper runs in make_tool_awaitable's executor thread,
+                # where this tracker's contextvars are invisible, so it records
+                # nothing and our wrapper is what makes sync tools appear.
+                _decorator_records = getattr(tool_func, "_cuga_tracked", False) and iscoroutinefunction(
+                    tool_func
+                )
+                _param_names = _tool_param_names(tool)
                 tool_func = make_arg_warning_callable(
                     tool_func,
                     getattr(tool, "args_schema", None),
                     enable=_warn_args,
                 )
-                adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
+                awaitable_tool = make_tool_awaitable(tool_func)
+                if tool.name in _direct_tool_names and not _decorator_records:
+                    awaitable_tool = make_recording_awaitable(
+                        awaitable_tool,
+                        tool.name,
+                        app_name=_provider.app_name,
+                        param_names=_param_names,
+                    )
+                adapter._tools_context[tool.name] = awaitable_tool
             else:
                 logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 

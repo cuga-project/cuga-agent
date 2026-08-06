@@ -182,7 +182,8 @@ def test_normalize_response_extracts_reasoning():
 # ── 6. on_response_processed hook ────────────────────────────────────────
 
 
-def test_on_response_processed_calls_tracker_for_code():
+@pytest.mark.unit
+def test_on_response_processed_code_branch_records_code_not_content():
     AgentGraphAdapter = _get_adapter_class()
     tracker = _make_tracker()
     adapter = AgentGraphAdapter(
@@ -193,11 +194,20 @@ def test_on_response_processed_calls_tracker_for_code():
         base_tool_provider=None,
     )
     state = SimpleNamespace()
-    adapter.on_response_processed(state, code="print(1)", content="```python\nprint(1)\n```")
-    tracker.collect_step.assert_called()
+    content = "Here is the solution:\n```python\nprint(1)\n```"
+    code = "print(1)"
+    adapter.on_response_processed(state, code=code, content=content)
+
+    calls = tracker.collect_step.call_args_list
+    assert len(calls) == 2
+    assert calls[0].kwargs["step"].name == "Raw_Assistant_Response"
+    assert calls[0].kwargs["step"].data == content
+    assert calls[1].kwargs["step"].name == "Assistant_code"
+    assert calls[1].kwargs["step"].data == code  # must be code, not content
 
 
-def test_on_response_processed_calls_tracker_for_nl():
+@pytest.mark.unit
+def test_on_response_processed_nl_branch_records_content():
     AgentGraphAdapter = _get_adapter_class()
     tracker = _make_tracker()
     adapter = AgentGraphAdapter(
@@ -208,8 +218,15 @@ def test_on_response_processed_calls_tracker_for_nl():
         base_tool_provider=None,
     )
     state = SimpleNamespace()
-    adapter.on_response_processed(state, code=None, content="The answer is 42.")
-    tracker.collect_step.assert_called()
+    content = "The answer is 42."
+    adapter.on_response_processed(state, code=None, content=content)
+
+    calls = tracker.collect_step.call_args_list
+    assert len(calls) == 2
+    assert calls[0].kwargs["step"].name == "Raw_Assistant_Response"
+    assert calls[0].kwargs["step"].data == content
+    assert calls[1].kwargs["step"].name == "Assistant_nl"
+    assert calls[1].kwargs["step"].data == content
 
 
 # ── 7. build_metadata_update hook ────────────────────────────────────────
