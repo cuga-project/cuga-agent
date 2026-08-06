@@ -95,11 +95,13 @@ process instances or execution traces (see §6).
 Two cautions when using it on CUGA FLO models:
 
 - The `*-kogito.bpmn` models here are **hand-written** and carry script tasks, `drools:import`
-  declarations and typed `<bpmn2:property>` blocks. Whether the editor round-trips all of
-  that unchanged on save has not been verified — commit before opening one, so a rewrite is
-  visible in the diff.
+  declarations and typed `<bpmn2:property>` blocks. The editor does round-trip all of that
+  safely — verified on a re-save, with node, flow and property counts unchanged and the model
+  still building — but the file is **not** byte-identical: it regenerates the
+  `definitions` / `collaboration` / `participant` ids, reorders elements and rewrites diagram
+  bounds. Commit before opening one, so that churn is visible in the diff.
 - Edit the model in the app's `config/` directory, never the copy the build script places
-  under `src/main/resources/org/cuga/generated/`, which is overwritten every build.
+  under `build/kogito/<app>/src/main/resources/org/cuga/`, which is overwritten every build.
 
 ### Verify the toolchain
 
