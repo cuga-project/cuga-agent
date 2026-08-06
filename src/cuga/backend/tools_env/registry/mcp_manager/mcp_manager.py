@@ -545,19 +545,26 @@ class MCPManager:
         if not args:
             args = {}
         if not server:
-            logger.error(f"Tool {tool_name} not found. Available tools: {list(self.server_by_tool.keys())[:10]}")
+            logger.error(
+                f"Tool {tool_name} not found. Available tools: {list(self.server_by_tool.keys())[:10]}"
+            )
             raise Exception(f"[Tool {tool_name} not found in any server]")
 
         # Check if this is a string (MCP server name) or FastMCP server instance
         if isinstance(server, str):
-            # MCP server - use client-based call
+            # External MCP server - use client-based call
             if server in self.mcp_clients:
                 return await self._call_mcp_server_tool(server, tool_name, args)
             else:
                 raise Exception(f"[MCP server {server} not found in mcp_clients]")
         else:
-            # FastMCP server instance - call directly with args and headers
-            return await server.call_tool(tool_name, {**args, "headers": headers})
+            # Local FastMCP server instance - call directly.
+            # Handlers expect {"params": <args>, "headers": <headers>}.
+            result = await server.call_tool(tool_name, {"params": args, "headers": headers})
+            # FastMCP 3.x returns ToolResult; callers expect a TextContent list.
+            if hasattr(result, "content") and not isinstance(result, list):
+                return list(result.content or [])
+            return result
 
     def get_server_names(self):
         return list(self.tools_by_server.keys())
