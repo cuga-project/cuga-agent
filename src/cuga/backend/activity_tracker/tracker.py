@@ -2,9 +2,10 @@ import copy
 import json
 import os
 import shutil
+import time
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-import time
 
 import pandas as pd
 
@@ -60,7 +61,7 @@ def to_json_safe(value: Any, _seen: Optional[set[int]] = None) -> Any:
         _seen = set()
     if isinstance(value, BaseModel):
         return to_json_safe(value.model_dump(mode="python"), _seen)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         identity = id(value)
         if identity in _seen:
             return "<cyclic reference>"
@@ -69,7 +70,16 @@ def to_json_safe(value: Any, _seen: Optional[set[int]] = None) -> Any:
             return {str(key): to_json_safe(item, _seen) for key, item in value.items()}
         finally:
             _seen.remove(identity)
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (set, frozenset)):
+        identity = id(value)
+        if identity in _seen:
+            return "<cyclic reference>"
+        _seen.add(identity)
+        try:
+            return [to_json_safe(item, _seen) for item in value]
+        finally:
+            _seen.remove(identity)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         identity = id(value)
         if identity in _seen:
             return "<cyclic reference>"

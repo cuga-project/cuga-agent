@@ -1,4 +1,5 @@
 import json
+from collections import UserDict
 
 import pytest
 from pydantic import BaseModel
@@ -11,6 +12,28 @@ from cuga.backend.activity_tracker.tracker import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def isolate_activity_tracker_state():
+    tracker = ActivityTracker()
+    original_base_dir = tracker._base_dir
+    original_experiment_folder = tracker.experiment_folder
+    original_task_id = tracker.task_id
+    original_steps = list(tracker.steps)
+
+    tracker._base_dir = ""
+    tracker.experiment_folder = ""
+    tracker.task_id = ""
+    tracker.steps = []
+
+    try:
+        yield
+    finally:
+        tracker._base_dir = original_base_dir
+        tracker.experiment_folder = original_experiment_folder
+        tracker.task_id = original_task_id
+        tracker.steps = original_steps
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +80,11 @@ def test_to_json_safe_handles_cycle_deterministically():
     assert to_json_safe(value) == ["<cyclic reference>"]
 
 
+def test_to_json_safe_normalizes_mapping_and_sequence_types():
+    value = UserDict({"items": range(3)})
+    assert to_json_safe(value) == {"items": [0, 1, 2]}
+
+
 def test_decode_step_data_accepts_native_and_legacy_mapping():
     payload = {"id": 1}
     assert decode_step_data(payload, expected_type=dict) is payload
@@ -88,6 +116,19 @@ def test_to_file_writes_native_data_after_one_parse(tmp_path):
     payload = json.loads((tmp_path / "experiment" / "task.json").read_text())
     assert payload["steps"][0]["data"] == {"result": {"id": 1}}
     assert payload["steps"][1]["data"] == '{"result": 1}'
+
+
+def test_to_file_writes_supported_mapping_and_sequence_values(tmp_path):
+    tracker = ActivityTracker()
+    tracker._base_dir = str(tmp_path)
+    tracker.experiment_folder = "experiment"
+    tracker.task_id = "task"
+    tracker.steps = [Step(name="structured", data=UserDict({"items": range(3)}))]
+
+    tracker.to_file()
+
+    payload = json.loads((tmp_path / "experiment" / "task.json").read_text())
+    assert payload["steps"][0]["data"] == {"items": [0, 1, 2]}
 
 
 def test_to_file_external_append_writes_native_step_and_preserves_legacy(tmp_path):
