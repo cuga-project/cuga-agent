@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable, Optional
 
 from langchain_core.messages import HumanMessage
@@ -140,13 +139,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(
-                step=Step(
-                    name="User_output_variables",
-                    data=json.dumps(
-                        new_vars,
-                        default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o),
-                    ),
-                )
+                step=Step(name="User_output_variables", data=new_vars)
             )
 
             # Output is already formatted and trimmed by code_executor

@@ -145,7 +145,7 @@ class FinalAnswerNode(BaseNode):
                 thoughts=["Chat response provided directly."], final_answer=state.final_answer
             )
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
-            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump(mode="python")))
             return Command(update=state.model_dump(), goto=NodeNames.END)
 
         # Handle TaskAnalyzerAgent when final_answer is already set (no apps matched)
@@ -159,7 +159,7 @@ class FinalAnswerNode(BaseNode):
                 final_answer=state.final_answer,
             )
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
-            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump(mode="python")))
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
             state.sender = name
@@ -169,7 +169,7 @@ class FinalAnswerNode(BaseNode):
                 final_answer=state.final_answer,
             )
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
-            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+            tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump(mode="python")))
             return Command(update=state.model_dump(), goto=NodeNames.END)
 
         # Handle supervisor callback - forward answer without regeneration (especially for lite mode)
@@ -186,7 +186,7 @@ class FinalAnswerNode(BaseNode):
                     final_answer=state.final_answer,
                 )
                 state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
-                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump(mode="python")))
                 return Command(update=state.model_dump(), goto=NodeNames.END)
             else:
                 # Fallback: if no answer found, still forward empty answer to avoid regeneration
@@ -200,7 +200,7 @@ class FinalAnswerNode(BaseNode):
                     final_answer="",
                 )
                 state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
-                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump(mode="python")))
                 return Command(update=state.model_dump(), goto=NodeNames.END)
 
         # Main processing: generate final answer
@@ -231,7 +231,7 @@ class FinalAnswerNode(BaseNode):
             state.append_to_last_chat_message(chat_message)
 
         # Track the step
-        tracker.collect_step(Step(name=name, data=final_answer_output.model_dump_json()))
+        tracker.collect_step(Step(name=name, data=final_answer_output.model_dump(mode="python")))
 
         # Replace variables and update state
         final_answer_output.final_answer = state.variables_manager.replace_variables_placeholders(
