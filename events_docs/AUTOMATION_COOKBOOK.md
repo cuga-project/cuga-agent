@@ -190,8 +190,8 @@ Slack Events API and the Discord Gateway, so a watcher is just a subscription ro
 /watch when a new member joins this Discord server, greet them
 ```
 
-These land on `incident_triage`, which is the agent whose HANDLES lines declare the Slack/Discord
-trigger kinds.
+These land on `incident_triage`, the agent that declares the Slack/Discord trigger kinds in its
+`integrations` (`events/seed.py`).
 
 **Inbound webhook** — for anything that can POST:
 
@@ -235,7 +235,7 @@ own*. With AP off, arming one returns a clean "CONNECT NEEDED" rather than faili
 | Pinterest | 3 · RSS 1 · YouTube 1 · Box `new_file` 1 | `/watch new items on this RSS feed` |
 
 Note the asymmetry: `pr_reviewer` and `incident_triage` are *ready* for GitHub and Gmail events —
-their HANDLES lines already declare those triggers. What's missing is only the **delivery of the
+their `integrations` already declare those triggers. What's missing is only the **delivery of the
 event**, which is exactly the job AP does. See the AP re-enable notes in
 [CORE_VS_LAYER.md](CORE_VS_LAYER.md).
 
@@ -286,7 +286,7 @@ curl -s -H "X-Gateway-Token: $GATEWAY_TOKEN" \
 
 ## Sources
 
-`supervisor_agents.yaml` (the 8 sub-agents and their HANDLES lines) ·
+`supervisor_agents.yaml` (the 8 sub-agents) · `src/cuga/backend/events/seed.py` (trigger ownership) ·
 `src/cuga/backend/events/triggers.py` (the 42-row trigger registry) ·
 `src/cuga/backend/events/concierge.py` (slash parsing, the HITL state machine) ·
 `src/cuga/backend/events/poll_state.py` (the four delta tiers)

@@ -248,7 +248,7 @@ local and CE against the same bot gives `409 Conflict` on Telegram and split-bra
 | `rosters/supervisor_agents_full.yaml` | 27 — the original example |
 
 Whatever roster you write, **every registry trigger must be claimed by some agent's
-`HANDLES TRIGGERS:` line** — that is how the supervisor knows which specialist owns an inbound
+structured `integrations[].triggers`** in `events/seed.py` — that is where trigger ownership lives
 event. `tests/events/test_supervisor_roster.py` enforces it; the 8-agent roster covers all of them
 by giving `pr_reviewer` the `github/*` repo events, `incident_triage` the rest of
 slack/discord/box/gmail/calendar, and `webpage_summarizer` the URL-shaped ones (rss, youtube,

@@ -11,7 +11,7 @@ supervisor:
     papers, wikis, lab blogs, and web pages — and turn them into grounded, cited answers. Delegate
     EVERY task to exactly ONE sub-agent and return its answer; never answer yourself. Payloads may be
     prefixed with their trigger, e.g. [slack/new_slack_mention] or [telegram/new_channel_message]:
-    pick the sub-agent whose HANDLES line declares it. For plain questions, route by domain — a URL
+    pick the sub-agent whose role covers that source. For plain questions, route by domain — a URL
     to webpage_summarizer, a paper query to papers, a "what's new in AI" to ai_labs_news, an
     open-ended research ask to research_compass, a deep topic dive to wiki_dive.
 
@@ -19,7 +19,6 @@ agents:
   - name: research_compass
     special_instructions: |
       Research any topic. Search arXiv + Semantic Scholar (cuga-knowledge) AND the web (cuga-web), then synthesize the findings with citations, name the 2-3 most important papers/sources, and suggest what to read next. Be concrete.
-      HANDLES TRIGGERS: slack/new_slack_mention (New Mention in Channel), slack/saved_message (New Saved Message)
     mcp_servers:
       - name: cuga-knowledge
       - name: cuga-web
@@ -45,6 +44,5 @@ agents:
   - name: webpage_summarizer
     special_instructions: |
       Given a URL, fetch the page (fetch_webpage) and summarize it: what it is, the 3-5 key points, and who should care. If asked what a page links to, use fetch_webpage_links. If given a topic instead of a URL, web_search for it first, then fetch the best result. Never summarize a page you did not fetch.
-      HANDLES TRIGGERS: telegram/new_channel_message (New Update (content-filtered))
     mcp_servers:
       - name: cuga-web

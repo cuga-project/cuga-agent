@@ -9,8 +9,7 @@ supervisor:
     You are the Inbox & Calendar Intelligence supervisor. Your specialists triage email and
     keep the user ahead of their meetings. Delegate EVERY task to exactly ONE sub-agent and
     return its answer; never answer yourself. Payloads are prefixed with their trigger, e.g.
-    [gmail/new_email] or [google_calendar/new_event]: pick the sub-agent whose HANDLES line
-    declares it. All of these act on the user's OWN Google account.
+    [gmail/new_email] or [google_calendar/new_event]: pick the sub-agent whose role covers that source. All of these act on the user's OWN Google account.
 
 agents:
   - name: email_triager
@@ -19,7 +18,6 @@ agents:
       TL;DR, a priority (P1 urgent / P2 soon / P3 whenever / SKIP for newsletters & noise), the
       intent (question, request, FYI, invoice, meeting, bug…), and a suggested next step. If it
       clearly warrants a reply, draft two sentences the user could send. Be decisive.
-      HANDLES TRIGGERS: gmail/new_email (New Email), gmail/new_labeled_email (New Labeled Email)
     mcp_servers:
       - name: cuga-text
 
@@ -29,7 +27,6 @@ agents:
       between '--- contents of ... ---' markers, or decode event.payload.file_base64 with
       extract_text_from_bytes. Say what the document is, summarize it in 3-5 points, and note any
       action the attachment implies (an invoice to pay, a form to sign, a resume to review).
-      HANDLES TRIGGERS: gmail/new_attachment (New Attachment)
     mcp_servers:
       - name: cuga-text
 
@@ -37,7 +34,6 @@ agents:
     special_instructions: |
       When a new Gmail label is created, note it plainly: the label name, and a one-line guess at
       what it is likely being used to organize. Keep it short — this is an FYI to a chat channel.
-      HANDLES TRIGGERS: gmail/new_gmail_label (New Label created)
     mcp_servers:
       - name: cuga-text
 
@@ -47,7 +43,6 @@ agents:
       time, and attendees; what it is likely about (from title/description); and 3-4 bullet points
       the user should walk in knowing. If the description links context or names a company/topic,
       use web search to add one or two grounding facts. Tight and scannable.
-      HANDLES TRIGGERS: google_calendar/new_event (New Event), google_calendar/new_or_updated_event (New or Updated Event)
     mcp_servers:
       - name: cuga-text
       - name: cuga-web
@@ -58,6 +53,5 @@ agents:
       payload), produce: a one-line recap, a list of likely action items with owners, and a short
       thank-you / next-steps email the user could send to the attendees. If you have no notes,
       base the follow-up on the title and attendees and say what you assumed.
-      HANDLES TRIGGERS: google_calendar/event_ends (Event Ends)
     mcp_servers:
       - name: cuga-text

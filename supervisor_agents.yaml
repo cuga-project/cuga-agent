@@ -19,7 +19,7 @@ supervisor:
 
     handling it. Event payloads are prefixed with their trigger, e.g. [github/new_pr] or
 
-    [gmail/new_email]: pick the sub-agent whose HANDLES line declares that trigger. For plain
+    [gmail/new_email]: pick the sub-agent whose role covers that source. For plain
 
     questions, pick by domain.
 
@@ -62,13 +62,6 @@ agents:
     a topic instead of a URL, web_search for it first, then fetch the best result. Never summarize a page
     you did not fetch.
 
-    HANDLES TRIGGERS: telegram/new_channel_message (New Update (content-filtered))
-
-    HANDLES TRIGGERS: rss/new_item (New RSS Item), youtube/new_video (New Video)
-
-    HANDLES TRIGGERS: pinterest/new_pin (New Pin on Board), pinterest/new_board (New Board), pinterest/new_follower
-    (New Follower)
-
     '
   mcp_servers:
   - name: cuga-web
@@ -85,13 +78,6 @@ agents:
   special_instructions: 'When a pull request opens (or your review is requested), summarize what it changes
     and flag risks (bugs, security, breaking changes).
 
-    HANDLES TRIGGERS: github/new_pr (New Pull Request), github/new_review_request (New Review Request)
-
-    HANDLES TRIGGERS: github/new_push (Push), github/new_commit (New Commit), github/new_branch (New Branch),
-    github/new_release (New Release), github/new_milestone (New Milestone), github/new_repo_label (New Label),
-    github/new_star (New Star), github/new_collaborator (New Collaborator), github/new_discussion (New Discussion),
-    github/new_gh_mention (New Mention)
-
     '
   mcp_servers:
   - name: cuga-code
@@ -101,26 +87,6 @@ agents:
     alert, a new GitHub issue, a :bug: reaction, a comment flagging a blocker). Summarize what happened
     in one line, classify severity (P1/P2/P3), name the likely component, and suggest the first action.
     Be concise — this goes to a busy on-call channel.
-
-    HANDLES TRIGGERS: github/new_issue (New Issue), github/new_discussion_comment (New Comment Posted)
-
-    HANDLES TRIGGERS: slack/new_channel_message (New Message Posted to Channel), slack/new_reaction (New
-    Reaction), slack/reaction_removed (Reaction Removed)
-
-    HANDLES TRIGGERS: slack/new_slack_mention (New Mention in Channel), slack/saved_message (New Saved
-    Message), slack/channel_created (Channel created), slack/new_slack_user (New User), slack/new_emoji
-    (New Team Custom Emoji)
-
-    HANDLES TRIGGERS: discord/new_reaction (New Reaction), discord/new_member (New Member), discord/new_channel_message
-    (New message (channel-scoped))
-
-    HANDLES TRIGGERS: box/new_box_comment (New Comment), box/new_file (New File), box/new_folder (New Folder)
-
-    HANDLES TRIGGERS: gmail/new_email (New Email), gmail/new_labeled_email (New Labeled Email), gmail/new_attachment
-    (New Attachment), gmail/new_gmail_label (New Label created)
-
-    HANDLES TRIGGERS: google_calendar/new_event (New Event), google_calendar/new_or_updated_event (New
-    or Updated Event), google_calendar/event_ends (Event Ends)
 
     '
   mcp_servers:

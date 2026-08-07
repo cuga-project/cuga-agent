@@ -6,8 +6,16 @@ supervisor schema, consumed by load_supervisor_config).
 
 After conversion the YAML is the SOURCE OF TRUTH for sub-agents (edit it by hand; `make reload`
 rebuilds). This script stays only to re-derive the file during the transition — it is NOT a
-runtime dependency. Trigger HANDLES hints are generated from the registry so the supervisor's
-routing descriptions can never drift from the triggers that actually exist.
+runtime dependency.
+
+NO trigger hints are emitted into the prompts. An earlier version appended "HANDLES TRIGGERS: …"
+lines to every sub-agent's instructions, on the theory that the supervisor read them when routing.
+It does not: the routing prompt renders each sub-agent as `{{ agent['description'] }}`, and
+CugaAgent has no `description`, so every entry falls back to "Internal agent: <name>". The hints
+only ever reached the sub-agent's OWN prompt — read after routing had already chosen it — while
+costing ~50% of the roster's prompt text. Trigger ownership lives in the structured
+`integrations[].triggers` on each AgentSpec (events/seed.py), which is machine-readable and is what
+the tests assert against.
 (Plan: events_docs/plans/SUPERVISOR_REFACTOR.md, Phase 1.)
 """
 
@@ -26,31 +34,18 @@ You are CUGA. You coordinate specialist sub-agents. For EVERY task — even one 
 like summarizing a short email — delegate to exactly ONE best-suited sub-agent and return its
 answer. NEVER answer the task yourself: attribution and auditability depend on a specialist
 handling it. Event payloads are prefixed with their trigger, e.g. [github/new_pr] or
-[gmail/new_email]: pick the sub-agent whose HANDLES line declares that trigger. For plain
+[gmail/new_email]: pick the sub-agent whose role covers that source. For plain
 questions, pick by domain.
 """
 
 
-def _handles(spec, tr) -> str:
-    """The HANDLES routing hint, derived from the registry — never hand-written."""
-    lines = []
-    for integ in spec.integrations or []:
-        app = integ.get("app", "")
-        declared = integ.get("triggers")
-        rows = [t for t in tr.events_for(app) if (not declared or t.event in declared)]
-        if rows:
-            lines.append("HANDLES TRIGGERS: " + ", ".join(f"{t.app}/{t.event} ({t.title})" for t in rows))
-    return "\n".join(lines)
-
-
 def main() -> int:
-    from cuga.backend.events import seed, triggers as tr
+    from cuga.backend.events import seed
 
     agents = seed.default_agents()
     blocks = [
         "# GENERATED once by scripts/gen_supervisor_roster.py — now the SOURCE OF TRUTH.",
-        "# Edit by hand; `make reload` rebuilds the supervisor. HANDLES lines mirror the",
-        "# trigger registry (events/triggers.py); keep them in sync when editing triggers.",
+        "# Edit by hand; `make reload` rebuilds the supervisor.",
         "",
         "supervisor:",
         "  name: cuga",
@@ -62,9 +57,7 @@ def main() -> int:
     for a in agents:
         if a.name == "concierge":
             continue
-        instr = (a.prompt or "").strip()
-        hints = _handles(a, tr)
-        body = instr + ("\n" + hints if hints else "")
+        body = (a.prompt or "").strip()
         blocks.append(f"  - name: {a.name}")
         blocks.append("    special_instructions: |")
         blocks.extend(f"      {ln}" for ln in body.splitlines())

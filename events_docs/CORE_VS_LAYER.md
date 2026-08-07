@@ -126,7 +126,7 @@ when AP was switched off.
 |---|---|
 | AP engine code | ~1,842 LOC intact (`ap_engine.py` 807 · `catalog.py` 641 · `oauth.py` 266 · `connectors.py` 128) |
 | 27 AP triggers | registered and validated — GitHub 14 · Gmail 4 · Calendar 3 · Pinterest 3 · Box 1 · RSS 1 · YouTube 1 |
-| Agents ready | `pr_reviewer` and `incident_triage` already declare HANDLES lines for the GitHub/Gmail/Calendar/Box triggers. **No agent work needed.** |
+| Agents ready | `pr_reviewer` and `incident_triage` already declare the GitHub/Box triggers in their `integrations` (`events/seed.py`). **No agent work needed.** |
 | Local orchestration | `make ap` · `make ap-pieces` · `make up` · `make test-ap` |
 | Harnesses | `live_github_e2e` · `live_github_real_pr` · `live_github_triggers` · `live_gmail_e2e` · `live_integrations_e2e` · `live_new_pieces` |
 | **A latent crash — fixed** | `reachable()` had been pasted into the middle of `__init__`, so `_auth_lock` and friends were never assigned; the first AP call would raise `'APEngine' object has no attribute '_auth_lock'`. Fixed, with `test_ap_engine_construction.py` (5 tests) guarding it. **This would have been the first thing you hit.** |

@@ -17,7 +17,7 @@ supervisor:
 
     handling it. Event payloads are prefixed with their trigger, e.g. [github/new_pr] or
 
-    [gmail/new_email]: pick the sub-agent whose HANDLES line declares that trigger. For plain
+    [gmail/new_email]: pick the sub-agent whose role covers that source. For plain
 
     questions, pick by domain.
 
@@ -40,9 +40,6 @@ agents:
   special_instructions: 'Research any topic. Search arXiv + Semantic Scholar (cuga-knowledge) AND the
     web (cuga-web), then synthesize the findings with citations, name the 2-3 most important papers/sources,
     and suggest what to read next. Be concrete.
-
-    HANDLES TRIGGERS: slack/new_slack_mention (New Mention in Channel), slack/saved_message (New Saved
-    Message)
 
     '
   mcp_servers:
@@ -72,11 +69,6 @@ agents:
     agent is built to run on a schedule: when asked what changed, report ONLY items you have not reported
     before. Also fields Pinterest content-watch events (a new pin, board, or follower) — summarize what
     appeared.
-
-    HANDLES TRIGGERS: pinterest/new_pin (New Pin on Board), pinterest/new_board (New Board), pinterest/new_follower
-    (New Follower)
-
-    HANDLES TRIGGERS: rss/new_item (New RSS Item)
 
     '
   mcp_servers:
@@ -135,8 +127,6 @@ agents:
     creators actually say — attributing points to specific videos. Given a URL, answer from that video''s
     transcript. Quote transcripts; note when a video has none. (Broader than video_qa''s single video.)
 
-    HANDLES TRIGGERS: youtube/new_video (New Video)
-
     '
   mcp_servers:
   - name: cuga-web
@@ -157,8 +147,6 @@ agents:
     relevant doc, and answer grounded in it. Cite the doc URL. If the docs don''t cover it, say so rather
     than guessing.
 
-    HANDLES TRIGGERS: discord/new_channel_message (New message (channel-scoped))
-
     '
   mcp_servers:
   - name: cuga-web
@@ -166,12 +154,6 @@ agents:
   special_instructions: 'You summarize and triage the user''s Gmail, and field the user''s Google Calendar
     events (a new or updated event, or a meeting that just ended — draft the follow-ups). Uses their own
     Google login.
-
-    HANDLES TRIGGERS: gmail/new_email (New Email), gmail/new_labeled_email (New Labeled Email), gmail/new_attachment
-    (New Attachment), gmail/new_gmail_label (New Label created)
-
-    HANDLES TRIGGERS: google_calendar/new_event (New Event), google_calendar/new_or_updated_event (New
-    or Updated Event), google_calendar/event_ends (Event Ends)
 
     '
   mcp_servers:
@@ -183,11 +165,6 @@ agents:
     with extract_text_from_bytes. Judge fit against the job description in the message: start your reply
     with MATCH or SKIP, then two lines of reasoning citing specifics from the resume.
 
-    HANDLES TRIGGERS: box/new_file (New File), box/new_folder (New Folder), box/new_box_comment (New Comment)
-
-    HANDLES TRIGGERS: gmail/new_email (New Email), gmail/new_labeled_email (New Labeled Email), gmail/new_attachment
-    (New Attachment), gmail/new_gmail_label (New Label created)
-
     '
   mcp_servers:
   - name: cuga-text
@@ -195,13 +172,6 @@ agents:
   special_instructions: 'You post an overnight support digest to a shared Slack channel, and handle workspace-lifecycle
     events: welcome a new teammate or server member with a short onboarding note, announce a newly-created
     channel with a suggested charter, note a new custom emoji, or index a new Box folder.
-
-    HANDLES TRIGGERS: slack/channel_created (Channel created), slack/new_slack_user (New User), slack/new_emoji
-    (New Team Custom Emoji)
-
-    HANDLES TRIGGERS: discord/new_member (New Member)
-
-    HANDLES TRIGGERS: box/new_folder (New Folder)
 
     '
   mcp_servers:
@@ -211,11 +181,6 @@ agents:
     commits, branches, collaborators, labels, milestones, discussions, mentions). Read the event payload
     you are given, say plainly what happened and who did it, and add one useful next step when it is obvious
     (e.g. a release → one-line changelog digest; a push → note what changed). Concise, chat-friendly.
-
-    HANDLES TRIGGERS: github/new_star (New Star), github/new_push (Push), github/new_discussion (New Discussion),
-    github/new_branch (New Branch), github/new_collaborator (New Collaborator), github/new_repo_label
-    (New Label), github/new_milestone (New Milestone), github/new_release (New Release), github/new_commit
-    (New Commit), github/new_gh_mention (New Mention)
 
     '
   mcp_servers:

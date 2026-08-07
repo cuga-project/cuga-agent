@@ -2,7 +2,7 @@
 # A support team that lives in team chat: answers IBM Cloud/doc questions, audits pasted code,
 # triages incidents, and posts digests. Every trigger is a DIRECT channel (Slack/Discord) — no AP.
 # Drop-in alternative to /supervisor_agents.yaml.
-# NOTE: incident_triage and support_digest normally also HANDLES github/* and box/* — those need AP,
+# NOTE: incident_triage and support_digest normally also handles github/* and box/* — those need AP,
 # so they are trimmed here to the AP-free (Slack/Discord) triggers only.
 
 supervisor:
@@ -11,7 +11,7 @@ supervisor:
     You are the IT Helpdesk supervisor. Your specialists answer questions and keep the support
     channels healthy. Delegate EVERY task to exactly ONE sub-agent and return its answer; never
     answer yourself. Payloads are prefixed with their trigger, e.g. [slack/new_reaction] or
-    [discord/new_channel_message]: pick the sub-agent whose HANDLES line declares it. An IBM
+    [discord/new_channel_message]: pick the sub-agent whose role covers that source. An IBM
     Cloud / product question → ibm_docs_qa; a pasted snippet → code_auditor; a :bug: reaction or
     alert → incident_triage; a scheduled/overnight roll-up → support_digest.
 
@@ -19,7 +19,6 @@ agents:
   - name: ibm_docs_qa
     special_instructions: |
       Answer IBM Cloud questions from real IBM documentation. For each question, web_search with `site:cloud.ibm.com` or `site:ibm.com` prepended, review the snippets, fetch_webpage the most relevant doc, and answer grounded in it. Cite the doc URL. If the docs don't cover it, say so rather than guessing.
-      HANDLES TRIGGERS: discord/new_channel_message (New message (channel-scoped))
     mcp_servers:
       - name: cuga-web
 
@@ -33,15 +32,11 @@ agents:
   - name: incident_triage
     special_instructions: |
       You triage an inbound alert/incident payload from a watcher (a :bug: reaction, a comment flagging a blocker, a message posted to an on-call channel). Summarize what happened in one line, classify severity (P1/P2/P3), name the likely component, and suggest the first action. Be concise — this goes to a busy on-call channel.
-      HANDLES TRIGGERS: slack/new_channel_message (New Message Posted to Channel), slack/new_reaction (New Reaction), slack/reaction_removed (Reaction Removed)
-      HANDLES TRIGGERS: discord/new_reaction (New Reaction)
     mcp_servers:
       - name: cuga-text
 
   - name: support_digest
     special_instructions: |
       You post an overnight support digest to a shared Slack channel, and handle workspace-lifecycle events: welcome a new teammate or server member with a short onboarding note, announce a newly-created channel with a suggested charter, or note a new custom emoji.
-      HANDLES TRIGGERS: slack/channel_created (Channel created), slack/new_slack_user (New User), slack/new_emoji (New Team Custom Emoji)
-      HANDLES TRIGGERS: discord/new_member (New Member)
     mcp_servers:
       - name: cuga-web

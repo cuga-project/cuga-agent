@@ -232,7 +232,7 @@ The roster is loaded by **CUGA**, not by the eventing service — the roster bel
 executes. CUGA publishes it at `GET /run/agents`, and the eventing service reads it from there.
 
 Nothing in the channels, triggers, flows, or NL→Flow compiler is tied to the demo agents — they
-route to whatever your roster's HANDLES lines declare.
+route to whatever sub-agents your roster names.
 
 **Ready-made rosters ship in [`rosters/`](../rosters/README.md)** — drop-in alternatives to the flat
 27-agent default, so you can `EVENTS_SUPERVISOR_ROSTER=rosters/<file>.yaml` without authoring one.
@@ -244,23 +244,30 @@ rosters (exec office, DevOps) need AP for their SaaS push triggers. See
 
 ### Adding a sub-agent (builder guide)
 
-A sub-agent is **a skill, not a deployment**: a name, a prompt, tools, and routing hints. Append a
-block to your roster YAML (`supervisor_agents.yaml` by default):
+A sub-agent is **a skill, not a deployment**: a name, a prompt, and tools. Append a block to your
+roster YAML (`supervisor_agents.yaml` by default):
 
 ```yaml
   - name: invoice_checker
     special_instructions: |
       You verify invoices: amounts, due dates, duplicate detection. Be terse and factual.
-      HANDLES TRIGGERS: gmail/new_attachment (An email with an attachment)
     mcp_servers:
       - name: cuga-text
 ```
 
 then `make reload`. Three rules:
 
-1. **The HANDLES line is how the supervisor routes to it** — name the `app/event` pairs from the
-   trigger registry verbatim. The offline gates fail the build if a registry trigger is claimed by
-   nobody, or a HANDLES hint points at a trigger that doesn't exist.
+1. **The NAME is what the supervisor routes on** — so make it descriptive. Its routing prompt lists
+   each sub-agent as `name (INTERNAL): Internal agent: <name>`; there is no other description, so a
+   vague name is a vague routing signal.
+
+   > Rosters used to carry a `HANDLES TRIGGERS: app/event (…)` line per agent, and this guide used
+   > to tell you to write one. They were removed: the supervisor never saw them (they landed in the
+   > sub-agent's own prompt, read only *after* routing had picked it) while costing about half the
+   > roster's prompt text. **Do not add them back** — an offline gate now fails if any roster does.
+   > If a sub-agent should *own* a trigger, declare it in the structured
+   > `integrations[].triggers` on its `AgentSpec` in `src/cuga/backend/events/seed.py`, which is
+   > machine-readable and is what the connect gate and the tests actually consult.
 2. **Channels are NOT per-sub-agent.** Channels (web/Slack/Discord/Telegram) belong to the
    platform: they all converse with the one `cuga` agent. A sub-agent never "joins" a channel;
    answers are delivered by the platform to wherever the conversation or flow originated.

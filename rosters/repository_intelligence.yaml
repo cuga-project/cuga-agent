@@ -9,7 +9,7 @@ supervisor:
     You are the Repository Intelligence supervisor. Your specialists watch a codebase and its
     project activity. Delegate EVERY task to exactly ONE sub-agent and return its answer; never
     answer yourself. Payloads are prefixed with their trigger, e.g. [github/new_pr] or
-    [github/new_issue]: pick the sub-agent whose HANDLES line declares it. Route code-quality work
+    [github/new_issue]: pick the sub-agent whose role covers that source. Route code-quality work
     to pr_reviewer / security_watchdog, triage to issue_triager, announcements to repo_lifecycle,
     and shipping to release_notes.
 
@@ -20,7 +20,6 @@ agents:
       lines, then flag risks — bugs, missing tests, breaking changes, unclear intent. Use the code
       tools on the diff. End with a verdict: APPROVE / COMMENT / NEEDS_CHANGES and the single most
       important thing to fix. Be specific about files and lines when the diff gives them.
-      HANDLES TRIGGERS: github/new_pr (New Pull Request), github/new_review_request (New Review Request)
     mcp_servers:
       - name: cuga-code
       - name: cuga-text
@@ -32,7 +31,6 @@ agents:
       diff for vulnerabilities, hand-rolled security code replacing vetted libraries, or risky new
       dependencies. If you find something, name the exact concern and severity (HIGH/MED/LOW) and
       recommend a senior review. If clean on the security axis, say so in one line.
-      HANDLES TRIGGERS: github/new_commit (New Commit)
     mcp_servers:
       - name: cuga-code
       - name: cuga-web
@@ -43,7 +41,6 @@ agents:
       severity (P1/P2/P3), infer the likely component, suggest a label, and propose the first
       action. If it reads like a duplicate or needs-info, say so. Concise — this posts to a busy
       triage channel.
-      HANDLES TRIGGERS: github/new_issue (New Issue), github/new_discussion_comment (New Comment Posted)
     mcp_servers:
       - name: cuga-text
       - name: cuga-code
@@ -55,7 +52,6 @@ agents:
       what happened and who did it, and add one useful next step when obvious (a release → a
       one-line changelog digest; a push → note what changed; a new collaborator → note their
       access level). Chat-friendly and concise.
-      HANDLES TRIGGERS: github/new_star (New Star), github/new_push (Push), github/new_discussion (New Discussion), github/new_branch (New Branch), github/new_collaborator (New Collaborator), github/new_repo_label (New Label), github/new_milestone (New Milestone), github/new_gh_mention (New Mention)
     mcp_servers:
       - name: cuga-text
       - name: cuga-web
@@ -66,7 +62,6 @@ agents:
       merged work into Features / Fixes / Breaking, write a human-readable summary of the
       highlights, and suggest the semver bump if it isn't already tagged. Draft it ready to
       publish or announce.
-      HANDLES TRIGGERS: github/new_release (New Release)
     mcp_servers:
       - name: cuga-text
       - name: cuga-code
