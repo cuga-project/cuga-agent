@@ -39,12 +39,13 @@ rsync -a \
   --exclude '/output/' --exclude '/results/' \
   --exclude 'deploy/ce/.env.ce' \
   --exclude 'deploy/ce/.ce_urls.env' \
+  --exclude '/.env' \
   --exclude '.DS_Store' \
   "$APP_ROOT/" "$STAGE/"
 
 # Belt-and-suspenders: prove the secret file did not make it into the context.
-if [ -f "$STAGE/deploy/ce/.env.ce" ]; then
-  echo "ABORT: .env.ce leaked into the build context. Refusing to upload secrets."; exit 1
+if [ -f "$STAGE/deploy/ce/.env.ce" ] || [ -f "$STAGE/.env" ]; then
+  echo "ABORT: a secret env file leaked into the build context. Refusing to upload secrets."; exit 1
 fi
 CTX_SIZE=$(du -sh "$STAGE" 2>/dev/null | cut -f1)
 echo "Build context size: ${CTX_SIZE:-?}"

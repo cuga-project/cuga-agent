@@ -75,6 +75,32 @@ def _graph(path: str) -> str:
 
 
 # ── inbound ─────────────────────────────────────────────────────────────────────────────────────
+def _safe_bytes(s) -> bytes:
+    """UTF-8 bytes for a constant-time compare.
+
+    ``hmac.compare_digest`` raises TypeError on a ``str`` containing non-ASCII, and both values it
+    guards here (the signature header, hub.verify_token) come from the request. Comparing bytes keeps
+    an attacker from turning a 401 into an unhandled 500 with one accented character.
+    """
+    if isinstance(s, bytes):
+        return s
+    return str(s or "").encode("utf-8", "replace")
+
+
+# Meta's hub.challenge is a short random token that we must echo back VERBATIM. It is also the only
+# request value this service ever reflects, so bound it: anything outside this alphabet, or absurdly
+# long, is not a challenge Meta sent and there is no reason to echo it.
+_CHALLENGE_OK = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+_CHALLENGE_MAX = 128
+
+
+def _safe_challenge(value: str) -> str:
+    v = str(value or "")
+    if not v or len(v) > _CHALLENGE_MAX or any(c not in _CHALLENGE_OK for c in v):
+        return ""
+    return v
+
+
 def verify_signature(headers, raw_body: bytes | str) -> tuple[bool, str]:
     """Verify Meta's ``X-Hub-Signature-256`` (HMAC-SHA256 of the RAW body with the app secret).
 
@@ -93,7 +119,9 @@ def verify_signature(headers, raw_body: bytes | str) -> tuple[bool, str]:
         return False, "missing signature header"
     body = raw_body.encode() if isinstance(raw_body, str) else (raw_body or b"")
     mine = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    ok = hmac.compare_digest(mine, sig)
+    # Compare as BYTES. `hmac.compare_digest` raises TypeError on str containing non-ASCII, and this
+    # value is an attacker-supplied header — a single non-ASCII byte would turn a 401 into a 500.
+    ok = hmac.compare_digest(mine.encode(), _safe_bytes(sig))
     return ok, ("ok" if ok else "bad signature")
 
 
@@ -106,13 +134,16 @@ def handshake(params) -> tuple[bool, str]:
     """
     mode = params.get("hub.mode") or ""
     tok = params.get("hub.verify_token") or ""
-    challenge = params.get("hub.challenge") or ""
+    challenge = _safe_challenge(params.get("hub.challenge") or "")
     want = verify_token()
+    if not challenge:
+        return False, "missing or malformed hub.challenge"
     if not want:
         return False, "WHATSAPP_VERIFY_TOKEN is not set"
     if mode != "subscribe":
-        return False, f"unexpected hub.mode {mode!r}"
-    if not hmac.compare_digest(tok, want):
+        return False, "unexpected hub.mode"
+    # bytes, for the same reason as verify_signature — hub.verify_token is attacker-supplied
+    if not hmac.compare_digest(_safe_bytes(tok), _safe_bytes(want)):
         return False, "verify token mismatch"
     return True, challenge
 

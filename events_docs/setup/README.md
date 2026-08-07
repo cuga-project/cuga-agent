@@ -16,6 +16,7 @@ command to **verify** it works. Pick your integration:
 | **[TELEGRAM.md](TELEGRAM.md)** | **direct (default)** · AP webhook behind a flag | instant (long-poll) | 1:1 chat with an agent |
 | **[DISCORD.md](DISCORD.md)** | **direct (default)** · AP polling behind a flag | instant (Gateway) | channel chat with an agent |
 | **[SLACK.md](SLACK.md)** | **direct (default)** · AP behind a flag | instant | channel chat with an agent |
+| **[WHATSAPP.md](WHATSAPP.md)** | **direct (only)** — AP's piece is send-only, 0 triggers | instant (Meta webhook) | 1:1 chat with an agent; **24-hour window** then templates |
 
 **Integrations** (an app the agent watches / acts on — all run on **Activepieces**):
 
