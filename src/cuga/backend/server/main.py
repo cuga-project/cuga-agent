@@ -2790,7 +2790,11 @@ async def run_sync(request: Request):
 # depends on a bot-id lookup succeeding. If it ever doesn't, "<@U123> /automate …" must still be
 # recognised as arming — handing it to the plain agent is the silent-failure trap (it tries to
 # IMPLEMENT the schedule), which is precisely what this feature exists to prevent.
-_SLASH_VERBS = re.compile(r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push|cancel)\b", re.I)
+# `(?:\s|<@[^>]+>)*` NOT `\s*(?:<@[^>]+>\s*)*` — the latter lets a run of spaces be matched by either
+# the leading `\s*` or the group's trailing `\s*`, which is quadratic on input that is mostly spaces
+# (CodeQL py/polynomial-redos). This form is unambiguous: at any position exactly one alternative can
+# match, because `\s` and `<` are disjoint. Same utterance accepted, linear time.
+_SLASH_VERBS = re.compile(r"(?:\s|<@[^>]+>)*/(automate|watch|schedule|cron|poll|push|cancel)\b", re.I)
 # Threads with an arming dialogue open, so a bare "yes" / "cancel" / "change the prompt to …" is
 # forwarded too. Deliberately IN-MEMORY: core must not read the events store. It is a routing hint,
 # not state — the eventing service holds the real parked entry (10-minute TTL) and is the only

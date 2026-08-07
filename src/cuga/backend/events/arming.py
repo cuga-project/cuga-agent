@@ -112,10 +112,14 @@ _NO = {
 }
 
 # "change the prompt to X" / "edit prompt: X" / "prompt = X" — the field, then the new value.
+# NB: every `\s`-run below is ` ?` (at most one space), never `\s*`/`\s+`. These patterns are applied
+# to `_one_space()`-normalised text, so a single space is all that can occur — and the optional groups
+# between them no longer give the engine two ways to consume the same run of whitespace, which is what
+# made the originals quadratic on space-heavy input (CodeQL py/polynomial-redos). Same phrases match.
 _EDIT_RX = re.compile(
-    r"^\s*(?:/edit\s+)?(?:edit|change|update|set|make)?\s*(?:the\s+)?"
-    r"(prompt|instruction|schedule|cadence|interval|delivery|destination|target|sink)\s*"
-    r"(?:to|=|:|as)?\s*(.+)$",
+    r"^(?:/edit )?(?:edit|change|update|set|make)? ?(?:the )?"
+    r"(prompt|instruction|schedule|cadence|interval|delivery|destination|target|sink) ?"
+    r"(?:to|=|:|as)? ?(.+)$",
     re.I | re.S,
 )
 
@@ -135,7 +139,7 @@ def read_reply(text: str) -> tuple[str, str, str]:
     action ∈ ``yes`` | ``cancel`` | ``edit`` | ``unclear``. ``unclear`` is deliberate: we re-ask
     rather than guess, because guessing "yes" arms something the user never approved.
     """
-    t = (text or "").strip()
+    t = _one_space(text)  # single-space normal form — the precondition _EDIT_RX is written against
     if not t:
         return "unclear", "", ""
     low = t.lower().strip(" .!?")
@@ -157,16 +161,22 @@ def read_reply(text: str) -> tuple[str, str, str]:
 
 # ── composing the fire-time prompt ──────────────────────────────────────────────────────────────
 _CADENCE_STRIP = re.compile(
-    r"\b(every|each)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|half)?\s*"
+    r"\b(every|each) (\d+|one|two|three|four|five|six|seven|eight|nine|ten|half)? ?"
     r"(second|sec|minute|min|hour|hr|day|week|weekday|morning|evening|night|monday|tuesday|"
-    r"wednesday|thursday|friday|saturday|sunday)s?\b(\s+at\s+[\d:apm\.]+)?",
+    r"wednesday|thursday|friday|saturday|sunday)s?\b( at [\d:apm\.]+)?",
     re.I,
 )
 _DELIVERY_STRIP = re.compile(
-    r"\b(and\s+)?(send|message|dm|post|notify|tell|ping|email)\s+(me|us|it|them)?\s*"
-    r"(on|to|via|in)?\s*(slack|telegram|discord|whatsapp|email|web|here|this chat)?\b",
+    r"\b(and )?(send|message|dm|post|notify|tell|ping|email) (me|us|it|them)? ?"
+    r"(on|to|via|in)? ?(slack|telegram|discord|whatsapp|email|web|here|this chat)?\b",
     re.I,
 )
+
+
+def _one_space(s: str) -> str:
+    """Collapse every whitespace run to a single space. Cheap, linear, and the precondition the
+    patterns above are written against — call it before matching user text with them."""
+    return re.sub(r"\s+", " ", s or "").strip()
 
 
 def compose_prompt(utterance: str, kind: str = "cron") -> str:
@@ -180,7 +190,7 @@ def compose_prompt(utterance: str, kind: str = "cron") -> str:
     EVENTS_ARM_COMPOSE_LLM=1 additionally asks the model to sharpen it; any failure falls back to
     the deterministic text, so this never becomes a way for arming to break.
     """
-    t = (utterance or "").strip()
+    t = _one_space(utterance)  # precondition for the two STRIP patterns (single-space normal form)
     core = _CADENCE_STRIP.sub(" ", t)
     core = _DELIVERY_STRIP.sub(" ", core)
     core = re.sub(r"\s+", " ", core).strip(" ,.;:-—and").strip()

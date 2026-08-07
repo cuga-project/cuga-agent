@@ -112,8 +112,10 @@ def _slash_parse(text: str) -> dict | None:
     # tolerated a mention and this did NOT, a mention-prefixed "/automate …" was forwarded here,
     # missed by this parser, and armed by the NL path WITHOUT the confirmation card. The HITL gate
     # leaked: a flow armed that no human had approved.
+    # `(?:\s|<@[^>]+>)*` NOT `\s*(?:<@[^>]+>\s*)*` — see _SLASH_VERBS in server/main.py: the latter
+    # can match a run of spaces two ways and degrades quadratically (CodeQL py/polynomial-redos).
     m = re.match(
-        r"\s*(?:<@[^>]+>\s*)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S
+        r"(?:\s|<@[^>]+>)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S
     )
     if not m:
         return None

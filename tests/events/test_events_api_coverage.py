@@ -199,6 +199,36 @@ def test_connect_callback_with_a_tampered_state_is_rejected():
     assert r.status_code in (400, 401)  # must NOT fall back to a header principal
 
 
+def test_connect_callback_never_reflects_the_app_path_parameter(monkeypatch):
+    """The success page renders `{app}`, and `app` is a PATH PARAMETER — anyone can put anything in
+    the URL. Echoing it produced a reflected-XSS alert (CodeQL py/reflective-xss). The page now
+    allow-lists against the provider registry and escapes what survives, so it can only ever contain
+    a connector name we ship.
+
+    Worth a test rather than a manual check: this page is only reached by completing a real OAuth
+    consent, so neither the offline suite nor the live e2e exercised it.
+    """
+    from events import oauth
+
+    monkeypatch.setenv("EVENTS_OAUTH_STATE_SECRET", "test-secret")
+    c, _ = _client()  # engine=None → the AP call is skipped and we fall through to the page
+
+    # slash-free on purpose: a payload containing "/" would just fail to match the route, which
+    # would make this test pass for the wrong reason.
+    payload = "<img src=x onerror=alert(1)>"
+    state = oauth.encode_state(scope="default/default/local", ownership="per-user", ret="")
+    r = c.get(f"/api/events/connect/{payload}/callback", params={"code": "x", "state": state})
+
+    assert r.status_code == 200, r.text
+    assert "<img" not in r.text, "the path parameter was reflected into the page unescaped"
+    assert "onerror" not in r.text
+    assert "the app connected" in r.text  # unknown app → the generic label, never the caller's text
+
+    # …and a REAL connector still renders its own name
+    r2 = c.get("/api/events/connect/box/callback", params={"code": "x", "state": state})
+    assert r2.status_code == 200 and "box connected" in r2.text
+
+
 # ── admin/oauth-apps — role gate + round-trip ────────────────────────────────────────────────────
 def _admin_users(role="admin"):
     from events.users import UserStore

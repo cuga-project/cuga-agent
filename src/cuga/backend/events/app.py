@@ -11,6 +11,7 @@ dependency; the dependency-light core doesn't import this module.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import re
@@ -2705,8 +2706,16 @@ def register_events_routes(
                     project_name=p.ap_project_name(grain),
                 )
         except Exception as e:  # noqa: BLE001
-            Trace(new_trace_id()).error("connect", app=app, err=str(e))
-            return HTMLResponse(f"<h3>Connect failed</h3><p>{str(e)[:300]}</p>", 500)
+            # The trace keeps the detail; the RESPONSE must not. Echoing str(e) into HTML both
+            # reflected user-controlled text (XSS) and leaked internals — AP URLs, connection ids —
+            # to whoever opened the link. The trace id is the handle for anyone debugging.
+            tr = Trace(new_trace_id())
+            tr.error("connect", app=app, err=str(e))
+            return HTMLResponse(
+                f"<h3>Connect failed</h3><p>Something went wrong completing the connection. "
+                f"Reference: {html.escape(tr.id)}</p>",
+                500,
+            )
         # `ret` comes from our own signed state, but its VALUE originated in a query param anyone
         # could put in a link — allow only same-origin/relative targets (no open redirect).
         ret = st.get("ret") or ""
@@ -2714,7 +2723,11 @@ def register_events_routes(
 
         if ret and (ret.startswith("/") or ret.startswith(_oauth.public_base())):
             return RedirectResponse(ret, status_code=302)
-        return HTMLResponse(f"<h3>✅ {app} connected</h3><p>You can return to your chat.</p>")
+        # `app` is a PATH PARAMETER — anyone can put anything in the URL, so it must never reach the
+        # page as-is (reflected XSS). Allow-list it against the provider registry and escape what
+        # is left: the response can now only contain a name we ship.
+        safe_app = html.escape(app) if oauth.provider(app) else "the app"
+        return HTMLResponse(f"<h3>✅ {safe_app} connected</h3><p>You can return to your chat.</p>")
 
     @app.post("/api/events/connect/{app}/token")
     async def connect_token(app: str, request: Request):

@@ -137,7 +137,11 @@ def source_candidates(text: str) -> list[tuple[str, str]]:
     # never a trigger signal. Left in, the 'gmail' inside 'me@gmail.com' matched the gmail trigger and
     # a "when a PR opens … email me at …@gmail.com" mis-resolved to gmail/new_email (caught by the
     # verifier, 2026-07-19). Addresses don't help trigger detection, so masking them is safe.
-    t = re.sub(r"[\w.+-]+@[\w.-]+\.\w+", " ", text or "")
+    # The domain is `[\w-]+(?:\.[\w-]+)+`, NOT `[\w.-]+\.\w+`: in the latter the dot can be consumed
+    # by either the class or the literal, so a long dotted string is matched exponentially many ways
+    # and the engine backtracks through them (CodeQL py/polynomial-redos). Splitting the label from
+    # the separator makes the parse unique. Matches the same addresses.
+    t = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", " ", text or "")
     # Drop the branch region ("… if <cond> A, otherwise B") before trigger matching. The trigger is
     # in the "when <trigger>" clause; branch-condition words pollute it — "if it MENTIONS urgent"
     # matched github/new_gh_mention and a gmail branch flow went ambiguous (verifier-adjacent, 2026-07-20).

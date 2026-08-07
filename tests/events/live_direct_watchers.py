@@ -177,6 +177,12 @@ def slack_latest(n=1) -> list:
 def main() -> int:
     scopes = granted_scopes()
     print(f"Direct watchers — {SERVER}  ·  slack #{CHANNEL}")
+    # codeql[py/clear-text-logging-sensitive-data] — the printed value is the `x-oauth-scopes`
+    # RESPONSE header (a list like "chat:write,channels:history"), not the credential. CodeQL taints
+    # it because the request that fetched it carried SLACK_BOT_TOKEN in an Authorization header, and
+    # cannot see that the response header is unrelated to it. The token is never printed: its only
+    # use in this file is that header (line ~136). Printing the granted scopes is the entire point of
+    # the check — a missing scope is the usual reason a watcher silently never fires.
     print(f"\n[scopes] granted to the bot token: {', '.join(sorted(scopes)) or '(none)'}")
     ready, missing = [], []
     for trig, _u, ev, scope, _p in SLACK_WATCHERS:
