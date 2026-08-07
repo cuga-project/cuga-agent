@@ -235,6 +235,42 @@
   behind <code>EVENTS_DISCORD_BACKEND=ap</code>); it needs no public URL. Arm returns
   <code>{backend:"direct"}</code> — nothing to configure.</p>
   <div class="ep">
+    <div class="hd"><span class="verb v-get">GET</span><span class="path">/api/events/whatsapp/events</span>
+      <span class="desc">Meta webhook verification handshake</span></div>
+    <div class="body">
+      <p class="lead"><b>Unlike Slack, Meta verifies over GET.</b> It sends
+      <code>hub.mode</code>, <code>hub.verify_token</code> and <code>hub.challenge</code> as query
+      params and expects the challenge echoed as bare <code>text/plain</code>. Returning JSON fails
+      verification and shows up in the Meta console as <i>“the callback URL could not be
+      validated”</i>. The token is compared against <code>WHATSAPP_VERIFY_TOKEN</code>; a mismatch is
+      <code>403</code>.</p>
+<pre class="blk"><span class="c">// Meta sends:</span>
+GET /api/events/whatsapp/events?hub.mode=subscribe&amp;hub.verify_token=…&amp;hub.challenge=abc123
+<span class="c">// CUGA echoes the challenge back as text/plain → 200</span></pre>
+    </div>
+  </div>
+  <div class="ep">
+    <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/whatsapp/events</span>
+      <span class="desc">WhatsApp Cloud API receiver (this is CUGA, not AP)</span></div>
+    <div class="body">
+      <p class="lead">Point your Meta app's <b>WhatsApp → Configuration → Webhook</b> here and
+      subscribe the <code>messages</code> field. AP's WhatsApp piece is <b>send-only</b> (0 triggers),
+      so it cannot back a channel — this endpoint is the inbound half. The request is verified with
+      <code>X-Hub-Signature-256</code> (HMAC-SHA256 over the <b>raw</b> body with
+      <code>WHATSAPP_APP_SECRET</code>), then each inbound text message is answered through CUGA's
+      door in the background.</p>
+      <p class="lead">Inbound also <b>opens that sender's 24-hour customer-service window</b>, which
+      decides whether later sends may be free-form or must use an approved template.
+      <code>statuses[]</code> — delivery receipts for our own messages — are ignored, so the bot never
+      answers its own receipt.</p>
+<pre class="blk"><span class="k">{</span> <span class="k">"entry"</span>: [ <span class="k">{</span> <span class="k">"changes"</span>: [ <span class="k">{</span> <span class="k">"value"</span>: <span class="k">{</span>
+    <span class="k">"contacts"</span>: [ <span class="k">{</span> <span class="k">"wa_id"</span>: <span class="s">"15551234567"</span> <span class="k">}</span> ],
+    <span class="k">"messages"</span>: [ <span class="k">{</span> <span class="k">"from"</span>: <span class="s">"15551234567"</span>, <span class="k">"type"</span>: <span class="s">"text"</span>,
+                    <span class="k">"text"</span>: <span class="k">{</span> <span class="k">"body"</span>: <span class="s">"look at my gmail"</span> <span class="k">}</span> <span class="k">}</span> ]
+<span class="k">} }</span> ] <span class="k">}</span> ] <span class="k">}</span></pre>
+    </div>
+  </div>
+  <div class="ep">
     <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/slack/events</span>
       <span class="desc">Slack Events API target (this is CUGA, not AP)</span></div>
     <div class="body">

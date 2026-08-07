@@ -1585,6 +1585,37 @@ ENDPOINTS = [
     # ── inbound ───────────────────────────────────────────────────────────────
     E(
         "GET",
+        "/api/events/whatsapp/events",
+        "inbound",
+        "Meta's webhook VERIFICATION handshake. Unlike Slack — which handshakes over POST with a JSON "
+        "body — Meta sends a GET carrying <code>hub.mode</code>, <code>hub.verify_token</code> and "
+        "<code>hub.challenge</code>, and expects the challenge echoed back as bare "
+        "<code>text/plain</code>. Returning JSON here fails verification and presents in the Meta "
+        "console as 'the callback URL could not be validated'. The token is compared against "
+        "<code>WHATSAPP_VERIFY_TOKEN</code>; a mismatch is 403.",
+        tier="edge",
+        callers=["channel"],
+        auth="whatsapp",
+        try_it=False,
+    ),
+    E(
+        "POST",
+        "/api/events/whatsapp/events",
+        "inbound",
+        "WhatsApp Cloud API receiver. This is CUGA, not Activepieces — AP's WhatsApp piece is "
+        "send-only (0 triggers), so it cannot back a channel. The request is verified with "
+        "<code>X-Hub-Signature-256</code> (HMAC-SHA256 of the RAW body with "
+        "<code>WHATSAPP_APP_SECRET</code>), then each inbound text message is answered through "
+        "CUGA's door in the background. Inbound also opens that sender's 24-hour customer-service "
+        "window, which decides whether later sends may be free-form or must use an approved "
+        "template. <code>statuses[]</code> (delivery receipts for our own messages) are ignored.",
+        tier="edge",
+        callers=["channel"],
+        auth="whatsapp",
+        try_it=False,
+    ),
+    E(
+        "GET",
         "/api/events/slack/events",
         "inbound",
         "Friendly probe for the Slack Request URL. Slack itself only ever POSTs here; this GET exists "
@@ -2346,6 +2377,12 @@ AUTH_CHIP = {
     "slack": (
         "slack signature",
         "Verified against <code>SLACK_SIGNING_SECRET</code>; <b>open when unset</b>.",
+    ),
+    "whatsapp": (
+        "meta signature",
+        "<code>X-Hub-Signature-256</code> over the raw body, verified against "
+        "<code>WHATSAPP_APP_SECRET</code>; <b>open when unset</b>. The GET handshake instead "
+        "compares <code>hub.verify_token</code> to <code>WHATSAPP_VERIFY_TOKEN</code>.",
     ),
     "hookkey": ("?key=", "Required only when <code>EVENTS_WEBHOOK_KEY</code> is set."),
 }

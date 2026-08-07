@@ -60,6 +60,14 @@ CHANNELS = [
         "backend": "direct",
         "note": "two-way via the direct Events API (signed) + chat.postMessage",
     },
+    {
+        "name": "whatsapp",
+        "label": "WhatsApp",
+        "env": "WHATSAPP_TOKEN",
+        "live": True,
+        "backend": "direct",
+        "note": "two-way via the Meta Cloud API (signed webhook); 1:1 only, 24h window then templates",
+    },
 ]
 
 # ``app`` = the AP piece / substring we match a connection's externalId against.
