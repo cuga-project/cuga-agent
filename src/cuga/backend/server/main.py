@@ -2790,11 +2790,44 @@ async def run_sync(request: Request):
 # depends on a bot-id lookup succeeding. If it ever doesn't, "<@U123> /automate …" must still be
 # recognised as arming — handing it to the plain agent is the silent-failure trap (it tries to
 # IMPLEMENT the schedule), which is precisely what this feature exists to prevent.
-# `(?:\s|<@[^>]+>)*` NOT `\s*(?:<@[^>]+>\s*)*` — the latter lets a run of spaces be matched by either
-# the leading `\s*` or the group's trailing `\s*`, which is quadratic on input that is mostly spaces
-# (CodeQL py/polynomial-redos). This form is unambiguous: at any position exactly one alternative can
-# match, because `\s` and `<` are disjoint. Same utterance accepted, linear time.
-_SLASH_VERBS = re.compile(r"(?:\s|<@[^>]+>)*/(automate|watch|schedule|cron|poll|push|cancel)\b", re.I)
+_SLASH_VERB_NAMES = frozenset({"automate", "watch", "schedule", "cron", "poll", "push", "cancel"})
+
+
+def _slash_verb(text: str) -> str | None:
+    """The slash verb at the head of an utterance, or None. Plain string scanning, no regex.
+
+    This began as `\\s*(?:<@[^>]+>\\s*)*/(automate|…)\\b` and then as `(?:\\s|<@[^>]+>)*/(…)`. Both
+    are quantifiers applied to unbounded, attacker-supplied chat text, which CodeQL flags
+    (py/polynomial-redos) — the second still degrades because the engine re-tries the alternation
+    across a long run of spaces. Rather than keep tuning a pattern against a scanner, do the two
+    things the pattern was for — skip leading whitespace and `<@…>` mentions, then read one word —
+    with `lstrip`/`find`/`isalpha`. Every step is a single linear pass, so the pathological input
+    simply does not exist.
+
+    Behaviour is unchanged, including the `\\b` at the end: `/automate` and `/automate?` match,
+    `/automated` and `/automate1` do not.
+    """
+    s = (text or "").lstrip()
+    while s.startswith("<@"):
+        close = s.find(">")
+        if close < 3:  # `<@[^>]+>` needs a BODY: "<@>" is not a mention and the regex this replaced
+            break  # did not skip it, so neither do we (differential-tested, 140k inputs)
+        s = s[close + 1 :].lstrip()
+    if not s.startswith("/"):
+        return None
+    rest = s[1:]
+    i = 0
+    while i < len(rest) and rest[i].isalpha():
+        i += 1
+    word = rest[:i].lower()
+    if word not in _SLASH_VERB_NAMES:
+        return None
+    nxt = rest[i : i + 1]
+    if nxt and (nxt.isalnum() or nxt == "_"):  # the \b: a word char here means a longer word
+        return None
+    return word
+
+
 # Threads with an arming dialogue open, so a bare "yes" / "cancel" / "change the prompt to …" is
 # forwarded too. Deliberately IN-MEMORY: core must not read the events store. It is a routing hint,
 # not state — the eventing service holds the real parked entry (10-minute TTL) and is the only
@@ -2809,7 +2842,7 @@ def _events_api_url() -> str:
 def _forwards_to_events(query: str, thread_id: Optional[str]) -> bool:
     if not _events_api_url():
         return False  # no eventing service configured → plain chat, as before
-    if _SLASH_VERBS.match(query or ""):
+    if _slash_verb(query or ""):
         return True
     return bool(thread_id) and thread_id in _events_open_threads
 

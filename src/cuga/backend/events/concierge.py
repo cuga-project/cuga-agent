@@ -93,6 +93,12 @@ def _concierge_prompt() -> str:
     return CONCIERGE_PROMPT
 
 
+# The verbs this parser owns. NB /cancel is deliberately absent — the arming GATE handles it (it
+# drops a parked draft), so the door forwards /cancel while this returns None. See
+# test_cancel_is_the_doors_verb_only.
+_SLASH_CMDS = frozenset({"automate", "watch", "schedule", "cron", "poll", "push"})
+
+
 def _slash_parse(text: str) -> dict | None:
     """SLASH COMMANDS — an explicit "make me a flow" from ANY surface (web chat or a channel; both
     call ``run``). The advertised command is **``/automate <what>``** — one command whose ROUTER (the
@@ -100,7 +106,6 @@ def _slash_parse(text: str) -> dict | None:
     commands (``/watch|/schedule|/cron|/poll|/push``) are kept as hidden power-user overrides that
     FORCE a mode. DETERMINISTIC either way — the arm bypasses the LLM entirely (no flaky mode pick, no
     decline). Returns None when it isn't a slash command (normal NL routing then applies)."""
-    import re
 
     try:
         from . import classify
@@ -112,14 +117,28 @@ def _slash_parse(text: str) -> dict | None:
     # tolerated a mention and this did NOT, a mention-prefixed "/automate …" was forwarded here,
     # missed by this parser, and armed by the NL path WITHOUT the confirmation card. The HITL gate
     # leaked: a flow armed that no human had approved.
-    # `(?:\s|<@[^>]+>)*` NOT `\s*(?:<@[^>]+>\s*)*` — see _SLASH_VERBS in server/main.py: the latter
-    # can match a run of spaces two ways and degrades quadratically (CodeQL py/polynomial-redos).
-    m = re.match(
-        r"(?:\s|<@[^>]+>)*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S
-    )
-    if not m:
+    # Scanned, not matched with a regex: a quantifier over unbounded chat text is a ReDoS surface
+    # (CodeQL py/polynomial-redos), and this parser sees whatever a channel forwards. The steps are
+    # the same ones server/main.py:_slash_verb takes — skip whitespace and `<@…>`, read one word,
+    # require a word boundary after it — each a single linear pass. Keep the two in lockstep;
+    # test_the_door_and_the_concierge_agree_on_what_a_slash_command_is fails if they drift.
+    s = (text or "").lstrip()
+    while s.startswith("<@"):
+        close = s.find(">")
+        if close < 3:  # `<@[^>]+>` needs a BODY — keep in lockstep with the door, see main.py
+            break
+        s = s[close + 1 :].lstrip()
+    if not s.startswith("/"):
         return None
-    cmd, rest = m.group(1).lower(), (m.group(2) or "").strip()
+    after = s[1:]
+    i = 0
+    while i < len(after) and after[i].isalpha():
+        i += 1
+    cmd = after[:i].lower()
+    nxt = after[i : i + 1]
+    if cmd not in _SLASH_CMDS or (nxt and (nxt.isalnum() or nxt == "_")):
+        return None
+    rest = after[i:].strip()
     if not rest:
         return {
             "cmd": cmd,

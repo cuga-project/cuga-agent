@@ -245,7 +245,19 @@ def phase_preflight(r: Report) -> dict:
     _, ag = srv("GET", "/api/events/agents", timeout=20)
     agents = [a.get("name") for a in ag.get("agents", [])]
     r.ok("preflight", "agent fleet seeded", len(agents) >= 3, f"{len(agents)} agents")
-    return {"dead": False, "ap_live": ap_live, "no_ap": no_ap, "conn": conn, "agents": agents}
+    # WHICH BACKEND OWNS cron/poll. AP being reachable does NOT mean cron/poll use it: the server
+    # defaults to EVENTS_SCHEDULER=native, where they run in-process and there is no AP flow to
+    # record. Asking "is AP up?" and then demanding an ap_flow_id failed a correctly-armed native
+    # schedule. Ask the SERVER what it is doing (it must answer for a remote CE deploy too).
+    native_sched = any("native scheduler ON" in str(line) for line in (st.get("capability") or []))
+    return {
+        "dead": False,
+        "ap_live": ap_live,
+        "no_ap": no_ap,
+        "conn": conn,
+        "agents": agents,
+        "native_sched": native_sched,
+    }
 
 
 # ── channels ──────────────────────────────────────────────────────────────────
@@ -722,7 +734,16 @@ def arm_with_confirm(utter: str, thread: str, *, timeout: int = 300, max_turns: 
     return code, body
 
 
-def _arm_and_verify(r: Report, phase: str, utter: str, mode: str, thread: str, ap_live: bool, created: list):
+def _arm_and_verify(
+    r: Report,
+    phase: str,
+    utter: str,
+    mode: str,
+    thread: str,
+    ap_live: bool,
+    created: list,
+    native_sched: bool = False,
+):
     before = {s.get("id") for s in _subs()}
     code, rep = arm_with_confirm(utter, thread)
     reply = str(rep.get("reply", ""))
@@ -740,6 +761,13 @@ def _arm_and_verify(r: Report, phase: str, utter: str, mode: str, thread: str, a
         return
     if is_new:
         created.append(sub["id"])
+    if native_sched:
+        r.skip(
+            phase,
+            f"{phase}: AP flow id recorded",
+            "native scheduler owns cron/poll (EVENTS_SCHEDULER=native) — there is no AP flow by design",
+        )
+        return
     if not ap_live:
         r.skip(phase, f"{phase}: AP flow id recorded", "AP unreachable — cannot arm a real flow")
         return
@@ -765,8 +793,8 @@ def _arm_and_verify(r: Report, phase: str, utter: str, mode: str, thread: str, a
     r.ok(phase, f"{phase}: flow really exists in Activepieces", alive, detail, fail_detail=detail)
 
 
-def flow_cron(r: Report, ap_live: bool, created: list):
-    print("\n\033[1m[flow · CRON]\033[0m  arm a scheduled flow (AP schedule piece)")
+def flow_cron(r: Report, ap_live: bool, created: list, native_sched: bool = False):
+    print("\n\033[1m[flow · CRON]\033[0m  arm a scheduled flow (native scheduler, or the AP schedule piece)")
     _arm_and_verify(
         r,
         "CRON",
@@ -775,10 +803,11 @@ def flow_cron(r: Report, ap_live: bool, created: list):
         f"web:{RUN}:cron",
         ap_live,
         created,
+        native_sched,
     )
 
 
-def flow_poll(r: Report, ap_live: bool, created: list):
+def flow_poll(r: Report, ap_live: bool, created: list, native_sched: bool = False):
     print("\n\033[1m[flow · POLL]\033[0m  arm a watch-on-change flow")
     print("     note: no state primitive exists yet (no poll_state.py, no /api/events/poll) — a POLL is")
     print("           a cron flow + a prompt line. We assert exactly that, not change-detection.")
@@ -790,6 +819,7 @@ def flow_poll(r: Report, ap_live: bool, created: list):
         f"web:{RUN}:poll",
         ap_live,
         created,
+        native_sched,
     )
 
 
@@ -935,6 +965,12 @@ def flow_webhook(r: Report):
     ans = str(rep.get("answer", ""))
     print(f"     → {ans[:140]}")
     r.ok("WEBHOOK", "inbound payload accepted", code == 200 and rep.get("ok"), f"HTTP {code}")
+    # Case-INSENSITIVE. The fallback token was "sever", but every real answer writes "**Severity:**"
+    # with a capital S, so the fallback never actually fired and the whole assertion rested on the
+    # model happening to emit a P-number. One run phrased it without one and went red on a perfectly
+    # good triage. Lowercase once and compare against lowercase needles.
+    low = ans.lower()
+    triaged = any(s in low for s in ("p1", "p2", "p3", "sever", "critical"))
     step(
         phase="flows",
         surface="webhook",
@@ -942,9 +978,9 @@ def flow_webhook(r: Report):
         action='POSTs {"alert":"HighCPU","service":"checkout-api","value":"97%"} to /api/events/hook/monitoring',
         expect="incident_triage summarises it and assigns a P1/P2/P3 severity",
         got=ans,
-        ok=(code == 200 and any(s in ans for s in ("P1", "P2", "P3", "sever"))),
+        ok=(code == 200 and triaged),
     )
-    r.ok("WEBHOOK", "agent triaged it to a severity", any(s in ans for s in ("P1", "P2", "P3", "sever")))
+    r.ok("WEBHOOK", "agent triaged it to a severity", triaged)
 
     # The worker is GENERIC: the same endpoint must handle an arbitrary JSON shape, not just a
     # monitoring alert. Fire a CI/deploy-failure payload and assert the agent still triages it.
@@ -1061,8 +1097,8 @@ def main() -> int:
             ch_telegram(r)
         if a.only != "channels":
             flow_now(r)
-            flow_cron(r, facts["ap_live"], created)
-            flow_poll(r, facts["ap_live"], created)
+            flow_cron(r, facts["ap_live"], created, facts.get("native_sched", False))
+            flow_poll(r, facts["ap_live"], created, facts.get("native_sched", False))
             flow_push(r, facts, created)
             flow_webhook(r)
     except KeyboardInterrupt:

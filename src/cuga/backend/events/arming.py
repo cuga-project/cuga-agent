@@ -139,7 +139,12 @@ def read_reply(text: str) -> tuple[str, str, str]:
     action ∈ ``yes`` | ``cancel`` | ``edit`` | ``unclear``. ``unclear`` is deliberate: we re-ask
     rather than guess, because guessing "yes" arms something the user never approved.
     """
-    t = _one_space(text)  # single-space normal form — the precondition _EDIT_RX is written against
+    raw = text or ""
+    # MATCH against the single-space normal form (_EDIT_RX's precondition) but CUT the value out of
+    # the ORIGINAL: the value becomes the flow's fire-time prompt, and normalising it would silently
+    # flatten a pasted multi-line instruction ("summarise the PR\n- risk\n- reviewers") into one
+    # line. `back` maps each index of `t` to its index in `raw`, so the tail comes back verbatim.
+    t, back = _one_space_indexed(raw)
     if not t:
         return "unclear", "", ""
     low = t.lower().strip(" .!?")
@@ -150,12 +155,12 @@ def read_reply(text: str) -> tuple[str, str, str]:
     m = _EDIT_RX.match(t)
     if m:
         field = _FIELD_ALIAS.get(m.group(1).lower(), m.group(1).lower())
-        value = (m.group(2) or "").strip().strip("\"'")
+        value = raw[back[m.start(2)] :].strip().strip("\"'")
         if value:
             return "edit", field, value
     # A bare cadence ("every 10 minutes") reads as a schedule edit — a common natural correction.
     if re.match(r"^\s*every\s+\w+", t, re.I):
-        return "edit", "schedule", t
+        return "edit", "schedule", raw.strip()
     return "unclear", "", ""
 
 
@@ -177,6 +182,34 @@ def _one_space(s: str) -> str:
     """Collapse every whitespace run to a single space. Cheap, linear, and the precondition the
     patterns above are written against — call it before matching user text with them."""
     return re.sub(r"\s+", " ", s or "").strip()
+
+
+def _one_space_indexed(s: str) -> tuple[str, list[int]]:
+    """`_one_space`, plus a map from each index of the result back to the ORIGINAL string.
+
+    Normalising is fine for DECIDING what a reply means; it is not fine for the text handed back,
+    because that text becomes a stored prompt. `back[i]` is where `out[i]` came from, so a caller
+    can match on the normal form and still slice the user's own bytes out of the input.
+    """
+    out: list[str] = []
+    back: list[int] = []
+    i, n = 0, len(s or "")
+    while i < n and s[i].isspace():  # leading run — dropped, same as .strip()
+        i += 1
+    while i < n:
+        if s[i].isspace():
+            j = i
+            while j < n and s[j].isspace():
+                j += 1
+            if j < n:  # interior run → one space; a trailing run is dropped
+                out.append(" ")
+                back.append(i)
+            i = j
+        else:
+            out.append(s[i])
+            back.append(i)
+            i += 1
+    return "".join(out), back
 
 
 def compose_prompt(utterance: str, kind: str = "cron") -> str:
