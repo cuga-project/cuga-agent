@@ -370,12 +370,16 @@ def test_slash_matcher_tolerates_a_leading_mention():
     """Slack/Discord normally strip "<@bot>" before we see the text — but that depends on a bot-id
     lookup succeeding. If it ever doesn't, "<@U123> /automate …" must STILL be recognised as arming;
     handing it to the plain agent is the silent-failure trap (it tries to implement the schedule)."""
-    from cuga.backend.server.main import _SLASH_VERBS
+    from cuga.backend.server.main import _slash_verb
 
     for armed in ("/automate x", "  /schedule y", "<@U123> /automate x", "<@U1> <@U2> /poll z"):
-        assert _SLASH_VERBS.match(armed), armed
+        assert _slash_verb(armed), armed
     for chat in ("what is /automate?", "hello", "tell me about /cron jobs"):
-        assert not _SLASH_VERBS.match(chat), chat
+        assert not _slash_verb(chat), chat
+    # the trailing word boundary the old `\b` gave us: a longer word is NOT the verb
+    for chat in ("/automated x", "/automate1 x", "/nope x"):
+        assert not _slash_verb(chat), chat
+    assert _slash_verb("/automate?") == "automate"  # …but punctuation still ends it
 
 
 # ── CUGA MUST STAND ALONE: eventing absent, off, or down ──────────────────────────────────────

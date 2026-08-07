@@ -127,6 +127,36 @@ def source_of(text: str) -> tuple[str, str] | None:
     return ranked[0] if ranked else None
 
 
+def _mask_emails(text: str) -> str:
+    """Replace email addresses with a space, by scanning tokens rather than with a regex.
+
+    This was `re.sub(r"[\\w.+-]+@[\\w.-]+\\.\\w+", " ", text)`. `re.sub` is UNANCHORED, so the engine
+    retries the pattern at every position, and the local-part class can consume a long run before
+    failing — quadratic on adversarial input, which CodeQL flags (py/polynomial-redos). The utterance
+    comes from a chat message, so it is exactly the untrusted, unbounded string that matters.
+
+    Splitting on whitespace is enough because an address never contains a space: each token is
+    examined once, so the whole pass is linear. The `\\s+` split is a single quantifier with nothing
+    to backtrack into.
+    """
+    s = text or ""
+    if "@" not in s:  # the overwhelmingly common case, and free
+        return s
+    _EDGE = "(<[{\"'.,;:!?)>]}"
+    out = []
+    for part in re.split(r"(\s+)", s):
+        # Punctuation around the address is NOT part of it — the old regex left "boss@corp.com."'s
+        # trailing dot in place, so strip the edges, test the core, and put the edges back.
+        core = part.strip(_EDGE)
+        at = core.find("@")
+        if 0 < at < len(core) - 1 and "." in core[at + 1 : -1]:
+            head = part[: part.index(core)]
+            out.append(head + " " + part[len(head) + len(core) :])
+        else:
+            out.append(part)
+    return "".join(out)
+
+
 def source_candidates(text: str) -> list[tuple[str, str]]:
     """ALL (app, event) candidates for a PUSH utterance, best first, deduped.
 
@@ -137,7 +167,7 @@ def source_candidates(text: str) -> list[tuple[str, str]]:
     # never a trigger signal. Left in, the 'gmail' inside 'me@gmail.com' matched the gmail trigger and
     # a "when a PR opens … email me at …@gmail.com" mis-resolved to gmail/new_email (caught by the
     # verifier, 2026-07-19). Addresses don't help trigger detection, so masking them is safe.
-    t = re.sub(r"[\w.+-]+@[\w.-]+\.\w+", " ", text or "")
+    t = _mask_emails(text)
     # Drop the branch region ("… if <cond> A, otherwise B") before trigger matching. The trigger is
     # in the "when <trigger>" clause; branch-condition words pollute it — "if it MENTIONS urgent"
     # matched github/new_gh_mention and a gmail branch flow went ambiguous (verifier-adjacent, 2026-07-20).

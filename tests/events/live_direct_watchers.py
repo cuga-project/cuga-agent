@@ -165,6 +165,28 @@ def post_slack_event(event: dict) -> tuple[int, dict]:
         return e.code, {}
 
 
+def arm_with_confirm(utter: str, thread: str, timeout: int = 240, max_turns: int = 4):
+    """Say an arming utterance and drive the HITL dialogue to completion.
+
+    Arming is CONFIRM-gated: the concierge proposes and a human approves. A harness is that human.
+    Without this, the first watcher only ever got the confirmation card back (never "ARMED"), and
+    every later one was read as a REPLY to that still-open card ("I didn't catch that") — the
+    harness could not pass by construction. Mirrors live_e2e.arm_with_confirm.
+    """
+    code, body = http(
+        "POST", f"{SERVER}/api/concierge", {"text": utter, "thread_id": thread}, timeout=timeout
+    )
+    for _ in range(max_turns):
+        state = (body or {}).get("state")
+        if state not in ("confirm", "needs_input"):
+            break  # armed, cancelled, or a plain answer
+        reply = "yes" if state == "confirm" else utter
+        code, body = http(
+            "POST", f"{SERVER}/api/concierge", {"text": reply, "thread_id": thread}, timeout=timeout
+        )
+    return code, body
+
+
 def slack_latest(n=1) -> list:
     req = urllib.request.Request(
         f"https://slack.com/api/conversations.history?channel={CHANNEL}&limit={n}",
@@ -177,7 +199,16 @@ def slack_latest(n=1) -> list:
 def main() -> int:
     scopes = granted_scopes()
     print(f"Direct watchers — {SERVER}  ·  slack #{CHANNEL}")
-    print(f"\n[scopes] granted to the bot token: {', '.join(sorted(scopes)) or '(none)'}")
+    # Report scopes by MEMBERSHIP against our own table, never by echoing the response.
+    # `granted_scopes()` reads the x-oauth-scopes header from a request that carried
+    # SLACK_BOT_TOKEN, so everything derived from it is credential-tainted as far as CodeQL is
+    # concerned (py/clear-text-logging-sensitive-data) — and it is right to be strict: printing a
+    # provider's raw auth response is how tokens end up in CI logs. The names below come from
+    # SLACK_WATCHERS, i.e. from this file, and `scopes` is only ever tested with `in`. The output is
+    # also more useful: what we NEED and whether we have it, rather than everything the app was given.
+    required = sorted({scope for _t, _u, _e, scope, _p in SLACK_WATCHERS})
+    have = [s for s in required if s in scopes]
+    print(f"\n[scopes] {len(have)}/{len(required)} required granted: {', '.join(have) or '(none)'}")
     ready, missing = [], []
     for trig, _u, ev, scope, _p in SLACK_WATCHERS:
         (ready if scope in scopes else missing).append((trig, ev, scope))
@@ -201,12 +232,12 @@ def main() -> int:
         # web chat delivers to WEB (the answer rides back in the HTTP response) and nothing reaches
         # Slack. `gw:slack:<channel>` makes Slack the sink — which is what a user arming it from
         # Slack actually does.
-        code, rep = http(
-            "POST",
-            f"{SERVER}/api/concierge",
-            {"text": utter, "thread_id": f"gw:slack:{CHANNEL}"},
-            timeout=240,
-        )
+        # ONE thread for all four, deliberately. Do NOT add a `#<locus>` suffix to disambiguate the
+        # dialogues: in `gw:slack:<channel>#<locus>` the locus IS the Slack thread_ts, so a non-
+        # timestamp locus makes every reply fail with `invalid_thread_ts` for any event that carries
+        # no ts of its own (channel_created, team_join). Sharing the thread is safe because
+        # arm_with_confirm drives each dialogue to completion, leaving no parked draft behind.
+        code, rep = arm_with_confirm(utter, f"gw:slack:{CHANNEL}")
         reply = str(rep.get("reply", ""))
         m = re.search(r"[Ss]ubscription ([\w-]+)", reply)
         if not (code == 200 and m and ("ARMED" in reply or "REUSING" in reply)):
@@ -222,13 +253,32 @@ def main() -> int:
             results.append((trig, "EVENT-REJECTED", f"HTTP {code}"))
             print(f"  \033[31m✗\033[0m {trig:20} the endpoint rejected the signed event (HTTP {code})")
             continue
-        # the dispatcher runs the agent in the background; poll Slack for the delivered answer
+        # The dispatcher runs the agent in the background; poll Slack for the delivered answer.
+        # ATTRIBUTE it — "a new message appeared" is NOT proof THIS watcher fired. The previous
+        # watcher's delivery can land late and carries a new ts too, which scored channel_created a
+        # PASS on a message stamped `slack/new_slack_mention`. Prefer this trigger's own marker;
+        # otherwise accept a plain answer, but never one bearing a DIFFERENT watcher's marker.
+        others = [f"slack/{t}" for t, _u, _e, _s, _p in SLACK_WATCHERS if t != trig]
+
+        def _fresh():
+            out = []
+            for m in slack_latest(10):
+                try:
+                    if float(m.get("ts") or 0) > float(before_ts or 0):
+                        out.append(m)
+                except (TypeError, ValueError):
+                    continue
+            return out
+
         landed, answer = False, ""
         for _ in range(30):
             time.sleep(4)
-            msgs = slack_latest(1)
-            if msgs and msgs[0].get("ts") != before_ts:
-                landed, answer = True, (msgs[0].get("text") or "").replace("\n", " ")
+            fresh = _fresh()
+            mine = [m for m in fresh if f"slack/{trig}" in (m.get("text") or "")]
+            if not mine:
+                mine = [m for m in fresh if not any(o in (m.get("text") or "") for o in others)]
+            if mine:
+                landed, answer = True, (mine[0].get("text") or "").replace("\n", " ")
                 break
         status = "PASS" if landed else "NO-DELIVERY"
         results.append((trig, status, answer[:90]))

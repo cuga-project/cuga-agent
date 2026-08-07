@@ -83,6 +83,22 @@ def test_read_reply_extracts_the_edited_field_and_value():
     assert value == "Fetch the IBM share price"
 
 
+def test_read_reply_hands_back_the_new_prompt_VERBATIM():
+    """The edited value becomes the flow's fire-time prompt, so it must survive byte-for-byte.
+
+    read_reply matches against a single-space normal form (what _EDIT_RX is written against). When
+    that normalisation was applied to the value as well, a pasted multi-line instruction came back
+    flattened onto one line — the user approved a card showing one prompt and the flow stored a
+    different one. Match on the normal form, cut from the original.
+    """
+    action, field, value = read_reply("change the prompt to: summarise the PR\n- risk\n- reviewers")
+    assert (action, field) == ("edit", "prompt")
+    assert value == ": summarise the PR\n- risk\n- reviewers"
+
+    _, _, v2 = read_reply("set prompt to Check jira.\n\nThen post a table to slack.")
+    assert v2 == "Check jira.\n\nThen post a table to slack."
+
+
 def test_compose_prompt_strips_cadence_and_delivery_scaffolding():
     """The fire-time prompt is the TASK; when and where-to-send are the subscription's job."""
     out = compose_prompt("every 5 minutes send me the IBM stock price", "cron")
@@ -250,21 +266,40 @@ def test_channel_arm_records_the_originating_conversation(monkeypatch):
 
 
 def _door_pattern():
-    """CUGA's _SLASH_VERBS, read from source rather than imported.
+    """CUGA's door predicate (`_slash_verb`), lifted from source rather than imported.
 
     Importing cuga.backend.server.main pulls the whole CUGA server in — module-level side effects
     that leak into every other test in this session (17 unrelated failures when it was imported
-    here). The events suite must stay light; lift the literal out instead.
+    here). The events suite must stay light, so the definition is extracted and exec'd on its own.
+
+    It used to be a regex literal we could pull out with a `re.search`. It is now a function
+    (`_slash_verb`), because a quantifier over unbounded chat text is a ReDoS surface CodeQL flags —
+    so lift the function and its one constant via AST instead. Returns an object with `.match()` so
+    the tests below read the same either way.
     """
+    import ast
     import pathlib
-    import re
 
     src = (
         pathlib.Path(__file__).resolve().parents[2] / "src" / "cuga" / "backend" / "server" / "main.py"
     ).read_text()
-    m = re.search(r"_SLASH_VERBS = re\.compile\(\s*(r\"[^\"]+\")", src)
-    assert m, "could not find _SLASH_VERBS in server/main.py — did it move or get renamed?"
-    return re.compile(eval(m.group(1)), re.I)
+    tree = ast.parse(src)
+    wanted = [
+        n
+        for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name == "_slash_verb")
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "_SLASH_VERB_NAMES" for t in n.targets))
+    ]
+    assert len(wanted) == 2, "server/main.py no longer defines _SLASH_VERB_NAMES + _slash_verb"
+    ns: dict = {}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), "<door>", "exec"), ns)
+
+    class _Door:
+        @staticmethod
+        def match(text):  # truthy/falsy like the old re.match, so the assertions are unchanged
+            return ns["_slash_verb"](text)
+
+    return _Door
 
 
 def test_the_door_and_the_concierge_agree_on_what_a_slash_command_is():
