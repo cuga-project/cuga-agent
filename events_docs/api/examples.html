@@ -156,12 +156,19 @@ function render(){
         </div>
         ${e.note?`<div class="note">${esc(e.note)}</div>`:''}
       </div>
-      <button onclick="copy(this,'${esc(e.utterance).replace(/'/g,"\\'")}')">Copy</button>
+      <button data-copy="${esc(e.utterance)}" onclick="copy(this)">Copy</button>
     </div>`;
   }).join('') || '<p style="color:#8a8a8a">No examples match those filters.</p>';
 }
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function copy(btn,t){navigator.clipboard.writeText(t.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"'))
+// The text to copy rides in a data- attribute and the BROWSER decodes it. That removes two bug
+// classes CodeQL flagged rather than patching them:
+//   · the old form inlined the string into an onclick JS literal and escaped only ' — a backslash
+//     in an utterance broke out of the quoting (incomplete string escaping)
+//   · the old copy() hand-unescaped entities starting with &amp;, so a literal "&amp;lt;" became
+//     "<" instead of "&lt;" (double unescaping)
+// dataset gives back the already-decoded value, so neither escape step needs to exist.
+function copy(btn){navigator.clipboard.writeText(btn.dataset.copy || '')
   .then(()=>{const o=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>btn.textContent=o,1100);});}
 
 // Advanced section: group the trigger-tied examples by integration into collapsible <details>.
@@ -187,7 +194,7 @@ function renderAdvanced(){
           ${e.note?`<div class="note">${esc(e.note)}</div>`:''}
           ${e.needs?`<div class="needs">needs: ${esc(e.needs)}</div>`:''}
         </div>
-        <button onclick="copy(this,'${esc(e.utterance).replace(/'/g,"\\'")}')">Copy</button>
+        <button data-copy="${esc(e.utterance)}" onclick="copy(this)">Copy</button>
       </div>`).join('');
     const tiers=by[g].map(e=>e.feasibility);
     const nNow=tiers.filter(t=>t==='now').length;

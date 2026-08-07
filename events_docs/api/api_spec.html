@@ -2729,7 +2729,10 @@ function applyFilters(){
     sec.style.display=any?'':'none';
   });
   document.querySelectorAll('nav a').forEach(a=>{
-    const ep=document.querySelector(a.getAttribute('href').replace('#','#'));
+    // The href is already a '#id' selector. This used to call .replace('#','#') — replacing '#'
+    // with itself, a no-op that read as if it were sanitising something (CodeQL flags it as
+    // "replacement of a substring with itself"). Use the href directly and say so.
+    const ep=document.querySelector(a.getAttribute('href'));
     if(ep) a.style.display=ep.style.display==='none'?'none':'';
   });
 }
