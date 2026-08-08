@@ -1,5 +1,7 @@
 """Unit tests for E2B sandbox integration in CUGA Lite mode."""
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -51,6 +53,86 @@ class TestFilterNewVariables:
         assert result['my_tuple'] == (1, 2, 3)
         assert result['nested'] == {'list': [1, 2], 'dict': {'x': 10}}
 
+    @pytest.mark.unit
+    def test_filter_sets_and_frozensets(self):
+        """Sets/frozensets persist as JSON-safe tagged forms that hydrate back."""
+        original_keys = set()
+        all_locals = {
+            'my_set': {1, 2, 3},
+            'my_frozenset': frozenset({4, 5}),
+            'nested_set': {1, (2, 3)},
+            'deep_nested_set': {((1, 2), 3)},
+            'set_of_unserializable': {object()},
+        }
+
+        result = VariableUtils.filter_new_variables(all_locals, original_keys)
+        round_tripped = json.loads(json.dumps(result))
+
+        assert VariableUtils.hydrate_value(round_tripped['my_set']) == {1, 2, 3}
+        assert VariableUtils.hydrate_value(round_tripped['my_frozenset']) == frozenset({4, 5})
+        assert VariableUtils.hydrate_value(round_tripped['nested_set']) == {1, (2, 3)}
+        assert VariableUtils.hydrate_value(round_tripped['deep_nested_set']) == {((1, 2), 3)}
+        assert 'set_of_unserializable' not in result
+
+    @pytest.mark.unit
+    def test_sanitize_sets_survive_json_loads_round_trip(self):
+        """Stream/checkpoint path must dump and reload sets including nested tuples."""
+        original = {
+            "emails": {"a@x.com", "b@y.com"},
+            "nested": {((1, 2), (3, 4)), (1, (2, 3))},
+            "frozen": frozenset({"x", "y"}),
+        }
+        sanitized = VariableUtils.sanitize_value(original)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert restored["emails"] == original["emails"]
+        assert restored["nested"] == original["nested"]
+        assert restored["frozen"] == original["frozen"]
+
+    @pytest.mark.unit
+    def test_tag_shaped_user_dicts_round_trip_as_dicts(self):
+        """Ordinary dicts matching reserved tag shapes must not become sets/tuples."""
+        originals = {
+            "looks_like_set": {"__set_type__": "set", "items": [1, 2, 3]},
+            "looks_like_frozenset": {"__set_type__": "frozenset", "items": ["a"]},
+            "looks_like_tuple": {"__tuple_type__": "tuple", "items": [1, 2]},
+        }
+        sanitized = VariableUtils.sanitize_value(originals)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert restored == originals
+        assert isinstance(restored["looks_like_set"], dict)
+
+    @pytest.mark.unit
+    def test_hydrate_preserves_plain_container_identity(self):
+        """In-place mutations must hit the stored object when no tags are present."""
+        state = AgentState(input="test", url="")
+        state.variables_manager.add_variable([1], name="lst")
+        state.variables_manager.add_variable({"a": 1}, name="d")
+        got_list = state.variables_manager.get_variable("lst")
+        got_dict = state.variables_manager.get_variable("d")
+        assert got_list is state.variables_storage["lst"]["value"]
+        assert got_dict is state.variables_storage["d"]["value"]
+        got_list.append(2)
+        got_dict["b"] = 2
+        assert state.variables_manager.get_variable("lst") == [1, 2]
+        assert state.variables_manager.get_variable("d") == {"a": 1, "b": 2}
+
+    @pytest.mark.unit
+    def test_set_with_complex_members_round_trips_without_crash(self):
+        """Unhandled set members (complex→dict) stringify so hydrate stays hashable."""
+        original = {1 + 2j, (3 + 4j, 5)}
+        sanitized = VariableUtils.sanitize_value(original)
+        restored = VariableUtils.hydrate_value(json.loads(json.dumps(sanitized)))
+        assert isinstance(restored, set)
+        assert repr(1 + 2j) in restored
+        assert any(isinstance(x, tuple) for x in restored)
+
+    @pytest.mark.unit
+    def test_is_serializable_accepts_sets(self):
+        assert VariableUtils.is_serializable({1, 2, 3}) is True
+        assert VariableUtils.is_serializable(frozenset({"a", "b"})) is True
+        assert VariableUtils.is_serializable(set()) is True
+        assert VariableUtils.is_serializable({object()}) is False
+
     def test_filter_excludes_internal_variables(self):
         """Test that internal variables (starting with _) are filtered out."""
         original_keys = set()
@@ -100,6 +182,46 @@ class TestFilterNewVariables:
         result = VariableUtils.filter_new_variables(all_locals, original_keys)
 
         assert result == {}
+
+
+class TestLocalSandboxSetPersistence:
+    """Regression: set/frozenset vars must survive across local CodeExecutor steps (#550)."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_set_persists_across_two_steps(self):
+        state = AgentState(input="test", url="")
+
+        code1 = """
+nums = [3, 4, 5, 6]
+product_set = {a * b for a in nums for b in nums}
+print(len(product_set))
+"""
+        _, new_vars1 = await CodeExecutor.eval_with_tools_async(
+            code=code1, _locals={}, state=state, mode="local"
+        )
+        assert "product_set" in new_vars1
+        reloaded = json.loads(json.dumps({"variables": state.variables_storage}))
+        assert isinstance(
+            VariableUtils.hydrate_value(reloaded["variables"]["product_set"]["value"]),
+            set,
+        )
+        assert isinstance(state.variables_manager.get_variable("product_set"), set)
+        summary = state.variables_manager.get_variables_summary(variable_names=["product_set"])
+        assert "Type: set" in summary
+        assert "__set_type__" not in summary
+
+        _locals = {
+            name: state.variables_manager.get_variable(name)
+            for name in state.variables_manager.get_variable_names()
+        }
+
+        code2 = "print(len(nums), len(product_set))"
+        result2, _ = await CodeExecutor.eval_with_tools_async(
+            code=code2, _locals=_locals, state=state, mode="local"
+        )
+        assert "NameError" not in result2
+        assert "4 10" in result2
 
 
 class TestExecuteInE2BSandbox:

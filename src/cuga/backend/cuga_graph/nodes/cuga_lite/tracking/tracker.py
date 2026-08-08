@@ -22,6 +22,8 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+
 _tool_calls_context: contextvars.ContextVar[List[Dict[str, Any]]] = contextvars.ContextVar(
     "tool_calls", default=None
 )
@@ -30,7 +32,45 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
     "tracking_enabled", default=False
 )
 
+# Holds a mutable counter dict so the count survives context copies:
+# ``asyncio.wait_for`` runs each code block in a new Task whose context is a
+# *copy* of the executor's, but the copy references the SAME dict, so
+# increments made inside the block are visible to the executor afterwards.
+_block_tool_calls_context: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "block_tool_calls", default=None
+)
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class BlockToolCallCounter:
+    """Counts the tool calls made by a single code block.
+
+    The executor calls :meth:`reset` at the start of every block; every tool
+    invocation path (registry ``call_api``, local ``call_api`` helper,
+    combined-provider tools) calls :meth:`increment` before doing any work.
+    When a block is killed at ``sandbox_execution_timeout`` the executor reads
+    :meth:`current_count` so it can tell the agent how far the block actually
+    got, instead of reporting a bare timeout.
+    """
+
+    @staticmethod
+    def reset() -> None:
+        _block_tool_calls_context.set({"n": 0})
+
+    @staticmethod
+    def current_count() -> int:
+        holder = _block_tool_calls_context.get()
+        return holder["n"] if holder else 0
+
+    @staticmethod
+    def increment() -> None:
+        holder = _block_tool_calls_context.get()
+        if holder is None:
+            # No block scope was opened (direct tool use outside the code
+            # executor) — nothing to count.
+            return
+        holder["n"] += 1
 
 
 class ToolCallTracker:
@@ -114,6 +154,60 @@ class ToolCallTracker:
         if not ToolCallTracker.is_enabled():
             return []
         return _tool_calls_context.get() or []
+
+
+def make_recording_awaitable(
+    awaitable_func: Callable[..., Any],
+    tool_name: str,
+    app_name: Optional[str] = None,
+    param_names: Optional[List[str]] = None,
+) -> Callable[..., Any]:
+    """Wrap an already-awaitable tool function so each call is recorded.
+
+    Used for direct LangChain tools, which (unlike registry/combined provider
+    tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
+    tools record in the event-loop context, where this tracker's contextvars
+    are visible. Recording is a no-op unless a tracking session is active.
+
+    ``param_names`` (from the tool's args schema) maps positional arguments to
+    their real parameter names, so traces read the same as registry-tool traces.
+    """
+
+    @functools.wraps(awaitable_func)
+    async def _recorded(*args, **kwargs):
+        # Direct tools bypass the registry/combined call paths, so without this
+        # they are missing from the per-block count the executor reports as
+        # timeout evidence.
+        BlockToolCallCounter.increment()
+        start_time = time.time()
+        result = None
+        error_msg = None
+
+        try:
+            result = await awaitable_func(*args, **kwargs)
+            return result
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so it would skip `except
+            # Exception` and be recorded in `finally` as a success with no
+            # error — a cancelled/timed-out call must not look like one.
+            error_msg = "cancelled"
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            raise
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
+            ToolCallTracker.record_call(
+                tool_name=tool_name,
+                arguments=merge_tool_call_args(args, kwargs, param_names or []),
+                result=result,
+                app_name=app_name,
+                operation_id=tool_name,
+                duration_ms=duration_ms,
+                error=error_msg,
+            )
+
+    return _recorded
 
 
 def tracked_tool(
@@ -216,6 +310,11 @@ def tracked_tool(
                     duration_ms=duration_ms,
                     error=error_msg,
                 )
+
+        # Mark so callers that add their own recording (e.g. prepare_node's
+        # direct-tool wrapper) can avoid recording the same call twice.
+        async_wrapper._cuga_tracked = True
+        sync_wrapper._cuga_tracked = True
 
         if asyncio.iscoroutinefunction(func):
             return async_wrapper  # type: ignore

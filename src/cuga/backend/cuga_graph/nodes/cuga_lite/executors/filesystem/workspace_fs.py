@@ -227,7 +227,9 @@ class WorkspaceFilesystem:
     async def search_files(self, path: str, pattern: str, excludePatterns: Optional[List[str]] = None) -> str:
         try:
             results = await self.backend.search(path, pattern, excludePatterns or [])
-            return "\n".join(results) if results else "No matches found"
+            # Empty string (not e.g. "No matches found") so callers can rely on
+            # falsiness to detect "nothing found" instead of indexing into it like a list.
+            return "\n".join(results) if results else ""
         except Exception as exc:
             return f"[search_files error] {exc}"
 
@@ -317,7 +319,10 @@ class WorkspaceFilesystem:
                 name="search_files",
                 description=(
                     "Recursively search the workspace for entries matching a glob pattern "
-                    "(use `**/*.ext` for recursion). Returns matching relative paths."
+                    "(use `**/*.ext` for recursion). Returns a single newline-separated "
+                    "string of matching relative paths (one per line) — NOT a list. Empty "
+                    "string means no matches; use `.splitlines()` to get individual paths, "
+                    "and check with `if not result:` rather than indexing into it."
                 ),
             ),
             StructuredTool.from_function(

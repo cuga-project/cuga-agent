@@ -199,6 +199,17 @@ MODEL_CONTEXT_SIZES = {
     "google/gemini-pro": 32768,
     "google/gemini-exp": 2000000,
     # ============================================================================
+    # Google Gemma 4 Models
+    # ============================================================================
+    # Deployment cap, not the 262,144 native window: the RITS vLLM deployment serves
+    # max_model_len=131072 (probed via GET .../v1/models, 2026-07-28). Registering the
+    # native window put the 70% summarization trigger (~183k) beyond the deployment's
+    # 131k cliff, so summarization could never engage on Gemma (issue #563).
+    "gemma-4-31B-it": 131072,
+    "gemma-4-31b-it": 131072,
+    "google/gemma-4-31B-it": 131072,
+    "google/gemma-4-31b-it": 131072,
+    # ============================================================================
     # Meta Llama Models
     # ============================================================================
     "llama-4-maverick-17b-128e-instruct-fp8": 128000,
@@ -331,12 +342,13 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
     if "/" in normalized_name:
         normalized_name = normalized_name.split("/", 1)[1]
 
-    if normalized_name in MODEL_CONTEXT_SIZES:
-        return MODEL_CONTEXT_SIZES[normalized_name]
+    # Case-insensitive exact + longest-prefix match (model ids vary in casing).
+    normalized_lower = normalized_name.lower()
+    if normalized_lower in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[normalized_lower]
 
-    sorted_keys = _SORTED_MODEL_CONTEXT_KEYS
-    for key in sorted_keys:
-        if normalized_name.startswith(key):
+    for key in _SORTED_MODEL_CONTEXT_KEYS:
+        if normalized_lower.startswith(key.lower()):
             return MODEL_CONTEXT_SIZES[key]
 
     return None
@@ -354,6 +366,12 @@ def clamp_completion_tokens(
     if remaining >= requested:
         return requested
     return max(1, remaining)
+
+
+# Attribute stashing the first-seen completion budget on the client itself, so
+# repeated clamps never compound and the value's lifetime matches the client's
+# (an id()-keyed module cache could outlive the client and collide on id reuse).
+_ORIGINAL_BUDGET_ATTR = "_cuga_original_completion_budget"
 
 
 def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
@@ -389,12 +407,18 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
 
     params = dict(llm.params or {})
-    requested = (
-        getattr(llm, "max_completion_tokens", None)
-        or getattr(llm, "max_tokens", None)
-        or params.get("max_completion_tokens")
-        or 16000
-    )
+    # Resolve from the first-seen budget: params["max_completion_tokens"] is the key
+    # this function writes below, so re-reading it would make any clamp sticky for
+    # the client's lifetime (object.__setattr__ bypasses pydantic's field guard).
+    requested = getattr(llm, _ORIGINAL_BUDGET_ATTR, None)
+    if requested is None:
+        requested = (
+            getattr(llm, "max_completion_tokens", None)
+            or getattr(llm, "max_tokens", None)
+            or params.get("max_completion_tokens")
+            or 16000
+        )
+        object.__setattr__(llm, _ORIGINAL_BUDGET_ATTR, requested)
     requested = int(requested)
 
     clamped = clamp_completion_tokens(

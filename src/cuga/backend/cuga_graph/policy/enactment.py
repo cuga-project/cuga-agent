@@ -79,7 +79,8 @@ class PolicyEnactment:
             context = PolicyConfigurable.create_context_from_state(state, config or {})
 
             logger.debug(
-                f"PolicyEnactment: Created context with user_input='{context.user_input}', inferred target='{target}'"
+                f"PolicyEnactment: Created context with user_input_len={len(context.user_input or '')}, "
+                f"inferred target='{target}'"
             )
 
             # Check for policies (Intent Guards/Playbooks or OutputFormatter based on policy_types)

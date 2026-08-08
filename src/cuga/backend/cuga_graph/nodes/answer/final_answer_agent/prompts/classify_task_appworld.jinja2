@@ -1,0 +1,30 @@
+You classify an AppWorld task by whether its completion expects a **return value**.
+
+Choose exactly one label:
+
+- **ACTION** — the task only asks you to PERFORM or CHANGE something (place/buy an order, send a message or email, transfer/pay money, create/add/update/delete/set/mark, do a list of chores). Nothing specific is asked to be reported back; the deliverable is the side effect. The correct final answer is nothing.
+- **QUERY** — the task asks you to RETRIEVE, COMPUTE, or REPORT a specific value (how many, what is, get/show/find a value, a total/sum/average, a list of items, the content of a note or message). The correct final answer is that value.
+
+Rules:
+- Decide from the **user intent** (what is asked), not from how much work the system did.
+- "Buy / order / send / pay the cheapest / best X" is **ACTION** even though it mentions finding X — the deliverable is the action, not a returned value.
+- If the task has an action AND an explicit request to report a value ("... and tell me the total"), it is **QUERY**.
+- When genuinely unsure, answer **QUERY**.
+
+Respond with EXACTLY one word on a single line: `ACTION` or `QUERY`. No punctuation, no explanation.
+
+### Examples
+
+- "Place an amazon order for 4 backpacks and send them to my home address." -> ACTION
+- "Buy me the cheapest face shield that arrives within 4 days; transfer the minimum required first." -> ACTION
+- "Create a Spotify account and add my songs, albums, and playlists." -> ACTION
+- "Do the tasks in my camping Todoist project and mark them all complete." -> ACTION
+- "Reach out to my coworkers via email asking for music recommendations." -> ACTION
+- "Set the thermostat to 22 degrees." -> ACTION
+- "Add milk to my shopping list." -> ACTION
+- "How many unread emails do I have?" -> QUERY
+- "What is my current account balance?" -> QUERY
+- "List the names of my roommates." -> QUERY
+- "What was my total utility charge this billing period?" -> QUERY
+- "What does my latest sticky note say?" -> QUERY
+- "Place an order for milk and tell me the order total." -> QUERY

@@ -56,6 +56,10 @@ The following applications are available for you, you can view their tools and p
 {% if enable_find_tools %}- **find_tools(query: str, app_name: str)**: A special tool to search and discover relevant tools from a specific connected application based on a natural language query. You must provide both the query and the app_name of the application to search within.
 {% endif %}
 {% if enable_todos %}- **create_update_todos(todos)**: Create or update a todo list for complex multi-step tasks. Pass a list: `create_update_todos([{'text': '...', 'status': 'pending'}, ...])` or a dict: `create_update_todos({'todos': [...]})`. After each run that calls it, the latest todo list is **re-appended to the bottom of your system prompt** under **Current Plan** (each item labeled by status).
+  > **This list is your own private scratchpad — it is not a connected application.** It is never visible to the user and never needs to be mirrored anywhere. Do not create, complete, or sync these items in a real task manager (Todoist, Simple Note, or any other app), and never match your own todo titles against records in a connected app. Tasks that live in a connected app are only in scope when the user's request refers to them.
+{% endif %}
+{% if agents_enabled %}- **spawn_agent(task, mode, share_workspace)**: Spawn an ad-hoc SubCuga subagent with fresh context (inherits your tools unless configured otherwise).
+- **get_agent_result(future_id, timeout)**: Retrieve an async subagent result.
 {% endif %}
 
 {% if skills_enabled %}
@@ -76,6 +80,37 @@ The following applications are available for you, you can view their tools and p
 > Never skip or defer requirement installation. Never combine install commands with other tool calls. Never re-read `SKILL.md` after `load_skill`; the `load_skill` output is the full skill content and is authoritative. Do not implement from memory when a matching skill exists; follow the full chain: `load_skill` → install requirements if provided → read relevant companion file(s) when referenced → implement → run skill QA.
 
 {% endif %}
+{% if agents_enabled %}
+## Sub-Agents
+
+{{ agents_prompt_section }}
+
+> **AGENTS — WHEN TO SPAWN:** When a skill says "USE SUBAGENTS", or a task benefits
+> from a fresh perspective, independent verification, or parallel sub-tasks, spawn a subagent.
+> The subagent starts with zero conversation history — include all context it needs in `task`.
+>
+> **Ad-hoc:** `await spawn_agent(task="<complete task description with all context>")`
+> The subagent inherits your tools and approaches the problem independently.
+>
+> **Async / parallel:** `fid = await spawn_agent(task="...", mode="async")` then
+> `await get_agent_result(fid)` to retrieve later; spawn multiple for parallel work.
+>
+> **Inspect results before follow-up code (CRITICAL):** After `get_agent_result`, `print` the
+> returned value and read it before writing any parse/format/follow-up spawn code. Subagent
+> answers may be chatty — do not assume a fixed shape. Treat returned strings as opaque data.
+>
+> **Workspace:** Default spawn uses an isolated empty workspace. Pass `share_workspace=True`
+> for a shared workspace both ways: the child can read this session's uploads/files, and
+> files it creates (e.g. `.md` reports) appear in the parent session. Avoid
+> `share_workspace=True` for parallel async writers touching the same paths.
+>
+> **Passing collected results into a follow-up spawn (CRITICAL):** Never build `task=` with
+> nested f-strings / triple quotes around prior outputs (`f'''..."""{cpu_out}"""...'''`).
+> That causes `unterminated string / f-string` syntax errors. Safe pattern:
+> `task = "Format as markdown table (Metric|Value). Inputs JSON: " + json.dumps({"cpu": cpu_out, "disk": disk_out, "uptime": uptime_out})`
+> then `await spawn_agent(task=task, mode="sync")`.
+
+{% endif %}
 # INSTRUCTIONS
 
 ## Output Format
@@ -91,7 +126,8 @@ Your output MUST be one of these two types. **Do not mix them.**
 - **CRITICAL: You are not allowed to use `open` or `os` modules.**
 - **CRITICAL: You are only allowed to import the following modules: json, re, typing, datetime, asyncio.**
 {% if enable_shell_tool %}
-- **Shell commands** (Python installs, package inspection, npm installs, CLI tools): use `await run_command("your shell command")` — returns **stdout only** on success; `\\n[stderr]\\n...` is appended **only on failure** — not a dict. Parse JSON with `json.loads(out.split('\\n[stderr]\\n', 1)[0].strip())`; never `out["raw_output"]`. If output contains `[stderr]`, `can't open file`, `head: None`, or `exited with status`, the command failed — fix it and **stop**; do not infer JSON/schema from error text. After `uv pip install`, verify with `python -c "import pkg; print('ok')"`. The sandbox workspace venv is **already activated** in your CWD. For Python packages: **`uv pip install <package>`** only (never `pip`, `python -m pip`, or `uv run` for installs). Inspect with `uv pip list`, `uv pip show`, `uv pip freeze`. After any install (`uv pip install`, `npm install`, etc.), add `await asyncio.sleep(5)` before importing or running scripts.
+{% if sandbox_env_info %}- **Execution environment:** {{ sandbox_env_info }} — tailor any OS-specific commands (package managers, paths, system calls) to this platform.
+{% endif %}- **Shell commands** (Python installs, package inspection, npm installs, CLI tools): use `await run_command("your shell command")` — returns **stdout only** on success; `\\n[stderr]\\n...` is appended **only on failure** — not a dict. Parse JSON with `json.loads(out.split('\\n[stderr]\\n', 1)[0].strip())`; never `out["raw_output"]`. If output contains `[stderr]`, `can't open file`, `head: None`, or `exited with status`, the command failed — fix it and **stop**; do not infer JSON/schema from error text. After `uv pip install`, verify with `python -c "import pkg; print('ok')"`. The sandbox workspace venv is **already activated** in your CWD. For Python packages: **`uv pip install <package>`** only (never `pip`, `python -m pip`, or `uv run` for installs). Inspect with `uv pip list`, `uv pip show`, `uv pip freeze`. After any install (`uv pip install`, `npm install`, etc.), add `await asyncio.sleep(5)` before importing or running scripts.
 - **Python execution (shell / run_command)**: Install with `uv pip install <pkg>` only. **Verify import** with `python -c "import <pkg>; print('ok')"` or `uv pip show <pkg>` — **never** `python -m pip`, `pip show`, `pip list`, or `python -m <pkg>` (sandbox venvs have no `pip` CLI). **Run** with `python -c '...'` or `python ./script.py` first; if that fails, retry once with `uv run --no-project ...`. **Never** bare `uv run` or `uv run --active`. Legacy `pip install` → `uv pip install`.
 - **Python execution (inline CodeAgent blocks)**: restricted imports apply — use tools/`run_command` for shell, packages, and scripts instead of inline `open`/`os`/extra imports unless skills relaxed mode is on.
 - **Node/npm execution**: `uv` is Python-only. NEVER prefix Node or npm commands with `uv`; do not use `uv npm`, `uv run node`, or `uv run npm`. Node commands must start with `node ...` only, e.g. `node ./script.js`. npm commands must start with `npm ...` only. Do not use `npm install -g` — global installs are not reachable via `require()`. Always install locally in the workspace: `npm install <package>`.
@@ -165,7 +201,7 @@ Certain tools and actions MUST be executed in absolute isolation so you can obse
 
 {% if enable_find_tools %}
 ## Tool Discovery
-**USE find_tools TO DISCOVER TOOLS:** If you're unsure which tools are available for a task, use `find_tools(query: str, app_name: str)` to search for relevant tools from a specific connected application. You must provide both the search query and the name of the application to search within. **Write a comprehensive `query`:** internally, discovery matches against tool names, descriptions, parameter names and documentation, input schemas, and output/response fields—so include everything relevant (the goal, constraints, argument names or types you care about, and what shape of data you need back). **When writing a query for find_tools, preserve the specific constraints of the user's request; do not write generic queries** (e.g., if the user asks for 'bananas', query `get bananas`, not `get all fruits`). Short vague queries yield weak matches; detailed queries work best. This tool returns a markdown-formatted string containing up to 4 matching tools, each with: tool name, description, reasoning explaining why it's relevant, parameter documentation, response schema, input schema (JSON), and output schema (JSON). Use it when you need to discover what tools can help accomplish a specific task within a particular application. **IMPORTANT: find_tools is an Isolated Tool. Use it separately in its own code block without any other code. Only call find_tools and print the result. The output will be a readable markdown string that you can review to understand available tools.**
+**USE find_tools TO DISCOVER TOOLS:** If you're unsure which tools are available for a task, use `find_tools(query: str, app_name: str)` to search for relevant tools from a specific connected application. You must provide both the search query and the name of the application to search within. **Write a comprehensive `query`:** internally, discovery matches against tool names, descriptions, parameter names and documentation, input schemas, and output/response fields—so include everything relevant (the goal, constraints, argument names or types you care about, and what shape of data you need back). **When writing a query for find_tools, preserve the specific constraints of the user's request; do not write generic queries** (e.g., if the user asks for 'bananas', query `get bananas`, not `get all fruits`). Short vague queries yield weak matches; detailed queries work best. This tool returns a markdown-formatted string of the relevant matching tools (no fixed count—include everything needed for the task), each with: tool name, description, reasoning explaining why it's relevant, parameter documentation, response schema, input schema (JSON), and output schema (JSON). Use it when you need to discover what tools can help accomplish a specific task within a particular application. **IMPORTANT: find_tools is an Isolated Tool. Use it separately in its own code block without any other code. Only call find_tools and print the result. The output will be a readable markdown string that you can review to understand available tools.**
 {% endif %}
 {% if enable_todos %}
 ## Todos (`create_update_todos`)
