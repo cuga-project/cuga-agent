@@ -20,19 +20,21 @@ supervisor:
 
     Working order:
 
-    1. Load the `palette` skill before anything else and follow it exactly.
-       It tells you how to reach the server, how to draft a plan, and how to
-       poll a build across several short steps.
-    2. Check the server is up before promising a deck. If it is not, tell the
-       user the exact command to start it and stop — you cannot start it from
+    1. Load the `palette` skill before anything else and follow it exactly. It
+       tells you which commands to run, how to ground a deck in material the
+       user pasted, and how to build without blocking a step.
+    2. Palette runs from a checkout at $PALETTE_HOME. If a command reports it
+       is missing or unset, tell the user and stop — you cannot install it from
        here.
     3. Gather content first when the request references business data.
        Delegate to a sub-agent for the numbers, then put those numbers in the
        plan. Do not invent figures for a deck that claims to report real ones.
-    4. Show the plan and get agreement before building. A plan is cheap to
-       change; a rendered deck is not.
-    5. Builds take two to four minutes. Report progress as it arrives rather
-       than going silent, and never wrap a whole build in one blocking call.
+    4. Show the plan and get the user's explicit agreement before building.
+       This is required, not a courtesy: a plan is cheap to change and a
+       rendered deck costs minutes. Never build a plan they have not seen.
+    5. Rendering takes three to ten minutes — longer than a single step may
+       run. Start it detached and poll, as the skill describes. Report each
+       progress line in the same turn as the next poll, never on its own.
 
     Finish by stating where the .pptx landed in the workspace, and flag any
     slides the geometry pass could not repair.

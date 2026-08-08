@@ -66,12 +66,23 @@ def install_real_skill(root: Path) -> Path:
 
 def configure_skills(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The settings a skills-enabled agent runs under (mirrors demo_palette)."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
     from cuga.config import settings
+
+    # The Seatbelt policy bakes in <cwd>/cuga_workspace as the only writable
+    # tree, and the executor caches that it has been written. Production has one
+    # cwd per process so that is fine; here each test has its own tmp_path, and
+    # a stale policy silently denies every write — the sandbox just exits 1.
+    # Drop the cached executor so the next call rebuilds the policy for this cwd.
+    CodeExecutor._native_executor = None
 
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setenv("CUGA_FOLDER", str(tmp_path / ".cuga"))
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
     monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", False)
+    # Mirrors demo_palette. Drafting a plan is a blocking model call of about a
+    # minute, so the 30s default is not enough even for the cheap step.
+    monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", 120)
     monkeypatch.setattr(settings.policy, "enabled", False)
 
 
@@ -172,9 +183,10 @@ class TestAgentInvokesTheSkill:
 
         # The instructions the agent now has must be Palette's, not a stub's.
         for expected in (
-            "palette-skill",  # the CLI it must drive
-            "palette-skill deck",  # the one command that makes a deck
-            "pptxgenjs",  # the thing it is forbidden to hand-write
+            "palette.py",            # the CLI it must drive
+            "build-plan",            # step one of the two-step workflow
+            "build-deck",            # step two
+            "pptxgenjs",             # the thing it is forbidden to hand-write
         ):
             assert expected in transcript, (
                 f"{expected!r} missing from what the agent received after load_skill"
@@ -184,13 +196,13 @@ class TestAgentInvokesTheSkill:
     async def test_agent_is_told_not_to_block_on_a_build(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The per-step limit is the whole reason the skill exists in this shape.
+        """The per-step limit is the whole reason the skill ships a helper.
 
-        A deck is three to ten minutes and no step is, so the instructions must
-        describe a resumable loop rather than one blocking call. They must also
-        say what ends it: every observed failure ended a turn mid-build, either
-        by asking whether to keep going or by narrating progress with no command
-        attached, and on this host a turn of plain prose reads as a final answer.
+        `palette.py build-deck` blocks for three to ten minutes. No CUGA step
+        does, so a direct call is killed part-way while the render keeps going
+        — the work completes and nobody collects it. The instructions must
+        describe the detached start-and-poll path, and must say what ends the
+        loop: `verified`, computed from the filesystem rather than an exit code.
         """
         monkeypatch.chdir(tmp_path)
         install_real_skill(tmp_path)
@@ -206,11 +218,11 @@ class TestAgentInvokesTheSkill:
 
         transcript = conversation_text(model)
         for expected, why in (
-            ("--max-seconds", "no bounded poll — a blocking call would be killed by the step limit"),
+            ("deck.py start", "no detached build — a direct call is killed by the step limit"),
+            ("deck.py status", "nothing tells the agent how to find out when it finished"),
             ('"done": true', "nothing tells the agent what ends the loop"),
-            ("every turn you take must contain a `deck` call",
-             "nothing stops the agent narrating progress instead of polling for it"),
             ("verified", "completion is left to the agent's belief rather than the filesystem"),
+            ("120", "the skill should name the limit it is working around"),
         ):
             assert expected in transcript, f"{expected!r} missing: {why}"
 
@@ -236,33 +248,42 @@ class TestAgentInvokesTheSkill:
         assert "palette" in transcript, "the error should name the skills that do exist"
 
 
-@pytest.mark.manual
-@pytest.mark.skipif(not palette_is_up(), reason=f"no Palette server at {PALETTE_URL}")
+PALETTE_HOME = Path(
+    os.environ.get("PALETTE_HOME", REPO_ROOT.parent / "project-palette-july25")
+)
+
+
+@pytest.mark.skipif(
+    not (PALETTE_HOME / "palette.py").is_file(),
+    reason=f"no Palette checkout at {PALETTE_HOME}; set PALETTE_HOME",
+)
 class TestAgentReachesPalette:
-    """The full round trip, with a real Palette server on the other end.
+    """The full round trip into a real Palette checkout.
 
     Still no LLM — the model is scripted — but every other component is real:
-    the graph, the skill, the sandbox, the CLI, and the server.
+    the graph, the skill, the sandbox, and `palette.py` itself. Deliberately
+    uses commands that make **no model call**, so this tier stays fast and
+    keeps working when the inference endpoint is unreachable. Whether the
+    models produce a good deck is Tier 3's job; whether the sandbox can reach
+    Palette at all is this one's, and that is the link that actually breaks.
     """
 
     @pytest.mark.asyncio
-    async def test_agent_follows_the_skill_all_the_way_to_the_server(
+    async def test_the_sandbox_can_run_palette(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A sandbox confines writes, not reads or exec — so this must work."""
         monkeypatch.chdir(tmp_path)
         install_real_skill(tmp_path)
         configure_skills(monkeypatch, tmp_path)
+        monkeypatch.setenv("PALETTE_HOME", str(PALETTE_HOME))
 
         model = CaptureChatModel(
             responses=[
-                # 1. Open the skill, exactly as the prompt instructs.
                 code_block('print(await load_skill("palette"))'),
-                # 2. Do what it says: install the client, then ask the server
-                #    whether it is alive and configured.
                 code_block(
                     "out = await run_command("
-                    '"uv pip install --quiet ./skills/palette/vendor/palette_skill-*.whl '
-                    f'&& palette-skill --base-url {PALETTE_URL} health")\n'
+                    f'"cd {PALETTE_HOME} && python palette.py --help")\n'
                     "print(out)"
                 ),
                 AIMessage(content="Palette is reachable."),
@@ -271,88 +292,60 @@ class TestAgentReachesPalette:
         await run_graph(model, "Build me a deck about vector databases")
 
         transcript = conversation_text(model)
-        assert '"status": "ok"' in transcript or '"status":"ok"' in transcript, (
-            "the agent followed the skill but never got a live answer from Palette.\n"
-            f"Transcript tail:\n{transcript[-1500:]}"
-        )
-        assert "roster" in transcript, "the health payload did not come back intact"
-
-
-@pytest.mark.e2e
-@pytest.mark.skipif(not palette_is_up(), reason=f"no Palette server at {PALETTE_URL}")
-class TestRealModelChoosesPalette:
-    """Tier 3: does a real model *decide* to use the skill?
-
-    Everything else in this file substitutes the model. This is the one test
-    that does not — it uses the project's configured LLM and asserts on what
-    the model chose, unprompted, from a plain deck request. Needs credentials
-    (see conftest's `real_llm`) and a live Palette server.
-
-    Step budget is deliberately small: the point is the routing decision and
-    the first few instructed actions, not a full two-to-four minute build.
-    """
+        for expected in ("build-plan", "edit-plan", "build-deck"):
+            assert expected in transcript, (
+                f"the agent could not list palette.py's commands ({expected!r} missing).\n"
+                f"Transcript tail:\n{transcript[-1200:]}"
+            )
 
     @pytest.mark.asyncio
-    async def test_deck_request_routes_to_the_palette_skill(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, real_llm
+    async def test_the_helper_starts_a_build_without_blocking_the_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-            CugaLiteState,
-            create_cuga_lite_graph,
-        )
+        """The whole reason deck.py exists: `start` must return at once.
 
+        A direct `build-deck` runs for minutes and a CUGA step is capped at
+        120s, so the agent would be killed mid-render with the work continuing
+        unseen. `start` spawns and returns, and `status` is what reports the
+        outcome — including, here, an honest failure when the models cannot be
+        reached, rather than a deck that does not exist.
+        """
         monkeypatch.chdir(tmp_path)
         install_real_skill(tmp_path)
         configure_skills(monkeypatch, tmp_path)
-        monkeypatch.setenv("PALETTE_URL", PALETTE_URL)
+        monkeypatch.setenv("PALETTE_HOME", str(PALETTE_HOME))
 
-        graph = create_cuga_lite_graph(
-            model=real_llm, tool_provider=MinimalToolProvider(), apps_list=[]
-        ).compile()
+        # The plan is a fixture, not the thing under test: a sandbox may read
+        # anywhere, so an absolute path outside the workspace is fine and keeps
+        # write_file's escaping out of a test about starting a build.
+        plan = tmp_path / "plan.md"
+        plan.write_text("# Plan\n\n## Slide 1\n- hello\n")
 
-        thread_id = f"palette_real_{uuid.uuid4().hex[:8]}"
-        state = CugaLiteState(
-            chat_messages=[
-                HumanMessage(content="Build me a deck about vector databases for backend engineers.")
-            ],
-            thread_id=thread_id,
+        model = CaptureChatModel(
+            responses=[
+                code_block('print(await load_skill("palette"))'),
+                code_block(
+                    "out = await run_command("
+                    f'"python ./skills/palette/scripts/deck.py start '
+                    f'--plan {plan} --out-dir ./deck")\n'
+                    "print(out)"
+                ),
+                AIMessage(content="Started."),
+            ]
         )
-        result = await graph.ainvoke(
-            state,
-            config={
-                "configurable": {
-                    "thread_id": thread_id,
-                    "apps_list": [],
-                    "cuga_lite_max_steps": 4,
-                }
-            },
-        )
+        thread_id = await run_graph(model, "Build me a deck about vector databases")
 
-        messages = result.get("chat_messages", []) if isinstance(result, dict) else []
-        transcript = "\n".join(str(getattr(m, "content", "")) for m in messages)
-        # Only what the agent itself wrote. The full transcript also contains
-        # the skill body (load_skill output is fed back into the loop), which
-        # legitimately mentions pptxgenjs while forbidding its use.
-        authored = "\n".join(
-            str(getattr(m, "content", "")) for m in messages if type(m).__name__ == "AIMessage"
+        transcript = conversation_text(model)
+        # Not '"state": "running"' — SKILL.md says that too, so it would pass
+        # whether or not anything ran. "pid" only ever comes from deck.py.
+        assert '"pid":' in transcript, (
+            "deck.py start did not report a spawned build.\n"
+            f"Transcript tail:\n{transcript[-1500:]}"
         )
 
-        assert "load_skill" in transcript, (
-            "a plain deck request did not route to any skill. If this fails, the "
-            "SKILL.md `description` is the thing to fix — regenerate and reinstall.\n"
-            f"Transcript:\n{transcript[:2000]}"
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+            thread_workspace_root,
         )
-        assert 'load_skill("palette")' in transcript or "load_skill('palette')" in transcript, (
-            f"a skill was loaded, but not palette.\nTranscript:\n{transcript[:2000]}"
-        )
-        # Having read the instructions, it should reach for the CLI they describe
-        # rather than start hand-writing slide code.
-        assert "palette-skill" in transcript, (
-            "the skill was loaded but its instructions were not acted on"
-        )
-        hand_authoring = ("require('pptxgenjs')", 'require("pptxgenjs")', "new pptxgen",
-                          "from pptx import", "import pptxgenjs")
-        offenders = [marker for marker in hand_authoring if marker in authored]
-        assert not offenders, (
-            f"the agent started hand-writing deck code ({offenders}) instead of driving Palette"
-        )
+
+        state_file = thread_workspace_root(thread_id) / "deck" / ".palette-build.json"
+        assert state_file.is_file(), "no build state was written into the workspace"

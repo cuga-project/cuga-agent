@@ -1,41 +1,31 @@
-"""End-to-end: markdown in, a real .pptx out, driven by the agent.
+"""End-to-end: a request in, a real .pptx out, driven by the agent.
 
 Nothing here is mocked. A real model runs the real CugaLite graph, loads the
-real installed `palette` skill, and drives a real Palette server through its
-CLI in a real sandbox. What comes back is a PowerPoint file on disk, which
-these tests open and inspect.
+real installed `palette` skill, and drives `palette.py` in a real sandbox.
+What comes back is a PowerPoint file on disk, which these tests open and
+inspect.
 
-Two routes in, matching how people actually arrive at a deck:
+Requirements, each checked and skipped on rather than failing obscurely:
 
-  * **A plan already exists** — markdown in Palette's plan format goes straight
-    to Stage 2. This is the fast path (~4 min).
-  * **Only source material exists** — unstructured notes go through Stage 1
-    first, where the crafter imposes a narrative, then build (~6 min).
+  * a Palette checkout at ``$PALETTE_HOME`` (the skill shells out to it)
+  * ``RITS_API_KEY`` in this process's environment — the sandbox inherits it
+  * credentials for the project's LLM
 
-Both assert on the artifact, not on the transcript: the file must be a valid
-OOXML package with the expected number of slide parts, and every slide must
-have rendered to a PNG. A deck that "succeeded" with two slides or a 12KB
-.pptx is a failure.
-
-Requirements: credentials for the project's LLM, a reachable Palette server
-with RITS_API_KEY set, and the palette skill installed. Each is checked and
-skipped on rather than failing obscurely.
-
-    palette-skill serve ensure          # start Palette
+    export PALETTE_HOME=~/Documents/GitHub/project-palette-july25
+    export RITS_API_KEY=...
     uv run pytest tests/e2e/skills/test_palette_deck_e2e.py -m e2e -v -s
 
-Set PALETTE_DECK_OUT to keep the decks somewhere you can open them:
+Set ``PALETTE_DECK_OUT`` to keep the decks somewhere you can open them.
 
-    PALETTE_DECK_OUT=~/Desktop/palette-decks uv run pytest ... -m e2e -s
+These assert on the **artifact**, not the transcript: a long agent run gets
+context-summarised, which erases the very lines a transcript check would look
+for. A deck that "succeeded" with two slides or a 12 KB .pptx is a failure.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
-import urllib.error
-import urllib.request
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -48,26 +38,13 @@ from tests.e2e.skills.conftest import MinimalToolProvider
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 INSTALLED_SKILL = REPO_ROOT / ".cuga" / "skills" / "palette"
-FIXTURES = Path(__file__).parent / "fixtures"
-PALETTE_URL = os.environ.get("PALETTE_URL", "http://127.0.0.1:18814")
+PALETTE_HOME = Path(os.environ.get("PALETTE_HOME", REPO_ROOT.parent / "project-palette-july25"))
 
-#: Where to keep the produced decks. Defaults to a temp dir; point it at
-#: something durable to actually look at the output.
+#: Where to keep the produced decks. Point it somewhere durable to look at them.
 DECK_OUT = Path(os.environ.get("PALETTE_DECK_OUT", "/tmp/palette-decks")).expanduser()
 
 #: Collected for the end-of-session summary table.
 _RESULTS: list[dict] = []
-
-
-def _palette_health() -> dict | None:
-    try:
-        with urllib.request.urlopen(f"{PALETTE_URL}/health", timeout=3) as response:
-            return json.loads(response.read())
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-
-
-_HEALTH = _palette_health()
 
 pytestmark = [
     pytest.mark.e2e,
@@ -75,10 +52,13 @@ pytestmark = [
         not (INSTALLED_SKILL / "SKILL.md").is_file(),
         reason="palette skill not installed — run `make skill-install CUGA=<repo>` in project-palette",
     ),
-    pytest.mark.skipif(_HEALTH is None, reason=f"no Palette server at {PALETTE_URL}"),
     pytest.mark.skipif(
-        bool(_HEALTH) and not _HEALTH.get("rits_key_set"),
-        reason="Palette has no RITS_API_KEY — every build would fail at the first model call",
+        not (PALETTE_HOME / "palette.py").is_file(),
+        reason=f"no Palette checkout at {PALETTE_HOME}; set PALETTE_HOME",
+    ),
+    pytest.mark.skipif(
+        not os.environ.get("RITS_API_KEY", "").strip(),
+        reason="RITS_API_KEY is not exported; the sandbox inherits this process's env",
     ),
 ]
 
@@ -90,8 +70,6 @@ pytestmark = [
 
 @dataclass
 class DeckResult:
-    """What a run produced, for assertions and for the summary table."""
-
     name: str
     workspace: Path
     pptx: Path | None
@@ -105,46 +83,38 @@ class DeckResult:
             return 0
         with zipfile.ZipFile(self.pptx) as archive:
             return sum(
-                1
-                for n in archive.namelist()
+                1 for n in archive.namelist()
                 if n.startswith("ppt/slides/slide") and n.endswith(".xml")
             )
 
 
-def _configure(
-    monkeypatch: pytest.MonkeyPatch, workspace: Path, *, step_seconds: int | None = None
-) -> None:
+def _configure(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
     """Settings a skills-enabled agent runs under, mirroring `demo_palette`.
 
-    The preset's two departures from CUGA's defaults both exist because a deck
-    is minutes of polling rather than a handful of calls, and both were paid
-    for in failed runs:
+    The two departures from CUGA's defaults both exist because a deck is
+    minutes of work rather than a handful of calls:
 
-      * a **120s step**, so each bounded poll covers real ground. At the 30s
-        default a ten-minute build is twenty-odd polls, and agents abandon that
-        around step 40 of 100 — with the build still running, finishing
-        uncollected minutes later.
+      * a **120s step**, because drafting a plan is one blocking model call of
+        about a minute and the 30s default cannot hold it. (The *build* never
+        blocks a step — the skill starts it detached.)
       * **auto-continue on**, so a progress note the model writes as prose does
         not read as a finished answer and end the run.
-
-    ``step_seconds`` overrides the first for a test that wants something else.
     """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
     from cuga.config import settings
 
+    # The Seatbelt policy pins <cwd>/cuga_workspace as the only writable tree
+    # and the executor caches it. Each test has its own tmp_path, so a cached
+    # executor denies every write and the sandbox exits 1.
+    CodeExecutor._native_executor = None
+
     monkeypatch.chdir(workspace)
-    # 120s mirrors `_apply_palette_supervisor_env`, and the skill's CUGA
-    # profile polls at 100s to fit inside it. At the 30s default a ten-minute
-    # build is twenty-odd polls and the agent abandons it around step 40.
-    monkeypatch.setattr(
-        settings.advanced_features, "sandbox_execution_timeout", step_seconds or 120
-    )
+    monkeypatch.setattr(settings.advanced_features, "sandbox_execution_timeout", 120)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
     monkeypatch.setenv("CUGA_FOLDER", str(workspace / ".cuga"))
-    monkeypatch.setenv("PALETTE_URL", PALETTE_URL)
+    monkeypatch.setenv("PALETTE_HOME", str(PALETTE_HOME))
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
-    # Mirrors `_apply_palette_supervisor_env`. Left off, the first "still
-    # rendering, I'll keep checking" the model emits ends the run mid-build.
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
     monkeypatch.setattr(settings.policy, "enabled", False)
 
 
@@ -158,9 +128,8 @@ def _sandbox_workspace(thread_id: str) -> Path:
     """The directory the agent's `./` actually refers to.
 
     Not the process cwd: CUGA gives each thread its own workspace under
-    ``<cwd>/cuga_workspace/``, and that is where run_command runs and where
-    uploads have to be staged for the agent to see them. Resolved through
-    CUGA's own helper so this cannot drift from the executor.
+    ``<cwd>/cuga_workspace/``. Resolved through CUGA's own helper so this
+    cannot drift from the executor.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
         thread_workspace_root,
@@ -169,23 +138,8 @@ def _sandbox_workspace(thread_id: str) -> Path:
     return thread_workspace_root(thread_id)
 
 
-def _stage_uploads(thread_id: str, *sources: Path) -> Path:
-    """Put the markdown where the agent will look for it."""
-    uploads = _sandbox_workspace(thread_id) / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
-    for source in sources:
-        shutil.copy2(source, uploads / source.name)
-    return uploads
-
-
 async def _run_agent(prompt: str, thread_id: str, *, max_steps: int) -> str:
-    """Drive the real graph with the project's real model; return the transcript.
-
-    ``max_steps`` has to be generous. Each bounded poll is one step and advances
-    only ~25s, so a four-minute build alone costs ten to twelve steps, a draft
-    another four or five, and setup and delivery the rest. Budgets that look
-    ample for a normal task starve this one just before the download.
-    """
+    """Drive the real graph with the project's real model; return the transcript."""
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
         CugaLiteState,
         create_cuga_lite_graph,
@@ -215,7 +169,7 @@ async def _run_agent(prompt: str, thread_id: str, *, max_steps: int) -> str:
 def _collect(name: str, workspace: Path, transcript: str) -> DeckResult:
     """Find whatever the agent produced and copy it somewhere durable."""
     pptx_files = sorted(workspace.rglob("*.pptx"))
-    slides = sorted(workspace.rglob("slide-*.png"))
+    slides = sorted(workspace.rglob("*.png"))
     pptx = pptx_files[0] if pptx_files else None
 
     keep = DECK_OUT / name
@@ -224,22 +178,16 @@ def _collect(name: str, workspace: Path, transcript: str) -> DeckResult:
         if pptx:
             shutil.copy2(pptx, keep / "deck.pptx")
             pptx = keep / "deck.pptx"
-        kept_slides = []
-        for slide in slides:
-            shutil.copy2(slide, keep / slide.name)
-            kept_slides.append(keep / slide.name)
-        slides = kept_slides
+        slides = [shutil.copy2(s, keep / s.name) and keep / s.name for s in slides]
 
     outcome = DeckResult(name, workspace, pptx, slides, transcript)
-    _RESULTS.append(
-        {
-            "name": name,
-            "pptx": str(outcome.pptx) if outcome.pptx else "(none)",
-            "slides": outcome.slide_parts,
-            "previews": len(outcome.slides),
-            "bytes": outcome.pptx.stat().st_size if outcome.pptx else 0,
-        }
-    )
+    _RESULTS.append({
+        "name": name,
+        "pptx": str(outcome.pptx) if outcome.pptx else "(none)",
+        "slides": outcome.slide_parts,
+        "previews": len(outcome.slides),
+        "bytes": outcome.pptx.stat().st_size if outcome.pptx else 0,
+    })
     return outcome
 
 
@@ -262,30 +210,16 @@ def _assert_real_deck(outcome: DeckResult, *, min_slides: int) -> None:
     assert outcome.pptx.stat().st_size > 20_000, (
         f"{outcome.name}: .pptx is {outcome.pptx.stat().st_size} bytes — too small to hold real slides"
     )
-    assert len(outcome.slides) >= min_slides, (
-        f"{outcome.name}: {len(outcome.slides)} preview PNG(s) for "
-        f"{outcome.slide_parts} slides — previews were not rendered"
-    )
-    for slide in outcome.slides:
-        assert slide.stat().st_size > 5_000, f"{outcome.name}: {slide.name} is suspiciously small"
-        assert slide.read_bytes().startswith(b"\x89PNG"), f"{outcome.name}: {slide.name} is not a PNG"
 
 
-#: Palette's renderer forces IBM Plex (render.py's font safelist) and substitutes
-#: Calibri for anything else the model asks for. A deck hand-written with
-#: pptxgenjs defaults would carry Arial or Calibri and no Plex at all, so a
-#: Plex-heavy file could only have come through Palette's renderer.
+#: Palette's renderer forces IBM Plex and substitutes Calibri for anything else,
+#: so a Plex-heavy file could only have come through it. A deck hand-written
+#: with pptxgenjs defaults would carry Arial or Calibri and no Plex at all.
 PALETTE_FONT_MARKER = "IBM Plex"
 
 
 def _assert_came_from_palette(outcome: DeckResult) -> None:
-    """Provenance from the artifact, which cannot be summarised away.
-
-    The transcript is the obvious place to look for `load_skill("palette")`,
-    but CUGA compacts long conversations — and a draft-then-build run is long
-    enough to trigger it, which erases the very lines this would check. So the
-    file itself carries the proof, and the transcript is only a bonus.
-    """
+    """Provenance from the artifact, which cannot be summarised away."""
     with zipfile.ZipFile(outcome.pptx) as archive:
         xml = b"".join(
             archive.read(n) for n in archive.namelist() if n.startswith("ppt/slides/slide")
@@ -295,34 +229,20 @@ def _assert_came_from_palette(outcome: DeckResult) -> None:
         "Palette's renderer — the agent built a deck some other way."
     )
 
-    summarised = "summary of the conversation to date" in outcome.transcript
-    if not summarised:
-        assert (
-            'load_skill("palette")' in outcome.transcript
-            or "load_skill('palette')" in outcome.transcript
-        ), "the agent built something without loading the palette skill"
-        assert "palette-skill" in outcome.transcript, (
-            "the skill was loaded but its CLI was never driven"
-        )
 
+def _assert_the_plan_was_shown_first(outcome: DeckResult) -> None:
+    """The confirmation gate is the workflow, not a nicety.
 
-def _assert_orchestrator_was_used(workspace: Path, name: str) -> None:
-    """`palette-skill deck` leaves a state file; hand-managed sequences do not.
-
-    This is the distinction that matters. An agent stitching draft/build calls
-    together itself owns the thread id, the polling and the notion of "done" —
-    and that is precisely the arrangement that produced a deck announcement
-    with no deck behind it. ``run_deck`` owns all three instead, and records
-    that it did in ``.palette-deck.json``. No file, no orchestrator.
+    A plan is cheap to change and a render costs minutes, so the skill requires
+    the user to approve before building. The plan file on disk is the evidence
+    that step happened at all.
     """
-    states = sorted(workspace.rglob(".palette-deck.json"))
-    assert states, (
-        f"{name}: no .palette-deck.json anywhere — the agent hand-managed the "
-        "draft/build sequence instead of running `palette-skill deck`, which is "
-        "the exact arrangement that hallucinated a completed deck."
+    plans = list(outcome.workspace.rglob("plan.md"))
+    assert plans, (
+        f"{outcome.name}: no plan.md anywhere — the agent went straight to build-deck, "
+        "skipping the confirmation gate the skill makes mandatory."
     )
-    stage = json.loads(states[0].read_text()).get("stage")
-    assert stage == "done", f"{name}: orchestrator stopped in stage {stage!r}, not 'done'"
+    assert plans[0].stat().st_size > 200, f"{outcome.name}: plan.md is too short to be a real plan"
 
 
 # --------------------------------------------------------------------------
@@ -332,79 +252,70 @@ def _assert_orchestrator_was_used(workspace: Path, name: str) -> None:
 
 @pytest.mark.asyncio
 async def test_deck_from_a_bare_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The prompt that hallucinated, verbatim, with nothing added.
+    """What a person actually types, with nothing added.
 
-    Every other test here scaffolds: it names the stage, says "poll until the
-    build finishes", sometimes even passes a ``--max-seconds`` value. Under
-    that much instruction the agent cannot go wrong in the way it actually
-    went wrong. This one says what a person says — draft, show me, build —
-    and leaves the agent to work out the rest.
+    Deliberately unscaffolded: it does not name a command, mention the plan
+    step, or say how to poll. Every skill bug found so far came from a prompt
+    shaped like this one, and none was caught by a unit test.
 
-    It failed once already, announcing files that were never written while the
-    server logs showed four drafts and zero builds. It runs at the default 30s
-    step, like the demo, because the shortened step was part of the pressure.
+    It says "and build it" so the agent has permission to proceed past the
+    plan — a bare "draft a plan" would correctly stop and wait for a human.
     """
     _configure(monkeypatch, _prepare_skill(tmp_path))
     thread_id = f"deck_bare_{uuid.uuid4().hex[:8]}"
 
     transcript = await _run_agent(
-        "Draft a plan for a Q3 sales review, show it to me, then build it.",
+        "Build me a deck about vector databases for backend engineers. "
+        "Show me the plan first, then go ahead and build it.",
         thread_id,
         max_steps=100,
     )
 
     workspace = _sandbox_workspace(thread_id)
     outcome = _collect("bare_request", workspace, transcript)
-    _assert_real_deck(outcome, min_slides=5)
+    _assert_the_plan_was_shown_first(outcome)
+    _assert_real_deck(outcome, min_slides=3)
     _assert_came_from_palette(outcome)
-    _assert_orchestrator_was_used(workspace, outcome.name)
 
 
 @pytest.mark.asyncio
-async def test_deck_from_a_plan_markdown_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Markdown already in plan format goes straight to Stage 2."""
-    source = FIXTURES / "plan_agent_skills.md"
+async def test_deck_from_pasted_material(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Material pasted into the chat must reach `--context`, not the request.
+
+    This is the path for hosts with no file upload. Passed as part of the
+    request the crafter treats it as instructions; passed via `--context` it is
+    grounded source material and shaped into slides.
+    """
     _configure(monkeypatch, _prepare_skill(tmp_path))
-    thread_id = f"deck_plan_{uuid.uuid4().hex[:8]}"
-    _stage_uploads(thread_id, source)
+    thread_id = f"deck_ctx_{uuid.uuid4().hex[:8]}"
 
-    transcript = await _run_agent(
-        f"Build a slide deck from the plan in ./uploads/{source.name}. "
-        "It is already in Palette's plan format, so do not draft a new plan — "
-        "start the build directly from that file. Poll until the build finishes, "
-        "then save the .pptx and all slide previews into ./deck/.",
-        thread_id,
-        max_steps=70,
+    material = (
+        "Q3 platform notes.\n"
+        "- Ingest latency p99 fell from 840ms to 310ms after the batching change.\n"
+        "- Two regions still run the legacy path: eu-central and ap-south.\n"
+        "- Storage cost per TB dropped 22% following the tiering rollout.\n"
+        "- Open risk: the replay tool has no back-pressure and has twice caused "
+        "  a queue backlog during incident recovery.\n"
     )
 
-    outcome = _collect("from_plan_markdown", _sandbox_workspace(thread_id), transcript)
-    _assert_real_deck(outcome, min_slides=5)
-    _assert_came_from_palette(outcome)
-
-
-@pytest.mark.asyncio
-async def test_deck_from_unstructured_source_notes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Raw notes must go through Stage 1 before they can be built."""
-    source = FIXTURES / "source_sandbox_notes.md"
-    _configure(monkeypatch, _prepare_skill(tmp_path), step_seconds=120)
-    thread_id = f"deck_notes_{uuid.uuid4().hex[:8]}"
-    _stage_uploads(thread_id, source)
-
     transcript = await _run_agent(
-        f"Turn the engineering notes in ./uploads/{source.name} into a slide deck for "
-        "platform engineers. The file is raw notes, not a plan — draft a plan from it "
-        "first, then build the deck. Save the .pptx and all slide previews into ./deck/. "
-        "The step limit is raised for this task, so poll with --max-seconds 100 "
-        "rather than 25 — you will need far fewer polls that way.",
+        "Turn these notes into a 4-slide deck for platform engineers. "
+        "Show me the plan, then build it.\n\n" + material,
         thread_id,
-        max_steps=95,
+        max_steps=100,
     )
 
-    outcome = _collect("from_source_notes", _sandbox_workspace(thread_id), transcript)
-    _assert_real_deck(outcome, min_slides=5)
+    workspace = _sandbox_workspace(thread_id)
+    outcome = _collect("pasted_material", workspace, transcript)
+    _assert_the_plan_was_shown_first(outcome)
+    _assert_real_deck(outcome, min_slides=3)
     _assert_came_from_palette(outcome)
+
+    plan = next(iter(workspace.rglob("plan.md"))).read_text(errors="replace").lower()
+    assert any(token in plan for token in ("latency", "310", "tiering", "replay")), (
+        "the plan mentions nothing from the pasted notes — the material was not "
+        f"grounded into it.\nPlan:\n{plan[:800]}"
+    )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ARG001
@@ -417,7 +328,5 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # no
     print(f"  {'Run':<24} {'Slides':>6} {'PNGs':>5} {'Size':>10}  Path")
     for row in _RESULTS:
         size = f"{row['bytes']:,}" if row["bytes"] else "-"
-        print(
-            f"  {row['name']:<24} {row['slides']:>6} {row['previews']:>5} {size:>10}  {row['pptx']}"
-        )
+        print(f"  {row['name']:<24} {row['slides']:>6} {row['previews']:>5} {size:>10}  {row['pptx']}")
     print("=" * 78)

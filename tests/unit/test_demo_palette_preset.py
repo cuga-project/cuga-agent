@@ -29,7 +29,6 @@ def palette_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     for key in list(os.environ):
         if key.startswith(("DYNACONF_SKILLS__", "DYNACONF_SUPERVISOR__", "DYNACONF_ADVANCED_FEATURES__")):
             monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("PALETTE_URL", raising=False)
     _apply_demo_skills_env()
     _apply_palette_supervisor_env()
     return dict(os.environ)
@@ -56,6 +55,61 @@ class TestPresetEnvironment:
     def test_shell_tool_is_enabled(self, palette_env: dict[str, str]) -> None:
         """The palette skill drives its CLI through run_command."""
         assert palette_env["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] == "true"
+
+    @staticmethod
+    def _warnings_from(action) -> list[str]:
+        """Run `action` and return loguru's warnings.
+
+        CUGA logs through loguru, which pytest's caplog does not see — a test
+        asserting on caplog here passes vacuously whatever the code does. Add a
+        real sink instead.
+        """
+        from loguru import logger
+
+        captured: list[str] = []
+        sink = logger.add(captured.append, level="WARNING", format="{message}")
+        try:
+            action()
+        finally:
+            logger.remove(sink)
+        return captured
+
+    def test_it_warns_when_palette_home_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The skill shells out to palette.py; without PALETTE_HOME it cannot start.
+
+        Warn at launch rather than letting the agent discover it mid-deck,
+        which costs a model call and reads as a skill bug.
+        """
+        monkeypatch.delenv("PALETTE_HOME", raising=False)
+        assert any("PALETTE_HOME" in m for m in self._warnings_from(_apply_palette_supervisor_env))
+
+    def test_it_warns_when_palette_home_points_somewhere_wrong(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("PALETTE_HOME", str(tmp_path))
+        messages = self._warnings_from(_apply_palette_supervisor_env)
+        assert any("no palette.py" in m for m in messages)
+
+    def test_it_warns_when_the_model_key_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The sandbox inherits this process's env, not ~/.config/palette/env.
+
+        Without it every model call fails several minutes into a build, with an
+        error that looks like Palette's fault rather than a missing export.
+        """
+        monkeypatch.delenv("RITS_API_KEY", raising=False)
+        assert any("RITS_API_KEY" in m for m in self._warnings_from(_apply_palette_supervisor_env))
+
+    def test_a_configured_environment_warns_about_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Warnings people see on every correct launch are warnings they stop reading."""
+        monkeypatch.setenv("PALETTE_HOME", str(Path(__file__).resolve().parents[2]))
+        monkeypatch.setenv("RITS_API_KEY", "x")
+        monkeypatch.setattr(
+            "os.path.isfile", lambda p: True if p.endswith("palette.py") else os.path.exists(p)
+        )
+        messages = self._warnings_from(_apply_palette_supervisor_env)
+        assert not [m for m in messages if "PALETTE_HOME" in m or "RITS_API_KEY" in m]
 
     def test_natural_language_auto_continue_is_on(self, palette_env: dict[str, str]) -> None:
         """A deck is minutes of polling, so the model narrates progress a lot.
@@ -85,11 +139,16 @@ class TestPresetEnvironment:
         """The demo server is spawned from a different cwd than the CLI."""
         assert Path(palette_env["DYNACONF_SUPERVISOR__CONFIG_PATH"]).is_absolute()
 
-    def test_missing_palette_url_warns_rather_than_failing(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    def test_a_misconfigured_environment_never_raises(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A missing URL is recoverable — the user can start a server."""
-        monkeypatch.delenv("PALETTE_URL", raising=False)
+        """Everything the preset checks is recoverable, so warn and continue.
+
+        Refusing to launch would strand the user with no way to fix it from
+        inside the app.
+        """
+        monkeypatch.delenv("PALETTE_HOME", raising=False)
+        monkeypatch.delenv("RITS_API_KEY", raising=False)
         _apply_palette_supervisor_env()  # must not raise
 
 
@@ -132,9 +191,15 @@ class TestSupervisorConfig:
         assert "palette" in instructions.lower()
         assert "pptxgenjs" in instructions, "must forbid hand-building decks"
 
-    def test_supervisor_is_told_not_to_start_the_server(self, config: dict) -> None:
-        """The agent cannot start Palette from a sandbox; it must say so instead."""
-        assert "cannot start it" in config["supervisor"]["special_instructions"]
+    def test_supervisor_states_the_confirmation_gate(self, config: dict) -> None:
+        """Building an unapproved plan burns minutes on the wrong deck."""
+        instructions = config["supervisor"]["special_instructions"]
+        assert "explicit agreement before building" in instructions
+        assert "never a courtesy" in instructions or "required, not a courtesy" in instructions
+
+    def test_supervisor_knows_builds_outlast_a_step(self, config: dict) -> None:
+        """A blocking build is killed part-way and the work is thrown away."""
+        assert "detached and poll" in config["supervisor"]["special_instructions"]
 
 
 @pytest.mark.unit

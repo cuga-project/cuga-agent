@@ -88,34 +88,50 @@ def _apply_demo_skills_env() -> None:
 def _apply_palette_supervisor_env() -> None:
     """Deck-builder preset: supervisor coordination on top of the skills env.
 
-    Layers on `_apply_demo_skills_env` (which turns on skills + the shell tool
-    the palette skill drives through `run_command`). The supervisor loads
-    skills itself — see cuga_supervisor/nodes/prepare_agents_and_prompt.py —
-    gated only on `settings.skills.enabled`.
+    Layers on `_apply_demo_skills_env` (skills + the shell tool the palette
+    skill drives through `run_command`). The supervisor loads skills itself —
+    see cuga_supervisor/nodes/prepare_agents_and_prompt.py — gated only on
+    `settings.skills.enabled`.
+
+    The skill shells out to `palette.py` in a Palette checkout. It needs
+    $PALETTE_HOME to find it, and the sandbox inherits this environment.
     """
     os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
     os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = os.path.join(
         PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_palette.yaml"
     )
-    # A deck is two to four minutes of bounded polling, so the model surfaces
-    # progress as prose ("still rendering, I'll keep checking") far more often
-    # than a normal task does. With auto-continue off, the first such message
-    # ends the run — and it ends it mid-build, leaving a finished deck on the
-    # server that nobody downloads. Observed twice at step ~40 of 100.
+    # Rendering a deck takes minutes, so the model surfaces progress as prose
+    # ("still rendering, I'll keep checking") far more often than a normal task
+    # does. With auto-continue off the first such message ends the run — and it
+    # ends it mid-build, leaving a finished deck nobody collects.
     os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "true")
-    # A deck advances by bounded polls, one per step, so the step length sets
-    # how many steps a deck costs. At the 30s default a slow build (geometry
-    # repair can run several passes) is twenty-odd polls and agents abandon it
-    # around step 40 — with the build still running, and finishing uncollected
-    # minutes later. At 120s the same deck is five or six polls. The skill's
-    # CUGA profile passes `--max-seconds 100` to match; keep the two in step.
+    # Drafting a plan is a single blocking model call of roughly a minute, and
+    # each build poll is one step. 30s is not enough for the plan; 120s is.
+    # The deck build itself never blocks a step — the skill starts it detached
+    # and polls (skills/palette/scripts/deck.py), because no step limit will
+    # ever cover a ten-minute render.
     os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
-    # PALETTE_URL reaches the sandbox through the inherited environment; warn
-    # early rather than letting the agent discover it mid-deck.
-    if not os.environ.get("PALETTE_URL"):
+
+    palette_home = os.environ.get("PALETTE_HOME", "").strip()
+    if not palette_home:
         logger.warning(
-            "PALETTE_URL is not set — the palette skill will default to http://127.0.0.1:18814. "
-            "Start a local server with `palette-skill serve ensure`, or export PALETTE_URL."
+            "PALETTE_HOME is not set. The palette skill runs `palette.py` from a "
+            "Palette checkout and cannot guess where yours is — export it first:\n"
+            "  export PALETTE_HOME=~/code/project-palette"
+        )
+    elif not os.path.isfile(os.path.join(palette_home, "palette.py")):
+        logger.warning(
+            f"PALETTE_HOME={palette_home} has no palette.py in it. The skill will "
+            "fail on its first command; point it at a Palette checkout."
+        )
+    # The sandbox inherits this process's environment, so a key that is only in
+    # ~/.config/palette/env never reaches it. Every model call then fails with
+    # "RITS_API_KEY is not set" several minutes into a build.
+    if not os.environ.get("RITS_API_KEY", "").strip():
+        logger.warning(
+            "RITS_API_KEY is not set. Palette needs it for every model call, and "
+            "the sandbox only sees what this process exports:\n"
+            "  export RITS_API_KEY=$(grep -m1 RITS_API_KEY ~/.config/palette/env | cut -d= -f2-)"
         )
 
 
