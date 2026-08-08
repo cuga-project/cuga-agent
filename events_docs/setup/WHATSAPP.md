@@ -159,6 +159,54 @@ A template is *registered text with numbered slots*, so an agent’s free-form a
 The usual pattern is a nudge (“your digest is ready — reply to see it”) that reopens the window, then
 the full answer. Get one **utility** template approved early; review takes hours to days.
 
+### Creating the template — `WHATSAPP_TEMPLATE_NAME`
+
+A template is **registered text with numbered slots**, submitted to Meta and human-reviewed. You send
+it by *name plus variable values*; you cannot put arbitrary text through it.
+
+**The shape CUGA needs.** `send_message` passes exactly **one** body parameter — the first line of the
+agent's answer, truncated to 120 characters:
+
+```python
+first = (text or "").strip().splitlines()[0]
+res   = await send_template(to, params=[first[:120]])
+```
+
+So your template **must have exactly one `{{1}}` in the body**. Zero variables → Meta rejects the send
+(parameter count mismatch); two → same. This is the single most common way the template path fails
+after approval.
+
+**Create it** in WhatsApp Manager → **Message Templates** → *Create template*:
+
+| Field | Value |
+|---|---|
+| Name | `cuga_update` (lowercase, underscores — this is what goes in `WHATSAPP_TEMPLATE_NAME`) |
+| Category | **Utility** — not Marketing. Utility is for transactional follow-ups and is priced accordingly; Marketing is more expensive and more likely to be rejected here |
+| Language | `en_US` → `WHATSAPP_TEMPLATE_LANG` |
+| Body | `Your update is ready: {{1}}` |
+
+Add a sample value for `{{1}}` when prompted — Meta requires one to review.
+
+**Why the body should be a nudge, not the answer.** 120 characters cannot carry an agent's reply, and
+a template cannot grow to fit. The working pattern is: the template *announces*, the user replies
+(which reopens the 24-hour window), and the full answer follows free-form. So phrase it to invite a
+reply:
+
+```
+Your update is ready: {{1}}
+Reply here to see the full answer.
+```
+
+**Then set both:**
+```
+WHATSAPP_TEMPLATE_NAME=cuga_update
+WHATSAPP_TEMPLATE_LANG=en_US
+```
+and re-sync the CE secret (`deploy/ce/make_env_ce.sh`, then update the secret and roll a revision).
+
+Approval takes anywhere from minutes to a couple of days, and can be **rejected** — start it early
+rather than discovering it blocks your first scheduled fire.
+
 ### Testing the closed-window path
 
 While developing you message the bot constantly, so the window is always open and the template branch
@@ -236,6 +284,47 @@ application. It also gates the Groups API.
 While only your allow-listed phone can reach the test number, `user_id="local"` is *you*, and nothing
 can leak. **A public number removes that protection**: any stranger who messages it resolves to the
 same `local` principal — the one holding whatever credentials you connected. See the closing section.
+
+## Do you even need a watcher? — chat vs `/automate` vs watchers
+
+Before building one, note that **WhatsApp watchers are structurally different from Slack's**, and for
+most uses they add nothing.
+
+On Slack a watcher lets the bot **eavesdrop on traffic it is not part of** — a channel is full of
+humans talking to each other, and *“when someone posts ‘deploy failed’ in #ops, triage it”* is
+valuable precisely because those messages are not addressed to the bot.
+
+**On WhatsApp there is no such traffic.** Every message to your number is someone talking *to the
+agent*. The reason watchers exist does not apply. And content-based routing — *“refund questions go
+to the refunds agent”* — is **already what the supervisor does**; a `pattern` watcher would
+re-implement it with a regex, worse.
+
+| Surface | Status | Examples |
+|---|---|---|
+| **Chat** (`NOW`) | works today | `what's the price of bitcoin` · `summarize <url>` · `what's on my calendar tomorrow` |
+| **`/automate`** — WhatsApp as the **sink** for triggers on *other* systems | **works today** | `/automate every morning at 8 send me my calendar` · `/automate when a PR opens, summarise it` · `/automate every hour check the box folder` |
+| **Watcher** — the inbound WhatsApp message *is* the event | not implemented | see below |
+
+`/automate` is the direction that actually matters, and it needs no WhatsApp watcher at all: the
+trigger lives on GitHub/Gmail/Box/the scheduler, and WhatsApp is only where the answer lands.
+`gw:whatsapp:<wa_id>` resolves to `("whatsapp", "<wa_id>")`, so a flow armed here delivers here.
+
+A watcher would only earn its place where the inbound message must do something **other than reply to
+the sender**:
+
+| Case | Why chat cannot |
+|---|---|
+| “when a customer messages *refund*, also notify #support on Slack” | chat replies to the sender; a watcher can deliver **elsewhere** |
+| “log every inbound to the CRM” | a side effect with **no reply** |
+| “anything containing *complaint* MUST reach the complaints handler” | deterministic routing that **bypasses the LLM supervisor** — compliance, not intelligence |
+
+All three are **customer-service** shapes: fan-out, side effects, auditable routing. For a personal
+assistant, chat + `/automate` covers the ground completely.
+
+> **The thing to fix before watchers:** `/automate` on WhatsApp is subject to the 24-hour window. A
+> PR notification firing at 15:00 when you last messaged at 09:00 *yesterday* is outside it, and with
+> no `WHATSAPP_TEMPLATE_NAME` it fails rather than delivering. Getting one utility template approved
+> unlocks every `/automate` flow on this channel — a bigger win than any watcher.
 
 ## “Watching” WhatsApp — what a trigger can and cannot be
 
