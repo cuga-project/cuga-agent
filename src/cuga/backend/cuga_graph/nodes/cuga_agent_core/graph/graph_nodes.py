@@ -157,6 +157,7 @@ class CoreGraphAdapter(ABC):
         ``reasoning`` is the normalized model reasoning returned alongside
         ``content``. Default: no-op. Lite uses this to record tracker steps.
         """
+        pass
 
     def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
         """Return the *value* (not the full key/value pair) for the metadata
