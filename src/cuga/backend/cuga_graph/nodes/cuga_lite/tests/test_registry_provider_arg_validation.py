@@ -111,6 +111,7 @@ def test_structured_tool_has_diagnostic_handle_validation_error():
     ("param_schema", "value"),
     [
         ({"anyOf": [{"type": "string"}, {"type": "integer"}]}, 123),
+        ({"type": ["string", "integer"]}, 7),
         ({"$ref": "#/components/schemas/Payload"}, {"a": 1}),
         ({}, [1, 2]),
     ],

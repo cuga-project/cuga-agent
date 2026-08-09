@@ -39,9 +39,13 @@ def schema_type_is_ambiguous(prop: Dict[str, Any]) -> bool:
     """True when the JSON schema cannot pin the param to one Python type.
 
     Covers unresolved ``$ref`` and genuine unions (``anyOf``/``oneOf`` with more than
-    one non-null variant), where ``json_schema_type`` would narrow to the first branch.
+    one non-null variant, or OpenAPI 3.1 ``type: [A, B]``), where ``json_schema_type``
+    would narrow to the first branch. ``type: [T, "null"]`` stays narrow (Optional).
     """
-    if prop.get("type"):
+    t = prop.get("type")
+    if isinstance(t, list):
+        return len([x for x in t if x != "null"]) > 1
+    if t:
         return False
     if "$ref" in prop:
         return True
