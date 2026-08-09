@@ -1,14 +1,21 @@
 # Fix PR Reviews with Bob
 #
-# Secret-backed companion to `fix-pr-reviews-with-bob-trigger.yml`.
-# Runs after the trigger succeeds so fork PR reviews can still use secrets.
-# Trigger restricts @cuga-bob invocation to vars.BOB_ALLOWED_ACTORS.
+# Opt-in: PR must be labeled `fix-with-bob` and the review body must
+# contain `@cuga-bob`.
+#
+# Authorization: actors in vars.BOB_ALLOWED_ACTORS (default:
+# sami-marreed,offerakrabi). Unauthorized labels are removed.
+#
+# Runs on pull_request_review (not workflow_run) so CodeQL does not treat
+# PR-head checkout as a privileged untrusted-checkout critical. Same-repo
+# PRs still receive secrets; fork heads are skipped because cuga-bob cannot
+# push to forks.
 #
 # Security:
-# - Install deps from the trusted default branch, then switch to the PR
-#   head for editing (no uv sync / install hooks from the PR tree).
 # - Untrusted values are passed via env: and read as shell vars (not ${{ }}
 #   inside run: scripts).
+# - Install deps from the trusted default branch, then switch to the PR
+#   head for editing (no uv sync / install hooks from the PR tree).
 # - Checkout uses persist-credentials: false; the push token is applied
 #   only in the commit/push step.
 #
@@ -26,9 +33,10 @@
 name: Fix PR Reviews with Bob
 
 on:
-  workflow_run:
-    workflows: ["Fix PR Reviews with Bob - Trigger"]
-    types: [completed]
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: write
@@ -38,8 +46,52 @@ permissions:
   checks: read
 
 jobs:
+  reject-unauthorized-label:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.label.name == 'fix-with-bob'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check actor allowlist
+        id: auth
+        env:
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+        run: |
+          ALLOWED=false
+          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
+          for allowed in "${ACTORS[@]}"; do
+            allowed_trimmed="$(echo "${allowed}" | xargs)"
+            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
+              ALLOWED=true
+              break
+            fi
+          done
+          echo "allowed=${ALLOWED}" >> "$GITHUB_OUTPUT"
+
+      - name: Remove label and comment
+        if: steps.auth.outputs.allowed != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api \
+            --method DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/fix-with-bob" \
+            || true
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body "Removed \`fix-with-bob\`: only \`${BOB_ALLOWED_ACTORS}\` may apply this label (attempted by @${ACTOR})."
+
   fix-pr-reviews-with-bob:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: |
+      github.event_name == 'pull_request_review' &&
+      (github.event.review.state == 'commented' || github.event.review.state == 'changes_requested') &&
+      contains(github.event.pull_request.labels.*.name, 'fix-with-bob') &&
+      contains(github.event.review.body, '@cuga-bob')
     runs-on: ubuntu-latest
     env:
       BOB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
@@ -50,105 +102,62 @@ jobs:
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
 
     steps:
-      - name: Get PR details from workflow run
-        id: get_pr
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
-          script: |
-            const workflowRun = context.payload.workflow_run;
+      - name: Authorize actor and resolve PR head
+        id: prep
+        env:
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          ALLOWED=false
+          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
+          for allowed in "${ACTORS[@]}"; do
+            allowed_trimmed="$(echo "${allowed}" | xargs)"
+            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
+              ALLOWED=true
+              break
+            fi
+          done
+          if [ "${ALLOWED}" != "true" ]; then
+            echo "Skipping: @${ACTOR} is not in BOB_ALLOWED_ACTORS"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-            const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: workflowRun.id,
-              per_page: 100
-            });
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "Skipping fork PR head ${HEAD_REPO}; cuga-bob can only push to ${BASE_REPO}"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=fork" >> "$GITHUB_OUTPUT"
+            echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-            const payloadArtifact = artifacts.artifacts?.find(
-              (artifact) => artifact.name === 'pr-review-context'
-            );
-            if (!payloadArtifact) {
-              // Label-only / reject-only trigger runs succeed with no artifact.
-              core.info('No pr-review-context artifact; nothing to do');
-              core.setOutput('should_run', 'false');
-              return;
-            }
-
-            const zipResponse = await github.rest.actions.downloadArtifact({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              artifact_id: payloadArtifact.id,
-              archive_format: 'zip'
-            });
-
-            const fs = require('fs');
-            const os = require('os');
-            const path = require('path');
-            const { execFileSync } = require('child_process');
-
-            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bob-pr-review-'));
-            const zipPath = path.join(tempDir, 'artifact.zip');
-            const zipBuffer = Buffer.isBuffer(zipResponse.data)
-              ? zipResponse.data
-              : Buffer.from(zipResponse.data);
-            fs.writeFileSync(zipPath, zipBuffer);
-            execFileSync('unzip', ['-o', zipPath, '-d', tempDir], { stdio: 'inherit' });
-
-            const payload = JSON.parse(
-              fs.readFileSync(path.join(tempDir, 'pr-review-context.json'), 'utf8')
-            );
-
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: payload.pr_number
-            });
-
-            if (!pr.labels.some((label) => label.name === 'fix-with-bob')) {
-              core.info('PR does not have fix-with-bob label, skipping');
-              core.setOutput('should_run', 'false');
-              return;
-            }
-
-            const headRepo = pr.head.repo.full_name;
-            const baseRepo = `${context.repo.owner}/${context.repo.repo}`;
-            if (headRepo !== baseRepo) {
-              core.info(`Skipping fork PR head ${headRepo}; cuga-bob can only push to ${baseRepo}`);
-              core.setOutput('should_run', 'false');
-              core.setOutput('skip_reason', 'fork');
-              core.setOutput('pr_number', String(pr.number));
-              return;
-            }
-
-            const { data: review } = await github.rest.pulls.getReview({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: payload.pr_number,
-              review_id: payload.review_id
-            });
-
-            if (review.state !== 'COMMENTED' && review.state !== 'CHANGES_REQUESTED') {
-              core.info(`Review state ${review.state} is not actionable, skipping`);
-              core.setOutput('should_run', 'false');
-              return;
-            }
-
-            core.setOutput('should_run', 'true');
-            core.setOutput('pr_number', String(pr.number));
-            core.setOutput('pr_title', pr.title);
-            core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('head_sha', pr.head.sha);
-            core.setOutput('head_repo', headRepo);
-            core.setOutput('review_id', String(review.id));
-            core.setOutput('reviewer', review.user.login);
+          {
+            echo "should_run=true"
+            echo "pr_number=${PR_NUMBER}"
+            echo "pr_title<<TITLE_EOF"
+            printf '%s\n' "${PR_TITLE}"
+            echo "TITLE_EOF"
+            echo "head_ref=${HEAD_REF}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "head_repo=${HEAD_REPO}"
+            echo "review_id=${REVIEW_ID}"
+            echo "reviewer=${REVIEWER}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Comment on fork skip
-        if: steps.get_pr.outputs.should_run == 'false' && steps.get_pr.outputs.skip_reason == 'fork'
+        if: steps.prep.outputs.should_run == 'false' && steps.prep.outputs.skip_reason == 'fork'
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
         run: |
           gh api \
             --method POST \
@@ -159,24 +168,24 @@ jobs:
       # Install from the trusted default branch first so PR-controlled
       # pyproject/hooks never run under this secrets-bearing job.
       - name: Checkout trusted default branch
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install uv
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
 
       - name: Set up Python
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
       - name: Create venv and install dependencies
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         run: |
           uv sync --all-extras --dev
           echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv" >> "$GITHUB_ENV"
@@ -186,12 +195,12 @@ jobs:
           python -V
           which python
 
-      - name: Checkout PR head for editing
-        if: steps.get_pr.outputs.should_run == 'true'
+      - name: Switch to PR head for editing
+        if: steps.prep.outputs.should_run == 'true'
         env:
-          HEAD_REF: ${{ steps.get_pr.outputs.head_ref }}
-          HEAD_SHA: ${{ steps.get_pr.outputs.head_sha }}
-          HEAD_REPO: ${{ steps.get_pr.outputs.head_repo }}
+          HEAD_REF: ${{ steps.prep.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.prep.outputs.head_sha }}
+          HEAD_REPO: ${{ steps.prep.outputs.head_repo }}
           BOB_TOKEN: ${{ env.BOB_TOKEN }}
         run: |
           AUTHED_URL="https://x-access-token:${BOB_TOKEN}@github.com/${HEAD_REPO}.git"
@@ -202,20 +211,20 @@ jobs:
           git remote set-url origin "https://github.com/${HEAD_REPO}.git"
 
       - name: Setup Node.js
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Install Bob Shell
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         run: |
           curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
           command -v bob
           bob --version
 
       - name: Authenticate Bob Shell
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
@@ -225,14 +234,14 @@ jobs:
           fi
 
       - name: Get PR and Review Details
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         id: pr_details
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
-          REVIEW_ID: ${{ steps.get_pr.outputs.review_id }}
-          REVIEWER: ${{ steps.get_pr.outputs.reviewer }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
+          REVIEW_ID: ${{ steps.prep.outputs.review_id }}
+          REVIEWER: ${{ steps.prep.outputs.reviewer }}
         run: |
           PROMPT_DIR="${RUNNER_TEMP}/bob-pr-review-prompt"
           mkdir -p "${PROMPT_DIR}"
@@ -266,20 +275,20 @@ jobs:
           cat "${PROMPT_DIR}/review_comments.txt"
 
       - name: Configure Git
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         run: |
           git config --global user.name "cuga-bob"
           git config --global user.email "cuga-bob@users.noreply.github.com"
 
       - name: Execute Bob to Address Review Comments
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         uses: nick-fields/retry@v3
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           PR_NUMBER: ${{ steps.pr_details.outputs.pr_number }}
-          PR_TITLE: ${{ steps.get_pr.outputs.pr_title }}
-          REVIEWER: ${{ steps.get_pr.outputs.reviewer }}
+          PR_TITLE: ${{ steps.prep.outputs.pr_title }}
+          REVIEWER: ${{ steps.prep.outputs.reviewer }}
           PROMPT_DIR: ${{ steps.pr_details.outputs.prompt_dir }}
           REPOSITORY: ${{ github.repository }}
           AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
@@ -319,7 +328,7 @@ jobs:
             bob --accept-license --yolo -p "$(cat "${PROMPT_FILE}")"
 
       - name: Check for Changes
-        if: steps.get_pr.outputs.should_run == 'true'
+        if: steps.prep.outputs.should_run == 'true'
         id: changes
         run: |
           if [[ -n $(git status --porcelain) ]]; then
@@ -332,13 +341,13 @@ jobs:
           fi
 
       - name: Commit and Push Changes
-        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REVIEWER: ${{ steps.pr_details.outputs.reviewer }}
           REVIEW_ID: ${{ steps.pr_details.outputs.review_id }}
-          HEAD_REPO: ${{ steps.get_pr.outputs.head_repo }}
-          HEAD_REF: ${{ steps.get_pr.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.prep.outputs.head_repo }}
+          HEAD_REF: ${{ steps.prep.outputs.head_ref }}
         run: |
           git add -A
           git reset .bob/ || true
@@ -354,7 +363,7 @@ jobs:
           git remote set-url origin "https://github.com/${HEAD_REPO}.git"
 
       - name: Comment on PR
-        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -372,7 +381,7 @@ jobs:
             -f body="${BODY}"
 
       - name: Comment on PR - No Changes
-        if: steps.get_pr.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'false'
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'false'
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -389,11 +398,11 @@ jobs:
             -f body="${BODY}"
 
       - name: Handle Errors
-        if: steps.get_pr.outputs.should_run == 'true' && failure()
+        if: steps.prep.outputs.should_run == 'true' && failure()
         env:
           GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
         run: |
           gh api \
             --method POST \
