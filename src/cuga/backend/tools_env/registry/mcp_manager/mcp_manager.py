@@ -615,6 +615,13 @@ class MCPManager:
                 result[prefixed_tool_name] = s_copy
             return result
 
+        # OpenAPI services also start a local FastMCP SSE server via run_all_servers(),
+        # but must keep OpenAPITransformer parameter shaping (nested body fields, etc.).
+        openapi_schema = self.schemas.get(app_name)
+        if isinstance(openapi_schema, dict) and "paths" in openapi_schema:
+            openapi_schema["x-app-name"] = app_name
+            return OpenAPITransformer(openapi_schema).transform()
+
         # Check if it's an MCP server (either successfully connected or configured)
         is_mcp_server = app_name in self.mcp_clients or (
             app_name in self.schema_urls and self.schema_urls[app_name].type == ServiceType.MCP_SERVER
@@ -677,16 +684,21 @@ class MCPManager:
 
             return result
 
-        # For OpenAPI services, schema should be in self.schemas
         if app_name not in self.schemas:
             raise KeyError(
                 f"Application '{app_name}' not found in schemas. Available apps: {list(self.schemas.keys())}"
             )
 
-        self.schemas[app_name]['x-app-name'] = app_name
-        trans = OpenAPITransformer(self.schemas[app_name])
-        res = trans.transform()
-        return res
+        # Fallback: treat remaining dict schemas as OpenAPI
+        schema = self.schemas[app_name]
+        if isinstance(schema, dict):
+            schema['x-app-name'] = app_name
+            return OpenAPITransformer(schema).transform()
+
+        raise KeyError(
+            f"Application '{app_name}' schema is present but is not OpenAPI, MCP, or TRM. "
+            f"Schema type: {type(schema).__name__}"
+        )
 
     def _clear_mcp_server_registration(self, name: str) -> None:
         self.schemas.pop(name, None)
@@ -1353,12 +1365,9 @@ class MCPManager:
         for name, server in self.servers.items():
             port = self._get_free_port()
             self.server_ports[server.name] = port
-            # Register the server URL in mcp_clients so call_tool can route to _call_mcp_server_tool
-            self.mcp_clients[name] = f"http://localhost:{port}/sse"
-            # Create SSE transport for this server so _call_mcp_server_tool can use FastMCP client
-            from fastmcp.client.transports import SSETransport
-
-            self.mcp_transports[name] = SSETransport(f"http://localhost:{port}/sse")
+            # Local OpenAPI tools are invoked via the FastMCP instance in server_by_tool;
+            # do not register them in mcp_clients (that would make get_apis_for_application
+            # treat them as external MCP servers and expose the params/headers wrapper).
             thread = threading.Thread(
                 target=server.run, kwargs={"transport": "sse", "port": port}, daemon=True
             )
