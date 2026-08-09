@@ -24,6 +24,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
 )
 from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
+from cuga.backend.tools_env.registry.utils.schema_utils import python_type_for_schema
 from cuga.config import settings
 
 
@@ -176,23 +177,8 @@ def create_tool_from_api_dict(
             props = parameters["properties"]
             required = parameters.get("required", [])
             for param_name, param_schema in props.items():
-                param_type = param_schema.get("type", "string")
                 param_desc = param_schema.get("description", "")
-
-                # Handle type that might be a list (e.g., ['string', 'null'])
-                if isinstance(param_type, list):
-                    # Take the first non-null type, or default to 'string'
-                    param_type = next((t for t in param_type if t != "null"), "string")
-
-                type_mapping = {
-                    "string": str,
-                    "integer": int,
-                    "number": float,
-                    "boolean": bool,
-                    "array": list,
-                    "object": dict,
-                }
-                python_type = type_mapping.get(param_type, str)
+                python_type = python_type_for_schema(param_schema)
 
                 # Store constraints for later use in prompt
                 constraints = param_schema.get("constraints", [])

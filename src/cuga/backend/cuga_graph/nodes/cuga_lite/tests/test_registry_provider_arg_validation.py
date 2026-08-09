@@ -107,6 +107,40 @@ def test_structured_tool_has_diagnostic_handle_validation_error():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("param_schema", "value"),
+    [
+        ({"anyOf": [{"type": "string"}, {"type": "integer"}]}, 123),
+        ({"$ref": "#/components/schemas/Payload"}, {"a": 1}),
+        ({}, [1, 2]),
+    ],
+)
+async def test_ambiguous_schema_params_do_not_false_reject(param_schema, value):
+    tool = create_tool_from_api_dict(
+        tool_name="flex_tool",
+        tool_def={
+            "description": "accepts loosely typed params",
+            "parameters": {
+                "properties": {"payload": param_schema},
+                "required": ["payload"],
+            },
+        },
+        app_name="shop",
+    )
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.call_api",
+        new_callable=AsyncMock,
+        return_value={"ok": 1},
+    ) as mock_call:
+        result = await tool.coroutine({"payload": value})
+
+    mock_call.assert_awaited_once()
+    assert result == {"ok": 1}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_toolguard_rejects_unknown_args_before_ainvoke():
     from unittest.mock import MagicMock
 
