@@ -138,9 +138,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             )
 
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
-            adapter._tracker.collect_step(
-                step=Step(name="User_output_variables", data=new_vars)
-            )
+            adapter._tracker.collect_step(step=Step(name="User_output_variables", data=new_vars))
 
             # Output is already formatted and trimmed by code_executor
             logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
