@@ -27,7 +27,6 @@ from cuga.backend.tools_env.registry.mcp_manager.adapter import (
     apply_authentication,
     sanitize_tool_name,
 )
-import threading
 from collections import defaultdict
 from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from loguru import logger
@@ -170,21 +169,6 @@ class MCPManager:
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
         return base_url
-
-    @staticmethod
-    def _get_free_port():
-        import socket
-        import random
-
-        for _ in range(100):  # Try up to 100 times
-            port = random.randint(49152, 65535)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                try:
-                    s.bind(('', port))
-                    return port
-                except OSError:
-                    continue
-        raise RuntimeError("No free port found in safe range.")
 
     @staticmethod
     async def _fetch_and_parse_schema(url_or_path):
@@ -615,8 +599,7 @@ class MCPManager:
                 result[prefixed_tool_name] = s_copy
             return result
 
-        # OpenAPI services also start a local FastMCP SSE server via run_all_servers(),
-        # but must keep OpenAPITransformer parameter shaping (nested body fields, etc.).
+        # OpenAPI services keep OpenAPITransformer parameter shaping (nested body fields, etc.).
         openapi_schema = self.schemas.get(app_name)
         if isinstance(openapi_schema, dict) and "paths" in openapi_schema:
             openapi_schema["x-app-name"] = app_name
@@ -1362,15 +1345,7 @@ class MCPManager:
             self.original_tool_name_by_sanitized[tool.name] = tool.name
 
     async def run_all_servers(self):
-        for name, server in self.servers.items():
-            port = self._get_free_port()
-            self.server_ports[server.name] = port
-            # Local OpenAPI tools are invoked via the FastMCP instance in server_by_tool;
-            # do not register them in mcp_clients (that would make get_apis_for_application
-            # treat them as external MCP servers and expose the params/headers wrapper).
-            thread = threading.Thread(
-                target=server.run, kwargs={"transport": "sse", "port": port}, daemon=True
-            )
-            thread.start()
-            self.threads[name] = thread
-            print(f"Started MCP SSE server for {name} on port {port}")
+        # Local OpenAPI tools are invoked via the FastMCP instance in server_by_tool
+        # (see call_tool). Starting SSE here used to support the old client hop and is
+        # unused now — keep this no-op so callers/docs that still await it do not break.
+        return
