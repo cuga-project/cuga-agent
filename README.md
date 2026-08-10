@@ -456,11 +456,14 @@ make -C <palette> skill-install CUGA=<this repo>
 cuga-skills add palette
 ```
 
-Then point CUGA at the checkout the skill shells into, and run it:
+Then point CUGA at the checkout the skill shells into. Put both in **`.env`** rather than exporting them — `.env` is loaded into the environment at startup, so it survives a new terminal, and `RITS_API_KEY` probably lives there already:
 
 ```bash
-export PALETTE_HOME=<palette>      # the checkout containing palette.py
-export RITS_API_KEY=<key>          # model access; every command needs it
+PALETTE_HOME=/abs/path/to/project-palette    # the checkout containing palette.py
+RITS_API_KEY=<key>                           # model access; every command needs it
+```
+
+```bash
 cuga start demo_palette
 ```
 
@@ -477,7 +480,7 @@ Skills load at supervisor level (see [`prepare_agents_and_prompt.py`](src/cuga/b
 | `sandbox_execution_timeout` | 30s | **120s** | Each bounded poll is one step. A deck takes three to ten minutes — the spread is how many geometry repair passes it needs — so at 30s a long build is twenty-odd steps, and agents abandon that around step 40 of 100. The build then finishes on the server with nobody collecting it. |
 | `cuga_lite_nl_auto_continue` | false | **true** | Mid-build the model often writes a progress note as prose with no code. That reads as a finished answer and ends the run. |
 
-The 120s step covers `build-plan`, which is one blocking model call — measured at 43-82s, the slow end being `--source`. It is not meant to cover the deck build: no step limit ever will, so the skill starts that detached (`scripts/deck.py start`) and polls it (`scripts/deck.py status`) a step at a time.
+Nothing the skill runs blocks a step. Both slow commands — drafting the plan and building the deck — detach and are collected by polling, so a step limit can never cut one short. That matters more than the limit's value: a killed step is silent, the work finishes anyway, and the agent concludes it failed. Both real failures here were that, once with a good plan and once with a finished 15-slide deck sitting in the workspace.
 
 **Checking a deck is real.** An agent can describe files it never wrote, so verify from your shell rather than the chat:
 

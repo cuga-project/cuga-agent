@@ -105,10 +105,11 @@ def _apply_palette_supervisor_env() -> None:
     # does. With auto-continue off the first such message ends the run — and it
     # ends it mid-build, leaving a finished deck nobody collects.
     os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "true")
-    # Drafting a plan is a single blocking model call, and each build poll is
-    # one step. Measured across five real runs: 43-82s, the slow end being
-    # `--source`, which reads a file before the call. 30s cannot hold any of
-    # them; 120s holds all of them with enough margin for a slow day.
+    # Every poll is one step, and polls are fast. Nothing the skill runs blocks
+    # any more -- drafting a plan was the last thing that did, and at ~170s in
+    # the sandbox it outlived even this limit, so it detaches and is polled for
+    # like the deck build. 120s is now headroom rather than a bet: it covers a
+    # slow poll and the odd `ls`, and no single call is racing it.
     # The deck build itself never blocks a step — the skill starts it detached
     # and polls (skills/palette/scripts/deck.py), because no step limit will
     # ever cover a ten-minute render.
