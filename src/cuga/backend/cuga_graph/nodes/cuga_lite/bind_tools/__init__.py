@@ -5,12 +5,14 @@ provider-safe cap and shortlister flow.
 """
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap import (
+    BindToolsUnsupportedError,
     apply_bind_tools_cap_and_merge,
     bind_tools_max_count_from_settings,
     bind_tools_pad_to_cap_from_settings,
 )
 
 __all__ = [
+    "BindToolsUnsupportedError",
     "apply_bind_tools_cap_and_merge",
     "bind_tools_max_count_from_settings",
     "bind_tools_pad_to_cap_from_settings",

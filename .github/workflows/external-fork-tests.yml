@@ -85,7 +85,9 @@ jobs:
             tests/unit/test_chat_knowledge_mode.py \
             tests/unit/test_chat_agent_knowledge_toggle.py \
             tests/integration/test_knowledge_integration.py
-          uv run pytest tests/unit/test_cuga_lite_bind_tools.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \

@@ -14,6 +14,8 @@ Two concerns, kept separate:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +27,8 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     prompt_tool_dicts,
     resolve_runtime_backends,
 )
+
+pytestmark = pytest.mark.unit
 
 
 # ─── prompt_tool_dicts (Phase 5: expose runtime tools in Supervisor prompt) ──
@@ -183,10 +187,10 @@ def patch_packages(monkeypatch):
             created["shell_thread_id"] = thread_id
             created["shell_label"] = self.label
 
-            async def _rc():
+            def _rc():
                 return "ran"
 
-            return [_FakeTool("run_command", coroutine=_rc)]
+            return [_FakeTool("run_command", func=_rc)]
 
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
@@ -241,6 +245,15 @@ def test_callable_is_coroutine_or_func_and_skips_empty(patch_packages):
     # write_file had only .func, read_file had .coroutine — both captured
     assert callable(bundle.execution_callables["read_file"])
     assert callable(bundle.execution_callables["write_file"])
+
+
+def test_execution_callables_are_always_awaitable(patch_packages):
+    bundle = build_runtime_tools(thread_id="t1", backends=RuntimeBackends("host", "native"))
+    assert set(bundle.execution_callables) == {"read_file", "write_file", "run_command"}
+    assert all(inspect.iscoroutinefunction(fn) for fn in bundle.execution_callables.values())
+    assert asyncio.run(bundle.execution_callables["read_file"]()) == "x"
+    assert asyncio.run(bundle.execution_callables["write_file"]()) is None
+    assert asyncio.run(bundle.execution_callables["run_command"]()) == "ran"
 
 
 # ─── Skills parity: prompt_tool_dicts on real StructuredTool (Supervisor) ────
