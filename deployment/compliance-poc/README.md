@@ -10,10 +10,10 @@ probe its predecessor used, restarts long-running services on failure, and
 reaps orphans. Every service shares the container UID and group 0, so the
 image runs unchanged under an arbitrary assigned UID.
 
-The image is also self-contained on the network. Activepieces normally
-resolves its catalog from `cloud.activepieces.com` and pulls each package
-from npm; both are baked in at build time instead, so a restricted cluster
-needs no egress. See "Offline pieces" below.
+Activepieces normally resolves its catalog from `cloud.activepieces.com`
+and pulls each package from npm; both are baked in at build time instead, so
+the piece catalog needs no egress. See "Offline pieces" below. The pod does
+still reach out for other things — see "Egress" for the full list.
 
 Activepieces uses its supported PGLite database mode and a Redis process
 inside the same image. That keeps the PoC in one pod, but it is not the
@@ -96,6 +96,23 @@ Note that `AP_PIECES_SOURCE` is not read by Activepieces 0.82 — only
 `AP_PIECES_SYNC_MODE` is. The image previously set the former, which had no
 effect.
 
+## Egress
+
+The piece catalog is baked in, but the pod is not fully self-contained. It
+reaches these hosts at run time:
+
+- The model endpoint that `LLM_PROVIDER` / `OPENAI_BASE_URL` point at. With no
+  `OPENAI_BASE_URL` set, the client defaults to `api.openai.com`, which is
+  wrong for a gateway-hosted model and fails only when a chat is attempted,
+  not at startup.
+- Seven CUGA tool MCP servers on `*.codeengine.appdomain.cloud`, listed in
+  `mcp_servers_cuga_apps.yaml`. The registry starts either way, but a blocked
+  cluster gets a registry with no tools, and the health check fails because
+  `/api/tools/list` returns nothing usable.
+
+Nothing else leaves the pod. In particular, no request reaches
+`cloud.activepieces.com` or `registry.npmjs.org`.
+
 ## Kubernetes contract
 
 - Run exactly one replica with a recreate deployment strategy.
@@ -104,8 +121,7 @@ effect.
 - Expose port `7860` for the product UI. Ports `8081` and `8201` are only
   needed for direct Activepieces or Evolve diagnostics.
 - Supply model credentials through pod environment variables or a Secret.
-- No egress is required. The image contacts nothing outside the pod except
-  the model endpoint the credentials point at.
+- Allow the egress listed below, or expect degraded tool availability.
 - No security context is required. The image runs as any non-root UID with
   group 0 as its primary group and never writes outside `/data`.
 - Probe the image with its built-in health command:
