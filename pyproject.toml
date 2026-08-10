@@ -24,14 +24,14 @@ dependencies = [
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
-    # <2: mcp 2.0.0 removed mcp.server.fastmcp, which server/mcp_servers/cuga.py and
-    # registry/mcp_manager/adapter.py import. Lift once those move to the standalone fastmcp.
     # 1.28.1+ fixes GHSA-hvrp-rf83-w775, GHSA-jpw9-pfvf-9f58, GHSA-vj7q-gjh5-988w (task/session/WebSocket auth).
-    "mcp[cli]>=1.28.1,<2",
+    # No upper bound: mcp 2.x is compatible after moving imports to standalone fastmcp.
+    "mcp[cli]>=1.28.1",
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
-    "fastmcp>=3.2.0",
+    # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
+    "fastmcp>=3.2.0,<4",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
