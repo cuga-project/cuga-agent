@@ -45,6 +45,12 @@ CLOUD = "https://cloud.activepieces.com/api/v1/pieces"
 # Pinned known-good versions for the pinned AP image (0.82). Used as the install version so the
 # fallback NEVER depends on the flaky cloud version API. Refresh these if you bump the AP image
 # (get current values from: curl -s https://cloud.activepieces.com/api/v1/pieces | jq).
+#
+# This table is EVERY piece the project can reference, not just NEEDED. The compliance PoC image
+# bakes exactly these archives and disables the cloud sync, so a piece the AP engine builds flows
+# from must appear here even though the local dev flow never installs it explicitly — with the sync
+# on, the full catalog arrived anyway and hid the difference. Omitting one fails at flow-creation
+# time with "AP piece '<name>' has no resolvable version (installed?)", not at start-up.
 PINNED = {
     "@activepieces/piece-gmail": "0.12.7",
     "@activepieces/piece-github": "0.8.5",
@@ -55,6 +61,17 @@ PINNED = {
     "@activepieces/piece-pinterest": "0.1.5",
     "@activepieces/piece-youtube": "0.4.10",
     "@activepieces/piece-rss": "0.5.7",
+    # Referenced by the AP engine and the flow/OAuth tables rather than by NEEDED.
+    # piece-http backs every flow's callback action, so the retention schedule
+    # cannot be published without it; the rest are one armed channel away from
+    # the same failure. Versions resolved from the cloud registry for release
+    # 0.82.0, the same source the sync would have used.
+    "@activepieces/piece-http": "0.11.18",
+    "@activepieces/piece-webhook": "0.1.40",
+    "@activepieces/piece-slack": "0.17.4",
+    "@activepieces/piece-discord": "0.5.3",
+    "@activepieces/piece-microsoft-outlook": "0.4.0",
+    "@activepieces/piece-approval": "0.1.25",
 }
 
 
