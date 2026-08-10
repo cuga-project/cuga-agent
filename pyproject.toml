@@ -10,8 +10,8 @@ dependencies = [
     "langchain-ibm>=0.3.9",
     "langchain-openai",
     "langchain-core>=1.3.3",  # GHSA-pjwx-r37v-7724: unsafe deserialization via broad load() allowlists (<=1.3.2)
-    # litellm 1.83.14 pins aiohttp==3.13.4; keep floor aligned so uv/pip can resolve with litellm+fastmcp.
-    "aiohttp>=3.13.4",
+    # GHSA-cq5v-8q36-5273 (OOB heap read) and related aiohttp parser issues fixed in 3.14.3+.
+    "aiohttp>=3.14.3",
     "httpx",
     "docker",
     "langgraph",
@@ -26,7 +26,8 @@ dependencies = [
     "loguru",
     # <2: mcp 2.0.0 removed mcp.server.fastmcp, which server/mcp_servers/cuga.py and
     # registry/mcp_manager/adapter.py import. Lift once those move to the standalone fastmcp.
-    "mcp[cli]>=1.23.0,<2",
+    # 1.28.1+ fixes GHSA-hvrp-rf83-w775, GHSA-jpw9-pfvf-9f58, GHSA-vj7q-gjh5-988w (task/session/WebSocket auth).
+    "mcp[cli]>=1.28.1,<2",
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
@@ -34,7 +35,9 @@ dependencies = [
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
-    "langchain-litellm",
+    # 0.6+/0.7.0 publish cryptography<49, which blocks GHSA-g6cj-pr64-35w5 (needs cryptography>=50).
+    # Stay on 0.5.x until langchain-litellm lifts that cap; ChatLiteLLM API used here is unchanged.
+    "langchain-litellm>=0.5.1,<0.6",
     # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
     "litellm>=1.84.0",
     "tavily-python",
@@ -44,7 +47,8 @@ dependencies = [
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
     "PyJWT[crypto]>=2.13.0",  # GHSA-xgmm-8j9v-c9wx: JWK accepted as HMAC secret (<=2.12.x)
-    "cryptography>=48.0.1",  # GHSA-537c-gmf6-5ccf: vulnerable OpenSSL in wheels (<=48.0.0)
+    # 50.0.0+ fixes GHSA-g6cj-pr64-35w5 (PKCS#7 Bleichenbacher); 49+ also GHSA-jwv3-5hgf-82ww / GHSA-m2h6-j472-rp4c.
+    "cryptography>=50.0.0",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
@@ -85,14 +89,14 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "pillow>=12.2.0",  # CVE-2026-25990 (PSD), FITS decompression bomb (10.3.0-12.1.x)
+    "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
     "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools>=78.1.1",  # GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf (path traversal / command injection in <78.1.1)
     # Security updates for transitive dependencies
     "authlib>=1.6.9",      # GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
-    "pyasn1>=0.6.3",       # GHSA-jr27-m4p2-rc6r
+    "pyasn1>=0.6.4",       # GHSA-m4p7-r5rc-7g4j, GHSA-8ppf-4f7h-5ppj, GHSA-hm4w-wwcw-mr6r (DoS in <=0.6.3)
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
     "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
     "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
@@ -102,6 +106,10 @@ constraint-dependencies = [
     "langchain-classic>=1.0.7",  # GHSA-3644-q5cj-c5c7: untrusted prompt manifest deserialization (<=1.0.6)
     "docling>=2.94.0",  # GHSA-q29v-xc37-wh5m: unsafe URI/path handling in HTML backend (<=2.93.x)
     "mako>=1.3.12",           # GHSA-v92g-xgxw-vvmm (// path traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
+    "soupsieve>=2.8.4",  # GHSA-2wc2-fm75-p42x, GHSA-836r-79rf-4m37 (memory / ReDoS in <=2.8.3)
+    "joserfc>=1.6.8",  # GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
+    "json-repair>=0.60.1",  # GHSA-xf7x-x43h-rpqh: circular JSON Schema $ref DoS (<=0.60.0)
+    "datamodel-code-generator>=0.64.0",  # GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
@@ -121,13 +129,6 @@ explicit = true
 # - Lock file generated with: uv lock --upgrade-package strawberry-graphql --upgrade-package arize-phoenix --prerelease=allow
 # - graphql-core is mature; alpha is for new features, not instability
 # - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
-
-# NLTK vulnerabilities: NO PATCH AVAILABLE for GHSA-p4gq-832x-fm9v (path traversal in nltk.data.load)
-# RISK ACCEPTED: nltk is dev-only dependency; vulnerable wordnet_app HTTP server is not used in codebase
-# - Vulnerability: Unauthenticated remote shutdown via GET /SHUTDOWN%20THE%20SERVER
-# - Impact: DoS only, affects nltk.app.wordnet_app when exposed on network
-# - Mitigation: wordnet_app is not imported or used anywhere in the project
-# - Monitor: Check for NLTK security releases that patch nltk/app/wordnet_app.py
 
 # PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]
@@ -213,7 +214,7 @@ dev = [
     "ruff>=0.9.4",
     "tabulate",
     "beartype",
-    "nltk>=3.9.3",
+    "nltk>=3.10.0",  # GHSA-p4gq-832x-fm9v and related path traversal / ReDoS / SSRF in <=3.9.x
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",
