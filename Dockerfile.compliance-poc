@@ -46,7 +46,7 @@ RUN PYTHONPATH=/app/src uv run --no-sync python -c \
       || true; \
     find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
 ARG ACTIVEPIECES_IMAGE
 ARG EVOLVE_REF
@@ -55,7 +55,7 @@ LABEL org.opencontainers.image.title="CUGA compliance PoC" \
       io.cuga.activepieces.image="${ACTIVEPIECES_IMAGE}" \
       io.cuga.evolve.revision="${EVOLVE_REF}"
 
-RUN dnf install -y \
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
         alsa-lib \
         at-spi2-atk \
         at-spi2-core \
@@ -88,8 +88,8 @@ RUN dnf install -y \
         python3.12 \
         tar \
         unzip \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+    && microdnf clean all \
+    && rm -rf /var/cache/yum /var/cache/dnf
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./

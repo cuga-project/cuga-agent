@@ -1,7 +1,7 @@
 # Single-image compliance PoC
 
 `Dockerfile.compliance-poc` packages CUGA, its tool registry, Evolve MCP,
-and Activepieces on Red Hat UBI 9. It is intended for a stakeholder PoC
+and Activepieces on Red Hat UBI 9 minimal. It is intended for a stakeholder PoC
 deployed as one Kubernetes pod and one replica.
 
 The image is rootless. A small PID 1 supervisor (`cuga-poc-supervisor`)

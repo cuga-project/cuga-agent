@@ -50,7 +50,7 @@ compliance-poc-stop: ## Stop CUGA and Evolve processes started by compliance-poc
 compliance-poc-status: ## Report local compliance PoC service status
 	scripts/compliance_poc.sh --status
 
-compliance-poc-image: ## Build the single-image UBI9 compliance PoC
+compliance-poc-image: ## Build the single-image UBI9-minimal compliance PoC
 	$(DOCKER) build -f Dockerfile.compliance-poc -t $(IMAGE) .
 
 compliance-poc-image-multiarch: ## Build and push amd64+arm64 PoC images as one manifest
