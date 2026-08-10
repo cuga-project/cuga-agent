@@ -119,8 +119,11 @@ def sign_in(email: str, password: str) -> str:
     return token
 
 
-def installed(name: str) -> bool:
-    return request(f"/api/v1/pieces/{name}", timeout=20)[0] == 200
+def installed(name: str, token: str) -> bool:
+    # Archive installs are PLATFORM-scoped CUSTOM pieces, so the lookup only
+    # resolves them when the request carries the owner's token. Anonymously
+    # this 404s for pieces that are in fact installed.
+    return request(f"/api/v1/pieces/{name}", token=token, timeout=20)[0] == 200
 
 
 def install(name: str, version: str, archive: Path, token: str) -> None:
@@ -158,7 +161,7 @@ def main() -> None:
     token = sign_in(email, password)
 
     for name, entry in sorted(manifest.items()):
-        if installed(name):
+        if installed(name, token):
             print(f"{name} already installed")
             continue
         archive = PIECES_DIR / entry["archive"]
@@ -167,7 +170,7 @@ def main() -> None:
         print(f"installing {name}@{entry['version']} from {archive.name}")
         install(name, entry["version"], archive, token)
 
-    missing = sorted(name for name in manifest if not installed(name))
+    missing = sorted(name for name in manifest if not installed(name, token))
     if missing:
         raise SystemExit(f"pieces still unresolved after install: {missing}")
     print(f"all {len(manifest)} required pieces present")
