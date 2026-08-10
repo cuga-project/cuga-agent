@@ -59,6 +59,21 @@ spec:
               containerPort: 8081
             - name: evolve
               containerPort: 8201
+          # Model configuration is the one thing the image cannot supply for
+          # itself, and it fails at the first chat rather than at start-up, so
+          # the pod reports healthy while the demo does not work. For a
+          # gateway-hosted model all four keys matter:
+          #
+          #   LLM_PROVIDER=openai
+          #   MODEL_NAME=<model as the gateway names it>
+          #   OPENAI_BASE_URL=https://<gateway>/v1   # omitted => api.openai.com
+          #   OPENAI_API_KEY=<key>
+          #
+          #   oc create secret generic cuga-poc-model-credentials \
+          #     --from-literal=LLM_PROVIDER=openai \
+          #     --from-literal=MODEL_NAME=... \
+          #     --from-literal=OPENAI_BASE_URL=... \
+          #     --from-literal=OPENAI_API_KEY=...
           envFrom:
             - secretRef:
                 name: cuga-poc-model-credentials

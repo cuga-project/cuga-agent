@@ -64,8 +64,17 @@ docker exec cuga-compliance-poc \
   sed -n 's/^AP_PASSWORD=//p' /data/cuga-poc/secrets.env
 ```
 
-Pass explicit `AP_PASSWORD`, `AP_ENCRYPTION_KEY`, `AP_JWT_SECRET`, and
-`GATEWAY_TOKEN` values to use Kubernetes-managed secrets instead.
+Pass explicit `AP_PASSWORD`, `AP_ENCRYPTION_KEY`, `AP_JWT_SECRET`,
+`EVENTS_WEBHOOK_KEY`, and `GATEWAY_TOKEN` values to use Kubernetes-managed
+secrets instead. `EVENTS_WEBHOOK_KEY` is generated rather than left empty
+because an empty value makes `POST /api/events/hook/<name>` accept any
+request; retrieve it the same way as the Activepieces password when calling a
+hook by hand.
+
+Health does not cover the model endpoint, so the pod reports healthy with a
+wrong or missing one and fails at the first chat instead. Set `MODEL_NAME`
+and `OPENAI_BASE_URL` together — with no base URL the client defaults to
+`api.openai.com`, which will not serve a gateway-hosted model.
 
 A fresh volume no longer waits on the cloud piece catalog, so start-up is
 bounded by Activepieces initialising its PGLite database and the baked piece

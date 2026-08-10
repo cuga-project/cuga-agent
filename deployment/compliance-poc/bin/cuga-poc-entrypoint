@@ -29,6 +29,10 @@ GENERATED = {
     "AP_ENCRYPTION_KEY": lambda: secrets.token_hex(16),
     "AP_JWT_SECRET": lambda: secrets.token_hex(32),
     "AP_PASSWORD": lambda: secrets.token_urlsafe(24),
+    # Unset, the events layer accepts any POST to /api/events/hook/<name>,
+    # including one carrying a wrong ?key=. Generating it here closes that on
+    # a pod published through a Route without asking the operator for anything.
+    "EVENTS_WEBHOOK_KEY": lambda: secrets.token_urlsafe(32),
     "GATEWAY_TOKEN": lambda: secrets.token_urlsafe(32),
 }
 EXACT_KEYS = {
