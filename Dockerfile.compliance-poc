@@ -6,8 +6,12 @@ ARG REDIS_IMAGE=redis:7.4-bookworm
 
 FROM ${ACTIVEPIECES_IMAGE} AS activepieces
 USER root
+# Group bits are widened here rather than in the runtime stage: a recursive
+# chmod after COPY would copy every file up into a new layer and duplicate
+# node_modules in the final image.
 RUN find /usr/src/app/node_modules /usr/src/app/packages -type f -name "*.map" -delete \
-    && rm -rf /usr/src/app/node_modules/.cache
+    && rm -rf /usr/src/app/node_modules/.cache \
+    && chmod -R g=u /usr/src/app
 
 FROM ${REDIS_IMAGE} AS redis
 
@@ -52,7 +56,8 @@ ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
 RUN PYTHONPATH=/app/src uv run --no-sync python -c \
       "from scripts.preload_models import preload_fastembed, preload_fastembed_tokenizer; preload_fastembed(); preload_fastembed_tokenizer()" \
       || true; \
-    find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true; \
+    chmod -R g=u /app/.venv /app/.playwright /app/.cache
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
@@ -101,12 +106,15 @@ RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/.playwright /app/.playwright
-COPY --from=builder /app/.cache /app/.cache
+# Ownership is set as these land, not by a later recursive chown: the venv and
+# the Activepieces tree are the two largest things in the image and a chown
+# after the fact would write a second copy of both.
+COPY --from=builder --chown=1001:0 /app/.venv /app/.venv
+COPY --from=builder --chown=1001:0 /app/.playwright /app/.playwright
+COPY --from=builder --chown=1001:0 /app/.cache /app/.cache
 COPY --from=builder /tmp/evolve-hooks.yaml /etc/cuga-poc/evolve-hooks.yaml
 
-COPY --from=activepieces /usr/src/app /opt/activepieces
+COPY --from=activepieces --chown=1001:0 /usr/src/app /opt/activepieces
 COPY --from=activepieces /usr/local/bin/node /usr/local/bin/node
 COPY --from=activepieces /usr/local/bin/bun /usr/local/bin/bun
 COPY --from=activepieces /usr/local/lib/node_modules/pm2 /usr/local/lib/node_modules/pm2
@@ -147,8 +155,16 @@ COPY \
 # every path the services touch usable by whichever UID is assigned, and the
 # writable /etc/passwd lets the entrypoint register that UID for tools that
 # resolve the account by uid.
-RUN chgrp -R 0 /app /data /etc/cuga-poc /opt/activepieces \
-    && chmod -R g=u /app /data /etc/cuga-poc /opt/activepieces \
+#
+# Only writable paths are walked here. The venv, the model cache and the
+# Activepieces tree already carry group bits from their build stages and their
+# ownership was set by COPY, so touching them again would only duplicate them.
+# Read-only trees are left alone for the same reason: /usr/local/bin holds the
+# node and bun binaries, and world read-execute already serves any assigned UID.
+RUN chgrp -R 0 /data /etc/cuga-poc /app/cuga_workspace /app/crm_tmp /app/.cuga \
+    && chmod -R g=u /data /etc/cuga-poc /app/cuga_workspace /app/crm_tmp /app/.cuga \
+    && chgrp 0 /app \
+    && chmod g=u /app \
     && chmod g=u /etc/passwd
 
 ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
