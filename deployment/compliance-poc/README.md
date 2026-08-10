@@ -78,6 +78,31 @@ schedule all pass the bundled `cuga-poc-health` check.
 - Probe the image with its built-in health command:
   `/usr/local/bin/cuga-poc-health`.
 
+## OpenShift
+
+OpenShift's default `restricted-v2` SCC runs pods under a random non-root UID.
+The image refuses to start under it — `cuga-poc-entrypoint must run as root` —
+because systemd is PID 1, the units run as dedicated `cuga` and `activepieces`
+users, and `cuga-poc-prepare` chowns the `/data` tree.
+
+A cluster admin must bind the `privileged` SCC to the PoC service account:
+
+```sh
+oc adm policy add-scc-to-user privileged -z cuga-poc -n NAMESPACE
+```
+
+Then apply `deployment/compliance-poc/openshift.yaml`, which sets
+`runAsUser: 0`, `privileged: true`, and mounts memory-backed `/run` plus a
+writable `/tmp` for systemd.
+
+`anyuid` alone is not enough. It clears the entrypoint check, but CRI-O mounts
+`/sys/fs/cgroup` read-only for unprivileged containers and systemd then fails
+to mount its own hierarchy. Confirm which SCC a running pod actually got with:
+
+```sh
+oc get pod POD -o jsonpath='{.metadata.annotations.openshift\.io/scc}'
+```
+
 Deleting the `/data` volume intentionally creates a fresh PoC. On the next
 start the image regenerates credentials, creates the Activepieces owner,
 materializes required pieces, starts Evolve with PII hooks, and lets CUGA

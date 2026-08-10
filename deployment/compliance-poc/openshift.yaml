@@ -1,0 +1,119 @@
+---
+# Single-replica compliance PoC for OpenShift.
+#
+# The image runs systemd as PID 1 and manages its own service users, so it
+# needs UID 0 and a writable cgroup hierarchy. Both require a cluster admin to
+# bind the `privileged` SCC to this service account before applying:
+#
+#   oc adm policy add-scc-to-user privileged -z cuga-poc -n <namespace>
+#
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cuga-poc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cuga-poc-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cuga-poc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: cuga-poc
+  template:
+    metadata:
+      labels:
+        app: cuga-poc
+    spec:
+      serviceAccountName: cuga-poc
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: cuga-poc
+          image: registry.example.com/cuga-compliance-poc:VERSION
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          ports:
+            - name: ui
+              containerPort: 7860
+            - name: activepieces
+              containerPort: 8081
+            - name: evolve
+              containerPort: 8201
+          envFrom:
+            - secretRef:
+                name: cuga-poc-model-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            exec:
+              command: ["/usr/local/bin/cuga-poc-health"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 45
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/cuga-poc-health"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "2"
+              memory: 6Gi
+            limits:
+              memory: 12Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cuga-poc-data
+        - name: run
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cuga-poc
+spec:
+  selector:
+    app: cuga-poc
+  ports:
+    - name: ui
+      port: 7860
+      targetPort: ui
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: cuga-poc
+spec:
+  to:
+    kind: Service
+    name: cuga-poc
+  port:
+    targetPort: ui
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
