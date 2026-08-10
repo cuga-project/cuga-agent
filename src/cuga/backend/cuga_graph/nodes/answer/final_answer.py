@@ -65,7 +65,10 @@ def _strip_control_tokens(text: str) -> str:
         return text
     if not _harmony_stripping_enabled():
         return text
-    return _CONTROL_TOKEN_RE.sub("", text).strip()
+    # Remove the tokens and nothing else — no .strip(). A token sitting directly
+    # before an indented block would otherwise take that block's leading
+    # indentation with it and corrupt e.g. a Markdown code block.
+    return _CONTROL_TOKEN_RE.sub("", text)
 
 
 class HumanInTheLoopHandler:

@@ -97,6 +97,14 @@ def test_control_tokens_stripped_from_uncited_answer():
     assert state.final_answer == "The total is 42"
 
 
+def test_indentation_after_a_token_is_preserved():
+    """The filter removes tokens and nothing else: a token directly before an
+    indented block must not take that block's indentation with it."""
+    state = _state("<|message|>    def foo():\n        return 1")
+    FinalAnswerNode.apply_citation_resolution(state)
+    assert state.final_answer == "    def foo():\n        return 1"
+
+
 def test_legitimate_special_token_text_is_preserved():
     """Only the harmony protocol vocabulary is stripped — an answer that
     legitimately discusses <|...|>-style markers must pass through untouched."""
