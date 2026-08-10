@@ -5,6 +5,7 @@ from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.api_registry import ApiRegistry
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_call_function_returns_error_dict_when_tool_missing():
     manager = MCPManager(config={})
@@ -28,3 +29,22 @@ async def test_call_function_returns_error_dict_when_tool_missing():
     assert result["status_code"] == 500
     assert result["function_name"] == "evolve_save_trajectory"
     assert "not found in any server" in result["message"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_call_function_forwards_params_key_without_unwrapping_siblings():
+    """A field named `params` must not replace the entire args dict."""
+    manager = MCPManager(config={})
+    registry = ApiRegistry(client=manager)
+    manager.call_tool = AsyncMock(return_value={"ok": True})
+
+    arguments = {
+        "params": {"filter": "active"},
+        "limit": 10,
+        "user_id": "u-1",
+    }
+    await registry.call_function(app_name="demo", function_name="list_items", arguments=arguments)
+
+    manager.call_tool.assert_awaited_once()
+    assert manager.call_tool.await_args.kwargs["args"] == arguments

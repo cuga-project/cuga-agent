@@ -103,12 +103,18 @@ def test_default_get_invoke_config_returns_empty_dict():
     assert adapter.get_invoke_config({}) == {}
 
 
+@pytest.mark.unit
 def test_default_on_response_processed_is_noop():
     adapter = _MinimalAdapter()
     state = SimpleNamespace()
     # Must not raise
-    adapter.on_response_processed(state, code=None, content="hi")
-    adapter.on_response_processed(state, code="print(1)", content="```python\nprint(1)\n```")
+    adapter.on_response_processed(state, code=None, content="hi", reasoning=None)
+    adapter.on_response_processed(
+        state,
+        code="print(1)",
+        content="```python\nprint(1)\n```",
+        reasoning="Need to print one",
+    )
 
 
 def test_default_build_metadata_update_returns_existing_meta_when_no_playbook():
@@ -218,6 +224,7 @@ async def test_overridden_resolve_bind_tools():
 # ── 3. Hook signatures are stable under keyword call ──────────────────────
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_all_hooks_callable_with_keyword_args():
     adapter = _MinimalAdapter()
@@ -231,7 +238,7 @@ async def test_all_hooks_callable_with_keyword_args():
     adapter.prepare_system_content(state, {}, "prompt")
     adapter.normalize_response(response)
     adapter.get_invoke_config({})
-    adapter.on_response_processed(state, code=None, content="hi")
+    adapter.on_response_processed(state, code=None, content="hi", reasoning="thought")
     adapter.build_metadata_update(state, playbook_fired=False)
     adapter.get_variables_storage(state)
     adapter.get_tracker()

@@ -159,12 +159,20 @@ def create_call_model_node(
                     modified = True
                     playbook_fired = True
 
+                # The variables addendum is rebuilt from live state on every turn, so it must
+                # stay OUT of persisted history (#600). Persisting it left every message that
+                # was once `is_last` holding its own copy (capped at
+                # variables_summary_max_length each, but unbounded in count), which grew the
+                # context ~5x faster than the conversation itself and eventually tripped the
+                # provider's context limit mid-task. Unlike `pi` and `playbook_guidance` —
+                # which are guarded to fire once per conversation/task — this one has no
+                # such guard, so it is the only addendum that accumulates.
+                outbound_content = content
                 if variables_summary_text and is_last:
-                    content = content + variables_addendum
-                    modified = True
+                    outbound_content = content + variables_addendum
 
                 modified_messages.append(msg.model_copy(update={"content": content}) if modified else msg)
-                messages_for_model.append({"role": "user", "content": content})
+                messages_for_model.append({"role": "user", "content": outbound_content})
 
             elif is_ai:
                 modified_messages.append(msg)
@@ -198,7 +206,7 @@ def create_call_model_node(
             content, reasoning, tools_needing_probing=adapter.get_tools_needing_probing()
         )
 
-        adapter.on_response_processed(state, code, content)
+        adapter.on_response_processed(state, code, content, reasoning)
 
         # ── Build final message list + step count ──────────────────────────
         final_messages: list = modified_messages + [AIMessage(content=content)]
