@@ -1,0 +1,297 @@
+# Fix Issues with Bob
+#
+# When an issue is labeled `fix-with-bob`, IBM Bob Shell analyzes the issue
+# and opens a PR with proposed fixes.
+#
+# Authorization: actors in vars.BOB_ALLOWED_ACTORS (comma-separated logins).
+# Default if unset: sami-marreed,offerakrabi.
+# Unauthorized applications are removed and commented.
+#
+# Required secrets:
+#   BOBSHELL_API_KEY   — Bob Shell API key
+#   BOB_GITHUB_TOKEN   — PAT for cuga-bob (recommended; falls back to github.token)
+#   WATSONX_APIKEY
+#   MODEL_NAME
+#
+# Required vars (same as Tests workflow):
+#   WATSONX_PROJECT_ID
+#   WATSONX_URL
+#   AGENT_SETTING_CONFIG
+#
+# Optional vars:
+#   BOB_ALLOWED_ACTORS — e.g. "sami-marreed,offerakrabi"
+
+name: Fix Issues with Bob
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+  checks: read
+
+jobs:
+  authorize:
+    if: github.event.label.name == 'fix-with-bob'
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.auth.outputs.allowed }}
+    steps:
+      - name: Check actor allowlist
+        id: auth
+        env:
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+        run: |
+          ALLOWED=false
+          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
+          for allowed in "${ACTORS[@]}"; do
+            allowed_trimmed="$(echo "${allowed}" | xargs)"
+            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
+              ALLOWED=true
+              break
+            fi
+          done
+          echo "allowed=${ALLOWED}" >> "$GITHUB_OUTPUT"
+
+      - name: Remove label and comment
+        if: steps.auth.outputs.allowed != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+        run: |
+          gh api \
+            --method DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/labels/fix-with-bob" \
+            || true
+          gh issue comment "${ISSUE_NUMBER}" --repo "${{ github.repository }}" \
+            --body "Removed \`fix-with-bob\`: only \`${BOB_ALLOWED_ACTORS}\` may apply this label (attempted by @${ACTOR})."
+
+  fix-issues-with-bob:
+    needs: authorize
+    if: needs.authorize.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      BOB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ env.BOB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Create venv and install dependencies
+        run: |
+          uv sync --all-extras --dev
+          echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv" >> "$GITHUB_ENV"
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
+          # Activate for this step and verify Bob will see the project interpreter.
+          # shellcheck disable=SC1091
+          source "${GITHUB_WORKSPACE}/.venv/bin/activate"
+          python -V
+          which python
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Bob Shell
+        run: |
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
+          command -v bob
+          bob --version
+
+      - name: Authenticate Bob Shell
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+        run: |
+          if [ -z "$BOBSHELL_API_KEY" ]; then
+            echo "Error: BOBSHELL_API_KEY secret is not set"
+            exit 1
+          fi
+
+      - name: Get Issue Details
+        id: issue
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          ISSUE_DATA=$(gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}")
+          ISSUE_TITLE=$(echo "${ISSUE_DATA}" | jq -r '.title')
+          ISSUE_BODY=$(echo "${ISSUE_DATA}" | jq -r '.body // ""')
+
+          {
+            echo "issue_title<<TITLE_EOF"
+            echo "${ISSUE_TITLE}"
+            echo "TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          PROMPT_DIR="${RUNNER_TEMP}/bob-issue-prompt"
+          mkdir -p "${PROMPT_DIR}"
+          printf '%s\n' "${ISSUE_BODY}" > "${PROMPT_DIR}/issue_body.md"
+          echo "prompt_dir=${PROMPT_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "cuga-bob"
+          git config --global user.email "cuga-bob@users.noreply.github.com"
+
+      - name: Create Branch for Fix
+        run: |
+          BRANCH_NAME="fix/issue-${{ steps.issue.outputs.issue_number }}-${GITHUB_RUN_ID}"
+          git checkout -b "${BRANCH_NAME}"
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
+
+      - name: Execute Bob to Fix Issue
+        uses: nick-fields/retry@v3
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.issue_title }}
+          PROMPT_DIR: ${{ steps.issue.outputs.prompt_dir }}
+          AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+          WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+          WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+          WATSONX_URL: ${{ vars.WATSONX_URL }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            # shellcheck disable=SC1091
+            source "${GITHUB_WORKSPACE}/.venv/bin/activate"
+            PROMPT_FILE="${PROMPT_DIR}/bob-prompt.md"
+            {
+              echo "Fix GitHub issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+              echo
+              echo "Repository: ${{ github.repository }}"
+              echo "Issue URL: ${{ github.event.issue.html_url }}"
+              echo
+              echo "Issue Description:"
+              cat "${PROMPT_DIR}/issue_body.md"
+              echo
+              echo "Project notes:"
+              echo "- A uv-managed .venv is already created and activated (uv sync --all-extras --dev)."
+              echo "- Prefer \`uv run\` / the active venv for tools and tests."
+              echo "- Follow Conventional Commits style in any commit messages you suggest."
+              echo "- Keep changes focused on the issue. Do not edit unrelated files."
+              echo "- Do not commit .venv/ or uv cache artifacts."
+              echo "- New/changed pytest tests must use a type marker from pyproject.toml (e.g. @pytest.mark.unit)."
+              echo "- Preserve lazy-import patterns in cuga/__init__.py, cuga/sdk.py, and LLM provider modules."
+              echo
+              echo "Analyze the issue and make all necessary code changes to fix it."
+            } > "${PROMPT_FILE}"
+
+            bob --accept-license --yolo -p "$(cat "${PROMPT_FILE}")"
+
+      - name: Check for Changes
+        id: changes
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            git status --short
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and Push Changes
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.issue_title }}
+        run: |
+          git add -A
+          git reset .bob/ || true
+          git reset .venv/ || true
+          git commit -m "fix: address issue #${ISSUE_NUMBER}
+
+          ${ISSUE_TITLE}
+
+          Made with Bob Shell."
+          git remote set-url origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+          git push -u origin "${BRANCH_NAME}"
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.issue_title }}
+          PROMPT_DIR: ${{ steps.issue.outputs.prompt_dir }}
+        run: |
+          DEFAULT_BRANCH=$(gh api "repos/${{ github.repository }}" --jq '.default_branch')
+          DIFF_STATS=$(git diff "origin/${DEFAULT_BRANCH}...HEAD" --stat || echo "Unable to generate diff stats")
+
+          PR_BODY_FILE="${PROMPT_DIR}/pr_body.md"
+          {
+            echo "This PR was automatically generated by Bob Shell to fix issue #${ISSUE_NUMBER}."
+            echo
+            echo "## Issue"
+            cat "${PROMPT_DIR}/issue_body.md"
+            echo
+            echo "## Changes"
+            echo "${DIFF_STATS}"
+            echo
+            echo "Closes #${ISSUE_NUMBER}"
+          } > "${PR_BODY_FILE}"
+
+          PR_URL=$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --title "fix: address issue #${ISSUE_NUMBER} - ${ISSUE_TITLE}" \
+            --body-file "${PR_BODY_FILE}" \
+            --base "${DEFAULT_BRANCH}" \
+            --head "${BRANCH_NAME}")
+
+          echo "PR_URL=${PR_URL}" >> "$GITHUB_ENV"
+
+      - name: Comment on Issue
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh issue comment ${{ steps.issue.outputs.issue_number }} \
+            --body "Bob Shell opened a proposed fix: ${PR_URL}"
+
+      - name: Comment on Issue - No Changes
+        if: steps.changes.outputs.has_changes == 'false'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh issue comment ${{ steps.issue.outputs.issue_number }} \
+            --body "Bob Shell analyzed this issue but did not generate code changes. Manual intervention may be required."
+
+      - name: Handle Errors
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "Bob Shell hit an error while trying to fix this issue. Check the workflow logs."
