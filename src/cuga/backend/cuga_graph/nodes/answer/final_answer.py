@@ -29,8 +29,41 @@ ENABLE_SAVE_REUSE = settings.features.save_reuse
 _CONTROL_TOKEN_RE = re.compile(r"<\|(?:start|end|message|channel|constrain|return|call|endoftext)\|>")
 
 
+def _harmony_stripping_enabled() -> bool:
+    """Whether the harmony control-token filter applies to this run.
+
+    ``advanced_features.strip_harmony_control_tokens``:
+
+    - ``"auto"`` (default) — strip only when the final-answer model is a
+      harmony-format model (the gpt-oss family). Providers that never emit this
+      framing are left completely untouched, so the filter cannot alter their
+      output.
+    - ``true`` / ``false`` — force it on or off, e.g. for a provider that leaks
+      framing under a model name we don't recognise, or to disable it outright.
+    """
+    try:
+        mode = getattr(settings.advanced_features, "strip_harmony_control_tokens", "auto")
+    except Exception:
+        return False
+    if isinstance(mode, bool):
+        return mode
+    normalized = str(mode).strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    # auto: harmony framing originates from the gpt-oss family only
+    try:
+        model_name = str(getattr(settings.agent.final_answer.model, "model_name", "") or "")
+    except Exception:
+        return False
+    return "gpt-oss" in model_name.lower()
+
+
 def _strip_control_tokens(text: str) -> str:
     if "<|" not in (text or "") or not _CONTROL_TOKEN_RE.search(text):
+        return text
+    if not _harmony_stripping_enabled():
         return text
     return _CONTROL_TOKEN_RE.sub("", text).strip()
 
