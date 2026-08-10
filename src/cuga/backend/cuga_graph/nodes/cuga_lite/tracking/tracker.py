@@ -22,6 +22,8 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+
 _tool_calls_context: contextvars.ContextVar[List[Dict[str, Any]]] = contextvars.ContextVar(
     "tool_calls", default=None
 )
@@ -164,6 +166,60 @@ class ToolCallTracker:
         return _tool_calls_context.get() or []
 
 
+def make_recording_awaitable(
+    awaitable_func: Callable[..., Any],
+    tool_name: str,
+    app_name: Optional[str] = None,
+    param_names: Optional[List[str]] = None,
+) -> Callable[..., Any]:
+    """Wrap an already-awaitable tool function so each call is recorded.
+
+    Used for direct LangChain tools, which (unlike registry/combined provider
+    tools) have no built-in recorder. Apply AFTER make_tool_awaitable so sync
+    tools record in the event-loop context, where this tracker's contextvars
+    are visible. Recording is a no-op unless a tracking session is active.
+
+    ``param_names`` (from the tool's args schema) maps positional arguments to
+    their real parameter names, so traces read the same as registry-tool traces.
+    """
+
+    @functools.wraps(awaitable_func)
+    async def _recorded(*args, **kwargs):
+        # Direct tools bypass the registry/combined call paths, so without this
+        # they are missing from the per-block count the executor reports as
+        # timeout evidence.
+        BlockToolCallCounter.increment()
+        start_time = time.time()
+        result = None
+        error_msg = None
+
+        try:
+            result = await awaitable_func(*args, **kwargs)
+            return result
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so it would skip `except
+            # Exception` and be recorded in `finally` as a success with no
+            # error — a cancelled/timed-out call must not look like one.
+            error_msg = "cancelled"
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            raise
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
+            ToolCallTracker.record_call(
+                tool_name=tool_name,
+                arguments=merge_tool_call_args(args, kwargs, param_names or []),
+                result=result,
+                app_name=app_name,
+                operation_id=tool_name,
+                duration_ms=duration_ms,
+                error=error_msg,
+            )
+
+    return _recorded
+
+
 def tracked_tool(
     _func: Optional[F] = None,
     *,
@@ -264,6 +320,11 @@ def tracked_tool(
                     duration_ms=duration_ms,
                     error=error_msg,
                 )
+
+        # Mark so callers that add their own recording (e.g. prepare_node's
+        # direct-tool wrapper) can avoid recording the same call twice.
+        async_wrapper._cuga_tracked = True
+        sync_wrapper._cuga_tracked = True
 
         if asyncio.iscoroutinefunction(func):
             return async_wrapper  # type: ignore
