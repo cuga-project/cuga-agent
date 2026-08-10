@@ -111,15 +111,19 @@ class APEngine:
     async def _piece_version(self, c: httpx.AsyncClient, name: str) -> str:
         if name in self._piece_cache:
             return self._piece_cache[name]
+        # Pieces installed from a baked archive are PLATFORM-scoped and CUSTOM
+        # rather than OFFICIAL, and the metadata endpoints only resolve those
+        # for an authenticated caller. Anonymously they 404 as if uninstalled.
+        hdrs = await self._auth(c)
         ver = ""
         try:
-            r = await c.get(f"{self.base}/api/v1/pieces/{name}")
+            r = await c.get(f"{self.base}/api/v1/pieces/{name}", headers=hdrs)
             if r.status_code == 200:
                 ver = r.json().get("version", "") or ""
         except Exception:  # noqa: BLE001
             ver = ""
         if not ver:
-            r = await c.get(f"{self.base}/api/v1/pieces")
+            r = await c.get(f"{self.base}/api/v1/pieces", headers=hdrs)
             if r.status_code == 200:
                 ver = next((p.get("version", "") for p in r.json() if p.get("name") == name), "")
         if not ver:
@@ -130,10 +134,13 @@ class APEngine:
     async def available(self) -> tuple[bool, str]:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.get(f"{self.base}/api/v1/pieces/{SCHEDULE_PIECE}")
+                # Authenticate first: the schedule piece is PLATFORM-scoped when
+                # it comes from a baked archive, so an anonymous lookup 404s and
+                # reports a healthy Activepieces as unavailable.
+                hdrs = await self._auth(c)
+                r = await c.get(f"{self.base}/api/v1/pieces/{SCHEDULE_PIECE}", headers=hdrs)
                 if r.status_code != 200:
                     return False, f"AP {self.base} → HTTP {r.status_code}"
-                await self._auth(c)
             return True, f"AP reachable + authenticated at {self.base} (project {self.project_id})"
         except Exception as e:  # noqa: BLE001
             return False, f"AP unavailable at {self.base}: {e}"

@@ -1788,7 +1788,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return []
         try:
             async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(f"{engine.base}/api/v1/pieces/{piece}")
+                # Archive-installed pieces are PLATFORM-scoped, so the metadata
+                # only resolves for an authenticated caller.
+                hdrs = await engine._auth(c)
+                r = await c.get(f"{engine.base}/api/v1/pieces/{piece}", headers=hdrs)
             auth = (r.json() or {}).get("auth") if r.status_code == 200 else None
         except Exception:  # noqa: BLE001
             return []
