@@ -1,96 +1,177 @@
 #!/usr/bin/python3.12
-"""Create the PoC Activepieces owner, then materialize required pieces."""
+"""Create the PoC Activepieces owner, then install the baked piece archives.
+
+Activepieces normally resolves its catalog from cloud.activepieces.com and
+pulls each package from npm, which a restricted cluster blocks. The image
+bakes the piece tarballs instead and this uploads them through the local API
+as ARCHIVE packages, so the PoC never reaches the public internet and does
+not wait out the multi-minute cloud catalog import.
+
+Archive installs register as CUSTOM pieces, which the cloud sync's reaper
+deliberately leaves alone, so they survive even if syncing is turned back on.
+"""
 
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
-import subprocess
+import secrets
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 
 BASE = os.environ.get("AP_BASE_URL", "http://127.0.0.1:8081").rstrip("/")
-REQUIRED_PIECES = {
-    "@activepieces/piece-box",
-    "@activepieces/piece-gmail",
-    "@activepieces/piece-github",
-    "@activepieces/piece-google-calendar",
-    "@activepieces/piece-pinterest",
-    "@activepieces/piece-rss",
-    "@activepieces/piece-schedule",
-    "@activepieces/piece-telegram-bot",
-    "@activepieces/piece-youtube",
-}
+PIECES_DIR = Path(os.environ.get("AP_PIECES_ARCHIVE_DIR", "/etc/cuga-poc/pieces"))
+MANIFEST = PIECES_DIR / "pieces.json"
+READY_TIMEOUT_SECONDS = 300
 
 
-def request(path: str, method: str = "GET", body: dict | None = None) -> tuple[int, str]:
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        f"{BASE}{path}",
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"},
-    )
+def request(
+    path: str,
+    method: str = "GET",
+    body: dict | None = None,
+    token: str | None = None,
+    data: bytes | None = None,
+    content_type: str | None = None,
+    timeout: int = 60,
+) -> tuple[int, str]:
+    headers = {}
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    elif content_type:
+        headers["Content-Type"] = content_type
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"{BASE}{path}", data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             return response.status, response.read().decode()
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode()
 
 
-deadline = time.monotonic() + 300
-while time.monotonic() < deadline:
-    try:
-        status, _ = request("/api/v1/flags")
-        if status == 200:
-            break
-    except OSError:
-        pass
-    time.sleep(2)
-else:
+def multipart(fields: dict[str, str], filename: str, payload: bytes) -> tuple[bytes, str]:
+    """Encode the exact form the Activepieces web client posts for an archive."""
+    boundary = f"----cuga{secrets.token_hex(16)}"
+    marker = f"--{boundary}".encode()
+    chunks: list[bytes] = []
+    for key, value in fields.items():
+        chunks += [
+            marker,
+            f'Content-Disposition: form-data; name="{key}"'.encode(),
+            b"",
+            value.encode(),
+        ]
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    chunks += [
+        marker,
+        f'Content-Disposition: form-data; name="pieceArchive"; filename="{filename}"'.encode(),
+        f"Content-Type: {content_type}".encode(),
+        b"",
+        payload,
+        f"--{boundary}--".encode(),
+        b"",
+    ]
+    return b"\r\n".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def wait_for_activepieces() -> None:
+    deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            if request("/api/v1/flags", timeout=20)[0] == 200:
+                return
+        except OSError:
+            pass
+        time.sleep(2)
     raise SystemExit(f"Activepieces did not become ready at {BASE}")
 
-email = os.environ["AP_EMAIL"]
-password = os.environ["AP_PASSWORD"]
-status, response = request(
-    "/api/v1/authentication/sign-up",
-    "POST",
-    {
-        "email": email,
-        "password": password,
-        "firstName": "CUGA",
-        "lastName": "Administrator",
-        "trackEvents": False,
-        "newsLetter": False,
-    },
-)
-already_registered = status == 403 and "INVITATION_ONLY_SIGN_UP" in response
-if status not in {200, 201, 409} and not already_registered:
-    raise SystemExit(f"Activepieces owner bootstrap failed (HTTP {status}): {response[:300]}")
 
-# A fresh Activepieces catalog arrives incrementally. Running the shared
-# installer against a partial catalog makes it fall back to package pins that
-# can lag the pinned server image, so wait for authoritative live versions.
-catalog_timeout = float(
-    os.environ.get("CUGA_COMPLIANCE_POC_CATALOG_TIMEOUT_SECONDS", "780")
-)
-catalog_deadline = time.monotonic() + catalog_timeout
-while time.monotonic() < catalog_deadline:
-    status, response = request("/api/v1/pieces")
-    if status == 200:
-        names = {
-            item.get("name")
-            for item in json.loads(response)
-            if item.get("name") and item.get("version")
-        }
-        missing = REQUIRED_PIECES - names
-        if not missing:
-            break
-        print(f"Waiting for Activepieces catalog ({len(missing)} required pieces remaining)")
-    time.sleep(5)
-else:
-    raise SystemExit("Activepieces catalog did not publish all required piece versions")
+def ensure_owner(email: str, password: str) -> None:
+    status, response = request(
+        "/api/v1/authentication/sign-up",
+        "POST",
+        {
+            "email": email,
+            "password": password,
+            "firstName": "CUGA",
+            "lastName": "Administrator",
+            "trackEvents": False,
+            "newsLetter": False,
+        },
+    )
+    already_registered = status == 403 and "INVITATION_ONLY_SIGN_UP" in response
+    if status not in {200, 201, 409} and not already_registered:
+        raise SystemExit(f"Activepieces owner bootstrap failed (HTTP {status}): {response[:300]}")
 
-raise SystemExit(subprocess.call(["/app/.venv/bin/python", "/app/scripts/ap_pieces.py"]))
+
+def sign_in(email: str, password: str) -> str:
+    status, response = request(
+        "/api/v1/authentication/sign-in", "POST", {"email": email, "password": password}
+    )
+    token = json.loads(response).get("token") if status == 200 else None
+    if not token:
+        raise SystemExit(f"Activepieces sign-in failed (HTTP {status}): {response[:300]}")
+    return token
+
+
+def installed(name: str) -> bool:
+    return request(f"/api/v1/pieces/{name}", timeout=20)[0] == 200
+
+
+def install(name: str, version: str, archive: Path, token: str) -> None:
+    data, content_type = multipart(
+        {
+            "packageType": "ARCHIVE",
+            "pieceName": name,
+            "pieceVersion": version,
+            "scope": "PLATFORM",
+        },
+        archive.name,
+        archive.read_bytes(),
+    )
+    status, response = request(
+        "/api/v1/pieces",
+        "POST",
+        token=token,
+        data=data,
+        content_type=content_type,
+        timeout=180,
+    )
+    if status not in {200, 201, 409}:
+        raise SystemExit(f"installing {name}@{version} failed (HTTP {status}): {response[:300]}")
+
+
+def main() -> None:
+    if not MANIFEST.exists():
+        raise SystemExit(f"no baked piece manifest at {MANIFEST}")
+    manifest = json.loads(MANIFEST.read_text())
+
+    wait_for_activepieces()
+    email = os.environ["AP_EMAIL"]
+    password = os.environ["AP_PASSWORD"]
+    ensure_owner(email, password)
+    token = sign_in(email, password)
+
+    for name, entry in sorted(manifest.items()):
+        if installed(name):
+            print(f"{name} already installed")
+            continue
+        archive = PIECES_DIR / entry["archive"]
+        if not archive.is_file():
+            raise SystemExit(f"{name} is in the manifest but {archive} is missing")
+        print(f"installing {name}@{entry['version']} from {archive.name}")
+        install(name, entry["version"], archive, token)
+
+    missing = sorted(name for name in manifest if not installed(name))
+    if missing:
+        raise SystemExit(f"pieces still unresolved after install: {missing}")
+    print(f"all {len(manifest)} required pieces present")
+
+
+if __name__ == "__main__":
+    main()

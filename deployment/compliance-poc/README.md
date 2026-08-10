@@ -10,6 +10,11 @@ probe its predecessor used, restarts long-running services on failure, and
 reaps orphans. Every service shares the container UID and group 0, so the
 image runs unchanged under an arbitrary assigned UID.
 
+The image is also self-contained on the network. Activepieces normally
+resolves its catalog from `cloud.activepieces.com` and pulls each package
+from npm; both are baked in at build time instead, so a restricted cluster
+needs no egress. See "Offline pieces" below.
+
 Activepieces uses its supported PGLite database mode and a Redis process
 inside the same image. That keeps the PoC in one pod, but it is not the
 production Activepieces topology and must not be scaled horizontally.
@@ -62,11 +67,34 @@ docker exec cuga-compliance-poc \
 Pass explicit `AP_PASSWORD`, `AP_ENCRYPTION_KEY`, `AP_JWT_SECRET`, and
 `GATEWAY_TOKEN` values to use Kubernetes-managed secrets instead.
 
-A fresh volume can take 5–13 minutes to become healthy while Activepieces
-imports its official piece catalog. Warm starts normally become healthy in
-under a minute. Docker reports the container as `healthy` only after the tool
+A fresh volume no longer waits on the cloud piece catalog, so start-up is
+bounded by Activepieces initialising its PGLite database and the baked piece
+archives installing locally. The health budgets keep their old headroom
+regardless. Docker reports the container as `healthy` only after the tool
 registry, the tools-list API, Evolve, CUGA, Redis, and the published retention
 schedule all pass the bundled `cuga-poc-health` check.
+
+## Offline pieces
+
+`AP_PIECES_SYNC_MODE=NONE` stops Activepieces contacting
+`cloud.activepieces.com`. The nine pieces the events layer needs are baked
+into `/etc/cuga-poc/pieces` as npm tarballs and installed by
+`activepieces-bootstrap` through the local API as `ARCHIVE` packages, so
+neither the cloud catalog nor npm is reachable-or-required at run time.
+
+Versions come from the `PINNED` table in `scripts/ap_pieces.py`, read at
+build time by `fetch-piece-archives.py`, so the image and the local
+development flow cannot drift apart. Adding a piece means adding it to
+`PINNED` and rebuilding.
+
+Archive installs register as `CUSTOM` rather than `OFFICIAL` pieces. That is
+deliberate: the cloud sync's reaper only deletes `OFFICIAL` pieces missing
+from the cloud registry, so the baked pieces survive even if syncing is
+turned back on.
+
+Note that `AP_PIECES_SOURCE` is not read by Activepieces 0.82 — only
+`AP_PIECES_SYNC_MODE` is. The image previously set the former, which had no
+effect.
 
 ## Kubernetes contract
 
@@ -76,6 +104,8 @@ schedule all pass the bundled `cuga-poc-health` check.
 - Expose port `7860` for the product UI. Ports `8081` and `8201` are only
   needed for direct Activepieces or Evolve diagnostics.
 - Supply model credentials through pod environment variables or a Secret.
+- No egress is required. The image contacts nothing outside the pod except
+  the model endpoint the credentials point at.
 - No security context is required. The image runs as any non-root UID with
   group 0 as its primary group and never writes outside `/data`.
 - Probe the image with its built-in health command:
