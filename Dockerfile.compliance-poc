@@ -177,7 +177,7 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 
 VOLUME ["/data"]
 EXPOSE 7860 8081 8201
-HEALTHCHECK --interval=30s --timeout=8s --start-period=15m --retries=3 \
+HEALTHCHECK --interval=60s --timeout=40s --start-period=15m --retries=3 \
   CMD ["/usr/local/bin/cuga-poc-health"]
 
 # Docker resolves a bare UID to group 0, matching how OpenShift runs the pod.

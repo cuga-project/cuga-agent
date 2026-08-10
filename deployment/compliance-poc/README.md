@@ -77,15 +77,23 @@ schedule all pass the bundled `cuga-poc-health` check.
 ## Offline pieces
 
 `AP_PIECES_SYNC_MODE=NONE` stops Activepieces contacting
-`cloud.activepieces.com`. The nine pieces the events layer needs are baked
-into `/etc/cuga-poc/pieces` as npm tarballs and installed by
-`activepieces-bootstrap` through the local API as `ARCHIVE` packages, so
-neither the cloud catalog nor npm is reachable-or-required at run time.
+`cloud.activepieces.com`. The pieces are baked into `/etc/cuga-poc/pieces` as
+npm tarballs and installed by `activepieces-bootstrap` through the local API
+as `ARCHIVE` packages, so neither the cloud catalog nor npm is
+reachable-or-required at run time.
 
 Versions come from the `PINNED` table in `scripts/ap_pieces.py`, read at
 build time by `fetch-piece-archives.py`, so the image and the local
 development flow cannot drift apart. Adding a piece means adding it to
 `PINNED` and rebuilding.
+
+`PINNED` must list every piece the runtime can reference, not just the ones
+the events layer installs explicitly. With the cloud sync on, the full
+catalog arrived and covered the difference; with it off, a missing piece
+fails when a flow is built — `AP piece '<name>' has no resolvable version` —
+rather than at start-up. `piece-http` backs every flow's callback action, so
+the retention schedule cannot publish without it, and an unpublished
+schedule fails the health check and therefore the liveness probe.
 
 Archive installs register as `CUSTOM` rather than `OFFICIAL` pieces. That is
 deliberate: the cloud sync's reaper only deletes `OFFICIAL` pieces missing
@@ -125,7 +133,10 @@ Nothing else leaves the pod. In particular, no request reaches
 - No security context is required. The image runs as any non-root UID with
   group 0 as its primary group and never writes outside `/data`.
 - Probe the image with its built-in health command:
-  `/usr/local/bin/cuga-poc-health`.
+  `/usr/local/bin/cuga-poc-health`. It names the failing dependency on stdout
+  (`unhealthy: retention-scheduler(...)`), and Kubernetes copies that into the
+  probe's pod event, so the OpenShift console shows which service is down.
+  Its curl budgets total roughly 33s, so keep `timeoutSeconds` above that.
 
 ## OpenShift
 

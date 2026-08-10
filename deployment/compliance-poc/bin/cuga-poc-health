@@ -1,20 +1,62 @@
 #!/usr/bin/bash
-set -euo pipefail
+# Report which dependency is unhealthy, not merely that one is.
+#
+# Kubernetes puts an exec probe's output into the pod's Liveness/Readiness
+# event, so naming the failing service here is what makes the OpenShift
+# console show "retention-scheduler(unavailable: AP ... HTTP 404)" instead of
+# a bare "probe failed". Every budget below is bounded so the total stays
+# under the probe timeout in openshift.yaml; raising one means raising that.
+set -uo pipefail
 
-redis-cli -h 127.0.0.1 ping | grep -q '^PONG$'
-curl --fail --silent --show-error --max-time 3 \
-  http://127.0.0.1:8081/api/v1/flags >/dev/null
-curl --fail --silent --show-error --max-time 15 \
-  http://127.0.0.1:8001/applications >/dev/null
-curl --fail --silent --show-error --max-time 15 \
-  http://127.0.0.1:7860/api/tools/list >/dev/null
-curl --fail --silent --show-error --max-time 3 \
-  http://127.0.0.1:7860/api/admin/memory/automation \
+failed=()
+
+redis-cli -h 127.0.0.1 ping 2>/dev/null | grep -q '^PONG$' \
+  || failed+=("redis")
+
+curl --fail --silent --max-time 5 \
+  http://127.0.0.1:8081/api/v1/flags >/dev/null 2>&1 \
+  || failed+=("activepieces:8081")
+
+curl --fail --silent --max-time 10 \
+  http://127.0.0.1:8001/applications >/dev/null 2>&1 \
+  || failed+=("tool-registry:8001")
+
+curl --fail --silent --max-time 10 \
+  http://127.0.0.1:7860/api/tools/list >/dev/null 2>&1 \
+  || failed+=("cuga-tools:7860")
+
+# The SSE stream never closes, so curl always exits non-zero on the timeout.
+# Capture first and judge the body, or pipefail turns a healthy Evolve into a
+# reported failure.
+sse="$(curl --silent --no-buffer --max-time 3 http://127.0.0.1:8201/sse 2>/dev/null || true)"
+grep -q "event: endpoint" <<<"${sse}" \
+  || failed+=("evolve-mcp:8201")
+
+# The scheduler reports its own diagnosis; carry it through verbatim so the
+# event says why Activepieces refused rather than just that it did.
+scheduler="$(curl --fail --silent --max-time 5 \
+  http://127.0.0.1:7860/api/admin/memory/automation 2>/dev/null \
   | /usr/bin/python3.12 -c '
 import json, sys
-status = json.load(sys.stdin)
-raise SystemExit(0 if status.get("scheduler_health") == "healthy" else 1)
-'
+try:
+    status = json.load(sys.stdin)
+except Exception:
+    print("unreadable")
+    raise SystemExit(0)
+health = status.get("scheduler_health") or "unknown"
+detail = (status.get("scheduler_detail") or "").strip()
+print(f"{health}: {detail}"[:140] if detail else health)
+' 2>/dev/null)"
 
-response="$(curl --silent --no-buffer --max-time 2 http://127.0.0.1:8201/sse || true)"
-grep -q "event: endpoint" <<<"${response}"
+case "${scheduler}" in
+  healthy*) ;;
+  "")       failed+=("retention-scheduler:no-response") ;;
+  *)        failed+=("retention-scheduler(${scheduler})") ;;
+esac
+
+if [ "${#failed[@]}" -gt 0 ]; then
+  echo "unhealthy: ${failed[*]}"
+  exit 1
+fi
+
+echo "healthy: redis activepieces tool-registry cuga evolve retention-scheduler"

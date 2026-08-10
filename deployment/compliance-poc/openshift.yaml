@@ -65,20 +65,31 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-          # A fresh volume spends 5-13 minutes importing the Activepieces
-          # piece catalog. The startup probe owns that window so the liveness
-          # probe can stay tight once the pod is serving.
+          # cuga-poc-health names the failing dependency on stdout, and
+          # Kubernetes copies that into the probe's pod event, so the console
+          # shows which service is down. Its curl budgets total ~33s worst
+          # case; timeoutSeconds must stay above that or a slow-but-healthy
+          # pod gets killed for taking too long to answer.
           startupProbe:
             exec:
               command: ["/usr/local/bin/cuga-poc-health"]
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 45
+            periodSeconds: 40
+            timeoutSeconds: 35
+            failureThreshold: 23
+          # Readiness is separate so a broken dependency takes the pod out of
+          # the Route and shows as 0/1 Ready, rather than only ever presenting
+          # as a restart loop.
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/cuga-poc-health"]
+            periodSeconds: 40
+            timeoutSeconds: 35
+            failureThreshold: 2
           livenessProbe:
             exec:
               command: ["/usr/local/bin/cuga-poc-health"]
-            periodSeconds: 30
-            timeoutSeconds: 10
+            periodSeconds: 60
+            timeoutSeconds: 35
             failureThreshold: 3
           resources:
             requests:
