@@ -105,8 +105,10 @@ def _apply_palette_supervisor_env() -> None:
     # does. With auto-continue off the first such message ends the run — and it
     # ends it mid-build, leaving a finished deck nobody collects.
     os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "true")
-    # Drafting a plan is a single blocking model call of roughly a minute, and
-    # each build poll is one step. 30s is not enough for the plan; 120s is.
+    # Drafting a plan is a single blocking model call, and each build poll is
+    # one step. Measured across five real runs: 43-82s, the slow end being
+    # `--source`, which reads a file before the call. 30s cannot hold any of
+    # them; 120s holds all of them with enough margin for a slow day.
     # The deck build itself never blocks a step — the skill starts it detached
     # and polls (skills/palette/scripts/deck.py), because no step limit will
     # ever cover a ten-minute render.
@@ -681,7 +683,7 @@ def callback(
 
     - demo: Both registry and demo agent (runs directly)
     - demo_skills: Like demo; enables skills + shell tools; exits if OpenSandbox is unreachable
-    - demo_palette: Deck builder — supervisor mode + the palette skill (needs a Palette server)
+    - demo_palette: Deck builder — supervisor mode + the palette skill (needs $PALETTE_HOME)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - travel_agent: Corporate travel planning demo with multi-agent supervisor

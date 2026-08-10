@@ -445,15 +445,26 @@ For settings you keep beyond a one-off run, configure `[skills]` and `[advanced_
 
 A worked example of a skill wired into a purpose-built agent rather than the generic skills demo. **`demo_palette`** starts CUGA in **supervisor mode** as a *Deck Builder*: the supervisor owns the [`palette`](https://github.com/IBM/project-palette) skill and turns a request into a rendered `.pptx`, delegating to a sub-agent for the figures that go on the slides.
 
-**Setup lives in the Palette repo**, because the skill is generated there rather than hand-written here: run `make install`, `make release`, then `make skill-install CUGA=<this repo>`. The whole loop, including the reset levels and how to verify a deck is real, is `palette_skill/CHEATSHEET.md` in [project-palette](https://github.com/IBM/project-palette) — §0 is six lines.
-
-Consuming a **released** skill needs no Palette checkout at all — the same shape as a `skills.sh` install:
+**The skill lives in the Palette repo** and is installed here — CUGA consumes it, and never holds a second copy that can drift. Either way of installing it lands the same folder at `.cuga/skills/palette`:
 
 ```bash
-mkdir -p .cuga/skills
-tar xzf palette-skill-0.1.0-cuga.tar.gz -C .cuga/skills/   # from Palette's `make release`
-PALETTE_URL=http://127.0.0.1:18814 cuga start demo_palette
+# From a Palette checkout
+make -C <palette> install
+make -C <palette> skill-install CUGA=<this repo>
+
+# Or from the catalog, which points at Palette rather than vendoring it
+cuga-skills add palette
 ```
+
+Then point CUGA at the checkout the skill shells into, and run it:
+
+```bash
+export PALETTE_HOME=<palette>      # the checkout containing palette.py
+export RITS_API_KEY=<key>          # model access; every command needs it
+cuga start demo_palette
+```
+
+Both are checked at startup and each missing one is named in a warning, because the failure otherwise surfaces minutes later as a build that cannot reach the models.
 
 The preset layers supervisor coordination on top of the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on, and `[supervisor] config_path` pointed at [`supervisor_palette.yaml`](src/cuga/backend/tools_env/registry/config/supervisor_palette.yaml). Edit that file to change which sub-agents supply deck content.
 
@@ -466,16 +477,17 @@ Skills load at supervisor level (see [`prepare_agents_and_prompt.py`](src/cuga/b
 | `sandbox_execution_timeout` | 30s | **120s** | Each bounded poll is one step. A deck takes three to ten minutes — the spread is how many geometry repair passes it needs — so at 30s a long build is twenty-odd steps, and agents abandon that around step 40 of 100. The build then finishes on the server with nobody collecting it. |
 | `cuga_lite_nl_auto_continue` | false | **true** | Mid-build the model often writes a progress note as prose with no code. That reads as a finished answer and ends the run. |
 
-The skill polls at `--max-seconds 100` to fit inside the 120s step; the two are kept matched by a test in the Palette repo.
+The 120s step covers `build-plan`, which is one blocking model call — measured at 43-82s, the slow end being `--source`. It is not meant to cover the deck build: no step limit ever will, so the skill starts that detached (`scripts/deck.py start`) and polls it (`scripts/deck.py status`) a step at a time.
 
 **Checking a deck is real.** An agent can describe files it never wrote, so verify from your shell rather than the chat:
 
 ```bash
-ls -l cuga_workspace/*/deck/                    # deck.pptx, slide-01.png …
-cat  cuga_workspace/*/deck/.palette-deck.json   # "stage": "done"
+ls -l cuga_workspace/*/deck/deck.pptx           # a real deck is >100KB, not 4KB
+cat  cuga_workspace/*/deck/.palette-build.json  # "state": "done"
+tail -20 cuga_workspace/*/deck/build.log        # if it is not
 ```
 
-That state file is written by `palette-skill deck` and by nothing else, so its absence means the draft/build sequence was driven by hand — which is how a deck goes missing while being reported as built.
+`deck.py status` decides `"verified": true` by stat-ing that `.pptx`, never from an exit code — a build can exit 0 having written nothing, and an agent relaying that reports a deck which does not exist. It also waits for the build process to exit first: `build-deck` re-renders to the same path while it repairs geometry, so the file appears complete minutes before it is.
 
 **Install a sample skill (Anthropic `pptx`)**
 

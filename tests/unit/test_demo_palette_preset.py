@@ -121,6 +121,29 @@ class TestPresetEnvironment:
         """
         assert palette_env["DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE"] == "true"
 
+    def test_a_step_is_long_enough_to_draft_a_plan(self, palette_env: dict[str, str]) -> None:
+        """The default 30s step cannot hold `build-plan`, which is ~40s of one model call.
+
+        This is the limit the skill's start-and-poll helper works around, and
+        it belongs here rather than in the skill: Palette ships one SKILL.md for
+        every host, and Claude Code's Bash tool allows ten minutes. A number
+        that is right for CUGA would be wrong there.
+
+        The deck build itself never blocks a step at all — no step limit will
+        ever cover a ten-minute render, so `deck.py` starts it detached.
+        """
+        assert palette_env["DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT"] == "120"
+
+    def test_the_step_limit_defers_to_an_explicit_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """setdefault, like auto-continue — a longer limit set for debugging survives."""
+        from cuga.cli.main import _apply_palette_supervisor_env
+
+        monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "600")
+        _apply_palette_supervisor_env()
+        assert os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT"] == "600"
+
     def test_auto_continue_defers_to_an_explicit_setting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

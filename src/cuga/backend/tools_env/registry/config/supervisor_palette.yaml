@@ -8,8 +8,9 @@
 # Requires the palette skill installed under `.cuga/skills/palette`:
 #   cd project-palette && make skill-install CUGA=<this repo>
 #
-# And a reachable Palette server. Point at it with PALETTE_URL; start a local
-# one with `palette-skill serve ensure`.
+# And two environment variables, both checked when the preset starts:
+#   PALETTE_HOME  the Palette checkout containing palette.py
+#   RITS_API_KEY  model access
 
 supervisor:
   description: "Builds slide decks with Palette, pulling content from specialist agents"

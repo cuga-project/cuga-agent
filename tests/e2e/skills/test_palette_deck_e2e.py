@@ -139,7 +139,21 @@ def _sandbox_workspace(thread_id: str) -> Path:
 
 
 async def _run_agent(prompt: str, thread_id: str, *, max_steps: int) -> str:
-    """Drive the real graph with the project's real model; return the transcript."""
+    """One turn. Returns the transcript."""
+    return (await _converse([prompt], thread_id, max_steps=max_steps))[1]
+
+
+async def _converse(turns: list[str], thread_id: str, *, max_steps: int) -> tuple[list, str]:
+    """Drive the real graph across several user turns on one thread.
+
+    A deck needs two turns by design: the skill makes the confirmation gate
+    mandatory, so the agent presents the plan and stops. A single-turn harness
+    can never produce a deck, and a test built that way measures nothing.
+
+    `chat_messages` has no `add_messages` reducer, so a second `ainvoke` would
+    *replace* the history rather than append. The prior turn's messages are
+    therefore passed back explicitly.
+    """
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
         CugaLiteState,
         create_cuga_lite_graph,
@@ -152,18 +166,26 @@ async def _run_agent(prompt: str, thread_id: str, *, max_steps: int) -> str:
         model=model, tool_provider=MinimalToolProvider(), apps_list=[]
     ).compile()
 
-    result = await graph.ainvoke(
-        CugaLiteState(chat_messages=[HumanMessage(content=prompt)], thread_id=thread_id),
-        config={
-            "configurable": {
-                "thread_id": thread_id,
-                "apps_list": [],
-                "cuga_lite_max_steps": max_steps,
-            }
-        },
-    )
-    messages = result.get("chat_messages", []) if isinstance(result, dict) else []
-    return "\n".join(str(getattr(m, "content", "")) for m in messages)
+    history: list = []
+    transcript_parts: list[str] = []
+    for turn in turns:
+        result = await graph.ainvoke(
+            CugaLiteState(
+                chat_messages=[*history, HumanMessage(content=turn)], thread_id=thread_id
+            ),
+            config={
+                "configurable": {
+                    "thread_id": thread_id,
+                    "apps_list": [],
+                    "cuga_lite_max_steps": max_steps,
+                }
+            },
+        )
+        history = result.get("chat_messages", []) if isinstance(result, dict) else []
+        transcript_parts.append(
+            "\n".join(str(getattr(m, "content", "")) for m in history)
+        )
+    return history, "\n".join(transcript_parts)
 
 
 def _collect(name: str, workspace: Path, transcript: str) -> DeckResult:
@@ -252,21 +274,25 @@ def _assert_the_plan_was_shown_first(outcome: DeckResult) -> None:
 
 @pytest.mark.asyncio
 async def test_deck_from_a_bare_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """What a person actually types, with nothing added.
+    """What a person actually types, over the two turns a deck actually takes.
 
-    Deliberately unscaffolded: it does not name a command, mention the plan
-    step, or say how to poll. Every skill bug found so far came from a prompt
-    shaped like this one, and none was caught by a unit test.
+    Deliberately unscaffolded: neither turn names a command, mentions the plan
+    step, or says how to poll. Every skill bug found so far came from a prompt
+    shaped like this, and none was caught by a unit test.
 
-    It says "and build it" so the agent has permission to proceed past the
-    plan — a bare "draft a plan" would correctly stop and wait for a human.
+    Two turns because the skill makes the confirmation gate mandatory — the
+    agent presents the plan and stops, which is correct. A single-turn version
+    of this test failed for exactly that reason and was measuring the harness,
+    not the skill.
     """
     _configure(monkeypatch, _prepare_skill(tmp_path))
     thread_id = f"deck_bare_{uuid.uuid4().hex[:8]}"
 
-    transcript = await _run_agent(
-        "Build me a deck about vector databases for backend engineers. "
-        "Show me the plan first, then go ahead and build it.",
+    _, transcript = await _converse(
+        [
+            "Build me a deck about vector databases for backend engineers.",
+            "The plan looks good. Go ahead and build the deck.",
+        ],
         thread_id,
         max_steps=100,
     )
@@ -298,9 +324,11 @@ async def test_deck_from_pasted_material(tmp_path: Path, monkeypatch: pytest.Mon
         "  a queue backlog during incident recovery.\n"
     )
 
-    transcript = await _run_agent(
-        "Turn these notes into a 4-slide deck for platform engineers. "
-        "Show me the plan, then build it.\n\n" + material,
+    _, transcript = await _converse(
+        [
+            "Turn these notes into a 4-slide deck for platform engineers.\n\n" + material,
+            "Looks right. Build it.",
+        ],
         thread_id,
         max_steps=100,
     )

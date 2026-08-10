@@ -10,19 +10,17 @@ which means one link is deliberately not covered here: whether a real model
 *chooses* to call the skill. That needs credentials and lives in the Tier 3
 suite. Everything downstream of the decision is covered.
 
-    Tier 2  (no LLM, no server)  — prompt -> load_skill -> instructions returned
-    Tier 2+ (no LLM, live server) — ...and the instructions actually reach Palette
+    Tier 2 (no LLM, no models) — prompt -> load_skill -> instructions returned
+    Tier 3 (real LLM, real RITS) — ...and a real .pptx comes out the far end
 
-The second class skips unless a Palette server is up; start one with
-`palette-skill serve ensure`.
+Nothing here reaches a model or a Palette checkout, so it runs anywhere and in
+seconds. Tier 3 is `test_palette_deck_e2e.py`.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
 
@@ -37,7 +35,6 @@ from tests.e2e.skills.conftest import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 INSTALLED_SKILL = REPO_ROOT / ".cuga" / "skills" / "palette"
-PALETTE_URL = os.environ.get("PALETTE_URL", "http://127.0.0.1:18814")
 
 pytestmark = pytest.mark.skipif(
     not (INSTALLED_SKILL / "SKILL.md").is_file(),
@@ -46,14 +43,6 @@ pytestmark = pytest.mark.skipif(
         "from the project-palette checkout"
     ),
 )
-
-
-def palette_is_up() -> bool:
-    try:
-        with urllib.request.urlopen(f"{PALETTE_URL}/health", timeout=2) as response:
-            return response.status == 200
-    except (urllib.error.URLError, OSError):
-        return False
 
 
 def install_real_skill(root: Path) -> Path:
@@ -222,7 +211,10 @@ class TestAgentInvokesTheSkill:
             ("deck.py status", "nothing tells the agent how to find out when it finished"),
             ('"done": true', "nothing tells the agent what ends the loop"),
             ("verified", "completion is left to the agent's belief rather than the filesystem"),
-            ("120", "the skill should name the limit it is working around"),
+            (
+                "timed out tells you",
+                "a killed step reads as failure, and the agent gives up on a live build",
+            ),
         ):
             assert expected in transcript, f"{expected!r} missing: {why}"
 
