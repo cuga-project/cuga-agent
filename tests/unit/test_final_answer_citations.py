@@ -134,9 +134,7 @@ def test_gate_auto_enables_only_for_harmony_models(monkeypatch):
         "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
         SimpleNamespace(
             advanced_features=SimpleNamespace(strip_harmony_control_tokens="auto"),
-            agent=SimpleNamespace(
-                final_answer=SimpleNamespace(model=SimpleNamespace(model_name="gpt-4o"))
-            ),
+            agent=SimpleNamespace(final_answer=SimpleNamespace(model=SimpleNamespace(model_name="gpt-4o"))),
         ),
     )
     assert gate() is False
