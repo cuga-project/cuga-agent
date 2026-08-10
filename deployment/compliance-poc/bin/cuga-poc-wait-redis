@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+for _ in $(seq 1 30); do
+  if redis-cli -h 127.0.0.1 ping 2>/dev/null | grep -q '^PONG$'; then
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "Redis did not become ready at 127.0.0.1:6379" >&2
+exit 1

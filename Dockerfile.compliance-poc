@@ -46,7 +46,7 @@ RUN PYTHONPATH=/app/src uv run --no-sync python -c \
       || true; \
     find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-FROM registry.access.redhat.com/ubi9/ubi-init:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest
 
 ARG ACTIVEPIECES_IMAGE
 ARG EVOLVE_REF
@@ -86,7 +86,6 @@ RUN dnf install -y \
         pango \
         procps-ng \
         python3.12 \
-        shadow-utils \
         tar \
         unzip \
     && dnf clean all \
@@ -111,28 +110,20 @@ COPY src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml \
      /etc/cuga-poc/mcp_servers_cuga_apps.yaml
 COPY deployment/compliance-poc/defaults.env /etc/cuga-poc/defaults.env
 COPY deployment/compliance-poc/bin/ /usr/local/bin/
-COPY deployment/compliance-poc/systemd/ /etc/systemd/system/
 
 RUN ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
     && ln -sf ../lib/node_modules/pm2/bin/pm2-runtime /usr/local/bin/pm2-runtime \
-    && useradd --system --home-dir /data/cuga/home --shell /sbin/nologin cuga \
-    && useradd --system --home-dir /data/activepieces --shell /sbin/nologin activepieces \
     && mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data \
     && rm -rf /opt/activepieces/cache \
     && ln -s /data/activepieces/cache /opt/activepieces/cache \
     && chmod 0755 /usr/local/bin/cuga-poc-entrypoint \
+                  /usr/local/bin/cuga-poc-supervisor \
                   /usr/local/bin/cuga-poc-prepare \
+                  /usr/local/bin/cuga-poc-wait-redis \
                   /usr/local/bin/cuga-poc-wait-evolve \
                   /usr/local/bin/cuga-poc-wait-registry \
                   /usr/local/bin/activepieces-bootstrap \
-                  /usr/local/bin/cuga-poc-health \
-    && systemctl enable cuga-poc-prepare.service \
-                        redis.service \
-                        activepieces.service \
-                        evolve.service \
-                        registry.service \
-                        activepieces-bootstrap.service \
-                        cuga.service
+                  /usr/local/bin/cuga-poc-health
 
 COPY \
   src/cuga/demo_tools/huggingface/contacts.txt \
@@ -142,7 +133,17 @@ COPY \
   src/cuga/demo_tools/huggingface/sovereign_core_overview.pdf \
   /app/cuga_workspace/
 
+# OpenShift runs the container as an arbitrary UID that is always in group 0
+# and has no /etc/passwd entry. Mirroring the owner bits onto the group makes
+# every path the services touch usable by whichever UID is assigned, and the
+# writable /etc/passwd lets the entrypoint register that UID for tools that
+# resolve the account by uid.
+RUN chgrp -R 0 /app /data /etc/cuga-poc /opt/activepieces \
+    && chmod -R g=u /app /data /etc/cuga-poc /opt/activepieces \
+    && chmod g=u /etc/passwd
+
 ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    HOME=/data/cuga/home \
     PLAYWRIGHT_BROWSERS_PATH=/app/.playwright \
     FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
@@ -151,9 +152,11 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 
 VOLUME ["/data"]
 EXPOSE 7860 8081 8201
-STOPSIGNAL SIGRTMIN+3
 HEALTHCHECK --interval=30s --timeout=8s --start-period=15m --retries=3 \
   CMD ["/usr/local/bin/cuga-poc-health"]
 
+# Docker resolves a bare UID to group 0, matching how OpenShift runs the pod.
+USER 1001
+
 ENTRYPOINT ["/usr/local/bin/cuga-poc-entrypoint"]
-CMD ["/sbin/init"]
+CMD ["/usr/local/bin/cuga-poc-supervisor"]

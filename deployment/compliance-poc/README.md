@@ -1,8 +1,14 @@
 # Single-image compliance PoC
 
 `Dockerfile.compliance-poc` packages CUGA, its tool registry, Evolve MCP,
-and Activepieces on Red Hat UBI 9 init. It is intended for a stakeholder
-PoC deployed as one Kubernetes pod and one replica.
+and Activepieces on Red Hat UBI 9. It is intended for a stakeholder PoC
+deployed as one Kubernetes pod and one replica.
+
+The image is rootless. A small PID 1 supervisor (`cuga-poc-supervisor`)
+starts the six services in dependency order, gates each on the readiness
+probe its predecessor used, restarts long-running services on failure, and
+reaps orphans. Every service shares the container UID and group 0, so the
+image runs unchanged under an arbitrary assigned UID.
 
 Activepieces uses its supported PGLite database mode and a Redis process
 inside the same image. That keeps the PoC in one pod, but it is not the
@@ -32,11 +38,8 @@ The build pins Activepieces `0.82.0` and Evolve commit
 
 ## Run locally
 
-Systemd needs a writable cgroup hierarchy. Docker Desktop can run it with:
-
 ```sh
 docker run --rm --name cuga-compliance-poc \
-  --privileged --cgroupns=host \
   -p 7860:7860 -p 8081:8081 -p 8201:8201 \
   -v cuga-compliance-poc-data:/data \
   --env-file .env \
@@ -73,35 +76,38 @@ schedule all pass the bundled `cuga-poc-health` check.
 - Expose port `7860` for the product UI. Ports `8081` and `8201` are only
   needed for direct Activepieces or Evolve diagnostics.
 - Supply model credentials through pod environment variables or a Secret.
-- Use a systemd-capable security context and writable cgroup mount. The image
-  intentionally uses `ubi9/ubi-init` as PID 1.
+- No security context is required. The image runs as any non-root UID with
+  group 0 as its primary group and never writes outside `/data`.
 - Probe the image with its built-in health command:
   `/usr/local/bin/cuga-poc-health`.
 
 ## OpenShift
 
-OpenShift's default `restricted-v2` SCC runs pods under a random non-root UID.
-The image refuses to start under it — `cuga-poc-entrypoint must run as root` —
-because systemd is PID 1, the units run as dedicated `cuga` and `activepieces`
-users, and `cuga-poc-prepare` chowns the `/data` tree.
-
-A cluster admin must bind the `privileged` SCC to the PoC service account:
+`deployment/compliance-poc/openshift.yaml` deploys under the default
+`restricted-v2` SCC. No SCC binding, no dedicated service account, and no
+cluster-admin involvement:
 
 ```sh
-oc adm policy add-scc-to-user privileged -z cuga-poc -n NAMESPACE
+oc apply -f deployment/compliance-poc/openshift.yaml
 ```
 
-Then apply `deployment/compliance-poc/openshift.yaml`, which sets
-`runAsUser: 0`, `privileged: true`, and mounts memory-backed `/run` plus a
-writable `/tmp` for systemd.
+Three properties make that work, and breaking any of them reintroduces the
+root requirement:
 
-`anyuid` alone is not enough. It clears the entrypoint check, but CRI-O mounts
-`/sys/fs/cgroup` read-only for unprivileged containers and systemd then fails
-to mount its own hierarchy. Confirm which SCC a running pod actually got with:
+- No service users. Every process runs as the assigned UID. CUGA and
+  Activepieces are not isolated from each other — an acceptable trade for a
+  single-pod PoC, and the reason this image must not be treated as a
+  production topology.
+- Group 0 owns everything writable. The build mirrors owner permissions onto
+  the group (`chmod -R g=u`) and `cuga-poc-prepare` creates `/data`
+  directories setgid, so state stays shared no matter which UID is assigned.
+- The entrypoint appends its own `/etc/passwd` entry. OpenShift's UID has no
+  account in the image, which breaks tools that resolve the user by uid.
 
-```sh
-oc get pod POD -o jsonpath='{.metadata.annotations.openshift\.io/scc}'
-```
+Do not pin `runAsUser` or `fsGroup` in the manifest. OpenShift fills both from
+the namespace range, and hardcoding either is what breaks portability between
+clusters. Secrets in `/data/cuga-poc/secrets.env` are written `0660` so a pod
+that comes back under a different UID can still read them through group 0.
 
 Deleting the `/data` volume intentionally creates a fresh PoC. On the next
 start the image regenerates credentials, creates the Activepieces owner,

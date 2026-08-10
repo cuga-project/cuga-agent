@@ -1,19 +1,30 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-install -d -m 0750 -o activepieces -g activepieces \
+# Every service shares the container UID and group 0, so these directories
+# only need to be group-writable — there is no ownership to hand out and no
+# capability to do it with. The setgid bit keeps group 0 on anything created
+# underneath, which matters on runtimes that do not force it the way
+# OpenShift does.
+#
+# A directory carried over from an earlier deployment may be owned by a
+# different UID, which makes chmod fail. That is harmless when the mode is
+# already correct, so the mode is applied on a best-effort basis.
+for directory in \
+  /data/cuga-poc \
   /data/activepieces \
   /data/activepieces/cache \
   /data/activepieces/home \
   /data/activepieces/pieces \
-  /data/activepieces/redis
-
-install -d -m 0750 -o cuga -g cuga \
+  /data/activepieces/redis \
   /data/cuga \
   /data/cuga/crm \
   /data/cuga/dbs \
   /data/cuga/home \
   /data/cuga/logging \
-  /data/evolve
-
-install -d -m 0755 -o cuga -g cuga /app/.cuga
+  /data/evolve \
+  /app/.cuga \
+  /app/.cuga/knowledge; do
+  mkdir -p "${directory}"
+  chmod 2775 "${directory}" 2>/dev/null || true
+done

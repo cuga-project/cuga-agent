@@ -1,0 +1,288 @@
+#!/usr/bin/python3.12
+"""PID 1 process supervisor for the compliance PoC image.
+
+Replaces the systemd unit graph so the image runs under an arbitrary
+non-root UID. Services start in dependency order, each gated on the same
+readiness probes the units used as `ExecStartPost`. Long-running services
+restart on failure within a burst limit; a failed one-shot or an exhausted
+restart budget tears the container down so the orchestrator can reschedule
+it.
+
+As PID 1 this process also reaps orphaned children and forwards shutdown
+signals, neither of which the kernel does for us.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import sys
+import time
+
+
+AP_HOME = "/data/activepieces/home"
+CUGA_HOME = "/data/cuga/home"
+
+# Ordered exactly as the systemd graph resolved it. Activepieces is started
+# before Evolve and the registry so its multi-minute piece import overlaps
+# with their readiness probes instead of running after them.
+SERVICES = (
+    {
+        "name": "prepare",
+        "command": ["/usr/local/bin/cuga-poc-prepare"],
+        "oneshot": True,
+    },
+    {
+        "name": "redis",
+        "command": [
+            "/usr/local/bin/redis-server",
+            "--bind", "127.0.0.1",
+            "--protected-mode", "yes",
+            "--port", "6379",
+            "--dir", "/data/activepieces/redis",
+            "--appendonly", "yes",
+            "--supervised", "no",
+        ],
+        "env": {"HOME": AP_HOME},
+        "ready": ["/usr/local/bin/cuga-poc-wait-redis"],
+        "restart": True,
+    },
+    {
+        "name": "activepieces",
+        "command": ["/opt/activepieces/docker-entrypoint.sh"],
+        "cwd": "/opt/activepieces",
+        "env": {
+            "HOME": AP_HOME,
+            "AP_CACHE_PATH": "/data/activepieces/cache",
+            "AP_CONFIG_PATH": "/data/activepieces",
+            "AP_PIECES_CACHE_PATH": "/data/activepieces/pieces",
+        },
+        "restart": True,
+    },
+    {
+        "name": "evolve",
+        "command": [
+            "/app/.venv/bin/evolve-mcp",
+            "--transport", "sse",
+            "--host", "127.0.0.1",
+            "--port", "8201",
+        ],
+        "cwd": "/data/evolve",
+        "env": {"HOME": CUGA_HOME},
+        "ready": ["/usr/local/bin/cuga-poc-wait-evolve"],
+        "restart": True,
+    },
+    {
+        "name": "registry",
+        "command": [
+            "/app/.venv/bin/uvicorn",
+            "cuga.backend.tools_env.registry.registry.api_registry_server:app",
+            "--host", "127.0.0.1",
+            "--port", "8001",
+        ],
+        "cwd": "/app",
+        "env": {
+            "HOME": CUGA_HOME,
+            "MCP_SERVERS_FILE": "/etc/cuga-poc/mcp_servers_cuga_apps.yaml",
+        },
+        "ready": ["/usr/local/bin/cuga-poc-wait-registry"],
+        "restart": True,
+    },
+    {
+        "name": "activepieces-bootstrap",
+        "command": ["/usr/local/bin/activepieces-bootstrap"],
+        "cwd": "/app",
+        "env": {"HOME": AP_HOME, "PYTHONUNBUFFERED": "1"},
+        "oneshot": True,
+    },
+    {
+        "name": "cuga",
+        "command": [
+            "/app/.venv/bin/uvicorn",
+            "cuga.backend.server.main:app",
+            "--host", "0.0.0.0",
+            "--port", "7860",
+        ],
+        "cwd": "/app",
+        "env": {"HOME": CUGA_HOME},
+        "restart": True,
+    },
+)
+
+RESTART_DELAY_SECONDS = 5
+RESTART_BURST = 5
+RESTART_WINDOW_SECONDS = 300
+STOP_GRACE_SECONDS = 45
+
+
+class Shutdown(Exception):
+    """Raised from the signal handler to break out of a blocking wait."""
+
+
+def log(message: str) -> None:
+    print(f"[supervisor] {message}", file=sys.stderr, flush=True)
+
+
+def describe(status: int) -> str:
+    if os.WIFSIGNALED(status):
+        return f"signal {os.WTERMSIG(status)}"
+    return f"exit {os.WEXITSTATUS(status)}"
+
+
+class Supervisor:
+    def __init__(self) -> None:
+        # pid -> (kind, service spec). Probes are tracked alongside services
+        # so a single waitpid(-1) loop owns every child, including orphans.
+        self.children: dict[int, tuple[str, dict]] = {}
+        self.restarts: dict[str, list[float]] = {}
+        self.failure: str | None = None
+
+    def spawn(self, spec: dict, kind: str, command: list[str]) -> int:
+        environment = dict(os.environ)
+        environment.update(spec.get("env", {}))
+        cwd = spec.get("cwd")
+        pid = os.fork()
+        if pid == 0:
+            try:
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                if cwd:
+                    os.chdir(cwd)
+                os.execve(command[0], command, environment)
+            except BaseException as error:  # noqa: BLE001 - last chance in child
+                print(f"[supervisor] {command[0]}: {error}", file=sys.stderr, flush=True)
+            os._exit(127)
+        self.children[pid] = (kind, spec)
+        return pid
+
+    def start(self, spec: dict) -> int:
+        log(f"starting {spec['name']}")
+        return self.spawn(spec, "service", spec["command"])
+
+    def handle_exit(self, pid: int, status: int) -> None:
+        entry = self.children.pop(pid, None)
+        if entry is None:
+            return  # reaped orphan we never started
+        kind, spec = entry
+        if kind != "service":
+            return
+        name = spec["name"]
+        if spec.get("oneshot"):
+            return  # the startup sequence inspects one-shot results directly
+        log(f"{name} terminated ({describe(status)})")
+        if not spec.get("restart"):
+            return
+        history = [
+            stamp
+            for stamp in self.restarts.get(name, [])
+            if time.monotonic() - stamp < RESTART_WINDOW_SECONDS
+        ]
+        if len(history) >= RESTART_BURST:
+            self.failure = (
+                f"{name} restarted {RESTART_BURST} times in "
+                f"{RESTART_WINDOW_SECONDS}s; giving up"
+            )
+            raise Shutdown
+        history.append(time.monotonic())
+        self.restarts[name] = history
+        time.sleep(RESTART_DELAY_SECONDS)
+        self.start(spec)
+
+    def wait_for(self, target: int) -> int:
+        """Reap children until `target` exits, returning its status."""
+        while True:
+            pid, status = os.waitpid(-1, 0)
+            if pid == target:
+                self.children.pop(pid, None)
+                return status
+            self.handle_exit(pid, status)
+
+    def run_startup(self) -> None:
+        for spec in SERVICES:
+            pid = self.start(spec)
+            if spec.get("oneshot"):
+                status = self.wait_for(pid)
+                if status != 0:
+                    self.failure = f"{spec['name']} failed ({describe(status)})"
+                    raise Shutdown
+                log(f"{spec['name']} completed")
+                continue
+            probe = spec.get("ready")
+            if probe:
+                status = self.wait_for(self.spawn(spec, "probe", probe))
+                if status != 0:
+                    self.failure = (
+                        f"{spec['name']} did not become ready ({describe(status)})"
+                    )
+                    raise Shutdown
+                log(f"{spec['name']} ready")
+        log("all services started")
+
+    def run_forever(self) -> None:
+        while True:
+            try:
+                pid, status = os.waitpid(-1, 0)
+            except ChildProcessError:
+                self.failure = "no services left to supervise"
+                raise Shutdown from None
+            self.handle_exit(pid, status)
+
+    def shutdown(self) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if self.children:
+            log(f"stopping {len(self.children)} child process(es)")
+        for pid in list(self.children):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                self.children.pop(pid, None)
+        deadline = time.monotonic() + STOP_GRACE_SECONDS
+        while self.children and time.monotonic() < deadline:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                time.sleep(0.2)
+                continue
+            self.children.pop(pid, None)
+        for pid in list(self.children):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        while True:
+            try:
+                if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                    break
+            except ChildProcessError:
+                break
+
+
+def main() -> None:
+    supervisor = Supervisor()
+
+    def on_signal(signum: int, _frame: object) -> None:
+        log(f"received signal {signum}")
+        raise Shutdown
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    try:
+        supervisor.run_startup()
+        supervisor.run_forever()
+    except Shutdown:
+        pass
+    finally:
+        supervisor.shutdown()
+
+    if supervisor.failure:
+        log(supervisor.failure)
+        raise SystemExit(1)
+    log("shutdown complete")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,16 +1,30 @@
 #!/usr/bin/python3.12
-"""Persist generated secrets, pass container env to systemd, then start PID 1."""
+"""Resolve PoC configuration and secrets, then exec the service supervisor.
+
+Runs under an arbitrary non-root UID. It never chowns, writes only under
+/data, and registers the effective UID in /etc/passwd so tools that look
+the account up by uid keep working on OpenShift, which assigns a UID that
+has no entry in the image.
+
+Service configuration is merged here and handed to the supervisor through
+the process environment, so nothing needs to be written to /etc at runtime.
+"""
 
 from __future__ import annotations
 
+import errno
 import os
+import pwd
 import secrets
+import sys
 from pathlib import Path
 
 
 STATE_DIR = Path("/data/cuga-poc")
 SECRETS_FILE = STATE_DIR / "secrets.env"
-CONTAINER_ENV_FILE = Path("/etc/cuga-poc/container.env")
+DEFAULTS_FILE = Path("/etc/cuga-poc/defaults.env")
+PASSWD_FILE = Path("/etc/passwd")
+FALLBACK_HOME = "/data/cuga/home"
 GENERATED = {
     "AP_ENCRYPTION_KEY": lambda: secrets.token_hex(16),
     "AP_JWT_SECRET": lambda: secrets.token_hex(32),
@@ -71,26 +85,74 @@ def write_env(path: Path, values: dict[str, str], mode: int) -> None:
     temporary.replace(path)
 
 
-def main() -> None:
-    if os.geteuid() != 0:
-        raise SystemExit("cuga-poc-entrypoint must run as root")
+def ensure_passwd_entry() -> None:
+    """Give the effective UID a passwd entry when the image has none.
 
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    OpenShift runs the container as a random UID from the namespace range.
+    Group 0 owns /etc/passwd and the image makes it group-writable, so the
+    entry can be appended without any capability.
+    """
+    uid = os.geteuid()
+    try:
+        pwd.getpwuid(uid)
+        return
+    except KeyError:
+        pass
+    entry = f"cuga:x:{uid}:{os.getegid()}:CUGA compliance PoC:{FALLBACK_HOME}:/sbin/nologin\n"
+    try:
+        with PASSWD_FILE.open("a") as handle:
+            handle.write(entry)
+    except OSError as error:
+        if error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+            raise
+        print(
+            f"[entrypoint] warning: uid {uid} has no passwd entry and "
+            f"{PASSWD_FILE} is not writable",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def resolve_environment() -> dict[str, str]:
+    """Merge configuration lowest precedence first.
+
+    Image defaults lose to persisted secrets, which lose to values supplied
+    on the container, which lose to the wiring this PoC topology requires.
+    """
+    resolved = read_env(DEFAULTS_FILE)
+
     persisted = read_env(SECRETS_FILE)
     for key, factory in GENERATED.items():
         persisted[key] = os.environ.get(key) or persisted.get(key) or factory()
-    write_env(SECRETS_FILE, persisted, 0o600)
+    # 0660, not 0600: a redeployed pod may come back under a different UID
+    # and must still read the credentials it generated, via group 0.
+    write_env(SECRETS_FILE, persisted, 0o660)
+    resolved.update(persisted)
 
-    forwarded = {
-        key: value
-        for key, value in os.environ.items()
-        if key in EXACT_KEYS or key.startswith(PREFIXES)
-    }
-    forwarded.update(POC_WIRING)
-    write_env(CONTAINER_ENV_FILE, forwarded, 0o600)
+    resolved.update(
+        {
+            key: value
+            for key, value in os.environ.items()
+            if key in EXACT_KEYS or key.startswith(PREFIXES)
+        }
+    )
+    resolved.update(POC_WIRING)
+    return resolved
 
-    command = os.sys.argv[1:] or ["/sbin/init"]
-    os.execvpe(command[0], command, os.environ)
+
+def main() -> None:
+    # Group 0 is shared by every process in the pod, so state written by one
+    # service has to stay readable and writable by the others.
+    os.umask(0o002)
+    ensure_passwd_entry()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    environment = dict(os.environ)
+    environment.update(resolve_environment())
+    environment.setdefault("HOME", FALLBACK_HOME)
+
+    command = sys.argv[1:] or ["/usr/local/bin/cuga-poc-supervisor"]
+    os.execvpe(command[0], command, environment)
 
 
 if __name__ == "__main__":

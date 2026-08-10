@@ -1,17 +1,13 @@
 ---
 # Single-replica compliance PoC for OpenShift.
 #
-# The image runs systemd as PID 1 and manages its own service users, so it
-# needs UID 0 and a writable cgroup hierarchy. Both require a cluster admin to
-# bind the `privileged` SCC to this service account before applying:
+# Runs under the default `restricted-v2` SCC: no service-account binding, no
+# elevated security context, no cluster-admin involvement. OpenShift assigns
+# an arbitrary UID from the namespace range and a group-0 primary group, which
+# is what the image is built for.
 #
-#   oc adm policy add-scc-to-user privileged -z cuga-poc -n <namespace>
+#   oc apply -f deployment/compliance-poc/openshift.yaml
 #
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cuga-poc
----
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -39,14 +35,23 @@ spec:
       labels:
         app: cuga-poc
     spec:
-      serviceAccountName: cuga-poc
+      # No runAsUser and no fsGroup: OpenShift fills both from the namespace
+      # range. Pinning either one is what breaks portability between clusters.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       terminationGracePeriodSeconds: 60
+      # Service links inject CUGA_POC_PORT=tcp://... and friends, which collide
+      # with the CUGA_ prefix the entrypoint forwards into service config.
+      enableServiceLinks: false
       containers:
         - name: cuga-poc
           image: registry.example.com/cuga-compliance-poc:VERSION
           securityContext:
-            runAsUser: 0
-            privileged: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: ui
               containerPort: 7860
@@ -60,10 +65,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: run
-              mountPath: /run
-            - name: tmp
-              mountPath: /tmp
+          # A fresh volume spends 5-13 minutes importing the Activepieces
+          # piece catalog. The startup probe owns that window so the liveness
+          # probe can stay tight once the pod is serving.
           startupProbe:
             exec:
               command: ["/usr/local/bin/cuga-poc-health"]
@@ -86,11 +90,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: cuga-poc-data
-        - name: run
-          emptyDir:
-            medium: Memory
-        - name: tmp
-          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -50,7 +50,7 @@ compliance-poc-stop: ## Stop CUGA and Evolve processes started by compliance-poc
 compliance-poc-status: ## Report local compliance PoC service status
 	scripts/compliance_poc.sh --status
 
-compliance-poc-image: ## Build the single-image UBI9 init compliance PoC
+compliance-poc-image: ## Build the single-image UBI9 compliance PoC
 	$(DOCKER) build -f Dockerfile.compliance-poc -t $(IMAGE) .
 
 compliance-poc-image-multiarch: ## Build and push amd64+arm64 PoC images as one manifest
@@ -58,7 +58,7 @@ compliance-poc-image-multiarch: ## Build and push amd64+arm64 PoC images as one 
 	  -f Dockerfile.compliance-poc -t $(IMAGE) --push .
 
 compliance-poc-image-run: ## Run the single-image PoC locally with persistent data
-	$(DOCKER) run --rm --name cuga-compliance-poc --privileged --cgroupns=host \
+	$(DOCKER) run --rm --name cuga-compliance-poc \
 	  -p 7860:7860 -p 8081:8081 -p 8201:8201 \
 	  -v cuga-compliance-poc-data:/data --env-file .env $(IMAGE)
 
