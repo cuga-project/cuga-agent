@@ -750,9 +750,12 @@ def create_mcp_prompt(
     skills_prompt_section: str = "",
     enable_shell_tool: bool = False,
     sandbox_workspace: str = "/workspace",
+    sandbox_env_info: str = "",
     has_knowledge=False,
     few_shot_examples: Optional[List[Dict[str, str]]] = None,
     few_shots_enabled: Optional[bool] = None,
+    agents_enabled: bool = False,
+    agents_prompt_section: str = "",
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -773,6 +776,7 @@ def create_mcp_prompt(
         skills_prompt_section: Pre-formatted markdown/XML block from the skills registry
         enable_shell_tool: If True, include run_command / npm / sandbox workspace bullets in the prompt (OpenSandbox shell tools; defaults False in settings)
         sandbox_workspace: Path prefix shown to the agent for sandbox files. Use "/workspace" for opensandbox/e2b (real Docker path) and "." for native/local (relative cwd).
+        sandbox_env_info: Human-readable OS/environment string shown to the model when shell tools are enabled (e.g. "macOS 14.5" or "Linux (Ubuntu, Docker container)").
         has_knowledge: If True, include knowledge-base search guidance in the prompt
         few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
         few_shots_enabled: Unused (reserved for API compatibility).
@@ -827,7 +831,10 @@ def create_mcp_prompt(
             "skills_prompt_section": skills_prompt_section,
             "enable_shell_tool": enable_shell_tool,
             "sandbox_workspace": sandbox_workspace,
+            "sandbox_env_info": sandbox_env_info,
             "has_knowledge": has_knowledge,
+            "agents_enabled": agents_enabled,
+            "agents_prompt_section": agents_prompt_section,
         }
     ).to_string()
     return prompt

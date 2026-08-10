@@ -197,9 +197,11 @@ class SecurityValidator:
         lower = (exc.msg or "").lower()
         if "unterminated" in lower and ("string" in lower or "f-string" in lower):
             msg += (
-                "\nHint: Do not embed large markdown or JSON inside f-strings or triple-quoted strings. "
-                "Build reports with '\\n'.join([...]), json.dumps() for dict sections, or "
-                "await write_file('./output/report.md', content)."
+                "\nHint: Do not embed large markdown, JSON, or prior tool/subagent outputs inside "
+                "f-strings or triple-quoted strings. Build reports with '\\n'.join([...]), "
+                "json.dumps() for dict sections, or await write_file('./output/report.md', content). "
+                "For spawn_agent follow-ups: "
+                'task = ".... Inputs JSON: " + json.dumps({"a": a_out, "b": b_out})'
             )
         elif "unexpected indent" in lower:
             msg += (

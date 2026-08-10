@@ -112,6 +112,12 @@ Generate Python code that precisely implements the provided **plan** by making c
 
 6.  **No Complex Logic:** Do *not* implement complex business logic, intricate data transformations, or significant computations within the generated code itself. The primary logic should reside within the APIs or be dictated by the orchestration sequence defined in the **plan**. Your code acts as the "glue" between API calls.
 
+6a. **Robust Data Matching:** When filtering or searching over API results, apply defensive matching strategies:
+
+    * **Product/category filtering:** Use case-insensitive substring matching (`.lower()` on both sides). When a product could plausibly belong to the target category based on its name (e.g., "Rogue Flat Utility Bench" is plausibly a weightlifting bench), include it unless the plan explicitly excludes it. Err toward inclusion when ambiguous — the planner can resolve ambiguity downstream.
+    * **Date-window broadening:** When searching for an order or event by date and the initial search returns empty, retry with a ±14-day window around the target date before reporting "not found." Never terminate with an empty result when a broader date search is possible.
+    * **Phone number normalization:** When an SMS or phone API returns a 4xx error (especially HTTP 409 "user does not exist"), retry the call with the alternative phone number format: if the number was sent with a "+1" country code prefix, retry without it; if sent without a country code, retry with "+1". Store the retry response in a distinctly named variable (e.g., `sms_retry_response`) separate from the original error.
+
 7.  **Progress Tracking & Debugging:** Include `print()` statements throughout the code to track intermediate progress:
     * **API Call Progress:** Print a brief description before each `call_api` call indicating what operation is being performed.
     * **Success/Error Status:** Print whether each API call succeeded or failed, with relevant details.

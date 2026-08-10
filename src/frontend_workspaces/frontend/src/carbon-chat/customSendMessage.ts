@@ -224,6 +224,28 @@ export async function customSendMessage(
     let accumulatedText = "";
     let currentStepTitle = "";
     let currentStepContent = "";
+    let currentSubAgentName = "";
+    const subAgentAccumulators: Map<string, Array<{ title: string; content: string }>> = new Map();
+    // Track collectedSteps index per spawnKey so A→B→A interleaving replaces rather than duplicates.
+    const subAgentStepIndexes: Map<string, number> = new Map();
+
+    const flushPendingStep = () => {
+      if (!currentStepTitle || !currentStepContent) return;
+      const step = createReasoningStep(currentStepTitle, currentStepContent);
+      if (currentSubAgentName) {
+        const existingIdx = subAgentStepIndexes.get(currentSubAgentName);
+        if (existingIdx !== undefined) {
+          collectedSteps[existingIdx] = step;
+        } else {
+          subAgentStepIndexes.set(currentSubAgentName, collectedSteps.length);
+          collectedSteps.push(step);
+        }
+      } else {
+        collectedSteps.push(step);
+      }
+      currentStepTitle = "";
+      currentStepContent = "";
+    };
 
     // Build headers
     const headers: Record<string, string> = {
@@ -279,9 +301,8 @@ export async function customSendMessage(
 
       switch (event.name) {
         case "CodeAgent":
-          if (currentStepTitle && currentStepContent) {
-            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
-          }
+          flushPendingStep();
+          currentSubAgentName = "";
 
           const codeAgentResult = parseReasoningStepContent(event.data || "", "Code Agent");
           currentStepTitle = codeAgentResult.title;
@@ -304,13 +325,89 @@ export async function customSendMessage(
           }
           break;
 
+        case "SubAgent": {
+          let subAgentData: any = {};
+          try { subAgentData = typeof event.data === "string" ? JSON.parse(event.data) : (event.data || {}); } catch { /* ignore */ }
+
+          const agentName = subAgentData.agent_name || "sub-agent";
+          const spawnKey = subAgentData.spawn_id || agentName;
+          const agentLabel = subAgentData.spawn_id
+            ? `Sub-Agent: ${agentName} (${String(subAgentData.spawn_id).slice(0, 12)})`
+            : `Sub-Agent: ${agentName}`;
+
+          // Switching to a different sub-agent or entering for the first time — flush pending step
+          if (currentSubAgentName !== spawnKey) {
+            flushPendingStep();
+            currentSubAgentName = spawnKey;
+            if (!subAgentAccumulators.has(spawnKey)) {
+              subAgentAccumulators.set(spawnKey, []);
+            }
+          }
+
+          const iterations = subAgentAccumulators.get(spawnKey)!;
+          let newIteration: { title: string; content: string } | null = null;
+
+          if (subAgentData.type === "start") {
+            newIteration = { title: "Task", content: subAgentData.task || "" };
+          } else if (subAgentData.type === "result") {
+            const answer = subAgentData.answer || "";
+            newIteration = {
+              title: "Result",
+              content: `**Execution Output:**\n\`\`\`\n${answer}\n\`\`\``,
+            };
+          } else if (subAgentData.code || subAgentData.execution_output) {
+            const parsed = parseReasoningStepContent(event.data || "", "");
+            newIteration = {
+              title: subAgentData.code ? "Code" : "Execution Output",
+              content: parsed.content,
+            };
+          } else {
+            break;
+          }
+
+          iterations.push(newIteration);
+
+          // Each iteration becomes a <details> block — gives a second-level dropdown inside the step
+          const nestedContent = iterations
+            .map(({ title, content }) => `<details>\n<summary>${title}</summary>\n\n${content}\n\n</details>`)
+            .join("\n\n");
+
+          // Keep sub-agent steps in collectedSteps (replace-in-place) so A→B→A
+          // interleaving never appends a second copy of A.
+          const updatedStep = createReasoningStep(agentLabel, nestedContent);
+          const existingIdx = subAgentStepIndexes.get(spawnKey);
+          if (existingIdx !== undefined) {
+            collectedSteps[existingIdx] = updatedStep;
+          } else {
+            subAgentStepIndexes.set(spawnKey, collectedSteps.length);
+            collectedSteps.push(updatedStep);
+          }
+          currentStepTitle = "";
+          currentStepContent = "";
+
+          instance.messaging.addMessageChunk({
+            partial_item: {
+              response_type: MessageResponseTypes.TEXT,
+              text: " ",
+              streaming_metadata: { id: "text-stream", cancellable: true },
+            },
+            partial_response: {
+              message_options: {
+                reasoning: { steps: [...collectedSteps] },
+                response_user_profile: RESPONSE_USER_PROFILE,
+              },
+            },
+            streaming_metadata: { response_id: responseID },
+          } as StreamChunk);
+          break;
+        }
+
         case "CodeAgent_Reasoning":
         case "Thinking":
         case "Planning":
         case "Analyzing":
-          if (currentStepTitle && currentStepContent) {
-            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
-          }
+          flushPendingStep();
+          currentSubAgentName = "";
 
           const reasoningResult = parseReasoningStepContent(
             event.data || "",
@@ -522,9 +619,7 @@ export async function customSendMessage(
 
           accumulatedText = answerText;
 
-          if (currentStepTitle && currentStepContent) {
-            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
-          }
+          flushPendingStep();
 
           console.log(`Finalizing with ${collectedSteps.length} reasoning steps`);
 
@@ -596,10 +691,8 @@ export async function customSendMessage(
 
         case "Complete":
         case "Done":
-          if (currentStepTitle) {
-            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
-          }
-          
+          flushPendingStep();
+
           const completeItem = {
             response_type: MessageResponseTypes.TEXT,
             text: accumulatedText || "Task completed.",

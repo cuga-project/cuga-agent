@@ -1,0 +1,412 @@
+# Fix PR Reviews with Bob
+#
+# Opt-in: PR must be labeled `fix-with-bob` and the review body must
+# contain `@cuga-bob`.
+#
+# Authorization: actors in vars.BOB_ALLOWED_ACTORS (default:
+# sami-marreed,offerakrabi). Unauthorized labels are removed.
+#
+# Runs on pull_request_review (not workflow_run) so CodeQL does not treat
+# PR-head checkout as a privileged untrusted-checkout critical. Same-repo
+# PRs still receive secrets; fork heads are skipped because cuga-bob cannot
+# push to forks.
+#
+# Security:
+# - Untrusted values are passed via env: and read as shell vars (not ${{ }}
+#   inside run: scripts).
+# - Install deps from the trusted default branch, then switch to the PR
+#   head for editing (no uv sync / install hooks from the PR tree).
+# - Checkout uses persist-credentials: false; the push token is applied
+#   only in the commit/push step.
+#
+# Required secrets:
+#   BOBSHELL_API_KEY
+#   BOB_GITHUB_TOKEN   — recommended; falls back to github.token
+#   WATSONX_APIKEY
+#   MODEL_NAME
+#
+# Required vars:
+#   WATSONX_PROJECT_ID
+#   WATSONX_URL
+#   AGENT_SETTING_CONFIG
+
+name: Fix PR Reviews with Bob
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+  checks: read
+
+jobs:
+  reject-unauthorized-label:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.label.name == 'fix-with-bob'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check actor allowlist
+        id: auth
+        env:
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+        run: |
+          ALLOWED=false
+          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
+          for allowed in "${ACTORS[@]}"; do
+            allowed_trimmed="$(echo "${allowed}" | xargs)"
+            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
+              ALLOWED=true
+              break
+            fi
+          done
+          echo "allowed=${ALLOWED}" >> "$GITHUB_OUTPUT"
+
+      - name: Remove label and comment
+        if: steps.auth.outputs.allowed != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api \
+            --method DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/fix-with-bob" \
+            || true
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" \
+            --body "Removed \`fix-with-bob\`: only \`${BOB_ALLOWED_ACTORS}\` may apply this label (attempted by @${ACTOR})."
+
+  fix-pr-reviews-with-bob:
+    if: |
+      github.event_name == 'pull_request_review' &&
+      (github.event.review.state == 'commented' || github.event.review.state == 'changes_requested') &&
+      contains(github.event.pull_request.labels.*.name, 'fix-with-bob') &&
+      contains(github.event.review.body, '@cuga-bob')
+    runs-on: ubuntu-latest
+    env:
+      BOB_TOKEN: ${{ secrets.BOB_GITHUB_TOKEN || github.token }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+
+    steps:
+      - name: Authorize actor and resolve PR head
+        id: prep
+        env:
+          ACTOR: ${{ github.actor }}
+          BOB_ALLOWED_ACTORS: ${{ vars.BOB_ALLOWED_ACTORS || 'sami-marreed,offerakrabi' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          ALLOWED=false
+          IFS=',' read -ra ACTORS <<< "${BOB_ALLOWED_ACTORS}"
+          for allowed in "${ACTORS[@]}"; do
+            allowed_trimmed="$(echo "${allowed}" | xargs)"
+            if [ "${ACTOR}" = "${allowed_trimmed}" ]; then
+              ALLOWED=true
+              break
+            fi
+          done
+          if [ "${ALLOWED}" != "true" ]; then
+            echo "Skipping: @${ACTOR} is not in BOB_ALLOWED_ACTORS"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+            echo "Skipping fork PR head ${HEAD_REPO}; cuga-bob can only push to ${BASE_REPO}"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=fork" >> "$GITHUB_OUTPUT"
+            echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "should_run=true"
+            echo "pr_number=${PR_NUMBER}"
+            echo "pr_title<<TITLE_EOF"
+            printf '%s\n' "${PR_TITLE}"
+            echo "TITLE_EOF"
+            echo "head_ref=${HEAD_REF}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "head_repo=${HEAD_REPO}"
+            echo "review_id=${REVIEW_ID}"
+            echo "reviewer=${REVIEWER}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on fork skip
+        if: steps.prep.outputs.should_run == 'false' && steps.prep.outputs.skip_reason == 'fork'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body="Bob Shell skipped this review-fix: fork PR heads cannot be pushed by \`cuga-bob\`. Use a same-repo branch, or apply the fix manually."
+
+      # Install from the trusted default branch first so PR-controlled
+      # pyproject/hooks never run under this secrets-bearing job.
+      - name: Checkout trusted default branch
+        if: steps.prep.outputs.should_run == 'true'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        if: steps.prep.outputs.should_run == 'true'
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Set up Python
+        if: steps.prep.outputs.should_run == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Create venv and install dependencies
+        if: steps.prep.outputs.should_run == 'true'
+        run: |
+          uv sync --all-extras --dev
+          echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv" >> "$GITHUB_ENV"
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
+          # shellcheck disable=SC1091
+          source "${GITHUB_WORKSPACE}/.venv/bin/activate"
+          python -V
+          which python
+
+      - name: Switch to PR head for editing
+        if: steps.prep.outputs.should_run == 'true'
+        env:
+          HEAD_REF: ${{ steps.prep.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.prep.outputs.head_sha }}
+          HEAD_REPO: ${{ steps.prep.outputs.head_repo }}
+          BOB_TOKEN: ${{ env.BOB_TOKEN }}
+        run: |
+          AUTHED_URL="https://x-access-token:${BOB_TOKEN}@github.com/${HEAD_REPO}.git"
+          git remote set-url origin "${AUTHED_URL}"
+          git fetch --no-tags origin "${HEAD_SHA}"
+          git checkout --force -B "${HEAD_REF}" FETCH_HEAD
+          # Drop credentials before untrusted tooling (Bob) runs.
+          git remote set-url origin "https://github.com/${HEAD_REPO}.git"
+
+      - name: Setup Node.js
+        if: steps.prep.outputs.should_run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Bob Shell
+        if: steps.prep.outputs.should_run == 'true'
+        run: |
+          curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
+          command -v bob
+          bob --version
+
+      - name: Authenticate Bob Shell
+        if: steps.prep.outputs.should_run == 'true'
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+        run: |
+          if [ -z "$BOBSHELL_API_KEY" ]; then
+            echo "Error: BOBSHELL_API_KEY secret is not set"
+            exit 1
+          fi
+
+      - name: Get PR and Review Details
+        if: steps.prep.outputs.should_run == 'true'
+        id: pr_details
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
+          REVIEW_ID: ${{ steps.prep.outputs.review_id }}
+          REVIEWER: ${{ steps.prep.outputs.reviewer }}
+        run: |
+          PROMPT_DIR="${RUNNER_TEMP}/bob-pr-review-prompt"
+          mkdir -p "${PROMPT_DIR}"
+
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "review_id=${REVIEW_ID}" >> "$GITHUB_OUTPUT"
+          echo "reviewer=${REVIEWER}" >> "$GITHUB_OUTPUT"
+          echo "prompt_dir=${PROMPT_DIR}" >> "$GITHUB_OUTPUT"
+
+          COMMENTS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments" \
+            --jq '.[] | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"')
+
+          printf '%s\n' "${COMMENTS}" > "${PROMPT_DIR}/review_comments.txt"
+
+          REVIEW_BODY=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
+            --jq '.body // ""')
+
+          if [ -n "${REVIEW_BODY}" ]; then
+            {
+              echo "Review Summary:"
+              printf '%s\n' "${REVIEW_BODY}"
+            } >> "${PROMPT_DIR}/review_comments.txt"
+          fi
+
+          cat "${PROMPT_DIR}/review_comments.txt"
+
+      - name: Configure Git
+        if: steps.prep.outputs.should_run == 'true'
+        run: |
+          git config --global user.name "cuga-bob"
+          git config --global user.email "cuga-bob@users.noreply.github.com"
+
+      - name: Execute Bob to Address Review Comments
+        if: steps.prep.outputs.should_run == 'true'
+        uses: nick-fields/retry@v3
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr_details.outputs.pr_number }}
+          PR_TITLE: ${{ steps.prep.outputs.pr_title }}
+          REVIEWER: ${{ steps.prep.outputs.reviewer }}
+          PROMPT_DIR: ${{ steps.pr_details.outputs.prompt_dir }}
+          REPOSITORY: ${{ github.repository }}
+          AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+          WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+          WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+          WATSONX_URL: ${{ vars.WATSONX_URL }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+        with:
+          timeout_minutes: 20
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            # shellcheck disable=SC1091
+            source "${GITHUB_WORKSPACE}/.venv/bin/activate"
+            PROMPT_FILE="${PROMPT_DIR}/bob-prompt.md"
+            {
+              echo "Address PR review comments for PR #${PR_NUMBER}: ${PR_TITLE}"
+              echo
+              echo "Repository: ${REPOSITORY}"
+              echo "Reviewer: ${REVIEWER}"
+              echo
+              echo "Review Comments:"
+              cat "${PROMPT_DIR}/review_comments.txt"
+              echo
+              echo "Project notes:"
+              echo "- A uv-managed .venv was created from the trusted default branch (uv sync --all-extras --dev), then this job switched to the PR head."
+              echo "- Prefer \`uv run\` / the active venv for tools and tests. Do not re-run uv sync against untrusted lock/project files."
+              echo "- Keep changes focused on the review feedback."
+              echo "- Do not commit .venv/ or uv cache artifacts."
+              echo "- New/changed pytest tests must use a type marker from pyproject.toml (e.g. @pytest.mark.unit)."
+              echo "- Preserve lazy-import patterns in cuga/__init__.py, cuga/sdk.py, and LLM provider modules."
+              echo
+              echo "Analyze all review comments and make the necessary code changes to address each point."
+              echo "Be thorough. If a comment is unclear, use best judgment from context."
+            } > "${PROMPT_FILE}"
+
+            bob --accept-license --yolo -p "$(cat "${PROMPT_FILE}")"
+
+      - name: Check for Changes
+        if: steps.prep.outputs.should_run == 'true'
+        id: changes
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            git status --short
+            CHANGED_FILES=$(git diff --name-only | tr '\n' ', ' | sed 's/,$//')
+            echo "changed_files=${CHANGED_FILES}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and Push Changes
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REVIEWER: ${{ steps.pr_details.outputs.reviewer }}
+          REVIEW_ID: ${{ steps.pr_details.outputs.review_id }}
+          HEAD_REPO: ${{ steps.prep.outputs.head_repo }}
+          HEAD_REF: ${{ steps.prep.outputs.head_ref }}
+        run: |
+          git add -A
+          git reset .bob/ || true
+          git reset .venv/ || true
+          git commit -m "fix: address review comments from @${REVIEWER}
+
+          Review ID: ${REVIEW_ID}
+
+          Made with Bob Shell."
+          git remote set-url origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${HEAD_REPO}.git"
+          git push origin "HEAD:${HEAD_REF}"
+          git remote set-url origin "https://github.com/${HEAD_REPO}.git"
+
+      - name: Comment on PR
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'true'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr_details.outputs.pr_number }}
+          REVIEWER: ${{ steps.pr_details.outputs.reviewer }}
+          CHANGED_FILES: ${{ steps.changes.outputs.changed_files }}
+        run: |
+          BODY=$(printf 'Thanks @%s — Bob Shell addressed the review comments.\n\n**Changed files:** %s' \
+            "${REVIEWER}" "${CHANGED_FILES}")
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body="${BODY}"
+
+      - name: Comment on PR - No Changes
+        if: steps.prep.outputs.should_run == 'true' && steps.changes.outputs.has_changes == 'false'
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr_details.outputs.pr_number }}
+          REVIEWER: ${{ steps.pr_details.outputs.reviewer }}
+        run: |
+          BODY=$(printf 'Bob Shell analyzed review comments from @%s but did not generate code changes. Manual follow-up may be needed.' \
+            "${REVIEWER}")
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body="${BODY}"
+
+      - name: Handle Errors
+        if: steps.prep.outputs.should_run == 'true' && failure()
+        env:
+          GITHUB_TOKEN: ${{ env.BOB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.prep.outputs.pr_number }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body="Bob Shell hit an error while addressing review comments. Check the workflow logs."
