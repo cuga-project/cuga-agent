@@ -207,7 +207,7 @@ def test_on_response_processed_code_branch_records_fenced_code_not_content():
 
 
 @pytest.mark.unit
-def test_on_response_processed_records_reasoning_after_assistant_step():
+def test_on_response_processed_records_reasoning_before_assistant_step():
     AgentGraphAdapter = _get_adapter_class()
     tracker = _make_tracker()
     adapter = AgentGraphAdapter(
@@ -231,10 +231,10 @@ def test_on_response_processed_records_reasoning_after_assistant_step():
     calls = tracker.collect_step.call_args_list
     assert [call.kwargs["step"].name for call in calls] == [
         "Raw_Assistant_Response",
-        "Assistant_nl",
         "Assistant_reasoning",
+        "Assistant_nl",
     ]
-    assert calls[2].kwargs["step"].data == reasoning
+    assert calls[1].kwargs["step"].data == reasoning
 
 
 @pytest.mark.unit

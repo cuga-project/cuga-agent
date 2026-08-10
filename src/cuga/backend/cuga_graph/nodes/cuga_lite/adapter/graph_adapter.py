@@ -184,13 +184,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
     ) -> None:
         try:
             self._tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
+            if reasoning:
+                self._tracker.collect_step(step=Step(name="Assistant_reasoning", data=reasoning))
             if code:
                 fenced_code = f"```python\n{code}\n```"
                 self._tracker.collect_step(step=Step(name="Assistant_code", data=fenced_code))
             else:
                 self._tracker.collect_step(step=Step(name="Assistant_nl", data=content))
-            if reasoning:
-                self._tracker.collect_step(step=Step(name="Assistant_reasoning", data=reasoning))
         except Exception as exc:
             logger.debug(f"AgentGraphAdapter.on_response_processed tracker error: {exc}")
 
