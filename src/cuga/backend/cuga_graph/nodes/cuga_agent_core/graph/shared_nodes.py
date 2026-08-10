@@ -206,7 +206,7 @@ def create_call_model_node(
             content, reasoning, tools_needing_probing=adapter.get_tools_needing_probing()
         )
 
-        adapter.on_response_processed(state, code, content)
+        adapter.on_response_processed(state, code, content, reasoning)
 
         # ── Build final message list + step count ──────────────────────────
         final_messages: list = modified_messages + [AIMessage(content=content)]
