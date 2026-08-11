@@ -51,7 +51,30 @@ def log(message: str) -> None:
 
 
 def ensure_certificate() -> ssl.SSLContext:
-    """Self-signed is sufficient: kubelet does not verify probe certificates."""
+    """Prefer the platform's serving certificate; self-sign only as a fallback.
+
+    SSL_CERTFILE/SSL_KEYFILE are how CUGA is given a certificate everywhere
+    else — `cuga start` passes them to uvicorn as --ssl-certfile/--ssl-keyfile
+    — so a platform that mounts a serving certificate sets them here too.
+    Honouring them matters beyond neatness: a reencrypt Route validates the
+    pod's certificate against the service CA, and a self-signed one fails that
+    check, which leaves the pod Ready while the router refuses to send it
+    traffic. Self-signed remains the fallback because kubelet does not verify
+    probe certificates, so a bare `docker run` still works.
+    """
+    supplied_cert = os.environ.get("SSL_CERTFILE", "").strip()
+    supplied_key = os.environ.get("SSL_KEYFILE", "").strip()
+    if supplied_cert and supplied_key:
+        if not (Path(supplied_cert).is_file() and Path(supplied_key).is_file()):
+            raise SystemExit(
+                f"SSL_CERTFILE={supplied_cert} SSL_KEYFILE={supplied_key} are set "
+                "but not both readable"
+            )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=supplied_cert, keyfile=supplied_key)
+        log(f"serving the supplied certificate {supplied_cert}")
+        return context
+
     CERT_DIR.mkdir(parents=True, exist_ok=True)
     if not (CERT.exists() and KEY.exists()):
         subprocess.run(
@@ -66,7 +89,7 @@ def ensure_certificate() -> ssl.SSLContext:
         )
         KEY.chmod(0o640)
         CERT.chmod(0o644)
-        log(f"generated self-signed certificate at {CERT}")
+        log(f"no SSL_CERTFILE/SSL_KEYFILE supplied; generated self-signed {CERT}")
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=str(CERT), keyfile=str(KEY))
     return context

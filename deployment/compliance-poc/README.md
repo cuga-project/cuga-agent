@@ -110,9 +110,17 @@ self-signed certificate. So `cuga-poc-gate` owns the port instead:
 - Once the backend answers, the connection is an opaque byte pump, which
   keeps SSE and WebSocket upgrades working — the chat UI streams over it.
 
-The certificate is self-signed and generated on first boot into
-`/data/cuga-poc/gate.crt`; kubelet does not verify probe certificates. CUGA
-itself binds loopback `7861`, and every internal URL still addresses `7860`.
+The gate serves `SSL_CERTFILE`/`SSL_KEYFILE` when the platform sets them —
+the same pair `cuga start` hands uvicorn as `--ssl-certfile`/`--ssl-keyfile`,
+so a platform that mounts a serving certificate is already supplying them.
+Use them: a reencrypt Route validates the pod's certificate against the
+service CA, and a self-signed one fails that check, which leaves the pod
+Ready while the router refuses to route to it. Absent those variables the
+gate self-signs into `/data/cuga-poc/gate.crt`, which is enough for a plain
+`docker run` because kubelet does not verify probe certificates.
+
+CUGA itself binds loopback `7861`, and every internal URL still addresses
+`7860`.
 
 ## Offline pieces
 
