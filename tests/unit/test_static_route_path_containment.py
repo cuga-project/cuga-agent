@@ -90,7 +90,7 @@ async def test_serve_flows_rejects_traversal(static_root: Path):
 
     with pytest.raises(HTTPException) as exc:
         await serve_flows(TRAVERSAL, request=None)
-    assert exc.value.status_code in (403, 404)
+    assert exc.value.status_code == 404
 
 
 async def test_serve_react_rejects_traversal(static_root: Path):
@@ -98,14 +98,14 @@ async def test_serve_react_rejects_traversal(static_root: Path):
 
     with pytest.raises(HTTPException) as exc:
         await serve_react(TRAVERSAL, request=None)
-    assert exc.value.status_code in (403, 404)
+    assert exc.value.status_code == 404
 
 
 async def test_serve_react_rejects_traversal_behind_manage_prefix(static_root: Path):
     """The ``manage/`` prefix is stripped before the join; containment still applies."""
     with pytest.raises(HTTPException) as exc:
         await serve_react(f"manage/{TRAVERSAL}", request=None)
-    assert exc.value.status_code in (403, 404)
+    assert exc.value.status_code == 404
 
 
 async def test_serve_flows_rejects_absolute_path(static_root: Path, tmp_path: Path):
@@ -115,7 +115,7 @@ async def test_serve_flows_rejects_absolute_path(static_root: Path, tmp_path: Pa
 
     with pytest.raises(HTTPException) as exc:
         await serve_flows(absolute, request=None)
-    assert exc.value.status_code in (403, 404)
+    assert exc.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ def test_flows_route_rejects_encoded_traversal(client: TestClient, static_root: 
     assert_traversal_would_have_been_served(static_root)
 
     resp = client.get("/flows/..%2f..%2foutside%2fcanary.txt")
-    assert resp.status_code in (403, 404)
+    assert resp.status_code == 404
     assert CANARY not in resp.text
 
 
@@ -135,7 +135,7 @@ def test_react_route_rejects_encoded_traversal(client: TestClient, static_root: 
     assert_traversal_would_have_been_served(static_root)
 
     resp = client.get("/..%2f..%2foutside%2fcanary.txt")
-    assert resp.status_code in (403, 404)
+    assert resp.status_code == 404
     assert CANARY not in resp.text
 
 
