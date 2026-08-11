@@ -1,21 +1,15 @@
----
-name: github-commands
-description: "GitHub issue and epic workflow for cuga-agent: list epics, find orphans, add/remove sub-issues via gh."
-trigger: /github
----
-
 # GitHub commands (`gh`)
 
-Reference for working with **issues**, **epics**, and **sub-issues** in `cuga-project/cuga-agent`.
+Reference for issues, epics, features, and sub-issues in `cuga-project/cuga-agent`.
 
 **Prerequisites**
 
 ```bash
-gh auth status          # must be logged in
-gh repo view            # should show cuga-project/cuga-agent
+gh auth status
+gh repo view   # should show cuga-project/cuga-agent (or pass --repo)
 ```
 
-Set defaults once (optional):
+Optional defaults:
 
 ```bash
 export REPO=cuga-project/cuga-agent
@@ -23,11 +17,13 @@ export OWNER=cuga-project
 export NAME=cuga-agent
 ```
 
+Hierarchy: **Epic → Feature → Issue** (max depth 3). Link with GraphQL `addSubIssue`.
+
 ---
 
 ## Epics in this repo
 
-Epics are open issues with the label **`type: epic`**. Child work items are linked as **sub-issues** (GitHub parent/child), not only via labels.
+Open issues with label **`type: epic`**. Also search titles for `[Epic]` / `[EPIC]`.
 
 ```bash
 gh issue list --state open --label "type: epic" --limit 50 \
@@ -37,9 +33,9 @@ gh issue list --state open --label "type: epic" --limit 50 \
 
 ---
 
-## List sub-issues of an epic
+## List sub-issues of a parent
 
-Replace `238` with the epic number:
+Replace `238` with the parent number (epic or feature):
 
 ```bash
 gh api graphql -f query='
@@ -58,9 +54,7 @@ gh api graphql -f query='
 
 ---
 
-## Find issues without an epic parent
-
-`gh issue list` cannot filter by parent. Use GraphQL:
+## Find issues without a parent
 
 ```bash
 gh api graphql -f query='
@@ -86,16 +80,11 @@ query($cursor: String) {
 '
 ```
 
-Issues whose parent has `type: epic` are considered **under an epic**; `parent == null` means no parent at all.
-
 ---
 
 ## Get issue node IDs (required for sub-issue mutations)
 
-GraphQL mutations use **node IDs** (`I_kwDO...`), not issue numbers.
-
 ```bash
-# Single issue
 gh api graphql -f query='
 {
   repository(owner: "cuga-project", name: "cuga-agent") {
@@ -103,7 +92,6 @@ gh api graphql -f query='
   }
 }' --jq '.data.repository.issue'
 
-# Parent + child in one call
 gh api graphql -f query='
 {
   repository(owner: "cuga-project", name: "cuga-agent") {
@@ -115,13 +103,13 @@ gh api graphql -f query='
 
 ---
 
-## Add a sub-issue (link child → epic parent)
+## Add a sub-issue (link child → parent)
 
-**Supported today:** `gh api graphql` + `addSubIssue` mutation.
+**Supported:** `gh api graphql` + `addSubIssue`.
 
-**Not supported in current `gh issue edit`:** `--set-parent`, `--add-sub-issue` (may arrive in a future CLI release).
+**Not supported** in current `gh issue edit`: `--set-parent`, `--add-sub-issue`.
 
-**REST note:** `POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues` returned 404 in this repo; prefer GraphQL.
+**REST note:** `POST .../sub_issues` returned 404 here; prefer GraphQL.
 
 ### One child
 
@@ -183,13 +171,19 @@ done
 gh issue view 168 --json number,title,parent --jq '{number, title, parent: .parent}'
 ```
 
-Or GraphQL:
+Or:
 
 ```bash
 gh api graphql -f query='
 { repository(owner:"cuga-project", name:"cuga-agent") {
     issue(number:168) { number title parent { number title } }
 }}' --jq '.data.repository.issue'
+```
+
+Before attaching a leaf under a Feature, confirm the Feature’s parent is an Epic (depth ≤ 3):
+
+```bash
+gh issue view <feature> --json number,title,parent --jq '{number, title, parent: .parent}'
 ```
 
 ---
@@ -220,12 +214,12 @@ mutation {
 
 ## Create an issue
 
-Agent filing commands require a parent epic (see Related), except small self-contained bugs. After create, link with `addSubIssue` (above). Creating a sub-issue with parent in one step is not supported by `gh issue create` for this CLI version.
+Creating with parent in one step is not supported by `gh issue create` for this CLI version. Create, then `addSubIssue`.
 
 ```bash
 gh issue create \
   --title "[Feature]: Example title" \
-  --body "Part of #<epic>.\n\n## Summary\n..." \
+  --body "Part of #<parent>.\n\n## What you want and why\n..." \
   --label "enhancement" \
   --label "needs-triage" \
   --label "component: agent"
@@ -259,38 +253,38 @@ gh api repos/cuga-project/cuga-agent/issues/168 \
 
 ---
 
-## Epic hygiene (conventions)
+## Hierarchy hygiene
 
-| Label / pattern | Meaning |
-|-----------------|--------|
-| `type: epic` | Top-level epic issue |
-| `component: *` | Area (agent, frontend, policies, …) |
-| Sub-issue parent | Epic issue number via GitHub parent link |
+| Pattern | Meaning |
+|---|---|
+| `type: epic` | Top-level epic |
+| Feature-family title prefix | Child of an epic |
+| Leaf under feature | Child of a feature (grandchild of epic) |
+| `component: *` | Area label |
 
-**When to parent an issue**
+**When to parent**
 
-- **Must:** Features, designs, and non-trivial bugs — clear scope match to an open epic.
-- **Ask:** Two or more epics could fit; do not auto-pick.
-- **Skip:** Small self-contained bugs only (narrow repro, no design change). Not chores/features.
-
-**Epics with no children** are planning placeholders until sub-issues are linked.
+- **Epic:** never.
+- **Feature-family:** must parent to an epic.
+- **Leaf under feature:** parent to that feature (feature must already be under an epic).
+- **Small self-contained bug:** may skip parent; say so.
+- **Non-trivial bug, no fitting feature:** ask user (feature / epic / none). Never invent a Feature.
+- **Ask:** two or more parents could fit; do not auto-pick.
 
 ---
 
 ## Troubleshooting
 
 | Problem | Fix |
-|---------|-----|
+|---|---|
 | `Forbidden` on `gh api graphql` | Run outside sandbox / check `gh auth status` |
-| `addSubIssue` succeeds but UI slow | Refresh issue page; parent shows under "Sub-issues" |
+| `addSubIssue` succeeds but UI slow | Refresh; parent shows under Sub-issues |
 | Child already has parent | `removeSubIssue` first, or skip |
-| `404` on REST `sub_issues` | Use GraphQL `addSubIssue` instead |
-| Need assignee/labels only | `gh issue edit` — no parent flags needed |
+| `404` on REST `sub_issues` | Use GraphQL `addSubIssue` |
+| Depth would exceed 3 | Stop; re-home under Feature or Epic with user |
 
 ---
 
 ## Related
 
-- `cuga-new-feature.md` — create feature issues; must pick a parent epic and link via `addSubIssue`
-- `cuga-report-bug.md` — create bug issues; same epic link flow except small self-contained bugs
-- `cuga-create-pr.md` — create pull requests against upstream
+Use skill `cuga-github-issues` (`SKILL.md`) for filing. Use skill `cuga-contributor-workflows` for PRs.
