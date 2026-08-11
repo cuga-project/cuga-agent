@@ -341,3 +341,109 @@ class TestAgentReachesPalette:
 
         state_file = thread_workspace_root(thread_id) / "deck" / ".palette-build.json"
         assert state_file.is_file(), "no build state was written into the workspace"
+
+
+class TestTheSecondTurnIsWhereDecksAreWonOrLost:
+    """A deck cannot happen in one turn, so the reply is half the interaction.
+
+    The confirmation gate means the agent presents a plan and stops. Whatever
+    the user types next decides everything, and only one of the four things
+    they might say should reach `build-deck`. These run the real graph against
+    the real installed skill, so they fail if the instructions the agent
+    actually receives stop covering a case.
+    """
+
+    @staticmethod
+    def _instructions(model: CaptureChatModel) -> str:
+        """The skill text as the agent received it, whitespace collapsed."""
+        return " ".join(conversation_text(model).split())
+
+    @pytest.mark.asyncio
+    async def test_the_agent_is_told_how_to_read_each_reply(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        install_real_skill(tmp_path)
+        configure_skills(monkeypatch, tmp_path)
+
+        model = CaptureChatModel(
+            responses=[
+                code_block('print(await load_skill("palette"))'),
+                AIMessage(content="Understood."),
+            ]
+        )
+        await run_graph(model, "Build a deck about RAG")
+        text = self._instructions(model)
+
+        for expected, why in (
+            ("Approval", "nothing tells the agent which reply builds"),
+            ("A change", "an edit instruction has no route to edit-plan"),
+            ("A question", "a question about the plan could be read as approval"),
+            ("A different deck", "a new topic would be edited into the old plan"),
+            ("is a change, not an approval", '"yes, but shorter" would build the rejected deck'),
+            ("verbatim", "the agent may paraphrase the user into edit-plan"),
+            ("Never build straight after an edit", "a revised plan could be built unapproved"),
+        ):
+            assert expected in text, why
+
+    @pytest.mark.asyncio
+    async def test_the_edit_route_exists_and_is_reachable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`edit` has to be named with its flag, or the agent re-plans instead.
+
+        Re-planning silently discards the version the user just read and
+        reviewed — the most expensive way to handle "make it 3 slides".
+        """
+        monkeypatch.chdir(tmp_path)
+        install_real_skill(tmp_path)
+        configure_skills(monkeypatch, tmp_path)
+
+        model = CaptureChatModel(
+            responses=[
+                code_block('print(await load_skill("palette"))'),
+                AIMessage(content="Understood."),
+            ]
+        )
+        await run_graph(model, "Build a deck about RAG")
+        text = self._instructions(model)
+
+        assert "deck.py edit" in text, "no documented route to edit-plan"
+        assert "--instruction" in text, "the agent does not know how to pass the change"
+        assert "--context" in text, "pasted material has no route"
+
+    @pytest.mark.asyncio
+    async def test_the_gate_survives_auto_continue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preset turns on auto-continue; the gate must still yield.
+
+        `demo_palette` sets cuga_lite_nl_auto_continue so a progress note
+        mid-build does not end the run. The confirmation gate is the opposite
+        case — prose that *must* hand back to the user. CUGA's deterministic
+        planning-text detector bails on second-person text, on anything over
+        400 characters, and on questions; the gate wording is all three, so it
+        falls through to the classifier, which yields on "a choice the user
+        must make".
+
+        This asserts the wording keeps those properties. A gate rewritten in
+        the first person and under 400 characters would be auto-continued, and
+        the agent would answer its own question.
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+            looks_like_planning_text,
+        )
+
+        skill = (INSTALLED_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        gate = [
+            line.strip("> ").strip()
+            for line in skill.splitlines()
+            if line.strip().startswith(">") and "?" in line
+        ]
+        assert gate, "the skill no longer quotes a confirmation prompt"
+
+        prompt = " ".join(gate)
+        assert not looks_like_planning_text(prompt), (
+            "the confirmation prompt reads as planning text, so CUGA would "
+            "auto-continue past it and the user would never be asked"
+        )
