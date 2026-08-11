@@ -8,8 +8,8 @@ extensions:
   # getExtraNodeFromType: suffix "!" selects the module itself, no suffix selects
   # getAnInstance().
   #
-  # These entries only take effect if the pack is actually loaded by the analysis.
-  # See .github/codeql/codeql-config.yml.
+  # Default setup detects model packs in .github/codeql/extensions/ automatically,
+  # so this pack is loaded without any workflow or repository configuration.
   - addsTo:
       pack: codeql/python-all
       extensible: barrierModel
