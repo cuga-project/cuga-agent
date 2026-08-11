@@ -46,9 +46,6 @@ __all__ = [
     "client_adaptation_hash",
     "client_glossary_hash",
     "expand_query_with_glossary",
-    "PolicyDecision",
-    "PolicyDecisionOutcome",
-    "PolicyDecisionStage",
 ]
 
 # For type checkers and IDEs — not executed at runtime.
