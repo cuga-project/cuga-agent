@@ -1,5 +1,6 @@
 import json
 import re
+from functools import lru_cache
 from typing import Literal, Dict, Callable
 
 from langchain_core.messages import AIMessage
@@ -24,9 +25,46 @@ tracker = ActivityTracker()
 ENABLE_SAVE_REUSE = settings.features.save_reuse
 
 # harmony-format models (gpt-oss) can leak their control tokens into answers.
-# Matched as a closed vocabulary (the harmony protocol's special tokens), not a
-# generic <|...|> wildcard, so legitimate answer text like "<|custom|>" survives.
-_CONTROL_TOKEN_RE = re.compile(r"<\|(?:start|end|message|channel|constrain|return|call|endoftext)\|>")
+# Anything <|...|>-shaped is a *candidate*; only members of the harmony
+# vocabulary below are removed, so legitimate answer text like "<|custom|>"
+# survives.
+_SPECIAL_TOKEN_SHAPE_RE = re.compile(r"<\|[^|>]*\|>")
+
+# Used only when openai-harmony can't be imported — the framing tokens the
+# protocol defines, so a missing wheel degrades to the previous behaviour
+# rather than disabling the filter outright.
+_FALLBACK_CONTROL_TOKENS = frozenset(
+    {
+        "<|start|>",
+        "<|end|>",
+        "<|message|>",
+        "<|channel|>",
+        "<|constrain|>",
+        "<|return|>",
+        "<|call|>",
+        "<|endoftext|>",
+    }
+)
+
+
+@lru_cache(maxsize=1)
+def _harmony_special_tokens() -> frozenset:
+    """The harmony special-token vocabulary, taken from ``openai-harmony``.
+
+    Sourcing it from the official encoding rather than a hand-maintained list
+    means the set tracks upstream instead of drifting (review request from
+    @sami-marreed on #558). Loaded lazily and cached: callers check
+    :func:`_harmony_stripping_enabled` first, so non-harmony runs never pay for
+    building the encoding.
+    """
+    try:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+
+        encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        return frozenset(encoding.special_tokens_set)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("openai-harmony unavailable; using built-in token list: {}", e)
+        return _FALLBACK_CONTROL_TOKENS
 
 
 def _harmony_stripping_enabled() -> bool:
@@ -61,14 +99,15 @@ def _harmony_stripping_enabled() -> bool:
 
 
 def _strip_control_tokens(text: str) -> str:
-    if "<|" not in (text or "") or not _CONTROL_TOKEN_RE.search(text):
+    if "<|" not in (text or ""):
         return text
     if not _harmony_stripping_enabled():
         return text
+    specials = _harmony_special_tokens()
     # Remove the tokens and nothing else — no .strip(). A token sitting directly
     # before an indented block would otherwise take that block's leading
     # indentation with it and corrupt e.g. a Markdown code block.
-    return _CONTROL_TOKEN_RE.sub("", text)
+    return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)
 
 
 class HumanInTheLoopHandler:

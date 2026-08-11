@@ -32,6 +32,9 @@ dependencies = [
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
     # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
     "fastmcp>=3.2.0,<4",
+    # Authoritative harmony special-token vocabulary for the final-answer filter
+    # (see final_answer._harmony_special_tokens); avoids hand-maintaining the list.
+    "openai-harmony>=0.0.4",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",

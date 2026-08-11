@@ -124,6 +124,21 @@ def _reload_gate():
     return _REAL_GATE
 
 
+def test_vocabulary_comes_from_openai_harmony():
+    """The token list is sourced from openai-harmony rather than hand-maintained,
+    so it tracks upstream (review request on #558). The eight framing tokens the
+    filter targets must be a subset of it."""
+    from cuga.backend.cuga_graph.nodes.answer.final_answer import (
+        _FALLBACK_CONTROL_TOKENS,
+        _harmony_special_tokens,
+    )
+
+    vocabulary = _harmony_special_tokens()
+    assert _FALLBACK_CONTROL_TOKENS <= vocabulary
+    # the library ships the full special-token set, far larger than the fallback
+    assert len(vocabulary) > len(_FALLBACK_CONTROL_TOKENS)
+
+
 def test_gate_auto_enables_only_for_harmony_models(monkeypatch):
     """auto = strip for gpt-oss, leave every other provider alone."""
     gate = _reload_gate()
