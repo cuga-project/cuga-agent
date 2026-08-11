@@ -5,7 +5,15 @@
 # alerts and update the lockfiles by hand.
 #
 # Updates are grouped so that one pull request covers many packages. Ungrouped,
-# a backlog of 45 alerts would arrive as 45 separate pull requests.
+# a backlog of 45 alerts would arrive as 45 separate pull requests. Routine
+# updates are split into two groups per ecosystem so that a broken build tool
+# does not hold up a runtime fix, and so a red batch says what it is. Major
+# upgrades are always left on their own because they are the most likely to
+# break something.
+#
+# Not covered on purpose: the standalone example projects under docs/examples.
+# They are illustrations, not shipped code, and nothing installs them as part
+# of the product.
 version: 2
 
 updates:
@@ -24,10 +32,28 @@ updates:
       python-security:
         applies-to: security-updates
         patterns: ["*"]
-      # One pull request for routine minor and patch upgrades. Major upgrades
-      # are left on their own because they are more likely to break something.
-      python-minor:
+      # Test and lint tooling. Kept apart from runtime packages so a broken
+      # tool does not block a runtime upgrade, and the other way round.
+      python-tooling:
         applies-to: version-updates
+        patterns:
+          - "pytest*"
+          - "ruff*"
+          - "mypy*"
+          - "types-*"
+          - "coverage*"
+          - "pre-commit*"
+        update-types: ["minor", "patch"]
+      # Everything else that ships.
+      python-runtime:
+        applies-to: version-updates
+        exclude-patterns:
+          - "pytest*"
+          - "ruff*"
+          - "mypy*"
+          - "types-*"
+          - "coverage*"
+          - "pre-commit*"
         update-types: ["minor", "patch"]
 
   # Frontend packages. This is the pnpm workspace root; Dependabot picks up the
@@ -45,8 +71,15 @@ updates:
       npm-security:
         applies-to: security-updates
         patterns: ["*"]
-      npm-minor:
+      # Build tooling, which never reaches the browser.
+      npm-dev:
         applies-to: version-updates
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+      # Packages that ship to the browser, which get a closer look.
+      npm-prod:
+        applies-to: version-updates
+        dependency-type: "production"
         update-types: ["minor", "patch"]
 
   # Versions of the actions used in .github/workflows.
@@ -59,5 +92,10 @@ updates:
     commit-message:
       prefix: "chore(ci)"
     groups:
-      github-actions:
+      github-actions-security:
+        applies-to: security-updates
         patterns: ["*"]
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
