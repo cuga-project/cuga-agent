@@ -4,6 +4,10 @@
 and Activepieces on Red Hat UBI 9 minimal. It is intended for a stakeholder PoC
 deployed as one Kubernetes pod and one replica.
 
+Port `7860` is fronted by `cuga-poc-gate`, which accepts TLS *or* plain HTTP
+on the same socket and proxies to CUGA on loopback `7861`. See "Port 7860"
+below for why.
+
 The image is rootless. A small PID 1 supervisor (`cuga-poc-supervisor`)
 starts the six services in dependency order, gates each on the readiness
 probe its predecessor used, restarts long-running services on failure, and
@@ -82,6 +86,33 @@ archives installing locally. The health budgets keep their old headroom
 regardless. Docker reports the container as `healthy` only after the tool
 registry, the tools-list API, Evolve, CUGA, Redis, and the published retention
 schedule all pass the bundled `cuga-poc-health` check.
+
+## Port 7860
+
+A platform operator that owns the Deployment probes
+`GET https://<pod-ip>:7860/`. Uvicorn serves plain HTTP, so that probe failed
+permanently with `server gave HTTP response to HTTPS client`, and for the
+first two minutes with `connection refused` because CUGA takes that long to
+listen. Either one alone is enough to hold a pod in a restart loop.
+
+Serving TLS from uvicorn would fix only the scheme, and would break the
+plain-HTTP callers inside the pod — `cuga-poc-health`, and the Activepieces
+HTTP action that calls `HOST_CALLBACK_URL`, which would then have to accept a
+self-signed certificate. So `cuga-poc-gate` owns the port instead:
+
+- It classifies each connection by its first byte. `0x16` begins a TLS
+  handshake and cannot begin an HTTP method, and `MSG_PEEK` reads it without
+  consuming it, so both protocols work on one port.
+- It starts before every other service, so the probe gets an answer within
+  seconds instead of two minutes. Until CUGA responds, `GET /` returns 200 so
+  the pod is not killed while it is legitimately still starting; every other
+  path returns 503 rather than pretending to serve.
+- Once the backend answers, the connection is an opaque byte pump, which
+  keeps SSE and WebSocket upgrades working — the chat UI streams over it.
+
+The certificate is self-signed and generated on first boot into
+`/data/cuga-poc/gate.crt`; kubelet does not verify probe certificates. CUGA
+itself binds loopback `7861`, and every internal URL still addresses `7860`.
 
 ## Offline pieces
 

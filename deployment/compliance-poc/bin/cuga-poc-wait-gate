@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Any HTTP status means the gate is answering; 503 before CUGA is up is the
+# expected reply, not a failure.
+for _ in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+    http://127.0.0.1:7860/ 2>/dev/null || true)"
+  [ -n "${code}" ] && [ "${code}" != "000" ] && exit 0
+  sleep 1
+done
+
+echo "cuga-poc-gate did not start answering on 127.0.0.1:7860" >&2
+exit 1

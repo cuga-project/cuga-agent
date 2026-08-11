@@ -33,6 +33,16 @@ SERVICES = (
         "oneshot": True,
     },
     {
+        # Started before anything slow: the platform operator probes port 7860
+        # from the moment the container starts, and CUGA needs about two
+        # minutes to listen. The gate answers immediately so the startup probe
+        # has something to talk to, and it terminates the probe's TLS.
+        "name": "gate",
+        "command": ["/usr/local/bin/cuga-poc-gate"],
+        "ready": ["/usr/local/bin/cuga-poc-wait-gate"],
+        "restart": True,
+    },
+    {
         "name": "redis",
         "command": [
             "/usr/local/bin/redis-server",
@@ -97,11 +107,14 @@ SERVICES = (
     },
     {
         "name": "cuga",
+        # Bound to loopback behind the gate, which owns 7860. Everything that
+        # addresses CUGA — the health check, HOST_CALLBACK_URL, the events
+        # layer — keeps using 7860 and is proxied, so no internal URL changes.
         "command": [
             "/app/.venv/bin/uvicorn",
             "cuga.backend.server.main:app",
-            "--host", "0.0.0.0",
-            "--port", "7860",
+            "--host", "127.0.0.1",
+            "--port", "7861",
         ],
         "cwd": "/app",
         "env": {"HOME": CUGA_HOME},

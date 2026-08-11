@@ -135,6 +135,8 @@ RUN ln -sf ../lib/node_modules/pm2/bin/pm2 /usr/local/bin/pm2 \
     && ln -s /data/activepieces/cache /opt/activepieces/cache \
     && chmod 0755 /usr/local/bin/cuga-poc-entrypoint \
                   /usr/local/bin/cuga-poc-supervisor \
+                  /usr/local/bin/cuga-poc-gate \
+                  /usr/local/bin/cuga-poc-wait-gate \
                   /usr/local/bin/cuga-poc-prepare \
                   /usr/local/bin/cuga-poc-wait-redis \
                   /usr/local/bin/cuga-poc-wait-evolve \

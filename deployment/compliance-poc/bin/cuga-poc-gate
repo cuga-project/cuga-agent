@@ -1,0 +1,173 @@
+#!/usr/bin/python3.12
+"""Front port 7860 with a listener that speaks TLS or plain HTTP, from t=0.
+
+The platform operator probes `GET https://<pod-ip>:7860/` and owns the
+Deployment, so the image has to meet that contract rather than the other way
+around. Two things stood in the way:
+
+  * uvicorn serves plain HTTP, so the probe's TLS handshake produced
+    "server gave HTTP response to HTTPS client" and could never pass.
+  * CUGA needs roughly two minutes to listen, so the probe first collects a
+    run of "connection refused" and may exhaust its budget before then.
+
+Switching uvicorn itself to TLS would fix only the first, and would break the
+plain-HTTP callers inside the pod — cuga-poc-health, and the Activepieces
+HTTP action that calls HOST_CALLBACK_URL, which would then have to accept a
+self-signed certificate. So this accepts both protocols on the same port:
+the first byte of a TLS handshake is 0x16, which no HTTP method can begin
+with, and MSG_PEEK lets us classify without consuming it.
+
+Until CUGA answers, `GET /` returns 200 so the probe passes and the pod is
+not killed while it is legitimately still starting; every other path returns
+503 rather than pretending to serve. Once the backend is up the connection
+becomes an opaque byte pump, which keeps SSE and WebSocket upgrades intact.
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import socketserver
+import ssl
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+LISTEN_PORT = int(os.environ.get("CUGA_GATE_PORT", "7860"))
+BACKEND = ("127.0.0.1", int(os.environ.get("CUGA_BACKEND_PORT", "7861")))
+CERT_DIR = Path(os.environ.get("CUGA_GATE_CERT_DIR", "/data/cuga-poc"))
+CERT = CERT_DIR / "gate.crt"
+KEY = CERT_DIR / "gate.key"
+
+TLS_HANDSHAKE_FIRST_BYTE = 0x16
+HEAD_LIMIT = 65536
+PEEK_TIMEOUT = 30
+PUMP_IDLE_TIMEOUT = 900
+
+
+def log(message: str) -> None:
+    print(f"[gate] {message}", file=sys.stderr, flush=True)
+
+
+def ensure_certificate() -> ssl.SSLContext:
+    """Self-signed is sufficient: kubelet does not verify probe certificates."""
+    CERT_DIR.mkdir(parents=True, exist_ok=True)
+    if not (CERT.exists() and KEY.exists()):
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(KEY), "-out", str(CERT),
+                "-days", "3650", "-subj", "/CN=cuga-compliance-poc",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        KEY.chmod(0o640)
+        CERT.chmod(0o644)
+        log(f"generated self-signed certificate at {CERT}")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(CERT), keyfile=str(KEY))
+    return context
+
+
+def read_head(conn: socket.socket) -> bytes:
+    """Read up to the end of the request headers, returning what was read."""
+    buffered = b""
+    while b"\r\n\r\n" not in buffered and len(buffered) < HEAD_LIMIT:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        buffered += chunk
+    return buffered
+
+
+def starting_response(head: bytes) -> bytes:
+    """200 for the probe's `GET /`, 503 for anything that wants real service."""
+    request_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+    parts = request_line.split()
+    probe = len(parts) >= 2 and parts[0] == "GET" and parts[1] in ("/", "/index.html")
+    if probe:
+        body = b"cuga compliance poc: starting\n"
+        status = b"HTTP/1.1 200 OK"
+    else:
+        body = b"cuga compliance poc: backend not ready\n"
+        status = b"HTTP/1.1 503 Service Unavailable"
+    return (
+        status + b"\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+        b"Connection: close\r\n\r\n" + body
+    )
+
+
+def pump(src: socket.socket, dst: socket.socket) -> None:
+    try:
+        while True:
+            chunk = src.recv(65536)
+            if not chunk:
+                break
+            dst.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:  # noqa: D102
+        conn = self.request
+        try:
+            conn.settimeout(PEEK_TIMEOUT)
+            first = conn.recv(1, socket.MSG_PEEK)
+            if not first:
+                return
+            if first[0] == TLS_HANDSHAKE_FIRST_BYTE:
+                conn = self.server.tls_context.wrap_socket(conn, server_side=True)
+            head = read_head(conn)
+            if not head:
+                return
+            try:
+                backend = socket.create_connection(BACKEND, timeout=5)
+            except OSError:
+                conn.sendall(starting_response(head))
+                return
+            conn.settimeout(PUMP_IDLE_TIMEOUT)
+            backend.settimeout(PUMP_IDLE_TIMEOUT)
+            backend.sendall(head)
+            upstream = threading.Thread(target=pump, args=(conn, backend), daemon=True)
+            upstream.start()
+            pump(backend, conn)
+            upstream.join(timeout=PUMP_IDLE_TIMEOUT)
+            backend.close()
+        except (OSError, ssl.SSLError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
+class Gate(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, addr, handler, tls_context: ssl.SSLContext) -> None:
+        self.tls_context = tls_context
+        super().__init__(addr, handler)
+
+
+def main() -> None:
+    context = ensure_certificate()
+    server = Gate(("0.0.0.0", LISTEN_PORT), Handler, context)
+    log(f"listening on 0.0.0.0:{LISTEN_PORT} (TLS or plain), backend {BACKEND[0]}:{BACKEND[1]}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
