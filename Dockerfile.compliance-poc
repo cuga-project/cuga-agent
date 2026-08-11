@@ -173,7 +173,12 @@ RUN chgrp -R 0 /data /etc/cuga-poc /app/cuga_workspace /app/crm_tmp /app/.cuga \
     && chmod g=u /app \
     && chmod g=u /etc/passwd
 
+# PYTHONUNBUFFERED matches the non-PoC image and matters in a pod: stdout is a
+# pipe rather than a tty, so without it Python block-buffers and `oc logs` runs
+# behind, losing whatever was still buffered when a process dies.
 ENV PATH="/app/.venv/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8 \
     HOME=/data/cuga/home \
     PLAYWRIGHT_BROWSERS_PATH=/app/.playwright \
     FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
