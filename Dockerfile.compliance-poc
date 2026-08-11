@@ -15,9 +15,13 @@ RUN find /usr/src/app/node_modules /usr/src/app/packages -type f -name "*.map" -
 
 FROM ${REDIS_IMAGE} AS redis
 
-# Piece tarballs are architecture independent, so fetch them once on the build
-# host rather than repeating the download for every target platform.
-FROM --platform=${BUILDPLATFORM} ${PYTHON_IMAGE} AS pieces
+# The piece tarballs are architecture independent. Pinning this stage to
+# --platform=${BUILDPLATFORM} would fetch them once for a multi-arch build,
+# but BUILDPLATFORM is a BuildKit automatic ARG and Buildah — which IBM Code
+# Engine builds with — does not define it, leaving an empty --platform= that
+# fails the build. Repeating a 2MB download per architecture is the cheaper
+# trade.
+FROM ${PYTHON_IMAGE} AS pieces
 USER root
 COPY scripts/ap_pieces.py /tmp/ap_pieces.py
 COPY deployment/compliance-poc/fetch-piece-archives.py /tmp/fetch-piece-archives.py
