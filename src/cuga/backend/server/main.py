@@ -107,6 +107,51 @@ def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
     return current_user.sub if current_user else DEFAULT_USER_ID
 
 
+# Subjects whose PoC memory has been seeded in this process. compliance_poc
+# .bootstrap is itself idempotent — it keys compliance_seed_state by user_id and
+# skips entities whose seed_key already exists — so this only exists to avoid
+# re-running that check on every request.
+_poc_seeded_subjects: set[str] = set()
+
+
+def _poc_seed_enabled() -> bool:
+    return os.getenv("CUGA_COMPLIANCE_POC_SEED_ENABLED", "").lower() in {"1", "true", "yes"}
+
+
+async def _seed_compliance_poc_for_user(user_id: str, user_name: str) -> None:
+    """Seed the PoC workspace for one signed-in subject.
+
+    The startup bootstrap can only seed DEFAULT_USER_ID, because it runs before
+    any request and so has no identity to attribute the data to. Where
+    authorization is enabled every read is scoped to the caller's `sub`, so the
+    demo data existed but the signed-in user was looking at an empty workspace.
+    """
+    from cuga.backend.evolve.compliance_poc import bootstrap
+
+    try:
+        await bootstrap(app_state.agent_id, user_id, _memory_namespace_id(), user_name)
+        logger.info("Compliance PoC data seeded for signed-in user {}", user_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Leave the subject unmarked so a later request retries.
+        _poc_seeded_subjects.discard(user_id)
+        logger.warning("Compliance PoC seed for user {} failed: {}", user_id, exc)
+
+
+def _schedule_poc_seed(current_user: Optional[UserInfo]) -> None:
+    """Seed in the background on first sight of a subject; never block the request."""
+    if not _poc_seed_enabled() or current_user is None:
+        return
+    user_id = current_user.sub
+    if not user_id or user_id in _poc_seeded_subjects:
+        return
+    _poc_seeded_subjects.add(user_id)
+    name = getattr(current_user, "name", None) or "Demo user"
+    task = asyncio.create_task(_seed_compliance_poc_for_user(user_id, name))
+    app_state.background_tasks.append(task)
+
+
 async def _require_workspace_thread_access(
     request: Request,
     thread_id: Optional[str],
@@ -2557,6 +2602,10 @@ async def auth_userinfo(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
         return JSONResponse({"sub": DEFAULT_USER_ID})
+    # The UI calls this as it loads, which makes it the earliest point at which
+    # a signed-in subject is known and so the natural place to seed their PoC
+    # workspace. Runs in the background; the response does not wait for it.
+    _schedule_poc_seed(user)
     return JSONResponse(user.model_dump())
 
 
@@ -2660,6 +2709,9 @@ async def stream(
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 
+    # Safety net for a client that reaches chat without having called
+    # /auth/userinfo; seeding is idempotent and runs in the background.
+    _schedule_poc_seed(current_user)
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
     user_attachments = await get_attachment_snapshot(request)
