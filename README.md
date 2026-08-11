@@ -482,13 +482,26 @@ The preset is the `demo_skills` environment — skills on, shell tool on (the sk
 
 Nothing the skill runs blocks a step. Both slow commands — drafting the plan and building the deck — detach and are collected by polling, so a step limit can never cut one short. That matters more than the limit's value: a killed step is silent, the work finishes anyway, and the agent concludes it failed. Both real failures here were that, once with a good plan and once with a finished 15-slide deck sitting in the workspace.
 
+**Finding what a conversation produced.** Files land in `cuga_workspace/<thread-id>/`, and a thread id is a UUID that never appears in the chat. Two things make it findable without one:
+
+- the **Files panel in the web UI** browses and downloads the workspace directly — no terminal at all, and the normal way to collect a deck
+- **`cuga_workspace/latest`** is a symlink to the newest conversation, so a stable path always works:
+
+```bash
+open cuga_workspace/latest/deck/deck.pptx
+```
+
+The real path is also logged once, the first time a conversation writes anything: `workspace for this conversation: …`.
+
 **Checking a deck is real.** An agent can describe files it never wrote, so verify from your shell rather than the chat:
 
 ```bash
-ls -l cuga_workspace/*/deck/deck.pptx           # a real deck is >100KB, not 4KB
-cat  cuga_workspace/*/deck/.palette-build.json  # "state": "done"
-tail -20 cuga_workspace/*/deck/build.log        # if it is not
+ls -l cuga_workspace/latest/deck/deck.pptx           # a real deck is >100KB, not 4KB
+cat  cuga_workspace/latest/deck/.palette-build.json  # "state": "done"
+tail -20 cuga_workspace/latest/deck/build.log        # if it is not
 ```
+
+**If the agent keeps asking you to approve the plan**, your deck is probably already built — run the command above. An agent does not reliably remember earlier turns, so the skill's workflow opens by asking the filesystem whether a build is already running or finished rather than restarting at the confirmation gate. Saying "yes" again cannot fix that loop, because the loop is not waiting on you.
 
 `deck.py status` decides `"verified": true` by stat-ing that `.pptx`, never from an exit code — a build can exit 0 having written nothing, and an agent relaying that reports a deck which does not exist. It also waits for the build process to exit first: `build-deck` re-renders to the same path while it repairs geometry, so the file appears complete minutes before it is.
 

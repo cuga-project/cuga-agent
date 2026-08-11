@@ -69,6 +69,30 @@ def _build_policy() -> str:
 """
 
 
+def _point_latest_at(workspace_root: Path) -> None:
+    """Keep ``cuga_workspace/latest`` pointing at the newest conversation.
+
+    A thread id is a UUID the user never sees, so "where did my file go" ends
+    in globbing ``cuga_workspace/*`` and guessing. This makes the common case —
+    the conversation you are having right now — reachable by a stable path:
+
+        open cuga_workspace/latest/deck/deck.pptx
+
+    Only ever a convenience. With two conversations open it names whichever
+    wrote first, which is why the log line above prints the real path too.
+    Failure here must never break a command, so it is swallowed.
+    """
+    link = workspace_root.parent / "latest"
+    try:
+        if link.is_symlink() or link.exists():
+            if not link.is_symlink():
+                return  # a real directory named `latest` is the user's; leave it
+            link.unlink()
+        link.symlink_to(workspace_root.name)
+    except OSError as exc:  # unsupported filesystem, permissions, a race
+        logger.debug(f"[NativeSandbox] could not update {link}: {exc}")
+
+
 class NativeSandboxExecutor:
     """Shell sandbox using macOS sandbox-exec; commands run from the per-thread workspace directory."""
 
@@ -210,7 +234,15 @@ class NativeSandboxExecutor:
         # Native uses one shared /tmp/.venv. It is created lazily once, not per command.
         await self._ensure_venv()
         workspace_root = native_thread_workspace_root(thread_id)
+        first_use = not workspace_root.exists()
         workspace_root.mkdir(parents=True, exist_ok=True)
+        if first_use:
+            # Say where this conversation's files land, once, the first time it
+            # writes any. The thread id is a UUID nobody sees in the chat, so
+            # without this the only way to find what an agent produced is to
+            # glob `cuga_workspace/*` and guess which directory is yours.
+            logger.info(f"[NativeSandbox] workspace for this conversation: {workspace_root}")
+            _point_latest_at(workspace_root)
         # /tmp is a symlink to /private/tmp on macOS; cd to the physical per-thread workspace so
         # relative paths like `./script.js` resolve correctly inside sandbox-exec.
         # npm under nvm stages installs in the global prefix (~/.nvm/...); redirect prefix here

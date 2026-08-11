@@ -216,6 +216,31 @@ class TestPresetApps:
 
 
 @pytest.mark.unit
+class TestTheSetupIsWrittenDown:
+    """Warning at startup is the safety net, not the instructions.
+
+    Someone reads the README before they run anything. If it does not name both
+    variables they hit a build that dies several minutes in on a model call, or
+    a skill that cannot find the checkout — and both read as Palette being
+    broken rather than as setup being incomplete.
+    """
+
+    @pytest.fixture
+    def readme(self) -> str:
+        return (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("variable", ["PALETTE_HOME", "RITS_API_KEY"])
+    def test_the_readme_names_it(self, readme: str, variable: str) -> None:
+        section = readme[readme.index("demo_palette") :]
+        assert variable in section, f"the demo_palette section never mentions {variable}"
+
+    def test_the_readme_says_where_to_put_them(self, readme: str) -> None:
+        """`.env` is loaded at startup, so it survives a new terminal; an export does not."""
+        section = readme[readme.index("demo_palette") :]
+        assert ".env" in section, "the README does not say where the variables should live"
+
+
+@pytest.mark.unit
 class TestSeedingBranches:
     """Source-level: demo_palette must share demo_skills' seeding branches.
 
