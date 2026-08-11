@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from loguru import logger
 
@@ -15,9 +16,49 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     resolved_runtime_model_name,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
+    BindToolsUnsupportedError,
     apply_bind_tools_cap_and_merge,
     bind_tools_max_count_from_settings,
 )
+
+
+def _record_bind_tools_degraded(reason: str) -> None:
+    """Leave a machine-readable trace that native binding was requested and didn't happen.
+
+    The ``logger.warning`` alone is not actionable: ``resolve_bind_tools`` runs on
+    every ``call_model`` turn, and nothing downstream can branch on a log line. An
+    eval harness comparing native tool-calling vs text-mode can key off this step
+    to relabel or exclude the run instead of silently reporting text-mode numbers
+    under a native-FC label. Never raises — a trace failure must not kill the run.
+    """
+    try:
+        from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+
+        ActivityTracker().collect_step(step=Step(name="bind_tools_degraded", data=reason))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("could not record bind_tools_degraded step: {}", e)
+
+
+def _safe_bind(model: BaseChatModel, tools: List[StructuredTool]) -> Runnable:
+    """Bind ``tools`` to ``model``, falling back to the unbound model if the
+    provider does not support ``bind_tools``.
+
+    ``BaseChatModel.bind_tools`` raises ``NotImplementedError`` by default, and
+    ``NotImplementedError`` is a subclass of ``RuntimeError`` — so without this
+    guard it would be caught by the cap's deliberate ``except RuntimeError:
+    raise`` in ``resolve_model_with_bind_tools`` and crash ``call_model``
+    instead of degrading to the unbound (code-act) model.
+    """
+    try:
+        return model.bind_tools(tools)
+    except NotImplementedError:
+        name = getattr(model, "model_name", type(model).__name__)
+        logger.warning(
+            "Model {} does not support bind_tools; falling back to unbound (code-act) model",
+            name,
+        )
+        _record_bind_tools_degraded(f"{name} does not support bind_tools (bind step)")
+        return model
 
 
 def _bind_tools_mode_from_settings() -> str:
@@ -157,6 +198,10 @@ async def resolve_model_with_bind_tools(
     - ``cuga_lite_bind_tools_apps``: list of app names (``mode=apps`` or ``apps_and_tools``)
     - ``cuga_lite_bind_tools_tool_names``: StructuredTool ``name`` values (``mode=tools`` or ``apps_and_tools``)
     - ``cuga_lite_bind_tools_include_find_tools``: merge ``find_tools`` into ``all`` / ``apps`` / ``tools`` / ``apps_and_tools``
+
+    Settings-only (``settings.advanced_features``, **not** readable from ``configurable`` —
+    setting these in ``configurable`` is silently ignored and the defaults apply):
+
     - ``cuga_lite_bind_tools_max_count``: provider-safe cap on the number of tools sent to
       ``bind_tools``. Default 128 (matches Groq/OpenAI). Set 0 to disable. When the
       candidate list exceeds the cap, the LLM shortlister picks the top-K most relevant
@@ -213,14 +258,14 @@ async def resolve_model_with_bind_tools(
         if include_find_tools:
             ft_only = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
             if ft_only:
-                return active_model.bind_tools([ft_only])
+                return _safe_bind(active_model, [ft_only])
         return active_model
 
     try:
         if mode == "find_tools":
             ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
             if ft:
-                return active_model.bind_tools([ft])
+                return _safe_bind(active_model, [ft])
             logger.debug(
                 "cuga_lite_bind_tools_mode=find_tools but find_tools StructuredTool is missing "
                 "(shortlisting may be off)"
@@ -235,7 +280,7 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(list(by_name.values()))
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "apps_and_tools":
             if not tool_provider:
@@ -245,7 +290,7 @@ async def resolve_model_with_bind_tools(
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=apps_and_tools but cuga_lite_bind_tools_apps and "
                     "cuga_lite_bind_tools_tool_names are both empty "
@@ -289,14 +334,14 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "apps":
             if not app_names:
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=apps but cuga_lite_bind_tools_apps is empty "
                     "(set include_find_tools to bind find_tools only)"
@@ -320,14 +365,14 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         if mode == "tools":
             if not tool_names:
                 if include_find_tools:
                     ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
                     if ft:
-                        return active_model.bind_tools([ft])
+                        return _safe_bind(active_model, [ft])
                 logger.warning(
                     "cuga_lite_bind_tools_mode=tools but cuga_lite_bind_tools_tool_names is empty "
                     "(set include_find_tools to bind find_tools only)"
@@ -358,12 +403,16 @@ async def resolve_model_with_bind_tools(
             bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
-            return active_model.bind_tools(bound)
+            return _safe_bind(active_model, bound)
 
         logger.warning(
             "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",
             mode,
         )
+    except BindToolsUnsupportedError as e:
+        # Provider capability gap, not a cap/shortlist failure: degrade like _safe_bind does.
+        logger.warning("{}", e)
+        _record_bind_tools_degraded(str(e))
     except RuntimeError:
         # Actionable cap/shortlist errors from apply_bind_tools_cap_and_merge are intentional —
         # surfacing them is required so research/benchmark runs don't silently degrade.

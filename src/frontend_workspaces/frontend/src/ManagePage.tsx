@@ -73,6 +73,14 @@ export interface HomescreenConfig {
   starters?: string[];
 }
 
+export type LlmJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | LlmJsonValue[]
+  | { [key: string]: LlmJsonValue };
+
 export interface AgentConfig {
   agent?: { name?: string; description?: string };
   llm?: {
@@ -83,6 +91,13 @@ export interface AgentConfig {
     base_url?: string;
     model?: string;
     temperature?: number;
+    max_tokens?: number;
+    top_p?: number;
+    top_k?: number;
+    frequency_penalty?: number;
+    presence_penalty?: number;
+    stop?: string | string[];
+    extra_params?: Record<string, LlmJsonValue>;
     disable_ssl?: boolean;
   };
   tools?: ToolEntry[];
@@ -108,6 +123,7 @@ export interface AgentConfig {
     enabled?: boolean;
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
+    citations_enabled?: boolean;
     rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
@@ -157,6 +173,7 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
+  citations_enabled: true,
   rag_profile: "standard",
   embedding_provider: "huggingface",
   embedding_model: "",
@@ -225,6 +242,38 @@ function isIndexConfigEquivalent(
   if (current.chunk_overlap !== saved.chunk_overlap) return false;
   if (current.metric_type !== saved.metric_type) return false;
   return true;
+}
+
+// True when the draft's index config differs from the PUBLISHED (live) config.
+// Reuses isIndexConfigEquivalent so the "Live" pill and the profile "Modified"
+// tag share ONE definition of a meaningful change (they must never disagree).
+// null live = baseline not loaded yet = not diverged (don't flag before we
+// know what's actually serving).
+function isDivergedFromLive(
+  current: NonNullable<AgentConfig["knowledge"]>,
+  live: { provider: string; model: string; chunk_size?: number; chunk_overlap?: number; metric_type?: string } | null,
+): boolean {
+  if (!live) return false;
+  return !isIndexConfigEquivalent(current, {
+    ...DEFAULT_KNOWLEDGE_CONFIG,
+    embedding_provider: live.provider,
+    embedding_model: live.model,
+    chunk_size: live.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
+    chunk_overlap: live.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
+    metric_type: live.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
+  });
+}
+
+// Providers whose model runs from local files (ONNX / torch weights on disk).
+// They have no API key and no endpoint, so "check its API key / connection"
+// is advice the user literally cannot act on — the real cause is missing or
+// half-downloaded model files, which CUGA now re-fetches by itself.
+const LOCAL_EMBEDDING_PROVIDERS = new Set(["fastembed", "huggingface"]);
+
+// ``embedder_model`` arrives as "<provider>/<model>" (e.g.
+// "fastembed/BAAI/bge-small-en-v1.5"), so the provider is the first segment.
+function isLocalEmbeddingProvider(embedderModel: string): boolean {
+  return LOCAL_EMBEDDING_PROVIDERS.has((embedderModel || "").split("/")[0].trim().toLowerCase());
 }
 
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
@@ -310,6 +359,8 @@ export function ManagePage() {
   const location = useLocation();
   const search = location.search || "";
   const [llmConfig, setLlmConfig] = useState<NonNullable<AgentConfig["llm"]>>(DEFAULT_CONFIG.llm!);
+  const [llmExtraParamsDraft, setLlmExtraParamsDraft] = useState<string | null>(null);
+  const [llmExtraParamsError, setLlmExtraParamsError] = useState<string | null>(null);
   const [tools, setToolsState] = useState<ToolEntry[]>(DEFAULT_CONFIG.tools ?? []);
   const [featureFlags, setFeatureFlags] = useState(DEFAULT_CONFIG.feature_flags!);
   const [homescreen, setHomescreen] = useState<HomescreenConfig>(DEFAULT_CONFIG.homescreen ?? DEFAULT_HOMESCREEN);
@@ -411,6 +462,12 @@ export function ManagePage() {
   // (don't alarm); false = unreachable → the indexed docs can't be searched.
   const [knowledgeEmbedderAvailable, setKnowledgeEmbedderAvailable] = useState<boolean | null>(null);
   const [knowledgeEmbedderModel, setKnowledgeEmbedderModel] = useState<string>("");
+  // "disabled" | "preparing" | "available" | "unavailable". "preparing" means a
+  // cold start is still downloading the model — that must not render as an error.
+  const [knowledgeEmbedderState, setKnowledgeEmbedderState] = useState<string | null>(null);
+  // The scrubbed reason from the backend. It was already on the wire and simply
+  // discarded, which is why the UI could only offer a generic guess.
+  const [knowledgeEmbedderError, setKnowledgeEmbedderError] = useState<string>("");
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<{
@@ -670,7 +727,7 @@ export function ManagePage() {
           if (liveKn && typeof liveKn === "object") {
             setLiveKnowledge({
               provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
-              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
+              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "",
               version: typeof data.version === "number" ? data.version : null,
               chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
               chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
@@ -728,7 +785,7 @@ export function ManagePage() {
         setConnectedApps([]);
         setConnectedTools([]);
       }
-      setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+      replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
       setToolsState(Array.isArray(out.tools) ? out.tools : []);
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
@@ -859,6 +916,8 @@ export function ManagePage() {
         typeof data.embedder_available === "boolean" ? data.embedder_available : null,
       );
       setKnowledgeEmbedderModel(data.embedder_model ?? "");
+      setKnowledgeEmbedderState(typeof data.embedder_state === "string" ? data.embedder_state : null);
+      setKnowledgeEmbedderError(data.embedder_error ?? "");
       return data;
     } catch {
       setKnowledgeHealthy(false);
@@ -1052,7 +1111,7 @@ export function ManagePage() {
         const ag = next.agent;
         setAgentName(ag?.name ?? "");
         setAgentDescription(ag?.description ?? "");
-        setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+        replaceLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
         setToolsState(Array.isArray(next.tools) ? next.tools : []);
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
         setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
@@ -1075,11 +1134,35 @@ export function ManagePage() {
     }
   };
 
-  const updateLlm = (field: keyof NonNullable<AgentConfig["llm"]>, value: string | number | boolean) => {
-    setLlmConfig((c) => ({ ...(c ?? {}), [field]: value }));
+  const replaceLlmConfig = (next: NonNullable<AgentConfig["llm"]>) => {
+    setLlmConfig(next);
+    setLlmExtraParamsDraft(null);
+    setLlmExtraParamsError(null);
+  };
+
+  const updateLlm = (
+    field: keyof NonNullable<AgentConfig["llm"]>,
+    value: string | number | boolean | string[] | Record<string, LlmJsonValue> | undefined
+  ) => {
+    setLlmConfig((c) => {
+      const next = { ...(c ?? {}) };
+      if (value === undefined) {
+        delete next[field];
+      } else {
+        (next as Record<string, unknown>)[field] = value;
+      }
+      return next;
+    });
   };
   const updateLlmTemperature = (value: number) => {
     setLlmConfig((c) => ({ ...(c ?? {}), temperature: value }));
+  };
+  const clearLlmNumber = (field: "max_tokens" | "top_p" | "top_k" | "frequency_penalty" | "presence_penalty") => {
+    setLlmConfig((c) => {
+      const next = { ...(c ?? {}) };
+      delete next[field];
+      return next;
+    });
   };
 
   const updateFeatureFlag = (field: "enable_todos" | "reflection" | "enable_filesystem_tools", value: boolean) => {
@@ -1163,7 +1246,7 @@ export function ManagePage() {
             if (a.name) setAgentName(a.name);
             if (a.description !== undefined) setAgentDescription(a.description);
           }
-          setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+          replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
           setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
@@ -1522,7 +1605,7 @@ export function ManagePage() {
                         </Select>
                       )}
                     </FormGroup>
-                    <FormGroup legendText="">
+                    <FormGroup legendText="Sampling">
                       <NumberInput
                         id="llm-temperature"
                         label="Temperature"
@@ -1535,7 +1618,189 @@ export function ManagePage() {
                         }
                         onBlur={scheduleLlmDraftSave}
                       />
+                      <NumberInput
+                        id="llm-max-tokens"
+                        label="Max tokens"
+                        helperText="Leave empty to keep the model/TOML default"
+                        min={1}
+                        step={256}
+                        allowEmpty
+                        value={llm.max_tokens ?? ""}
+                        onChange={(_e: unknown, { value }: { value: number | string }) => {
+                          if (value === "" || value === undefined || value === null) {
+                            clearLlmNumber("max_tokens");
+                            return;
+                          }
+                          const n = Number(value);
+                          if (Number.isFinite(n) && n > 0) updateLlm("max_tokens", Math.floor(n));
+                        }}
+                        onBlur={scheduleLlmDraftSave}
+                        style={{ marginTop: "0.75rem" }}
+                      />
                     </FormGroup>
+                    <Accordion align="start" size="sm">
+                      <AccordionItem title="Advanced LLM params">
+                        <VStack gap={5}>
+                          <NumberInput
+                            id="llm-top-p"
+                            label="Top P"
+                            helperText="Only sent when set (safer for Bedrock/Claude via OpenAI-compatible endpoints)"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            allowEmpty
+                            value={llm.top_p ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("top_p");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("top_p", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-top-k"
+                            label="Top K"
+                            helperText="Used by Watsonx / LiteLLM when supported"
+                            min={1}
+                            step={1}
+                            allowEmpty
+                            value={llm.top_k ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("top_k");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n) && n > 0) updateLlm("top_k", Math.floor(n));
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-frequency-penalty"
+                            label="Frequency penalty"
+                            helperText="OpenAI-compatible providers (ignored by Groq/Watsonx)"
+                            min={-2}
+                            max={2}
+                            step={0.1}
+                            allowEmpty
+                            value={llm.frequency_penalty ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("frequency_penalty");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("frequency_penalty", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <NumberInput
+                            id="llm-presence-penalty"
+                            label="Presence penalty"
+                            helperText="OpenAI-compatible providers (ignored by Groq/Watsonx)"
+                            min={-2}
+                            max={2}
+                            step={0.1}
+                            allowEmpty
+                            value={llm.presence_penalty ?? ""}
+                            onChange={(_e: unknown, { value }: { value: number | string }) => {
+                              if (value === "" || value === undefined || value === null) {
+                                clearLlmNumber("presence_penalty");
+                                return;
+                              }
+                              const n = Number(value);
+                              if (Number.isFinite(n)) updateLlm("presence_penalty", n);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <TextInput
+                            id="llm-stop"
+                            labelText="Stop sequences"
+                            helperText="Comma-separated stop strings"
+                            value={Array.isArray(llm.stop) ? llm.stop.join(", ") : (llm.stop ?? "")}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const parts = raw
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean);
+                              updateLlm("stop", parts.length ? parts : undefined);
+                            }}
+                            onBlur={scheduleLlmDraftSave}
+                          />
+                          <TextArea
+                            id="llm-extra-params"
+                            labelText="Extra params (JSON)"
+                            helperText="Provider-agnostic map for LiteLLM / OpenAI-compatible backends. Auth keys are stripped server-side."
+                            rows={4}
+                            invalid={Boolean(llmExtraParamsError)}
+                            invalidText={llmExtraParamsError ?? undefined}
+                            value={
+                              llmExtraParamsDraft ??
+                              (llm.extra_params && Object.keys(llm.extra_params).length > 0
+                                ? JSON.stringify(llm.extra_params, null, 2)
+                                : "")
+                            }
+                            onChange={(e) => {
+                              setLlmExtraParamsDraft(e.target.value);
+                              setLlmExtraParamsError(null);
+                            }}
+                            onBlur={() => {
+                              if (llmExtraParamsDraft === null) {
+                                return;
+                              }
+                              const raw = llmExtraParamsDraft.trim();
+                              if (!raw) {
+                                updateLlm("extra_params", undefined);
+                                setLlmExtraParamsDraft(null);
+                                setLlmExtraParamsError(null);
+                                scheduleLlmDraftSave();
+                                return;
+                              }
+                              try {
+                                const parsed = JSON.parse(raw) as unknown;
+                                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                                  setLlmExtraParamsError("Extra params must be a JSON object");
+                                  return;
+                                }
+                                const isJsonValue = (v: unknown): v is LlmJsonValue => {
+                                  if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+                                    return true;
+                                  }
+                                  if (Array.isArray(v)) return v.every(isJsonValue);
+                                  if (typeof v === "object") {
+                                    return Object.values(v as Record<string, unknown>).every(isJsonValue);
+                                  }
+                                  return false;
+                                };
+                                const cleaned: Record<string, LlmJsonValue> = {};
+                                let dropped = false;
+                                for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+                                  if (isJsonValue(v)) {
+                                    cleaned[k] = v;
+                                  } else {
+                                    dropped = true;
+                                  }
+                                }
+                                if (dropped) {
+                                  setLlmExtraParamsError("Extra params must be JSON values (no functions)");
+                                  return;
+                                }
+                                updateLlm("extra_params", Object.keys(cleaned).length ? cleaned : undefined);
+                                setLlmExtraParamsDraft(null);
+                                setLlmExtraParamsError(null);
+                                scheduleLlmDraftSave();
+                              } catch {
+                                setLlmExtraParamsError("Invalid JSON");
+                              }
+                            }}
+                          />
+                        </VStack>
+                      </AccordionItem>
+                    </Accordion>
                   </VStack>
                   )}
               </AccordionItem>
@@ -1788,12 +2053,35 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
+                    {/* Cold start: the model is still being fetched/loaded. This
+                        is NOT a failure and must never render as one — a first
+                        run downloads hundreds of MB, and a red error there makes
+                        working software look broken. */}
+                    {knowledgeEmbedderState === "preparing" && knowledgeDocCount > 0 && (
+                      <InlineNotification
+                        kind="info"
+                        lowContrast
+                        hideCloseButton
+                        title="Preparing embedder"
+                        subtitle={
+                          `Getting the embedding model${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} ready — ` +
+                          `this can take a minute the first time. Search will work as soon as it finishes.`
+                        }
+                        style={{ maxInlineSize: "100%" }}
+                      />
+                    )}
                     {/* Embedder-unavailable alert. Distinct from the removed
                         "re-index recommended" NAG below: this is a real error —
                         the documents exist but their embedder can't embed
-                        queries (missing/invalid key, provider down), so search
-                        returns nothing. Surfaced on the agent card (not just in
-                        the modal) because it makes knowledge silently useless. */}
+                        queries, so search returns nothing. Surfaced on the agent
+                        card (not just in the modal) because it makes knowledge
+                        silently useless.
+
+                        The remedy differs by provider, so the copy does too:
+                        local providers have no key or endpoint to check (that
+                        advice used to be unfollowable), and CUGA re-downloads
+                        corrupt model files itself. We also show the backend's
+                        scrubbed reason, which was previously dropped. */}
                     {knowledgeEmbedderAvailable === false && knowledgeDocCount > 0 && (
                       <InlineNotification
                         kind="error"
@@ -1802,8 +2090,12 @@ export function ManagePage() {
                         title="Embedder unavailable"
                         subtitle={
                           `Your ${knowledgeDocCount} indexed document${knowledgeDocCount !== 1 ? "s" : ""} can't be searched — ` +
-                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't reachable. ` +
-                          `Open Configure knowledge base to check its API key / connection and run Test connection.`
+                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't usable. ` +
+                          (isLocalEmbeddingProvider(knowledgeEmbedderModel)
+                            ? `It runs locally, so there's no key or connection to check — its model files are missing or unreadable. ` +
+                              `Restart to let CUGA re-download them; if it persists, check free disk space and network access.`
+                            : `Open Configure knowledge base to check its API key / connection and run Test connection.`) +
+                          (knowledgeEmbedderError ? ` (${knowledgeEmbedderError})` : "")
                         }
                         style={{ maxInlineSize: "100%" }}
                       />
@@ -1934,21 +2226,10 @@ export function ManagePage() {
                         // helper the Re-index banner uses, so both signals
                         // agree on what counts as a meaningful change. Avoids
                         // duplicating the empty-model-as-default rule.
-                        const diverged = !isIndexConfigEquivalent(knowledgeConfig, {
-                          ...DEFAULT_KNOWLEDGE_CONFIG,
-                          embedding_provider: liveKnowledge.provider,
-                          embedding_model: liveKnowledge.model,
-                          // Compare against the PUBLISHED chunk/metric, not the
-                          // draft's own values (Sami review) — otherwise a
-                          // chunk-only draft edit compares against itself and
-                          // never turns the pill yellow.
-                          chunk_size: liveKnowledge.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
-                          chunk_overlap: liveKnowledge.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
-                          metric_type: liveKnowledge.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
-                        });
+                        const diverged = isDivergedFromLive(knowledgeConfig, liveKnowledge);
                         const label = (
                           <>
-                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                            Live: {liveKnowledge.provider} · {liveKnowledge.model || "(default)"}
                             {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
                           </>
                         );
@@ -2365,7 +2646,7 @@ export function ManagePage() {
                 if (Array.isArray(next.tools)) {
                   next.tools = normalizeTools(next.tools);
                 }
-                setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+                replaceLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
                 setToolsState(Array.isArray(next.tools) ? next.tools : []);
                 setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
                 setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);

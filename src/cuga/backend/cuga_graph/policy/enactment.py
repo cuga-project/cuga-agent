@@ -89,7 +89,8 @@ class PolicyEnactment:
             context = PolicyConfigurable.create_context_from_state(state, config or {})
 
             logger.debug(
-                f"PolicyEnactment: Created context with user_input='{context.user_input}', inferred target='{target}'"
+                f"PolicyEnactment: Created context with user_input_len={len(context.user_input or '')}, "
+                f"inferred target='{target}'"
             )
 
             # Check for policies (Intent Guards/Playbooks or OutputFormatter based on policy_types)
@@ -895,7 +896,8 @@ Important:
 - Only change formatting, structure, and presentation
 - Do not add new information that wasn't in the original
 - Do not remove important details
-- Follow the formatting instructions exactly"""
+- Follow the formatting instructions exactly
+- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them."""
 
             # Include user input if available
             user_input_section = ""
@@ -934,6 +936,7 @@ Important:
 - Extract all factual information from the original response
 - Map it to the JSON schema structure
 - Preserve all factual information
+- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them.
 - Return valid JSON matching the schema exactly"""
 
                 # Include user input if available
@@ -981,7 +984,8 @@ Important:
 - Extract all information from the original response
 - Map it to the JSON schema structure
 - Preserve all factual information
-- Return ONLY valid JSON matching the schema"""
+- Return ONLY valid JSON matching the schema
+- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them."""
 
                     messages_fallback = [
                         SystemMessage(content=system_prompt_fallback),

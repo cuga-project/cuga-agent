@@ -278,6 +278,30 @@ def test_clamp_watsonx_completion_for_messages_updates_params():
     assert model.params["max_completion_tokens"] == 16000
 
 
+@pytest.mark.unit
+def test_clamp_watsonx_completion_recovers_when_budget_only_in_params():
+    """Production clients carry the budget only inside ``params`` (see llm/models.py),
+    so a clamp must not become sticky by re-reading the value it wrote."""
+    pytest.importorskip("langchain_ibm")
+    from langchain_ibm import ChatWatsonx
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 16000, "temperature": 0.1},
+        model_id="openai/gpt-oss-120b",
+        profile={"max_input_tokens": 131072},
+    )
+    huge_messages = [{"role": "user", "content": "word " * 200_000}]
+
+    clamp_watsonx_completion_for_messages(model, huge_messages)
+
+    assert model.params["max_completion_tokens"] < 16000
+
+    small_messages = [{"role": "user", "content": "hello"}]
+    clamp_watsonx_completion_for_messages(model, small_messages)
+
+    assert model.params["max_completion_tokens"] == 16000
+
+
 def test_clamp_watsonx_completion_applies_safety_margin_for_undercounted_prompts():
     """Our approximate counter undercounts real WatsonX tokenization on dense prompts.
 

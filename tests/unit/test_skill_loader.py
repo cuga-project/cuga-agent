@@ -1,16 +1,31 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
+from cuga.backend.skills.tools import create_skill_tools
+
+pytestmark = pytest.mark.unit
+
+pytestmark = pytest.mark.unit
 
 
-def _write_skill(root: Path, name: str, description: str, body: str = "Body", requirements: str = "") -> None:
+def _write_skill(
+    root: Path,
+    name: str,
+    description: str,
+    body: str = "Body",
+    requirements: str = "",
+    extra_frontmatter: str = "",
+) -> None:
     skill_dir = root / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     requirements_block = f"requirements: {requirements}\n" if requirements else ""
+    extra_block = f"{extra_frontmatter}\n" if extra_frontmatter else ""
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n{requirements_block}---\n{body}\n",
+        f"---\nname: {name}\ndescription: {description}\n{requirements_block}{extra_block}---\n{body}\n",
         encoding="utf-8",
     )
 
@@ -128,6 +143,33 @@ def test_skill_registry_load_skill_without_requirements_skips_install_step() -> 
     assert "Analyze uploads." in loaded
 
 
+def test_load_skill_tool_prints_instructions_even_if_agent_discards_return(capsys) -> None:
+    """The code-agent's stdout capture is the only guaranteed path for skill
+    instructions to reach the agent's context. If the agent's own code discards
+    `load_skill`'s return value instead of printing it, the tool must still
+    surface the instructions via a print side-effect, or the agent never sees
+    them and improvises instead of following the skill.
+    """
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="deck",
+                description="Deck skill",
+                body="## Body\n\nDistinctive skill instructions marker.",
+                source="/skills/deck/SKILL.md",
+            )
+        ]
+    )
+    load_tool = create_skill_tools(registry)[0]
+    assert load_tool.name == "load_skill"
+
+    result = load_tool.func(name="deck")
+
+    printed = capsys.readouterr().out
+    assert "Distinctive skill instructions marker." in printed
+    assert result == printed.rstrip("\n") or "Distinctive skill instructions marker." in result
+
+
 # ---------------------------------------------------------------------------
 # Sandbox skill-copy path
 # ---------------------------------------------------------------------------
@@ -218,12 +260,7 @@ def test_skill_name_with_path_traversal_is_rejected(tmp_path: Path) -> None:
 
 
 def test_jinja_expression_in_description_is_stripped(tmp_path: Path) -> None:
-    """A description containing {{ }} Jinja2 expression syntax is sanitized at parse time.
-
-    Without sanitization, a malicious SKILL.md can inject arbitrary text into
-    the system prompt by placing Jinja2 template expressions in the description
-    field, which is rendered by the mcp_prompt.jinja2 template without escaping.
-    """
+    """A description containing {{ }} Jinja2 expression syntax is sanitized at parse time."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
@@ -242,12 +279,7 @@ def test_jinja_expression_in_description_is_stripped(tmp_path: Path) -> None:
 
 
 def test_jinja_block_in_description_is_stripped(tmp_path: Path) -> None:
-    """A description containing {% %} Jinja2 block syntax has the delimiters stripped.
-
-    The sanitizer removes Jinja delimiter sequences ({% %}) to prevent the
-    template engine from evaluating them.  Literal text between the delimiters
-    may remain; what matters is that no {% or %} tokens reach the renderer.
-    """
+    """A description containing {% %} Jinja2 block syntax has the delimiters stripped."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
@@ -266,7 +298,7 @@ def test_jinja_block_in_description_is_stripped(tmp_path: Path) -> None:
 
 
 def test_jinja_expression_in_name_is_stripped(tmp_path: Path) -> None:
-    """A name field containing Jinja2 syntax is sanitized (name is also rendered into the prompt)."""
+    """A name field containing Jinja2 syntax is sanitized."""
     from cuga.backend.skills.loader import _parse_skill_file
 
     skill_path = tmp_path / "SKILL.md"
@@ -297,3 +329,69 @@ def test_clean_description_is_unchanged(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.description == "Summarizes complex reports into bullet points"
+
+
+def test_loader_parses_arguments_frontmatter(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_skill(
+        tmp_path / ".cuga" / "skills",
+        "review",
+        "Review a PR",
+        extra_frontmatter="arguments: pr_number title",
+    )
+
+    entries = discover_skills(None)
+    by_name = {e.name: e for e in entries}
+
+    assert by_name["review"].arguments == ("pr_number", "title")
+
+
+def test_loader_rejects_skill_with_numeric_argument_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_skill(
+        tmp_path / ".cuga" / "skills",
+        "bad",
+        "Has a numeric arg name",
+        extra_frontmatter="arguments: title 2",
+    )
+
+    entries = discover_skills(None)
+
+    # A numeric-only arg name collides with positional $N syntax — skill is dropped.
+    assert "bad" not in {e.name for e in entries}
+
+
+def test_load_skill_substitutes_args_into_body() -> None:
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="review",
+                description="Review a PR",
+                body="Review PR #$pr for $reason. Full: $ARGUMENTS",
+                source="/tmp/SKILL.md",
+                arguments=("pr", "reason"),
+            )
+        ]
+    )
+
+    loaded = registry.load_skill("review", "123 typos")
+
+    assert "Review PR #123 for typos. Full: 123 typos" in loaded
+
+
+def test_load_skill_without_args_leaves_body_verbatim() -> None:
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="review",
+                description="Review a PR",
+                body="Body with $ARGUMENTS placeholder",
+                source="/tmp/SKILL.md",
+            )
+        ]
+    )
+
+    # Model-initiated load_skill calls pass no args — body must be untouched.
+    loaded = registry.load_skill("review")
+
+    assert "Body with $ARGUMENTS placeholder" in loaded

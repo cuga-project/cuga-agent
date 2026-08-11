@@ -13,12 +13,16 @@ Database Schema:
 """
 
 import json
+import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
 from cuga.backend.storage import get_storage
-from cuga.config import get_service_instance_id, get_tenant_id
+from cuga.config import get_service_instance_id, get_tenant_id, settings
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_agent_id(agent_id: str) -> str:
@@ -37,6 +41,74 @@ def _instance_id() -> str:
 
 def _tenant_id() -> str:
     return get_tenant_id()
+
+
+def run_sync(coro: Any) -> Any:
+    """Run an async config_store coroutine from sync CLI/bootstrap code.
+
+    Safe when no event loop is running (``asyncio.run``) and when one already is
+    (worker thread with its own loop), matching the pattern used elsewhere in
+    the codebase for sync wrappers around async storage.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def should_preserve_existing_configs() -> bool:
+    """Whether bootstrap should skip seeding when agent_configs rows already exist.
+
+    Controlled by ``storage.preserve_configs_on_startup`` (``prod`` | ``local`` | ``any``).
+    Default ``prod``: only preserve when ``storage.mode`` is ``prod``. Invalid values
+    fall back to ``prod``.
+    """
+    storage = getattr(settings, "storage", None)
+    preserve = (getattr(storage, "preserve_configs_on_startup", None) or "prod").strip().lower()
+    mode = (getattr(storage, "mode", None) or "local").strip().lower()
+    if preserve not in ("prod", "local", "any"):
+        preserve = "prod"
+    if preserve == "any":
+        return True
+    return preserve == mode
+
+
+async def has_any_config(agent_id: str = "cuga-default") -> bool:
+    """Return True if any draft or published row exists for tenant+instance+agent."""
+    base_agent_id = _parse_agent_id(agent_id)
+    store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
+    await _ensure_schema(store)
+    row = await store.fetchone(
+        """
+        SELECT 1 FROM agent_configs
+        WHERE tenant_id = ? AND instance_id = ? AND agent_id = ?
+        LIMIT 1
+        """,
+        (tenant_id, inst_id, base_agent_id),
+    )
+    return row is not None
+
+
+async def resolve_preserve_existing(agent_id: str = "cuga-default") -> bool:
+    """Return True (and log) when bootstrap should keep existing configs for agent_id."""
+    if not should_preserve_existing_configs():
+        return False
+    if not await has_any_config(agent_id):
+        return False
+    logger.info(
+        "Preserving existing agent configs from DB (mode=%s, tenant=%r, instance=%r, agent=%r)",
+        getattr(settings.storage, "mode", "local"),
+        get_tenant_id(),
+        get_service_instance_id(),
+        agent_id,
+    )
+    return True
 
 
 async def _ensure_schema(store) -> None:
@@ -311,5 +383,11 @@ def reset_config_db() -> None:
     # the deleted file; the next access reopens against the recreated DB.
     get_storage().invalidate_relational_stores()
     path = os.path.join(DBS_DIR, "cuga.db")
-    if os.path.exists(path):
-        os.remove(path)
+    # WAL mode makes this a three-file unit. Dropping only the main DB leaves an
+    # orphaned -wal/-shm pair still describing pages the recreated file doesn't
+    # have, so the next connection reads past EOF and raises
+    # SQLITE_IOERR_SHORT_READ — surfaced as a bare "disk I/O error". A hard kill
+    # (crash, SIGKILL, Ctrl-C mid-write) is enough to strand the sidecars.
+    for target in (path, f"{path}-wal", f"{path}-shm"):
+        if os.path.exists(target):
+            os.remove(target)

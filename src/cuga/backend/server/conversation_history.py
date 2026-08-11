@@ -7,7 +7,7 @@ Uses the storage layer (get_storage().get_relational_store("conversation")) for 
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -376,12 +376,25 @@ class ConversationHistoryDB:
             tenant_id = _tenant_id()
             inst_id = _instance_id()
             now = datetime.utcnow().isoformat()
-            events_json = json.dumps(events)
             existing = await store.fetchone(
-                "SELECT created_at FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                "SELECT events FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
                 (tenant_id, inst_id, agent_id, thread_id, user_id),
             )
             if existing:
+                # Append new events to existing rather than overwriting — the caller
+                # only buffers per-request events, so without this multi-turn refresh
+                # loses every turn except the most recent. Re-sequence the new events
+                # so numbers stay unique and monotonic across the merged list.
+                raw_existing = json.loads(existing["events"]) if existing["events"] else []
+                # Tolerate corrupted rows: drop non-dict entries (and non-list
+                # payloads) so one bad row can't permanently break persistence
+                # for this thread via the except below.
+                if not isinstance(raw_existing, list):
+                    raw_existing = []
+                existing_events = [e for e in raw_existing if isinstance(e, dict)]
+                max_seq = max((e.get("sequence", -1) for e in existing_events), default=-1)
+                renumbered = [{**e, "sequence": max_seq + 1 + offset} for offset, e in enumerate(events)]
+                events_json = json.dumps(existing_events + renumbered)
                 await store.execute(
                     """
                     UPDATE stream_events SET events = ?, updated_at = ?
@@ -390,6 +403,7 @@ class ConversationHistoryDB:
                     (events_json, now, tenant_id, inst_id, agent_id, thread_id, user_id),
                 )
             else:
+                events_json = json.dumps(events)
                 await store.execute(
                     """
                     INSERT INTO stream_events (tenant_id, instance_id, agent_id, thread_id, user_id, events, created_at, updated_at)
@@ -431,6 +445,39 @@ class ConversationHistoryDB:
         except Exception as e:
             logger.error(f"Error retrieving stream events: {e}")
             return None
+
+    async def gc_ephemeral_stream_events(self, older_than_days: int = 7) -> int:
+        """Delete stream_events rows that have no conversation_history row
+        (ephemeral Try-It-Out threads) and haven't been updated recently.
+        Returns number of rows deleted."""
+        try:
+            await self._ensure_schema()
+            store = self._get_store()
+            cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+            await store.execute(
+                """
+                DELETE FROM stream_events
+                WHERE updated_at < ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM conversation_history ch
+                    WHERE ch.tenant_id = stream_events.tenant_id
+                      AND ch.instance_id = stream_events.instance_id
+                      AND ch.agent_id = stream_events.agent_id
+                      AND ch.thread_id = stream_events.thread_id
+                      AND ch.user_id = stream_events.user_id
+                  )
+                """,
+                (cutoff,),
+            )
+            # Both LocalRelationalStore and ProdRelationalStore set _last_rowcount
+            # on execute(); use it to avoid SELECT changes() (SQLite-only) or
+            # pg-specific row-count queries.
+            removed = getattr(store, "_last_rowcount", 0) or 0
+            await store.commit()
+            return removed
+        except Exception as e:
+            logger.error(f"Error in gc_ephemeral_stream_events: {e}")
+            return 0
 
     async def append_stream_event(
         self, agent_id: str, thread_id: str, user_id: str, event_name: str, event_data: str, sequence: int

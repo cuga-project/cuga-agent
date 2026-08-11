@@ -67,12 +67,19 @@ class TestMinimaxBaseUrl:
         mgr = LLMManager()
         assert mgr._get_base_url({}, "minimax") == "https://env.minimax/v1"
 
+    def test_china_region_endpoint(self, monkeypatch):
+        monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+        monkeypatch.setenv("MINIMAX_REGION", "cn_zh")
+        mgr = LLMManager()
+        assert mgr._get_base_url({}, "minimax") == "https://api.minimaxi.com/v1"
+
 
 class TestMinimaxCreateInstance:
     def test_client_receives_key_base_url_and_timeout(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
-            with patch("cuga.backend.llm.models.ReasoningChatOpenAI") as mock_openai:
+            with patch("cuga.backend.llm.models._get_reasoning_chat_openai") as mock_factory:
+                mock_openai = mock_factory.return_value
                 mock_openai.return_value = object()
                 mgr = LLMManager()
                 mgr._create_llm_instance({**BASE_MODEL_SETTINGS, "timeout": 200})

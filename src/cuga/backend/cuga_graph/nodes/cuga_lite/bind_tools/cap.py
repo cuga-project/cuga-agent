@@ -25,10 +25,22 @@ from cuga.config import settings
 
 
 __all__ = [
+    "BindToolsUnsupportedError",
     "apply_bind_tools_cap_and_merge",
     "bind_tools_max_count_from_settings",
     "bind_tools_pad_to_cap_from_settings",
 ]
+
+
+class BindToolsUnsupportedError(Exception):
+    """The active model cannot do native tool binding, so binding must degrade.
+
+    Deliberately **not** a ``RuntimeError`` subclass: the cap/shortlist errors in
+    this module are intentional loud failures re-raised by
+    ``resolve_model_with_bind_tools``'s ``except RuntimeError: raise``. A missing
+    provider capability is a different class of problem — the run can still
+    proceed on the unbound (code-act) path — so it must not travel that route.
+    """
 
 
 def bind_tools_max_count_from_settings() -> int:
@@ -135,8 +147,15 @@ async def _run_shortlister(
 ) -> List[str]:
     """Run :meth:`PromptUtils.shortlist_tool_names` and validate the result.
 
-    Raises ``RuntimeError`` on shortlister failure or empty ranking — silent
-    truncation would corrupt benchmark results comparing native vs text mode.
+    Raises:
+        BindToolsUnsupportedError: the active model cannot do native structured
+            output / tool binding. The shortlister runs on that same model, so
+            this fires before any bind is attempted. Deliberately not a
+            ``RuntimeError``, so ``resolve_model_with_bind_tools`` degrades to
+            the unbound (code-act) model instead of re-raising.
+        RuntimeError: genuine shortlister failure or an empty ranking — silent
+            truncation would corrupt benchmark results comparing native vs
+            text mode, so these stay loud.
     """
     all_apps: List[Any] = []
     if tool_provider is not None:
@@ -161,6 +180,16 @@ async def _run_shortlister(
             top_k=top_k,
             run_config=run_config,
         )
+    except NotImplementedError as e:
+        # The shortlister runs on the *same* model we are about to bind to, so a model
+        # without native tool-calling fails here (with_structured_output → bind_tools)
+        # before _safe_bind is ever reached. Same capability gap, so same degradation:
+        # signal it as non-RuntimeError so it bypasses the intentional cap re-raise.
+        raise BindToolsUnsupportedError(
+            f"bind_tools cap shortlister cannot run: the active model does not support "
+            f"native structured output/tool binding ({e!r}). Falling back to the unbound "
+            f"(code-act) model."
+        ) from e
     except Exception as e:
         raise RuntimeError(
             f"cuga_lite_bind_tools shortlister failed reducing {len(ranking_pool)} tools to "

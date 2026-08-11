@@ -143,12 +143,18 @@ export function useKnowledgeDraftSave(opts: {
             const body = await res.clone().json();
             if (ac.signal.aborted) return;
             setDraftSaveStatus({ kind: "saved" });
+            // Adopt-existing-collection (backend): the applied embedder maps to
+            // an already-built collection, so the engine points at it and it has
+            // documents — show that count immediately (badge). But do NOT advance
+            // the reindex snapshot here. Adopting a PREVIOUSLY-built collection
+            // does not mean the user's CURRENT document set is indexed with this
+            // embedder, so a draft autosave must NOT clear the "Re-index to apply
+            // your changes" banner (it did, which is why it flashed then vanished
+            // on an embedder change). The banner persists until an actual
+            // Publish / Re-index rebuilds the current documents with the embedder.
             const _lc = body?.live_changes;
-            if (_lc?.adopted_existing_collection) {
-              setKnowledgeSavedSnapshot({ ...(knowledgeConfig as object) });
-              if (typeof _lc.active_document_count === "number") {
-                setKnowledgeDocCount(_lc.active_document_count);
-              }
+            if (_lc?.adopted_existing_collection && typeof _lc.active_document_count === "number") {
+              setKnowledgeDocCount(_lc.active_document_count);
             }
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections

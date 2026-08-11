@@ -31,11 +31,14 @@ jobs:
     runs-on: ubuntu-latest
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -80,7 +83,9 @@ jobs:
             tests/unit/test_chat_knowledge_mode.py \
             tests/unit/test_chat_agent_knowledge_toggle.py \
             tests/integration/test_knowledge_integration.py
-          uv run pytest tests/unit/test_cuga_lite_bind_tools.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
             tests/unit/test_policy_tool_guide_loading.py \
@@ -119,11 +124,14 @@ jobs:
     timeout-minutes: 25
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -150,11 +158,14 @@ jobs:
     timeout-minutes: 60
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       PYTHONIOENCODING: utf-8
       CUGA_THREAD_WORKSPACE_SEED: crm
 

@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from cuga.backend.knowledge.engine import SearchResult
 from cuga.backend.knowledge.envelope import _result_to_chunk
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _make_result(**overrides) -> SearchResult:

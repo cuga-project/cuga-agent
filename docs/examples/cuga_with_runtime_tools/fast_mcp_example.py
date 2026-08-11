@@ -7,8 +7,8 @@ The server must be running before starting the main application.
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.openapi import (
-    HTTPRoute,
+from fastmcp.utilities.openapi import HTTPRoute
+from fastmcp.server.providers.openapi import (
     OpenAPITool,
     OpenAPIResource,
     OpenAPIResourceTemplate,

@@ -26,6 +26,16 @@ Set the environment variable (defaults to http://localhost:4318 if not set):
 Optional headers (e.g. for authenticated collectors):
     OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>
 
+## Airgapped / no GitHub egress
+
+OpenLit defaults to fetching pricing from raw.githubusercontent.com. CUGA always
+passes a local pricing.json from settings.observability.pricing_json (empty =
+bundled under observability/assets/). LiteLLM's remote model cost map is
+controlled by settings.observability.litellm_local_model_cost_map (default true).
+
+    DYNACONF_OBSERVABILITY__PRICING_JSON=/path/to/pricing.json
+    DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP=true
+
 ## Local testing stack
 
 See deployment/docker-compose/openlit/ for a ready-to-use local stack:
@@ -49,10 +59,31 @@ import logging
 import os
 import threading
 from contextvars import ContextVar
+from pathlib import Path
+
 from loguru import logger
 
 # Logger for SessionSpanProcessor exception handling
 _logger = logging.getLogger(__name__)
+
+_BUNDLED_PRICING_JSON = Path(__file__).resolve().parent / "assets" / "pricing.json"
+
+
+def bundled_openlit_pricing_json() -> Path:
+    """Path to the vendored OpenLit pricing.json shipped with Cuga."""
+    return _BUNDLED_PRICING_JSON
+
+
+def resolve_openlit_pricing_json(settings_pricing_json: str | None = None) -> str:
+    """
+    Resolve a local pricing.json path so OpenLit never needs GitHub egress.
+
+    Uses settings.observability.pricing_json (DYNACONF_OBSERVABILITY__PRICING_JSON).
+    Empty/unset falls back to the bundled asset under observability/assets/.
+    """
+    if settings_pricing_json and str(settings_pricing_json).strip():
+        return str(settings_pricing_json).strip()
+    return str(bundled_openlit_pricing_json())
 
 
 def _merge_otel_resource_attributes(existing: str, new_attrs: dict[str, str]) -> str:
@@ -123,10 +154,10 @@ _static_attrs_dict = {
 _existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
 os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(_existing, _static_attrs_dict)
 
-try:
-    import openlit  # type: ignore[import-untyped]
-except ImportError:
-    openlit = None  # type: ignore[assignment]
+# openlit is imported lazily inside init_openlit() — only when observability is enabled.
+# Importing it unconditionally at module level pulls in langchain_litellm → litellm (~270ms)
+# on every cold start, even when openlit is disabled (the default).
+_openlit_module = None  # populated by _get_openlit() on first call with observability enabled
 
 try:
     from opentelemetry import trace as otel_trace  # type: ignore[import-untyped]
@@ -138,6 +169,20 @@ except ImportError:
     SpanProcessor = type("BaseSpanProcessor", (object,), {})  # type: ignore[assignment,misc]
     ReadableSpan = None  # type: ignore[assignment]
     Context = None  # type: ignore[assignment]
+
+
+def _get_openlit():
+    """Return the openlit module, importing it lazily on first call."""
+    global _openlit_module
+    if _openlit_module is None:
+        try:
+            import openlit  # type: ignore[import-untyped]
+
+            _openlit_module = openlit
+        except ImportError:
+            _openlit_module = False  # sentinel: import attempted, not available
+    return _openlit_module if _openlit_module is not False else None
+
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
 _init_lock = threading.Lock()  # Protects initialization from race conditions
@@ -191,6 +236,8 @@ def init_openlit() -> None:
     Configuration:
         settings.toml:  [observability] openlit = true
         env var:        OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+        env var:        DYNACONF_OBSERVABILITY__PRICING_JSON=/path/to/pricing.json
+        env var:        DYNACONF_OBSERVABILITY__LITELLM_LOCAL_MODEL_COST_MAP=true
     """
     global _initialized
     if _initialized:
@@ -212,8 +259,9 @@ def init_openlit() -> None:
             logger.warning(f"OpenLit: could not read observability settings: {e}")
             return
 
-        # Graceful no-op if openlit is not installed
-        if openlit is None:
+        # Lazily import openlit — only when observability is actually enabled.
+        _openlit = _get_openlit()
+        if _openlit is None:
             logger.warning(
                 "OpenLit observability is enabled in settings but 'openlit' is not installed. "
                 "This should not happen as openlit is a core dependency. Please reinstall cuga."
@@ -244,14 +292,28 @@ def init_openlit() -> None:
         attr_keys = [p.split("=", 1)[0].strip() for p in attrs.split(",") if "=" in p]
         logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES keys={','.join(attr_keys)}")
 
+        # Airgapped / sovereign: local pricing from settings (bundled when empty).
+        # DYNACONF_OBSERVABILITY__PRICING_JSON / observability.pricing_json
+        obs = getattr(settings, "observability", None)
+        pricing_json = resolve_openlit_pricing_json(
+            settings_pricing_json=getattr(obs, "pricing_json", "") or ""
+        )
+        # Bridge settings → LiteLLM native env (settings win over pre-set native env).
+        from cuga.config import apply_litellm_local_model_cost_map
+
+        apply_litellm_local_model_cost_map(bool(getattr(obs, "litellm_local_model_cost_map", True)))
+
         try:
             # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT
             # from the environment automatically (standard OTel pattern).
             # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
             # is the OTel resource attribute that Tempo uses for the Service column.
-            openlit.init(
+            # pricing_json is always a local path (bundled or settings override) so startup
+            # does not depend on public GitHub egress (see issue #475).
+            _openlit.init(
                 application_name="cuga",
                 capture_message_content=False,
+                pricing_json=pricing_json,
             )
 
             # Security: Uninstrument FastAPI and httpx to prevent HTTP-level spans

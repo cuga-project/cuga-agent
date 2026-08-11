@@ -2,6 +2,11 @@ services:
   - amazon:
       description: Provides access to Amazon's services. This could include e-commerce functionalities like product search, listing, and order management, or cloud services via AWS.
       url: http://localhost:9000/amazon/openapi.json
+      api_overrides:
+        - operation_id: download_order_receipt_order_receipt__order_id__get
+          drop_query_parameters: ["file_system_access_token"]
+        - operation_id: download_prime_subscription_receipt_prime_subscriptions__prime_subscription_id__receipt_get
+          drop_query_parameters: ["file_system_access_token"]
       auth:
         type: oauth2
   - admin:
@@ -51,11 +56,27 @@ services:
   - splitwise:
       description: Enables interaction with a service like Splitwise for managing shared expenses, tracking debts, and settling payments between individuals or groups.
       url: http://localhost:9000/splitwise/openapi.json
+      api_overrides:
+        - operation_id: record_expense_expenses_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: attach_expense_receipt_file_expenses__expense_id__file_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: download_expense_receipt_file_expenses__expense_id__file_get
+          drop_query_parameters: ["file_system_access_token"]
+        - operation_id: record_payment_payments_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: attach_payment_receipt_file_payments__payment_id__file_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: download_payment_receipt_file_payments__payment_id__file_get
+          drop_query_parameters: ["file_system_access_token"]
       auth:
         type: oauth2
   - spotify:
       description: Allows for interaction with the Spotify music streaming service, potentially including music playback control, playlist management, and searching for tracks or artists.
       url: http://localhost:9000/spotify/openapi.json
+      api_overrides:
+        - operation_id: download_premium_subscription_receipt_premium_subscriptions__premium_subscription_id__receipt_get
+          drop_query_parameters: ["file_system_access_token"]
       auth:
         type: oauth2
   - supervisor:
@@ -66,10 +87,22 @@ services:
   - todoist:
       description: Enables interaction with a to-do list or task management application like Todoist, allowing for creating, updating, and organizing tasks.
       url: http://localhost:9000/todoist/openapi.json
+      api_overrides:
+        - operation_id: post_task_comment_tasks__task_id__comments_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: upload_attachment_task_comments__task_comment_id__attachments_post
+          drop_request_body_parameters:  ["file_system_access_token"]
+        - operation_id: download_attachment_task_comments__task_comment_id__attachments__attachment_file_name__get
+          drop_query_parameters: ["file_system_access_token"]
       auth:
         type: oauth2
   - venmo:
       description: Allows for interaction with a peer-to-peer payment service like Venmo, enabling functionalities such as sending and receiving money or viewing transaction history. Peer-to-peer payments. If recipient is identified by **proper name** or relationship, you **must** first get contact info via the phone app.
       url: http://localhost:9000/venmo/openapi.json
+      api_overrides:
+        - operation_id: download_bank_transfer_receipt_bank_transfers__bank_transfer_id__receipt_get
+          drop_query_parameters: ["file_system_access_token"]
+        - operation_id: download_transaction_receipt_transactions__transaction_id__receipt_get
+          drop_query_parameters: ["file_system_access_token"]
       auth:
         type: oauth2

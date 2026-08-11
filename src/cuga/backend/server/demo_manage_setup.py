@@ -1,6 +1,5 @@
 """Helper to setup agent config (draft + v1) for demo and demo_crm with manage experience."""
 
-import asyncio
 import json
 import logging
 import os
@@ -465,7 +464,9 @@ def setup_demo_manage_config(
     filesystem: bool = True,
 ) -> None:
     """
-    Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
+    Setup agent config (draft + v1) for demo or demo_crm. Resets the config db and
+    reseeds defaults unless storage.preserve_configs_on_startup indicates existing
+    tenant/instance/agent rows should be preserved (see resolve_preserve_existing).
     Uses same SSE links as cli for email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
@@ -475,8 +476,11 @@ def setup_demo_manage_config(
 
     from cuga.backend.server.config_store import (
         reset_config_db,
+        resolve_preserve_existing,
+        run_sync,
         save_config,
         save_draft,
+        should_preserve_existing_configs,
     )
 
     if demo_type == "demo_knowledge":
@@ -523,7 +527,10 @@ def setup_demo_manage_config(
         "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
         "What capabilities does the platform highlight on-premises use?",
     ]
-    reset_config_db()
+
+    preserve_existing = run_sync(resolve_preserve_existing(agent_id))
+    if not preserve_existing:
+        reset_config_db()
 
     # Only wipe knowledge data when explicitly requested (--reset flag).
     # This preserves uploaded documents across normal restarts.
@@ -738,11 +745,20 @@ def setup_demo_manage_config(
     if filesystem:
         config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
+    if preserve_existing:
+        return
+
     async def _setup():
         await save_draft(config, agent_id)
         await save_config(config, agent_id)
 
-    asyncio.run(_setup())
+    logger.info(
+        "Seeding agent configs from defaults (agent=%r, preserve_gate=%s, mode=%s)",
+        agent_id,
+        should_preserve_existing_configs(),
+        getattr(settings.storage, "mode", "local"),
+    )
+    run_sync(_setup())
 
 
 # Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.
