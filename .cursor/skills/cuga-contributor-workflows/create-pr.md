@@ -12,15 +12,31 @@ git status --porcelain
 
 If this returns any output, **STOP**. Commit or stash first. Do not create the PR until clean.
 
-### Unpushed commits
+### Resolve branch and origin repo
 
 ```bash
-git rev-list --count @{u}..HEAD
+branch="$(git branch --show-current)"
+origin_repo="$(gh repo view origin --json nameWithOwner -q .nameWithOwner)"
 ```
 
-If the count is greater than zero, **STOP**. Push first (`git push origin <branch-name>`). Do not create the PR until pushed.
+### Unpushed commits
 
-Only if both checks pass, continue.
+Prefer explicit `origin/<branch>` over `@{u}` (upstream may be unset or point elsewhere).
+
+```bash
+if ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+  echo "No origin/$branch yet. After user confirmation: git push -u origin \"$branch\""
+  # STOP until pushed with -u
+else
+  git rev-list --count "origin/$branch"..HEAD
+fi
+```
+
+If there is no `origin/<branch>`, obtain confirmation and push with `git push -u origin <branch-name>` before continuing.
+
+If the rev-list count is greater than zero, **STOP**. Push first (`git push origin <branch-name>`). Do not create the PR until pushed.
+
+Only if both checks pass (clean tree AND branch matches origin), continue.
 
 ## Step 2: Create the pull request
 
@@ -33,10 +49,17 @@ Only if both checks pass, continue.
    - Root Cause / Solution (bugfixes)
    - Testing
    - Checklist
-4. Create:
+4. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown):
 
 ```bash
-gh pr create --base main --title "<title in commit convention>" --body "<filled template>"
+title="<title in commit convention>"
+body_file="$(mktemp)"
+cat >"$body_file" <<'EOF'
+<filled template>
+EOF
+
+gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file"
+rm -f "$body_file"
 ```
 
 Return the PR URL to the user.
