@@ -85,21 +85,19 @@ def _apply_demo_skills_env() -> None:
         os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
 
 
-def _apply_palette_supervisor_env() -> None:
-    """Deck-builder preset: supervisor coordination on top of the skills env.
+def _apply_palette_env() -> None:
+    """Deck-builder preset: the skills environment, plus what a deck needs.
 
-    Layers on `_apply_demo_skills_env` (skills + the shell tool the palette
-    skill drives through `run_command`). The supervisor loads skills itself —
-    see cuga_supervisor/nodes/prepare_agents_and_prompt.py — gated only on
-    `settings.skills.enabled`.
+    Deliberately thin. `_apply_demo_skills_env` already turns on skills and the
+    shell tool the palette skill drives through `run_command`, and the skill
+    itself carries every instruction about how to build a deck. CUGA's job here
+    is only to make the environment survivable for a task that runs in minutes
+    rather than seconds — anything more would be a second copy of SKILL.md,
+    kept in a different repo, drifting.
 
     The skill shells out to `palette.py` in a Palette checkout. It needs
     $PALETTE_HOME to find it, and the sandbox inherits this environment.
     """
-    os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
-    os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = os.path.join(
-        PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_palette.yaml"
-    )
     # Rendering a deck takes minutes, so the model surfaces progress as prose
     # ("still rendering, I'll keep checking") far more often than a normal task
     # does. With auto-continue off the first such message ends the run — and it
@@ -110,9 +108,6 @@ def _apply_palette_supervisor_env() -> None:
     # the sandbox it outlived even this limit, so it detaches and is polled for
     # like the deck build. 120s is now headroom rather than a bet: it covers a
     # slow poll and the odd `ls`, and no single call is racing it.
-    # The deck build itself never blocks a step — the skill starts it detached
-    # and polls (skills/palette/scripts/deck.py), because no step limit will
-    # ever cover a ten-minute render.
     os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
 
     palette_home = os.environ.get("PALETTE_HOME", "").strip()
@@ -684,7 +679,7 @@ def callback(
 
     - demo: Both registry and demo agent (runs directly)
     - demo_skills: Like demo; enables skills + shell tools; exits if OpenSandbox is unreachable
-    - demo_palette: Deck builder — supervisor mode + the palette skill (needs $PALETTE_HOME)
+    - demo_palette: Deck builder — demo_skills plus the palette skill (needs $PALETTE_HOME)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - travel_agent: Corporate travel planning demo with multi-agent supervisor
@@ -694,7 +689,7 @@ def callback(
     Examples:
       cuga start demo           # Start both registry and demo agent directly
       cuga start demo_skills    # Skills + OpenSandbox shell tools; stops if sandbox server is unreachable
-      cuga start demo_palette   # Deck builder: supervisor + palette skill
+      cuga start demo_palette   # Deck builder: skills env + the palette skill
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start travel_agent   # Start Travel Agent demo (flights, hotels, compliance, approval)
@@ -1156,7 +1151,7 @@ def start(
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_skills: Like demo but sets skills + OpenSandbox shell tools via env; requires OpenSandbox TCP
-      - demo_palette: Like demo_skills plus supervisor mode wired to supervisor_palette.yaml
+      - demo_palette: Like demo_skills, with a longer step and auto-continue for slow builds
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
@@ -1168,7 +1163,7 @@ def start(
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem tools
       - demo_skills: default = digital_sales + skills/OpenSandbox shell tools
-      - demo_palette: default = digital_sales (deck content) + skills + supervisor
+      - demo_palette: default = digital_sales (deck content) + filesystem + skills
       - demo_crm: default = crm + filesystem tools + email
       - manager: default = filesystem tools
       - demo_health: default = oak_health only
@@ -1392,7 +1387,7 @@ def start(
         if service in ("demo_skills", "demo_palette"):
             _apply_demo_skills_env()
             if service == "demo_palette":
-                _apply_palette_supervisor_env()
+                _apply_palette_env()
             if getattr(settings.advanced_features, "sandbox_mode", "opensandbox") == "opensandbox":
                 _uv_sync_opensandbox_extra()
                 if not _check_opensandbox_reachable():

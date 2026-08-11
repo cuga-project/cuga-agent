@@ -445,8 +445,8 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "knowledge": knowledge,
         }
     if preset == "demo_palette":
-        # digital_sales backs the supervisor's content sub-agent (see
-        # supervisor_palette.yaml); filesystem is where built decks land.
+        # digital_sales gives the demo real figures to put in a deck;
+        # filesystem is where built decks land.
         return {
             "crm": False,
             "email": False,
@@ -536,7 +536,7 @@ def setup_demo_manage_config(
     DEMO_PALETTE_STARTERS = [
         "Build a deck explaining retrieval-augmented generation to backend engineers",
         "Draft a plan for a Q3 sales review, show it to me, then build it",
-        "Is the Palette server reachable, and which models is it using?",
+        "Turn these notes into a 5-slide deck: <paste anything>",
     ]
     # Aligns with OOBE doc sovereign_core_overview.pdf (ingested on first demo_knowledge start).
     DEMO_KNOWLEDGE_STARTERS = [

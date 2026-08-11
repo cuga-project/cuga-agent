@@ -1,8 +1,10 @@
-"""The `demo_palette` preset: supervisor mode + the palette agent skill.
+"""The `demo_palette` preset: the skills environment, tuned for a slow task.
 
-The preset is only correct if four things line up — skills on, shell tool on,
-supervisor pointed at a real config, and the deck-content app enabled. Each is
-set in a different file, so this asserts them together.
+The preset is deliberately thin. Palette's SKILL.md says how to build a deck;
+all CUGA does is turn on skills and the shell tool, give a step long enough to
+not cut anything short, and warn early about the two environment variables
+whose absence otherwise surfaces minutes into a build. Each of those is set in
+a different place, so they are asserted together here.
 """
 
 from __future__ import annotations
@@ -11,16 +13,24 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
 
 from cuga.backend.server.demo_manage_setup import get_default_apps_for_preset
 from cuga.cli.main import (
     _apply_demo_skills_env,
-    _apply_palette_supervisor_env,
+    _apply_palette_env,
     validate_service,
 )
 
 PRESET = "demo_palette"
+
+
+def palette_only_env() -> set[str]:
+    """The variables the preset's own layer sets, isolated from demo_skills'."""
+    before = set(os.environ)
+    _apply_palette_env()
+    return set(os.environ) - before | {
+        k for k in os.environ if k.startswith("DYNACONF_SUPERVISOR__")
+    }
 
 
 @pytest.fixture
@@ -30,7 +40,7 @@ def palette_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         if key.startswith(("DYNACONF_SKILLS__", "DYNACONF_SUPERVISOR__", "DYNACONF_ADVANCED_FEATURES__")):
             monkeypatch.delenv(key, raising=False)
     _apply_demo_skills_env()
-    _apply_palette_supervisor_env()
+    _apply_palette_env()
     return dict(os.environ)
 
 
@@ -49,7 +59,7 @@ class TestPresetRegistration:
 @pytest.mark.unit
 class TestPresetEnvironment:
     def test_skills_are_enabled(self, palette_env: dict[str, str]) -> None:
-        """The supervisor gates skill loading on settings.skills.enabled alone."""
+        """Skill loading is gated on settings.skills.enabled and nothing else."""
         assert palette_env["DYNACONF_SKILLS__ENABLED"] == "true"
 
     def test_shell_tool_is_enabled(self, palette_env: dict[str, str]) -> None:
@@ -81,13 +91,13 @@ class TestPresetEnvironment:
         which costs a model call and reads as a skill bug.
         """
         monkeypatch.delenv("PALETTE_HOME", raising=False)
-        assert any("PALETTE_HOME" in m for m in self._warnings_from(_apply_palette_supervisor_env))
+        assert any("PALETTE_HOME" in m for m in self._warnings_from(_apply_palette_env))
 
     def test_it_warns_when_palette_home_points_somewhere_wrong(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("PALETTE_HOME", str(tmp_path))
-        messages = self._warnings_from(_apply_palette_supervisor_env)
+        messages = self._warnings_from(_apply_palette_env)
         assert any("no palette.py" in m for m in messages)
 
     def test_it_warns_when_the_model_key_is_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,7 +107,7 @@ class TestPresetEnvironment:
         error that looks like Palette's fault rather than a missing export.
         """
         monkeypatch.delenv("RITS_API_KEY", raising=False)
-        assert any("RITS_API_KEY" in m for m in self._warnings_from(_apply_palette_supervisor_env))
+        assert any("RITS_API_KEY" in m for m in self._warnings_from(_apply_palette_env))
 
     def test_a_configured_environment_warns_about_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -108,7 +118,7 @@ class TestPresetEnvironment:
         monkeypatch.setattr(
             "os.path.isfile", lambda p: True if p.endswith("palette.py") else os.path.exists(p)
         )
-        messages = self._warnings_from(_apply_palette_supervisor_env)
+        messages = self._warnings_from(_apply_palette_env)
         assert not [m for m in messages if "PALETTE_HOME" in m or "RITS_API_KEY" in m]
 
     def test_natural_language_auto_continue_is_on(self, palette_env: dict[str, str]) -> None:
@@ -138,29 +148,44 @@ class TestPresetEnvironment:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """setdefault, like auto-continue — a longer limit set for debugging survives."""
-        from cuga.cli.main import _apply_palette_supervisor_env
+        from cuga.cli.main import _apply_palette_env
 
         monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "600")
-        _apply_palette_supervisor_env()
+        _apply_palette_env()
         assert os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT"] == "600"
 
     def test_auto_continue_defers_to_an_explicit_setting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """setdefault, not assignment — someone debugging turn-by-turn keeps control."""
-        from cuga.cli.main import _apply_palette_supervisor_env
+        from cuga.cli.main import _apply_palette_env
 
         monkeypatch.setenv("DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE", "false")
-        _apply_palette_supervisor_env()
+        _apply_palette_env()
         assert os.environ["DYNACONF_ADVANCED_FEATURES__CUGA_LITE_NL_AUTO_CONTINUE"] == "false"
 
-    def test_supervisor_is_enabled_and_configured(self, palette_env: dict[str, str]) -> None:
-        assert palette_env["DYNACONF_SUPERVISOR__ENABLED"] == "true"
-        assert Path(palette_env["DYNACONF_SUPERVISOR__CONFIG_PATH"]).is_file()
+    def test_the_preset_does_not_restate_the_skill(self) -> None:
+        """CUGA configures the environment. It never explains how to build a deck.
 
-    def test_config_path_is_absolute(self, palette_env: dict[str, str]) -> None:
-        """The demo server is spawned from a different cwd than the CLI."""
-        assert Path(palette_env["DYNACONF_SUPERVISOR__CONFIG_PATH"]).is_absolute()
+        There used to be a supervisor config here carrying a deck-builder
+        persona: load the skill, honour the confirmation gate, start the build
+        detached and poll. Every line of that already lived in Palette's
+        SKILL.md, and this copy went stale the moment the skill changed — it
+        still described the deck build detaching after the plan started
+        detaching too.
+
+        One source of truth, and it ships with Palette.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        stray = list(repo.glob("src/**/supervisor_palette.yaml"))
+        assert not stray, f"a palette persona config is back: {stray}"
+
+        # The env layer is config only. Prose for the model would have to reach
+        # it through a supervisor config, so there must not be one.
+        assert "DYNACONF_SUPERVISOR__CONFIG_PATH" not in palette_only_env(), (
+            "the preset points the supervisor at a config, which is where "
+            "instructions duplicating SKILL.md lived last time"
+        )
 
     def test_a_misconfigured_environment_never_raises(
         self, monkeypatch: pytest.MonkeyPatch
@@ -172,14 +197,13 @@ class TestPresetEnvironment:
         """
         monkeypatch.delenv("PALETTE_HOME", raising=False)
         monkeypatch.delenv("RITS_API_KEY", raising=False)
-        _apply_palette_supervisor_env()  # must not raise
+        _apply_palette_env()  # must not raise
 
 
 @pytest.mark.unit
 class TestPresetApps:
     def test_deck_content_and_workspace_apps_are_on(self) -> None:
         apps = get_default_apps_for_preset(PRESET)
-        assert apps["digital_sales"] is True, "the supervisor's content sub-agent needs it"
         assert apps["filesystem"] is True, "built decks land in the workspace"
 
     def test_unrelated_demo_apps_stay_off(self) -> None:
@@ -189,40 +213,6 @@ class TestPresetApps:
     def test_preset_is_known_to_the_apps_resolver(self) -> None:
         """An unknown preset silently falls through to a generic default."""
         assert get_default_apps_for_preset(PRESET) != get_default_apps_for_preset("not_a_preset")
-
-
-@pytest.mark.unit
-class TestSupervisorConfig:
-    @pytest.fixture
-    def config(self, palette_env: dict[str, str]) -> dict:
-        return yaml.safe_load(Path(palette_env["DYNACONF_SUPERVISOR__CONFIG_PATH"]).read_text())
-
-    def test_parses_into_the_shape_the_loader_expects(self, config: dict) -> None:
-        assert isinstance(config.get("agents"), list)
-        for agent in config["agents"]:
-            assert agent.get("name") and agent.get("description")
-
-    def test_sub_agent_apps_match_the_preset(self, config: dict) -> None:
-        """An app named here but disabled in the preset yields an agent with no tools."""
-        enabled = {name for name, on in get_default_apps_for_preset(PRESET).items() if on}
-        for agent in config["agents"]:
-            for app in agent.get("apps", []):
-                assert app in enabled, f"{agent['name']} wants {app!r}, which the preset does not start"
-
-    def test_supervisor_instructions_route_through_the_skill(self, config: dict) -> None:
-        instructions = config["supervisor"]["special_instructions"]
-        assert "palette" in instructions.lower()
-        assert "pptxgenjs" in instructions, "must forbid hand-building decks"
-
-    def test_supervisor_states_the_confirmation_gate(self, config: dict) -> None:
-        """Building an unapproved plan burns minutes on the wrong deck."""
-        instructions = config["supervisor"]["special_instructions"]
-        assert "explicit agreement before building" in instructions
-        assert "never a courtesy" in instructions or "required, not a courtesy" in instructions
-
-    def test_supervisor_knows_builds_outlast_a_step(self, config: dict) -> None:
-        """A blocking build is killed part-way and the work is thrown away."""
-        assert "detached and poll" in config["supervisor"]["special_instructions"]
 
 
 @pytest.mark.unit

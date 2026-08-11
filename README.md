@@ -443,7 +443,9 @@ For settings you keep beyond a one-off run, configure `[skills]` and `[advanced_
 
 ### `cuga start demo_palette` — a skill-backed agent
 
-A worked example of a skill wired into a purpose-built agent rather than the generic skills demo. **`demo_palette`** starts CUGA in **supervisor mode** as a *Deck Builder*: the supervisor owns the [`palette`](https://github.com/IBM/project-palette) skill and turns a request into a rendered `.pptx`, delegating to a sub-agent for the figures that go on the slides.
+A worked example of consuming an externally-owned skill. **`demo_palette`** is the `demo_skills` environment presented as a *Deck Builder* — its own greeting, starter prompts, and identity — with the [`palette`](https://github.com/IBM/project-palette) skill installed and two settings raised for a task measured in minutes.
+
+**What CUGA deliberately does not do here is explain how to build a deck.** That lives in Palette's `SKILL.md` and travels with the skill. An earlier version of this preset carried a supervisor persona restating it — load the skill, honour the confirmation gate, poll the build — and that copy went stale the first time the skill changed. Config here, instructions there.
 
 **The skill lives in the Palette repo** and is installed here — CUGA consumes it, and never holds a second copy that can drift. Either way of installing it lands the same folder at `.cuga/skills/palette`:
 
@@ -469,9 +471,7 @@ cuga start demo_palette
 
 Both are checked at startup and each missing one is named in a warning, because the failure otherwise surfaces minutes later as a build that cannot reach the models.
 
-The preset layers supervisor coordination on top of the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on, and `[supervisor] config_path` pointed at [`supervisor_palette.yaml`](src/cuga/backend/tools_env/registry/config/supervisor_palette.yaml). Edit that file to change which sub-agents supply deck content.
-
-Skills load at supervisor level (see [`prepare_agents_and_prompt.py`](src/cuga/backend/cuga_graph/nodes/cuga_supervisor/nodes/prepare_agents_and_prompt.py)), gated only on `[skills] enabled`.
+The preset is the `demo_skills` environment — skills on, shell tool on (the skill drives a CLI through `run_command`), filesystem tools on — plus the two settings below and the deck-builder presentation. Skill loading is gated on `[skills] enabled` and nothing else.
 
 **Two settings the preset raises**, both because a deck is minutes of polling rather than a handful of calls, and both applied with `setdefault` so an explicit env var still wins:
 
