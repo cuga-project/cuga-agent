@@ -145,9 +145,19 @@ class CoreGraphAdapter(ABC):
         Default: empty (Supervisor and any adapter that hasn't opted in)."""
         return frozenset()
 
-    def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:
-        """Side-effect hook called after code extraction.  Default: no-op.
-        Lite uses this to record tracker steps."""
+    def on_response_processed(
+        self,
+        state: Any,
+        code: Optional[str],
+        content: str,
+        reasoning: Optional[str] = None,
+    ) -> None:
+        """Side-effect hook called after code extraction.
+
+        ``reasoning`` is the normalized model reasoning returned alongside
+        ``content``. Default: no-op. Lite uses this to record tracker steps.
+        """
+        pass
 
     def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
         """Return the *value* (not the full key/value pair) for the metadata
