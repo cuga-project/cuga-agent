@@ -1,3 +1,25 @@
-# Default CodeQL setup auto-discovers model extensions under
-# .github/codeql/extensions/*/qlpack.yml (see workspace-path-sanitizers/).
+# CodeQL configuration.
+#
+# IMPORTANT: this file is not currently in use.
+#
+# Code scanning on this repository runs as GitHub-managed *default setup*. Default
+# setup does not read this file, and it does not discover the model extensions under
+# .github/codeql/extensions/ on its own. Anything configured here has no effect until
+# one of the following is done, both of which need repository admin access:
+#
+#   * set the `github-codeql-config-file` repository property to the path of this
+#     file, or
+#   * replace default setup with advanced setup — a workflow that calls
+#     github/codeql-action/init and points it at this file.
+#
+# Whichever route is taken, confirm that the in-repository model pack under
+# .github/codeql/extensions/ is actually loaded. Model packs are normally referenced
+# by published name, and this one is local to the repository. Verify with
+# `codeql resolve extensions <query> --model-packs=cuga-project/workspace-path-sanitizers`,
+# which lists the model files that were loaded.
+#
+# An earlier version of this comment claimed that default setup auto-discovers model
+# extensions. That was wrong, and it hid the fact that the sanitizer model in
+# .github/codeql/extensions/workspace-path-sanitizers/ had never been applied to any
+# analysis. See issue #633.
 name: cuga-agent-codeql
