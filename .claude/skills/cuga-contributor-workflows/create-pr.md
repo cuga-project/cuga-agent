@@ -14,29 +14,42 @@ If this returns any output, **STOP**. Commit or stash first. Do not create the P
 
 ### Resolve branch and origin repo
 
+`origin` is a Git remote name — resolve its URL, then ask `gh` for `OWNER/REPO` (do not pass the literal remote name `origin` to `gh repo view`).
+
 ```bash
 branch="$(git branch --show-current)"
-origin_repo="$(gh repo view origin --json nameWithOwner -q .nameWithOwner)"
+if [ -z "$branch" ]; then
+  echo "Detached HEAD; check out a local branch before creating a PR." >&2
+  exit 1
+fi
+
+origin_url="$(git remote get-url origin)"
+origin_repo="$(gh repo view "$origin_url" --json nameWithOwner -q .nameWithOwner)"
 ```
 
-### Unpushed commits
+### Remote parity (`origin/<branch>`)
 
-Prefer explicit `origin/<branch>` over `@{u}` (upstream may be unset or point elsewhere).
+Prefer `refs/remotes/origin/<branch>` over `@{u}`. Fetch first so the check is not stale.
 
 ```bash
-if ! git rev-parse --verify "origin/$branch" >/dev/null 2>&1; then
+git fetch origin "$branch"
+
+if ! git rev-parse --verify "refs/remotes/origin/$branch^{commit}" >/dev/null 2>&1; then
   echo "No origin/$branch yet. After user confirmation: git push -u origin \"$branch\""
   # STOP until pushed with -u
 else
-  git rev-list --count "origin/$branch"..HEAD
+  # "<behind> <ahead>" relative to refs/remotes/origin/$branch...HEAD
+  git rev-list --left-right --count "refs/remotes/origin/$branch...HEAD"
 fi
 ```
 
 If there is no `origin/<branch>`, obtain confirmation and push with `git push -u origin <branch-name>` before continuing.
 
-If the rev-list count is greater than zero, **STOP**. Push first (`git push origin <branch-name>`). Do not create the PR until pushed.
+If **ahead** is greater than zero, **STOP**. Push first (`git push origin <branch-name>`).
 
-Only if both checks pass (clean tree AND branch matches origin), continue.
+If **behind** is greater than zero, **STOP**. Update the local branch (pull/rebase) before creating the PR.
+
+Only if the tree is clean and both counts are zero, continue.
 
 ## Step 2: Create the pull request
 
@@ -54,12 +67,12 @@ Only if both checks pass (clean tree AND branch matches origin), continue.
 ```bash
 title="<title in commit convention>"
 body_file="$(mktemp)"
+trap 'rm -f "$body_file"' EXIT
 cat >"$body_file" <<'EOF'
 <filled template>
 EOF
 
 gh pr create --repo "$origin_repo" --base main --title "$title" --body-file "$body_file"
-rm -f "$body_file"
 ```
 
 Return the PR URL to the user.
