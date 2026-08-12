@@ -30,6 +30,7 @@ from langchain_ibm.chat_models import ChatWatsonx
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
+from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import PydanticOutputParser
 
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import (
@@ -73,6 +74,27 @@ def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
         and "'parsed'" in msg
         and "refusal" in msg.lower()
         and "Received message:" in msg
+    )
+
+
+def _json_schema_unusable(exc: BaseException) -> bool:
+    """Should a failed ``json_schema`` attempt fall back to the json_mode parser?
+
+    An endpoint that does not implement the OpenAI structured-output spec fails in
+    more than one way. Some return an AIMessage with neither ``parsed`` nor
+    ``refusal`` (see above). Others accept ``response_format`` and silently ignore
+    it, answering with prose or with renamed keys — which surfaces as a
+    ``ValidationError`` or an ``OutputParserException`` instead.
+
+    Both mean the same thing: this endpoint will not honour the schema, so retrying
+    the identical request cannot help and the json_mode path should be tried
+    instead. Anything else (auth, rate limit, connection) is a real error and must
+    keep propagating so the caller's retry can do its job (#639).
+    """
+    return (
+        _structured_output_missing_parsed_field(exc)
+        or isinstance(exc, (ValidationError, OutputParserException))
+        or isinstance(exc, json.JSONDecodeError)
     )
 
 
@@ -127,17 +149,25 @@ class BaseAgent(ABC):
 
         json_schema_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
         parser = PydanticOutputParser(pydantic_object=schema)
-        json_mode_chain = prompt_template | llm | parser
+        # The fallback runs the model unconstrained, so the prompt has to carry the
+        # shape itself — a bare parser only validates, it never asks for JSON. Passed
+        # as a partial so the schema's own braces are not read as template variables.
+        json_mode_prompt = (
+            prompt_template + ChatPromptTemplate.from_messages([("system", "{cuga_format_instructions}")])
+        ).partial(cuga_format_instructions=BaseAgent.get_format_instructions(parser))
+        json_mode_chain = json_mode_prompt | llm | parser
 
         async def _invoke_with_fallback(inputs):
             try:
                 output = await json_schema_chain.ainvoke(inputs)
                 return BaseAgent.validate_and_retry_output(output, schema)
             except Exception as exc:
-                if _structured_output_missing_parsed_field(exc):
+                if _json_schema_unusable(exc):
                     logger.warning(
-                        "json_schema structured output not supported by this model endpoint "
-                        "(parsed=None, refusal=None); falling back to json_mode parser"
+                        "json_schema structured output not honoured by this model endpoint "
+                        "({}: {}); falling back to json_mode parser",
+                        type(exc).__name__,
+                        str(exc)[:200],
                     )
                     output = await json_mode_chain.ainvoke(inputs)
                     return BaseAgent.validate_and_retry_output(output, schema)
