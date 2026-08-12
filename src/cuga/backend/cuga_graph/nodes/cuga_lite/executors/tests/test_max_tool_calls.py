@@ -24,6 +24,8 @@ def _set_cap(monkeypatch, cap):
 
 @pytest.mark.unit
 def test_enforce_raises_clear_error_past_cap(monkeypatch):
+    """Past the cap, the error must tell the model what to do instead of
+    simply failing — it is recoverable guidance, not a crash."""
     _set_cap(monkeypatch, 3)
 
     ToolCallTracker.seed_call_budget(0)
@@ -49,6 +51,8 @@ def test_budget_carries_over_from_prior_steps(monkeypatch):
 
 @pytest.mark.unit
 def test_unseeded_context_and_zero_cap_are_not_enforced(monkeypatch):
+    """Two no-op cases: outside a seeded sandbox context (non-CugaLite callers)
+    and with the cap disabled via max_tool_calls = 0."""
     _set_cap(monkeypatch, 1)
 
     # Outside a seeded sandbox context the budget is a no-op.
@@ -78,6 +82,7 @@ async def test_exhaustion_returns_control_to_the_model(monkeypatch):
     _set_cap(monkeypatch, 1)
 
     async def echo(value: int) -> int:
+        """Trivial tool that echoes its argument."""
         return value
 
     tool = StructuredTool.from_function(coroutine=echo, name="echo", description="Echo a value.")
@@ -105,9 +110,12 @@ async def test_exhaustion_returns_control_to_the_model(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_local_call_api_respects_cap(monkeypatch):
+    """End-to-end through the local call_api closure: calls under the cap
+    succeed, the one past it raises."""
     _set_cap(monkeypatch, 2)
 
     async def echo(value: int) -> int:
+        """Trivial tool that echoes its argument."""
         return value
 
     tool = StructuredTool.from_function(coroutine=echo, name="echo", description="Echo a value.")
