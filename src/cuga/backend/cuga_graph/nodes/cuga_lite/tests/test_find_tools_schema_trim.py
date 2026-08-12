@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    PromptUtils,
     Tool,
     _render_find_tools_markdown,
     input_schema_adds_detail,
@@ -318,3 +322,26 @@ def test_render_emits_output_schema_only_when_response_doc_missing():
     )
     assert "**Output Schema:**" in md
     assert '"id"' in md
+
+
+@pytest.mark.unit
+def test_build_shortlister_payload_still_includes_full_schemas():
+    args_schema = MagicMock()
+    args_schema.schema.return_value = {
+        "type": "object",
+        "properties": {"role": {"type": "string", "enum": ["a", "b"]}},
+    }
+    func = SimpleNamespace(
+        _response_schemas={"success": {"type": "object", "properties": {"id": {"type": "integer"}}}},
+        _param_constraints={"role": ["enum: a|b"]},
+    )
+    tool = MagicMock()
+    tool.name = "rich_tool"
+    tool.model_dump.return_value = {"name": "rich_tool", "description": "d"}
+    tool.args_schema = args_schema
+    tool.func = func
+
+    tools_as_dict, _apps = PromptUtils._build_shortlister_payload([tool], [])
+    assert tools_as_dict["rich_tool"]["args_schema"]["properties"]["role"]["enum"] == ["a", "b"]
+    assert "success" in tools_as_dict["rich_tool"]["_response_schemas"]
+    assert tools_as_dict["rich_tool"]["_param_constraints"]["role"] == ["enum: a|b"]
