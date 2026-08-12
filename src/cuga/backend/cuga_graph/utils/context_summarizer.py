@@ -411,6 +411,21 @@ class ContextSummarizer:
         NOTE: This uses LangChain internal APIs (AgentState, Runtime) which may change
         in future versions. Integration tests should catch breaking changes.
 
+        Why pyproject.toml pins ``langchain<1.3.15``:
+
+        When the summary model call fails, langchain 1.3.9-1.3.14 catch the error and hand
+        back the text "Error generating summary: ...". We treat that as a normal summary, so
+        the conversation keeps a placeholder plus the last N messages.
+
+        From 1.3.15 the middleware stops catching that error and lets it out instead. It then
+        reaches the ``except`` in ``summarize_messages``, which throws away every older
+        message and keeps only the last N — no summary, no placeholder. So a single failed
+        summary call turns into the worst state loss we have.
+
+        Staying under 1.3.15 keeps the gentler behaviour. Before lifting the cap, give
+        ``summarize_messages`` a real answer for a failed summary call (retry, or synthesise
+        its own placeholder) so that failure stops meaning "drop the history".
+
         Args:
             typed_messages: List of typed messages for middleware
             original_messages: Original message list for fallback

@@ -6,9 +6,17 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10, <3.14"
 dependencies = [
-    "langchain>=1.0",
+    # >=1.3.9 fixes GHSA-gr75-jv2w-4656 (path traversal / sandbox escape in the file-search
+    # middleware, <=1.3.8).
+    # <1.3.15 because 1.3.15 changed what happens when the summary model call fails:
+    # 1.3.9-1.3.14 return an "Error generating summary" placeholder, 1.3.15 raises instead.
+    # A raise makes us drop the whole conversation history rather than keep a placeholder.
+    # 1.3.9-1.3.14 therefore give us the security fix with no behaviour change.
+    # See _invoke_middleware in cuga/backend/cuga_graph/utils/context_summarizer.py
+    # for the full story and what to fix before lifting the cap.
+    "langchain>=1.3.9,<1.3.15",
     "langchain-ibm>=0.3.9",
-    "langchain-openai",
+    "langchain-openai>=1.1.14",  # GHSA-r7w7-9xr2-qq2r: image-token-counting SSRF guard bypassed via DNS rebinding
     "langchain-core>=1.3.3",  # GHSA-pjwx-r37v-7724: unsafe deserialization via broad load() allowlists (<=1.3.2)
     # GHSA-cq5v-8q36-5273 (OOB heap read) and related aiohttp parser issues fixed in 3.14.3+.
     "aiohttp>=3.14.3",
@@ -60,7 +68,9 @@ dependencies = [
     # ``test_no_tesseract_falls_back_to_easyocr`` documents that this
     # fallback path must remain importable.
     "easyocr",
-    "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
+    # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels.
+    # 2.13.0 fixes GHSA-rrmf-rvhw-rf47 (memory corruption in torch.jit.script, <=2.12.1).
+    "torch>=2.13.0",
     "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=1.0,<2.0",
@@ -92,17 +102,24 @@ constraint-dependencies = [
     "pillow>=12.3.0",  # GHSA-62p4-gmf7-7g93 and related Pillow OOB/DoS CVEs in <=12.2.x
     "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    "setuptools>=78.1.1",  # GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf (path traversal / command injection in <78.1.1)
+    "setuptools>=83.0.0",  # GHSA-h35f-9h28-mq5c (MANIFEST.in bypass via Unicode NFC/NFD collision, <83); earlier GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
     # Security updates for transitive dependencies
-    "authlib>=1.6.9",      # GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
+    "authlib>=1.7.1",      # GHSA-r95x-qfjj-fjj2, GHSA-w8p2-r796-3vmq (OAuth/OIDC open redirect in 1.7.0); earlier GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
+    "idna>=3.15",          # GHSA-65pc-fj4g-8rjx: crafted input to idna.encode() bypasses the CVE-2024-3651 fix (<3.15)
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
     "pyasn1>=0.6.4",       # GHSA-m4p7-r5rc-7g4j, GHSA-8ppf-4f7h-5ppj, GHSA-hm4w-wwcw-mr6r (DoS in <=0.6.3)
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
-    "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
+    # GHSA-fr49-mhgj-crfc (MaxAliasesLimiter bypass via fragment spreads), GHSA-qfwv-87qj-98xq
+    # (circular fragment reference DoS), GHSA-x97m-qp5c-w9xj (GraphiQL leaks headers in URLs).
+    # Earlier: auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2).
+    "strawberry-graphql>=0.315.7",
     "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
     "starlette>=1.3.1",       # GHSA-82w8-qh3p-5jfq (form DoS), GHSA-wqp7-x3pw-xc5r (UNC SSRF on Windows)
     "python-multipart>=0.0.30",  # GHSA-5rvq-cxj2-64vf (querystring DoS); GHSA-pp6c-gr5w-3c5g fixed in 0.0.27+
     "langsmith>=0.8.18",  # GHSA-f4xh-w4cj-qxq8: TracingMiddleware arbitrary file read (<=0.8.17)
+    "langgraph-checkpoint>=4.1.1",  # GHSA-fjqc-hq36-qh5p: unsafe JSON deserialization when loading checkpoints
+    "langgraph-sdk>=0.3.15",  # GHSA-w39p-vh2g-g8g5: unsafe URL path construction
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j: NestedSecretsSettingsSource follows symlinks out of secrets_dir
     "langchain-classic>=1.0.7",  # GHSA-3644-q5cj-c5c7: untrusted prompt manifest deserialization (<=1.0.6)
     "docling>=2.94.0",  # GHSA-q29v-xc37-wh5m: unsafe URI/path handling in HTML backend (<=2.93.x)
     "mako>=1.3.12",           # GHSA-v92g-xgxw-vvmm (// path traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
