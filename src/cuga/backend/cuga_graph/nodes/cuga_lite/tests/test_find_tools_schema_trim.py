@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import input_schema_adds_detail
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    input_schema_adds_detail,
+    should_emit_output_schema,
+)
 
 
 @pytest.mark.unit
@@ -171,3 +174,33 @@ def test_input_schema_adds_detail_false_for_non_dict():
     assert input_schema_adds_detail(None) is False
     assert input_schema_adds_detail([]) is False
     assert input_schema_adds_detail("x") is False
+
+
+@pytest.mark.unit
+def test_should_emit_output_schema_false_when_response_doc_present():
+    assert should_emit_output_schema("Returns (on success)...", {"type": "object"}) is False
+
+
+@pytest.mark.unit
+def test_should_emit_output_schema_false_for_weak_probe_text():
+    assert (
+        should_emit_output_schema(
+            "⚠️ No declared output schema for this tool. Call it ALONE",
+            {"type": "string"},
+        )
+        is False
+    )
+
+
+@pytest.mark.unit
+def test_should_emit_output_schema_true_when_response_doc_empty():
+    assert (
+        should_emit_output_schema("", {"type": "object", "properties": {"id": {"type": "integer"}}}) is True
+    )
+    assert should_emit_output_schema("   ", {"type": "string"}) is True
+
+
+@pytest.mark.unit
+def test_should_emit_output_schema_false_when_both_empty():
+    assert should_emit_output_schema("", {}) is False
+    assert should_emit_output_schema("", None) is False

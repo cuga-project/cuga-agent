@@ -56,6 +56,13 @@ def input_schema_adds_detail(schema: Any) -> bool:
     return _schema_node_adds_detail(schema)
 
 
+def should_emit_output_schema(response_doc: str, output_schema: Any) -> bool:
+    """Emit Output Schema JSON only when Response Schema text is absent."""
+    if response_doc and str(response_doc).strip():
+        return False
+    return isinstance(output_schema, dict) and bool(output_schema)
+
+
 def _non_null_variants(node: dict) -> list:
     variants: list = []
     for key in ("anyOf", "oneOf"):
