@@ -42,7 +42,13 @@ dependencies = [
     "typer>=0.15.3",
     "typer-slim>=0.15.3", # explicit: docling pulls typer meta-package which needs typer-slim
     # <4: fastmcp 4.0.0 is currently beta. Lift to >=4.0.0 once a stable release exists.
-    "fastmcp>=3.2.0,<4",
+    # >=3.3.0 so the fastmcp/ package has exactly one owner. Up to 3.2.x the fastmcp
+    # distribution ships the code itself; from 3.3.0 it is a meta-package that requires
+    # fastmcp-slim[client,server]==<same version>, and fastmcp-slim ships the code.
+    # arize-phoenix pulls pydantic-ai-slim[mcp] -> fastmcp-slim, so on 3.2.x we ended up with
+    # two distributions writing the same fastmcp/ directory: whichever installed last won, and
+    # uninstalling either deleted the shared directory. Same split as typer / typer-slim above.
+    "fastmcp>=3.3.0,<4",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
