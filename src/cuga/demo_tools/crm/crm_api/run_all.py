@@ -7,7 +7,8 @@ import argparse
 import httpx
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.server.openapi import HTTPRoute, OpenAPITool, OpenAPIResource, OpenAPIResourceTemplate
+from fastmcp.utilities.openapi import HTTPRoute
+from fastmcp.server.providers.openapi import OpenAPITool, OpenAPIResource, OpenAPIResourceTemplate
 
 from .main import app
 from .database import init_db

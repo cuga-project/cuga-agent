@@ -42,9 +42,32 @@ def is_tool_choice_none_tool_use_failed(err: Any) -> bool:
     True when the provider rejected the request because the model emitted a tool call
     while tool_choice was none (e.g. Groq 400 tool_use_failed).
     Safe to retry the same plain-text completion call.
+
+    Detects both forms: the stringified error, and a structured provider ``body``
+    dict on the exception (whose ``str()`` may only be the status code).
     """
     err_str = err if isinstance(err, str) else str(err)
-    return "tool_use_failed" in err_str and "Tool choice is none" in err_str
+    if "tool_use_failed" in err_str and "Tool choice is none" in err_str:
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            code_matches = error.get("code") == "tool_use_failed" or "tool_use_failed" in str(error)
+            if code_matches and "Tool choice is none" in str(error.get("message") or ""):
+                return True
+    return False
+
+
+def is_ollama_tool_call_parse_error(err: Any) -> bool:
+    """
+    True when Ollama returns a 500 because the model emitted code/text into the
+    tool-call channel and Ollama's parser expected JSON
+    (``error parsing tool call: raw='...' ... looking for beginning of value``).
+    Safe to retry the same completion call.
+    """
+    err_str = err if isinstance(err, str) else str(err)
+    return "error parsing tool call" in err_str
 
 
 async def ainvoke_with_retry_on_tool_choice_none(
@@ -57,10 +80,10 @@ async def ainvoke_with_retry_on_tool_choice_none(
         try:
             return await chain.ainvoke(input_data)
         except Exception as e:
-            if attempt < max_attempts - 1 and is_tool_choice_none_tool_use_failed(e):
-                logger.warning(
-                    "Retrying LLM call after tool_use_failed (Tool choice is none, but model called a tool)"
-                )
+            if attempt < max_attempts - 1 and (
+                is_tool_choice_none_tool_use_failed(e) or is_ollama_tool_call_parse_error(e)
+            ):
+                logger.warning("Retrying LLM call after retryable provider tool-call error: {}", e)
                 continue
             raise
 

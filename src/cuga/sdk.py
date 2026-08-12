@@ -80,50 +80,27 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
-    pass
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
-from cuga.backend.llm.models import LLMManager
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-    create_cuga_lite_graph,
-)
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
-    DirectLangChainToolsProvider,
-)
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
-    configure_toolguard_provider,
-    ensure_toolguard_provider,
-    invalidate_toolguard_provider,
-    unwrap_tool_provider,
-)
-from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
-    FinalAnswerAppworldOutput,
-    appworld_plain_post_llm_runnable,
-    load_appworld_final_answer_prompt,
-    load_appworld_plain_final_answer_prompt,
-    parse_appworld_plain_completion,
-)
-from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
-from cuga.backend.cuga_graph.state.agent_state import AgentState
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.messages import BaseMessage
 
-from cuga.backend.cuga_graph.policy.models import (
-    IntentGuard,
-    Playbook,
-    ToolGuide,
-    ToolApproval,
-    OutputFormatter,
-    KeywordTrigger,
-    NaturalLanguageTrigger,
-    IntentGuardResponse,
-    AlwaysTrigger,
-)
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
-from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+_llm_manager_instance = None
 
-llm_manager = LLMManager()
+
+def _get_llm_manager():
+    global _llm_manager_instance
+    if _llm_manager_instance is None:
+        from cuga.backend.llm.models import LLMManager
+
+        _llm_manager_instance = LLMManager()
+    return _llm_manager_instance
+
+
+def __getattr__(name: str):
+    if name == "llm_manager":
+        return _get_llm_manager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class InvokeResult(BaseModel):
@@ -134,7 +111,16 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="List of tool calls made during execution (when track_tool_calls is enabled)",
     )
-    thread_id: str = Field(default="", description="Thread ID used for this invocation")
+    sources: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Citation sources for the answer: [{n, cite_id, filename, page, "
+        "section_path, scope, snippet, score, query}] — populated when knowledge "
+        "citations are enabled and the answer cites retrieved chunks. "
+        "section_path and score are optional (omitted when absent). Stream "
+        "consumers: the FinalAnswerAgent node update carries both final_answer "
+        "and sources.",
+    )
+    thread_id: Optional[str] = Field(default=None, description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
     variables: Dict[str, Any] = Field(
         default_factory=dict,
@@ -180,18 +166,22 @@ class PoliciesManager:
         self._agent = agent
         self._fs_sync = None
 
-    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+    def _agent_tool_provider(self) -> "Optional[ToolProviderInterface]":
         """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
         return getattr(self._agent, "tool_provider", None)
 
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import invalidate_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is not None:
             invalidate_toolguard_provider(provider)
 
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import configure_toolguard_provider
+
         provider = self._agent_tool_provider()
         if provider is None:
             return
@@ -205,13 +195,14 @@ class PoliciesManager:
                 policy_storage=self._agent._policy_system.storage,
             )
 
-    async def _ensure_policy_system(self) -> Optional[PolicyConfigurable]:
+    async def _ensure_policy_system(self) -> "Optional[PolicyConfigurable]":
         """Ensure policy system is initialized if enabled.
 
         Returns:
             PolicyConfigurable if enabled, None if disabled via settings.policy.enabled
         """
         from cuga.config import settings
+        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
         if not settings.policy.enabled:
             return None
@@ -333,6 +324,13 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            IntentGuard,
+            IntentGuardResponse,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_intent_guard")
@@ -427,6 +425,12 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            Playbook,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_playbook")
@@ -526,6 +530,12 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            ToolGuide,
+            KeywordTrigger,
+            AlwaysTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_guide")
@@ -604,6 +614,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guide")
@@ -685,6 +697,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolGuide
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping update_tool_guard")
@@ -777,6 +791,8 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import ToolApproval
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_tool_approval")
@@ -850,6 +866,13 @@ class PoliciesManager:
             )
             ```
         """
+        from cuga.backend.cuga_graph.policy.models import (
+            OutputFormatter,
+            KeywordTrigger,
+            NaturalLanguageTrigger,
+            AlwaysTrigger,
+        )
+
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping add_output_format")
@@ -1081,6 +1104,120 @@ class PoliciesManager:
         logger.info(f"✅ Loaded {result['count']} policies from {file_path} (enabled: {result['enabled']})")
 
         return result
+
+    async def generate_tool_guards_from_json(
+        self,
+        file_path: str,
+        clear_existing: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Load policies from a JSON file and generate ToolGuards for imported Tool Guides.
+
+        Generation is scoped to policy IDs present in the JSON file. Existing policies
+        already in storage are not generated unless their IDs are also present in the file.
+
+        Args:
+            file_path: Path to JSON file containing policies
+            clear_existing: If True, clear all existing policies before loading
+
+        Returns:
+            Dictionary with import summary, source policy IDs, generated results,
+            skipped policies, errors, and overall status.
+        """
+        from cuga.backend.cuga_graph.policy.utils import extract_policies_data_from_json
+        from cuga.backend.server import tool_guard_generation
+
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping generate_tool_guards_from_json")
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": ["Policy system is disabled"]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": ["Policy system is disabled"],
+            }
+
+        try:
+            extracted = extract_policies_data_from_json(file_path)
+        except Exception as exc:
+            error_msg = f"Failed to read policies from {file_path}: {exc}"
+            logger.error(error_msg)
+            return {
+                "status": "error",
+                "import": {"count": 0, "enabled": True, "errors": [error_msg]},
+                "source_policy_ids": [],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+        apply_result = await apply_policies_data_to_storage(
+            policy_system.storage,
+            extracted["policies"],
+            clear_existing=clear_existing,
+            filesystem_sync=None,
+        )
+        import_result = {
+            "count": apply_result["count"],
+            "enabled": extracted["enabled"],
+            "errors": [*extracted["errors"], *apply_result["errors"]],
+        }
+
+        await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
+
+        runtime_tool_provider = self._agent_tool_provider()
+        if runtime_tool_provider is None:
+            error_msg = "Tool provider is not initialized"
+            return {
+                "status": "error",
+                "import": import_result,
+                "source_policy_ids": extracted["policy_ids"],
+                "generated": {},
+                "skipped": [],
+                "errors": [error_msg],
+            }
+
+        _model = None
+        _llm_config = getattr(self._agent, "llm_config", None)
+        if _llm_config:
+            try:
+                from cuga.backend.llm.models import create_llm_from_config
+
+                _model = create_llm_from_config(_llm_config)
+            except Exception:
+                logger.warning(
+                    "Failed to build model from llm_config for ToolGuard generation; using default"
+                )
+
+        generation_agent = tool_guard_generation.build_tool_guard_generation_agent(
+            policy_system=policy_system,
+            tool_provider=runtime_tool_provider,
+            model=_model,
+        )
+        batch_result = await tool_guard_generation.generate_tool_guards_for_policies(
+            policy_system=policy_system,
+            policy_ids=extracted["policy_ids"],
+            generation_agent=generation_agent,
+        )
+
+        result_errors = [*import_result.get("errors", []), *batch_result.get("errors", [])]
+        status = batch_result.get("status", "error")
+        if result_errors and status == "ok":
+            status = "partial"
+
+        return {
+            "status": status,
+            "import": import_result,
+            "source_policy_ids": extracted["policy_ids"],
+            "generated": batch_result.get("generated", {}),
+            "skipped": batch_result.get("skipped", []),
+            "errors": result_errors,
+        }
 
     async def clear(self) -> bool:
         """
@@ -1593,16 +1730,17 @@ class CugaAgent:
     def __init__(
         self,
         tools: Optional[List[BaseTool]] = None,
-        tool_provider: Optional[ToolProviderInterface] = None,
+        tool_provider: "Optional[ToolProviderInterface]" = None,
         model: Optional[BaseChatModel] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
-        policy_system: Optional[PolicyConfigurable] = None,
+        policy_system: "Optional[PolicyConfigurable]" = None,
         special_instructions: Optional[str] = None,
         cuga_folder: Optional[str] = None,
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
+        enable_citations: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
     ):
@@ -1621,6 +1759,7 @@ class CugaAgent:
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
+            enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
 
@@ -1668,6 +1807,7 @@ class CugaAgent:
 
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
+        self._enable_citations = enable_citations  # None = follow knowledge settings
 
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
@@ -1675,6 +1815,9 @@ class CugaAgent:
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
         policy_storage = self._policy_system.storage if self._policy_system is not None else None
         if tool_provider:
             base_provider = tool_provider
@@ -1699,6 +1842,8 @@ class CugaAgent:
         # Initialize model
         if not self._model:
             from cuga.config import settings
+
+            from cuga.backend.llm.models import LLMManager
 
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
@@ -1834,6 +1979,11 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import unwrap_tool_provider
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
+                    DirectLangChainToolsProvider,
+                )
+
                 provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
                 if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
                     existing_names = {t.name for t in provider_for_knowledge.tools}
@@ -1890,6 +2040,10 @@ class CugaAgent:
         # callbacks) as base_callbacks so direct `agent.graph.ainvoke(...)` is also
         # instrumented. invoke()/stream() override these via configurable["callbacks"],
         # which the node prefers when present (no double-counting).
+        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
+        from cuga.backend.cuga_graph.state.agent_state import AgentState
+        from langgraph.graph import StateGraph, START, END
+
         cuga_lite_subgraph = create_cuga_lite_graph(
             model=self._model,
             tool_provider=self.tool_provider,
@@ -2051,11 +2205,18 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
+            if self._enable_citations is not None:
+                config.citations_enabled = self._enable_citations
             from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
 
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            # Gate citation-marker resolution on this agent's flag (module-global
+            # hook — matches the session-override hook's single-process assumption).
+            from cuga.backend.knowledge.sources import set_agent_citations_lookup
+
+            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -2127,6 +2288,8 @@ class CugaAgent:
             ```
         """
         if self._compiled_graph is None:
+            from langgraph.checkpoint.memory import MemorySaver
+
             graph = self._create_graph()
 
             # Always compile with checkpointer and interrupt for HITL support
@@ -2138,6 +2301,51 @@ class CugaAgent:
             logger.debug("Compiled graph with checkpointer and HITL support")
 
         return self._compiled_graph
+
+    async def _dispatch_slash(self, message: str, thread_id: Optional[str]):
+        """SDK-side wrapper around parse_and_dispatch; returns ``None`` on failure so the caller falls back to the planner."""
+        try:
+            from cuga.backend.skills import SkillRegistry, discover_skills
+            from cuga.backend.slash_commands import (
+                DispatchResult,
+                build_slash_registry,
+                parse_and_dispatch,
+            )
+        except Exception:
+            logger.exception("Failed to import slash_commands package")
+            return None
+
+        # Mirror the server's skills gating (main.py _skills_effective_enabled):
+        # when skills are disabled the slash layer stands down entirely and the
+        # raw message reaches the planner unchanged.
+        skills_on = (
+            self._enable_skills
+            if self._enable_skills is not None
+            else getattr(settings.skills, "enabled", False)
+        )
+        if not skills_on:
+            return DispatchResult(kind="passthrough", raw_input=message)
+
+        skill_registry = None
+        try:
+            skill_registry = SkillRegistry(discover_skills(self.cuga_folder))
+        except Exception:
+            logger.exception("Failed to discover skills for slash dispatch")
+
+        slash_registry = build_slash_registry(skill_registry)
+        try:
+            return await parse_and_dispatch(
+                message,
+                slash_registry=slash_registry,
+                skill_registry=skill_registry,
+                thread_id=thread_id,
+            )
+        except Exception:
+            command_name = message.split(maxsplit=1)[0] if message.startswith("/") else "<non-slash>"
+            logger.exception(f"Slash dispatch failed for command {command_name!r}")
+            if message.startswith("/"):
+                raise
+            return None
 
     async def invoke(
         self,
@@ -2210,6 +2418,18 @@ class CugaAgent:
         """
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
+
+        slash_result = None
+        if isinstance(message, str):
+            try:
+                slash_result = await self._dispatch_slash(message, thread_id)
+            except Exception as e:
+                return InvokeResult(
+                    answer="",
+                    tool_calls=[],
+                    thread_id=thread_id,
+                    error=f"Slash dispatch failed: {e}",
+                )
 
         await self._ensure_initialized()
 
@@ -2292,6 +2512,7 @@ class CugaAgent:
 
             # Get tool calls from result (only if tracking was enabled)
             tool_calls = result.get("tool_calls", []) if track_tool_calls else []
+            sources = result.get("sources", []) or []
 
             from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
@@ -2300,6 +2521,7 @@ class CugaAgent:
             return InvokeResult(
                 answer=final_answer,
                 tool_calls=tool_calls,
+                sources=sources,
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
@@ -2308,7 +2530,16 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            new_messages = [HumanMessage(content=message)]
+            from langchain_core.messages import HumanMessage
+
+            # If dispatch resolved a skill, soft-dispatch: the planner input
+            # becomes the translated suggestion ("use the skill named '<name>'
+            # to: <args>") and the planner decides to call ``load_skill``
+            # itself. No messages are injected.
+            if slash_result is not None and slash_result.kind == "skill" and slash_result.planner_input:
+                new_messages = [HumanMessage(content=slash_result.planner_input)]
+            else:
+                new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
 
@@ -2319,6 +2550,18 @@ class CugaAgent:
 
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
+
+        # New user turn (not a HITL resume — that path returns above): scope
+        # citations to this turn's retrieval so an id from an earlier turn can't
+        # resolve in this answer. Mirrors the server's event_stream hook.
+        try:
+            from cuga.backend.knowledge.sources import begin_ledger_turn
+
+            begin_ledger_turn(thread_id)
+        except Exception:
+            pass
+
+        from cuga.backend.cuga_graph.state.agent_state import AgentState
 
         # Try to get existing state for this thread_id
         existing_state = None
@@ -2415,6 +2658,7 @@ class CugaAgent:
         # Fallback: if final_answer is still empty, look at the last non-empty AI message.
         # Reasoning models sometimes return content='' with the answer only in
         # additional_kwargs['reasoning_content'], so check both fields.
+        fallback_sources = None
         if not final_answer:
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
@@ -2426,6 +2670,21 @@ class CugaAgent:
                     final_answer = text
                     logger.debug("final_answer extracted from last AI chat message (fallback)")
                     break
+
+            # Chat transcript keeps raw [sN] markers by design; the
+            # fallback text bypassed FinalAnswerNode resolution, so
+            # resolve here before returning it to the caller.
+            from cuga.backend.knowledge.sources import (
+                get_ledger,
+                has_citation_markers,
+                resolve_citations,
+            )
+
+            if final_answer and has_citation_markers(final_answer):
+                ledger = get_ledger(thread_id, create=False)
+                final_answer, fallback_sources = resolve_citations(final_answer, ledger)
+            else:
+                fallback_sources = []
 
         # Check if graph interrupted for approval
         if not final_answer:
@@ -2443,46 +2702,91 @@ class CugaAgent:
         # Get tool calls from result (only if tracking was enabled)
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
 
+        # Citation sources: normal path reads the graph state; if the empty-answer
+        # fallback fired, its locally-resolved sources supersede the state copy.
+        sources = result.get("sources", []) or []
+        if fallback_sources is not None:
+            sources = fallback_sources
+
         # Extract sub-agent variables for VariableBridge (Phase 8).
         from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
         _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
         if settings.advanced_features.benchmark == "appworld":
-            llm_model = llm_manager.get_model(settings.agent.final_answer.model)
+            from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
+                FinalAnswerAppworldOutput,
+                appworld_plain_post_llm_runnable,
+                is_appworld_action_label,
+                load_appworld_final_answer_prompt,
+                load_appworld_plain_final_answer_prompt,
+                load_appworld_task_classifier_prompt,
+                parse_appworld_plain_completion,
+            )
+            from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
+            from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+            from langchain_core.messages import AIMessage
+
+            llm_model = _get_llm_manager().get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
-            if appworld_plain:
-                pmt = load_appworld_plain_final_answer_prompt(model_config=settings.agent.final_answer.model)
-                chain = (
-                    BaseAgent.get_chain(pmt, llm_model, wx_json_mode="no_format")
-                    | appworld_plain_post_llm_runnable()
-                )
-            else:
-                pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
-                chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
             invoke_payload = {
                 "input": message if isinstance(message, str) else message[-1].content,
                 "last_planner_answer": final_answer,
             }
-            if appworld_plain:
-                final_answer_res = await ainvoke_with_retry_on_tool_choice_none(chain, invoke_payload)
-            else:
-                final_answer_res = await chain.ainvoke(invoke_payload)
-            if appworld_plain:
-                if isinstance(final_answer_res, FinalAnswerAppworldOutput):
-                    final_answer = final_answer_res.final_answer
-                elif isinstance(final_answer_res, AIMessage):
-                    raw = final_answer_res.content
-                    if isinstance(raw, list):
-                        raw = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw)
-                    final_answer = parse_appworld_plain_completion(str(raw))
+            # Same ACTION/QUERY gate as FinalAnswerAgent (plain mode): action tasks → N/A.
+            # Gate extraction on this decision, not on `final_answer == "N/A"` — a planner
+            # that legitimately answers the string "N/A" on a QUERY task must still be
+            # extracted, as it was before the classifier existed.
+            is_action = False
+            if appworld_plain and getattr(settings.advanced_features, "appworld_classify_action_tasks", True):
+                try:
+                    classifier = BaseAgent.get_chain(
+                        load_appworld_task_classifier_prompt(model_config=settings.agent.final_answer.model),
+                        llm_model,
+                        wx_json_mode="no_format",
+                    )
+                    clf_msg = await classifier.ainvoke(invoke_payload)
+                    clf_raw = (clf_msg.content if hasattr(clf_msg, "content") else str(clf_msg)) or ""
+                    if is_appworld_action_label(clf_raw):
+                        logger.info("SDK AppWorld classifier -> ACTION (answer=N/A)")
+                        is_action = True
+                        final_answer = "N/A"
+                    else:
+                        logger.info("SDK AppWorld classifier -> QUERY")
+                except Exception as e:
+                    logger.warning(f"SDK AppWorld action/query classifier failed, defaulting to QUERY: {e}")
+            if not is_action:
+                if appworld_plain:
+                    pmt = load_appworld_plain_final_answer_prompt(
+                        model_config=settings.agent.final_answer.model
+                    )
+                    chain = (
+                        BaseAgent.get_chain(pmt, llm_model, wx_json_mode="no_format")
+                        | appworld_plain_post_llm_runnable()
+                    )
                 else:
-                    final_answer = str(final_answer_res)
-            else:
-                final_answer = final_answer_res.final_answer
+                    pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
+                    chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
+                if appworld_plain:
+                    final_answer_res = await ainvoke_with_retry_on_tool_choice_none(chain, invoke_payload)
+                else:
+                    final_answer_res = await chain.ainvoke(invoke_payload)
+                if appworld_plain:
+                    if isinstance(final_answer_res, FinalAnswerAppworldOutput):
+                        final_answer = final_answer_res.final_answer
+                    elif isinstance(final_answer_res, AIMessage):
+                        raw = final_answer_res.content
+                        if isinstance(raw, list):
+                            raw = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw)
+                        final_answer = parse_appworld_plain_completion(str(raw))
+                    else:
+                        final_answer = str(final_answer_res)
+                else:
+                    final_answer = final_answer_res.final_answer
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,
+            sources=sources,
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
@@ -2585,6 +2889,8 @@ class CugaAgent:
         # Normal streaming case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
+            from langchain_core.messages import HumanMessage
+
             messages = [HumanMessage(content=message)]
         else:
             messages = message
@@ -2651,12 +2957,18 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+            unwrap_tool_provider,
+            invalidate_toolguard_provider,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
+
         base_provider = unwrap_tool_provider(self.tool_provider)
         if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
             self.tool_provider, "add_tool"
         ):
             self.tool_provider.add_tool(tool)
-            invalidate_toolguard_provider(self.tool_provider)
+            invalidate_toolguard_provider(self.tool_provider)  # noqa: F821
             # Reset graph so it gets recreated with new tools
             self._graph = None
             self._compiled_graph = None
@@ -2744,8 +3056,8 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
-        tool_provider: Optional[ToolProviderInterface] = None,
-        policy_system: Optional[PolicyConfigurable] = None,
+        tool_provider: "Optional[ToolProviderInterface]" = None,
+        policy_system: "Optional[PolicyConfigurable]" = None,
         cuga_folder: Optional[str] = None,
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
@@ -2797,6 +3109,8 @@ class CugaSupervisor:
         self._reset_policy_storage = reset_policy_storage
 
         if tool_provider is not None:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
+
             policy_storage = self._policy_system.storage if self._policy_system is not None else None
             self.tool_provider = ensure_toolguard_provider(
                 tool_provider,
@@ -2810,6 +3124,8 @@ class CugaSupervisor:
         # Initialize model from settings if not provided
         if not self._model:
             from cuga.config import settings
+
+            from cuga.backend.llm.models import LLMManager
 
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
@@ -2925,6 +3241,10 @@ class CugaSupervisor:
                 metadata_key="supervisor_metadata",
             )
 
+            # NOTE: no citation resolution here — sub-agents resolve their own
+            # answers via FinalAnswerNode; if supervisor-level retrieval is ever
+            # added, resolve [sN] markers before END (see
+            # FinalAnswerNode.apply_citation_resolution).
             state.sender = callback_name
             return Command(update=state.model_dump(), goto=END)
 
@@ -3095,9 +3415,16 @@ class CugaSupervisor:
             result.get("tool_calls", []) if isinstance(result, dict) else getattr(result, "tool_calls", [])
         )
 
+        # Citation sources bridged from sub-agent state (empty when the
+        # supervisor state doesn't carry them).
+        sources = (
+            result.get("sources", []) if isinstance(result, dict) else getattr(result, "sources", [])
+        ) or []
+
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,
+            sources=sources,
             thread_id=thread_id,
             error=error_msg,
         )

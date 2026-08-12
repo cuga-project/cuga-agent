@@ -253,7 +253,17 @@ class DynamicAgentGraph:
                 model_config["disable_ssl"] = self.llm_config.get(
                     "disable_ssl", model_config.get("disable_ssl", False)
                 )
-                for k in ("auth_type", "auth_header_name"):
+                for k in (
+                    "auth_type",
+                    "auth_header_name",
+                    "max_tokens",
+                    "top_p",
+                    "top_k",
+                    "frequency_penalty",
+                    "presence_penalty",
+                    "stop",
+                    "extra_params",
+                ):
                     if k in self.llm_config and self.llm_config[k] is not None:
                         model_config[k] = self.llm_config[k]
                 model_config.setdefault("max_tokens", 16000)

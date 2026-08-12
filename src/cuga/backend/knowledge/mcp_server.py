@@ -15,6 +15,11 @@ from typing import Any
 import httpx
 from fastmcp import FastMCP
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    VIRTUAL_WORKSPACE_ROOT,
+    resolve_workspace_path,
+)
+
 logger = logging.getLogger("cuga.knowledge")
 
 # --- Configuration ---
@@ -140,6 +145,40 @@ def _get_agent_id() -> str:
     return "cuga-default"
 
 
+_LEGACY_VIRTUAL_ROOTS = ("/tmp", "/private/tmp")
+
+
+def _is_allowed_virtual_absolute(posix_path: str) -> bool:
+    if posix_path == VIRTUAL_WORKSPACE_ROOT or posix_path.startswith(f"{VIRTUAL_WORKSPACE_ROOT}/"):
+        return True
+    return any(
+        posix_path == legacy or posix_path.startswith(f"{legacy}/") for legacy in _LEGACY_VIRTUAL_ROOTS
+    )
+
+
+def _resolve_ingest_file_path(file_path: str, *, thread_id: str) -> Path:
+    """Resolve and confine ingest paths to the agent workspace (CWE-22/73)."""
+    raw = (file_path or "").strip()
+    if not raw:
+        raise ValueError("file_path is required")
+
+    posix = raw.replace("\\", "/")
+    if posix.startswith("/") and not _is_allowed_virtual_absolute(posix):
+        raise ValueError(
+            "file_path must be under /workspace; "
+            f"absolute paths outside the workspace are not allowed: {file_path!r}"
+        )
+
+    resolved = resolve_workspace_path(
+        raw,
+        thread_id=thread_id or None,
+        operation="ingest_knowledge",
+    )
+    if not resolved.is_file():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    return resolved
+
+
 def _identity_headers(agent_id: str = "", thread_id: str = "") -> dict[str, str]:
     """Build identity headers. Uses explicit agent_id if provided, else auto-discovers."""
     aid = agent_id if agent_id else _get_agent_id()
@@ -225,18 +264,21 @@ async def ingest_knowledge(
     Supports PDF, DOCX, XLSX, PPTX, HTML, Markdown, images (with OCR), and more.
     Use only scopes enabled for the current agent.
     When using scope="session", thread_id is required.
+
+    ``file_path`` must resolve under the agent workspace (``/workspace/...`` or a
+    relative path within it). Host-absolute paths such as ``/etc/passwd`` are rejected.
     """
-    import os
+    try:
+        resolved = _resolve_ingest_file_path(file_path, thread_id=thread_id)
+    except (ValueError, FileNotFoundError) as exc:
+        return {"error": str(exc)}
 
-    if not os.path.exists(file_path):
-        return {"error": f"File not found: {file_path}"}
-
-    with open(file_path, "rb") as f:
+    with open(resolved, "rb") as f:
         resp = await _request(
             "POST",
             "/api/knowledge/documents",
             headers=_identity_headers(agent_id, thread_id),
-            files={"files": (os.path.basename(file_path), f)},
+            files={"files": (resolved.name, f)},
             data={"scope": scope, "replace_duplicates": str(replace_duplicates).lower()},
         )
     return resp.json()

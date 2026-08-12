@@ -377,6 +377,9 @@ export function ChatLanding() {
   const [knowledgeEnabled, setKnowledgeEnabled] = useState(false);
   const [agentKnowledgeEnabled, setAgentKnowledgeEnabled] = useState(false);
   const [sessionKnowledgeEnabled, setSessionKnowledgeEnabled] = useState(false);
+  // Agent-level citations flag (default on — hides the per-session toggle
+  // only when the operator explicitly disabled citations in Manage).
+  const [citationsEnabled, setCitationsEnabled] = useState(true);
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
@@ -594,6 +597,7 @@ export function ChatLanding() {
           setKnowledgeEnabled(kEnabled);
           setAgentKnowledgeEnabled(agentKEnabled);
           setSessionKnowledgeEnabled(sessionKEnabled);
+          setCitationsEnabled(contextData.citations_enabled ?? true);
           api.setKnowledgeAgentId(agentIdFallback);
 
           // Eagerly fetch doc count so it's available on first render.
@@ -679,6 +683,7 @@ export function ChatLanding() {
             setKnowledgeEnabled(knowledgeConfig.enabled ?? false);
             setAgentKnowledgeEnabled(knowledgeConfig.agent_level_enabled ?? false);
             setSessionKnowledgeEnabled(knowledgeConfig.session_level_enabled ?? false);
+            setCitationsEnabled(knowledgeConfig.citations_enabled ?? true);
           }
         }
 
@@ -1518,6 +1523,7 @@ export function ChatLanding() {
                   knowledgeEnabled={knowledgeEnabled}
                   agentKnowledgeEnabled={agentKnowledgeEnabled}
                   sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+                  citationsEnabled={citationsEnabled}
                   agentLabel={agentConfig.name}
                 />
               )}

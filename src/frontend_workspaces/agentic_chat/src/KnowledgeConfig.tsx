@@ -15,6 +15,8 @@ import {
   NumberInput,
   Select,
   SelectItem,
+  SelectItemGroup,
+  ActionableNotification,
   InlineNotification,
   InlineLoading,
   Theme,
@@ -32,7 +34,7 @@ import {
   AILabel,
   AILabelContent,
 } from "@carbon/react";
-import { Upload, TrashCan, Search, Renew, Document, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
+import { Upload, TrashCan, Search, Renew, Document, Quotes, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 import * as api from "../../frontend/src/api";
 import { EnvPresetsPanel } from "./EnvPresetsPanel";
@@ -44,7 +46,7 @@ import "./ConfigModal.css";
 interface ReindexTask {
   task_id: string;
   filename?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   file_tasks?: Record<
     string,
     {
@@ -167,6 +169,26 @@ function formatElapsedSeconds(seconds: number): string {
 // Survives modal close + page reload so the user sees their bar continue
 // rather than vanish. Cleared whenever a task lands in a terminal state.
 const ACTIVE_UPLOADS_LS_KEY = "cuga.knowledge.activeUploads";
+// Per-provider FIELD SPEC (module-scope; the Provider <Select> options are
+// authored inline as native optgroups). Each provider carries its own
+// needsKey/needsBaseUrl/keyRequired/modelRequired/cloud so field visibility,
+// required-ness, the security-critical field RESET, and the "not detected"
+// logic all derive from ONE source instead of drifting across parallel lists.
+// (`cloud` = participates in the server's detected env-preset list.)
+const KNOWLEDGE_PROVIDER_ITEMS: any[] = [
+  { id: "auto" },
+  { id: "fastembed" },
+  { id: "ollama", needsKey: true, needsBaseUrl: true },
+  { id: "huggingface" },
+  { id: "openai", needsKey: true, needsBaseUrl: true, cloud: true },
+  { id: "openrouter", needsKey: true, keyRequired: true, modelRequired: true, cloud: true },
+  { id: "litellm", needsKey: true, needsBaseUrl: true, modelRequired: true, cloud: true },
+];
+// Field spec for a provider id (falls back to an empty spec for auto/fastembed/
+// huggingface/unknown, which need no credentials). Single source of truth for
+// every per-provider decision below.
+const providerSpec = (id: string | undefined | null): any =>
+  KNOWLEDGE_PROVIDER_ITEMS.find((it) => it.id === id) ?? {};
 // Drop entries older than 1h to avoid resurrecting tasks the server has
 // long since GC'd. The server's recover_stale_tasks already handles its
 // side; this is the client's belt-and-suspenders.
@@ -280,6 +302,10 @@ interface KnowledgeConfigValues {
   enabled?: boolean;
   agent_level_enabled?: boolean;
   session_level_enabled?: boolean;
+  // Citations toggle — numbered source markers ([1]) with clickable
+  // snippets in answers. Agent-level default; per-session override
+  // lives in the session settings API, not this config.
+  citations_enabled?: boolean;
   rag_profile?: string;
   embedding_provider?: string;
   embedding_model?: string;
@@ -381,7 +407,16 @@ interface KnowledgePanelProps {
   knowledgeReindexNeeded?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
-  onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
+  // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
+  // the tile can render real filenames from millisecond 0 — no
+  // task_xxx flicker waiting for the first /tasks GET to complete.
+  // Backwards-compatible: missing/undefined falls back to placeholder
+  // rows that get enriched by polling, same as before.
+  onReindex?: () => Promise<{
+    count: number;
+    task_ids: string[];
+    tasks?: { task_id: string; filename: string }[];
+  } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
   // Auto-reindex bubbled down from ManagePage: when a draft PATCH
@@ -399,6 +434,18 @@ interface KnowledgePanelProps {
   // without this, the snapshot only updates on Publish, and the banner
   // persists indefinitely after a successful auto-reindex.
   onAutoReindexComplete?: () => void;
+  // Fired when polling reaches terminal state — regardless of success
+  // OR partial failure. Distinct from ``onAutoReindexComplete``:
+  //   - onAutoReindexComplete fires ONLY on full success (5/5 done, 0 failed)
+  //     → ManagePage refreshes snapshot
+  //   - onReindexFinished fires on ANY terminal state (done=true)
+  //     → ManagePage clears ``knowledgeReindexing`` so autosave can resume
+  // The split exists because the snapshot-refresh side-effect is unsafe
+  // on partial-failure (snapshot would claim success that didn't happen),
+  // but the autosave-unblock side-effect is safe either way (workers are
+  // demonstrably no longer running).
+  // Workflow w5i1mbchd / #398 follow-up v2.
+  onReindexFinished?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -458,6 +505,7 @@ export default function KnowledgePanel({
   autoReindexTrigger,
   onAutoReindexConsumed,
   onAutoReindexComplete,
+  onReindexFinished,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
@@ -489,6 +537,7 @@ export default function KnowledgePanel({
   const knowledgeEnabled = knowledgeConfig?.enabled ?? true;
   const agentLevelEnabled = knowledgeEnabled && (knowledgeConfig?.agent_level_enabled ?? true);
   const sessionLevelEnabled = knowledgeEnabled && (knowledgeConfig?.session_level_enabled ?? true);
+  const citationsEnabled = knowledgeEnabled && (knowledgeConfig?.citations_enabled ?? true);
 
   // Documents tab state
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -555,6 +604,12 @@ export default function KnowledgePanel({
     error?: string;
   } | null>(null);
 
+  // Guided "apply a detected provider" flow: after the user clicks Use on an
+  // env preset, walk them through verify-connection → re-index (step 3 gated on
+  // a green test) so they never re-index against an unreachable embedder. Set on
+  // apply; cleared when they switch provider away or the re-index finishes.
+  const [presetGuide, setPresetGuide] = useState<{ provider: string; label: string; openedAt: number } | null>(null);
+
   // === Section-level UI helpers (production polish pass) ===
 
   // Show / hide expert fields. Persisted in localStorage so the user's mode
@@ -576,6 +631,10 @@ export default function KnowledgePanel({
     }
   }, []);
 
+  // NOTE: the effect that auto-opens this disclosure lives AFTER the envPresets
+  // state declaration below — its dependency array reads envPresets, which would
+  // otherwise be in its temporal dead zone here and throw on every render.
+
   // Live URL validation — conservative: empty is OK (optional fields),
   // anything non-empty must start with http:// or https://. Catches the
   // "pasted a hostname without protocol" mistake before save fires.
@@ -594,14 +653,14 @@ export default function KnowledgePanel({
   // them. Errors block save (engine would reject); warnings are advisory.
   type SectionStatus = { kind: "error" | "warning"; reason: string } | null;
   const embeddingsStatus: SectionStatus = (() => {
-    const p = knowledgeConfig?.embedding_provider;
+    const spec = providerSpec(knowledgeConfig?.embedding_provider);
     const model = (knowledgeConfig?.embedding_model || "").trim();
     const apiKey = (knowledgeConfig?.embedding_api_key || "").trim();
     if (baseUrlError) return { kind: "error", reason: `Base URL: ${baseUrlError}` };
-    if ((p === "litellm" || p === "openrouter") && !model) {
+    if (spec.modelRequired && !model) {
       return { kind: "error", reason: "Model is required" };
     }
-    if (p === "openrouter" && !apiKey) {
+    if (spec.keyRequired && !apiKey) {
       return { kind: "error", reason: "API Key is required" };
     }
     if (extraParamsHint) return { kind: "error", reason: extraParamsHint };
@@ -917,9 +976,12 @@ export default function KnowledgePanel({
 
   // Reset test result when any embedding-related field changes (stale result
   // would be misleading — a green check on yesterday's key isn't trustworthy
-  // after the user edits something).
+  // after the user edits something). Also clear the extra-params reserved-key
+  // hint: switching provider resets embedding_extra_params, and a lingering hint
+  // would keep embeddingsStatus in an error state with no visible field to fix.
   useEffect(() => {
     setTestResult(null);
+    setExtraParamsHint(null);
   }, [
     knowledgeConfig?.embedding_provider,
     knowledgeConfig?.embedding_model,
@@ -927,6 +989,21 @@ export default function KnowledgePanel({
     knowledgeConfig?.embedding_base_url,
     knowledgeConfig?.embedding_extra_params,
   ]);
+
+  // Dismiss the guided apply flow once the user switches provider away from the
+  // applied preset, or the re-index THIS guide started has finished. Gate the
+  // done-branch on a run that began after the guide opened — otherwise a stale
+  // `reindexProgress.done` left over from an earlier re-index kills the guide the
+  // instant it appears.
+  useEffect(() => {
+    if (!presetGuide) return;
+    const switchedAway = (knowledgeConfig?.embedding_provider ?? "") !== presetGuide.provider;
+    const freshReindexDone =
+      !!reindexProgress?.done && (reindexProgress.startedAt ?? 0) >= presetGuide.openedAt;
+    if (switchedAway || freshReindexDone) {
+      setPresetGuide(null);
+    }
+  }, [presetGuide, knowledgeConfig?.embedding_provider, reindexProgress?.done, reindexProgress?.startedAt]);
 
   // Run a single embed call against the configured provider — surfaces auth /
   // network / model failures BEFORE the user uploads anything.
@@ -973,26 +1050,59 @@ export default function KnowledgePanel({
   // subscribe). Extracted from the POST flow so a profile-switch migration
   // gets identical progress UI without the user having to click Reindex
   // a second time.
-  const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
+  // #402: merge backend tasks by task_id over the placeholder list so a
+  // partial poll (some tasks not yet visible in metadata) doesn't drop
+  // placeholder rows — the tile keeps showing all N rows from the moment
+  // Re-index fires, enriched with filename + status as they arrive.
+  const mergeTasksById = useCallback(
+    (taskIds: string[], placeholders: ReindexTask[], backendTasks: ReindexTask[]): ReindexTask[] => {
+      const byId = new Map<string, ReindexTask>(placeholders.map((t) => [t.task_id, t]));
+      for (const t of backendTasks) {
+        const enriched = { ...t, filename: getReindexTaskFilename(t) };
+        const prev = byId.get(t.task_id);
+        byId.set(t.task_id, prev ? { ...prev, ...enriched } : enriched);
+      }
+      return taskIds.map(
+        (id) => byId.get(id) ?? { task_id: id, status: "pending" as const },
+      );
+    },
+    [],
+  );
+
+  const armReindexFromTaskIds = useCallback(
+    async (
+      taskIds: string[],
+      total: number,
+      seedTasks?: { task_id: string; filename: string }[],
+    ) => {
     if (!taskIds.length) return;
-    let initialTasks: ReindexTask[] = taskIds.map((id) => ({ task_id: id, status: "pending" as const }));
+    // Seed placeholders with filenames if the POST response carried
+    // them (#402 production sweep). The previous code rendered N rows
+    // of ``task_xxx`` for up to one full polling interval (~2s) before
+    // the first /tasks GET landed and supplied the filenames; with
+    // the seed, the tile shows real names from frame 0.
+    const seedById = new Map<string, string>(
+      (seedTasks ?? []).map((t) => [t.task_id, t.filename]),
+    );
+    const placeholders: ReindexTask[] = taskIds.map(
+      (id): ReindexTask => {
+        const seedFilename = seedById.get(id);
+        return seedFilename
+          ? { task_id: id, status: "pending" as const, filename: seedFilename }
+          : { task_id: id, status: "pending" as const };
+      },
+    );
+    let initialTasks: ReindexTask[] = placeholders;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
-        if (relevantTasks.length > 0) {
-          initialTasks = relevantTasks;
-        }
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
+        initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
-      // Fall back to task IDs until polling resolves filenames.
+      // Fall back to placeholders; polling will enrich as filenames load.
     }
     setReindexProgress({
       taskIds,
@@ -1012,29 +1122,39 @@ export default function KnowledgePanel({
         if (!res.ok) return;
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        // Filter to only our reindex tasks
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
         const completed = relevantTasks.filter((t: ReindexTask) => t.status === "completed").length;
-        const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
+        // Count "cancelled" as terminal/failed (#4). A superseded worker writes
+        // status="cancelled" (engine ReindexSupersededError); if the tile only
+        // counted "failed", completed+failed could never reach taskIds.length,
+        // the poll would never reach done, onReindexFinished would never fire,
+        // and the tile would spin forever with knowledgeReindexing stuck true.
+        // The backend deferred flip already treats cancelled as failed.
+        const failed = relevantTasks.filter(
+          (t: ReindexTask) => t.status === "failed" || t.status === "cancelled",
+        ).length;
         const done = completed + failed >= taskIds.length;
 
-        setReindexProgress((prev) => ({
-          taskIds,
-          total: taskIds.length,
-          completed,
-          failed,
-          tasks: relevantTasks,
-          done,
-          // Preserve the wall-clock start stamp set when the operation kicked
-          // off; ``_reindexStartedAt`` only exists in the outer scope of the
-          // ``handleReindex`` invocation and would be undefined here.
-          startedAt: prev?.startedAt ?? Date.now(),
-        }));
+        setReindexProgress((prev) => {
+          const mergedTasks = mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks);
+          // [#402] Per-poll proof of life. If ``rowsRendered`` ever drops
+          // below ``taskIds`` length, the merge regressed. If
+          // ``rowsWithFilename`` stays below taskIds.length past ~1s
+          // after tile-arm, the backend isn't populating ``file_tasks``
+          // — different bug.
+          return {
+            taskIds,
+            total: taskIds.length,
+            completed,
+            failed,
+            // Merge by id so transient polls that don't see every task
+            // (e.g. backend just created task N+1 between our HTTP call
+            // and its insert) don't shrink the tile to fewer rows.
+            tasks: mergedTasks,
+            done,
+            startedAt: prev?.startedAt ?? Date.now(),
+          };
+        });
 
         if (done) {
           if (reindexPollRef.current) clearInterval(reindexPollRef.current);
@@ -1042,6 +1162,11 @@ export default function KnowledgePanel({
           // Refresh document list after reindex completes
           loadDocuments();
           checkHealth();
+          // #398 follow-up v2 (workflow w5i1mbchd): fire onReindexFinished
+          // ALWAYS at terminal state — both success AND partial-failure
+          // mean "workers stopped, parent can resume autosave PATCHes".
+          // Distinct from onAutoReindexComplete which is success-only.
+          onReindexFinished?.();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);
             // Tell the parent to refresh its saved-config snapshot so the
@@ -1051,7 +1176,29 @@ export default function KnowledgePanel({
             // confusing because the engine HAS already re-embedded.
             onAutoReindexComplete?.();
           } else {
-            onToast?.("warning", "Re-index finished", `${completed} succeeded, ${failed} failed.`);
+            // Partial-failure toast: be loud about the data-integrity story.
+            // Production sweep (workflow w5i1mbchd): the deferred flip is
+            // now STRICT (refuses promotion unless ALL tasks succeeded), so
+            // partial failure means the user's previous embedder is STILL
+            // active. Search keeps working on the old vectors. The user
+            // must fix the failing files and Re-index again, or revert.
+            // Crucially: DO NOT call onAutoReindexComplete — that would
+            // refresh the saved-config snapshot to the NEW (unapplied)
+            // config and clear the "Re-index needed" banner, both of
+            // which would lie about the engine's actual state.
+            const failedNames = relevantTasks
+              .filter((t) => t.status === "failed" || t.status === "cancelled")
+              .map((t) => t.filename || t.task_id)
+              .slice(0, 3)
+              .join(", ");
+            const more = failed > 3 ? ` (+${failed - 3} more)` : "";
+            onToast?.(
+              "error",
+              "Re-index didn't complete",
+              `${completed}/${taskIds.length} succeeded; ${failed} failed: ${failedNames}${more}. ` +
+                `Your previous embedder configuration is still active. ` +
+                `Fix the failing file(s) and Re-index again, or revert your config.`,
+            );
           }
         }
       } catch {
@@ -1061,11 +1208,14 @@ export default function KnowledgePanel({
   }, [loadDocuments, checkHealth, onToast]);
 
   // Manual Reindex button path: POST first to get task IDs, then arm.
+  // Thread ``result.tasks`` (POST response carries [{task_id, filename}]
+  // pairs after the #402 production sweep) so the tile renders real
+  // filenames from frame 0 — no task_xxx placeholder window.
   const startReindexWithProgress = useCallback(async () => {
     if (!onReindex) return;
     const result = await onReindex();
     if (!result || !result.task_ids?.length) return;
-    await armReindexFromTaskIds(result.task_ids, result.count);
+    await armReindexFromTaskIds(result.task_ids, result.count, result.tasks);
   }, [onReindex, armReindexFromTaskIds]);
 
   // Server-side auto-reindex path: ManagePage extracts task IDs from a
@@ -2424,6 +2574,41 @@ export default function KnowledgePanel({
                               </Stack>
                             </Stack>
                           </Tile>
+
+                          {/* Citations card */}
+                          <Tile
+                            style={{
+                              borderLeft: citationsEnabled
+                                ? "3px solid var(--cds-support-success)"
+                                : "3px solid var(--cds-border-subtle)",
+                              transition: "border-color 0.15s ease",
+                            }}
+                          >
+                            <Stack gap={3}>
+                              <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", justifyContent: "space-between" }}>
+                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center" }}>
+                                  <Quotes size={20} style={{ color: citationsEnabled ? "var(--cds-support-success)" : "var(--cds-text-disabled)", flexShrink: 0 }} />
+                                  <div>
+                                    <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--cds-text-primary)", margin: 0 }}>
+                                      Citations
+                                    </p>
+                                    <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: "0.125rem 0 0 0" }}>
+                                      Number knowledge sources in answers ([1]) with clickable snippets
+                                    </p>
+                                  </div>
+                                </Stack>
+                                <Toggle
+                                  id="knowledge-citations-enabled"
+                                  aria-label="Citations"
+                                  labelA=""
+                                  labelB=""
+                                  toggled={knowledgeConfig.citations_enabled ?? true}
+                                  onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, citations_enabled: checked })}
+                                  size="sm"
+                                />
+                              </Stack>
+                            </Stack>
+                          </Tile>
                         </Stack>
                       )}
 
@@ -2512,10 +2697,13 @@ export default function KnowledgePanel({
                                   // reason to drop the profile from the selected state. ``Modified``
                                   // tag inside the selected tile signals the drift (see below).
                                   const isSelected = isNamedProfile;
-                                  // True when this is the selected profile AND the user has edited
-                                  // a vector-config field — drives the "Modified" Tag + the in-tile
-                                  // reindex hint. The non-selected reindex hint (offered to OTHER
-                                  // profiles to inform their decision) still uses ``willReindex`` below.
+                                  // "Modified" = this profile is running settings that differ from
+                                  // its packaged defaults (e.g. "standard" with a non-default
+                                  // embedder or chunk size) — a CUSTOMIZATION indicator, independent
+                                  // of publish state (it stays after Publish; a customized profile
+                                  // is still customized). Clears when the vector fields are set back
+                                  // to the profile's defaults. The save-bar "Live" pill separately
+                                  // signals unpublished changes. willReindex reuses the same check.
                                   const isModified = isNamedProfile && !vectorConfigMatches;
                                   const willReindex = !vectorConfigMatches;
                                   return (
@@ -2591,7 +2779,7 @@ export default function KnowledgePanel({
                                           )}
                                           {isModified && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
-                                              Your edits override profile defaults — re-indexing will run on Publish.
+                                              Overrides the profile defaults — re-indexing runs on Publish.
                                             </p>
                                           )}
                                         </Stack>
@@ -2602,6 +2790,7 @@ export default function KnowledgePanel({
                               </Stack>
                             </Stack>
                           )}
+
 
                           {/* ── 4. Re-index: warning, progress, or completion ── */}
                           {agentLevelEnabled && reindexProgress && !reindexProgress.done && (
@@ -2728,41 +2917,27 @@ export default function KnowledgePanel({
                               states now. ``knowledgeStale`` /
                               ``knowledgeReindexDeferred`` keep their roles for
                               the persistent stale cases. */}
-                          {agentLevelEnabled && !reindexProgress && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
-                            <Stack gap={3}>
-                              {/* Two passes on this notice:
-                                    1. Softened from kind="warning" +
-                                       "danger--tertiary" (alarming for a
-                                       routine change).
-                                    2. Then sharpened — "Update existing
-                                       documents" was too soft, sounded
-                                       optional. The action is in fact
-                                       mandatory if the user wants their
-                                       config change to take effect on
-                                       already-indexed documents (new
-                                       uploads use the new config; existing
-                                       ones don't until re-indexed). Title
-                                       leads with that. */}
-                              <InlineNotification
+                          {agentLevelEnabled && !reindexProgress && !presetGuide && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) &&
+                            (onReindex ? (
+                              // Single primitive: the "Re-index now" CTA lives inside the banner.
+                              <ActionableNotification
                                 kind="info"
-                                title="Re-index to apply your changes"
-                                subtitle="Existing documents still use the previous embedder. New uploads will use the new configuration, but already-indexed documents need a re-index to switch."
                                 lowContrast
                                 hideCloseButton
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads use the new configuration, but already-indexed documents need a re-index to switch."
+                                actionButtonLabel={knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
+                                onActionButtonClick={startReindexWithProgress}
                               />
-                              {onReindex && (
-                                <Button
-                                  type="button"
-                                  kind="primary"
-                                  size="sm"
-                                  disabled={knowledgeReindexing}
-                                  onClick={startReindexWithProgress}
-                                >
-                                  {knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
-                                </Button>
-                              )}
-                            </Stack>
-                          )}
+                            ) : (
+                              <InlineNotification
+                                kind="info"
+                                lowContrast
+                                hideCloseButton
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads use the new configuration, but already-indexed documents need a re-index to switch."
+                              />
+                            ))}
 
                           {/* ── 4. Advanced settings toggle ──
                               UX rationale: the basic view is just the
@@ -2790,447 +2965,451 @@ export default function KnowledgePanel({
                               size="sm"
                             />
                             <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
-                              Embeddings, chunking, parsing, retrieval behavior, score & metric, and limits.
+                              Embedding model, chunking, parsing, retrieval behavior, score & metric, and limits.
                             </span>
                           </Stack>
 
                           {/* ── 5. Advanced configuration (only when toggle on) ── */}
                           {showAdvanced && (
                           <Accordion align="start" size="md">
-                            <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
+                            <AccordionItem title={sectionTitle("Embedding model", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
-                                {/* "Detected in your environment" panel lives here
-                                    inside the Embeddings section — same scope as
-                                    the manual Provider Select + API key + base URL
-                                    fields below. Picking a preset here populates
-                                    the manual fields; typing in the manual fields
-                                    overrides the preset. One conceptual surface,
-                                    two modes of entry. */}
-                                {envPresets && envPresets.length > 0 && (
-                                  <EnvPresetsPanel
-                                    presets={envPresets}
-                                    currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
-                                    currentModel={knowledgeConfig.embedding_model ?? ""}
-                                    onApply={(preset) => {
-                                      onPresetApplied?.();
-                                      onKnowledgeConfigChange({
-                                        ...knowledgeConfig,
-                                        embedding_provider: preset.default_provider,
-                                        embedding_model: preset.default_model,
-                                        embedding_api_key: "",
-                                        embedding_base_url: "",
-                                        embedding_extra_params: {},
-                                      });
-                                      onToast?.(
-                                        "success",
-                                        `${preset.label} applied`,
-                                        `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
-                                      );
-                                    }}
-                                    onFocusProviderSelect={() => {
-                                      const el = document.getElementById("knowledge-embedding-provider");
-                                      el?.focus();
-                                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                    }}
-                                  />
-                                )}
-                                <Stack orientation="horizontal" gap={4}>
-                                  <Select
-                                    id="knowledge-embedding-provider"
-                                    labelText="Provider"
-                                    value={knowledgeConfig.embedding_provider ?? "auto"}
-                                    onChange={(e: any) => {
-                                      const newProvider = e.target.value;
-                                      // CRITICAL: when switching providers, RESET fields that are
-                                      // provider-specific. Otherwise a previously-typed base_url
-                                      // (e.g. an IBM LiteLLM proxy URL) silently bleeds into the
-                                      // next provider's request (e.g. OpenRouter), sending your
-                                      // OpenRouter key to the wrong server. Each provider's
-                                      // base_url / api_key / extra_params live in their own world.
-                                      const prev = knowledgeConfig.embedding_provider;
-                                      const isCredentialedProvider = (p: string | undefined) =>
-                                        p === "openai" || p === "openrouter" || p === "litellm" || p === "ollama";
-                                      const needsReset = isCredentialedProvider(prev) || isCredentialedProvider(newProvider);
-                                      onKnowledgeConfigChange({
-                                        ...knowledgeConfig,
-                                        embedding_provider: newProvider,
-                                        ...(needsReset
-                                          ? {
-                                              embedding_base_url: "",
-                                              embedding_api_key: "",
-                                              embedding_extra_params: {},
-                                              embedding_model: "",
-                                            }
-                                          : {}),
-                                      });
-                                    }}
-                                  >
-                                    <SelectItem value="auto" text="Auto-detect" />
-                                    <SelectItem value="fastembed" text="FastEmbed (local)" />
-                                    <SelectItem value="openai" text="OpenAI / OpenAI-compatible (Together, Fireworks, custom proxy)" />
-                                    <SelectItem value="openrouter" text="OpenRouter (single key for many models)" />
-                                    <SelectItem value="litellm" text="LiteLLM (unified — openai/cohere/azure/bedrock/...)" />
-                                    <SelectItem value="huggingface" text="HuggingFace local (PyTorch — Mac GPU / NVIDIA CUDA via GPU Acceleration toggle)" />
-                                    <SelectItem value="ollama" text="Ollama" />
-                                  </Select>
-                                  <TextInput
-                                    id="knowledge-embedding-model"
-                                    labelText="Model"
-                                    value={knowledgeConfig.embedding_model ?? ""}
-                                    onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_model: e.target.value })}
-                                    placeholder={
-                                      knowledgeConfig.embedding_provider === "openrouter"
-                                        ? "REQUIRED — e.g. openai/text-embedding-3-small"
-                                        : knowledgeConfig.embedding_provider === "litellm"
-                                          ? "REQUIRED — e.g. openai/text-embedding-3-small, cohere/embed-english-v3.0"
-                                          : "Auto-detect per provider"
-                                    }
-                                  />
-                                </Stack>
-                                {knowledgeConfig.embedding_provider === "openrouter" && (
+                              <span style={{ fontSize: "0.8125rem", color: "var(--cds-text-primary)" }}>
+                                {knowledgeConfig.embedding_provider && knowledgeConfig.embedding_provider !== "auto" ? (
                                   <>
-                                    <InlineNotification
-                                      kind="info"
-                                      lowContrast
-                                      hideCloseButton
-                                      title="OpenRouter"
-                                      subtitle={
-                                        <>
-                                          Paste any embeddings model id from{" "}
-                                          <a
-                                            href="https://openrouter.ai/models?output_modalities=embeddings"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                          >
-                                            openrouter.ai/models
-                                          </a>{" "}
-                                          (e.g. <code>openai/text-embedding-3-small</code>). Both Model and API Key are required.
-                                        </>
-                                      }
-                                    />
-                                    <TextInput
-                                      id="knowledge-embedding-api-key-openrouter"
-                                      type="password"
-                                      labelText="OpenRouter API Key"
-                                      required
-                                      value={knowledgeConfig.embedding_api_key ?? ""}
-                                      onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
-                                      placeholder="Paste OPENROUTER_API_KEY"
-                                    />
+                                    Using <strong>{knowledgeConfig.embedding_provider}</strong>
+                                    {knowledgeConfig.embedding_model ? ` · ${knowledgeConfig.embedding_model}` : ""}
                                   </>
+                                ) : (
+                                  "Not set up yet — pick an embedder below."
                                 )}
-                                {knowledgeConfig.embedding_provider === "litellm" && (
-                                  <>
-                                    {!((knowledgeConfig.embedding_model || "").trim()) ? (
-                                      <InlineNotification
-                                        kind="warning"
-                                        lowContrast
-                                        hideCloseButton
-                                        title="Model required"
-                                        subtitle={
-                                          <>
-                                            LiteLLM needs a model name with a provider prefix in the <strong>Model</strong> field above
-                                            (e.g. <code>openai/text-embedding-3-small</code>, <code>azure/text-embedding-3-small-1</code>,
-                                            <code>cohere/embed-english-v3.0</code>). Settings won't save until this is filled in.
-                                          </>
-                                        }
-                                      />
-                                    ) : (
-                                      <InlineNotification
+                              </span>
+                              {envPresets && envPresets.length > 0 && (
+                                <EnvPresetsPanel
+                                  presets={envPresets}
+                                  currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
+                                  currentModel={knowledgeConfig.embedding_model ?? ""}
+                                  onApply={(preset) => {
+                                    onPresetApplied?.();
+                                    onKnowledgeConfigChange({
+                                      ...knowledgeConfig,
+                                      embedding_provider: preset.default_provider,
+                                      embedding_model: preset.default_model,
+                                      embedding_api_key: "",
+                                      embedding_base_url: "",
+                                      embedding_extra_params: {},
+                                    });
+                                    onToast?.(
+                                      "success",
+                                      `${preset.label} applied`,
+                                      `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                    );
+                                    // Start the guided verify → re-index flow (single
+                                    // notification rendered right below the presets list).
+                                    setPresetGuide({
+                                      provider: preset.default_provider,
+                                      label: preset.label.replace(" (via LiteLLM)", ""),
+                                      openedAt: Date.now(),
+                                    });
+                                  }}
+                                  onFocusProviderSelect={() => {
+                                    // The Provider select is always mounted now — just focus/scroll it.
+                                    const el = document.getElementById("knowledge-embedding-provider");
+                                    el?.focus();
+                                    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  }}
+                                />
+                              )}
+
+                              {presetGuide &&
+                                (() => {
+                                  // One guarded action ("verify, then re-index"), not a
+                                  // multi-step journey: a single Carbon notification whose lone
+                                  // action button IS the current step. Re-index is gated
+                                  // STRUCTURALLY — the "Re-index now" button only exists once the
+                                  // connection test passes, so there is no disabled control or
+                                  // "do this first" caption to explain.
+                                  const label = presetGuide.label;
+                                  const reindexActive =
+                                    knowledgeReindexing || !!(reindexProgress && !reindexProgress.done);
+                                  const reach = `Reachable — ${testResult?.dim ?? "?"}-dim${
+                                    testResult?.latency_ms != null ? `, ${testResult.latency_ms} ms` : ""
+                                  }`;
+
+                                  // In-flight: the rich per-file reindex progress lives in section 4
+                                  // above; here we only give in-place acknowledgement — never a
+                                  // second progress UI.
+                                  if (reindexActive) {
+                                    return <InlineLoading description="Re-indexing your documents…" />;
+                                  }
+                                  if (testing) {
+                                    return <InlineLoading description={`Testing ${label} connection…`} />;
+                                  }
+                                  if (testResult?.ok) {
+                                    return knowledgeReindexNeeded ? (
+                                      <ActionableNotification
                                         kind="success"
                                         lowContrast
-                                        hideCloseButton
-                                        title="LiteLLM ready"
-                                        subtitle={
-                                          <>
-                                            <code>{knowledgeConfig.embedding_model}</code> will be routed via LiteLLM. See{" "}
-                                            <a
-                                              href="https://docs.litellm.ai/docs/embedding/supported_embedding"
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                            >
-                                              supported models
-                                            </a>
-                                            . API key falls back to env var if empty. Base URL is for self-hosted proxies.
-                                          </>
-                                        }
+                                        hideCloseButton={false}
+                                        onCloseButtonClick={() => setPresetGuide(null)}
+                                        title={reach}
+                                        subtitle="Existing documents still use the old provider — re-index to switch them over."
+                                        actionButtonLabel="Re-index now"
+                                        onActionButtonClick={startReindexWithProgress}
                                       />
-                                    )}
-                                    <Stack orientation="horizontal" gap={4}>
-                                      <TextInput
-                                        id="knowledge-embedding-base-url-litellm"
-                                        labelText="Base URL (optional, for self-hosted LiteLLM proxy)"
-                                        value={knowledgeConfig.embedding_base_url ?? ""}
-                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_base_url: e.target.value })}
-                                        placeholder="e.g. http://localhost:4000"
-                                        invalid={!!baseUrlError}
-                                        invalidText={baseUrlError ?? undefined}
+                                    ) : (
+                                      <ActionableNotification
+                                        kind="success"
+                                        lowContrast
+                                        hideCloseButton={false}
+                                        onCloseButtonClick={() => setPresetGuide(null)}
+                                        title={reach}
+                                        subtitle="Nothing to re-index yet — new uploads will use this provider."
                                       />
-                                      <TextInput
-                                        id="knowledge-embedding-api-key-litellm"
-                                        type="password"
-                                        labelText="API Key (optional — falls back to env var)"
-                                        value={knowledgeConfig.embedding_api_key ?? ""}
-                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
-                                        placeholder="Leave empty to use provider env var"
+                                    );
+                                  }
+                                  if (testResult) {
+                                    return (
+                                      <ActionableNotification
+                                        kind="error"
+                                        lowContrast
+                                        hideCloseButton={false}
+                                        onCloseButtonClick={() => setPresetGuide(null)}
+                                        title={`Couldn't reach ${label}`}
+                                        subtitle={`${testResult.error || "The embedder didn't respond."} Check credentials in your environment, then test again.`}
+                                        actionButtonLabel="Test again"
+                                        onActionButtonClick={handleTestConnection}
                                       />
-                                    </Stack>
-                                  </>
-                                )}
-                                {(knowledgeConfig.embedding_provider === "openai" || knowledgeConfig.embedding_provider === "ollama") && (
-                                  <>
-                                    <InlineNotification
+                                    );
+                                  }
+                                  return (
+                                    <ActionableNotification
                                       kind="info"
                                       lowContrast
-                                      hideCloseButton
-                                      title={knowledgeConfig.embedding_provider === "openai" ? "OpenAI / OpenAI-compatible" : "Ollama"}
-                                      subtitle={
-                                        knowledgeConfig.embedding_provider === "openai" ? (
-                                          <>
-                                            Works for OpenAI direct and any OpenAI-compatible endpoint (Together, Fireworks, IBM LiteLLM proxy).
-                                            Remember to append <code>/v1</code> to the Base URL for most proxies. For OpenRouter use its dedicated provider.
-                                          </>
-                                        ) : (
-                                          <>
-                                            Local Ollama server. Base URL defaults to <code>http://localhost:11434</code>. Model is optional —
-                                            defaults to <code>nomic-embed-text</code>.
-                                          </>
-                                        )
-                                      }
+                                      hideCloseButton={false}
+                                      onCloseButtonClick={() => setPresetGuide(null)}
+                                      title={`Verify ${label} before re-indexing`}
+                                      subtitle={`${knowledgeConfig.embedding_provider}${knowledgeConfig.embedding_model ? ` · ${knowledgeConfig.embedding_model}` : ""} — test the embedder responds so you don't re-index against a broken connection.`}
+                                      actionButtonLabel="Test connection"
+                                      onActionButtonClick={handleTestConnection}
                                     />
-                                    <Stack orientation="horizontal" gap={4}>
-                                      <TextInput
-                                        id="knowledge-embedding-base-url"
-                                        labelText="Base URL"
-                                        value={knowledgeConfig.embedding_base_url ?? ""}
-                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_base_url: e.target.value })}
-                                        placeholder={knowledgeConfig.embedding_provider === "openai" ? "e.g. https://api.together.xyz/v1" : "e.g. http://localhost:11434"}
-                                        helperText={knowledgeConfig.embedding_provider === "openai" ? "Optional — leave empty for OpenAI direct." : "Optional — defaults to localhost:11434."}
-                                        invalid={!!baseUrlError}
-                                        invalidText={baseUrlError ?? undefined}
-                                      />
-                                      <TextInput
-                                        id="knowledge-embedding-api-key"
-                                        type="password"
-                                        labelText="API Key"
-                                        value={knowledgeConfig.embedding_api_key ?? ""}
-                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
-                                        placeholder={knowledgeConfig.embedding_provider === "openai" ? "Leave empty to use OPENAI_API_KEY env" : "Usually unused for Ollama"}
-                                        helperText={knowledgeConfig.embedding_provider === "openai" ? "Optional — falls back to OPENAI_API_KEY env var." : "Optional — Ollama typically doesn't require a key."}
-                                      />
-                                    </Stack>
-                                  </>
-                                )}
+                                  );
+                                })()}
 
-                                {/* === Advanced extra_params editor (for Azure api_version, Bedrock region, ...) === */}
-                                {showAdvanced && (knowledgeConfig.embedding_provider === "litellm" ||
-                                  knowledgeConfig.embedding_provider === "openai") && (
-                                  <TextInput
-                                    id="knowledge-embedding-extra-params"
-                                    labelText="Advanced: Extra provider kwargs (optional, JSON dict)"
-                                    value={
-                                      knowledgeConfig.embedding_extra_params &&
-                                      Object.keys(knowledgeConfig.embedding_extra_params).length > 0
-                                        ? JSON.stringify(knowledgeConfig.embedding_extra_params)
-                                        : ""
-                                    }
-                                    onChange={(e: any) => {
-                                      const raw = e.target.value.trim();
-                                      if (!raw) {
-                                        onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: {} });
-                                        return;
-                                      }
-                                      try {
-                                        const parsed = JSON.parse(raw);
-                                        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                                          // Reject reserved keys that have dedicated fields above —
-                                          // prevents the "I put my model in the JSON" foot-gun the
-                                          // user hit. We surface the rejection via setExtraParamsHint.
-                                          const reserved = ["embedding_model", "model", "embedding_api_key", "api_key", "embedding_base_url", "base_url"];
-                                          const violations = reserved.filter((k) => k in parsed);
-                                          if (violations.length > 0) {
-                                            setExtraParamsHint(
-                                              `Don't put ${violations.join(", ")} here — those go in the named fields above. This box is for provider-specific extras (e.g. api_version for Azure).`,
-                                            );
+                              {/* Save-failure recovery must be visible on the DEFAULT path
+                                  too (the manual block's copy is hidden while collapsed), so a
+                                  failed autosave is never silent/unrecoverable. */}
+                              {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
+                                <ActionableNotification
+                                  kind="error"
+                                  lowContrast
+                                  hideCloseButton={false}
+                                  onCloseButtonClick={() => onDismissDraftSave?.()}
+                                  title="Couldn't save your changes"
+                                  subtitle={draftSaveStatus.error || "No detail returned."}
+                                  actionButtonLabel="Retry"
+                                  onActionButtonClick={() => onRetryDraftSave?.()}
+                                />
+                              )}
+
+                              {(() => {
+                                  const p = knowledgeConfig.embedding_provider ?? "auto";
+                                  const spec = providerSpec(p);
+                                  const modelRequired = !!spec.modelRequired;
+                                  const modelMissing = modelRequired && !(knowledgeConfig.embedding_model || "").trim();
+                                  // Legacy/unknown saved provider → surface it as a real option so the
+                                  // Select shows the true value instead of coercing to Auto-detect.
+                                  const isKnown =
+                                    p === "auto" || KNOWLEDGE_PROVIDER_ITEMS.some((it: any) => it.id === p);
+                                  return (
+                                    <Stack gap={4}>
+                                      <Select
+                                        id="knowledge-embedding-provider"
+                                        labelText="Provider"
+                                        value={p}
+                                        onChange={(e: any) => {
+                                          const newProvider = e.target.value;
+                                          if (newProvider === p) return; // no-op re-select
+                                          // CRITICAL: switching providers ALWAYS resets the
+                                          // provider-specific fields. Otherwise a previously-typed
+                                          // base_url (e.g. an IBM LiteLLM proxy URL) silently bleeds
+                                          // into the next provider's request (e.g. OpenRouter), sending
+                                          // your key to the wrong server; a stale model likewise carries
+                                          // across. Each provider's base_url / api_key / extra_params /
+                                          // model live in their own world — clear them unconditionally.
+                                          onKnowledgeConfigChange({
+                                            ...knowledgeConfig,
+                                            embedding_provider: newProvider,
+                                            embedding_base_url: "",
+                                            embedding_api_key: "",
+                                            embedding_extra_params: {},
+                                            embedding_model: "",
+                                          });
+                                        }}
+                                      >
+                                        {!isKnown && <SelectItem value={p} text={`${p} — custom provider`} />}
+                                        <SelectItem value="auto" text="Auto-detect — best available, chosen for you" />
+                                        <SelectItemGroup label="On your machine">
+                                          <SelectItem value="fastembed" text="FastEmbed — runs locally, no key" />
+                                          <SelectItem value="ollama" text="Ollama — local Ollama server" />
+                                          <SelectItem value="huggingface" text="HuggingFace — local, uses your GPU" />
+                                        </SelectItemGroup>
+                                        <SelectItemGroup label="Hosted API">
+                                          <SelectItem value="openai" text="OpenAI / compatible — OpenAI, Together, Fireworks, proxies" />
+                                          <SelectItem value="openrouter" text="OpenRouter — one key, many models" />
+                                          <SelectItem value="litellm" text="LiteLLM — routes to many providers" />
+                                        </SelectItemGroup>
+                                      </Select>
+                                      <TextInput
+                                        id="knowledge-embedding-model"
+                                        labelText="Model"
+                                        value={knowledgeConfig.embedding_model ?? ""}
+                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_model: e.target.value })}
+                                        placeholder="e.g. openai/text-embedding-3-small"
+                                        helperText={
+                                          modelRequired
+                                            ? "Required — include the provider prefix (e.g. openai/text-embedding-3-small)."
+                                            : p === "ollama"
+                                              ? "Optional — defaults to nomic-embed-text."
+                                              : "Optional — auto-detected for this provider."
+                                        }
+                                        required={modelRequired}
+                                        invalid={modelMissing}
+                                        invalidText="Required for this provider — include the provider prefix."
+                                      />
+                                      {spec.needsKey && (
+                                        <TextInput
+                                          id="knowledge-embedding-api-key"
+                                          type="password"
+                                          labelText={spec.keyRequired ? "API key" : "API key (optional)"}
+                                          value={knowledgeConfig.embedding_api_key ?? ""}
+                                          onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
+                                          placeholder={spec.keyRequired ? "Paste OPENROUTER_API_KEY" : "Leave empty to use the provider's env var"}
+                                          helperText={spec.keyRequired ? "Required for OpenRouter." : "Optional — falls back to the provider's environment variable."}
+                                          required={!!spec.keyRequired}
+                                          invalid={!!spec.keyRequired && !(knowledgeConfig.embedding_api_key || "").trim()}
+                                          invalidText="API key is required for OpenRouter."
+                                        />
+                                      )}
+                                      {spec.needsBaseUrl && (
+                                        <TextInput
+                                          id="knowledge-embedding-base-url"
+                                          labelText="Base URL (optional)"
+                                          value={knowledgeConfig.embedding_base_url ?? ""}
+                                          onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_base_url: e.target.value })}
+                                          placeholder={p === "openai" ? "e.g. https://api.together.xyz/v1" : p === "ollama" ? "e.g. http://localhost:11434" : "e.g. http://localhost:4000"}
+                                          helperText={p === "openai" ? "Optional — leave empty for OpenAI direct; append /v1 for most proxies." : p === "ollama" ? "Optional — defaults to http://localhost:11434." : "Optional — for a self-hosted LiteLLM proxy."}
+                                          invalid={!!baseUrlError}
+                                          invalidText={baseUrlError ?? undefined}
+                                        />
+                                      )}
+                                      {(p === "openrouter" || p === "litellm") && (
+                                        <Button
+                                          kind="ghost"
+                                          size="sm"
+                                          onClick={() =>
+                                            window.open(
+                                              p === "openrouter"
+                                                ? "https://openrouter.ai/models?output_modalities=embeddings"
+                                                : "https://docs.litellm.ai/docs/embedding/supported_embedding",
+                                              "_blank",
+                                              "noopener,noreferrer",
+                                            )
+                                          }
+                                        >
+                                          {p === "openrouter" ? "Browse OpenRouter embedding models" : "Supported LiteLLM models"}
+                                        </Button>
+                                      )}
+                                      {/* === Action row: Test connection + status Tags ===
+                                          Carbon Tag is the right primitive for compact status
+                                          indicators — supports color tokens, icons (renderIcon),
+                                          and is screen-reader friendly. Replaces the previous
+                                          span+inline-hex approach. */}
+                                      <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
+                                        <Button
+                                          kind="tertiary"
+                                          size="sm"
+                                          disabled={testing || !knowledgeConfig.embedding_provider}
+                                          onClick={handleTestConnection}
+                                          renderIcon={testing ? Renew : undefined}
+                                          iconDescription={testing ? "Testing connection…" : undefined}
+                                        >
+                                          {testing ? "Testing…" : "Test connection"}
+                                        </Button>
+
+                                        {/* Save-state indicator: each variant maps to a real
+                                            PATCH lifecycle event (saving/2xx/non-2xx/network).
+                                            The prior 1500ms-setTimeout "Saved" sticker that
+                                            lied is gone — now the user sees a "Saving…" tag
+                                            while the network call is in flight, "Saved" only
+                                            AFTER a 2xx response (auto-hides after 3s via
+                                            ``recentlySaved``), and a red "Couldn't save"
+                                            button-tag with one-click Retry on any failure. */}
+                                        {saveState === "saving" && (
+                                          <Tag type="gray" size="sm" renderIcon={Renew}>
+                                            Saving…
+                                          </Tag>
+                                        )}
+                                        {/* saving-slow: 25s+ into the save with no
+                                            response yet. Softer copy than a fail
+                                            state — corporate VPNs / first-time
+                                            Watsonx endpoint resolution can take
+                                            30-45s and a perfectly-healthy save
+                                            shouldn't read as broken. */}
+                                        {saveState === "saving-slow" && (
+                                          <Tag type="gray" size="sm" renderIcon={Renew}>
+                                            Still saving — network is slow
+                                          </Tag>
+                                        )}
+                                        {saveState === "saved" && recentlySaved && (
+                                          <Tag type="green" size="sm" renderIcon={Checkmark}>
+                                            Saved
+                                          </Tag>
+                                        )}
+                                        {/* Save-failure Retry lives once, in the always-visible
+                                            top-level ActionableNotification above — not duplicated
+                                            here as a second Retry affordance. */}
+
+                                        {/* Key-source chip — only shown when no test result is up
+                                            yet (test result is more informative when available) */}
+                                        {!testResult && accel?.key_source?.required && (
+                                          <Tag
+                                            type={
+                                              accel.key_source.source === "missing"
+                                                ? "red"
+                                                : accel.key_source.source === "ui"
+                                                  ? "green"
+                                                  : "magenta"
+                                            }
+                                            size="sm"
+                                            title="Where the embedding API key is being read from."
+                                          >
+                                            {accel.key_source.source === "ui"
+                                              ? "Key: from UI"
+                                              : accel.key_source.source === "missing"
+                                                ? "Key: missing"
+                                                : `Key: ${accel.key_source.source}`}
+                                          </Tag>
+                                        )}
+                                      </Stack>
+
+                                      {/* Test connection result — use InlineNotification so the
+                                          FULL error is visible (no 80-char truncation behind a
+                                          title attr). Critical for debugging 401s etc. */}
+                                      {testResult && !presetGuide && (
+                                        <InlineNotification
+                                          kind={testResult.ok ? "success" : "error"}
+                                          lowContrast
+                                          hideCloseButton={false}
+                                          onCloseButtonClick={() => setTestResult(null)}
+                                          title={
+                                            testResult.ok
+                                              ? `Connected — dim=${testResult.dim}, ${testResult.latency_ms} ms`
+                                              : "Test failed"
+                                          }
+                                          subtitle={
+                                            testResult.ok
+                                              ? "You can now upload documents on the Documents tab."
+                                              : testResult.error || "No detail returned."
+                                          }
+                                        />
+                                      )}
+
+                                      {/* Full autosave-failure detail now renders once, at the
+                                          Embedder section top level (visible on the default path
+                                          too), so it's intentionally not duplicated here. */}
+                                    </Stack>
+                                  );
+                                })()}
+
+                              <span style={{ fontSize: "0.8125rem", fontWeight: 600, display: "block", marginTop: "0.25rem", color: "var(--cds-text-secondary)" }}>
+                                {"Throughput & hardware"}
+                              </span>
+                              <Stack gap={4} style={{ paddingTop: "0.25rem" }}>
+                                    <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
+                                      <Toggle
+                                        id="knowledge-use-gpu"
+                                        labelText="GPU Acceleration"
+                                        labelA="Off"
+                                        labelB="On"
+                                        toggled={knowledgeConfig.use_gpu ?? true}
+                                        onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, use_gpu: checked })}
+                                        size="sm"
+                                      />
+                                      {/* Honest device label: green when GPU engaged, magenta
+                                          when GPU requested but ORT loaded CPU only, gray when
+                                          not relevant (cloud provider). */}
+                                      {accel && (
+                                        <Tag
+                                          type={
+                                            accel.fallback_to_cpu
+                                              ? "magenta"
+                                              : accel.embedding_relevant
+                                                ? "green"
+                                                : "gray"
+                                          }
+                                          size="sm"
+                                          renderIcon={
+                                            accel.fallback_to_cpu
+                                              ? ErrorFilled
+                                              : accel.embedding_relevant
+                                                ? Checkmark
+                                                : undefined
+                                          }
+                                          title="What the running engine actually loaded for embedding inference."
+                                        >
+                                          {accel.fallback_to_cpu ? "GPU fallback to CPU" : `Detected: ${accel.device_label}`}
+                                        </Tag>
+                                      )}
+                                    </Stack>
+                                    {(knowledgeConfig.embedding_provider === "litellm" ||
+                                      knowledgeConfig.embedding_provider === "openai") && (
+                                      <TextInput
+                                        id="knowledge-embedding-extra-params"
+                                        labelText="Advanced: Extra provider kwargs (optional, JSON dict)"
+                                        value={
+                                          knowledgeConfig.embedding_extra_params &&
+                                          Object.keys(knowledgeConfig.embedding_extra_params).length > 0
+                                            ? JSON.stringify(knowledgeConfig.embedding_extra_params)
+                                            : ""
+                                        }
+                                        onChange={(e: any) => {
+                                          const raw = e.target.value.trim();
+                                          if (!raw) {
+                                            onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: {} });
                                             return;
                                           }
-                                          setExtraParamsHint(null);
-                                          onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: parsed });
+                                          try {
+                                            const parsed = JSON.parse(raw);
+                                            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                                              // Reject reserved keys that have dedicated fields above —
+                                              // prevents the "I put my model in the JSON" foot-gun the
+                                              // user hit. We surface the rejection via setExtraParamsHint.
+                                              const reserved = ["embedding_model", "model", "embedding_api_key", "api_key", "embedding_base_url", "base_url"];
+                                              const violations = reserved.filter((k) => k in parsed);
+                                              if (violations.length > 0) {
+                                                setExtraParamsHint(
+                                                  `Don't put ${violations.join(", ")} here — those go in the named fields above. This box is for provider-specific extras (e.g. api_version for Azure).`,
+                                                );
+                                                return;
+                                              }
+                                              setExtraParamsHint(null);
+                                              onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: parsed });
+                                            }
+                                          } catch {
+                                            // Don't propagate while user is typing invalid JSON.
+                                          }
+                                        }}
+                                        placeholder={
+                                          knowledgeConfig.embedding_model?.startsWith("azure/")
+                                            ? '{"api_version":"2024-02-15","azure_deployment":"my-deployment"}'
+                                            : 'leave empty for most providers'
                                         }
-                                      } catch {
-                                        // Don't propagate while user is typing invalid JSON.
-                                      }
-                                    }}
-                                    placeholder={
-                                      knowledgeConfig.embedding_model?.startsWith("azure/")
-                                        ? '{"api_version":"2024-02-15","azure_deployment":"my-deployment"}'
-                                        : 'leave empty for most providers'
-                                    }
-                                    helperText="NOT for the model name — model has its own field above. Use this only for provider-specific extras (Azure: api_version. Bedrock: aws_region_name)."
-                                    invalid={!!extraParamsHint}
-                                    invalidText={extraParamsHint ?? undefined}
-                                  />
-                                )}
-
-                                {/* === Action row: Test connection + status Tags ===
-                                    Carbon Tag is the right primitive for compact status
-                                    indicators — supports color tokens, icons (renderIcon),
-                                    and is screen-reader friendly. Replaces the previous
-                                    span+inline-hex approach. */}
-                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
-                                  <Button
-                                    kind="tertiary"
-                                    size="sm"
-                                    disabled={testing || !knowledgeConfig.embedding_provider}
-                                    onClick={handleTestConnection}
-                                    renderIcon={testing ? Renew : undefined}
-                                    iconDescription={testing ? "Testing connection…" : undefined}
-                                  >
-                                    {testing ? "Testing…" : "Test connection"}
-                                  </Button>
-
-                                  {/* Save-state indicator: each variant maps to a real
-                                      PATCH lifecycle event (saving/2xx/non-2xx/network).
-                                      The prior 1500ms-setTimeout "Saved" sticker that
-                                      lied is gone — now the user sees a "Saving…" tag
-                                      while the network call is in flight, "Saved" only
-                                      AFTER a 2xx response (auto-hides after 3s via
-                                      ``recentlySaved``), and a red "Couldn't save"
-                                      button-tag with one-click Retry on any failure. */}
-                                  {saveState === "saving" && (
-                                    <Tag type="gray" size="sm" renderIcon={Renew}>
-                                      Saving…
-                                    </Tag>
-                                  )}
-                                  {/* saving-slow: 25s+ into the save with no
-                                      response yet. Softer copy than a fail
-                                      state — corporate VPNs / first-time
-                                      Watsonx endpoint resolution can take
-                                      30-45s and a perfectly-healthy save
-                                      shouldn't read as broken. */}
-                                  {saveState === "saving-slow" && (
-                                    <Tag type="gray" size="sm" renderIcon={Renew}>
-                                      Still saving — network is slow
-                                    </Tag>
-                                  )}
-                                  {saveState === "saved" && recentlySaved && (
-                                    <Tag type="green" size="sm" renderIcon={Checkmark}>
-                                      Saved
-                                    </Tag>
-                                  )}
-                                  {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
-                                    <Button
-                                      kind="ghost"
-                                      size="sm"
-                                      renderIcon={ErrorFilled}
-                                      onClick={() => onRetryDraftSave?.()}
-                                      style={{ color: "var(--cds-support-error)" }}
-                                    >
-                                      Couldn&apos;t save — Retry
-                                    </Button>
-                                  )}
-
-                                  {/* Key-source chip — only shown when no test result is up
-                                      yet (test result is more informative when available) */}
-                                  {!testResult && accel?.key_source?.required && (
-                                    <Tag
-                                      type={
-                                        accel.key_source.source === "missing"
-                                          ? "red"
-                                          : accel.key_source.source === "ui"
-                                            ? "green"
-                                            : "magenta"
-                                      }
-                                      size="sm"
-                                      title="Where the embedding API key is being read from."
-                                    >
-                                      {accel.key_source.source === "ui"
-                                        ? "Key: from UI"
-                                        : accel.key_source.source === "missing"
-                                          ? "Key: missing"
-                                          : `Key: ${accel.key_source.source}`}
-                                    </Tag>
-                                  )}
-                                </Stack>
-
-                                {/* Test connection result — use InlineNotification so the
-                                    FULL error is visible (no 80-char truncation behind a
-                                    title attr). Critical for debugging 401s etc. */}
-                                {testResult && (
-                                  <InlineNotification
-                                    kind={testResult.ok ? "success" : "error"}
-                                    lowContrast
-                                    hideCloseButton={false}
-                                    onCloseButtonClick={() => setTestResult(null)}
-                                    title={
-                                      testResult.ok
-                                        ? `Connected — dim=${testResult.dim}, ${testResult.latency_ms} ms`
-                                        : "Test failed"
-                                    }
-                                    subtitle={
-                                      testResult.ok
-                                        ? "You can now upload documents on the Documents tab."
-                                        : testResult.error || "No detail returned."
-                                    }
-                                  />
-                                )}
-
-                                {/* Full autosave-failure detail. Replaces the
-                                    prior native ``title=`` attribute tooltip
-                                    on the Retry button (which truncated to
-                                    ~80 chars and was invisible on most
-                                    screens). Surfaces the full server error
-                                    so debugging a 422 / 500 doesn't require
-                                    opening the browser network tab. */}
-                                {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
-                                  <InlineNotification
-                                    kind="error"
-                                    lowContrast
-                                    hideCloseButton={false}
-                                    onCloseButtonClick={() => onDismissDraftSave?.()}
-                                    title="Couldn't save your changes"
-                                    subtitle={draftSaveStatus.error || "No detail returned."}
-                                  />
-                                )}
-
-                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
-                                  <Toggle
-                                    id="knowledge-use-gpu"
-                                    labelText="GPU Acceleration"
-                                    labelA="Off"
-                                    labelB="On"
-                                    toggled={knowledgeConfig.use_gpu ?? true}
-                                    onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, use_gpu: checked })}
-                                    size="sm"
-                                  />
-                                  {/* Honest device label: green when GPU engaged, magenta
-                                      when GPU requested but ORT loaded CPU only, gray when
-                                      not relevant (cloud provider). */}
-                                  {accel && (
-                                    <Tag
-                                      type={
-                                        accel.fallback_to_cpu
-                                          ? "magenta"
-                                          : accel.embedding_relevant
-                                            ? "green"
-                                            : "gray"
-                                      }
-                                      size="sm"
-                                      renderIcon={
-                                        accel.fallback_to_cpu
-                                          ? ErrorFilled
-                                          : accel.embedding_relevant
-                                            ? Checkmark
-                                            : undefined
-                                      }
-                                      title="What the running engine actually loaded for embedding inference."
-                                    >
-                                      {accel.fallback_to_cpu ? "GPU fallback to CPU" : `Detected: ${accel.device_label}`}
-                                    </Tag>
-                                  )}
-                                </Stack>
-                                {showAdvanced && (
-                                  <>
+                                        helperText="NOT for the model name — model has its own field above. Use this only for provider-specific extras (Azure: api_version. Bedrock: aws_region_name)."
+                                        invalid={!!extraParamsHint}
+                                        invalidText={extraParamsHint ?? undefined}
+                                      />
+                                    )}
                                     <Stack orientation="horizontal" gap={4}>
                                       <NumberInput
                                         id="knowledge-embedding-batch-size"
@@ -3263,19 +3442,17 @@ export default function KnowledgePanel({
                                       helperText="Chunks per add_many transaction. Caps each transaction so a large document does not blow past pgvector's command_timeout or hold the HNSW write lock for long. Default 200 works for typical docs."
                                       onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, vector_insert_batch_size: value })) as any}
                                     />
-                                  </>
-                                )}
-                                {/* Per-section Reset to factory defaults */}
-                                <Button kind="ghost" size="sm" renderIcon={Reset}
-                                  onClick={() => setResetTarget({
-                                    section: "Embeddings",
-                                    fields: ["embedding_provider", "embedding_model", "embedding_api_key", "embedding_base_url", "embedding_extra_params", "use_gpu", "embedding_batch_size", "embedding_concurrency", "vector_insert_batch_size"],
-                                  })}>
-                                  Reset Embeddings to defaults
-                                </Button>
+                                    {/* Per-section Reset to factory defaults */}
+                                    <Button kind="ghost" size="sm" renderIcon={Reset}
+                                      onClick={() => setResetTarget({
+                                        section: "Embeddings",
+                                        fields: ["embedding_provider", "embedding_model", "embedding_api_key", "embedding_base_url", "embedding_extra_params", "use_gpu", "embedding_batch_size", "embedding_concurrency", "vector_insert_batch_size"],
+                                      })}>
+                                      Reset Embedder to defaults
+                                    </Button>
+                                  </Stack>
                               </Stack>
                             </AccordionItem>
-
                             <AccordionItem title={sectionTitle("Chunking", chunkingStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 {ragProfiles && (knowledgeConfig.rag_profile ?? "standard") !== "custom" && (

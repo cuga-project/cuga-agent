@@ -17,17 +17,102 @@ You receive one transcript that concatenates:
 1) Assistant content — user-visible reply (may be empty)
 2) Reasoning — internal chain-of-thought when the platform provides it (may be empty)
 
-Read the full transcript. Do not decide from reasoning alone: if the visible content is already a complete, substantive answer, use auto_continue false even when reasoning mentions extra steps. Do not ignore reasoning when visible content is empty or a vague one-liner.
+Read the FULL transcript end-to-end (not only the opening sentence). Do not decide from reasoning alone. Do not ignore reasoning when visible content is empty or a vague one-liner.
 
 Return ONLY JSON, no markdown, no prose: {"auto_continue": true} or {"auto_continue": false}
 
-Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution (interim status, incompleteness, upcoming tool calls in reasoning).
+Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution:
+- interim status / incompleteness
+- phase-complete narration that then announces the next phase the agent will do itself
+- upcoming tool calls, searches, listings, discoveries, or inspections (even if phrased as “I will / I’ll …”)
+- multi-step plans where the announced work has not been executed yet in this turn (no code ran)
 
-Use auto_continue false when the combined picture is an appropriate completed turn: final answer, user question, refusal, error explanation, or clear stop."""
+Important: a completed *sub-step* plus “next I will / proceed to / mark that phase complete and …” is still interim → true. Do NOT finalize just because an earlier clause reports counts or “X is complete” if later text clearly continues the overall task.
+
+Use auto_continue false when the combined picture is an appropriate completed turn OR a hard stop:
+- final answer / result with no further agent-owned work announced
+- user question, missing input, or a choice the user must make
+- refusal, fatal error, or explicit inability to continue (tools missing, environment unavailable, blocked)
+- if ANY clause says the agent cannot / is unable to continue (or tools are not available), prefer false even when earlier sentences described a plan
+
+Examples (visible content → decision):
+- "We need to search student_loan app." → {"auto_continue": true} — interim plan; the work it announces has not happened.
+- "Let me perform the second phase." → {"auto_continue": true} — interim status before more execution.
+- "The export is complete: 12 saved tracks, 6 saved albums, and 6 ordered playlists. I’ll mark that phase complete and proceed to account setup discovery." → {"auto_continue": true} — sub-phase done, but the agent announces the next phase it will run itself.
+- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads, using the supplied current date as the search boundary. The directory listing and email-thread search are independent, so I’ll retrieve both and retain every matching thread page for detailed inspection." → {"auto_continue": true} — pure forward plan; no code yet.
+- "I’ll inspect the work directory and search Jonathan’s inbox across all result pages for schedule-related threads… I’m unable to continue because the connected application tool functions are not available in the current execution environment." → {"auto_continue": false} — plan is overridden by a hard stop / tools unavailable.
+- "Ok I will fetch the information, but first I require your ID" → {"auto_continue": false} — blocked on user input despite the announced plan.
+- "I could not find any matching loans." → {"auto_continue": false} — a result, not a plan.
+- "Which account should I use?" → {"auto_continue": false} — clarifying question.
+- "Done. All 15 artists are followed on Spotify." → {"auto_continue": false} — completed result with no next agent phase."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
 _COMBINED_MAX = 20000
+
+# Deterministic fast-path for obvious planning/discovery turns.
+#
+# The agent occasionally emits a short first-person plan with no code on a turn
+# where it clearly intends to keep working, e.g. "We need to search student_loan
+# app." or "We need to discover the tool signatures for codebase_comments".
+# The LLM classifier has been observed to misfire on these and finalize the plan
+# as the answer (the "planning-text stall"). We catch the unambiguous cases here
+# so the result does not depend on a flaky model call.
+#
+# This path is intentionally conservative: it only flips False -> True for short
+# text that opens with a first-person intent ("we"/"I"/"let's"/"let me"),
+# optionally behind a discourse marker, followed by a forward-looking action or
+# modal verb. A genuine final answer rarely matches, and the surrounding graph
+# already enforces a step limit before auto-continuing, so an over-fire cannot
+# loop forever.
+_PLANNING_INTENT_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|now|first(?:ly)?|next|then|so|alright|well)[\s,]+)*"
+    r"(?:we|i|let'?s|let\s+me)\b"
+    r"(?:(?!\.).)*?\b"
+    r"(?:need\s+to|have\s+to|should|must|will|'ll|going\s+to|gonna|"
+    r"start\s+by|begin\s+by|"
+    r"search|discover|find|look\s+up|fetch|call|query|inspect|"
+    r"explore|examine|check|investigate|figure\s+out|determine|"
+    r"retrieve|gather|list|enumerate)\b",
+    re.IGNORECASE,
+)
+
+# A negation usually marks a result or refusal ("I could not find …"), not a
+# forward-looking plan — let those fall through to the LLM classifier / finalize.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|unable|cannot|no)\b|\w+n['\u2019]t\b",
+    re.IGNORECASE,
+)
+
+# A planning statement describes the agent's own next actions. Text that
+# addresses the user in the second person may be requesting input ("Ok I will
+# fetch the information, but first I require your ID") \u2014 auto-continuing there
+# would answer the agent's request with a synthetic "continue" instead of the
+# user's reply. Anything second-person falls through to the LLM classifier.
+_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours)\b", re.IGNORECASE)
+
+_PLANNING_MAX_LEN = 400
+
+
+def looks_like_planning_text(visible: str) -> bool:
+    """True for a short first-person intent statement that signals more work to come.
+
+    Conservative deterministic detector for the planning-text stall. Returns
+    False for empty text, anything longer than a couple of sentences, text
+    that reads as a question (clarifying questions should finalize, not loop),
+    or text that addresses the user in the second person (it may be requesting
+    input the user must supply).
+    """
+    t = (visible or "").strip()
+    if not t or len(t) > _PLANNING_MAX_LEN:
+        return False
+    if t.rstrip().endswith("?"):
+        return False
+    if _NEGATION_RE.search(t):
+        return False
+    if _SECOND_PERSON_RE.search(t):
+        return False
+    return bool(_PLANNING_INTENT_RE.match(t))
 
 
 def build_combined_content_and_reasoning(visible: str, reasoning: str) -> str:
@@ -104,6 +189,9 @@ async def classify_nl_auto_continue(
         return False
     visible = normalize_assistant_text(assistant_visible)
     reasoning = normalize_assistant_text(reasoning_excerpt)
+    if looks_like_planning_text(visible):
+        logger.info("NL auto-continue: planning-text fast-path matched; auto-continuing")
+        return True
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
         return False

@@ -2,6 +2,8 @@ import asyncio
 import unittest
 import uuid
 
+import pytest
+
 from system_tests.e2e.base_crm_test import BaseCRMTestServerStream
 from system_tests.e2e.digital_sales_test_helpers import DigitalSalesTestHelpers
 
@@ -24,6 +26,7 @@ class TestCRMContactsEmailWorkflowFindTools(BaseCRMTestServerStream):
         self.thread_id = str(uuid.uuid4())
         print(f"\n=== Test thread ID: {self.thread_id} ===")
 
+    @pytest.mark.stability
     async def test_crm_contacts_write_and_email_find_tools(self):
         """Test CRM contacts query with file writing and email sending."""
         print(f"Running test with thread ID: {self.thread_id}")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
@@ -24,10 +24,54 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     is_find_tools_listing_markdown,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.utils.context_management_utils import (
+    prepare_reflection_context,
+    truncate_text_for_context,
+)
+from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
 
 _llm_manager = LLMManager()
+
+
+def _describe_observed_shape(result: Any) -> str:
+    """Render a short, human-readable description of an observed tool result."""
+    if isinstance(result, dict):
+        keys = list(result.keys())[:8]
+        suffix = ", ..." if len(result) > len(keys) else ""
+        return f"dict with keys [{', '.join(repr(k) for k in keys)}{suffix}]"
+    if isinstance(result, (list, tuple)):
+        kind = type(result).__name__
+        if result:
+            return (
+                f"{kind} of {len(result)} items, e.g. first item: "
+                f"{type(result[0]).__name__} {str(result[0])[:120]!r}"
+            )
+        return f"empty {kind}"
+    if isinstance(result, str):
+        return f"str of {len(result)} chars, e.g. {result[:120]!r}"
+    return type(result).__name__
+
+
+def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
+    """Stash the first observed output shape for any weak-schema tool this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    if not weak_schema_tool_names:
+        return
+    observed = getattr(adapter, "_observed_tool_shapes", {})
+    for call in tool_calls:
+        name = call.get("name")
+        if name not in weak_schema_tool_names or name in observed or call.get("error"):
+            continue
+        observed[name] = _describe_observed_shape(call.get("result"))
+
+
+def _needs_shape_tracking(adapter: Any) -> bool:
+    """True when at least one weak-schema tool's shape hasn't been observed yet this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    observed = getattr(adapter, "_observed_tool_shapes", {})
+    return bool(weak_schema_tool_names - observed.keys())
 
 
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
@@ -70,8 +114,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
-        # Start tool call tracking (only if enabled via invoke parameter)
-        ToolCallTracker.start_tracking(enabled=track_tool_calls)
+        # Start tool call tracking (enabled via invoke parameter, or internally
+        # whenever a weak-schema tool's output shape hasn't been observed yet)
+        ToolCallTracker.start_tracking(enabled=track_tool_calls or _needs_shape_tracking(adapter))
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -83,6 +128,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     _exec_plan.shell_backend,
                     _exec_plan.filesystem_backend,
                 )
+            logger.debug(f"\n\n------\n\n📝 Generated code:\n\n{state.script}\n\n------\n\n")
             output, new_vars = await CodeExecutor.eval_with_tools_async(
                 code=state.script,
                 _locals=context,
@@ -122,32 +168,45 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         settings.agent.planner.model
                     )
                     reflection_agent = reflection_task(llm=active_model)
-                    # Format chat messages as history string
-                    agent_history_parts = []
-                    for msg in state.chat_messages:
-                        if isinstance(msg, HumanMessage):
-                            agent_history_parts.append(f"User: {msg.content}")
-                        elif isinstance(msg, AIMessage):
-                            agent_history_parts.append(f"Assistant: {msg.content}")
-                        else:
-                            agent_history_parts.append(
-                                f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}"
-                            )
-                    agent_history = (
-                        "\n".join(agent_history_parts)
-                        if agent_history_parts
-                        else "No previous conversation history"
+                    reflection_text_limit = min(
+                        30_000,
+                        settings.advanced_features.execution_output_max_length // 2,
+                    )
+                    agent_history, coder_output = await prepare_reflection_context(
+                        list(state.chat_messages),
+                        output,
+                        active_model,
+                        max_output_chars=reflection_text_limit,
+                        max_history_chars=reflection_text_limit,
+                        tracker=adapter._tracker,
+                    )
+                    skills_prompt_section = truncate_text_for_context(
+                        state.reflection_skills_prompt_section or "",
+                        reflection_text_limit,
+                        label="Skills prompt section",
+                    )
+                    current_task = reflection_current_task(state) or "(no task text)"
+                    clamp_watsonx_completion_for_messages(
+                        active_model,
+                        [
+                            {
+                                "role": "user",
+                                "content": "\n".join(
+                                    [current_task, agent_history, coder_output, skills_prompt_section]
+                                ),
+                            }
+                        ],
                     )
                     reflection_result = await reflection_agent.ainvoke(
                         {
                             "instructions": "",
-                            "current_task": reflection_current_task(state) or "(no task text)",
+                            "current_task": current_task,
                             "agent_history": agent_history,
-                            "coder_agent_output": output,
+                            "coder_agent_output": coder_output,
                             "apps": state.reflection_apps or [],
                             "enable_find_tools": state.reflection_enable_find_tools,
                             "skills_enabled": state.reflection_skills_enabled,
-                            "skills_prompt_section": state.reflection_skills_prompt_section,
+                            "skills_prompt_section": skills_prompt_section,
                             "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                         },
                         config=config or {},
@@ -179,7 +238,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             # Collect tool calls from this execution
             execution_tool_calls = ToolCallTracker.stop_tracking()
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             if error_message:
                 return core_create_error_command(
@@ -210,7 +272,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         except Exception as e:
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)

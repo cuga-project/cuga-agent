@@ -21,11 +21,18 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # WatsonX is configured via repo Variables + WATSONX_APIKEY secret.
+      # AGENT_SETTING_CONFIG, WATSONX_PROJECT_ID, and WATSONX_URL are Variables.
+      # WATSONX_APIKEY remains a Secret.
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      # Optional fallbacks for openai/groq-compatible paths
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout code
@@ -46,9 +53,93 @@ jobs:
 
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
-      
+
+      - name: Lint
+        run: uv run ruff check && uv run ruff format --check
+
+      # Each group below is run as its own `pytest` invocation (its own process)
+      # rather than one big collection. Several suites here rely on
+      # module-level singletons (FastAPI app, policy/config DB, variables
+      # manager) that were never designed to share a process with hundreds of
+      # unrelated tests — collecting everything into a single session
+      # resurfaces cross-test state leaks that don't reflect real bugs.
+      # `uv run pytest` (no args) remains the single, full-discovery entry
+      # point for local development.
       - name: Run unit tests
-        run: bash src/scripts/run_tests.sh --skip-stability
+        run: |
+          uv run pytest ./src/cuga/backend/tools_env/registry/tests/
+          uv run pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
+          uv run pytest \
+            tests/unit/test_knowledge_engine.py \
+            tests/unit/test_session_knowledge.py \
+            tests/unit/test_knowledge_routes.py \
+            tests/unit/test_cuga_lite_knowledge_scopes.py \
+            tests/unit/test_chat_knowledge_mode.py \
+            tests/unit/test_chat_agent_knowledge_toggle.py \
+            tests/integration/test_knowledge_integration.py
+          # Citations, source ledger, session settings, and durability/reset
+          # regressions — previously not exercised by CI.
+          uv run pytest \
+            tests/unit/test_source_ledger.py \
+            tests/unit/test_citation_resolver.py \
+            tests/unit/test_citation_settings.py \
+            tests/unit/test_final_answer_citations.py \
+            tests/unit/test_envelope_citations.py \
+            tests/unit/test_sdk_citations.py \
+            tests/unit/test_server_citation_egress.py \
+            tests/unit/test_session_settings_routes.py \
+            tests/unit/test_session_citation_override.py \
+            tests/unit/test_ephemeral_stream_events.py \
+            tests/unit/test_config_db_reset_wal_sidecars.py \
+            tests/unit/test_embedder_cache_resilience.py \
+            tests/unit/test_knowledge_copy_source_files.py \
+            tests/unit/test_knowledge_envelope_rank_fields.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
+          # call_model prompt assembly: the variables addendum must reach the model
+          # but never be persisted into history (#600) — unbounded copies previously
+          # exhausted the context window mid-task.
+          uv run pytest tests/unit/test_variables_addendum_not_persisted.py
+          uv run pytest \
+            tests/unit/test_toolguard_provider.py \
+            tests/unit/test_policy_tool_guide_loading.py \
+            tests/unit/test_async_tool_provider_construction.py \
+            tests/unit/test_tool_guard_generation.py \
+            tests/unit/test_tool_guard_generation_route.py \
+            tests/unit/test_tool_guard_generation_route_sync.py \
+            tests/unit/test_policy_frontend_dict_guards_enabled.py \
+            tests/unit/test_toolguard_reuse_roundtrip.py
+          # Trajectory-write containment (#636) and the recording path it must not break.
+          uv run pytest \
+            tests/unit/test_tracker_external_path_containment.py \
+            tests/unit/test_registry_trajectory_recording.py
+          uv run pytest tests/integration/a2a/ tests/unit/test_a2a_simple_runner_hitl.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run policy and SDK integration tests
+        run: |
+          uv run pytest ./src/cuga/backend/cuga_graph/policy/tests
+          uv run pytest ./src/cuga/sdk_core/tests/
+          uv run pytest ./tests/system/test_manager_api_integration.py
+          uv run pytest ./src/system_tests/load/tests/
+          uv run pytest tests/unit/test_load_test_mock_llm.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run mocked concurrent load test
+        run: uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
 
   pgvector-integration:
     name: pgvector Integration
@@ -116,7 +207,8 @@ jobs:
 
       - name: Run pgvector integration tests (MVT)
         run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
-              -v -m pgvector --maxfail=3 --durations=10
+              -v -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
+              --maxfail=3 --durations=10
         env:
           PYTHONUNBUFFERED: "1"
 

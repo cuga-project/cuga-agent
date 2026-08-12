@@ -1,0 +1,38 @@
+* @sami-marreed @offerakrabi
+
+/cuga_graph/ @sami-marreed @offerakrabi
+/tools_env/ @sami-marreed @offerakrabi @haroldship
+
+/observability/ @sami-marreed @offerakrabi @haroldship
+/evaluation/ @sami-marreed @offerakrabi @haroldship
+
+/src/cuga/backend/knowledge/ @dolev31 @sami-marreed
+
+/src/frontend_workspaces/ @sami-marreed @dolev31 @offerakrabi @nir-mashkif
+
+/src/cuga/backend/memory/ @gaodan-fang @sami-marreed
+
+/dbs/ @sami-marreed
+/storage/ @sami-marreed
+
+/.github/ @sami-marreed
+Dockerfile* @sami-marreed
+/deployment/ @sami-marreed
+
+/pyproject.toml @sami-marreed @offerakrabi
+/uv.lock @sami-marreed @offerakrabi
+
+/src/cuga/sdk.py @sami-marreed @offerakrabi
+/src/cuga/sdk_core/ @sami-marreed @offerakrabi
+
+/src/cuga/backend/server/ @sami-marreed @offerakrabi
+/src/cuga/api/ @sami-marreed @offerakrabi
+
+/src/cuga/backend/browser_env/ @sami-marreed @offerakrabi
+/src/cuga/backend/web_automation/ @sami-marreed @offerakrabi
+
+/src/cuga/backend/llm/ @sami-marreed @Sergey-Zeltyn
+
+/configurations/ @sami-marreed @offerakrabi
+config.py @sami-marreed @offerakrabi
+settings.toml @sami-marreed @offerakrabi

@@ -5,7 +5,7 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
 from loguru import logger
 
-from .common import SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
+from .common import CodeSyntaxError, SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
 from .common.benchmark_mode import (
     is_benchmark_mode,
     reset_skills_relaxed_execution,
@@ -187,7 +187,11 @@ class CodeExecutor:
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
         # Security checks must run for every execution mode, including E2B turns.
-        SecurityValidator.validate_imports(code)
+        try:
+            SecurityValidator.validate_imports(code)
+        except CodeSyntaxError as e:
+            executor = cls._get_local_executor()
+            return executor.format_error(e), {}
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
@@ -231,7 +235,10 @@ class CodeExecutor:
 
         except Exception as e:
             executor = cls._get_local_executor()
-            result = executor.format_error(e)
+            available_tools = [
+                name for name, value in _locals.items() if callable(value) and not name.startswith('_')
+            ]
+            result = executor.format_error(e, available_tools=available_tools, code=code)
 
         # Variables that should always be included even if they existed before.
         # Task todos are not stored here — they are shown in the todos system prompt section.
@@ -277,17 +284,17 @@ class CodeExecutor:
     @classmethod
     def _wrap_code_for_code_agent(cls, code: str, fake_datetime: Optional[str] = None) -> str:
         """Wrap code for CodeAgent execution."""
+        SecurityValidator.validate_syntax(code)
         indented_code = '\n'.join('    ' + line for line in code.split('\n'))
 
-        datetime_mock = CodeWrapper.create_datetime_mock(fake_datetime)
+        # Freeze time (datetime/date/time) like AppWorld's sandbox when in benchmark
+        # mode — scoped inside _async_main so it restores after the user code runs.
+        async_main = CodeWrapper.build_async_main(indented_code, fake_datetime)
 
         wrapped_code = f"""
 import asyncio
 import json
-{datetime_mock}
-async def _async_main():
-{indented_code}
-    return locals()
+{async_main}
 """
         SecurityValidator.validate_dangerous_modules(wrapped_code)
         return wrapped_code
@@ -346,7 +353,10 @@ async def _async_main():
         except Exception as e:
             logger.error(f"Error executing code: {e}")
             executor = cls._get_local_executor()
-            return executor.format_error(e), {}
+            available_tools = [
+                name for name, value in context_locals.items() if callable(value) and not name.startswith('_')
+            ]
+            return executor.format_error(e, available_tools=available_tools, code=wrapped_code), {}
 
     @classmethod
     async def eval_for_code_agent(
@@ -393,7 +403,11 @@ async def _async_main():
 
             tracker = ActivityTracker()
             fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
-            wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
+            try:
+                wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
+            except CodeSyntaxError as e:
+                executor = cls._get_local_executor()
+                return executor.format_error(e), {}
 
             if skills_on:
                 if mode in ('e2b', 'docker'):

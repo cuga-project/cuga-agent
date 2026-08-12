@@ -18,6 +18,7 @@ from cuga.backend.knowledge.auth import (
     ensure_agent_scope_manage_if_needed,
     require_internal_or_auth,
     require_knowledge_agent_manage_identity,
+    resolve_agent_collection,
     resolve_collection,
 )
 from cuga.backend.knowledge.engine import (
@@ -29,6 +30,7 @@ from cuga.backend.knowledge.engine import (
     ReindexBusyError,
     ReindexInProgressError,
 )
+from cuga.backend.knowledge.sources import annotate_envelope_with_citations, citations_enabled_for
 
 logger = logging.getLogger("cuga.knowledge")
 
@@ -231,6 +233,15 @@ async def health(request: Request):
         "details": subsystem.get("details", {}),
         "settings": h["settings"],
         "embeddings_initialized": h.get("embeddings_initialized", False),
+        # Live availability of the ACTIVE embedder. When false, the collection's
+        # vectors can't be searched (query embedding fails) — the UI warns.
+        "embedder_available": h.get("embedder_available"),
+        "embedder_error": h.get("embedder_error"),
+        "embedder_model": h.get("embedder_model"),
+        # "disabled" | "preparing" | "available" | "unavailable". Lets the UI
+        # distinguish a cold start still downloading its model from a genuine
+        # fault, instead of showing a red error for both.
+        "embedder_state": h.get("embedder_state"),
     }
     if collection:
         result["stale"] = h.get("stale", False)
@@ -350,6 +361,8 @@ async def search(
             fallback_from=fallback_from,
             include_scores=include_scores,
         )
+        if citations_enabled_for(engine._config, identity.thread_id):
+            annotate_envelope_with_citations(env, results, thread_id=identity.thread_id, query=query)
         _emit_canonical_log(
             tid_preview=_tid_preview,
             query_preview=_query_preview,
@@ -410,6 +423,8 @@ async def search(
         fallback_from=None,
         include_scores=include_scores,
     )
+    if citations_enabled_for(engine._config, identity.thread_id):
+        annotate_envelope_with_citations(env, results, thread_id=identity.thread_id, query=query)
     _emit_canonical_log(
         tid_preview=_tid_preview,
         query_preview=_query_preview,
@@ -712,11 +727,17 @@ async def get_document_file(
         raise HTTPException(status_code=404, detail="document not found")
 
     media_type, _ = mimetypes.guess_type(str(file_path))
+    # Let Starlette build Content-Disposition. It RFC 5987-encodes non-ASCII
+    # filenames (Hebrew, Arabic, CJK, emoji…) as ``filename*=utf-8''…``, which
+    # is latin-1-safe — hand-rolling ``filename="<raw>"`` crashed on any name
+    # outside latin-1 (Starlette encodes all header values as latin-1).
+    # content_disposition_type="inline" so the browser opens the doc (e.g. a
+    # PDF preview) instead of forcing a download.
     return FileResponse(
         file_path,
         filename=file_path.name,
         media_type=media_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+        content_disposition_type="inline",
     )
 
 
@@ -740,6 +761,18 @@ async def delete_document(
         return {"status": "ok"}
     except DocumentNotFoundError:
         raise HTTPException(status_code=404, detail="document not found")
+    except ReindexInProgressError:
+        # Delete is rejected while this collection is being reindexed —
+        # otherwise the doc would be re-embedded into the in-flight target and
+        # resurrect after the pointer flips. 409 mirrors the upload guard shape.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reindex_in_progress",
+                "collections": [collection],
+                "message": "A re-index is running. Wait for it to finish before deleting documents.",
+            },
+        )
 
 
 @knowledge_router.delete("/session")
@@ -759,6 +792,80 @@ async def delete_session_collection(
         provider.delete_session(identity.thread_id)
 
     return {"status": "ok"}
+
+
+# --- Session settings ---
+
+_SESSION_SETTINGS_ALLOWED = {"citations_enabled"}
+
+
+def _coerce_flag(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _resolve_session_provider(request: Request, identity: KnowledgeIdentity):
+    """Resolve the knowledge provider and enforce session ownership.
+
+    Raises 503 if the provider is not initialized, and 403 if the caller
+    (when user_id/tenant_id are present) does not own the session. Same
+    ownership pattern as resolve_collection for scope=session.
+    """
+    app_state = getattr(request.app.state, "app_state", None)
+    provider = getattr(app_state, "knowledge_provider", None) if app_state else None
+    if provider is None:
+        raise HTTPException(status_code=503, detail="knowledge not initialized")
+    if provider and identity.user_id and identity.tenant_id:
+        if not provider.check_session_access(identity.thread_id, identity.user_id, identity.tenant_id):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    return provider
+
+
+def _apply_session_settings_patch(provider, thread_id: str, body: dict, *, user_id: str, tenant_id: str):
+    patch = {k: _coerce_flag(v) for k, v in (body or {}).items() if k in _SESSION_SETTINGS_ALLOWED}
+    if not patch:
+        raise ValueError(f"no valid session settings in patch; allowed: {sorted(_SESSION_SETTINGS_ALLOWED)}")
+    return provider.patch_session_overrides(thread_id, patch, user_id=user_id, tenant_id=tenant_id)
+
+
+@knowledge_router.get("/session/settings")
+async def get_session_settings(
+    request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)
+):
+    """Per-conversation knowledge settings overrides (citations toggle)."""
+    if not identity.thread_id:
+        raise HTTPException(status_code=400, detail="X-Thread-ID header required")
+    provider = _resolve_session_provider(request, identity)
+    session = provider.get_session(identity.thread_id)
+    return {"thread_id": identity.thread_id, "overrides": (session.overrides if session else {})}
+
+
+@knowledge_router.patch("/session/settings")
+async def patch_session_settings(
+    request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)
+):
+    """Update per-conversation knowledge settings overrides (citations toggle)."""
+    if not identity.thread_id:
+        raise HTTPException(status_code=400, detail="X-Thread-ID header required")
+    provider = _resolve_session_provider(request, identity)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    try:
+        state = _apply_session_settings_patch(
+            provider,
+            identity.thread_id,
+            body,
+            user_id=identity.user_id or "",
+            tenant_id=identity.tenant_id or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"thread_id": identity.thread_id, "overrides": state.overrides}
 
 
 # --- Reindex ---
@@ -794,9 +901,48 @@ async def list_tasks(
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
     engine = _get_engine(request)
+    # Enforce scope-enabled + ownership (raises 403/400); also the exact
+    # collection for the session branch.
     collection = resolve_collection(identity, scope, request)
-    tasks = await engine.get_tasks(collection)
+    if scope == "agent":
+        # Return tasks across ALL of this agent's collections (active +
+        # in-flight), not just the active one. A config-change reindex
+        # (reindex_for_config) ingests into a NEW collection and DEFERS the
+        # pointer flip, so the in-flight collection is not the active one
+        # until promotion. Polling only the active collection leaves the
+        # reindex tile frozen at "Pending" for the whole run, then jumps to
+        # done at flip — no live per-document progress. The base prefix (no
+        # hash) matches every collection this agent owns, and the FE filters
+        # to its own task_ids; other agents'/sessions' tasks are excluded.
+        base = resolve_agent_collection(identity.agent_id, None)
+        # ponytail: full task scan + Python prefix filter. The task table is
+        # small (ingestion jobs, not user traffic). If it ever grows, push
+        # the prefix into the store query (collection = base OR LIKE base_%).
+        all_tasks = await engine.get_tasks(None)
+        tasks = [
+            t for t in all_tasks if (c := str(t.get("collection", ""))) == base or c.startswith(f"{base}_")
+        ]
+    else:
+        tasks = await engine.get_tasks(collection)
     return {"tasks": tasks}
+
+
+def _caller_owns_task_collection(
+    identity: KnowledgeIdentity, scope: str, collection: str, expected_collection: str
+) -> bool:
+    """Whether the caller owns the task's collection.
+
+    Agent tasks may live on ANY of the agent's collections — including the
+    in-flight TARGET of a deferred-flip reindex, whose hash differs from the
+    active pointer — so match the base prefix (the SAME ownership rule the
+    GET /tasks list endpoint uses). Session tasks require an exact match.
+    An exact-match here would 403 every in-flight reindex task for the whole
+    deferred window, freezing the live-progress tile.
+    """
+    if scope == "agent":
+        base = resolve_agent_collection(identity.agent_id, None)
+        return collection == base or collection.startswith(f"{base}_")
+    return collection == expected_collection
 
 
 @knowledge_router.get("/tasks/{task_id}")
@@ -820,7 +966,7 @@ async def get_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     return _enrich_task(task)
@@ -846,7 +992,7 @@ async def cancel_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     if scope == "agent":

@@ -31,11 +31,14 @@ jobs:
     runs-on: ubuntu-latest
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -58,8 +61,61 @@ jobs:
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
 
+      - name: Lint
+        run: uv run ruff check && uv run ruff format --check
+
+      # See tests.yml for why this runs as several separate `pytest`
+      # invocations instead of one big collection.
       - name: Run unit tests
-        run: bash src/scripts/run_tests.sh --skip-stability
+        run: |
+          uv run pytest ./src/cuga/backend/tools_env/registry/tests/
+          uv run pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
+          uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
+          uv run pytest \
+            tests/unit/test_knowledge_engine.py \
+            tests/unit/test_session_knowledge.py \
+            tests/unit/test_knowledge_routes.py \
+            tests/unit/test_cuga_lite_knowledge_scopes.py \
+            tests/unit/test_chat_knowledge_mode.py \
+            tests/unit/test_chat_agent_knowledge_toggle.py \
+            tests/integration/test_knowledge_integration.py
+          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
+            tests/unit/test_bind_tools_safe_fallback.py \
+            tests/unit/test_tool_use_failed_recovery.py
+          uv run pytest \
+            tests/unit/test_toolguard_provider.py \
+            tests/unit/test_policy_tool_guide_loading.py \
+            tests/unit/test_async_tool_provider_construction.py \
+            tests/unit/test_tool_guard_generation.py \
+            tests/unit/test_tool_guard_generation_route.py \
+            tests/unit/test_tool_guard_generation_route_sync.py \
+            tests/unit/test_policy_frontend_dict_guards_enabled.py \
+            tests/unit/test_toolguard_reuse_roundtrip.py
+          uv run pytest tests/integration/a2a/ tests/unit/test_a2a_simple_runner_hitl.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run policy and SDK integration tests
+        run: |
+          uv run pytest ./src/cuga/backend/cuga_graph/policy/tests
+          uv run pytest ./src/cuga/sdk_core/tests/
+          uv run pytest ./tests/system/test_manager_api_integration.py
+          uv run pytest ./src/system_tests/load/tests/
+          uv run pytest tests/unit/test_load_test_mock_llm.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
+
+      - name: Run mocked concurrent load test
+        run: uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
 
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI (fork, external-testing)
@@ -68,11 +124,14 @@ jobs:
     timeout-minutes: 25
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
 
     steps:
       - name: Checkout fork head
@@ -99,12 +158,14 @@ jobs:
     timeout-minutes: 60
     environment: external-testing
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+      WATSONX_URL: ${{ vars.WATSONX_URL }}
       MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
-      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
-      TEST_RESULTS_FILE: test_results_python_3.12.json
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       PYTHONIOENCODING: utf-8
       CUGA_THREAD_WORKSPACE_SEED: crm
 
@@ -121,37 +182,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --all-extras --dev
 
-      - name: Copy huggingface examples
-        run: |
-          mkdir -p ./cuga_workspace
-          cp -r src/cuga/demo_tools/huggingface/* ./cuga_workspace/
+      - name: Install Playwright browsers
+        run: uv run playwright install --with-deps chromium
 
       - name: Run stability tests
-        continue-on-error: true
-        id: test-run
-        run: uv run run_stability_tests.py --method local
-
-      - name: Check pass rate
-        if: always()
-        run: |
-          results_file="test_results_python_3.12.json"
-          if [ ! -f "$results_file" ]; then
-            echo "❌ Test results file not found. Tests may have failed before completion."
-            exit 1
-          fi
-          python3 << EOF
-          import json
-          import sys
-          with open('$results_file', 'r') as f:
-              data = json.load(f)
-          pass_rate = data.get('pass_rate', 0)
-          if pass_rate < 88:
-              print(f"❌ Pass rate is {pass_rate}%, which is below the required 88%. Failing the job.")
-              sys.exit(1)
-          print(f"✅ Pass rate is {pass_rate}%, which meets the required 88% threshold.")
-          EOF
+        run: uv run pytest -m stability --stability-threshold 88 -n0
+        env:
+          PYTHONUNBUFFERED: "1"
 
       - name: Upload test logs
         if: always()
@@ -159,12 +198,4 @@ jobs:
         with:
           name: test-logs-python-3.12-fork
           path: src/system_tests/e2e/logs/
-          retention-days: 7
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-python-3.12-fork
-          path: test_results_python_3.12.json
           retention-days: 7

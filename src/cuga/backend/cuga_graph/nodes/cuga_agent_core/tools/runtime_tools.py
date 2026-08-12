@@ -105,6 +105,8 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
     Mirrors the original ``cuga_lite_graph`` injection (same backend
     selection, same ``coroutine or func`` extraction, same log lines).
     """
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+
     bundle = ToolBundle()
 
     if backends.filesystem != "none":
@@ -120,7 +122,7 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
         for ft in fs_tools:
             fn = ft.coroutine or ft.func
             if fn:
-                bundle.execution_callables[ft.name] = fn
+                bundle.execution_callables[ft.name] = make_tool_awaitable(fn)
         bundle.prompt_tools.extend(fs_tools)
         bundle.app_definitions.append(
             AppDefinition(
@@ -148,7 +150,7 @@ def build_runtime_tools(*, thread_id: Optional[str], backends: RuntimeBackends) 
         for st in run_cmd_tools:
             fn = st.coroutine or st.func
             if fn:
-                bundle.execution_callables[st.name] = fn
+                bundle.execution_callables[st.name] = make_tool_awaitable(fn)
         bundle.prompt_tools.extend(run_cmd_tools)
         logger.info(f"[{sandbox_label}] Injected run_command (thread_id={thread_id!r})")
 

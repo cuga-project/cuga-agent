@@ -1,0 +1,59 @@
+[agent.task_decomposition.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 1000
+
+[agent.planner.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.chat.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.plan_controller.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.final_answer.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 15000
+
+[agent.code.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 3000
+
+[agent.code_planner.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 3000
+
+[agent.qa.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 4000
+
+[agent.action.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 400
+
+[agent.shortlister.model]
+platform = "minimax"
+model_name = "MiniMax-M3"
+temperature = 0.1
+max_tokens = 700

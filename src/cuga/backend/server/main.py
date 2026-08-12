@@ -13,7 +13,17 @@ import yaml
 import httpx
 import json
 from contextlib import asynccontextmanager
-from typing import List, Dict, Any, Union, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Union, Optional
+
+if TYPE_CHECKING:
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
+    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
@@ -29,30 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # The module also calls init_openlit() at import time to set up instrumentation.
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
 
-from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
-
-from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.configurations.instructions_manager import InstructionsManager
-from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
-from cuga.cli import start_extension_browser_if_configured
-from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
-from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
-    ChromeExtensionCommunicatorHTTP,
-    ChromeExtensionCommunicatorProtocol,
-)
-from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
-from cuga.backend.cuga_graph.graph import DynamicAgentGraph
-from cuga.backend.cuga_graph.utils.controller import AgentRunner
-from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
-    ActionAgentEventProcessor,
-)
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
-from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
-from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
-from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
-from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent, OutputFormat
-from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 from cuga.config import (
     get_app_name_from_url,
     get_user_data_path,
@@ -60,6 +47,9 @@ from cuga.config import (
     PACKAGE_ROOT,
     LOGGING_DIR,
     TRACES_DIR,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    assert_resolved_path_under,
 )
 from cuga.backend.server import agents_routes
 from cuga.backend.server import manage_routes
@@ -93,7 +83,6 @@ from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
     generate_tool_guards_for_policy,
 )
-from cuga.backend.cuga_graph.policy.models import ToolGuide
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -161,6 +150,10 @@ def _session_knowledge_collection(thread_id: str) -> str:
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
+    from cuga.backend.knowledge.sources import drop_ledger
+
+    drop_ledger(thread_id)
+
     if not app_state:
         return
 
@@ -173,15 +166,18 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
         provider.delete_session(thread_id)
 
 
-def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+def _knowledge_config(app_state: "AppState" | None):
     engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    return getattr(engine, "_config", None) if engine else None
+
+
+def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    config = _knowledge_config(app_state)
     return bool(config and getattr(config, "enabled", False))
 
 
 def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: str) -> bool:
-    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    config = _knowledge_config(app_state)
     if not config or not getattr(config, "enabled", False):
         return False
     if scope == "session":
@@ -189,10 +185,98 @@ def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: 
     return bool(getattr(config, "agent_level_enabled", True))
 
 
+def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    config = _knowledge_config(app_state)
+    if not config or not getattr(config, "enabled", False):
+        return False
+    return bool(getattr(config, "citations_enabled", True))
+
+
+def _format_sources_footer(sources: list[dict]) -> str:
+    """Build a plain-text sources footer for WXO-mode answers."""
+    lines = []
+    for s in sources:
+        page = f" p.{s['page']}" if s.get("page") is not None else ""
+        lines.append(f"[{s['n']}] {s['filename']}{page}")
+    return "\n\nSources:\n" + "\n".join(lines)
+
+
+async def _rehydrate_citation_ledger(
+    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+) -> None:
+    """Prepare the citation ledger at the start of a NEW user turn.
+
+    Two jobs:
+    1. Rehydrate: after a restart the in-memory ledger is gone, so restore
+       cite_ids from the on-disk conversation to keep them collision-free.
+       Only runs when the ledger is absent.
+    2. begin_turn: scope citations to THIS turn's retrieval, so an id from an
+       earlier turn cannot resolve in this turn's answer.
+
+    A HITL resume (tool approval, clarifying answer) re-enters ``event_stream``
+    but is a CONTINUATION of the same logical turn — the pre-interrupt search
+    node does not re-run, so its cite_ids must stay in scope. On resume we do
+    nothing: the ledger already exists and begin_turn() would wrongly wipe this
+    turn's retrieval scope and strip legitimate citations from the answer.
+
+    WXO-mode Answer events are raw text (not JSON) and are intentionally
+    skipped by the ``isinstance(payload, dict)`` guard below.
+
+    Must never break the turn — every failure mode is swallowed.
+    """
+    if not thread_id:
+        return
+    # Gate on the SAME session-aware predicate that stamping and resolution use
+    # (citations_enabled_for), not the agent-only flag — otherwise a thread with
+    # a per-session override diverges: rehydration is skipped while writes still
+    # register, so the fresh ledger re-issues colliding cite_ids after a restart.
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    config = _knowledge_config(app_state)
+    if not config or not getattr(config, "enabled", False):
+        return
+    if not citations_enabled_for(config, thread_id):
+        return
+    try:
+        from cuga.backend.knowledge.sources import get_ledger as _get_ledger
+
+        _ledger = _get_ledger(thread_id, create=False)
+        if _ledger is None:
+            conversation_db = get_conversation_db()
+            stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
+            events_list = stream_history.events if stream_history else []
+            # Create even when there is no history, so begin_turn() below always
+            # has a ledger to scope — a fresh conversation's first turn included.
+            _ledger = _get_ledger(thread_id)  # create
+            for ev in events_list:
+                if ev.event_name != "Answer":
+                    continue
+                try:
+                    payload = json.loads(ev.event_data)
+                    if not isinstance(payload, dict):
+                        # WXO-mode Answer events are raw text — skip intentionally
+                        continue
+                    for snap in payload.get("sources", []) or []:
+                        _ledger.restore(snap)
+                except Exception:
+                    logger.debug(
+                        "Citation ledger rehydration: skipped event for thread %s",
+                        thread_id,
+                    )
+                    continue
+        # Scope citations to THIS turn's retrieval — but only on a genuinely new
+        # turn. A HITL resume is a continuation of the same turn, so begin_turn()
+        # would wipe the pre-interrupt search scope and strip legitimate
+        # citations. Rehydration above still runs on resume, so a restart during
+        # an interrupt (which wipes the in-memory ledger) is recovered.
+        if not is_resume:
+            _ledger.begin_turn()
+    except Exception as e:
+        logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
+
+
 def _skills_effective_enabled() -> bool:
-    return getattr(settings.skills, "enabled", False) and getattr(
-        settings.advanced_features, "enable_shell_tool", False
-    )
+    return getattr(settings.skills, "enabled", False)
 
 
 try:
@@ -245,6 +329,8 @@ class AppState:
     """A class to hold and manage all application state variables."""
 
     def __init__(self):
+        from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+
         # Initializing all state variables to None or default values.
         self.tracker: Optional[ActivityTracker] = None
         self.env: Optional[BrowserEnvGymAsync | ExtensionEnv] = None
@@ -442,6 +528,8 @@ async def lifespan(app: FastAPI):
         try:
             policies_content = os.getenv("CUGA_POLICIES_CONTENT", "")
             if policies_content:
+                from cuga.configurations.instructions_manager import InstructionsManager
+
                 logger.info("Loading hardcoded policies")
                 instructions_manager = InstructionsManager()
                 instructions_manager.set_instructions_from_one_file(policies_content)
@@ -449,86 +537,87 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to load policies: {e}")
 
-    # Initialize policy system (only if enabled)
-    if settings.policy.enabled:
-        try:
-            from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-            from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-            from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
+    async def _init_policy() -> None:
+        # Initialize policy system (only if enabled)
+        if settings.policy.enabled:
+            try:
+                from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+                from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
+                from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
 
-            app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
-            app_state.policy_system = PolicyConfigurable.get_instance()
-            await app_state.policy_system.initialize()
-            logger.info("✅ Policy system initialized")
+                app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
+                app_state.policy_system = PolicyConfigurable.get_instance()
+                await app_state.policy_system.initialize()
+                logger.info("✅ Policy system initialized")
 
-            # Get .cuga folder path from environment or settings
-            cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+                # Get .cuga folder path from environment or settings
+                cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
 
-            # Check if filesystem sync is enabled (can be disabled globally in settings)
-            filesystem_sync_enabled = settings.policy.filesystem_sync
-            auto_load_enabled = settings.policy.auto_load_policies
+                # Check if filesystem sync is enabled (can be disabled globally in settings)
+                filesystem_sync_enabled = settings.policy.filesystem_sync
+                auto_load_enabled = settings.policy.auto_load_policies
 
-            if not filesystem_sync_enabled:
-                logger.info("Filesystem sync disabled in settings")
-                app_state.policy_filesystem_sync = None
-            elif not auto_load_enabled:
-                logger.info("Auto-load policies disabled in settings")
-                # Initialize sync but don't load
-                app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
-            # Load policies from filesystem if folder exists and auto-load is enabled
-            elif os.path.exists(cuga_folder):
-                logger.info(f"Loading policies from {cuga_folder}...")
-                try:
-                    result = await load_policies_from_folder(
-                        folder_path=cuga_folder,
-                        storage=app_state.policy_system.storage,
-                        clear_existing=False,
-                    )
-                    await app_state.policy_system.initialize()  # Reinitialize after loading
-                    logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
-
-                    # Initialize filesystem sync for automatic saving
-                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
-                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
-
-                    # Validate and sync: ensure filesystem and storage are in sync
-                    try:
-                        sync_result = await validate_and_sync_policies(
-                            app_state.policy_system.storage, app_state.policy_filesystem_sync
-                        )
-                        if sync_result['removed'] or sync_result['added_to_filesystem']:
-                            logger.info(
-                                f"📊 Sync validation: "
-                                f"removed from storage={sync_result['removed']}, "
-                                f"added to filesystem={sync_result['added_to_filesystem']}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Failed to validate and sync policies: {e}")
-                except Exception as e:
-                    logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                if not filesystem_sync_enabled:
+                    logger.info("Filesystem sync disabled in settings")
                     app_state.policy_filesystem_sync = None
-            else:
-                logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                elif not auto_load_enabled:
+                    logger.info("Auto-load policies disabled in settings")
+                    # Initialize sync but don't load
+                    app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                    logger.info(f"✅ Filesystem sync enabled for {cuga_folder} (auto-load disabled)")
+                # Load policies from filesystem if folder exists and auto-load is enabled
+                elif os.path.exists(cuga_folder):
+                    logger.info(f"Loading policies from {cuga_folder}...")
+                    try:
+                        result = await load_policies_from_folder(
+                            folder_path=cuga_folder,
+                            storage=app_state.policy_system.storage,
+                            clear_existing=False,
+                        )
+                        await app_state.policy_system.initialize()  # Reinitialize after loading
+                        logger.info(f"✅ Loaded {result['count']} policies from {cuga_folder}")
+
+                        # Initialize filesystem sync for automatic saving
+                        app_state.policy_filesystem_sync = PolicyFilesystemSync(cuga_folder=cuga_folder)
+                        logger.info(f"✅ Filesystem sync enabled for {cuga_folder}")
+
+                        # Validate and sync: ensure filesystem and storage are in sync
+                        try:
+                            sync_result = await validate_and_sync_policies(
+                                app_state.policy_system.storage, app_state.policy_filesystem_sync
+                            )
+                            if sync_result['removed'] or sync_result['added_to_filesystem']:
+                                logger.info(
+                                    f"📊 Sync validation: "
+                                    f"removed from storage={sync_result['removed']}, "
+                                    f"added to filesystem={sync_result['added_to_filesystem']}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to validate and sync policies: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to load policies from {cuga_folder}: {e}")
+                        app_state.policy_filesystem_sync = None
+                else:
+                    logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
+                    app_state.policy_filesystem_sync = None
+
+                app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
+
+            except Exception as e:
+                logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.policy_system = None
                 app_state.policy_filesystem_sync = None
-
-            app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize policy system: {e}")
+                app_state.set_subsystem_status(
+                    "policy",
+                    "failed",
+                    "Policy subsystem failed to initialize",
+                    {"error": str(e)},
+                )
+        else:
+            logger.info("Policy system disabled in settings")
             app_state.policy_system = None
             app_state.policy_filesystem_sync = None
-            app_state.set_subsystem_status(
-                "policy",
-                "failed",
-                "Policy subsystem failed to initialize",
-                {"error": str(e)},
-            )
-    else:
-        logger.info("Policy system disabled in settings")
-        app_state.policy_system = None
-        app_state.policy_filesystem_sync = None
-        app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
+            app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
 
     # -------------------------------------------------------------------
     # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
@@ -558,6 +647,32 @@ async def lifespan(app: FastAPI):
         if not getattr(app_state, "knowledge_provider", None):
             _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+
+        # Wire per-session citation overrides into the knowledge sources module
+        # so citations_enabled_for() can honor session-level toggles.
+        from cuga.backend.knowledge import sources as knowledge_sources
+
+        def _session_overrides_lookup(thread_id: str):
+            provider = getattr(app_state, "knowledge_provider", None)
+            if provider is None:
+                return None
+            session = provider.get_session(thread_id)
+            return session.overrides if session else None
+
+        knowledge_sources.set_session_override_lookup(_session_overrides_lookup)
+
+        # Wire the agent-level citations flag the same way, reading the LIVE
+        # engine config each call (apply_knowledge_config can replace it at
+        # runtime). Engine absent means "no gating info" -> enabled, so
+        # SDK/edge paths keep resolving citations.
+        def _agent_citations_lookup() -> bool:
+            engine = getattr(app_state, "knowledge_engine", None)
+            config = getattr(engine, "_config", None) if engine is not None else None
+            if config is None:
+                return True
+            return bool(getattr(config, "citations_enabled", True))
+
+        knowledge_sources.set_agent_citations_lookup(_agent_citations_lookup)
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
         app_state.knowledge_engine.start_background_tasks()
@@ -645,12 +760,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         kb_config = KnowledgeConfig()
 
-    if kb_config.enabled:
-        await initialize_knowledge_engine(app_state, kb_config)
-    else:
-        app_state.knowledge_engine = None
-        logger.info("Knowledge features disabled (knowledge.enabled=false)")
-        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+    async def _init_knowledge() -> None:
+        if kb_config.enabled:
+            await initialize_knowledge_engine(app_state, kb_config)
+        else:
+            app_state.knowledge_engine = None
+            logger.info("Knowledge features disabled (knowledge.enabled=false)")
+            app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+
+    await asyncio.gather(_init_policy(), _init_knowledge())
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
@@ -684,6 +802,8 @@ async def lifespan(app: FastAPI):
                 )
                 await app_state.policy_system.initialize()
                 logger.info(f"Manager mode: applied {len(policies_list)} policies from config")
+            from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
             registry_url = get_registry_base_url()
             async with httpx.AsyncClient() as client:
                 r = await client.post(f"{registry_url}/reload", timeout=10.0)
@@ -697,6 +817,20 @@ async def lifespan(app: FastAPI):
     # Start the save_reuse server if configured
 
     await manage_save_reuse_server()
+
+    # Deferred imports — kept here intentionally to avoid loading the browser stack
+    # and graph modules before lifespan starts.  Moving these to module-top would
+    # re-introduce the startup latency that was removed by this optimisation.
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
+    from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
+        ChromeExtensionCommunicatorHTTP,
+    )
+    from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
+    from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
+    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.cli import start_extension_browser_if_configured
+
     app_state.tracker = ActivityTracker()
     if settings.advanced_features.use_extension:
         app_state.env = ExtensionEnv(
@@ -940,6 +1074,15 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
+    try:
+        removed = await get_conversation_db().gc_ephemeral_stream_events()
+        if removed:
+            logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
+    except Exception:
+        logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -986,6 +1129,10 @@ async def lifespan(app: FastAPI):
 
 def get_element_names(tool_calls, elements):
     """Extracts element names from tool calls."""
+    from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+        ActionAgentEventProcessor,
+    )
+
     elements_map = {}
     for tool in tool_calls:
         element_bid = tool.get("args", {}).get("bid", None)
@@ -1092,22 +1239,75 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
+    events_only: bool = False,
 ):
-    """Save conversation history and stream events asynchronously."""
+    """Save conversation history and stream events asynchronously.
+
+    When *events_only* is True (e.g. X-Disable-History / Try-It-Out mode) only
+    stream_events are persisted so that citation-ledger rehydration and reload
+    replay still work — the conversation_history table (sidebar) is left untouched.
+    """
     try:
-        await save_conversation_to_db(
-            agent_id,
-            thread_id,
-            state,
-            user_id,
-            user_attachments=user_attachments,
-        )
+        if not events_only:
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
         if events:
             conversation_db = get_conversation_db()
             await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
             logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
+
+
+def _build_slash_skill_registry():
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import (
+            build_slash_registry,
+            parse_and_dispatch,
+        )
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+        )
+    except Exception:
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
+        return None
 
 
 async def save_conversation_to_db(
@@ -1127,6 +1327,8 @@ async def save_conversation_to_db(
         user_id: The user identifier (defaults to DEFAULT_USER_ID)
     """
     try:
+        from langchain_core.messages import AIMessage, HumanMessage
+
         if not thread_id or not state:
             return
 
@@ -1289,6 +1491,13 @@ async def event_stream(
     user_attachments: Optional[List[Dict[str, Any]]] = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
+    from cuga.backend.cuga_graph.utils.agent_loop import AgentLoop, AgentLoopAnswer, StreamEvent
+    from cuga.backend.cuga_graph.utils.controller import AgentRunner
+    from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
+    from langchain_core.messages import AIMessage
+
     run_agent = agent if agent is not None else app_state.agent
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
@@ -1382,9 +1591,12 @@ async def event_stream(
 
     local_tracker.task_id = 'demo'
 
-    # Initialize event sequence counter and buffer for stream event tracking
+    # Initialize event sequence counter and buffer for stream event tracking.
     event_sequence = 0
-    stream_events_buffer = []  # Buffer to collect events during streaming
+    # Buffer collects THIS turn's events only. The DB layer (save_stream_events)
+    # appends them to the persisted prior turns and re-sequences, so the row
+    # stays cumulative — no per-turn clobber — without seeding the buffer here.
+    stream_events_buffer = []
 
     # Add user message to buffer as first event
     if query and thread_id:
@@ -1400,6 +1612,23 @@ async def event_stream(
             }
         )
         event_sequence += 1
+
+    slash_result = None
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
+        # Soft dispatch: the planner input becomes the translated suggestion
+        # ("use the skill named '<name>' to: <args>") and the planner decides
+        # to call ``load_skill`` itself. The UserMessage stream event above
+        # already carries the original raw utterance, so display/history keep
+        # what the user actually typed.
+        local_state.input = slash_result.planner_input or query
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to carry the translated planner input, so the planner
+        # sees the raw slash text. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping planner-input translation")
 
     langfuse_handler = (
         CallbackHandler()
@@ -1441,6 +1670,9 @@ async def event_stream(
                 "prefix": _sess_prefix(thread_id),
                 "filenames": _session_kb.filenames,
             }
+
+    if thread_id:
+        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1567,19 +1799,25 @@ async def event_stream(
                                             },
                                         }
                                         active_policies.append(policy_data)
-                        final_answer_text = (
-                            event.answer
-                            if settings.advanced_features.wxo_integration
-                            else json.dumps(
-                                {
-                                    "data": event.answer,
-                                    "variables": variables_metadata,
-                                    "active_policies": active_policies,
-                                }
-                            )
-                            if event.answer
-                            else "Done."
-                        )
+                        if settings.advanced_features.wxo_integration:
+                            # WXO is raw text — append a plain-text sources footer
+                            # (applied once, before final_answer_text is built, so
+                            # both the streamed payload and the persisted Answer
+                            # event carry it).
+                            if event.answer and event.sources:
+                                event.answer = f"{event.answer}{_format_sources_footer(event.sources)}"
+                            final_answer_text = event.answer
+                        elif event.answer:
+                            answer_payload = {
+                                "data": event.answer,
+                                "variables": variables_metadata,
+                                "active_policies": active_policies,
+                            }
+                            if event.sources:
+                                answer_payload["sources"] = event.sources
+                            final_answer_text = json.dumps(answer_payload)
+                        else:
+                            final_answer_text = "Done."
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -1598,8 +1836,11 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                            # Batch save all events and conversation history synchronously (for debugging)
-                            # Skip saving if disable_history is True
+                            # Batch save all events and conversation history.
+                            # When disable_history is True (Try-It-Out / X-Disable-History)
+                            # we still persist stream_events so citation-ledger rehydration
+                            # and reload replay work, but we skip conversation_history so
+                            # the sidebar is not polluted.
                             if not disable_history:
                                 await _save_conversation_and_events_async(
                                     agent_id=app_state.agent_id,
@@ -1610,7 +1851,28 @@ async def event_stream(
                                     user_attachments=user_attachments,
                                 )
                             else:
-                                logger.info(f"History saving disabled for thread_id: {thread_id}")
+                                try:
+                                    await _save_conversation_and_events_async(
+                                        agent_id=app_state.agent_id,
+                                        thread_id=thread_id,
+                                        user_id=user_id,
+                                        # state is unused when events_only=True; pass it
+                                        # like the normal branch does (AgentState() would
+                                        # raise on its required fields anyway).
+                                        state=local_state,
+                                        events=stream_events_buffer.copy(),
+                                        user_attachments=user_attachments,
+                                        events_only=True,
+                                    )
+                                    logger.info(
+                                        f"Try-It-Out: saved stream events (no conversation history) "
+                                        f"for thread_id: {thread_id}"
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        f"Try-It-Out: ephemeral stream-events save failed (non-fatal) "
+                                        f"for thread_id: {thread_id}"
+                                    )
 
                         yield StreamEvent(
                             name="Answer",
@@ -1685,7 +1947,14 @@ async def event_stream(
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except ValueError as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
@@ -1700,9 +1969,17 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
+                        from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
+
+                        if app_state.output_format == OutputFormat.WXO:
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -1749,6 +2026,16 @@ app.add_middleware(
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 app.include_router(agents_routes.router)
+
+
+if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
+    # The A2A package is only imported when explicitly enabled in settings,
+    # so disabled deployments pay no import-time cost for it. All runner
+    # wiring lives in cuga.backend.server.a2a.runner — main.py just
+    # delegates the mount.
+    from cuga.backend.server.a2a.runner import build_a2a_router_for_settings  # noqa: E402
+
+    app.include_router(build_a2a_router_for_settings(settings.a2a, app_state))
 
 
 @app.get("/health")
@@ -2019,7 +2306,11 @@ async def auth_userinfo(request: Request):
 if getattr(settings.advanced_features, "use_extension", False):
     print(settings.advanced_features.use_extension)
 
-    def get_communicator() -> ChromeExtensionCommunicatorProtocol:
+    def get_communicator():
+        from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
+            ChromeExtensionCommunicatorProtocol,
+        )
+
         comm: ChromeExtensionCommunicatorProtocol | None = getattr(
             app_state.env, "extension_communicator", None
         )
@@ -2049,6 +2340,8 @@ if getattr(settings.advanced_features, "use_extension", False):
 
     @app.post("/extension/agent_query")
     async def extension_agent_query(request: Request):
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
         body = await request.json()
         query = body.get("query", "")
         request_id = body.get("request_id", None)
@@ -2217,6 +2510,8 @@ async def stream(
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
     user_attachments = await get_attachment_snapshot(request)
@@ -2284,12 +2579,24 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
         if thread_id not in app_state.stop_events:
             app_state.stop_events[thread_id] = asyncio.Event()
         app_state.stop_events[thread_id].set()
+        try:
+            from cuga.backend.agent_spawn import clear_runtime_caches
+
+            clear_runtime_caches(thread_id)
+        except Exception as e:
+            logger.warning(f"Failed to clear spawn caches on stop for {thread_id}: {e}")
         return {"status": "success", "message": f"Stop request received for thread_id: {thread_id}"}
     else:
         logger.warning("Received stop request without thread_id, stopping all threads")
         # Fallback: stop all threads (for backward compatibility)
         for event in app_state.stop_events.values():
             event.set()
+        try:
+            from cuga.backend.agent_spawn import clear_runtime_caches
+
+            clear_runtime_caches()
+        except Exception as e:
+            logger.warning(f"Failed to clear spawn caches on stop-all: {e}")
         return {"status": "success", "message": "Stop request received for all threads"}
 
 
@@ -2317,6 +2624,17 @@ async def reset_agent_state(
             # Clear stop event for this thread
             if thread_id in app_state.stop_events:
                 app_state.stop_events[thread_id].clear()
+            try:
+                from cuga.backend.agent_spawn import clear_runtime_caches
+
+                clear_runtime_caches(thread_id)
+            except Exception as e:
+                logger.warning(f"Failed to clear spawn caches on reset for {thread_id}: {e}")
+
+            # Drop the in-memory citation source ledger for this thread
+            from cuga.backend.knowledge.sources import drop_ledger
+
+            drop_ledger(thread_id)
 
             # In LangGraph, state is persisted per thread_id. The client should generate a new thread_id
             # for a fresh start. If we need to clear the thread state, we would need to delete it from
@@ -2327,6 +2645,12 @@ async def reset_agent_state(
             # Clear all stop events (for backward compatibility)
             for event in app_state.stop_events.values():
                 event.clear()
+            try:
+                from cuga.backend.agent_spawn import clear_runtime_caches
+
+                clear_runtime_caches()
+            except Exception as e:
+                logger.warning(f"Failed to clear spawn caches on reset-all: {e}")
 
         # Note: We don't reset the agent graph or environment as they are shared resources.
         # State is managed per-thread via LangGraph's checkpointer.
@@ -2621,8 +2945,14 @@ def _policy_to_frontend_dict(policy_dict: dict) -> dict:
         frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
         frontend_policy["target_apps"] = policy_dict.get("target_apps")
         frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
-        frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
+        raw_guards = policy_dict.get("tool_guards") or {}
+        frontend_policy["tool_guards"] = (
+            {k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in raw_guards.items()}
+            if raw_guards
+            else policy_dict.get("tool_guards")
+        )
         frontend_policy["prepend"] = policy_dict.get("prepend", False)
+        frontend_policy["guards_enabled"] = policy_dict.get("guards_enabled", True)
     elif policy_type == "tool_approval":
         frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
         frontend_policy["required_apps"] = policy_dict.get("required_apps")
@@ -2886,6 +3216,8 @@ async def generate_tool_guard_for_policy(
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
     """Generate and persist ToolGuards for a saved Tool Guide policy."""
+    from cuga.backend.cuga_graph.policy.models import ToolGuide
+
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},
@@ -3029,6 +3361,7 @@ _CUGA_LITE_FILESYSTEM_TOOLS: tuple[tuple[str, str], ...] = (
 async def _runtime_tools_flags(agent_id: Optional[str], use_draft: bool) -> tuple[bool, bool]:
     """Return (shell_enabled, filesystem_enabled) from agent config or settings fallback."""
     from cuga.backend.server.config_store import _parse_agent_id, load_config, load_draft
+    from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id
 
     base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
     try:
@@ -3064,6 +3397,8 @@ async def get_tools_list(
     """
     try:
         # Check for draft mode from query parameter or header
+        from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
+
         use_draft = False
         if draft is not None:
             use_draft = str(draft).lower() in ("1", "true", "yes", "on")
@@ -3162,6 +3497,8 @@ async def get_tools_list(
 async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve tools connection status."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+
         # Get available apps and their tools
         apps = await get_apps()
         tools = []
@@ -3259,6 +3596,8 @@ async def get_agent_state(
                         "message": "No state found for this thread_id",
                     }
                 )
+
+            from cuga.backend.cuga_graph.state.agent_state import AgentState
 
             local_state = AgentState(**state_snapshot.values)
             variables_metadata = local_state.variables_manager.get_all_variables_metadata(
@@ -3422,6 +3761,8 @@ async def get_subagents_config(current_user: Optional[UserInfo] = Depends(requir
 async def get_apps_endpoint(current_user: Optional[UserInfo] = Depends(require_auth)):
     """Endpoint to retrieve available apps."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apps
+
         apps = await get_apps()
         apps_data = [
             {
@@ -3445,6 +3786,8 @@ async def get_app_tools(
 ):
     """Endpoint to retrieve tools for a specific app."""
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_apis
+
         apis = await get_apis(app_name)
         tools_data = [
             {
@@ -3508,8 +3851,33 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "knowledge_enabled": _knowledge_enabled_for_app_state(app_state),
             "agent_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "agent"),
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
+            "citations_enabled": _knowledge_citations_enabled_for_app_state(app_state),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the registry of slash commands (skills only); rebuilt per request so new SKILL.md files appear without restart."""
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")
@@ -3898,6 +4266,8 @@ async def proxy_function_call(
     Exposes the registry's /functions/call endpoint through the main HuggingFace Space URL.
     """
     try:
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
         registry_url = f"{get_registry_base_url()}/functions/call"
 
         body = await request.body()
@@ -3955,6 +4325,8 @@ def validate_input_length(text: str) -> None:
 
 async def get_query(request: Request) -> Union[str, ActionResponse]:
     """Parses the incoming request to extract the user query or action."""
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
+
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -4017,9 +4389,13 @@ async def get_attachment_snapshot(request: Request) -> Optional[List[Dict[str, A
 @app.get("/flows/{full_path:path}")
 async def serve_flows(full_path: str, request: Request):
     """Serves files from the flows directory."""
-    file_path = os.path.join(app_state.STATIC_DIR_FLOWS, full_path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
+    static_root = Path(app_state.STATIC_DIR_FLOWS)
+    try:
+        file_path = assert_resolved_path_under(Path(os.path.join(static_root, full_path)), static_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Flow file not found.")
+    if file_path.is_file():
+        return FileResponse(str(file_path))
     raise HTTPException(status_code=404, detail="Flow file not found.")
 
 
@@ -4029,10 +4405,16 @@ async def serve_react(full_path: str, request: Request):
     if not app_state.STATIC_DIR_HTML:
         raise HTTPException(status_code=500, detail="Frontend build directory not found.")
 
+    static_root = Path(app_state.STATIC_DIR_HTML)
     lookup_path = full_path[7:] if full_path.startswith("manage/") else full_path
-    file_path = os.path.join(app_state.STATIC_DIR_HTML, lookup_path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
+    try:
+        file_path = assert_resolved_path_under(Path(os.path.join(static_root, lookup_path)), static_root)
+    except ValueError:
+        # Resolved outside the static directory: refuse rather than falling through to
+        # the index.html SPA route, so the request gets one unambiguous answer.
+        raise HTTPException(status_code=404, detail="Frontend files not found.")
+    if file_path.is_file():
+        return FileResponse(str(file_path))
 
     index_path = os.path.join(app_state.STATIC_DIR_HTML, "index.html")
     if os.path.exists(index_path):

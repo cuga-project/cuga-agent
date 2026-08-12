@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.policy.models import (
     Playbook,
     OutputFormatter,
     ToolGuide,
+    ToolGuard,
     IntentGuard,
     ToolApproval,
     KeywordTrigger,
@@ -39,25 +40,32 @@ def parse_markdown_with_frontmatter(file_path: str) -> tuple[Dict[str, Any], str
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Check for frontmatter delimiters
-    if not content.startswith('---'):
+    lines = content.splitlines(keepends=True)
+
+    # Check for frontmatter delimiters on their own lines. ToolGuard policy code
+    # can contain strings/comments with "---", which must not terminate YAML.
+    if not lines or lines[0].rstrip('\r\n') != '---':
         raise ValueError(f"File {file_path} missing frontmatter (should start with ---)")
 
-    # Split frontmatter and content
-    parts = content.split('---', 2)
-    if len(parts) < 3:
+    closing_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.rstrip('\r\n') == '---':
+            closing_index = index
+            break
+
+    if closing_index is None:
         raise ValueError(f"File {file_path} has invalid frontmatter format")
+
+    frontmatter_text = ''.join(lines[1:closing_index])
+    markdown_content = ''.join(lines[closing_index + 1 :]).strip()
 
     # Parse YAML frontmatter
     try:
-        frontmatter = yaml.safe_load(parts[1])
+        frontmatter = yaml.safe_load(frontmatter_text)
         if not isinstance(frontmatter, dict):
             raise ValueError("Frontmatter must be a YAML dictionary")
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in frontmatter: {e}")
-
-    # Get markdown content (everything after second ---)
-    markdown_content = parts[2].strip()
 
     return frontmatter, markdown_content
 
@@ -210,6 +218,17 @@ def create_tool_guide_from_markdown(
     if not triggers:
         triggers = [AlwaysTrigger()]
 
+    raw_tool_guards = frontmatter.get('tool_guards')
+    tool_guards: dict = {}
+    if isinstance(raw_tool_guards, dict):
+        for tool_name, guard_config in raw_tool_guards.items():
+            try:
+                tool_guards[tool_name] = (
+                    guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
+                )
+            except Exception as e:
+                logger.warning(f"Skipping invalid guard for tool '{tool_name}' in {file_path}: {e}")
+
     return ToolGuide(
         id=frontmatter.get('id', f"tool_guide_{Path(file_path).stem}"),
         name=name,
@@ -218,7 +237,9 @@ def create_tool_guide_from_markdown(
         target_tools=target_tools,
         target_apps=frontmatter.get('target_apps'),
         guide_content=content,
+        tool_guards=tool_guards,
         prepend=frontmatter.get('prepend', False),
+        guards_enabled=frontmatter.get('guards_enabled', True),
         priority=frontmatter.get('priority', 50),
         enabled=frontmatter.get('enabled', True),
     )
