@@ -198,6 +198,48 @@ class FindToolsOutput(BaseModel):
     )
 
 
+def _render_find_tools_markdown(
+    query: str,
+    enriched_tools: List[Tool],
+    tool_descriptions: Dict[str, Optional[str]],
+) -> str:
+    """Assemble find_tools discovery markdown with conditional schema blocks."""
+    markdown_lines = [
+        f"# Found {len(enriched_tools)} Matching Tool(s)\n",
+        f"**Query:** {query}\n",
+    ]
+    for idx, tool in enumerate(enriched_tools, 1):
+        markdown_lines.append(f"## {idx}. `{tool.name}`\n")
+
+        tool_description = tool_descriptions.get(tool.name)
+        if tool_description:
+            markdown_lines.append(f"**Description:** {tool_description}\n")
+
+        markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
+
+        if tool.params_doc:
+            markdown_lines.append("**Parameters:**\n")
+            markdown_lines.append(f"{tool.params_doc}\n")
+        else:
+            markdown_lines.append("**Parameters:** No parameters required\n")
+
+        if tool.response_doc:
+            markdown_lines.append("**Response Schema:**\n")
+            markdown_lines.append(f"{tool.response_doc}\n")
+
+        if tool.input_ and tool.input_ != {} and input_schema_adds_detail(tool.input_):
+            markdown_lines.append("**Input Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
+
+        if should_emit_output_schema(tool.response_doc, tool.output_schema):
+            markdown_lines.append("**Output Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
+
+        markdown_lines.append("---\n")
+
+    return "\n".join(markdown_lines)
+
+
 class PromptUtils:
     """Utilities for creating prompts and finding tools."""
 
@@ -513,41 +555,7 @@ class PromptUtils:
             if hasattr(tool, 'description')
         }
 
-        markdown_lines = [
-            f"# Found {len(enriched_tools)} Matching Tool(s)\n",
-            f"**Query:** {query}\n",
-        ]
-
-        for idx, tool in enumerate(enriched_tools, 1):
-            markdown_lines.append(f"## {idx}. `{tool.name}`\n")
-
-            tool_description = tool_descriptions.get(tool.name)
-            if tool_description:
-                markdown_lines.append(f"**Description:** {tool_description}\n")
-
-            markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
-
-            if tool.params_doc:
-                markdown_lines.append("**Parameters:**\n")
-                markdown_lines.append(f"{tool.params_doc}\n")
-            else:
-                markdown_lines.append("**Parameters:** No parameters required\n")
-
-            if tool.response_doc:
-                markdown_lines.append("**Response Schema:**\n")
-                markdown_lines.append(f"{tool.response_doc}\n")
-
-            if tool.input_ and tool.input_ != {}:
-                markdown_lines.append("**Input Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
-
-            if tool.output_schema and tool.output_schema != {}:
-                markdown_lines.append("**Output Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
-
-            markdown_lines.append("---\n")
-
-        return "\n".join(markdown_lines)
+        return _render_find_tools_markdown(query, enriched_tools, tool_descriptions)
 
     @staticmethod
     async def shortlist_tool_names(
