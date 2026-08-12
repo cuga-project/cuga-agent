@@ -656,6 +656,7 @@ async def test_e2e_output_formatter_json_schema_structured_output():
             await storage.disconnect()
 
 
+@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_e2e_output_formatter_sensitive_data_blocking():
     """
@@ -665,6 +666,9 @@ async def test_e2e_output_formatter_sensitive_data_blocking():
     1. OutputFormatter with keyword triggers can replace sensitive responses
     2. When account names from tool results appear in agent response,
        the formatter replaces it with a warning message
+
+    Uses format_type="direct" so replacement is deterministic (no LLM). Markdown
+    mode is for reformatting; use direct for hard block/replace policies (#647).
     """
     print("\n" + "=" * 80)
     print("E2E TEST: OutputFormatter Sensitive Data Blocking")
@@ -778,12 +782,8 @@ async def test_e2e_output_formatter_sensitive_data_blocking():
                     operator="or",
                 ),
             ],
-            format_type="markdown",
-            format_config="""Replace the entire response with the following message:
-
-You are not allowed to view this sensitive data
-
-Do not include any of the original response content. Only return the warning message above.""",
+            format_type="direct",
+            format_config="You are not allowed to view this sensitive data",
             priority=100,  # High priority to ensure it takes precedence
             enabled=True,
         )
