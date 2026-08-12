@@ -15,6 +15,9 @@ import json
 
 import pytest
 from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import AIMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, ValidationError
 
 from cuga.backend.cuga_graph.nodes.shared.base_agent import _json_schema_unusable
@@ -65,28 +68,77 @@ def test_transport_errors_still_propagate(exc):
     assert _json_schema_unusable(exc) is False
 
 
+class _FakeLLM(Runnable):
+    """Minimal LLM stand-in that composes with `|` like the real thing.
+
+    ``with_structured_output`` yields a runnable that fails the way an endpoint
+    ignoring ``json_schema`` does; the model itself answers with plain JSON, which
+    is what the json_mode branch's PydanticOutputParser expects.
+    """
+
+    def __init__(self, schema_failure: BaseException, json_text: str):
+        self.schema_failure = schema_failure
+        self.json_text = json_text
+        self.calls: list[str] = []
+        self.json_mode_prompt_text = ""
+
+    def with_structured_output(self, schema, method=None, **kwargs):
+        def _fail(_inputs):
+            self.calls.append(f"json_schema({method})")
+            raise self.schema_failure
+
+        return RunnableLambda(_fail)
+
+    def invoke(self, input, config=None, **kwargs):
+        self.calls.append("json_mode")
+        # capture what the fallback prompt actually rendered, so the test can
+        # assert the format instructions really reached the model
+        self.json_mode_prompt_text = "\n".join(m.content for m in input.to_messages())
+        return AIMessage(content=self.json_text)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        return self.invoke(input, config, **kwargs)
+
+
 @pytest.mark.unit
-def test_chain_falls_back_on_validation_error():
-    """End to end through the real except-branch: a ValidationError must reach json_mode."""
+def test_production_chain_falls_back_and_carries_format_instructions():
+    """Drive the real create_validated_structured_output_chain, not a copy of it.
+
+    Exercises the actual wiring: the json_schema attempt, the `_json_schema_unusable`
+    branch, and the json_mode prompt built with the `cuga_format_instructions`
+    partial. A broken partial raises KeyError here; a rewired chain changes the
+    recorded call order.
+    """
     import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
 
-    import cuga.backend.cuga_graph.nodes.shared.base_agent as ba
+    from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
-    expected = Shortlist(result=["gmail_send_email_emails_post"])
-    schema_chain = MagicMock(ainvoke=AsyncMock(side_effect=_validation_error()))
-    mode_chain = MagicMock(ainvoke=AsyncMock(return_value=expected))
+    llm = _FakeLLM(_validation_error(), '{"result": ["gmail_send_email_emails_post"]}')
+    prompt = ChatPromptTemplate.from_messages([("system", "You select tools."), ("human", "{input}")])
 
-    async def invoke(inputs):
-        try:
-            return ba.BaseAgent.validate_and_retry_output(await schema_chain.ainvoke(inputs), Shortlist)
-        except Exception as exc:
-            if ba._json_schema_unusable(exc):
-                return ba.BaseAgent.validate_and_retry_output(await mode_chain.ainvoke(inputs), Shortlist)
-            raise
+    chain = BaseAgent.create_validated_structured_output_chain(llm, Shortlist, prompt)
+    out = asyncio.run(chain.ainvoke({"input": "pick tools for sending mail"}))
 
-    with patch.object(ba.BaseAgent, "validate_and_retry_output", side_effect=lambda out, _s: out):
-        assert asyncio.run(invoke({"input": "pick tools"})) == expected
+    assert isinstance(out, Shortlist)
+    assert out.result == ["gmail_send_email_emails_post"]
+    # json_schema attempted exactly once, then json_mode exactly once — no retry storm
+    assert llm.calls == ["json_schema(json_schema)", "json_mode"], llm.calls
+    # the fallback prompt must actually tell the model what JSON to produce
+    assert "result" in llm.json_mode_prompt_text
+    assert "schema" in llm.json_mode_prompt_text.lower()
 
-    schema_chain.ainvoke.assert_awaited_once()
-    mode_chain.ainvoke.assert_awaited_once()
+
+@pytest.mark.unit
+def test_production_chain_does_not_fall_back_on_transport_error():
+    """A connection failure must propagate, not silently become a json_mode call."""
+    import asyncio
+
+    from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+
+    llm = _FakeLLM(ConnectionError("connection reset by peer"), "{}")
+    prompt = ChatPromptTemplate.from_messages([("system", "You select tools."), ("human", "{input}")])
+    chain = BaseAgent.create_validated_structured_output_chain(llm, Shortlist, prompt)
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(chain.ainvoke({"input": "pick tools"}))
+    assert "json_mode" not in llm.calls
