@@ -98,7 +98,9 @@ out-of-scope report than miss a real one.
 3. We develop the fix in the advisory's temporary private fork, so it is not public before the
    advisory is ready.
 4. We release a version containing the fix.
-5. We publish the advisory and request a CVE.
+5. We publish the advisory and request a CVE. CVEs for this repository are issued by GitHub,
+   which acts as the CVE Numbering Authority for advisories filed by maintainers of a hosted
+   open-source project.
 
 We ask that you keep the report confidential until the advisory is published. We aim to publish
 within 90 days of the report; if a fix is taking longer, we will tell you why rather than let the
