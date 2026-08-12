@@ -134,7 +134,9 @@ async def test_slow_response_is_cut_off_at_the_deadline(monkeypatch):
     elapsed = time.monotonic() - started
 
     assert result is None
-    assert elapsed < 3.0, f"the slow request was not cut off at the deadline ({elapsed:.1f}s)"
+    # Budget is 0.3s; allow scheduling margin but stay well under a multi-second
+    # regression so a broken deadline is caught rather than tolerated.
+    assert elapsed < 1.0, f"the slow request was not cut off at the deadline ({elapsed:.1f}s)"
 
 
 async def test_absent_trace_id_returns_immediately(virtual_clock):
