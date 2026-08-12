@@ -49,6 +49,12 @@ _block_tool_calls_context: contextvars.ContextVar[dict] = contextvars.ContextVar
     "block_tool_calls", default=None
 )
 
+# Set while inside a call that has already been charged to the budget, so nested
+# enforcement (a named tool whose implementation calls call_api) doesn't double-count.
+_counting_tool_call_context: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "counting_tool_call", default=False
+)
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -186,7 +192,14 @@ class ToolCallTracker:
         No-op outside a seeded execution context (e.g. tool calls made outside
         the CugaLite sandbox loop) or when ``advanced_features.max_tool_calls``
         is 0 (disabled).
+
+        Also a no-op when already inside a counted call: a named tool reaches
+        the sandbox through :func:`counted_tool_call` and a registry-backed one
+        then calls ``call_api`` internally, so counting at both boundaries would
+        charge a single logical call twice.
         """
+        if _counting_tool_call_context.get():
+            return
         box = _tool_call_budget_context.get()
         if box is None:
             return
@@ -201,6 +214,31 @@ class ToolCallTracker:
                 "(Configurable via advanced_features.max_tool_calls; 0 disables.)"
             )
         box[0] += 1
+
+
+def counted_tool_call(awaitable_func: Callable[..., Any]) -> Callable[..., Any]:
+    """Charge one budget unit per call of an already-awaitable tool function.
+
+    ``call_api`` is only the choke point for registry-routed calls. Tools the
+    sandbox invokes by name — direct LangChain tools, skills, filesystem/shell
+    runtime tools, ``find_tools`` — never pass through it, so without this they
+    escape ``advanced_features.max_tool_calls`` entirely.
+
+    Applied at the outermost boundary; ``enforce_call_budget`` no-ops while
+    nested, so a registry-backed tool that internally calls ``call_api`` is
+    still charged exactly once.
+    """
+
+    @functools.wraps(awaitable_func)
+    async def _counted(*args, **kwargs):
+        ToolCallTracker.enforce_call_budget()
+        token = _counting_tool_call_context.set(True)
+        try:
+            return await awaitable_func(*args, **kwargs)
+        finally:
+            _counting_tool_call_context.reset(token)
+
+    return _counted
 
 
 def make_recording_awaitable(
