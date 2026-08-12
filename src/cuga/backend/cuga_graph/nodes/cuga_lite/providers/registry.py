@@ -14,6 +14,7 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 from pydantic import Field, ValidationError, create_model
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import call_history
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallCounter,
@@ -84,6 +85,10 @@ async def call_api(
                     result = json.loads(response_data)
                 except json.JSONDecodeError:
                     result = response_data
+                # A 4xx that repeats a call we already made successfully is
+                # likely reporting a state we set ourselves (#596). Annotate the
+                # evidence; the result stays an error either way.
+                result = call_history.observe(app_name, api_name, args, result)
                 return result
     except asyncio.TimeoutError:
         error_msg = f"Tool call '{api_name}' timed out after {timeout_seconds} seconds"
