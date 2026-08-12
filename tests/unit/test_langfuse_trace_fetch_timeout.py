@@ -23,6 +23,7 @@ import asyncio
 import socket
 import time
 
+import httpx
 import pytest
 
 from cuga.evaluation.langfuse import get_langfuse_data as trace_fetch
@@ -61,6 +62,26 @@ def unreachable_langfuse(monkeypatch):
 
 
 @pytest.fixture
+def attempted_requests(monkeypatch):
+    """Record every outbound trace request instead of making it.
+
+    A fast path returns ``None`` just like an exhausted retry loop does, so
+    ``is None`` alone cannot tell the two apart. This records what the fetch
+    tried to send, which distinguishes "never asked" from "asked and gave up".
+    Failing with ``ConnectError`` keeps the retry loop on its normal error
+    branch; raising something the loop does not expect would mask that.
+    """
+    attempts: list[str] = []
+
+    async def _record(self, url, *args, **kwargs):
+        attempts.append(url)
+        raise httpx.ConnectError("no network in tests")
+
+    monkeypatch.setattr("httpx.AsyncClient.get", _record)
+    return attempts
+
+
+@pytest.fixture
 def virtual_clock(monkeypatch):
     """Make backoff sleeps free but keep them visible to the clock.
 
@@ -96,14 +117,21 @@ async def test_unreachable_langfuse_does_not_stall_the_task(unreachable_langfuse
     )
 
 
-async def test_missing_credentials_still_returns_immediately(monkeypatch, virtual_clock):
-    """Regression guard for the #318 fast path."""
+async def test_missing_credentials_never_reach_the_network(monkeypatch, virtual_clock, attempted_requests):
+    """Regression guard for the #318 fast path.
+
+    Without the guard the loop would send a request httpx cannot authenticate
+    and then burn the whole backoff schedule on it, so the assertion that
+    matters is that nothing is sent at all.
+    """
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
 
     handler = LangfuseTraceHandler("0" * 32)
 
     assert await handler.get_langfuse_data() is None
+
+    assert attempted_requests == [], "the fetch tried to request a trace without credentials"
     assert virtual_clock.elapsed == 0.0
 
 
@@ -139,7 +167,16 @@ async def test_slow_response_is_cut_off_at_the_deadline(monkeypatch):
     assert elapsed < 1.0, f"the slow request was not cut off at the deadline ({elapsed:.1f}s)"
 
 
-async def test_absent_trace_id_returns_immediately(virtual_clock):
-    """No trace id means there is nothing to wait for."""
+async def test_absent_trace_id_never_reaches_the_network(
+    unreachable_langfuse, virtual_clock, attempted_requests
+):
+    """No trace id means there is nothing to fetch, so nothing should be sent.
+
+    Credentials are supplied on purpose. Without them the #318 guard returns
+    just as early, so the test would still pass with the trace-id guard gone
+    and would be asserting nothing about the guard it is named for.
+    """
     assert await LangfuseTraceHandler("").get_langfuse_data() is None
+
+    assert attempted_requests == [], "the fetch tried to request a trace it does not have an id for"
     assert virtual_clock.elapsed == 0.0
