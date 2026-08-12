@@ -45,6 +45,18 @@ class _StubMcpManager:
     auth_config: dict = {}
 
 
+_MISSING = object()
+
+
+def _restore(module, name: str, value) -> None:
+    """Put a module global back, including back to not existing at all."""
+    if value is _MISSING:
+        if hasattr(module, name):
+            delattr(module, name)
+    else:
+        setattr(module, name, value)
+
+
 @pytest.fixture
 def registry_client(tmp_path: Path):
     """The real app with MCP startup skipped, and every global it touches restored.
@@ -57,9 +69,14 @@ def registry_client(tmp_path: Path):
     original_enabled = settings.advanced_features.tracker_enabled
     original_steps = list(tracker.steps)
     original_prompts = list(tracker.prompts)
-    # registry/mcp_manager are only bound by the lifespan, so they may not exist yet.
-    original_registry = getattr(srv, "registry", None)
-    original_manager = getattr(srv, "mcp_manager", None)
+    # experiment_folder and task_id are what get_current_trajectory_path builds from,
+    # so leaving them set would hand a later test this test's trajectory path.
+    original_experiment_folder = tracker.experiment_folder
+    original_task_id = tracker.task_id
+    # registry/mcp_manager are only bound by the lifespan, so they may not exist yet;
+    # _MISSING marks that so teardown removes them again rather than binding None.
+    original_registry = getattr(srv, "registry", _MISSING)
+    original_manager = getattr(srv, "mcp_manager", _MISSING)
     original_db_mode = srv.database_mode
     original_lifespan = srv.app.router.lifespan_context
 
@@ -81,10 +98,12 @@ def registry_client(tmp_path: Path):
             yield client, tracker
     finally:
         srv.app.router.lifespan_context = original_lifespan
-        srv.registry = original_registry
-        srv.mcp_manager = original_manager
+        _restore(srv, "registry", original_registry)
+        _restore(srv, "mcp_manager", original_manager)
         srv.database_mode = original_db_mode
         tracker.set_base_dir(original_base_dir)
+        tracker.experiment_folder = original_experiment_folder
+        tracker.task_id = original_task_id
         tracker.steps = original_steps
         tracker.prompts = original_prompts
         settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": original_enabled}}, merge=True)
