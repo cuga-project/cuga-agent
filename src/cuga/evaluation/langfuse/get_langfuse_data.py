@@ -118,7 +118,11 @@ class LangfuseTraceHandler:
                 break
             try:
                 async with httpx.AsyncClient(timeout=request_timeout) as client:
-                    response = await client.get(url, auth=auth)
+                    # httpx's timeout bounds inactivity between chunks, not the total
+                    # request. A peer that keeps trickling data could otherwise hold the
+                    # request open past the budget, so wrap the whole call in a hard
+                    # wall-clock timeout and keep the httpx timeout as a phase safeguard.
+                    response = await asyncio.wait_for(client.get(url, auth=auth), timeout=request_timeout)
 
                     if response.status_code == 404:
                         if await wait_before_retry(attempt, "Trace not yet available"):

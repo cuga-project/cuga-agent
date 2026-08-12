@@ -107,6 +107,36 @@ async def test_missing_credentials_still_returns_immediately(monkeypatch, virtua
     assert virtual_clock.elapsed == 0.0
 
 
+async def test_slow_response_is_cut_off_at_the_deadline(monkeypatch):
+    """A single request that keeps the connection alive must not outlast the budget.
+
+    ``httpx``'s timeout bounds inactivity between chunks, not total request time, so
+    a peer that keeps trickling data could hold one ``client.get`` open indefinitely.
+    The fetch wraps the call in a hard wall-clock timeout for this reason.
+
+    Real time is used here (no virtual clock), with a small ``deadline_seconds``, so
+    the wall clock is the thing under test. The request is replaced with one that
+    sleeps far longer than the deadline; without the wrapping timeout it would run to
+    completion.
+    """
+
+    async def _slow_get(self, *args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr("httpx.AsyncClient.get", _slow_get)
+
+    config = trace_fetch.Config("pk-lf-test", "sk-lf-test", "http://langfuse.invalid")
+
+    started = time.monotonic()
+    result = await LangfuseTraceHandler.extract_langfuse_data(
+        config, "0" * 32, initial_delay=0.05, deadline_seconds=0.3
+    )
+    elapsed = time.monotonic() - started
+
+    assert result is None
+    assert elapsed < 3.0, f"the slow request was not cut off at the deadline ({elapsed:.1f}s)"
+
+
 async def test_absent_trace_id_returns_immediately(virtual_clock):
     """No trace id means there is nothing to wait for."""
     assert await LangfuseTraceHandler("").get_langfuse_data() is None
