@@ -1,3 +1,27 @@
-# Default CodeQL setup auto-discovers model extensions under
-# .github/codeql/extensions/*/qlpack.yml (see workspace-path-sanitizers/).
+# CodeQL configuration.
+#
+# NOTE: this file is not currently read by anything.
+#
+# Code scanning here runs as GitHub-managed default setup, which does not read a
+# repository CodeQL config file unless the `github-codeql-config-file` repository
+# property points at one, or the repository moves to advanced setup. Neither is the
+# case today, so any setting added below has no effect.
+#
+# This does NOT apply to the model pack in .github/codeql/extensions/. Default setup
+# detects and uses model packs in that directory automatically, independently of this
+# file. So the sanitizer model there is live and needs nothing configured here.
+#
+# To check locally which model files an analysis actually loaded:
+#
+#   codeql resolve extensions \
+#     --additional-packs=.github/codeql/extensions \
+#     --model-packs=cuga-project/workspace-path-sanitizers \
+#     -- codeql/python-queries:Security/CWE-022/PathInjection.ql
+#
+# The output lists every model file loaded; the sanitizer model should appear with a
+# non-zero row count for the `barrierModel` predicate.
+#
+# An earlier version of this comment claimed default setup auto-discovers model
+# extensions *because of this file*. That was wrong in both directions: this file is
+# not read, and the extensions directory does not depend on it. See issue #633.
 name: cuga-agent-codeql
