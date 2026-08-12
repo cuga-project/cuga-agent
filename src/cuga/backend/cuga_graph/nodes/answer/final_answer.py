@@ -1,6 +1,4 @@
 import json
-import re
-from functools import lru_cache
 from typing import Literal, Dict, Callable
 
 from langchain_core.messages import AIMessage
@@ -17,97 +15,13 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
+from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds, MessagePrefixes
 
 tracker = ActivityTracker()
 
 # Feature flag for human-in-the-loop functionality
 ENABLE_SAVE_REUSE = settings.features.save_reuse
-
-# harmony-format models (gpt-oss) can leak their control tokens into answers.
-# Anything <|...|>-shaped is a *candidate*; only members of the harmony
-# vocabulary below are removed, so legitimate answer text like "<|custom|>"
-# survives.
-_SPECIAL_TOKEN_SHAPE_RE = re.compile(r"<\|[^|>]*\|>")
-
-# Used only when openai-harmony can't be imported — the framing tokens the
-# protocol defines, so a missing wheel degrades to the previous behaviour
-# rather than disabling the filter outright.
-_FALLBACK_CONTROL_TOKENS = frozenset(
-    {
-        "<|start|>",
-        "<|end|>",
-        "<|message|>",
-        "<|channel|>",
-        "<|constrain|>",
-        "<|return|>",
-        "<|call|>",
-        "<|endoftext|>",
-    }
-)
-
-
-@lru_cache(maxsize=1)
-def _harmony_special_tokens() -> frozenset:
-    """The harmony special-token vocabulary, taken from ``openai-harmony``.
-
-    Sourcing it from the official encoding rather than a hand-maintained list
-    means the set tracks upstream instead of drifting (review request from
-    @sami-marreed on #558). Loaded lazily and cached: callers check
-    :func:`_harmony_stripping_enabled` first, so non-harmony runs never pay for
-    building the encoding.
-    """
-    try:
-        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
-
-        encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
-        return frozenset(encoding.special_tokens_set)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.debug("openai-harmony unavailable; using built-in token list: {}", e)
-        return _FALLBACK_CONTROL_TOKENS
-
-
-def _harmony_stripping_enabled() -> bool:
-    """Whether the harmony control-token filter applies to this run.
-
-    ``advanced_features.strip_harmony_control_tokens``:
-
-    - ``"auto"`` (default) — strip only when the final-answer model is a
-      harmony-format model (the gpt-oss family). Providers that never emit this
-      framing are left completely untouched, so the filter cannot alter their
-      output.
-    - ``true`` / ``false`` — force it on or off, e.g. for a provider that leaks
-      framing under a model name we don't recognise, or to disable it outright.
-    """
-    try:
-        mode = getattr(settings.advanced_features, "strip_harmony_control_tokens", "auto")
-    except Exception:
-        return False
-    if isinstance(mode, bool):
-        return mode
-    normalized = str(mode).strip().lower()
-    if normalized in ("true", "1", "yes", "on"):
-        return True
-    if normalized in ("false", "0", "no", "off"):
-        return False
-    # auto: harmony framing originates from the gpt-oss family only
-    try:
-        model_name = str(getattr(settings.agent.final_answer.model, "model_name", "") or "")
-    except Exception:
-        return False
-    return "gpt-oss" in model_name.lower()
-
-
-def _strip_control_tokens(text: str) -> str:
-    if "<|" not in (text or ""):
-        return text
-    if not _harmony_stripping_enabled():
-        return text
-    specials = _harmony_special_tokens()
-    # Remove the tokens and nothing else — no .strip(). A token sitting directly
-    # before an indented block would otherwise take that block's leading
-    # indentation with it and corrupt e.g. a Markdown code block.
-    return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)
 
 
 class HumanInTheLoopHandler:
@@ -190,7 +104,7 @@ class FinalAnswerNode(BaseNode):
 
             text = state.final_answer or ""
             if "<|" in text:
-                text = _strip_control_tokens(text)
+                text = strip_harmony_tokens(text)
                 state.final_answer = text
             if not has_citation_markers(text):
                 # No [sN] markers to resolve. Two cases land here: a genuinely
@@ -319,7 +233,7 @@ class FinalAnswerNode(BaseNode):
         # apply_citation_resolution runs on state.final_answer below)
         if settings.features.chat:
             chat_message = (
-                f"{MessagePrefixes.ANSWER_PREFIX}{_strip_control_tokens(final_answer_output.final_answer)}"
+                f"{MessagePrefixes.ANSWER_PREFIX}{strip_harmony_tokens(final_answer_output.final_answer)}"
             )
             state.append_to_last_chat_message(chat_message)
 

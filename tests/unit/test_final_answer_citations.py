@@ -1,9 +1,7 @@
 from types import SimpleNamespace
 
-from cuga.backend.cuga_graph.nodes.answer.final_answer import (
-    FinalAnswerNode,
-    _harmony_stripping_enabled as _REAL_GATE,
-)
+from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+from cuga.backend.cuga_graph.utils.harmony import harmony_handling_enabled as _REAL_GATE
 from cuga.backend.knowledge.sources import get_ledger, _reset_all_ledgers_for_tests
 import pytest
 
@@ -17,7 +15,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def _force_harmony_stripping(monkeypatch):
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.answer.final_answer._harmony_stripping_enabled",
+        "cuga.backend.cuga_graph.utils.harmony.harmony_handling_enabled",
         lambda: True,
     )
 
@@ -74,6 +72,7 @@ def test_chat_history_copy_is_sanitized(monkeypatch):
 
     from langchain_core.messages import AIMessage
 
+    # this one controls features.chat, which final_answer reads — not the gate
     monkeypatch.setattr(
         "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
         SimpleNamespace(features=SimpleNamespace(chat=True)),
@@ -128,12 +127,12 @@ def test_vocabulary_comes_from_openai_harmony():
     """The token list is sourced from openai-harmony rather than hand-maintained,
     so it tracks upstream (review request on #558). The eight framing tokens the
     filter targets must be a subset of it."""
-    from cuga.backend.cuga_graph.nodes.answer.final_answer import (
+    from cuga.backend.cuga_graph.utils.harmony import (
         _FALLBACK_CONTROL_TOKENS,
-        _harmony_special_tokens,
+        harmony_special_tokens,
     )
 
-    vocabulary = _harmony_special_tokens()
+    vocabulary = harmony_special_tokens()
     assert _FALLBACK_CONTROL_TOKENS <= vocabulary
     # the library ships the full special-token set, far larger than the fallback
     assert len(vocabulary) > len(_FALLBACK_CONTROL_TOKENS)
@@ -143,7 +142,7 @@ def test_gate_auto_enables_only_for_harmony_models(monkeypatch):
     """auto = strip for gpt-oss, leave every other provider alone."""
     gate = _reload_gate()
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
+        "cuga.backend.cuga_graph.utils.harmony.settings",
         SimpleNamespace(
             advanced_features=SimpleNamespace(strip_harmony_control_tokens="auto"),
             agent=SimpleNamespace(
@@ -154,7 +153,7 @@ def test_gate_auto_enables_only_for_harmony_models(monkeypatch):
     assert gate() is True
 
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
+        "cuga.backend.cuga_graph.utils.harmony.settings",
         SimpleNamespace(
             advanced_features=SimpleNamespace(strip_harmony_control_tokens="auto"),
             agent=SimpleNamespace(final_answer=SimpleNamespace(model=SimpleNamespace(model_name="gpt-4o"))),
@@ -167,7 +166,7 @@ def test_gate_can_be_forced_on_or_off(monkeypatch):
     gate = _reload_gate()
     for value, expected in (("false", False), ("true", True), (False, False), (True, True)):
         monkeypatch.setattr(
-            "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
+            "cuga.backend.cuga_graph.utils.harmony.settings",
             SimpleNamespace(
                 advanced_features=SimpleNamespace(strip_harmony_control_tokens=value),
                 agent=SimpleNamespace(
@@ -182,7 +181,7 @@ def test_non_harmony_run_leaves_tokens_untouched(monkeypatch):
     """End-to-end: with the gate closed the answer passes through byte-identical,
     so a non-gpt-oss provider's output is never altered by this filter."""
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.answer.final_answer._harmony_stripping_enabled",
+        "cuga.backend.cuga_graph.utils.harmony.harmony_handling_enabled",
         lambda: False,
     )
     text = "The total is 42<|return|>"
