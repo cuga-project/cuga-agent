@@ -110,11 +110,23 @@ def extract_code_from_model_response(
     Tries fenced/raw code in ``content`` first; only if that yields nothing
     does it look at ``reasoning_content``. Mirrors the (previously
     duplicated) logic in the Lite and Supervisor loop nodes.
+
+    Multiple fences in reasoning are drafts/retries, not one program (#626):
+    only the last fenced block is kept, so six near-identical attempts are not
+    concatenated into one redundant executable.
     """
     code = extract_and_combine_codeblocks(content, tools_needing_probing) if content else ""
     if not code and reasoning_content:
-        code = extract_and_combine_codeblocks(reasoning_content, tools_needing_probing)
+        code = extract_and_combine_codeblocks(_last_fenced_block(reasoning_content), tools_needing_probing)
     return code
+
+
+def _last_fenced_block(text: str) -> str:
+    """Keep only the final ```python fence; pass text through if there are 0–1."""
+    blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
+    if len(blocks) < 2:
+        return text
+    return f"```python{blocks[-1]}```"
 
 
 def make_tool_awaitable(func: Callable[..., Any]) -> Callable[..., Any]:

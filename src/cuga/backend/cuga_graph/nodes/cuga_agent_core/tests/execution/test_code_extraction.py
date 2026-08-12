@@ -47,6 +47,22 @@ def test_model_response_empty_content_uses_reasoning() -> None:
     assert extract_code_from_model_response(None, "```python\nx = compute()\n```") == "x = compute()"
 
 
+def test_reasoning_drafts_do_not_concatenate() -> None:
+    """#626: multiple reasoning fences are retries, not one program."""
+    reasoning = (
+        "let me try\n```python\nprint(find_tools('a'))\n```\n"
+        "hmm, retry\n```python\nprint(find_tools('b'))\n```\n"
+        "final\n```python\nprint(find_tools('c'))\n```"
+    )
+    assert extract_code_from_model_response("prose only", reasoning) == "print(find_tools('c'))"
+
+
+def test_content_blocks_still_combine() -> None:
+    """Only the reasoning fallback de-drafts; content stays a single program."""
+    content = "```python\na = 1\n```\ntext\n```python\nprint(a)\n```"
+    assert extract_code_from_model_response(content, None) == "a = 1\n\nprint(a)"
+
+
 def test_model_response_no_code_anywhere_returns_empty() -> None:
     assert extract_code_from_model_response("prose only", None) == ""
     assert extract_code_from_model_response("prose only", "also prose") == ""
