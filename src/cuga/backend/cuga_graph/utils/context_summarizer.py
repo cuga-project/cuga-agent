@@ -413,18 +413,28 @@ class ContextSummarizer:
 
         Why pyproject.toml pins ``langchain<1.3.15``:
 
-        When the summary model call fails, langchain 1.3.9-1.3.14 catch the error and hand
-        back the text "Error generating summary: ...". We treat that as a normal summary, so
-        the conversation keeps a placeholder plus the last N messages.
+        This only matters when the summary model call itself fails. Measured with 30 messages
+        and ``keep_last_n_messages = 10``:
 
-        From 1.3.15 the middleware stops catching that error and lets it out instead. It then
-        reaches the ``except`` in ``summarize_messages``, which throws away every older
-        message and keeps only the last N — no summary, no placeholder. So a single failed
-        summary call turns into the worst state loss we have.
+        - 1.3.9-1.3.14 catch the failure inside the middleware and return the text
+          "Error generating summary: ...". We treat that like any other summary, so we get
+          back 11 messages (that placeholder plus the last 10) and metrics that report a
+          successful summarization.
+        - 1.3.15 retries the call and, if it still fails, lets the exception out.
+          ``_invoke_middleware`` wraps it as ``RuntimeError("middleware_invocation_failed:
+          <original error>")``, which the ``except`` in ``summarize_messages`` catches. We get
+          back 10 messages (the last 10, no placeholder), an error log, and metrics carrying
+          ``hard_truncation``.
 
-        Staying under 1.3.15 keeps the gentler behaviour. Before lifting the cap, give
-        ``summarize_messages`` a real answer for a failed summary call (retry, or synthesise
-        its own placeholder) so that failure stops meaning "drop the history".
+        Both versions lose the same 20 older messages, so this is not a difference in how much
+        history survives. What differs is the extra placeholder message and, more usefully, the
+        reporting: 1.3.15 retries first and says the summarization failed, whereas 1.3.9-1.3.14
+        pass an error string off as a summary and report success.
+
+        The cap exists only so that a dependency bump made for security reasons does not also
+        change behaviour. It is not a judgement that 1.3.15 is worse — on retries and honest
+        metrics it is better. Lift it whenever the shorter return and the ``hard_truncation``
+        metrics are acceptable to the tracker/eval consumers (see issue #563).
 
         Args:
             typed_messages: List of typed messages for middleware
