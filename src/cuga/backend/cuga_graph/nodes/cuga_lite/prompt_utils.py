@@ -32,6 +32,91 @@ _WEAK_SCHEMA_PROBE_DIRECTIVE = (
 # import dependency).
 _SYNTHETIC_PLACEHOLDER_KEY = "_synthetic_placeholder"
 
+_RICH_SCHEMA_KEYS = frozenset(
+    {
+        "enum",
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+)
+
+
+def input_schema_adds_detail(schema: Any) -> bool:
+    """True when raw Input Schema JSON carries detail Parameters would lose."""
+    if not isinstance(schema, dict) or not schema:
+        return False
+    return _schema_node_adds_detail(schema)
+
+
+def _non_null_variants(node: dict) -> list:
+    variants: list = []
+    for key in ("anyOf", "oneOf"):
+        for variant in node.get(key) or []:
+            if isinstance(variant, dict) and variant.get("type") != "null":
+                variants.append(variant)
+    t = node.get("type")
+    if isinstance(t, list):
+        for x in t:
+            if x != "null":
+                variants.append({"type": x})
+    return variants
+
+
+def _schema_node_adds_detail(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if "$ref" in node:
+        return True
+    for map_key in ("$defs", "definitions"):
+        defs = node.get(map_key)
+        if isinstance(defs, dict) and defs:
+            return True
+    if any(k in node for k in _RICH_SCHEMA_KEYS):
+        return True
+
+    if "anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list):
+        variants = _non_null_variants(node)
+        if len(variants) > 1:
+            return True
+        if len(variants) == 1 and _schema_node_adds_detail(variants[0]):
+            return True
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        if items.get("type") == "object" or "properties" in items or "$ref" in items:
+            return True
+        if _schema_node_adds_detail(items):
+            return True
+    elif isinstance(items, list):
+        if any(_schema_node_adds_detail(i) for i in items if isinstance(i, dict)):
+            return True
+
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for prop in props.values():
+            if not isinstance(prop, dict):
+                continue
+            if "$ref" in prop:
+                return True
+            if "properties" in prop and isinstance(prop.get("properties"), dict):
+                return True
+            if _schema_node_adds_detail(prop):
+                return True
+
+    for variant in node.get("allOf") or []:
+        if _schema_node_adds_detail(variant):
+            return True
+
+    return False
+
 
 def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, bool):
