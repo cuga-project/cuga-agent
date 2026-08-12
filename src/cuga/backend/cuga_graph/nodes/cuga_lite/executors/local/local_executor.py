@@ -109,6 +109,29 @@ class LocalExecutor(BaseExecutor):
                         guidance += "(no stdout was printed before the timeout)"
                     return guidance
                 context_locals.update(result_locals)
+        except SystemExit as e:
+            # `exit()` is a reasonable thing for generated code to reach — "stop
+            # this block, there is nothing more to do". The intent is fine; the
+            # blast radius was not. Relaxed execution hands the block the full
+            # builtins, and SystemExit is a BaseException, so it walked past
+            # every `except Exception` above this and killed the host process
+            # mid-run (an evaluation sweep died at task 23 of 40 this way).
+            #
+            # So honour the intent instead of forbidding it: end the block early
+            # and keep everything a normal block would have kept. `return
+            # locals()` never ran, but the frame is still alive on the
+            # traceback, so the variables computed before the exit are readable
+            # from it and persist across blocks as usual.
+            context_locals.update(self._locals_from_frame(e, "_async_main"))
+            reason = str(e) if str(e) and not str(e).isdigit() else ""
+            note = "Block ended early: the code called exit()/quit() or raised SystemExit"
+            note += f" ({reason}).\n" if reason else ".\n"
+            note += (
+                "This ended the block only — variables defined before it were kept and "
+                "are available in the next block. Nothing after the exit ran.\n"
+            )
+            captured = stdout_buf.getvalue()
+            return f"{note}{captured}" if captured.strip() else f"{note}(no output printed)"
         except Exception as e:
             # Preserve prints from earlier successful lines so the agent still
             # sees discovery output (e.g. find_tools) when a later line raises.
@@ -122,6 +145,24 @@ class LocalExecutor(BaseExecutor):
             result = "<code ran, no output printed to stdout>"
 
         return result
+
+    @staticmethod
+    def _locals_from_frame(error: BaseException, func_name: str) -> dict[str, Any]:
+        """Read a still-live frame's locals off an exception's traceback.
+
+        Used when the block stopped somewhere other than its own ``return
+        locals()`` — the frame is kept alive by the traceback, so the variables
+        computed up to that point are still readable and need not be discarded.
+        """
+        frame = None
+        tb = error.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code.co_name == func_name:
+                frame = tb.tb_frame
+            tb = tb.tb_next
+        if frame is None:
+            return {}
+        return {k: v for k, v in frame.f_locals.items() if not k.startswith("__")}
 
     def format_error(
         self,
