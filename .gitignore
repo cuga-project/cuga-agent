@@ -28,10 +28,13 @@ test_results.json
 vendor
 logs/
 .milvus*
-.bob
-!.bob/commands/
-!.bob/commands/cuga-*.md
-!.bob/commands/github_commands.md
+.bob/*
+!.bob/skills/
+.bob/skills/*
+!.bob/skills/cuga-github-issues/
+!.bob/skills/cuga-github-issues/**
+!.bob/skills/cuga-contributor-workflows/
+!.bob/skills/cuga-contributor-workflows/**
 test_workspace/
 *.logs
 
@@ -82,10 +85,13 @@ vendor/
 cuga.egg-info
 
 # IDE and editor files
-.cursor/
-!.cursor/commands/
-!.cursor/commands/cuga-*.md
-!.cursor/commands/github_commands.md
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/cuga-github-issues/
+!.cursor/skills/cuga-github-issues/**
+!.cursor/skills/cuga-contributor-workflows/
+!.cursor/skills/cuga-contributor-workflows/**
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
