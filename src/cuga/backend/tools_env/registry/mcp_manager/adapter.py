@@ -9,6 +9,10 @@ from loguru import logger
 from pydantic import BaseModel
 
 from cuga.backend.tools_env.registry.config.config_loader import ServiceConfig
+from cuga.backend.tools_env.registry.utils.conflict_utils import (
+    is_already_satisfied,
+    satisfied_result,
+)
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import (
     SimpleOpenAPIParser,
 )
@@ -671,6 +675,21 @@ def create_handler(api, model, base_url: str, name: str, schemas: Dict[str, Serv
                         error_response["message"] += f" {e.response.text}"
                 except Exception:
                     pass
+
+            # Classify AFTER the body has been appended: the "already ..." phrase
+            # lives in the response body, not in str(e). The desired state already
+            # holding is a satisfied goal, not a failure to retry (#596).
+            if is_already_satisfied(error_response.get("status_code"), error_response.get("message")):
+                logger.info(
+                    f"'{api.name}' returned {error_response.get('status_code')} reporting the desired "
+                    f"state already holds; treating as satisfied: {error_response['message']}"
+                )
+                return satisfied_result(
+                    error_response.get("status_code"),
+                    error_response["message"],
+                    url=error_response.get("url"),
+                    method=error_response.get("method"),
+                )
 
             return error_response
 

@@ -23,41 +23,12 @@ except ImportError:
     TavilyClient = None
 
 
-# ── Idempotent-conflict classification (#596) ──────────────────────────────────
-# Some 4xx responses report that the requested post-condition is ALREADY true —
-# the note exists, the song is in the playlist, the thread is already archived.
-# Those are not failures: the goal state holds. Surfacing them as exceptions made
-# the agent re-issue the same call, which accounted for 57% of all error responses
-# observed across five AppWorld bundles (11,747 of 20,469).
-#
-# 409 Conflict is treated as idempotent on its own — that is what the status means.
-# For 422 the API reuses the code for genuine validation failures too, so only an
-# explicit allow-list of known "already true" messages qualifies; a broad match on
-# "already" would mask real errors.
-IDEMPOTENT_CONFLICT_STATUS = 409
-
-ALREADY_SATISFIED_MESSAGES = (
-    "already in the playlist",
-    "already exists",
-    "already marked as archived",
-    "already marked as read",
-    "already marked as unread",
+# Idempotent-conflict classification lives in utils.conflict_utils so this module
+# and mcp_manager.adapter — the two places tool errors are built — apply one rule (#596).
+from cuga.backend.tools_env.registry.utils.conflict_utils import (  # noqa: E402
+    is_already_satisfied,
+    satisfied_result,
 )
-
-
-def is_already_satisfied(status_code: Optional[int], message: Any) -> bool:
-    """True when a 4xx response reports the desired state already holds.
-
-    Args:
-        status_code: HTTP status from the tool response.
-        message: Response message/body text, if any.
-    """
-    if status_code == IDEMPOTENT_CONFLICT_STATUS:
-        return True
-    if status_code == 422 and message:
-        lowered = str(message).lower()
-        return any(pattern in lowered for pattern in ALREADY_SATISFIED_MESSAGES)
-    return False
 
 
 class ApiRegistry:
@@ -476,13 +447,9 @@ class ApiRegistry:
                     f"'{function_name}' returned {error_detail['status_code']} "
                     f"reporting the desired state already holds; treating as satisfied: {final_message}"
                 )
-                return {
-                    "status": "success",
-                    "already_satisfied": True,
-                    "status_code": error_detail['status_code'],
-                    "message": final_message,
-                    "function_name": function_name,
-                }
+                return satisfied_result(
+                    error_detail['status_code'], final_message, function_name=function_name
+                )
 
             return {
                 "status": "exception",
