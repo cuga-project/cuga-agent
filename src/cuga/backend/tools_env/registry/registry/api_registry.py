@@ -23,14 +23,6 @@ except ImportError:
     TavilyClient = None
 
 
-# Idempotent-conflict classification lives in utils.conflict_utils so this module
-# and mcp_manager.adapter — the two places tool errors are built — apply one rule (#596).
-from cuga.backend.tools_env.registry.utils.conflict_utils import (  # noqa: E402
-    is_already_satisfied,
-    satisfied_result,
-)
-
-
 class ApiRegistry:
     """
     Internal class to manage API and Application information,
@@ -437,18 +429,6 @@ class ApiRegistry:
             else:
                 final_message = (
                     f"HTTP {error_detail['status_code']} error executing function '{function_name}'"
-                )
-
-            # The requested state may already hold — that is a satisfied goal, not a
-            # failure to retry (#596). Report it as such, keeping the original status
-            # and message so genuine conflicts stay debuggable.
-            if is_already_satisfied(error_detail['status_code'], final_message):
-                logger.info(
-                    f"'{function_name}' returned {error_detail['status_code']} "
-                    f"reporting the desired state already holds; treating as satisfied: {final_message}"
-                )
-                return satisfied_result(
-                    error_detail['status_code'], final_message, function_name=function_name
                 )
 
             return {
