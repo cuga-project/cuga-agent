@@ -48,13 +48,17 @@ def test_model_response_empty_content_uses_reasoning() -> None:
 
 
 def test_reasoning_drafts_do_not_concatenate() -> None:
-    """#626: multiple reasoning fences are retries, not one program."""
+    """#626: reasoning fences are a blind plan — only the first can run.
+
+    Shape taken from AppWorld trajectories: fence 1 discovers tools, the rest
+    call what it has not bound yet.
+    """
     reasoning = (
-        "let me try\n```python\nprint(find_tools('a'))\n```\n"
-        "hmm, retry\n```python\nprint(find_tools('b'))\n```\n"
-        "final\n```python\nprint(find_tools('c'))\n```"
+        "discover first\n```python\nprint(await find_tools('spotify'))\n```\n"
+        "then list\n```python\nprint(await spotify_list_playlists())\n```\n"
+        "then rate\n```python\nprint(await spotify_rate(5))\n```"
     )
-    assert extract_code_from_model_response("prose only", reasoning) == "print(find_tools('c'))"
+    assert extract_code_from_model_response("prose only", reasoning) == "print(await find_tools('spotify'))"
 
 
 def test_content_blocks_still_combine() -> None:
