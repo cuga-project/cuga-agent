@@ -35,8 +35,25 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def _enable_tracker():
     """Mirror api_registry_server.py:331, which force-enables the tracker whenever a
-    trajectory_path is supplied, so the tracker_enabled guard is not the thing under test."""
+    trajectory_path is supplied, so the tracker_enabled guard is not the thing under test.
+
+    ActivityTracker is a singleton and the enabled flag is a process-global setting, so
+    both are saved and restored around each test to keep leaked state out of the rest of
+    the suite."""
+    tracker = ActivityTracker()
+    original_base_dir = tracker.get_base_dir()
+    original_enabled = settings.advanced_features.tracker_enabled
+    original_steps = list(tracker.steps)
+    original_prompts = list(tracker.prompts)
+
     settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": True}}, merge=True)
+    try:
+        yield
+    finally:
+        tracker.set_base_dir(original_base_dir)
+        tracker.steps = original_steps
+        tracker.prompts = original_prompts
+        settings.update({"ADVANCED_FEATURES": {"TRACKER_ENABLED": original_enabled}}, merge=True)
 
 
 def _tracker_with_base(base: Path) -> ActivityTracker:
