@@ -48,6 +48,7 @@ class CugaSupervisorState(AgentState):
     execution_complete: bool = False
     error: Optional[str] = None
     step_count: int = 0
+    tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
 
     # Metadata for tracking
     supervisor_metadata: Dict[str, Any] = Field(default_factory=dict)

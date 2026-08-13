@@ -205,7 +205,7 @@ class ToolCallTracker:
             return
         from cuga.config import settings
 
-        max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 100)
+        max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 256)
         # Check before counting so rejected attempts never inflate the counter.
         if max_tool_calls and box[0] >= max_tool_calls:
             raise RuntimeError(

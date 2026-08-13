@@ -467,7 +467,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             runtime_thread_id = None
 
         _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
-        adapter._tools_context.update(_runtime_bundle.execution_callables)
+        adapter._tools_context.update(
+            {name: counted_tool_call(fn) for name, fn in _runtime_bundle.execution_callables.items()}
+        )
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions

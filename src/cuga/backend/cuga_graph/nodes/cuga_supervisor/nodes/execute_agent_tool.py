@@ -17,6 +17,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
@@ -68,6 +69,11 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             SUPERVISOR_EXEC_KEY: exec_ctx,
         }
 
+        # Per-task tool-call budget: carry the count from earlier steps so
+        # advanced_features.max_tool_calls caps the whole task, not one block.
+        # Without this the supervisor's delegation tools escape the cap entirely.
+        ToolCallTracker.seed_call_budget(getattr(state, "tool_calls_used", 0))
+
         try:
             exec_plan = ExecutionRouter.resolve(settings)
             if exec_plan.split_execution_active:
@@ -115,6 +121,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "supervisor_chat_messages": updated_messages,
                 "supervisor_variables": state.supervisor_variables,
                 "step_count": state.step_count + 1,
+                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
                 **delegation_updates,
             }
             # The create_update_todos tool writes onto the run-local state via the execution
@@ -140,6 +147,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "error": error_msg,
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
+                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
                 **_delegation_state_update(state),
             }
 
