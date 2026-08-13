@@ -27,6 +27,8 @@ _DEFAULT_BACKEND = {
     "discord": "direct",  # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
     "web": "direct",  # the browser: no socket to push into, so its transport is a durable
     # per-thread mailbox the UI drains by cursor — see web_inbox.
+    "whatsapp": "direct",  # Meta Cloud API. NOT optional: AP's whatsapp piece has 0 triggers, so it
+    # cannot receive — an AP backend could only ever do the outbound half.
 }
 
 
@@ -95,5 +97,15 @@ async def send_direct(
         res = await telegram_direct.send_message(target, text, reply_to=(locus or None))
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"telegram: {res.get('error') or res}")
+    if ch == "whatsapp":
+        from . import whatsapp_direct
+
+        # ``target`` is the wa_id (the user's phone number) — WhatsApp is 1:1, so there is no
+        # channel/thread to address and ``locus`` is unused. send_message picks free-form vs
+        # template from the 24-hour window; a scheduled fire is usually OUTSIDE it, which is why
+        # that decision lives in the adapter and not here.
+        res = await whatsapp_direct.send_message(target, text)
+        ok = bool(res.get("ok"))
+        return ok, ("ok" if ok else f"whatsapp: {res.get('error') or res}")
     log.warning("no direct sender for channel %s (target=%s) — dropping", channel, target)
     return False, f"no direct sender for '{channel}'"

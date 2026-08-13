@@ -1998,6 +1998,77 @@ def register_events_routes(
         except Exception as e:  # noqa: BLE001
             tr.error("slack", err=str(e))
 
+    # --- DIRECT WhatsApp (Meta Cloud API; AP's piece has no inbound trigger) -----------------------
+    @app.get("/api/events/whatsapp/events")
+    async def whatsapp_verify(request: Request):
+        """Meta's webhook verification handshake.
+
+        Unlike Slack (which handshakes over POST with a JSON body), Meta sends a GET carrying
+        ``hub.mode``/``hub.verify_token``/``hub.challenge`` and expects the challenge echoed as
+        PLAIN TEXT. So this is a real handler, not the friendly "you opened this in a browser" probe
+        the Slack route serves — returning JSON here fails verification.
+        """
+        from . import whatsapp_direct
+
+        ok, val = whatsapp_direct.handshake(request.query_params)
+        if not ok:
+            Trace(new_trace_id()).error("whatsapp", reason=val)
+            return JSONResponse({"ok": False, "error": val}, 403)
+        return PlainTextResponse(val)
+
+    @app.post("/api/events/whatsapp/events")
+    async def whatsapp_events(request: Request):
+        """Inbound WhatsApp messages. Verifies the signature, then answers each message through
+        CUGA's door in the background (Meta retries anything not acked promptly).
+
+        WhatsApp is 1:1 by construction — a conversation IS one human — so the wa_id is both the
+        delivery address and the per-user native id. That makes identity unambiguous here in a way
+        it never is on Slack, where many humans share one channel.
+        """
+        import asyncio
+
+        import json as _json
+
+        from . import whatsapp_direct
+
+        raw = await request.body()
+        ok_sig, why = whatsapp_direct.verify_signature(request.headers, raw)
+        if not ok_sig:
+            Trace(new_trace_id()).error("whatsapp", reason=why)
+            return JSONResponse({"ok": False, "error": why}, 401)
+        try:
+            body = _json.loads(raw.decode("utf-8", "replace") or "{}")
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "bad json"}, 400)
+        msgs = whatsapp_direct.messages(body)
+        for m in msgs:
+            # Record BEFORE answering: this is what opens the 24-hour free-form window, and the
+            # reply we are about to send depends on it.
+            whatsapp_direct.note_inbound(m["wa_id"])
+            asyncio.create_task(_whatsapp_answer(m["text"], m["wa_id"]))
+        if msgs:
+            Trace(new_trace_id())("whatsapp.direct", messages=len(msgs))
+        return {"ok": True, "messages": len(msgs)}
+
+    async def _whatsapp_answer(text: str, wa_id: str) -> None:
+        """Route a WhatsApp message through CUGA's /run and reply to the same number.
+
+        CUGA IS THE DOOR: this adapter owns the Cloud API token and nothing else. There is no
+        ``locus`` — WhatsApp has no threads, so the conversation is the person.
+        """
+        from . import cuga_door, whatsapp_direct
+
+        tr = Trace(new_trace_id())
+        try:
+            answer = await cuga_door.ask(text, channel="whatsapp", native_id=wa_id, user=wa_id, locus="")
+            if answer:
+                res = await whatsapp_direct.send_message(wa_id, answer)
+                tr("whatsapp.reply", ok=res.get("ok"), mode=res.get("mode") or "text")
+            else:
+                tr.error("whatsapp", reason="no answer from CUGA /run")
+        except Exception as e:  # noqa: BLE001
+            tr.error("whatsapp", err=str(e))
+
     # --- DIRECT Box (OAuth-free watcher; polls Box's API with a token) -----------------------------
     @app.post("/api/events/box/poll")
     async def box_poll(request: Request):
