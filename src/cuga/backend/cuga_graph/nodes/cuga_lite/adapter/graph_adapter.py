@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
@@ -26,7 +26,9 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_user_message_text
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
-    classify_nl_auto_continue,
+    BLOCKED_CLAIM_CORRECTION,
+    BlockedClaimEvidence,
+    classify_nl_auto_continue_decision,
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
@@ -202,8 +204,34 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     async def classify_auto_continue(
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
-    ) -> bool:
-        return await classify_nl_auto_continue(model, content, reasoning)
+    ) -> bool | str:
+        """Bool as in the base contract; a non-empty ``str`` means "continue, and
+        use this text as the synthetic user message" (unverified-blocker retry,
+        issue #610)."""
+        evidence = BlockedClaimEvidence(
+            tools_available=bool(self._tools_context),
+            code_executed=self._any_execution_ran(state),
+            retry_used=bool(self.get_metadata(state).get("_blocked_claim_retry")),
+        )
+        decision = await classify_nl_auto_continue_decision(model, content, reasoning, evidence=evidence)
+        if decision.blocked_override:
+            # One-shot: record the spent retry so a second refusal finalizes.
+            # shared_nodes re-reads metadata after this call, so the marker
+            # persists through the auto-continue Command update.
+            self.set_metadata(state, {**self.get_metadata(state), "_blocked_claim_retry": True})
+            return BLOCKED_CLAIM_CORRECTION
+        return decision.auto_continue
+
+    def _any_execution_ran(self, state: Any) -> bool:
+        """Has any sandbox execution produced feedback this task? Mirrors the
+        ``Execution output:`` message prefix emitted by ``execution_output_text``."""
+        for msg in self.get_messages(state):
+            if not isinstance(msg, HumanMessage):
+                continue
+            content = getattr(msg, "content", None)
+            if isinstance(content, str) and content.startswith("Execution output:"):
+                return True
+        return False
 
     def build_prepare_node(self, lc_bind_tools_meta: dict):
         return create_prepare_tools_and_apps_node(self, lc_bind_tools_meta)

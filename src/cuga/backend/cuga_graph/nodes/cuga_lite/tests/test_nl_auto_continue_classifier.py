@@ -105,3 +105,117 @@ async def test_disabled_flag_finalizes_planning_text(monkeypatch):
     result = await classify_nl_auto_continue(llm, "We need to search student_loan app.", None)
     assert result is False
     llm.ainvoke.assert_not_called()
+
+
+# ── Unverified-blocker override (issue #610) ────────────────────────────────
+#
+# Turn-1 "plan → refusal" messages that claim tools/data are unavailable while
+# the harness can positively verify otherwise (tools bound, nothing executed,
+# retry unspent) must be auto-continued once with a corrective message.
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (  # noqa: E402
+    BlockedClaimEvidence,
+    classify_nl_auto_continue_decision,
+    looks_like_unverified_blocker,
+)
+
+# Verbatim observed failures (AppWorld bundles, gpt-5.6-luna and gpt-oss-120b).
+OBSERVED_BLOCKER_STRINGS = [
+    "I’m sorry, but I couldn’t access the Amazon cart and wishlist data needed to calculate the total.",
+    "I’m sorry, but I couldn’t access the Spotify subscription details needed to calculate the remaining days.",
+    "I’m unable to access the Amazon tools needed to identify the last t-shirt order or post a product question in this session.",
+    "I’m unable to access the Amazon order or its customer questions/reviews with the currently available tools, so I can’t reliably determine whether the answer is yes or no.",
+    "I’m sorry, but I don’t have a tool that can change your Venmo password. You’ll need to update it directly through the Venmo app or website.",
+    "I’m unable to locate any Amazon-related tools in the current environment, so I can’t retrieve your account-creation date.",
+    "I’m unable to access the Spotify subscription details because the Spotify account tool isn’t available in this session.",
+]
+
+
+@pytest.mark.parametrize("text", OBSERVED_BLOCKER_STRINGS)
+def test_observed_blocker_strings_detected(text):
+    assert looks_like_unverified_blocker(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "Done. All 15 artists are followed on Spotify.",
+        "The count is 96.",
+        "I can help you browse Amazon products, manage Gmail threads, and track expenses.",
+        "Which account should I use?",
+        "The order was placed successfully. Order ID: 3146.",
+    ],
+)
+def test_non_blocker_text_not_detected(text):
+    assert looks_like_unverified_blocker(text) is False
+
+
+def _finalize_llm():
+    """Mock LLM whose classifier verdict is finalize (auto_continue false)."""
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = '{"auto_continue": false}'
+    llm.ainvoke = AsyncMock(return_value=resp)
+    return llm
+
+
+_FULL_EVIDENCE = BlockedClaimEvidence(tools_available=True, code_executed=False, retry_used=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", OBSERVED_BLOCKER_STRINGS)
+async def test_blocked_override_fires_on_turn1_refusal(text):
+    decision = await classify_nl_auto_continue_decision(_finalize_llm(), text, None, evidence=_FULL_EVIDENCE)
+    assert decision.auto_continue is True
+    assert decision.blocked_override is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        BlockedClaimEvidence(tools_available=False, code_executed=False, retry_used=False),
+        BlockedClaimEvidence(tools_available=True, code_executed=True, retry_used=False),
+        BlockedClaimEvidence(tools_available=True, code_executed=False, retry_used=True),
+        None,
+    ],
+)
+async def test_blocked_override_requires_positive_evidence(evidence):
+    """Empty tool list (registry down), prior execution, a spent retry, or no
+    evidence at all → the refusal finalizes as before."""
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(), OBSERVED_BLOCKER_STRINGS[0], None, evidence=evidence
+    )
+    assert decision.auto_continue is False
+    assert decision.blocked_override is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_override_ignores_genuine_completion():
+    """A tool-free completion contains no inability claim — the override must
+    not resurrect `require_tool_call_before_final` (removed in PR #416 review)."""
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(),
+        "I can help you browse Amazon products, manage Gmail threads, and track expenses.",
+        None,
+        evidence=_FULL_EVIDENCE,
+    )
+    assert decision.auto_continue is False
+    assert decision.blocked_override is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_override_disabled_by_flag(monkeypatch):
+    monkeypatch.setattr(mod.settings.advanced_features, "cuga_lite_blocked_claim_retry", False, raising=False)
+    decision = await classify_nl_auto_continue_decision(
+        _finalize_llm(), OBSERVED_BLOCKER_STRINGS[0], None, evidence=_FULL_EVIDENCE
+    )
+    assert decision.auto_continue is False
+
+
+@pytest.mark.asyncio
+async def test_bool_wrapper_never_overrides():
+    """The back-compat bool API passes no evidence, so behavior is unchanged."""
+    result = await classify_nl_auto_continue(_finalize_llm(), OBSERVED_BLOCKER_STRINGS[0], None)
+    assert result is False

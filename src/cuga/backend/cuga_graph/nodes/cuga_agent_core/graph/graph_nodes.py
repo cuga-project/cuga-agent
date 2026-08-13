@@ -173,10 +173,12 @@ class CoreGraphAdapter(ABC):
 
     async def classify_auto_continue(
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
-    ) -> bool:
+    ) -> bool | str:
         """Return ``True`` when the NL response should loop back automatically.
-        Default: ``False`` (Supervisor never auto-continues).
-        Lite overrides with ``classify_nl_auto_continue``."""
+        A truthy ``str`` also loops back, but is used verbatim as the synthetic
+        user message instead of the plain ``"continue"`` (Lite's unverified-
+        blocker retry, issue #610). Default: ``False`` (Supervisor never
+        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
         return False
 
 

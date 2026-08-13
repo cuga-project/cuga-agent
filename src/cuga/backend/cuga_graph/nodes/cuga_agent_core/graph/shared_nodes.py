@@ -251,11 +251,22 @@ def create_call_model_node(
 
         should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
         if should_continue:
+            # A str result is a corrective directive (e.g. Lite's unverified-blocker
+            # retry, issue #610) — use it as the synthetic user message and re-read
+            # metadata, which the adapter may have updated during classification
+            # (the meta_update above was built before the classify call).
+            continue_text = should_continue if isinstance(should_continue, str) else "continue"
+            if isinstance(should_continue, str):
+                meta_update = {
+                    adapter.metadata_key: adapter.build_metadata_update(
+                        state, playbook_fired=playbook_fired
+                    )
+                }
             logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
             return Command(
                 goto="call_model",
                 update={
-                    adapter.messages_key: final_messages + [HumanMessage(content="continue")],
+                    adapter.messages_key: final_messages + [HumanMessage(content=continue_text)],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
