@@ -7,17 +7,20 @@ normalize the visible ``content`` channel, but CUGA deliberately reads
 ``llm/models.ReasoningChatOpenAI``), so the un-normalized reasoning channel is
 where this framing actually leaks from.
 
-Two emission points use this module:
+Handling happens where the model response is decoded — ``normalize_response``,
+the single point both the CugaLite and supervisor graphs share — so every
+downstream surface (``final_answer``, ``state.messages``, the streamed
+``CodeAgent`` event, the chat copy, the trajectory step) inherits clean text.
+Sanitizing per display surface does not converge: each new surface is a new
+leak.
 
-- ``cuga_agent_core.graph.shared_nodes`` — refuses to promote token-bearing
-  reasoning into an answer when visible content is empty.
-- ``nodes.answer.final_answer`` — strips any framing that reaches the delivered
-  answer.
-
-The vocabulary comes from ``openai-harmony`` rather than a hand-maintained
-list, so it tracks upstream. Everything here is gated on
-``advanced_features.strip_harmony_control_tokens`` so non-harmony providers are
-never touched.
+Detection is driven by the *text*, not by the configured model name. A name can
+be wrong in ways the framing cannot — proxies, ``rits/`` prefixes, published
+``llm_config``, and ``configurable["llm"]`` overrides all rename the underlying
+model, and CugaLite resolves a different model than the final-answer agent. The
+``"<|" not in text`` fast path keeps non-harmony runs free, and only members of
+the ``openai-harmony`` vocabulary are treated as framing, so text that merely
+mentions ``<|custom|>`` survives untouched.
 """
 
 import re
@@ -74,33 +77,28 @@ def harmony_special_tokens() -> frozenset:
 
 
 def harmony_handling_enabled() -> bool:
-    """Whether harmony control-token handling applies to this run.
+    """Whether harmony control-token handling applies at all — a kill switch.
 
     ``advanced_features.strip_harmony_control_tokens``:
 
-    - ``"auto"`` (default) — handle only when the final-answer model is a
-      harmony-format model (the gpt-oss family). Providers that never emit this
-      framing are left completely untouched.
-    - ``true`` / ``false`` — force it on or off, e.g. for a provider that leaks
-      framing under a model name we don't recognise, or to disable it outright.
+    - ``"auto"`` (default) / ``true`` — handle framing wherever it appears.
+      Whether a given piece of text is touched is decided by the text itself,
+      so runs that never see framing are unaffected either way.
+    - ``false`` — disable outright.
+
+    Deliberately does NOT inspect the configured model name. Doing so keyed the
+    behaviour off ``agent.final_answer.model`` while CugaLite — the default
+    path — runs on ``agent.code.model`` or a published ``llm_config``, so the
+    common gpt-oss setup was never handled at all.
     """
     try:
         mode = getattr(settings.advanced_features, "strip_harmony_control_tokens", "auto")
     except Exception:
-        return False
+        # Unreadable settings must not silently disable a safety filter.
+        return True
     if isinstance(mode, bool):
         return mode
-    normalized = str(mode).strip().lower()
-    if normalized in ("true", "1", "yes", "on"):
-        return True
-    if normalized in ("false", "0", "no", "off"):
-        return False
-    # auto: harmony framing originates from the gpt-oss family only
-    try:
-        model_name = str(getattr(settings.agent.final_answer.model, "model_name", "") or "")
-    except Exception:
-        return False
-    return "gpt-oss" in model_name.lower()
+    return str(mode).strip().lower() not in ("false", "0", "no", "off")
 
 
 def contains_harmony_tokens(text: str) -> bool:

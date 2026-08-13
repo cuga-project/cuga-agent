@@ -103,6 +103,10 @@ class FinalAnswerNode(BaseNode):
             )
 
             text = state.final_answer or ""
+            # Defence in depth. The decode boundary (normalize_response) is what
+            # actually keeps framing out of delivered text; this catches an
+            # answer assembled from some other source, and costs one substring
+            # check when there is nothing to do.
             if "<|" in text:
                 text = strip_harmony_tokens(text)
                 state.final_answer = text
@@ -229,26 +233,15 @@ class FinalAnswerNode(BaseNode):
         # Parse and process output
         final_answer_output = FinalAnswerOutput(**json.loads(response.content))
 
-        # Add to chat if enabled (sanitized: this copy is delivered before
-        # apply_citation_resolution runs on state.final_answer below)
+        # Add to chat if enabled. No sanitizing here: harmony framing is removed
+        # at the decode boundary (adapter.normalize_response), so every copy
+        # taken from the model response is already clean.
         if settings.features.chat:
-            chat_message = (
-                f"{MessagePrefixes.ANSWER_PREFIX}{strip_harmony_tokens(final_answer_output.final_answer)}"
-            )
+            chat_message = f"{MessagePrefixes.ANSWER_PREFIX}{final_answer_output.final_answer}"
             state.append_to_last_chat_message(chat_message)
 
-        # Track the step. Sanitized like the chat copy above: every other branch
-        # of node_handler tracks an already-stripped answer, so without this the
-        # trajectory is the one surface still carrying raw framing. The raw text
-        # stays in state.messages, which is model context rather than output.
-        tracker.collect_step(
-            Step(
-                name=name,
-                data=final_answer_output.model_copy(
-                    update={"final_answer": strip_harmony_tokens(final_answer_output.final_answer)}
-                ).model_dump_json(),
-            )
-        )
+        # Track the step (already clean — see the chat copy above).
+        tracker.collect_step(Step(name=name, data=final_answer_output.model_dump_json()))
 
         # Replace variables and update state
         final_answer_output.final_answer = state.variables_manager.replace_variables_placeholders(

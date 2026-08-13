@@ -29,19 +29,6 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import Core
 # ── Shared test adapter ────────────────────────────────────────────────────
 
 
-# The reasoning-fallback guard is gated on advanced_features.strip_harmony_control_tokens
-# (see utils.harmony); force it so these assert the guard, not ambient model config.
-@pytest.fixture(autouse=True)
-def _force_harmony_handling(monkeypatch):
-    monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.contains_harmony_tokens",
-        lambda text: (
-            "<|" in (text or "")
-            and any(t in text for t in ("<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|return|>"))
-        ),
-    )
-
-
 class _TestAdapter(CoreGraphAdapter):
     messages_key = "chat_messages"
     execute_node_name = "sandbox"
