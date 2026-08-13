@@ -854,28 +854,6 @@ def _resolve_apps(
     )
 
 
-def _roster_needs_file_mcp() -> bool:
-    """Is a roster of sub-agents in play?
-
-    The registry needs FILE mode (serving cuga-finance/geo/web/…) whenever one is; "none" means
-    managed-config-db mode, which serves only the demo app. Two ways to be in that world:
-
-      * ``CUGA_SUPERVISOR_ROSTER=…``            this server preloaded AS a supervisor
-      * an explicitly exported ``MCP_SERVERS_FILE``  (``make up``, a container env, …)
-
-    The second used to be silently overwritten with "none", which is why a cuga-core started with
-    ``cuga start demo`` served only ``digital_sales`` and every roster agent answered "the available
-    toolset does not include…" despite the env being set.
-
-    Pure env read, no side effects, so it is safe to call before anything is configured.
-    """
-    explicit = (os.environ.get("MCP_SERVERS_FILE", "") or "").strip()
-    return bool(
-        (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
-        or (explicit and explicit != "none")
-    )
-
-
 @app.command(help="Start a specified service", short_help="Start service(s)")
 def start(
     service: str = typer.Argument(
@@ -1159,9 +1137,6 @@ def start(
     """
     validate_service(service)
 
-    # NB: there is no --events flag. The event-driven layer is a SEPARATE SERVICE
-    # (`uv run python -m cuga.backend.events.service`, or `make run-events`) that calls this server
-    # over HTTP. `make up` starts both. This command starts CUGA and nothing else.
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
             "--reset/--hard-reset is only supported for demo_knowledge and will be ignored for '%s'", service
@@ -1368,15 +1343,9 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        # See _roster_needs_file_mcp for what "a roster is in play" means and why it matters.
-        if _roster_needs_file_mcp():
-            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins over the default.
-            os.environ.setdefault(
-                "MCP_SERVERS_FILE",
-                os.path.join(PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"),
-            )
-            logger.info(f"registry in FILE mode: MCP_SERVERS_FILE={os.environ['MCP_SERVERS_FILE']}")
-        else:
+        # An operator who exports MCP_SERVERS_FILE means it — don't overwrite it. Unset still means
+        # "none" (managed-config-db mode, serving the demo app), which is what the demo wants.
+        if not (os.environ.get("MCP_SERVERS_FILE", "") or "").strip():
             os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
