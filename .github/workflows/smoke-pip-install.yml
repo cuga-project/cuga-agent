@@ -11,6 +11,11 @@ concurrency:
   group: smoke-pip-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# This workflow only reads the repository. Override on a per-job basis if any
+# future job needs to write.
+permissions:
+  contents: read
+
 jobs:
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI
