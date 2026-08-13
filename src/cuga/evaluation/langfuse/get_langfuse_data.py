@@ -1,8 +1,15 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 import httpx
 import os
+
+# Hard ceiling on the wall clock ``extract_langfuse_data`` may spend before it
+# gives up. This call is awaited inline in the per-task eval path, so whatever
+# it spends is added to every task's reported turnaround. An unreachable host
+# or a trace that never propagates must cost seconds, not minutes. See #540.
+DEFAULT_TRACE_FETCH_DEADLINE_SECONDS = 8.0
 
 
 @dataclass
@@ -64,54 +71,73 @@ class LangfuseTraceHandler:
 
     @staticmethod
     async def extract_langfuse_data(
-        config, trace_id: str, max_retries: int = 10, initial_delay: float = 2.0
+        config,
+        trace_id: str,
+        max_retries: int = 10,
+        initial_delay: float = 2.0,
+        deadline_seconds: float = DEFAULT_TRACE_FETCH_DEADLINE_SECONDS,
     ) -> Optional[Dict[str, Any]]:
         """
         Extract data from Langfuse API with retry logic.
 
         Langfuse data takes time to propagate to the server, so we retry with exponential backoff.
 
+        Retries stop at ``deadline_seconds`` regardless of how many attempts are
+        left. Without that ceiling the backoff schedule alone costs ~150s per
+        call, paid inline by every eval task whenever the trace is slow to land
+        or the host is unreachable. See #540.
+
         Args:
             trace_id: The Langfuse trace ID to fetch
             max_retries: Maximum number of retry attempts (default: 10)
             initial_delay: Initial delay in seconds before first retry (default: 2.0)
+            deadline_seconds: Total wall-clock budget for the whole fetch
         """
         auth = (config.langfuse_public_key, config.langfuse_secret_key)
         url = f"{config.langfuse_host}/api/public/traces/{trace_id}"
 
         delay = initial_delay
+        deadline = time.monotonic() + deadline_seconds
+
+        async def wait_before_retry(attempt: int, reason: str) -> bool:
+            """Back off before the next attempt; False means give up now."""
+            nonlocal delay
+            remaining = deadline - time.monotonic()
+            if attempt >= max_retries - 1 or remaining <= 0:
+                return False
+            wait = min(delay, remaining)
+            print(f"  {reason} (attempt {attempt + 1}/{max_retries}), waiting {wait:.1f}s...")
+            await asyncio.sleep(wait)
+            delay *= 1.5
+            return True
 
         for attempt in range(max_retries):
+            # Never let a single request outlive the budget the caller allowed.
+            request_timeout = min(30.0, max(deadline - time.monotonic(), 0.0))
+            if request_timeout <= 0:
+                break
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(url, auth=auth)
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                    # httpx's timeout bounds inactivity between chunks, not the total
+                    # request. A peer that keeps trickling data could otherwise hold the
+                    # request open past the budget, so wrap the whole call in a hard
+                    # wall-clock timeout and keep the httpx timeout as a phase safeguard.
+                    response = await asyncio.wait_for(client.get(url, auth=auth), timeout=request_timeout)
 
                     if response.status_code == 404:
-                        if attempt < max_retries - 1:
-                            print(
-                                f"  Trace not yet available (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s..."
-                            )
-                            await asyncio.sleep(delay)
-                            delay *= 1.5
+                        if await wait_before_retry(attempt, "Trace not yet available"):
                             continue
-                        else:
-                            print(f"  Warning: Trace {trace_id} not found after {max_retries} attempts")
-                            return None
+                        print(f"  Warning: Trace {trace_id} not found after {attempt + 1} attempts")
+                        return None
 
                     response.raise_for_status()
                     data = response.json()
 
                     if not data.get('observations') or len(data.get('observations', [])) == 0:
-                        if attempt < max_retries - 1:
-                            print(
-                                f"  Trace data incomplete (no observations yet, attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s..."
-                            )
-                            await asyncio.sleep(delay)
-                            delay *= 1.5
+                        if await wait_before_retry(attempt, "Trace data incomplete (no observations yet)"):
                             continue
-                        else:
-                            print(f"  Warning: Trace data still incomplete after {max_retries} attempts")
-                            return data
+                        print(f"  Warning: Trace data still incomplete after {attempt + 1} attempts")
+                        return data
 
                     print(
                         f"  ✓ Langfuse data fetched successfully ({len(data.get('observations', []))} observations)"
@@ -120,33 +146,21 @@ class LangfuseTraceHandler:
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
-                    if attempt < max_retries - 1:
-                        print(
-                            f"  Trace not yet available (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s..."
-                        )
-                        await asyncio.sleep(delay)
-                        delay *= 1.5
+                    if await wait_before_retry(attempt, "Trace not yet available"):
                         continue
-                    else:
-                        print(f"  Warning: Trace {trace_id} not found after {max_retries} attempts")
-                        return None
+                    print(f"  Warning: Trace {trace_id} not found after {attempt + 1} attempts")
+                    return None
                 else:
                     print(f"  Warning: HTTP error fetching Langfuse data: {e}")
                     return None
 
             except Exception as e:
-                if attempt < max_retries - 1:
-                    print(
-                        f"  Error fetching data (attempt {attempt + 1}/{max_retries}): {e}, retrying in {delay:.1f}s..."
-                    )
-                    await asyncio.sleep(delay)
-                    delay *= 1.5
+                if await wait_before_retry(attempt, f"Error fetching data: {e}"):
                     continue
-                else:
-                    print(
-                        f"  Warning: Could not fetch Langfuse data for trace {trace_id} after {max_retries} attempts: {e}"
-                    )
-                    return None
+                print(
+                    f"  Warning: Could not fetch Langfuse data for trace {trace_id} after {attempt + 1} attempts: {e}"
+                )
+                return None
 
         return None
 
