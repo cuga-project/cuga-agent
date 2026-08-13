@@ -123,7 +123,8 @@ constraint-dependencies = [
     # Earlier: auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2).
     "strawberry-graphql>=0.315.7",
     # arize-phoenix hard-pins an exact strawberry-graphql, so it sets which strawberry we get:
-    # <=16.3.0 pins the vulnerable 0.314.3, 16.4.0+ pins 0.316.0, 17.13.0+ pins 0.319.0.
+    # <=16.3.0 pins the vulnerable 0.314.3, 16.4.0..17.12.0 pins 0.316.0, 17.13.0..17.30.0 pins
+    # 0.319.0, 18.0.0+ pins 0.320.4.
     # >=17.13.0 because 16.4.0..17.10.0 ask for "pydantic-ai-slim>=1.95.0" with no upper bound
     # while their code still uses the 1.x API, so a resolver is free to install pydantic-ai 2.x
     # and phoenix then fails to import (MCPServerStreamableHTTP). pytest loads phoenix through
