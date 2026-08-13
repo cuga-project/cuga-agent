@@ -195,16 +195,16 @@ Other subsets:
 
 ```bash
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"   # fast local loop
-uv run pytest -m stability --stability-threshold 88 -n0        # stability only
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0        # stability only
 uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
 ```
 
 The default `uv run pytest` excludes `@pytest.mark.manual` and `@pytest.mark.pgvector` tests via `pyproject.toml` `addopts`.
 
-> **Note:** CI's `unit-tests` job runs the suites above as several separate `pytest`
-> invocations (grouped by area) rather than one big collection. A handful of suites
-> rely on process-global singletons (the FastAPI `app` instance, the policy/config
-> DB) that assume they're the only tests in the process; collecting everything into
+> **Note:** CI splits these suites across parallel jobs (and several separate `pytest`
+> invocations) rather than one big collection. A handful of suites rely on
+> process-global singletons (the FastAPI `app` instance, the policy/config DB)
+> that assume they're the only tests in the process; collecting everything into
 > a single session can resurface cross-test state leaks unrelated to your change. If
 > `uv run pytest` surfaces failures a single scoped run doesn't reproduce, try
 > running just the affected file(s) in isolation before assuming a regression.

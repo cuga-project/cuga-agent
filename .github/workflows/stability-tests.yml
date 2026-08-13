@@ -3,54 +3,58 @@ name: Stability Tests
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.md'
   pull_request:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**/*.md'
   workflow_dispatch:
+
+concurrency:
+  group: stability-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
+
+env:
+  AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+  WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+  WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+  WATSONX_URL: ${{ vars.WATSONX_URL }}
+  MODEL_NAME: ${{ secrets.MODEL_NAME }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+  PYTHONIOENCODING: utf-8
+  CUGA_THREAD_WORKSPACE_SEED: crm
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   stability-tests:
     name: Stability Tests (Python ${{ matrix.python-version }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         python-version:
-          - "3.11"
           - "3.12"
           - "3.13"
-    env:
-      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
-      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
-      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
-      WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-      PYTHONIOENCODING: utf-8
-      CUGA_THREAD_WORKSPACE_SEED: crm
-
+          - "3.14"
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
-      - name: Install uv and set the Python version
-        uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-cuga
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Install Playwright browsers
-        run: uv run playwright install --with-deps chromium
-
       - name: Run stability tests
-        run: uv run pytest -m stability --stability-threshold 88 -n0
+        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0 --durations=20
 
       - name: Upload test logs
         if: always()
@@ -64,35 +68,21 @@ jobs:
     name: Stability Tests Windows Smoke (Python 3.12)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
-      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
-      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
-      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
-      WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       UV_NO_PROGRESS: 1
       UV_QUIET: 1
-      PYTHONIOENCODING: utf-8
-      CUGA_THREAD_WORKSPACE_SEED: crm
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
-      - name: Install uv and set the Python version
-        uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup-cuga
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
       - name: Run Windows smoke stability tests
-        run: uv run pytest -m windows_smoke --stability-threshold 88 -n0
+        run: uv run pytest src/system_tests/e2e/fast_test.py -m windows_smoke --stability-threshold 88 -n0 --durations=20
 
       - name: Upload test logs
         if: always()
