@@ -1,3 +1,4 @@
+import inspect
 from typing import Any, Dict, List, Literal, Optional
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
@@ -18,6 +19,7 @@ from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import counted_tool_call
 
 
 def _skills_enabled_for_run(state: AgentState | None) -> bool:
@@ -136,6 +138,25 @@ class CodeExecutor:
             Tuple of (execution result, new variables dictionary)
         """
         original_keys = set(_locals.keys())
+
+        # Single enforcement point for advanced_features.max_tool_calls.
+        # Every tool the agent can call — registry, MCP/SDK providers, plain
+        # python tools, skills, runtime filesystem/shell, find_tools, todos,
+        # agent delegation — reaches generated code through this namespace, on
+        # both the CugaLite and supervisor graphs. Charging here rather than at
+        # each registration site means a newly added tool cannot silently escape
+        # the budget.
+        #
+        # Only coroutine functions are charged: every real tool is async by this
+        # point (make_tool_awaitable), while plain callables carried in _locals
+        # are variables from earlier blocks and must not be counted or made
+        # awaitable. Names starting with '_' are internal injections.
+        _locals = {
+            key: counted_tool_call(value)
+            if inspect.iscoroutinefunction(value) and not key.startswith('_')
+            else value
+            for key, value in _locals.items()
+        }
 
         skills_on = _skills_enabled_for_run(state)
         skills_token = set_skills_relaxed_execution(skills_on)

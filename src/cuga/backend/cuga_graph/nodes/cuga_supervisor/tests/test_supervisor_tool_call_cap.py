@@ -8,7 +8,6 @@ for two independent reasons, one per test below.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -59,7 +58,10 @@ def _make_adapter(tools_context):
 
 
 def _make_state(script, used=0):
+    from cuga.backend.cuga_graph.state.agent_state import VariablesManager
+
     return SimpleNamespace(
+        variables_manager=VariablesManager(),
         script=script,
         thread_id="t-cap",
         step_count=0,
@@ -131,46 +133,64 @@ async def test_supervisor_budget_carries_across_steps(monkeypatch):
     assert seen["n"] == 1, "the second step must only get the 1 call left in the task budget"
 
 
-def _tool_context_writes(path: Path):
-    """Lines that register a callable into a sandbox tool context."""
-    pattern = re.compile(r"^\s*adapter\._(agent_)?tools_context(\[[^\]]+\]\s*=|\.update\()")
-    return [
-        (i, line.rstrip()) for i, line in enumerate(path.read_text().splitlines(), 1) if pattern.match(line)
-    ]
+@pytest.mark.asyncio
+async def test_unwrapped_tool_is_still_capped(monkeypatch):
+    """The guarantee, stated behaviourally rather than structurally.
 
-
-def test_every_tool_registration_is_budget_counted():
-    """Guard for the whole class of bug, not just today's instance.
-
-    Every tool the sandbox can call — SDK/MCP provider tools, plain python
-    tools, skills, runtime filesystem/shell, agent delegation, todos,
-    find_tools — enters via a ``*_tools_context`` write. A write that skips
-    ``counted_tool_call`` silently escapes the cap, which is exactly how the
-    supervisor path and the lite runtime tools were missed. Any new
-    registration site must be wrapped or this fails.
+    The cap is enforced where generated code gets its namespace, not at each
+    tool's registration site, so a tool registered with no wrapper at all is
+    still charged. That is what makes the budget hold for tool kinds nobody
+    thought to wrap — SDK/MCP providers, skills, runtime fs/shell, delegation —
+    and it is the property that must survive future refactors.
     """
-    root = Path(__file__).resolve().parents[2]
-    sources = [
-        root / "cuga_lite" / "adapter" / "prepare_node.py",
-        root / "cuga_supervisor" / "nodes" / "prepare_agents_and_prompt.py",
-    ]
+    _set_cap(monkeypatch, 3)
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], None),
+    )
 
-    unwrapped = []
-    for src in sources:
-        assert src.exists(), f"missing {src}"
-        lines = src.read_text().splitlines()
-        for lineno, line in _tool_context_writes(src):
-            # `.update(` and `[name] =` may wrap onto following lines.
-            window = "\n".join(lines[lineno - 1 : lineno + 2])
-            if "counted_tool_call" in window:
-                continue
-            # A re-wrap of an entry read back out of the same context (e.g. the
-            # knowledge-tool thread_id decorator) keeps the inner counting.
-            if "_tools_context.get(" in "\n".join(lines[max(0, lineno - 6) : lineno]):
-                continue
-            unwrapped.append(f"{src.name}:{lineno}: {line.strip()}")
+    seen = {"n": 0}
 
-    assert not unwrapped, "tool registrations that escape max_tool_calls:\n" + "\n".join(unwrapped)
+    async def brand_new_tool(task: str) -> str:
+        seen["n"] += 1
+        return "ok"
+
+    # Registered bare — exactly how a newly added tool would arrive.
+    node = create_execute_agent_tool_node(_make_adapter({"brand_new_tool": brand_new_tool}))
+    state = _make_state("for i in range(20):\n    await brand_new_tool('t')\n")
+    await node(state)
+
+    assert seen["n"] == 3, f"unwrapped tool escaped the cap: {seen['n']} calls against cap 3"
+
+
+def test_variables_are_not_charged_as_tool_calls(monkeypatch):
+    """Only coroutine functions are charged. Plain callables in the namespace are
+    variables carried over from earlier blocks; charging them would both bill
+    them as tool calls and turn them into coroutines, breaking their call sites.
+    """
+    import asyncio
+
+    _set_cap(monkeypatch, 1)  # would trip immediately if these were charged
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], None),
+    )
+
+    seen = {"n": 0}
+
+    def helper(x):  # a sync function the model defined in an earlier block
+        seen["n"] += 1
+        return x * 2
+
+    node = create_execute_agent_tool_node(_make_adapter({"helper": helper}))
+    state = _make_state("doubled = [helper(i) for i in range(5)]\n")
+    update = asyncio.run(node(state))
+
+    assert seen["n"] == 5, "a plain callable was charged against the tool budget"
+    assert update.get("error") is None, f"wrapping broke a sync call site: {update.get('error')}"
+    assert update["tool_calls_used"] == 0
 
 
 def test_default_cap_is_256():

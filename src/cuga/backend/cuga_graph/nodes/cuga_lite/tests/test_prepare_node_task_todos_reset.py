@@ -145,3 +145,41 @@ async def test_continuing_conversation_preserves_ref_and_omits_task_todos_in_upd
     assert "task_todos" not in result.update, (
         "Command.update should not include task_todos on a continuing turn (would erase the in-flight plan)"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chat_messages",
+    [
+        [HumanMessage(content="first task")],
+        [HumanMessage(content="first"), AIMessage(content="done"), HumanMessage(content="second task")],
+    ],
+    ids=["first-turn", "follow-up-turn"],
+)
+async def test_tool_call_budget_resets_every_turn(chat_messages):
+    """advanced_features.max_tool_calls is a per-TASK budget, so prepare — which
+    runs once per graph invocation (START -> prepare) — must zero the counter on
+    every turn, not only on a fresh conversation.
+
+    Without this the count is restored from the checkpoint each turn and
+    accumulates over a thread: turn N+1 inherits turn N's spend and a long
+    conversation eventually starts a turn with no budget left at all.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+
+    adapter = _build_mock_adapter([])
+    state = _make_state(chat_messages=chat_messages, task_todos=None)
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+        new=False,
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        result = await node(state, config={"configurable": {"enable_todos": False}})
+
+    assert result.update.get("tool_calls_used") == 0, (
+        "prepare must reset tool_calls_used so the cap is per task; without it "
+        "the budget is per conversation and long threads starve"
+    )

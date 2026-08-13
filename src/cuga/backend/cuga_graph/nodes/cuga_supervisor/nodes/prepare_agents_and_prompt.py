@@ -17,7 +17,6 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy impor
     split_execution_note,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import counted_tool_call
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
     build_runtime_tools,
     prompt_tool_dicts,
@@ -134,7 +133,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             tool_func = create_agent_delegation_func(
                 adapter, agent_name, agent_or_config, agent_card=agent_card
             )
-            adapter._agent_tools_context[tool_name] = counted_tool_call(tool_func)
+            adapter._agent_tools_context[tool_name] = tool_func
 
             is_a2a_agent = agent_card is not None
             if is_a2a_agent and pass_variables_a2a:
@@ -175,9 +174,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             agent_tools_for_prompt.append(tool_info)
 
         todos_tool = await create_update_todos_tool(write_todos=_store_todos_on_run_state)
-        adapter._agent_tools_context["create_update_todos"] = counted_tool_call(
-            make_tool_awaitable(todos_tool.func)
-        )
+        adapter._agent_tools_context["create_update_todos"] = make_tool_awaitable(todos_tool.func)
         agent_tools_for_prompt.append(
             {
                 "name": "create_update_todos",
@@ -194,7 +191,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         runtime_backends = resolve_runtime_backends(settings, cfg)
         runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=runtime_backends)
         adapter._agent_tools_context.update(
-            {name: counted_tool_call(fn) for name, fn in runtime_bundle.execution_callables.items()}
+            {name: (fn) for name, fn in runtime_bundle.execution_callables.items()}
         )
         agent_tools_for_prompt.extend(prompt_tool_dicts(runtime_bundle.prompt_tools))
 
@@ -219,9 +216,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                         else getattr(skill_tool, "func", None)
                     )
                     if tool_func:
-                        adapter._agent_tools_context[skill_tool.name] = counted_tool_call(
-                            make_tool_awaitable(tool_func)
-                        )
+                        adapter._agent_tools_context[skill_tool.name] = make_tool_awaitable(tool_func)
                 agent_tools_for_prompt.extend(prompt_tool_dicts(skill_tools))
                 skills_section = format_available_skills_block(skill_registry)
                 logger.info(f"Supervisor: loaded {len(skill_entries)} skill(s)")
@@ -236,9 +231,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                         else getattr(provider_tool, "func", None)
                     )
                     if provider_func:
-                        adapter._agent_tools_context[provider_tool.name] = counted_tool_call(
-                            make_tool_awaitable(provider_func)
-                        )
+                        adapter._agent_tools_context[provider_tool.name] = make_tool_awaitable(provider_func)
                 agent_tools_for_prompt.extend(prompt_tool_dicts(provider_tools))
                 logger.info(f"Supervisor: loaded {len(provider_tools)} tool(s) from tool_provider")
             except Exception as exc:
@@ -279,6 +272,11 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             update_payload[adapter.metadata_key] = adapter.get_metadata(state)
         if is_fresh_conversation:
             update_payload["task_todos"] = None
+
+        # Per-task tool-call budget resets here: prepare runs once per graph
+        # invocation (START -> prepare), so each user turn starts fresh. See the
+        # matching reset in the CugaLite prepare node.
+        update_payload["tool_calls_used"] = 0
 
         return Command(
             goto="call_model",

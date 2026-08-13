@@ -36,10 +36,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
-    counted_tool_call,
-    make_recording_awaitable,
-)
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import make_recording_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     PromptUtils,
     create_mcp_prompt,
@@ -258,7 +255,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if hasattr(find_tool, 'coroutine') and find_tool.coroutine
                 else find_tool.func
             )
-            adapter._tools_context['find_tools'] = counted_tool_call(make_tool_awaitable(find_tool_func))
+            adapter._tools_context['find_tools'] = make_tool_awaitable(find_tool_func)
             if lc_bind_tools_meta is not None:
                 lc_bind_tools_meta["_lc_bind_tools_find_tools"] = find_tool
             logger.info(
@@ -303,9 +300,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if hasattr(todos_tool, 'coroutine') and todos_tool.coroutine
                 else todos_tool.func
             )
-            adapter._tools_context['create_update_todos'] = counted_tool_call(
-                make_tool_awaitable(todos_tool_func)
-            )
+            adapter._tools_context['create_update_todos'] = make_tool_awaitable(todos_tool_func)
 
         # Apply tool guide if guides exist in metadata and haven't been applied yet
         # Guides should apply regardless of whether a playbook matched
@@ -363,7 +358,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         else _sk_tool.func
                     )
                     if _sk_fn:
-                        adapter._tools_context[_sk_tool.name] = counted_tool_call(make_tool_awaitable(_sk_fn))
+                        adapter._tools_context[_sk_tool.name] = make_tool_awaitable(_sk_fn)
                 skills_prompt_section = format_available_skills_block(skill_registry)
                 skills_enabled = True
 
@@ -432,7 +427,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         app_name=_provider.app_name,
                         param_names=_param_names,
                     )
-                adapter._tools_context[tool.name] = counted_tool_call(awaitable_tool)
+                adapter._tools_context[tool.name] = awaitable_tool
             else:
                 logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
@@ -445,7 +440,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             else:
                 tool_func = getattr(tool, "_run", None)
             if tool_func:
-                adapter._tools_context[tool.name] = counted_tool_call(make_tool_awaitable(tool_func))
+                adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
             else:
                 logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
@@ -468,7 +463,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
         adapter._tools_context.update(
-            {name: counted_tool_call(fn) for name, fn in _runtime_bundle.execution_callables.items()}
+            {name: (fn) for name, fn in _runtime_bundle.execution_callables.items()}
         )
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
@@ -505,7 +500,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             for _st in agent_spawn_tools:
                 _stfn = _st.coroutine if (hasattr(_st, "coroutine") and _st.coroutine) else _st.func
                 if _stfn:
-                    adapter._tools_context[_st.name] = counted_tool_call(make_tool_awaitable(_stfn))
+                    adapter._tools_context[_st.name] = make_tool_awaitable(_stfn)
 
             agents_prompt_section = format_available_agents_block()
             agents_enabled = True
@@ -792,6 +787,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # state.task_todos fallback path in prepare_system_content sees an
             # empty value on the next turn.
             update_payload["task_todos"] = None
+
+        # START -> prepare runs once per graph invocation, i.e. once per user
+        # turn, so this is what makes max_tool_calls a per-TASK budget. Without
+        # it the counter is restored from the checkpoint every turn and a long
+        # thread eventually starves: turn N+1 inherits turn N's spend and can
+        # begin with no budget at all.
+        update_payload["tool_calls_used"] = 0
 
         return Command(goto="call_model", update=update_payload)
 

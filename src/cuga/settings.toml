@@ -65,7 +65,7 @@ cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-cl
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
-max_tool_calls = 256  # Max tool/API calls per task, across every tool path (registry, MCP/SDK providers, plain python tools, skills, runtime fs/shell, agent delegation). 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS
+max_tool_calls = 256  # Max tool/API calls per task (reset every user turn), across every tool path (registry, MCP/SDK providers, plain python tools, skills, runtime fs/shell, agent delegation). 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS
 execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
 variables_summary_max_length = 12000  # Maximum characters for the "Available Variables" prompt addendum (prevents unbounded growth as sandbox variables accumulate)
 # OpenSandbox shell tools (run_command, write_file, …) and matching prompt guidance. Opt-in: set true when using OpenSandbox shell tools.

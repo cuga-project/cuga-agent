@@ -35,7 +35,8 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
 # Mutable [count] box so increments made inside child tasks (e.g. under
 # asyncio.wait_for) stay visible to the seeding context, like the calls list above.
 # Distinct from _block_tool_calls_context below: this one spans the whole task
-# (seeded from CugaLiteState.tool_calls_used) and backs the max_tool_calls cap,
+# (seeded from the graph state's tool_calls_used, which prepare resets each
+# turn so the cap is per task) and backs the max_tool_calls cap,
 # while that one counts a single code block for timeout evidence.
 _tool_call_budget_context: contextvars.ContextVar[Optional[List[int]]] = contextvars.ContextVar(
     "tool_call_budget", default=None
@@ -193,10 +194,10 @@ class ToolCallTracker:
         the CugaLite sandbox loop) or when ``advanced_features.max_tool_calls``
         is 0 (disabled).
 
-        Also a no-op when already inside a counted call: a named tool reaches
-        the sandbox through :func:`counted_tool_call` and a registry-backed one
-        then calls ``call_api`` internally, so counting at both boundaries would
-        charge a single logical call twice.
+        Also a no-op when already inside a counted call: tools are wrapped by
+        :func:`counted_tool_call` where the sandbox namespace is built, and a
+        registry-backed tool then calls ``call_api`` internally, so counting at
+        both boundaries would charge a single logical call twice.
         """
         if _counting_tool_call_context.get():
             return
@@ -220,13 +221,18 @@ def counted_tool_call(awaitable_func: Callable[..., Any]) -> Callable[..., Any]:
     """Charge one budget unit per call of an already-awaitable tool function.
 
     ``call_api`` is only the choke point for registry-routed calls. Tools the
-    sandbox invokes by name — direct LangChain tools, skills, filesystem/shell
-    runtime tools, ``find_tools`` — never pass through it, so without this they
-    escape ``advanced_features.max_tool_calls`` entirely.
+    sandbox invokes by name — MCP/SDK provider tools, direct LangChain tools,
+    skills, filesystem/shell runtime tools, ``find_tools``, agent delegation —
+    never pass through it, so without this they escape
+    ``advanced_features.max_tool_calls`` entirely.
 
-    Applied at the outermost boundary; ``enforce_call_budget`` no-ops while
-    nested, so a registry-backed tool that internally calls ``call_api`` is
-    still charged exactly once.
+    Applied once, in ``CodeExecutor.eval_with_tools_async``, to every coroutine
+    function in the namespace handed to generated code. That is the single point
+    both the CugaLite and supervisor graphs share, so tools cannot escape the
+    budget by being registered somewhere new.
+
+    ``enforce_call_budget`` no-ops while nested, so a registry-backed tool that
+    internally calls ``call_api`` is still charged exactly once.
     """
 
     @functools.wraps(awaitable_func)
