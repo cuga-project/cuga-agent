@@ -5,7 +5,7 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from loguru import logger
 
-from cuga.backend.cuga_graph.entry_router import EntryRouter
+from cuga.backend.cuga_graph.nodes.entry_router import EntryRouter
 from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import FinalAnswerAgent
 from cuga.backend.cuga_graph.nodes.chat.chat import ChatNode

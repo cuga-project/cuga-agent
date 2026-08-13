@@ -11,20 +11,11 @@ from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.browser_planner
     BrowserPlannerAgent,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
-from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from loguru import logger
 from langgraph.constants import END
 from langgraph.types import Command
 
 tracker = ActivityTracker()
-
-
-PLANNER_ROUTER_MAP = {
-    "ConcludeTaskAgent": NodeNames.FINAL_ANSWER_AGENT,
-    "QaAgent": "QaAgent",
-    "MemorizeAgent": "BrowserPlannerAgent",
-    "ActionAgent": "ActionAgent",
-}
 
 
 class PlannerNode(BaseNode):
@@ -41,7 +32,7 @@ class PlannerNode(BaseNode):
     async def node_handler(
         state: AgentState, agent: BrowserPlannerAgent, name: str
     ) -> Command[Literal["ActionAgent", "QaAgent", END, "BrowserPlannerAgent"]]:
-        if tracker.actions_count >= 4:
+        if tracker.actions_count >= 4 and state.task_analyzer_output is not None:
             logger.debug("Resetting navigation paths")
             state.task_analyzer_output.navigation_paths = None
         result: AIMessage = await agent.run(state)

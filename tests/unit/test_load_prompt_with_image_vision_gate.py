@@ -118,6 +118,21 @@ def test_human_message_is_multimodal_when_model_supports_vision(vision_setting_o
     assert "image_url" in types and "text" in types
 
 
+@pytest.mark.unit
+def test_user_prompt_renders_when_task_analyzer_output_is_none(vision_setting_on):
+    model_config = SimpleNamespace(enable_vision=False, enable_format=False)
+    pt = load_prompt_with_image(
+        os.path.join(PROMPT_DIR, "system.jinja2"),
+        os.path.join(PROMPT_DIR, "user.jinja2"),
+        model_config=model_config,
+        relative_to_caller=False,
+    )
+
+    messages = pt.format_messages(**{**FORMAT_VARS, "task_analyzer_output": None})
+
+    assert len(messages) == 2
+
+
 def test_human_message_is_string_when_global_vision_disabled(monkeypatch):
     monkeypatch.setattr(settings.advanced_features, "use_vision", False)
     model_config = SimpleNamespace(enable_vision=True, enable_format=False)

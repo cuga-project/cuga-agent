@@ -23,8 +23,6 @@ class NodeNames:
 class ActionIds:
     """Constants for human-in-the-loop action IDs."""
 
-    SAVE_REUSE = "save_reuse"
-    SAVE_REUSE_INTENT = "save_reuse_intent"
     FLOW_APPROVE = "flow_approve"
     NEW_FLOW_APPROVE = "new_flow_approve"
     CONSULT_WITH_HUMAN = "consult_with_human"

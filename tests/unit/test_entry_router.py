@@ -1,6 +1,6 @@
 import pytest
 
-from cuga.backend.cuga_graph.entry_router import EntryRouter
+from cuga.backend.cuga_graph.nodes.entry_router import EntryRouter
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from cuga.config import settings
