@@ -191,6 +191,40 @@ async def test_delegation_auto_passes_supervisor_variables_when_omitted():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_delegation_forwards_explicit_variables():
+    mock_agent = _fake_agent()
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        await _run_delegate(
+            _empty_delegation_state(),
+            mock_agent,
+            "async def _run():\n    return await delegate('get account value', variables=['user_id'])\n",
+            variable_manager=_FakeVM({"user_id": "user_alice_99"}),
+        )
+
+    assert mock_agent.invoke.await_args.kwargs["variables"] == {"user_id": "user_alice_99"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delegation_forwards_mid_script_explicit_variables():
+    mock_agent = _fake_agent()
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        await _run_delegate(
+            _empty_delegation_state(),
+            mock_agent,
+            (
+                "async def _run():\n"
+                "    user_id = 'from_script'\n"
+                "    return await delegate('get account value', variables=['user_id'])\n"
+            ),
+            variable_manager=_FakeVM({"user_id": "from_vm"}),
+        )
+
+    assert mock_agent.invoke.await_args.kwargs["variables"] == {"user_id": "from_script"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delegation_empty_variables_list_does_not_auto_pass():
     mock_agent = _fake_agent()
     with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
