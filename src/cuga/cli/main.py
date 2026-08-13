@@ -1137,6 +1137,12 @@ def start(
     """
     validate_service(service)
 
+    # NB: there is no --events flag. The event-driven layer is a SEPARATE SERVICE
+    # (`uv run python -m cuga.backend.events.service`, or `make run-events`) that calls this server
+    # over HTTP. `make up` starts both. This command starts CUGA and nothing else.
+    # slow external APIs (arXiv ~5.5s/call + retries) blow the 30s sandbox default
+    os.environ.setdefault("DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT", "120")
+
     if (reset or hard_reset) and service != "demo_knowledge":
         logger.warning(
             "--reset/--hard-reset is only supported for demo_knowledge and will be ignored for '%s'", service
@@ -1343,7 +1349,28 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        os.environ["MCP_SERVERS_FILE"] = "none"
+        # The registry needs FILE mode (serving cuga-finance/geo/web/…) whenever a roster of
+        # sub-agents is in play; "none" means managed-config-db mode, which serves only the demo
+        # app. Two ways to be in that world:
+        #   • CUGA_SUPERVISOR_ROSTER=…     this server preloaded AS a supervisor
+        #   • an explicitly exported MCP_SERVERS_FILE  (make up, a container env, …)
+        # The latter used to be silently overwritten with "none" here, which is why a cuga-core
+        # started with `cuga start demo` served only `digital_sales` and every roster agent
+        # answered "the available toolset does not include…" despite the env being set.
+        _explicit_mcp = (os.environ.get("MCP_SERVERS_FILE", "") or "").strip()
+        _wants_roster = bool(
+            (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
+            or (_explicit_mcp and _explicit_mcp != "none")
+        )
+        if _wants_roster:
+            # setdefault so an exported MCP_SERVERS_FILE (e.g. make up's) wins over the default.
+            os.environ.setdefault(
+                "MCP_SERVERS_FILE",
+                os.path.join(PACKAGE_ROOT, "backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"),
+            )
+            logger.info(f"registry in FILE mode: MCP_SERVERS_FILE={os.environ['MCP_SERVERS_FILE']}")
+        else:
+            os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:

@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { ChatLanding } from "./ChatLanding";
+import { StudioPage } from "./StudioPage";
 import { UnauthorizedPage } from "./UnauthorizedPage";
 import { AuthProvider, useAuth } from "./AuthContext";
 import * as api from "./api";
@@ -13,6 +14,21 @@ import "./global.css";
 
 function RouteRoot({ children }: { children: React.ReactNode }) {
   return <div className="route-root">{children}</div>;
+}
+
+// Renders its children only when the events layer is mounted + enabled; otherwise redirects home.
+// The nav entries already hide when events is off (via getEventsStatus); this also blocks DIRECT
+// navigation to /studio so Studio can never appear in vanilla CUGA (EVENTS_ENABLED off, the default).
+function EventsGate({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<"checking" | "on" | "off">("checking");
+  useEffect(() => {
+    api.getEventsStatus()
+      .then((s) => setState(s ? "on" : "off"))
+      .catch(() => setState("off"));
+  }, []);
+  if (state === "checking") return null;                 // don't flash Studio before the check resolves
+  if (state === "off") return <Navigate to="/" replace />;
+  return <>{children}</>;
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -112,6 +128,14 @@ function renderApp(): void {
               }
             />
             <Route path="/chat" element={<RouteRoot><ChatLanding /></RouteRoot>} />
+            <Route
+              path="/studio"
+              element={
+                <RequireRole requiredRoles={["ServiceOwner", "ServiceAdmin"]}>
+                  <EventsGate><RouteRoot><StudioPage /></RouteRoot></EventsGate>
+                </RequireRole>
+              }
+            />
             <Route path="/unauthorized" element={<RouteRoot><UnauthorizedPage /></RouteRoot>} />
           </Routes>
         </AuthProvider>

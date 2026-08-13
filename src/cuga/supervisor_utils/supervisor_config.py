@@ -22,13 +22,21 @@ class SupervisorConfig(BaseModel):
     a2a: Dict[str, Any] = {}
 
 
-async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+async def load_supervisor_config(
+    yaml_path: str, *, auto_load_policies: Optional[bool] = None
+) -> SupervisorConfig:
     """
     Load and parse supervisor YAML configuration.
     Creates internal CugaAgent instances from YAML config.
 
     Args:
         yaml_path: Path to YAML configuration file
+        auto_load_policies: Default for sub-agents that do not set it themselves.
+            ``None`` (the default) preserves existing behaviour — each CugaAgent falls back to
+            ``settings.policy.auto_load_policies``. Pass ``False`` for HEADLESS callers (scheduled
+            flows, webhooks, channel events): nobody is present to answer an approval interrupt, so
+            one would hang the run until the caller times out. A per-agent ``auto_load_policies:``
+            key in the YAML always wins over this.
 
     Returns:
         SupervisorConfig with loaded configuration
@@ -109,12 +117,21 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             # Get model config if specified
             model = _get_model_from_config(agent_config.get("model"))
 
-            # Create agent
+            # Policy auto-load. Precedence: the YAML entry wins; otherwise the caller's default;
+            # otherwise None, which lets CugaAgent fall back to `settings.policy.auto_load_policies`
+            # exactly as it always has.
+            #
+            # This defaulted to False for a while, which was a silent regression for everyone else:
+            # `load_supervisor_config` is public API (CugaSupervisor.from_yaml, documented in the
+            # README, plus cuga_graph/graph.py), so hardcoding False disabled policy loading for
+            # every downstream supervisor user regardless of their settings — with no error to
+            # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
+                auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
             )
 
             agents[agent_name] = agent
@@ -182,22 +199,21 @@ async def _create_tool_provider(
         elif isinstance(app_config, str):
             app_names.append(app_config)
 
-    # Create CombinedToolProvider which loads tools from registry
-    # CombinedToolProvider can filter by app names if provided
+    # mcp_servers entries contribute their names to the same registry-app filter
+    for m in mcp_servers or []:
+        n = m.get("name") if isinstance(m, dict) else str(m)
+        if n:
+            app_names.append(n)
+
+    # Create CombinedToolProvider SCOPED to the named apps/servers. Registry keys are
+    # underscore names ('cuga_finance'); hyphenated names would compose invalid Python
+    # identifiers downstream ('cuga-finance_get_price' parses as subtraction), so map them.
+    # An agent that names NOTHING gets all tools (unchanged behavior).
     if app_names or mcp_servers:
-        logger.info(
-            f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
-        )
-        tool_provider = CombinedToolProvider()
+        scoped = [n.replace("-", "_") for n in app_names] or None
+        logger.info(f"Creating CombinedToolProvider scoped to: {scoped or 'ALL apps'}")
+        tool_provider = CombinedToolProvider(app_names=scoped)
         await tool_provider.initialize()
-
-        # If specific app names are provided, filter the apps
-        if app_names:
-            # CombinedToolProvider loads all apps by default, but we can filter
-            # The tools will be loaded from registry based on app names when get_tools() is called
-            # For now, we'll let it load all and filter at tool retrieval time
-            logger.info(f"Tools will be loaded from registry for apps: {app_names}")
-
         return tool_provider
 
     return None

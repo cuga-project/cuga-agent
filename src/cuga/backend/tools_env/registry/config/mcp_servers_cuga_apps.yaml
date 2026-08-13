@@ -1,0 +1,38 @@
+# cuga-apps MCP servers — the full event-agent-ap set (7 servers on IBM Code Engine).
+# Point the CUGA registry at this file so event-layer CUGA workers get their tools:
+#     MCP_SERVERS_FILE=src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml uv run registry
+# App names use UNDERSCORES (cuga_finance, not cuga-finance) because CUGA's code-execution agent
+# composes `<app>_<tool>` as a Python identifier — a hyphen (`cuga-finance_get_crypto_price`)
+# parses as subtraction → NameError. The events layer maps its hyphenated names to these:
+# a worker provisioned with mcp_server_names=['cuga-finance'] → the roster passes
+# app_names=['cuga_finance'] to CombinedToolProvider (hyphens → underscores at load time).
+# NOTE: these Code Engine servers scale to zero — warm them before a demo/test.
+mcpServers:
+  cuga_web:
+    url: https://cuga-apps-mcp-web.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: web search / browse / weather / wiki
+  cuga_knowledge:
+    url: https://cuga-apps-mcp-knowledge.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: search_arxiv (recent papers)
+  cuga_geo:
+    url: https://cuga-apps-mcp-geo.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: country capital / population / region
+  cuga_finance:
+    url: https://cuga-apps-mcp-finance.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: get_stock_quote / get_crypto_price
+  cuga_code:
+    url: https://cuga-apps-mcp-code.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: explain / analyze code
+  cuga_local:
+    url: https://cuga-apps-mcp-local.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: local / system operations
+  cuga_text:
+    url: https://cuga-apps-mcp-text.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp
+    transport: http
+    description: summarize / translate / text utilities

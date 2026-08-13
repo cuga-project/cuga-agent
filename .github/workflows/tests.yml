@@ -124,6 +124,17 @@ jobs:
           PYTHONUNBUFFERED: "1"
           CUGA_THREAD_WORKSPACE_SEED: crm
 
+      # Event-driven agents layer — the OFFLINE suite. Every test uses a TestClient
+      # with fake creds + engine=None (Activepieces off), so it needs NO secrets and
+      # is safe in CI. The events layer is triggers-only; the live channel/AP
+      # integration harnesses (tests/events/live_*.py) are LOCAL-only and are never
+      # run here — they require real Slack/Telegram/Discord/AP credentials.
+      - name: Run events tests (offline, no creds)
+        run: |
+          uv run pytest tests/events -q
+        env:
+          PYTHONUNBUFFERED: "1"
+
       - name: Run policy and SDK integration tests
         run: |
           uv run pytest ./src/cuga/backend/cuga_graph/policy/tests

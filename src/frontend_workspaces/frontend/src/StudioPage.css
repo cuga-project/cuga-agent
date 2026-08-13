@@ -1,0 +1,229 @@
+.studio-page {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.studio-content {
+  flex: 1;
+  overflow: auto;
+  padding: 2rem 3rem;
+  margin-top: 3rem;
+  width: 100%;
+  max-width: 1200px;
+}
+
+.studio-heading-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+}
+
+.studio-title {
+  font-size: 1.5rem;
+  font-weight: 400;
+  margin-bottom: 0.25rem;
+}
+
+.studio-muted {
+  color: #525252;
+  line-height: 1.5;
+  font-size: 0.875rem;
+}
+
+.studio-scope code,
+.studio-muted code {
+  background: #f4f4f4;
+  padding: 0 0.25rem;
+  border-radius: 2px;
+  font-size: 0.8125rem;
+}
+
+/* card grids for Channels / Integrations / Flows / Examples */
+.studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.studio-card {
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem;
+  min-height: 140px;
+}
+
+.studio-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  gap: 0.5rem;
+}
+
+.studio-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.studio-card-foot {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 0.75rem;
+}
+
+.studio-example-utterance {
+  font-style: italic;
+  color: #161616;
+  margin: 0.25rem 0 0.5rem;
+  line-height: 1.4;
+}
+
+/* per-agent example chips (Agents tab) — click to load into the Concierge */
+.studio-example-chip {
+  display: inline-block;
+  margin: 0 6px 6px 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: #0f62fe;
+  background: #edf5ff;
+  border: 1px solid #d0e2ff;
+  border-radius: 14px;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.35;
+}
+.studio-example-chip:hover {
+  background: #d0e2ff;
+}
+
+/* concierge chat */
+.studio-chat {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 320px);
+  min-height: 360px;
+  margin-top: 1rem;
+}
+
+.studio-chat-log {
+  flex: 1;
+  overflow: auto;
+  padding: 0.5rem;
+  border: 1px solid #e0e0e0;
+  background: #f4f4f4;
+  margin-bottom: 1rem;
+}
+
+.studio-msg {
+  margin-bottom: 1rem;
+}
+
+.studio-msg-role {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  margin-bottom: 0.25rem;
+  display: flex;
+  align-items: center;
+}
+
+.studio-msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  background: #ffffff;
+  padding: 0.75rem;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+.studio-msg-user .studio-msg-text {
+  background: #edf5ff;
+}
+
+.studio-chat-input {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.studio-chat-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* ── HITL arming: the CONFIRM gate ────────────────────────────────────────────
+   Deliberately louder than a normal reply. This is the last moment a human sees
+   the instruction the agent will be handed on EVERY fire, so the prompt is the
+   visual anchor and the facts sit underneath it. Carbon blue-60 rail to read as
+   "action needed", not "error". */
+.studio-arm-card {
+  background: #ffffff;
+  border: 1px solid #c6c6c6;
+  border-left: 3px solid #0f62fe;
+  border-radius: 4px;
+  padding: 0.875rem 1rem;
+}
+
+.studio-arm-title {
+  font-weight: 600;
+  margin-bottom: 0.625rem;
+}
+
+.studio-arm-prompt-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #525252;
+  margin-bottom: 0.25rem;
+}
+
+.studio-arm-prompt {
+  margin: 0 0 0.875rem;
+  padding: 0.625rem 0.75rem;
+  background: #f4f4f4;
+  border-left: 2px solid #8d8d8d;
+  font-style: italic;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.studio-arm-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0 0 0.875rem;
+  font-size: 0.875rem;
+}
+
+.studio-arm-facts dt {
+  color: #525252;
+}
+
+.studio-arm-facts dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.studio-arm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.studio-arm-stale {
+  margin: 0;
+  font-size: 0.75rem;
+}
