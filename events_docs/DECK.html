@@ -1,0 +1,778 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUGA · Channels &amp; Events — where we are</title>
+<style>
+  :root{
+    --ink:#161616; --ink-2:#393939; --ink-3:#6f6f6f;
+    --paper:#ffffff; --paper-2:#f4f4f4; --paper-3:#e8e8e8;
+    --line:#d8d8d8;
+    --blue:#0f62fe; --blue-soft:#d0e2ff;
+    --teal:#007d79; --teal-soft:#d9fbfb;
+    --amber:#8e6a00; --amber-soft:#fcf4d6;
+    --red:#a2191f; --red-soft:#fff1f1;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Mono","Roboto Mono",Menlo,monospace;
+    --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --ink:#f4f4f4; --ink-2:#c6c6c6; --ink-3:#8d8d8d;
+      --paper:#0b0b0b; --paper-2:#161616; --paper-3:#262626;
+      --line:#393939;
+      --blue:#78a9ff; --blue-soft:#001d6c;
+      --teal:#3ddbd9; --teal-soft:#022b30;
+      --amber:#d2a106; --amber-soft:#302400;
+      --red:#ff8389; --red-soft:#2d0709;
+    }
+  }
+  :root[data-theme="dark"]{
+      --ink:#f4f4f4; --ink-2:#c6c6c6; --ink-3:#8d8d8d;
+      --paper:#0b0b0b; --paper-2:#161616; --paper-3:#262626;
+      --line:#393939;
+      --blue:#78a9ff; --blue-soft:#001d6c;
+      --teal:#3ddbd9; --teal-soft:#022b30;
+      --amber:#d2a106; --amber-soft:#302400;
+      --red:#ff8389; --red-soft:#2d0709;
+  }
+  :root[data-theme="light"]{
+      --ink:#161616; --ink-2:#393939; --ink-3:#6f6f6f;
+      --paper:#ffffff; --paper-2:#f4f4f4; --paper-3:#e8e8e8;
+      --line:#d8d8d8;
+      --blue:#0f62fe; --blue-soft:#d0e2ff;
+      --teal:#007d79; --teal-soft:#d9fbfb;
+      --amber:#8e6a00; --amber-soft:#fcf4d6;
+      --red:#a2191f; --red-soft:#fff1f1;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+       font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+
+  section{padding:56px 0;border-top:1px solid var(--line)}
+  section:first-of-type{border-top:0}
+  h1{font-size:clamp(30px,4.4vw,46px);line-height:1.1;letter-spacing:-.02em;margin:0 0 12px;text-wrap:balance}
+  h2{font-size:clamp(22px,2.8vw,30px);line-height:1.2;letter-spacing:-.015em;margin:0 0 6px;text-wrap:balance}
+  h3{font-size:17px;margin:26px 0 8px;letter-spacing:-.005em}
+  p{margin:0 0 14px;max-width:68ch;color:var(--ink-2)}
+  .lede{font-size:18px;color:var(--ink-2);max-width:64ch}
+  .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+           color:var(--ink-3);margin:0 0 10px}
+  code{font-family:var(--mono);font-size:.88em;background:var(--paper-2);
+       border:1px solid var(--line);border-radius:3px;padding:.08em .34em}
+  a{color:var(--blue)}
+
+  .grid{display:grid;gap:16px;margin:22px 0}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+  .card{background:var(--paper-2);border:1px solid var(--line);padding:18px 20px}
+  .card h3{margin-top:0}
+  .card p{margin-bottom:0;font-size:14.5px}
+
+  .rail{border-left:3px solid var(--blue);padding-left:16px}
+  .rail-teal{border-left-color:var(--teal)}
+  .rail-amber{border-left-color:var(--amber)}
+
+  table{border-collapse:collapse;width:100%;font-size:14.5px;margin:16px 0}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;
+     color:var(--ink-3);font-weight:400}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .scroll{overflow-x:auto}
+
+  .pill{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.05em;
+        padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .ok{background:var(--teal-soft);color:var(--teal)}
+  .warn{background:var(--amber-soft);color:var(--amber)}
+  .off{background:var(--paper-3);color:var(--ink-3)}
+  .bad{background:var(--red-soft);color:var(--red)}
+
+  /* ---- architecture diagram ---- */
+  .stack{margin:26px 0;font-size:14px}
+  .tier{border:1px solid var(--line);background:var(--paper-2);padding:14px 16px;margin:0}
+  .tier + .arrow{margin:0}
+  .tier-h{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+          color:var(--ink-3);margin-bottom:10px}
+  .row{display:flex;flex-wrap:wrap;gap:8px}
+  .box{border:1px solid var(--line);background:var(--paper);padding:8px 12px;font-size:13.5px;flex:1 1 130px;text-align:center}
+  .box b{display:block;font-weight:600;font-size:13.5px}
+  .box span{display:block;color:var(--ink-3);font-size:11.5px;font-family:var(--mono);margin-top:2px}
+  .box.k-blue{border-color:var(--blue);box-shadow:inset 3px 0 0 var(--blue)}
+  .box.k-teal{border-color:var(--teal);box-shadow:inset 3px 0 0 var(--teal)}
+  .box.k-amber{border-color:var(--amber);box-shadow:inset 3px 0 0 var(--amber);opacity:.72}
+  .arrow{text-align:center;color:var(--ink-3);font-family:var(--mono);font-size:12px;padding:7px 0;letter-spacing:.04em}
+
+  .flow{display:grid;grid-template-columns:auto 1fr;gap:0 14px;margin:18px 0;font-size:14.5px}
+  .flow dt{font-family:var(--mono);font-size:12px;color:var(--blue);padding:7px 0;white-space:nowrap}
+  .flow dd{margin:0;padding:7px 0;border-bottom:1px solid var(--line);color:var(--ink-2)}
+
+  .steps{counter-reset:s;list-style:none;padding:0;margin:18px 0}
+  .steps li{counter-increment:s;position:relative;padding:0 0 16px 40px;border-bottom:1px solid var(--line);margin-bottom:16px}
+  .steps li:last-child{border-bottom:0}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:26px;height:26px;
+    display:grid;place-items:center;font-family:var(--mono);font-size:12px;
+    border:1px solid var(--line);border-radius:50%;color:var(--ink-3)}
+  .steps b{display:block;margin-bottom:3px}
+  pre{background:var(--paper-2);border:1px solid var(--line);padding:13px 15px;overflow-x:auto;
+      font-family:var(--mono);font-size:12.5px;line-height:1.65;margin:12px 0}
+  .note{font-size:13.5px;color:var(--ink-3)}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+  .kpi{display:flex;gap:28px;flex-wrap:wrap;margin:20px 0}
+  .kpi div{min-width:120px}
+  .kpi b{display:block;font-size:30px;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .kpi span{font-size:12px;font-family:var(--mono);color:var(--ink-3);letter-spacing:.05em}
+
+  /* ---- two-lane trace: same message, one word different ---- */
+  .lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;margin:24px 0}
+  .lane{border:1px solid var(--line);background:var(--paper-2);display:flex;flex-direction:column}
+  .lane-chat{border-top:3px solid var(--teal)}
+  .lane-arm{border-top:3px solid var(--blue)}
+  .lane-head{padding:15px 18px 13px;border-bottom:1px solid var(--line)}
+  .lane-head h3{margin:0 0 8px;font-size:16px}
+  .lane-head .utt{display:block;font-family:var(--mono);font-size:12.5px;color:var(--ink);
+                  background:var(--paper);border:1px solid var(--line);padding:8px 10px;line-height:1.5}
+  .lane-head .utt em{font-style:normal;font-weight:700;padding:0 2px}
+  .lane-arm .utt em{background:var(--blue-soft);color:var(--blue)}
+  .hops{list-style:none;margin:0;padding:2px 18px 12px;counter-reset:h}
+  .hops li{counter-increment:h;position:relative;padding:10px 0 10px 30px;
+           border-bottom:1px solid var(--line);font-size:13.5px;color:var(--ink-2)}
+  .hops li:last-child{border-bottom:0}
+  .hops li::before{content:counter(h);position:absolute;left:0;top:11px;
+                   font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .hops b{color:var(--ink)}
+  .hops li.identical{color:var(--ink-3)}
+  .hops li.fork{background:var(--paper-3);margin:0 -18px;padding-left:48px;padding-right:18px}
+  .hops li.fork::before{left:18px}
+  .lane-foot{margin-top:auto;border-top:1px solid var(--line);padding:12px 18px;
+             font-size:13px;color:var(--ink-3)}
+  .lane-foot b{color:var(--ink-2)}
+
+  .blocks{margin:22px 0}
+  .proc{border:1px solid var(--line);margin-bottom:18px}
+  .proc-h{padding:13px 18px;border-bottom:1px solid var(--line);background:var(--paper-2)}
+  .proc-h b{font-family:var(--mono);font-size:13.5px}
+  .proc-h span{display:block;font-size:13px;color:var(--ink-3);margin-top:3px}
+  .proc table{margin:0}
+  .proc td,.proc th{padding:9px 18px}
+  .proc tbody tr:last-child td{border-bottom:0}
+  .proc-core{border-top:3px solid var(--teal)}
+  .proc-ev{border-top:3px solid var(--blue)}
+</style>
+
+
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">CUGA · event-driven agents · 2026-08-05</p>
+  <h1>Channels &amp; Events: where we are</h1>
+  <p class="lede">Two features, delivered as <b>a second service beside CUGA</b> — never bolted into
+  it. <b>Channels</b> let people talk to CUGA from Slack, Discord, Telegram or the web.
+  <b>Events</b> let them ask CUGA to keep doing something — on a schedule, on a change, or on an
+  inbound webhook — with a human approving the exact prompt before anything is armed.</p>
+  <p class="lede"><b>Both go through one door.</b> Every message from every channel lands on CUGA's
+  <code>POST /run</code>, and CUGA — not the eventing service — decides whether this one is ordinary
+  chat or an attempt to arm something. That inversion is the change that matters most here.</p>
+
+  <div class="kpi">
+    <div><b>4</b><span>CUGA CORE FILES TOUCHED</span></div>
+    <div><b>−17</b><span>UPSTREAM LINES DELETED</span></div>
+    <div><b>2</b><span>SERVICES, ONE IMAGE</span></div>
+    <div><b>364</b><span>OFFLINE TESTS GREEN</span></div>
+  </div>
+
+  <p class="note">Design record: <code>events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md</code> ·
+  step-by-step: <code>events_docs/RUNBOOK_TRY_IT.md</code></p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">The two features</p>
+  <h2>Channels first, then events on top</h2>
+  <p>They are deliberately separate. Channels is a <i>transport</i> question — how a message reaches
+  the agent and how the answer gets back. Events is a <i>time</i> question — what happens when
+  nobody is in the room.</p>
+  <p><b>CUGA owns the front door for both.</b> Slack, Discord, Telegram and the web all land on
+  CUGA's <code>/run</code>. The channel adapters hold the bot tokens because they own the sockets,
+  but they make no routing decision. The eventing service is invoked only when the utterance is
+  actually about eventing — so ordinary chat stays exactly as fast and as simple as it was before
+  any of this existed.</p>
+
+  <div class="grid g2">
+    <div class="card rail">
+      <h3>① Channels — talk to CUGA from anywhere</h3>
+      <p>Four surfaces, all live: <b>web</b>, <b>Slack</b>, <b>Discord</b>, <b>Telegram</b>. Slack
+      and Discord require an <b>@mention</b> to engage; once the bot roots a thread, follow-ups in
+      that thread need no re-mention. Replies go back to the thread they came from.</p>
+    </div>
+    <div class="card rail rail-teal">
+      <h3>② Events — make it keep happening</h3>
+      <p>A plain chat stays plain chat. Only <code>/automate</code>, <code>/watch</code>,
+      <code>/schedule</code> reach the eventing layer. It arms a <b>cron</b>, a <b>poll</b> (fire
+      only on change) or an inbound <b>webhook</b> — then fires on its own and delivers back through
+      whichever channel you came from.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Building blocks</p>
+  <h2>Two processes, twelve blocks, one door</h2>
+  <p>Every block below lives in exactly one of two processes, and the split is not cosmetic — it is
+  what lets CUGA ship without any of this. Read the <b>decides</b> column: plenty of blocks decide
+  something, but <b>exactly one decides whether eventing is involved at all</b> — and it lives in
+  CUGA, not in the eventing service. Every block on the transport path decides nothing.</p>
+
+  <div class="blocks">
+    <div class="proc proc-core">
+      <div class="proc-h">
+        <b>cuga-core</b> &nbsp;·&nbsp; :7860
+        <span>Vanilla CUGA. Imports nothing from the events package — a test fails if that ever
+        regresses. Holds no bot token, runs no scheduler.</span>
+      </div>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Block</th><th>What it owns</th><th>What it decides</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>The door</b> — <code>POST /run</code></td>
+            <td>The single entry point for every utterance from every channel. Non-streaming sibling of <code>/stream</code>.</td>
+            <td><b>Chat or eventing.</b> One regex + one set lookup, ~55 lines, in one place.</td>
+          </tr>
+          <tr>
+            <td><code>GET /stream</code></td>
+            <td>SSE for the Studio UI. Applies the <i>same</i> rule, so the web surface behaves identically.</td>
+            <td>Same one rule</td>
+          </tr>
+          <tr>
+            <td>Supervisor <code>cuga</code></td>
+            <td>8 sub-agents, the graph, model credentials, HITL, policies.</td>
+            <td>Which sub-agent answers</td>
+          </tr>
+          <tr>
+            <td><code>GET /run/agents</code></td>
+            <td>The roster, machine-readable. <b>The roster belongs to whoever executes</b> — that is this process, so the events side asks rather than guesses.</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>MCP tool clients</td>
+            <td>finance · web · geo · knowledge · code · text · local</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="proc proc-ev">
+      <div class="proc-h">
+        <b>cuga-events-svc</b> &nbsp;·&nbsp; :8100
+        <span>Its own process, its own deploy, its own lifecycle. Depends on CUGA (it cannot execute
+        anything itself). CUGA does not depend on it.</span>
+      </div>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Block</th><th>What it owns</th><th>What it decides</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>Channel adapters</b><br>slack · discord · telegram</td>
+            <td>The sockets and therefore <b>the bot tokens</b>: Slack's Events receiver + signing secret, Discord's gateway websocket, Telegram's long-poll. Normalise a message; post the answer back to the right thread.</td>
+            <td><span class="pill off">nothing</span> pure transport</td>
+          </tr>
+          <tr>
+            <td><code>cuga_door.ask()</code></td>
+            <td>The client that turns a channel message into <code>POST cuga-core/run</code>. Builds <code>thread_id = gw:&lt;channel&gt;:&lt;native&gt;#&lt;locus&gt;</code> — memory locus <i>and</i> delivery address in one string.</td>
+            <td><span class="pill off">nothing</span></td>
+          </tr>
+          <tr>
+            <td><b>Concierge</b> — <code>POST /api/concierge</code></td>
+            <td>NL → Flow. The HITL state machine: DRAFT → NEEDS_INPUT → CONFIRM → ARMED/CANCELLED. Returns a <code>state</code> the door uses to keep the dialogue routed.</td>
+            <td>What gets armed — <b>only after a human confirms</b></td>
+          </tr>
+          <tr>
+            <td>Subscription store</td>
+            <td><b>PostgreSQL</b>, tenant-scoped &mdash; the armed flows and their parked drafts (10-min TTL).
+                The <i>same engine</i> local dev runs (<code>make pg</code>), so local testing exercises the
+                storage path that ships. SQLite remains for the hermetic test suite only.</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>Native scheduler</td>
+            <td>cron + poll, in-process, no extra infra. Poll state answers "did it <i>actually</i> change?" so an unchanged tick stays silent.</td>
+            <td>When to fire</td>
+          </tr>
+          <tr>
+            <td><code>POST /invoke</code> · <code>POST /hook/&lt;name&gt;</code></td>
+            <td>The fire seam and the inbound-webhook seam. Run logging, then delivery back to the origin thread.</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>Activepieces engine</td>
+            <td>Present, <span class="pill warn">off</span>. One trigger backend for push on SaaS we don't own.</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <p class="rail" style="padding:2px 0 2px 16px"><b>The shape of it:</b> the eventing service talks to
+  CUGA twice — once <i>inbound</i> as a transport (a human's message, via <code>/run</code>) and once
+  <i>outbound</i> as an executor (a fired tick, via <code>/invoke</code> → <code>/run</code>). CUGA
+  talks to the eventing service exactly once, in one function, guarded by one environment variable.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Architecture</p>
+  <h2>User → CUGA → (only if needed) eventing → back</h2>
+
+  <div class="stack">
+    <div class="tier">
+      <div class="tier-h">People &amp; systems</div>
+      <div class="row">
+        <div class="box"><b>Web /studio</b><span>chat + Flows</span></div>
+        <div class="box"><b>Slack</b><span>@mention</span></div>
+        <div class="box"><b>Discord</b><span>@mention</span></div>
+        <div class="box"><b>Telegram</b><span>long-poll</span></div>
+        <div class="box"><b>Any system</b><span>POST /hook/&lt;name&gt;</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">↓ &nbsp; thin adapters — they hold the tokens, they decide NOTHING &nbsp; ↓</div>
+
+    <div class="tier" style="border-color:var(--teal);box-shadow:inset 0 3px 0 var(--teal)">
+      <div class="tier-h">CUGA &nbsp;— THE DOOR, :7860. Vanilla. No events code, no bot tokens.</div>
+      <div class="row">
+        <div class="box k-teal"><b>POST /run</b><span>every utterance lands here</span></div>
+        <div class="box k-teal"><b>the ONE rule</b><span>slash verb / open dialogue?</span></div>
+        <div class="box"><b>Supervisor "cuga"</b><span>8 sub-agents</span></div>
+        <div class="box"><b>/stream</b><span>SSE · the UI</span></div>
+        <div class="box"><b>/run/agents</b><span>what is loaded</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">↓ &nbsp; ONLY when arming: <code>POST /api/concierge</code> &nbsp; ↓</div>
+
+    <div class="tier">
+      <div class="tier-h">Eventing service &nbsp;— its own process, its own deploy, :8100</div>
+      <div class="row">
+        <div class="box k-blue"><b>Concierge</b><span>slash → arm · HITL</span></div>
+        <div class="box k-blue"><b>Native scheduler</b><span>cron · poll · in-process</span></div>
+        <div class="box k-blue"><b>/invoke</b><span>the fire seam</span></div>
+        <div class="box k-blue"><b>Delivery</b><span>back to origin thread</span></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="box k-amber"><b>Activepieces</b><span>IN, but OFF today</span></div>
+        <div class="box k-teal"><b>Direct watchers</b><span>Slack · Discord · Box</span></div>
+        <div class="box k-teal"><b>Poll state</b><span>did it actually change?</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">↓ &nbsp; the only thing that outlives the process &nbsp; ↓</div>
+
+    <div class="tier" style="border-color:var(--blue);box-shadow:inset 0 3px 0 var(--blue)">
+      <div class="tier-h">PostgreSQL &nbsp;— IBM Cloud Databases. The SAME engine local dev runs.</div>
+      <div class="row">
+        <div class="box k-blue"><b>Armed flows</b><span>tenant-scoped</span></div>
+        <div class="box k-blue"><b>Runs log</b><span>what fired, when</span></div>
+        <div class="box k-blue"><b>Identity</b><span>channel → user</span></div>
+        <div class="box k-blue"><b>Parked drafts</b><span>HITL, 10-min TTL</span></div>
+        <div class="box"><b>sslmode</b><span>verify-full</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">↓ &nbsp; a fired tick goes back the other way: scheduler → /invoke → CUGA /run &nbsp; ↓</div>
+
+    <div class="tier">
+      <div class="tier-h">MCP tool servers</div>
+      <div class="row">
+        <div class="box"><b>finance</b></div><div class="box"><b>web</b></div>
+        <div class="box"><b>geo</b></div><div class="box"><b>knowledge</b></div>
+        <div class="box"><b>code</b></div><div class="box"><b>text</b></div>
+        <div class="box"><b>local</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>The one rule, applied in one place</h3>
+  <pre>slash verb (/automate /watch /schedule /cron /poll /push /cancel)   → eventing
+this thread already has an arming dialogue open ("yes", "change …") → eventing
+everything else                                                     → the agent</pre>
+  <p>That second line is what makes the back-and-forth work. A bare <code>yes</code> means nothing
+  on its own, so CUGA remembers which threads are mid-dialogue — from the <code>state</code> the
+  eventing service returns — and keeps routing them until it says <code>armed</code> or
+  <code>cancelled</code>. It is a routing <i>hint</i>, not state: the eventing service holds the real
+  parked entry and is the only thing that can arm.</p>
+  <p class="note">The next section traces both branches of that rule hop by hop, from the same Slack
+  channel.</p>
+
+  <h3>The round trip, concretely</h3>
+  <dl class="flow">
+    <dt>1 · in</dt><dd>You <code>@bot /automate every minute send me the price of bitcoin</code> in Slack.</dd>
+    <dt>2 · to CUGA</dt><dd>The Slack adapter POSTs <b>CUGA's <code>/run</code></b>. It holds the token; it decides nothing.</dd>
+    <dt>3 · CUGA decides</dt><dd>Slash verb → forward to the eventing service. (Plain chat would stop here and answer.)</dd>
+    <dt>4 · confirm</dt><dd>A card comes back <b>in that thread</b>: the exact prompt, the cadence, the delivery target. Nothing armed yet.</dd>
+    <dt>5 · yes</dt><dd>Replied in-thread, no re-mention. CUGA sees the open dialogue, forwards it, the flow arms <b>deterministically</b>.</dd>
+    <dt>6 · fire</dt><dd>The scheduler wakes it and POSTs <code>/invoke</code>. Each fire runs on a <b>fresh</b> thread so tick #288 doesn't drag 287 prior turns.</dd>
+    <dt>7 · execute</dt><dd><code>/invoke</code> → CUGA <code>/run</code> → the supervisor picks <code>pricebot</code> → <code>cuga-finance</code>.</dd>
+    <dt>8 · back</dt><dd>Delivered into <b>the original Slack thread</b>. Execution thread ≠ delivery thread.</dd>
+  </dl>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Same channel, one word apart</p>
+  <h2>Two messages from Slack, traced hop by hop</h2>
+  <p>This is the clearest way to see what the door actually buys. Both messages are typed into the
+  same Slack channel, both hit the same receiver, both travel the same first four hops. The only
+  difference is one word — and the only place that word changes anything is inside CUGA.</p>
+
+  <div class="lanes">
+
+    <div class="lane lane-chat">
+      <div class="lane-head">
+        <h3>Without <code>/automate</code> — ordinary chat</h3>
+        <span class="utt">@cuga-app what is IBM trading at?</span>
+      </div>
+      <ol class="hops">
+        <li class="identical">Slack delivers an <code>app_mention</code> event to the events service:
+          <b>POST <code>/api/events/slack/events</code></b>. The receiver lives here because it owns
+          the signing secret and the bot token.</li>
+        <li class="identical">Signature verified · <code>&lt;@Uxxx&gt;</code> stripped · deduped on
+          <code>ts</code> · <b>acked in &lt;3 s</b>, real work handed to a background task (Slack's
+          timeout is unforgiving).</li>
+        <li class="identical"><code>cuga_door.ask(...)</code> → <b>POST <code>cuga-core/run</code></b>
+          with <code>thread_id = gw:slack:C123#1712…</code>. The adapter <b>does not look at the
+          text</b>.</li>
+        <li class="fork"><b>The door decides.</b> No slash verb; this thread has no open dialogue →
+          <code>_forwards_to_events()</code> returns <b>False</b>.
+          <b>The eventing service is never called.</b></li>
+        <li>The supervisor runs, picks a sub-agent, calls <code>cuga-finance</code> over MCP.</li>
+        <li><code>/run</code> returns <code>{"answer": "IBM is trading at …"}</code>.</li>
+        <li>The adapter posts it back into the thread with <code>chat.postMessage</code>.</li>
+      </ol>
+      <div class="lane-foot">Eventing's total involvement: <b>it carried the message and carried the
+      answer back.</b> The concierge, the scheduler and the store were never touched. Nothing was
+      persisted. Identical latency to CUGA with no eventing service deployed at all.</div>
+    </div>
+
+    <div class="lane lane-arm">
+      <div class="lane-head">
+        <h3>With <code>/automate</code> — arming a flow</h3>
+        <span class="utt">@cuga-app <em>/automate</em> every morning at 9 tell me IBM's price</span>
+      </div>
+      <ol class="hops">
+        <li class="identical">Same receiver, same endpoint. <span class="pill off">byte-identical</span></li>
+        <li class="identical">Same verification, same dedup, same 3-second ack.
+          <span class="pill off">byte-identical</span></li>
+        <li class="identical">Same <code>cuga_door.ask(...)</code> → same <code>POST
+          cuga-core/run</code>. <span class="pill off">byte-identical</span></li>
+        <li class="fork"><b>The door decides.</b> <code>_SLASH_VERBS</code> matches (a leading
+          <code>@mention</code> is tolerated) → <b>forward</b>. The agent is never invoked, so it
+          never tries to <i>implement</i> the schedule.</li>
+        <li><b>POST <code>events/api/concierge</code></b> — the text, the <code>thread_id</code>, the
+          channel envelope, plus the gateway token and the identity headers so the flow arms in the
+          scope your Studio browses.</li>
+        <li>Concierge parses to <b>DRAFT</b>, strips the cadence out of the prompt
+          (<code>"every morning at 9 tell me IBM's price"</code> → <code>"Tell me IBM's price."</code>),
+          returns <code>state: "confirm"</code> + a card.</li>
+        <li>CUGA notes the thread in <code>_events_open_threads</code> and returns the card as the
+          answer, tagged <code>routed_to: "events"</code>. The adapter posts it into the thread.
+          <b>Nothing is armed.</b></li>
+        <li>You reply <b><code>yes</code></b> in-thread — no re-mention. Hops 1–3 repeat identically;
+          at hop 4 there is <i>still</i> no slash verb, but the thread is <b>open</b>, so it forwards.
+          The concierge arms deterministically, returns <code>armed</code>, and CUGA drops the thread
+          from the open set.</li>
+        <li>09:00 the next day: the scheduler fires → <code>/invoke</code> → <b>a fresh
+          <code>/run</code></b> → the answer is delivered into the original Slack thread.</li>
+      </ol>
+      <div class="lane-foot">The word <code>/automate</code> changes exactly one branch, in exactly
+      one file. <b>Everything upstream and downstream of that branch is the same code.</b></div>
+    </div>
+
+  </div>
+
+  <h3>What actually differs</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th></th><th>without <code>/automate</code></th><th>with <code>/automate</code></th></tr></thead>
+    <tbody>
+      <tr><td>Slack receiver, signature check, ack</td><td colspan="2" style="text-align:center">identical</td></tr>
+      <tr><td>Call into CUGA</td><td colspan="2" style="text-align:center"><code>POST /run</code> — identical body shape</td></tr>
+      <tr><td>Concierge invoked</td><td><span class="pill off">no</span></td><td><span class="pill ok">yes</span></td></tr>
+      <tr><td>Agent runs on this turn</td><td><span class="pill ok">yes</span></td><td><span class="pill off">no</span> — a card comes back instead</td></tr>
+      <tr><td>Anything persisted</td><td><span class="pill off">no</span></td><td>a parked draft, then a subscription <b>after you say yes</b></td></tr>
+      <tr><td>Response field <code>routed_to</code></td><td>absent</td><td><code>"events"</code></td></tr>
+      <tr><td>Happens again tomorrow</td><td><span class="pill off">no</span></td><td><span class="pill ok">yes</span> — that is the whole point</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="note">Telegram, Discord and the web Studio follow exactly the same two lanes — different
+  adapter, same <code>cuga_door.ask()</code>, same door, same rule. Web chat goes through
+  <code>/stream</code> instead of <code>/run</code>, and the rule is applied there too: an arming
+  reply comes back as a single SSE <code>Answer</code> frame.</p>
+
+  <p class="rail rail-teal" style="padding:2px 0 2px 16px"><b>Why this ordering matters.</b> It used
+  to run the other way — every channel message went to the eventing layer first, which decided
+  chat-vs-arming and only <i>then</i> called CUGA. That made eventing the front door for ordinary
+  chat, so chat inherited the availability of a feature it does not use. Now the exception asks
+  permission from the rule, not the other way round.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">NL → Flow</p>
+  <h2>Nothing arms until you approve the prompt</h2>
+  <p>The risky part of "turn this sentence into a standing job" is not the schedule — it is the
+  <b>prompt the agent is handed on every single fire</b>, forever, with nobody watching. So a human
+  goes in front of it.</p>
+
+  <ol class="steps">
+    <li><b>DRAFT</b> — the utterance is parsed into cadence + prompt + delivery target. The
+    scaffolding is stripped: <code>"every 5 mins check ibm stock price"</code> →
+    <code>"Check ibm stock price."</code> The schedule already handles recurrence; leaving it in the
+    prompt asks the agent to <i>implement a loop</i>.</li>
+    <li><b>NEEDS_INPUT</b> — if something required is missing (no cadence, no push source) it asks,
+    through the same channel you came from, and waits.</li>
+    <li><b>CONFIRM</b> — you see the card. <b>Arm it</b> · <b>Edit prompt</b> · <b>Cancel</b>.</li>
+    <li><b>ARMED</b> — and only then. Cron and poll arm <b>deterministically</b> from the approved
+    text; there is no second LLM pass free to arm something you never read.</li>
+  </ol>
+  <p class="note">Drafts expire after 10 minutes. Plain chat never enters this dialogue at all.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Deployment</p>
+  <h2>Two services, one image</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3><code>cuga-core</code> — vanilla CUGA</h3>
+      <p>The agent, the graph, the Studio UI, <code>/stream</code>, <code>/run</code>. Imports
+      nothing from the events package. No scheduler, no channel loops, <b>no bot tokens</b>.</p>
+    </div>
+    <div class="card">
+      <h3><code>cuga-events-svc</code> — the eventing service</h3>
+      <p>Triggers, the native scheduler, the four channel adapters, the concierge,
+      <code>/invoke</code>. Arms flows and fires them; executes by calling CUGA's <code>/run</code>.
+      A singleton — the scheduler and channel loops are process-wide.</p>
+    </div>
+  </div>
+  <p><b>"Combined" mode — events mounted onto CUGA's FastAPI app — has been removed entirely</b>,
+  along with the two in-process runtimes it needed. There is one topology.</p>
+
+  <h3>CUGA runs perfectly well without any of this</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Scenario</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>Eventing never deployed (<code>EVENTS_API_URL</code> unset)</td><td>Forward disabled. <code>/run</code> and <code>/stream</code> behave exactly as upstream CUGA — a slash verb is just text.</td></tr>
+      <tr><td>Eventing deployed but <b>down</b></td><td>Chat unaffected (it never calls out). Arming returns an honest sentence naming the unreachable URL. No stack trace, no hang.</td></tr>
+      <tr><td>Eventing turned off</td><td>Same as never deployed — unset one variable.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>The coupling is <b>one variable, one direction</b>: CUGA imports nothing from
+  <code>cuga.backend.events</code> (a test fails if that regresses), and the only link out is an
+  HTTP POST guarded by <code>EVENTS_API_URL</code>. The dependency runs the other way — the eventing
+  service needs CUGA, because CUGA executes every agent call.</p>
+  <p class="note">Why one image and not two? The events package now imports exactly one thing from
+  CUGA core (<code>resolve_secret</code>), so a lean events image is genuinely feasible. It is not
+  worth it yet: one image means one build, one tag, and no version-skew risk across the
+  <code>/run</code> contract. Worth revisiting when the two deploy on different cadences.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Activepieces</p>
+  <h2>Wired in, switched off — and why we still care</h2>
+  <div class="grid g2">
+    <div class="card rail rail-amber">
+      <h3>What works without it</h3>
+      <p>Everything above: all four chat channels, cron, poll, inbound webhooks, and the direct
+      watchers for Slack, Discord and Box. The <b>native scheduler</b> runs cron/poll in-process. No
+      extra infra.</p>
+    </div>
+    <div class="card rail rail-amber">
+      <h3>What it unlocks when you turn it on</h3>
+      <p><b>Push triggers on SaaS you don't own</b> — Gmail new-email, GitHub repo events, Box
+      new-file, Calendar. AP holds the OAuth tokens (encrypted; the agent never sees them) and does
+      the provider-specific webhook plumbing we would otherwise write ~30 times.</p>
+    </div>
+  </div>
+  <p><b>Why it's off:</b> it is a whole extra service, and every path that doesn't need it should
+  not depend on it. AP is <i>one trigger backend</i>, not the spine. The harness proves it: with AP
+  down, the only failures are the two assertions that exist to check AP is down.</p>
+  <p class="note"><b>Heads up for the day you enable it:</b> we fixed a latent crash in the AP
+  engine — <code>reachable()</code> had been pasted into the middle of <code>__init__</code>, so half
+  the constructor never ran. It fails on the first AP call with
+  <code>'APEngine' object has no attribute '_auth_lock'</code>. Invisible while AP is off.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Blast radius</p>
+  <h2>Are we touching core? Barely.</h2>
+  <p>Across the entire branch we delete <b>17</b> lines of upstream CUGA. Two are in
+  <code>server/main.py</code>/<code>cli/main.py</code> and are one-line <i>replacements</i>; the other
+  15 are in <code>supervisor_config.py</code> &mdash; the one place we changed existing CUGA
+  <b>behaviour</b> rather than adding to it, and the change most worth a reviewer's attention.</p>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Area</th><th>Files</th><th>Added</th><th>Deleted</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><b>CUGA core</b> (server + CLI)</td><td class="num">2</td><td class="num">+465</td><td class="num"><b>−2</b></td><td>New endpoints + the door. Additive.</td></tr>
+      <tr><td><b>CUGA core</b> (supervisor_config + roster yaml)</td><td class="num">2</td><td class="num">+56</td><td class="num"><b>−15</b></td><td>Headless policy default + real tool scoping. <b>The one behaviour change.</b></td></tr>
+      <tr><td>Events layer</td><td class="num">44</td><td class="num">+11,561</td><td class="num">−35</td><td>Entirely new subsystem</td></tr>
+      <tr><td>Tests</td><td class="num">54</td><td class="num">+12,266</td><td class="num">−0</td><td>Offline suite + live harnesses</td></tr>
+      <tr><td>Docs</td><td class="num">40</td><td class="num">+7,565</td><td class="num">−0</td><td>Specs, runbooks, setup guides</td></tr>
+      <tr><td>Config / rosters / make</td><td class="num">32</td><td class="num">+5,800</td><td class="num">−0</td><td>Agent rosters, targets</td></tr>
+      <tr><td>Frontend (UI source)</td><td class="num">9</td><td class="num">+2,092</td><td class="num">−6</td><td>Studio tabs, confirm card</td></tr>
+      <tr><td>Deploy kit</td><td class="num">9</td><td class="num">+713</td><td class="num">−0</td><td>Code Engine scripts</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>The two lines removed from <code>server/main.py</code> · <code>cli/main.py</code></h3>
+  <pre>- return JSONResponse({"hide_cuga_logo": …, "brand_name": …})
++ return JSONResponse({… , "events_api_url": …})     # the UI needs to find the events service
+
+- os.environ["MCP_SERVERS_FILE"] = "none"
++ if not wants_roster: os.environ["MCP_SERVERS_FILE"] = "none"   # was clobbering CE's value</pre>
+  <p><b>Everything else lives on top of CUGA core.</b> Core gains <code>/run</code>,
+  <code>/run/agents</code>, an optional preloaded supervisor, one extra field on a config response,
+  and a ~55-line HTTP forwarder.</p>
+
+  <h3 style="color:var(--amber)">The honest asterisk — <code>supervisor_config.py</code></h3>
+  <p>One file where we changed <b>existing behaviour</b> rather than adding to it. Flagged here
+  because a reviewer skimming "17 lines" should not skim past it:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Change</th><th>Why</th><th>Who it affects</th></tr></thead>
+    <tbody>
+      <tr><td><code>auto_load_policies=False</code> for sub-agents</td>
+          <td>Supervisor delegates run <b>headless</b> (flows, webhooks, channel events). Nobody is present to click an approval, and an approval interrupt in a headless run hangs until the caller times out. A YAML entry can opt back in.</td>
+          <td><span class="pill warn">anyone already calling <code>load_supervisor_config</code></span></td></tr>
+      <tr><td><code>CombinedToolProvider</code> is now actually <b>scoped</b></td>
+          <td>The old filter was a no-op that logged intent and loaded everything. Hyphenated names are also mapped (<code>cuga-finance</code> → <code>cuga_finance</code>; the hyphen form composed invalid Python identifiers — <code>cuga-finance_get_price</code> parses as subtraction).</td>
+          <td>agents that name servers; an agent naming nothing still gets all tools</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Verification</p>
+  <h2>What is actually proven</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Offline suite (hermetic — passes with the stack up)</td><td class="num"><b>364 passed · 86 s</b></td></tr>
+      <tr><td>Store tests against <b>real PostgreSQL</b> (<code>make test-pg</code>)</td><td class="num"><b>20 passed</b></td></tr>
+      <tr><td><b>Durability</b>: armed flow survived a real Code Engine pod replacement</td><td class="num"><b>PASS</b></td></tr>
+      <tr><td>Local e2e (chat · arm · webhook × 3 modes)</td><td class="num">30 ✓ · 2 ✗ (AP down)</td></tr>
+      <tr><td>Fire: cron + poll, real ticks + live answers</td><td class="num"><b>2 / 2</b></td></tr>
+      <tr><td><b>Slack channel-arm</b>: @mention → card in-thread → bare "yes" → armed → tick delivered back</td><td class="num"><b>PASS</b></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Nine bugs fixed — eight pre-existing or latent</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Bug</th><th>Bites when</th></tr></thead>
+    <tbody>
+      <tr><td><b>Flow reuse crossed tenants</b> — the dedup lookup ignored ownership</td><td><span class="pill bad">multi-tenant</span> "reusing" another tenant's flow: invisible, undeletable, delivering to them</td></tr>
+      <tr><td><code>APEngine.reachable()</code> pasted mid-<code>__init__</code></td><td><span class="pill warn">the day you enable AP</span></td></tr>
+      <tr><td>Events layer guessed at a roster it does not own</td><td>any split deployment</td></tr>
+      <tr><td>Pinned agent lost across <code>/run</code></td><td><code>?agent=</code> webhooks</td></tr>
+      <tr><td>Standalone service never loaded <code>.env</code></td><td><code>make run-events</code> locally</td></tr>
+      <tr><td>Scheduler fired before its own socket listened</td><td>any subscription due at boot</td></tr>
+      <tr><td>Ephemeral stream-events GC lost in a merge</td><td>silently, forever — rows pile up</td></tr>
+      <tr><td><code>EVENTS_USER_ID</code> lost with the <code>--events</code> flag</td><td>channel-armed flows: armed, firing, <b>invisible</b> in the Studio</td></tr>
+      <tr><td>Offline suite was never hermetic</td><td>a 50 s suite took 25+ min whenever a dev stack was up</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note">Two of these — the lost GC and the lost background-loop launcher — were casualties
+  of the same <code>main.py</code> merge conflict. That file is worth a careful read before merging.</p>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Roadmap</p>
+  <h2>What's next</h2>
+  <div class="grid g3">
+    <div class="card">
+      <h3>Near</h3>
+      <p>Commit + slice into reviewable PRs · turn AP on and exercise Gmail/GitHub/Box push ·
+      re-verify the deployed pair after each.</p>
+    </div>
+    <div class="card">
+      <h3>Mid</h3>
+      <p>Split the secret so <code>cuga-core</code> never sees a bot token · fire-time robustness ·
+      restrict the database's public endpoint to the Code Engine egress range.</p>
+    </div>
+    <div class="card">
+      <h3>Later</h3>
+      <p>Multi-replica (scheduler + channel loops are process-wide singletons) · a lean separate
+      events image · richer poll predicates · the action half, still deferred.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────── -->
+<section>
+  <p class="eyebrow">Over to you</p>
+  <h2>How to test it</h2>
+
+  <h3>Local</h3>
+  <pre>make up-noap       # BOTH services: CUGA :7860 + eventing :8100
+make test          # offline suite — hermetic, run it any time
+make test-e2e      # real channels + native cron/poll fire</pre>
+
+  <h3>By hand — the part worth seeing</h3>
+  <p>At <code>http://localhost:7860/studio</code> → Concierge, type:</p>
+  <pre>/automate every 5 minutes send IBM stock price</pre>
+  <p>You get a <b>confirm card</b>, not an armed flow. Try all three buttons. Then the same in Slack
+  with <code>@your-bot /automate every minute send me the price of bitcoin</code> and reply
+  <code>yes</code> <b>in the thread</b> — a minute later the tick lands there.</p>
+
+  <h3>Deployed</h3>
+  <pre>make ce-status · make ce-smoke · make test-e2e-ce</pre>
+  <p><b>Delete anything you arm</b> — it fires forever. Studio → Flows → delete.</p>
+
+  <h3>Redirect URLs — only Slack and OAuth need one</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th></th><th>Needs a URL?</th><th>Set to</th></tr></thead>
+    <tbody>
+      <tr><td>Slack</td><td><span class="pill warn">yes</span></td><td><code>&lt;events-app&gt;/api/events/slack/events</code></td></tr>
+      <tr><td>Discord</td><td><span class="pill off">no</span></td><td>outbound Gateway websocket</td></tr>
+      <tr><td>Telegram</td><td><span class="pill off">no</span></td><td>long-poll</td></tr>
+      <tr><td>Web</td><td><span class="pill off">no</span></td><td>—</td></tr>
+      <tr><td>OAuth (Box/Gmail/GitHub)</td><td><span class="pill warn">yes</span></td><td><code>&lt;events-app&gt;/connect/&lt;app&gt;/callback</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Slack's Request URL points at the EVENTING SERVICE, never at CUGA.</b>
+  "CUGA is the door" describes where the <i>decision</i> happens — one hop later, invisible to
+  Slack. The receiver did not move. Pointing Slack at <code>cuga-core</code> gets a <b>405</b> for
+  that path and Slack reports "your request URL returned an HTTP error". Use
+  <code>cuga-events-<b>svc</b></code>. Also: only one process at a time may serve a given Slack app
+  or long-poll a given Telegram bot — local plus CE on the same bot gives
+  <code>409 Conflict</code>.</p>
+  <p class="note">Opening that Request URL <i>in a browser</i> also used to answer <b>405</b> — a GET
+  on a POST-only endpoint, correct but alarming, and indistinguishable from having the wrong host. It
+  now returns a short JSON saying the endpoint is healthy, that Slack delivers by POST, and which
+  host is the right one. To exercise it for real:</p>
+  <pre>curl -X POST &lt;request-url&gt; -H 'Content-Type: application/json' \
+     -d '{"type":"url_verification","challenge":"probe"}'      # prints: probe</pre>
+</section>
+
+</div>

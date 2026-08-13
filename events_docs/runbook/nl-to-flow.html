@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<!-- CUGA events runbook — NL→Flow. Hand-authored, no-AP scope.
+     Sources: events/concierge.py (run, _slash_parse, _pre_route, make_concierge_tools,
+     find_or_create_flow, _single_shot_task, _strip_cadence), events/classify.py, events/flowspec.py,
+     events/poll_state.py (extract_spec/spec_to_state), events/native_scheduler.py. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NL&rarr;Flow — CUGA events runbook</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+
+<div class="kicker">CUGA · events · control plane</div>
+<h1>NL&rarr;Flow &mdash; English into an armed flow</h1>
+<p class="lede">How "watch bitcoin every 2 minutes and ping me on any move" becomes a native subscription
+   the scheduler fires &mdash; the three-tier decision, the concierge's LLM tools, cadence-stripping, and
+   bounded runs. No Activepieces: cron and poll arm on the in-process scheduler.</p>
+
+<div class="nav">
+  <a href="index.html">Overview</a>
+  <a href="channels.html">Channels</a>
+  <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>
+  <a href="nl-to-flow.html" class="here">NL&rarr;Flow</a>
+  <a href="scheduler-and-polling.html">Scheduler &amp; Polling</a>
+  <a href="apis.html">API Reference</a>
+  <a href="agents.html">Agents</a>
+  <a href="examples.html">Examples</a>
+</div>
+
+<h2 id="ladder">The decision ladder</h2>
+<p>An utterance enters <code>concierge.run()</code> and is decided in order &mdash; the cheapest path that
+   matches wins. Only the last rung is an LLM.</p>
+<div class="wrap"><table>
+  <tr><th>#</th><th>Rung</th><th>Mechanism</th><th>Outcome</th></tr>
+  <tr><td class="k">1</td><td><b>Slash</b> &mdash; <code>/automate /watch /schedule /cron /poll /push /start /link</code></td><td><code>_slash_parse</code> &mdash; deterministic, <b>no LLM</b></td><td>arm directly in the named mode (<code>/automate</code> lets the router pick)</td></tr>
+  <tr><td class="k">2</td><td><b>Pre-route</b> &mdash; a parked answer, or a high-confidence "watch X"</td><td><code>_pre_route</code> over <code>flowspec</code></td><td>arm it, or ask exactly <b>one</b> clarifying question (slot-fill)</td></tr>
+  <tr><td class="k">3</td><td><b>NOW fast-path</b> &mdash; a plain question</td><td><code>classify.classify()</code> &mdash; heuristic regex</td><td><b>straight to the agent</b>, no concierge-LLM hop</td></tr>
+  <tr><td class="k">4</td><td><b>Standing intent</b> &mdash; "every&hellip;", "when&hellip;"</td><td>the concierge's <b>LLM react-agent</b> (tool-calling)</td><td>tools <code>answer_now</code> / <code>find_or_create_flow</code> answer or arm</td></tr>
+</table></div>
+
+<h2 id="classify">The heuristic classifier (rung 3)</h2>
+<p><code>classify.classify(text)</code> is a <b>dependency-free regex</b>, not an LLM. It returns
+   <code>NOW | CRON | PUSH | POLL</code>, checked POLL&rarr;PUSH&rarr;CRON&rarr;NOW. It exists to make the NOW
+   fast-path free, to route <code>/stream</code>, and to be the oracle for dry-runs &mdash; it is <b>not</b>
+   the real NL&rarr;intent decision.</p>
+<pre><span class="c"># classify.py — the signals (regex, illustrative)</span>
+POLL  ← <span class="s">"every N minutes … tell me if / ping me on / watch"</span>   <span class="c"># recurring + change-report</span>
+PUSH  ← <span class="s">"when a … arrives / opens / is filed / reacts"</span>       <span class="c"># event-driven</span>
+CRON  ← <span class="s">"every day at 8am / weekday / hourly"</span>               <span class="c"># fixed clock</span>
+NOW   ← everything else                                  <span class="c"># a plain question</span></pre>
+<div class="note acc"><b>The real classifier is the LLM react-agent (rung 4).</b> When the heuristic says a
+   message is <em>not</em> NOW, the concierge hands it to its own tool-calling LLM, which decides the mode
+   by <em>which tool it calls</em> (<code>find_or_create_flow(kind=…)</code>) rather than by keyword.
+   The heuristic is the fast gate; the LLM is the judge.</div>
+
+<h2 id="tools">The concierge's LLM tools</h2>
+<p>Rung 4 is a <code>create_react_agent</code> over exactly these tools. It either answers immediately or
+   arms one flow, then explains what it did.</p>
+<div class="wrap"><table>
+  <tr><th>Tool</th><th>Signature</th><th>Does</th></tr>
+  <tr><td class="k">list_capabilities</td><td><code>() &rarr; str</code></td><td>reports the one agent (<code>cuga</code>) and its reach &mdash; grounding for the LLM</td></tr>
+  <tr><td class="k">answer_now</td><td><code>(agent, task) &rarr; str</code></td><td>forces <code>agent="cuga"</code> and runs it once &mdash; the immediate-answer path (same agent as the NOW fast-path)</td></tr>
+  <tr><td class="k">find_or_create_flow</td><td><code>(agent, kind, prompt, every_minutes?, cron?, source?, event?, deliver_to?, repo?, label?, folder?, emoji?, pattern?, watch_channel?) &rarr; str</code></td><td>arms a standing flow. <code>kind &isin; {cron, poll, push}</code>. De-dups on a <code>dedup_key</code> so re-asking reuses the flow.</td></tr>
+</table></div>
+<p class="dim">Both <code>answer_now</code> and the NOW fast-path call the identical <code>runtime.run("cuga", …)</code>
+   &mdash; "same agent, either way." <code>find_or_create_flow</code> is only offered when a subscription
+   store is present.</p>
+
+<h2 id="arm">Arming a native cron / poll (no AP)</h2>
+<p>When <code>find_or_create_flow(kind="cron"|"poll", …)</code> runs and the native scheduler is enabled
+   (<code>EVENTS_SCHEDULER != "ap"</code> &mdash; the default), it writes a <b>native subscription</b> and
+   returns. There is no Activepieces call.</p>
+<div class="seq">
+  <div class="hd"><b>find_or_create_flow(kind, prompt, …)</b> <span class="arrow">·</span> concierge.py</div>
+  <div class="step"><div class="num">1</div><div><div class="flow"><b>strip the cadence</b></div>
+    <div class="api">task = await _single_shot_task(prompt)   # "watch bitcoin every 2 min" → "Check the price of bitcoin now"</div>
+    <div class="desc">The schedule owns recurrence, so the stored prompt is a <b>single run</b>. LLM-first, regex fallback (&sect;cadence).</div></div></div>
+  <div class="step"><div class="num">2</div><div><div class="flow"><b>frame it as one run</b></div>
+    <div class="api">run_prompt = "This is ONE run of a scheduled task … do NOT loop, sleep, or wait. Do the check ONCE."</div>
+    <div class="desc">Prevents the agent from trying to implement the schedule itself (loop + sleep → execution timeout).</div></div></div>
+  <div class="step"><div class="num">3</div><div><div class="flow"><b>read the bound (if any)</b></div>
+    <div class="api">ttl = classify.ttl_of(raw_utterance) → expires_at = now + ttl</div>
+    <div class="desc">"&hellip; for one hour" is read from the <b>raw</b> utterance (the rewrite drops it). See &sect;bounded.</div></div></div>
+  <div class="step"><div class="num">4</div><div><div class="flow"><b>write the native subscription</b></div>
+    <div class="api">store.upsert(Subscription(backend="native", source_type="time", source_connector="cron"|"interval", …))</div>
+    <div class="desc">Sets <code>interval_seconds</code> or <code>cron_expr</code>, <code>next_fire</code>, <code>expires_at</code>, <code>deliver_to=[sink]</code>, <code>thread_id</code>, <code>prompt=run_prompt</code>. No engine/AP call.</div></div></div>
+  <div class="step"><div class="num">5</div><div><div class="flow"><b>POLL only — seed the delta state</b></div>
+    <div class="api">spec = poll_state.extract_spec(utterance) → store.set_watch_state(spec_to_state(sub.id, spec))</div>
+    <div class="desc">Classifies the watch into threshold / identity / fuzzy so later ticks only report on real change. See <a href="scheduler-and-polling.html#poll">Scheduler &sect;poll</a>.</div></div></div>
+</div>
+<pre><span class="c"># the native Subscription that gets written (illustrative fields)</span>
+Subscription(
+  <span class="k">mode</span>=<span class="s">"POLL"</span>, <span class="k">backend</span>=<span class="s">"native"</span>, <span class="k">target_agent</span>=<span class="s">"cuga"</span>,
+  <span class="k">source_type</span>=<span class="s">"time"</span>, <span class="k">source_connector</span>=<span class="s">"interval"</span>,
+  <span class="k">interval_seconds</span>=<span class="v">120</span>, <span class="k">cron_expr</span>=<span class="s">""</span>, <span class="k">next_fire</span>=<span class="v">&lt;now+120&gt;</span>, <span class="k">expires_at</span>=<span class="v">0</span>,
+  <span class="k">prompt</span>=<span class="s">"[one run] Check the price of bitcoin now and report the move."</span>,
+  <span class="k">deliver_to</span>=[<span class="s">"telegram"</span>], <span class="k">thread_id</span>=<span class="s">"gw:telegram:111222333"</span>, <span class="k">dedup_key</span>=<span class="s">"…"</span> )
+<span class="c">// reply → "ARMED poll for cuga → telegram (native · no AP). Runs every 2 min. Watch id cuga-8ab9cf."</span></pre>
+
+<h2 id="cadence">Cadence-stripping — <code>_single_shot_task</code></h2>
+<p>A recurring utterance is rewritten to a one-run task so the stored prompt never re-encodes the schedule.
+   <b>LLM-first, regex fallback:</b></p>
+<pre><span class="c"># concierge.py — _single_shot_task(prompt)</span>
+if <span class="k">EVENTS_CADENCE_LLM</span> != <span class="s">"1"</span>:  return _strip_cadence(prompt)          <span class="c"># regex only</span>
+out = &lt;LLM rewrite via _REWRITE_SYSTEM, timeout EVENTS_CADENCE_LLM_TIMEOUT=20&gt;
+if out leaks cadence words (_CADENCE_LEAK) or balloons (&gt;4&times;):  out = _strip_cadence(prompt)
+return out
+<span class="c"># _strip_cadence: removes "every N &lt;unit&gt;", "hourly/daily/…", "at 9am"; rewrites "keep watching"→"check"</span></pre>
+<p class="dim">Env: <code>EVENTS_CADENCE_LLM</code> (default 1) &middot; <code>EVENTS_CADENCE_LLM_TIMEOUT</code> (20).
+   The rewrite is one call per <b>flow</b>, never per tick.</p>
+
+<h2 id="bounded">Bounded runs &mdash; "&hellip; for one hour"</h2>
+<p>Add a duration and the flow ends itself. The TTL is parsed from the <b>raw</b> utterance
+   (<code>classify.ttl_of</code>), stored as <code>expires_at</code> on the subscription, and enforced
+   lazily at <code>/invoke</code>:</p>
+<pre><span class="c"># app.py — at the top of /invoke</span>
+_exp = body.get(<span class="s">"expires_at"</span>)
+if _exp and time.time() &gt; float(_exp):
+    &lt;delete the subscription&gt;
+    return { <span class="k">"ok"</span>: <span class="v">true</span>, <span class="k">"expired"</span>: <span class="v">true</span>,
+             <span class="k">"answer"</span>: <span class="s">"This bounded flow reached its end time and has been removed."</span> }
+<span class="c"># the native scheduler retires it too: a due row past expires_at is deleted before firing.</span></pre>
+<p class="dim">Lazy on purpose: it works even if the server was down at the deadline, and a flow never
+   overshoots by more than one tick.</p>
+
+<h2 id="dryrun">Dry-run &mdash; see what it WOULD arm</h2>
+<p>Preview the decision with zero side effects &mdash; the deterministic plan, no LLM commitment, nothing
+   written.</p>
+<pre><span class="k">GET</span> /api/events/dry-run?text=<span class="s">watch%20bitcoin%20every%202%20minutes%20and%20ping%20me</span>
+<span class="v">200</span> {
+  <span class="k">"mode"</span>: <span class="s">"POLL"</span>, <span class="k">"backend"</span>: <span class="s">"native"</span>, <span class="k">"cadence"</span>: <span class="s">"every 2 minutes"</span>,
+  <span class="k">"next_fire_preview"</span>: <span class="s">"…"</span>, <span class="k">"source"</span>: <span class="s">"time"</span>, <span class="k">"event"</span>: <span class="s">"tick"</span>,
+  <span class="k">"would"</span>: <span class="s">"arm a native POLL every 2 min, delivering to …"</span>, <span class="k">"side_effects"</span>: <span class="s">"none (dry run)"</span> }
+<span class="c">// or: POST /api/concierge?dry_run=1  { "text": "…" }  → { ok, dry_run:true, decision:{mode,…} }</span></pre>
+
+<h2 id="watchers">Direct channel watchers (push, no AP)</h2>
+<p>A "when someone reacts <code>:bug:</code> in #incidents&hellip;" is armed as a <b>direct watcher</b> &mdash;
+   no AP, because the reaction already arrives over the channel's own stream (Slack Events API / Discord
+   Gateway). At <code>/invoke</code>, an armed watcher <em>intercepts</em> a matching channel event and
+   reassigns the target from the router to the specialist:</p>
+<div class="seq">
+  <div class="hd"><b>Direct watcher</b> <span class="arrow">·</span> arm + match</div>
+  <div class="step"><div class="num">1</div><div><div class="flow"><b>arm</b></div>
+    <div class="api">"when someone reacts :bug: in #incidents, triage the message" → a push subscription (source=slack, event=new_reaction, emoji=bug)</div>
+    <div class="desc">Stored in the same subscription store; no AP flow.</div></div></div>
+  <div class="step"><div class="num">2</div><div><div class="flow"><b>event arrives</b></div>
+    <div class="api">Slack Events API → /api/events/slack/events → the reaction is a non-message event → direct_events.match</div>
+    <div class="desc">The channel's own inbound stream carries the reaction (see <a href="channels.html#slack">Channels &sect;Slack</a>).</div></div></div>
+  <div class="step"><div class="num">3</div><div><div class="flow"><b>dispatch to the specialist</b></div>
+    <div class="api">match → /invoke with agent = watcher.target_agent (e.g. incident_triage), deliver back to the thread</div>
+    <div class="desc">The router is bypassed; the named agent runs on the event payload.</div></div></div>
+</div>
+
+<h2 id="worked">Worked example, end to end</h2>
+<p>"<b>/watch bitcoin every 2 minutes and ping me on any move</b>", said in Telegram:</p>
+<pre><span class="v">1.</span> Telegram getUpdates → cuga_door.ask() → POST cuga-core/run
+<span class="v">1b.</span> CUGA's door: slash verb → POST events/api/concierge (a plain question would stop here and answer)
+<span class="v">2.</span> concierge.run → slash-parsed → POLL (not NOW) → LLM react-agent
+<span class="v">3.</span> LLM calls find_or_create_flow(kind="poll", prompt=…, every_minutes=2, deliver_to="telegram")
+<span class="v">4.</span> _single_shot_task → "Check the price of bitcoin now"; write native Subscription(interval=120s);
+       poll_state.extract_spec → watch_state(kind="threshold" or "fuzzy")
+<span class="v">5.</span> reply: "ARMED poll … Runs every 2 min. Watch id cuga-8ab9cf." → back to Telegram
+<span class="v">6.</span> &lt;every 120s&gt; native scheduler → POST /invoke (source=time, kind=tick, deliver=true, subscription_id)
+<span class="v">7.</span> /invoke augments the prompt with the [WATCH] instruction; runs cuga; parses &lt;&lt;SIGNAL {…}&gt;&gt;
+<span class="v">8.</span> poll_state.decide → changed? deliver the answer to Telegram : suppress (log "nochange")</pre>
+<p class="dim">Steps 6&ndash;8 are the <a href="scheduler-and-polling.html">Scheduler &amp; Polling</a> page.</p>
+
+<p class="src">Sources: <code>events/concierge.py</code> (<code>run</code>, <code>_slash_parse</code>,
+   <code>_pre_route</code>, <code>make_concierge_tools</code>, <code>find_or_create_flow</code>,
+   <code>_single_shot_task</code>, <code>_strip_cadence</code>) · <code>events/classify.py</code>
+   (<code>classify</code>, <code>ttl_of</code>) · <code>events/flowspec.py</code> ·
+   <code>events/poll_state.py</code> (<code>extract_spec</code>, <code>spec_to_state</code>) ·
+   <code>events/native_scheduler.py</code>. Env flags: <code>EVENTS_NOW_FASTPATH</code>,
+   <code>EVENTS_CADENCE_LLM</code>(<code>_TIMEOUT</code>), <code>EVENTS_POLL_LLM</code>(<code>_TIMEOUT</code>),
+   <code>EVENTS_SCHEDULER</code>. Verified 2026-07-31.</p>
+
+</body></html>

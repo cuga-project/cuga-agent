@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- CUGA events runbook — API REFERENCE. Hand-authored. Sources: events/app.py (register_events_routes,
+     ~41 route decorators), server/main.py (/stream). Verified 2026-07-31. -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Reference — CUGA events runbook</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+
+<div class="kicker">CUGA · events · API</div>
+<h1>API reference</h1>
+<p class="lede">Every route the events layer exposes &mdash; method, path, purpose, and auth. The layer mounts
+   onto the main CUGA server via <code>register_events_routes(app, …)</code>; <code>/stream</code> is the
+   only event-relevant route defined in <code>main.py</code>. AP-only routes are marked and out of scope
+   here.</p>
+
+<div class="nav">
+  <a href="index.html">Overview</a>
+  <a href="channels.html">Channels</a>
+  <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>
+  <a href="nl-to-flow.html">NL&rarr;Flow</a>
+  <a href="scheduler-and-polling.html">Scheduler &amp; Polling</a>
+  <a href="apis.html" class="here">API Reference</a>
+  <a href="agents.html">Agents</a>
+  <a href="examples.html">Examples</a>
+</div>
+
+<h2 id="auth">Auth legend</h2>
+<div class="wrap"><table>
+  <tr><th>Marker</th><th>Meaning</th></tr>
+  <tr><td class="k"><span class="pill sl">gateway</span></td><td><b>X-Gateway-Token</b> header must equal <code>GATEWAY_TOKEN</code> (empty token &rarr; seam open; startup warns). The "run an agent" seams.</td></tr>
+  <tr><td class="k"><span class="pill web">principal</span></td><td><b>header-principal</b> &mdash; <code>X-Tenant-Id</code>/<code>X-User-Id</code> (default <code>local</code>) &rarr; scope. This is isolation, <em>not</em> authentication. <code>+admin</code>/<code>+builder</code> add a role check.</td></tr>
+  <tr><td class="k"><span class="pill sl">slack-sig</span></td><td>Slack HMAC over <code>v0:ts:body</code> vs <code>SLACK_SIGNING_SECRET</code>.</td></tr>
+  <tr><td class="k"><span class="pill scd">?key</span></td><td><code>EVENTS_WEBHOOK_KEY</code> query/HMAC (unset &rarr; any request accepted).</td></tr>
+  <tr><td class="k"><span class="pill ok">none</span></td><td>open read endpoint.</td></tr>
+  <tr><td class="k"><span class="pill ap">AP</span></td><td>needs Activepieces &mdash; <b>out of scope</b> in this runbook (listed for completeness).</td></tr>
+</table></div>
+
+<h2 id="seam">1 · The universal seam</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">POST</td><td><code>/invoke</code></td><td>Run an agent (or the <code>concierge</code> router) on an <a href="invoke-and-concierge.html#envelope">Envelope</a>. Owns delivery, run-logging, the poll-delta gate, and bounded-run expiry. Called by channel adapters, the scheduler, webhooks. Response: <code>{ok, agent, answer, trace_id, meta{agent,backend,mcp,tools,ms}}</code> (+ <code>poll{changed,reason}</code> for a poll tick).</td><td><span class="pill sl">gateway</span></td></tr>
+</table></div>
+
+<h2 id="chat">2 · Chat surfaces</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">POST</td><td><code>/api/concierge</code></td><td>Studio/programmatic NL surface (synchronous). <code>?dry_run=1</code> = deterministic plan, no side effects. Body <code>{text, thread_id?, agent?}</code> &rarr; <code>{ok, reply, scope, trace_id}</code>.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET/POST</td><td><code>/api/events/dry-run</code></td><td>Show what an utterance WOULD arm, zero side effects. <code>?text=</code> &rarr; <code>{mode, backend, cadence, next_fire_preview, source, event, would, side_effects}</code>.</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/stream</code></td><td>Human web-chat door (SSE). Plain question &rarr; streams the agent; slash/standing-intent &rarr; concierge arm. <code>main.py</code>.</td><td>session</td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/slack/events</code></td><td>Slack Events API receiver: <code>url_verification</code> handshake, signature verify, message &rarr; concierge &rarr; <code>chat.postMessage</code>; other events &rarr; direct watchers.</td><td><span class="pill sl">slack-sig</span></td></tr>
+</table></div>
+
+<h2 id="subs">3 · Subscriptions &amp; runs</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/subscriptions</code></td><td>List the caller's watchers + a by-type summary (<code>native_no_ap</code>, <code>ap_flows</code>, active/paused). Filters <code>?mode ?backend ?status</code>. POLL rows carry a <code>watch{}</code> delta block.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/subscriptions/{id}/pause</code></td><td>Pause a watcher.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/subscriptions/{id}/resume</code></td><td>Resume a watcher.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">DELETE</td><td><code>/api/events/subscriptions/{id}</code></td><td>Delete a watcher (+ its AP flow if any).</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/subscriptions/{id}/flow</code></td><td>Rich read: the CUGA sub model + the live AP flow JSON (<code>ap_flow: null</code> on the native path).</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/subscriptions/{id}/run</code></td><td><b>Debug</b>: fire an armed flow now (real side effects). Native &rarr; POST /invoke. Off when <code>EVENTS_DEBUG_RUN=0</code>.</td><td><span class="pill sl">gateway</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/runs</code></td><td>Unified execution log (native/NOW + AP runs), tagged by trigger. Filters <code>?mode ?backend ?agent ?status ?kind ?limit</code>.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/runs/{id}</code></td><td>One run's detail + agent output.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/dashboard</code></td><td>Self-contained live control-plane HTML (reads only <code>/api/events/*</code>).</td><td><span class="pill ok">none</span></td></tr>
+</table></div>
+<p class="dim"><b>Subscription row:</b> <code>id, mode, target_agent, tenant(scope), backend, source_type,
+   source_connector, ap_flow_id, deliver_to[], thread_id, prompt, status, created_at, dedup_key, flow_name,
+   event, config{}, interval_seconds, cron_expr, next_fire, last_fire, fire_count, expires_at</code>
+   (+ <code>watch{}</code> on POLL). The primary key is <code>id</code>.</p>
+
+<h2 id="status">4 · Status / capability / catalog</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/status</code></td><td>What the layer can do now (shape below). Reports <code>ap_configured</code>, <code>worker_backend</code>, and the <code>capability</code> lines.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/channels</code></td><td>Channel connectors + connection status.</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/integrations</code></td><td>Integrations + connection status (per-row backend; Box-direct overrides to <code>direct</code>).</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/agents</code></td><td>The worker fleet specs + per-agent examples + <code>can_use</code>.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">POST / PUT</td><td><code>/api/events/agents</code> · <code>/{name}</code></td><td>Create/update a worker agent (idempotent by name).</td><td><span class="pill web">principal</span> +builder</td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/mcp-servers</code></td><td>Attachable tool servers + registry/explorer URLs.</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/triggers</code></td><td>The trigger registry: every <code>(app,event)</code> with slots/backend. Response <code>{apps[], total, kinds[]}</code>.</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/examples</code></td><td>The example-utterance catalog.</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/docs/{page}</code></td><td>Serve API-reference HTML (<code>api|spec|examples|slides|nlflow</code>).</td><td><span class="pill ok">none</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/setup-guides</code></td><td>Per-connector connect guides + live status.</td><td><span class="pill web">principal</span></td></tr>
+</table></div>
+<pre><span class="c">// GET /api/events/status — response shape</span>
+{ <span class="k">"ok"</span>: <span class="v">true</span>, <span class="k">"enabled"</span>: <span class="v">true</span>, <span class="k">"scope"</span>: <span class="s">"&lt;tenant/instance/user&gt;"</span>,
+  <span class="k">"concierge_backend"</span>: <span class="s">"react"</span>, <span class="k">"worker_backend"</span>: <span class="s">"cuga"</span>, <span class="k">"backends"</span>: [<span class="s">"react"</span>,<span class="s">"cuga"</span>],
+  <span class="k">"ap_configured"</span>: <span class="v">false</span>,                       <span class="c">// engine is None → no-AP</span>
+  <span class="k">"features"</span>: { <span class="k">"now"</span>: <span class="v">true</span>, <span class="k">"cron"</span>: …, <span class="k">"poll"</span>: …, <span class="k">"push"</span>: …, <span class="k">"channels_inbound"</span>: … },
+  <span class="k">"capability"</span>: [ <span class="s">"✓ web chat · webhooks · direct watchers …"</span>, <span class="s">"✓ native scheduler ON …"</span>, … ] }</pre>
+
+<h2 id="hooks">5 · Inbound webhooks &amp; direct pollers</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/hook/{name}</code></td><td>Generic inbound webhook &rarr; run an agent on the JSON body, optional channel delivery. <b>Pinned</b> <code>?agent=</code> (default <code>incident_triage</code>) vs <b>routed</b> <code>?route=1</code> (concierge picks). Response <code>{ok, routed, agent, answer, delivered, trace_id}</code>.</td><td><span class="pill scd">?key</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/box/poll</code></td><td>Direct Box poller (<code>EVENTS_BOX_BACKEND=direct</code>): poll a folder for new files/folders/comments &rarr; fire an agent per item. No AP.</td><td><span class="pill sl">gateway</span></td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/synth-fire</code></td><td>Fire any registry trigger with a synthetic, piece-exact payload at the seam &mdash; no AP flow/connection (tests AP-type triggers without AP). Off when <code>EVENTS_DEBUG_RUN=0</code>.</td><td><span class="pill sl">gateway</span></td></tr>
+</table></div>
+
+<h2 id="admin">6 · Admin &amp; identity</h2>
+<div class="wrap"><table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr>
+  <tr><td class="k">GET/POST</td><td><code>/api/events/admin/users</code></td><td>List / add tenant users.</td><td><span class="pill web">principal</span> +admin</td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/admin/channels/{channel}/arm</code></td><td>Arm a channel inbound flow. Direct channels: <b>nothing to arm</b> (the bot connects on boot) &mdash; returns the events URL / a note. Others build an AP flow.</td><td><span class="pill web">principal</span> +admin</td></tr>
+  <tr><td class="k">GET/POST</td><td><code>/api/events/admin/oauth-apps</code></td><td>Which OAuth providers have client id/secret set / set them (no secrets returned).</td><td><span class="pill web">principal</span> +admin</td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/admin/credential</code></td><td>Set one whitelisted connector cred (.env var) live.</td><td><span class="pill web">principal</span> +admin</td></tr>
+  <tr><td class="k">POST</td><td><code>/api/events/link/{channel}</code></td><td>Issue a link token binding a channel-native id &rarr; this profile.</td><td><span class="pill web">principal</span></td></tr>
+  <tr><td class="k">GET</td><td><code>/api/events/me</code></td><td>Caller profile: user_id, email, roles, linked channels, connections.</td><td><span class="pill web">principal</span></td></tr>
+</table></div>
+
+<h2 id="oauth">7 · OAuth connect <span class="pill ap">AP · out of scope</span></h2>
+<p class="dim">Listed for completeness &mdash; these create/read Activepieces connections and are not part of the
+   no-AP path: <code>GET /api/events/connect/{app}</code>, <code>GET /api/events/connect/{app}/callback</code>,
+   <code>POST /api/events/connect/{app}/token</code>, <code>GET /api/events/connections</code>.</p>
+
+<div class="note ok"><b>Which routes are no-AP?</b> The seam, all chat surfaces, subscriptions/runs, every read
+   endpoint, <code>/api/events/hook</code>, <code>/api/events/box/poll</code>,
+   <code>/api/events/synth-fire</code>, and direct-channel <code>arm</code> all work with zero Activepieces.
+   AP is required only for OAuth <code>connect/*</code>, <code>/connections</code>, AP-backed <code>arm</code>,
+   and the AP portions of <code>runs</code> / <code>{id}/flow</code> / <code>{id}/run</code>.</div>
+
+<p class="src">Sources: <code>events/app.py</code> (<code>register_events_routes</code> &mdash; ~41 route
+   decorators; the seam is <code>/invoke</code>) · <code>server/main.py</code> (<code>/stream</code>).
+   The four gateway-token seams: <code>/invoke</code>, <code>subscriptions/{id}/run</code>,
+   <code>box/poll</code>, <code>synth-fire</code>. Verified 2026-07-31.</p>
+
+</body></html>

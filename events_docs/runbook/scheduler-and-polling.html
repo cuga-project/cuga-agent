@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<!-- CUGA events runbook — scheduler & polling. Hand-authored, no-AP scope.
+     Sources: events/native_scheduler.py (run_scheduler, process_due, next_cron, next_fire_after,
+     _invoke_body), events/subscriptions.py (schema, due, mark_fired, watch_state), events/poll_state.py
+     (decide, parse_signal, augment_prompt, extract_spec), events/app.py (/invoke poll gate). -->
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduler &amp; Polling — CUGA events runbook</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+
+<div class="kicker">CUGA · events · scheduling</div>
+<h1>The scheduler &amp; polling infra</h1>
+<p class="lede">Recurring triggers with no external scheduler: an in-process loop over a SQLite
+   <code>next_fire</code> column, a built-in cron parser, and a <b>stateful poll-delta</b> gate that only
+   speaks up when something actually changed.</p>
+
+<div class="nav">
+  <a href="index.html">Overview</a>
+  <a href="channels.html">Channels</a>
+  <a href="invoke-and-concierge.html">/invoke &amp; Concierge</a>
+  <a href="nl-to-flow.html">NL&rarr;Flow</a>
+  <a href="scheduler-and-polling.html" class="here">Scheduler &amp; Polling</a>
+  <a href="apis.html">API Reference</a>
+  <a href="agents.html">Agents</a>
+  <a href="examples.html">Examples</a>
+</div>
+
+<h2 id="loop">The loop &mdash; one in-process task</h2>
+<p>When <code>EVENTS_SCHEDULER != "ap"</code> (the default <code>native</code>), a coroutine is launched at
+   boot into <code>app.state.events_background</code>. It is a plain asyncio loop &mdash; no external cron,
+   no Celery, no AP. It wakes every <b>10&thinsp;s</b>, fires everything due, and sleeps.</p>
+<pre><span class="c"># native_scheduler.py — run_scheduler(store, *, port, token, tick=10.0)</span>
+while not stopped:
+    await process_due(store, time.time(), _fire)     <span class="c"># fire everything due right now</span>
+    sleep(tick)                                       <span class="c"># 10s, in 1s slices so stop is prompt</span></pre>
+<div class="note"><b>This loop is the launcher's job.</b> It only runs if the boot code actually launches
+   <code>app.state.events_background</code> &mdash; the same background list that starts the Telegram
+   long-poll and Discord Gateway. If those channels are silent, the scheduler is too: check the boot log
+   for <code>events: launched N background task(s)</code>.</div>
+
+<h2 id="processdue">process_due &mdash; fire, reschedule, retire</h2>
+<div class="seq">
+  <div class="hd"><b>process_due(store, now, fire_fn)</b> <span class="arrow">·</span> native_scheduler.py</div>
+  <div class="step"><div class="num">1</div><div><div class="flow"><b>select due</b></div>
+    <div class="api">store.due(now) → SELECT * WHERE backend='native' AND status='active' AND next_fire &gt; 0 AND next_fire &lt;= now ORDER BY next_fire</div>
+    <div class="desc">AP-backed rows are fired by Activepieces, never this loop &mdash; the query filters them out.</div></div></div>
+  <div class="step"><div class="num">2</div><div><div class="flow"><b>expiry check</b></div>
+    <div class="api">if sub.expires_at and now &gt; sub.expires_at → store.delete(sub.id); skip</div>
+    <div class="desc">A bounded flow past its deadline is retired <b>before</b> running.</div></div></div>
+  <div class="step"><div class="num">3</div><div><div class="flow"><b>fire</b></div>
+    <div class="api">await fire_fn(sub)   # POSTs a tick envelope to /invoke (below); bare-except so one bad fire can't stall the loop</div>
+    <div class="desc">Exactly once per due row &mdash; a row an hour overdue fires <b>once</b>, not 30&times; (lazy catch-up).</div></div></div>
+  <div class="step"><div class="num">4</div><div><div class="flow"><b>reschedule or retire</b></div>
+    <div class="api">nxt = next_fire_after(sub, now); if not nxt or (expires_at and nxt &gt; expires_at) → delete; else mark_fired(next_fire=nxt, fire_count+1)</div>
+    <div class="desc"><code>next_fire_after</code>: interval &rarr; <code>now + interval_seconds</code> (lazy); cron &rarr; <code>next_cron(expr, now)</code>; neither &rarr; 0 (stop).</div></div></div>
+</div>
+
+<h3 id="cron">The cron parser</h3>
+<p><code>next_cron(expr, after)</code> returns the next epoch strictly after <code>after</code> matching a
+   <b>5-field</b> expression <code>minute hour day-of-month month day-of-week</code>, scanning minute-by-minute
+   up to ~366 days. Each field supports <code>*</code>, <code>a</code>, <code>a-b</code>, <code>a,b,c</code>,
+   <code>*/n</code>, <code>a-b/n</code>; day-of-week is <code>0=Sun&hellip;6=Sat</code> with <code>7==0</code>.</p>
+
+<h2 id="fire">How a tick reaches the agent</h2>
+<p>The <code>fire_fn</code> POSTs a <b>time-source envelope</b> to the same <code>/invoke</code> seam every
+   other trigger uses &mdash; with <code>deliver:true</code>, so CUGA delivers the answer itself (no AP
+   send step).</p>
+<pre><span class="c"># native_scheduler.py — _invoke_body(sub) → POST http://127.0.0.1:&lt;port&gt;/invoke  (X-Gateway-Token)</span>
+{ <span class="k">"text"</span>: sub.prompt,                         <span class="c"># the one-run task (cadence already stripped)</span>
+  <span class="k">"agent"</span>: sub.target_agent,                 <span class="c"># "cuga"</span>
+  <span class="k">"deliver"</span>: <span class="v">true</span>,                          <span class="c"># CUGA-owned delivery over the origin transport</span>
+  <span class="k">"source"</span>: { <span class="k">"type"</span>: <span class="s">"time"</span>, <span class="k">"name"</span>: <span class="s">"poll"</span>, <span class="k">"thread_id"</span>: <span class="s">"gw:telegram:111222333"</span> },
+  <span class="k">"event"</span>: { <span class="k">"kind"</span>: <span class="s">"tick"</span>, <span class="k">"payload"</span>: {} },
+  <span class="k">"subscription_id"</span>: <span class="s">"cuga-8ab9cf"</span>, <span class="k">"expires_at"</span>: <span class="v">null</span> }
+<span class="c">// /invoke decodes gw:&lt;channel&gt;:&lt;native&gt; from thread_id and delivers via delivery.send_direct.</span>
+<span class="c">// A non-message fire is labelled "⚡ flow fired · cron tick · &lt;flow_name&gt;" and logged to the Runs table.</span></pre>
+
+<h2 id="store">State &mdash; the <code>subscription</code> table</h2>
+<p>All of this lives in <b>one database</b> &mdash; PostgreSQL in every real deployment and in local dev (<code>make pg</code>); SQLite only for the hermetic offline suite. The native scheduler reads and writes these
+   columns; the AP columns (<code>ap_flow_id</code>) stay empty on the no-AP path.</p>
+<div class="wrap"><table>
+  <tr><th>Column</th><th>Meaning</th></tr>
+  <tr><td class="k">id</td><td>subscription id (the "watch id" in the ARMED reply)</td></tr>
+  <tr><td class="k">mode</td><td><code>NOW | CRON | PUSH | POLL</code></td></tr>
+  <tr><td class="k">target_agent</td><td>who runs on fire (<code>cuga</code>, or a specialist for a watcher)</td></tr>
+  <tr><td class="k">backend</td><td><code>native</code> (this loop) · <code>react</code>/<code>cuga</code> · AP flows excluded from <code>due()</code></td></tr>
+  <tr><td class="k">source_type / source_connector</td><td><code>time</code> / <code>cron</code>|<code>interval</code></td></tr>
+  <tr><td class="k">interval_seconds</td><td>&gt;0 &rarr; fixed-interval poll; next fire = <code>now + interval</code></td></tr>
+  <tr><td class="k">cron_expr</td><td>5-field cron (named <code>cron_expr</code>, not <code>cron</code>, to avoid clashing with the connector)</td></tr>
+  <tr><td class="k">next_fire</td><td>epoch of the next due tick (partial index <code>WHERE next_fire &gt; 0</code>)</td></tr>
+  <tr><td class="k">last_fire / fire_count</td><td>last tick epoch · number of fires (for the Runs view)</td></tr>
+  <tr><td class="k">expires_at</td><td>bounded-run deadline (0 = unbounded); enforced here and at <code>/invoke</code></td></tr>
+  <tr><td class="k">prompt</td><td>the one-run task the agent receives on each tick</td></tr>
+  <tr><td class="k">deliver_to / thread_id</td><td>the sink channel · the origin thread (delivery target)</td></tr>
+  <tr><td class="k">tenant / status / dedup_key</td><td>scope · <code>active|paused|draft</code> · de-dup key (re-arming reuses the row)</td></tr>
+</table></div>
+
+<h2 id="poll">Stateful poll &mdash; report only on change</h2>
+<p>A POLL is a cron that <b>decides whether to speak</b>. The gate lives entirely inside <code>/invoke</code>
+   (there is <b>no</b> <code>/api/events/poll</code> route) and leans on a per-subscription
+   <code>watch_state</code> row. Four tiers:</p>
+<div class="wrap"><table>
+  <tr><th>Tier</th><th>watch_state.kind</th><th>Fires when</th><th>Stores</th></tr>
+  <tr><td class="k">0</td><td><em>(no row)</em> <span class="pill scd">always</span></td><td>every tick (a plain cron report)</td><td>nothing</td></tr>
+  <tr><td class="k">1</td><td><code>threshold</code></td><td><code>abs(new&minus;baseline)/abs(baseline) &ge; threshold</code> (e.g. a 5% move)</td><td>a <b>baseline</b> scalar; first tick seeds it, never alerts</td></tr>
+  <tr><td class="k">1</td><td><code>identity</code></td><td>any <b>new key</b> vs a seen-set (new items, dedup by key)</td><td><b>keys only</b>, capped at 5000 &mdash; scales to millions of items</td></tr>
+  <tr><td class="k">2</td><td><code>fuzzy</code></td><td>the agent itself judges "materially changed"</td><td>a compact <b>state string</b> fed back next tick</td></tr>
+</table></div>
+<h3 id="signal">The <code>&lt;&lt;SIGNAL&gt;&gt;</code> protocol</h3>
+<p>On each POLL tick, <code>/invoke</code> appends a <code>[WATCH]</code> instruction (<code>augment_prompt</code>)
+   telling the agent to end its answer with one machine-readable line. The gate parses it, decides, and
+   strips it from the human reply.</p>
+<pre><span class="c"># the agent's final line, by tier</span>
+threshold  →  <span class="s">"&lt;&lt;SIGNAL {\"value\": 63799}&gt;&gt;"</span>
+identity   →  <span class="s">"&lt;&lt;SIGNAL {\"keys\": [\"paper-2401.001\", \"paper-2401.002\"]}&gt;&gt;"</span>
+fuzzy      →  <span class="s">"&lt;&lt;SIGNAL {\"changed\": true, \"state\": \"rain now forecast for 3pm\"}&gt;&gt;"</span>
+
+<span class="c"># inside /invoke — poll_state, pure decision, no I/O</span>
+_clean, _signal = poll_state.parse_signal(answer)     <span class="c"># split human text ⟂ signal</span>
+_dec = poll_state.decide(watch_state, _signal, now)   <span class="c"># → Decision(changed, state, reason)</span>
+store.set_watch_state(_dec.state)                      <span class="c"># persist baseline / seen-keys / fuzzy-state</span>
+if env.deliver and _dec.changed:  deliver(_clean)     <span class="c"># else: suppress, log status="nochange"</span></pre>
+<p class="dim">The delta spec is seeded at <b>arm</b> time by <code>poll_state.extract_spec(utterance)</code>
+   (LLM-first, <code>EVENTS_POLL_LLM=1</code>, regex fallback) &rarr; <code>spec_to_state</code>. The
+   <code>watch_state</code> row: <code>subscription_id, kind, seen_keys, baseline, reset_policy, value_path,
+   threshold, updated_at</code>.</p>
+
+<h2 id="bounded">Bounded runs</h2>
+<p>"&hellip; for one hour" sets <code>expires_at</code> on the subscription. It is enforced in <b>two</b>
+   places, both lazily: <code>process_due</code> deletes a due row already past the deadline before firing,
+   and <code>/invoke</code> deletes the subscription and returns <code>{expired:true}</code> instead of
+   running the agent. See <a href="nl-to-flow.html#bounded">NL&rarr;Flow &sect;bounded</a>.</p>
+
+<h2 id="scaling">Scaling notes (honest)</h2>
+<ul>
+  <li><b>Single owner.</b> The loop is one asyncio task per process. Run <b>one</b> instance
+      (<code>min = max = 1</code>) &mdash; N replicas each fire every due row &rarr; duplicate deliveries.</li>
+  <li><b>Ephemeral state.</b> <code>events.db</code> is SQLite on local disk. On a stateless deploy it resets
+      on restart (armed flows + watch-state lost). Durable multi-replica scheduling means externalizing state
+      (Postgres) and electing a single scheduler &mdash; future work.</li>
+  <li><b>Fingerprint, not content.</b> The <code>identity</code> tier stores <em>keys</em>, not items &mdash;
+      "did anything new appear" over a million-file folder is a set membership check, not a diff.</li>
+</ul>
+
+<p class="src">Sources: <code>events/native_scheduler.py</code> (<code>run_scheduler</code>,
+   <code>process_due</code>, <code>next_cron</code>, <code>next_fire_after</code>, <code>_invoke_body</code>) ·
+   <code>events/subscriptions.py</code> (schema, <code>due</code>, <code>mark_fired</code>,
+   <code>watch_state</code>) · <code>events/poll_state.py</code> (<code>decide</code>, <code>parse_signal</code>,
+   <code>augment_prompt</code>, <code>extract_spec</code>) · <code>events/app.py</code> (the <code>/invoke</code>
+   poll gate). Env: <code>EVENTS_SCHEDULER</code>, <code>EVENTS_POLL_LLM</code>(<code>_TIMEOUT</code>). Verified 2026-07-31.</p>
+
+</body></html>
