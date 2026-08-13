@@ -1,4 +1,4 @@
-"""Per-run token/cost/timing receipt for SDK invocations.
+"""Per-run token/timing receipt for SDK invocations.
 
 Enabled via ``advanced_features.run_receipt`` (default off). A fresh
 ``RunMetricsCollector`` is attached per ``CugaAgent.invoke()`` so concurrent
@@ -15,8 +15,6 @@ from langchain_core.outputs import LLMResult
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from cuga.backend.llm.pricing import estimate_cost
-
 
 class ToolTiming(BaseModel):
     name: str
@@ -25,7 +23,13 @@ class ToolTiming(BaseModel):
 
 
 class RunReceipt(BaseModel):
-    """Aggregated cost/latency picture of a single agent run."""
+    """Token and latency picture of a single agent run.
+
+    Reports token counts only, deliberately not cost: CUGA runs against
+    self-hosted and internal deployments whose price we don't know, so any
+    figure here would be wrong or misleading for some users. Multiply
+    ``input_tokens`` / ``output_tokens`` by your own rates instead.
+    """
 
     models: List[str] = Field(default_factory=list)
     input_tokens: int = 0
@@ -33,7 +37,6 @@ class RunReceipt(BaseModel):
     total_tokens: int = 0
     cache_read_tokens: int = 0  # subset of input_tokens served from provider prompt cache
     reasoning_tokens: int = 0  # subset of output_tokens spent on reasoning (when reported)
-    cost_usd: Optional[float] = None  # None when any used model has no known price
     llm_calls: int = 0
     tool_call_count: int = 0
     llm_time_s: float = 0.0
@@ -43,7 +46,6 @@ class RunReceipt(BaseModel):
     tool_timings: List[ToolTiming] = Field(default_factory=list)
 
     def __str__(self) -> str:
-        cost = f"${self.cost_usd:.4f}" if self.cost_usd is not None else "n/a (unknown model)"
         tokens_line = f"tokens: {self.input_tokens:,} in / {self.output_tokens:,} out ({self.total_tokens:,})"
         if self.cache_read_tokens and self.input_tokens:
             tokens_line += f" — {100 * self.cache_read_tokens // self.input_tokens}% cached"
@@ -52,7 +54,6 @@ class RunReceipt(BaseModel):
         lines = [
             f"model: {', '.join(self.models) if self.models else 'unknown'}",
             tokens_line,
-            f"est. cost: {cost}",
             f"llm calls: {self.llm_calls}   tool calls: {self.tool_call_count}",
             f"time: {self.wall_time_s:.1f}s (llm {self.llm_time_s:.1f}s / tools {self.tool_time_s:.1f}s)",
         ]
@@ -180,24 +181,6 @@ def build_run_receipt(
         cache_read_tokens = sum(u.get("cache_read_tokens", 0) for u in collector.usage_by_model.values())
         reasoning_tokens = sum(u.get("reasoning_tokens", 0) for u in collector.usage_by_model.values())
 
-        # Cost is only reported when every used model has a known price;
-        # a partial sum would silently understate the real cost. Cached input
-        # tokens are billed at the model's cache-read rate when known.
-        cost_usd: Optional[float] = 0.0
-        for model_name, usage in collector.usage_by_model.items():
-            model_cost = estimate_cost(
-                model_name,
-                usage["input_tokens"],
-                usage["output_tokens"],
-                cache_read_tokens=usage.get("cache_read_tokens", 0),
-            )
-            if model_cost is None:
-                cost_usd = None
-                break
-            cost_usd += model_cost
-        if not collector.usage_by_model:
-            cost_usd = None
-
         return RunReceipt(
             models=list(collector.usage_by_model.keys()),
             input_tokens=input_tokens,
@@ -205,7 +188,6 @@ def build_run_receipt(
             total_tokens=total_tokens,
             cache_read_tokens=cache_read_tokens,
             reasoning_tokens=reasoning_tokens,
-            cost_usd=cost_usd,
             llm_calls=collector.llm_calls,
             tool_call_count=sum(t.calls for t in tool_timings),
             llm_time_s=round(collector.llm_time_s, 3),

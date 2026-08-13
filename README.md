@@ -557,19 +557,20 @@ print(result.receipt)
 # ┌─ Run Receipt ─────────────────────────────────┐
 # │ model: gpt-4o                                 │
 # │ tokens: 18,342 in / 2,101 out (20,443)        │
-# │ est. cost: $0.0668                            │
 # │ llm calls: 7   tool calls: 4                  │
 # │ time: 9.4s (llm 6.1s / tools 2.8s)            │
 # │ slowest tool: get_accounts 1.9s               │
 # └───────────────────────────────────────────────┘
-result.receipt.cost_usd        # structured access: 0.0668 (None for unknown models)
+result.receipt.input_tokens    # structured access: 18342
+result.receipt.output_tokens   # 2101
 result.receipt.tool_timings    # per-tool call counts and total durations
 ```
 
-Costs come primarily from litellm's bundled model-cost map (cache-read pricing
-included), with a small static fallback table ([`backend/llm/pricing.py`](src/cuga/backend/llm/pricing.py));
-models without a public list price (self-hosted `rits/...` deployments in
-particular) show `est. cost: n/a`.
+The receipt reports **token counts, not cost**. CUGA runs against self-hosted and
+internal deployments whose price we don't know, so any figure here would be wrong
+for some users — multiply `input_tokens` / `output_tokens` by your own rates
+instead. `cache_read_tokens` and `reasoning_tokens` are reported when the provider
+supplies them, since they're often billed differently.
 
 What enabling costs: tool tracking runs in a **timings-only** mode when the
 caller has not passed `track_tool_calls=True` — only tool name, app, and

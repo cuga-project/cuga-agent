@@ -67,7 +67,7 @@ async def test_receipt_attached_when_flag_enabled():
     assert result.receipt.input_tokens >= 120
     assert result.receipt.llm_calls >= 1
     assert result.receipt.models == ["gpt-4o"]
-    assert result.receipt.cost_usd is not None and result.receipt.cost_usd > 0
+    assert result.receipt.output_tokens >= 1
     assert result.receipt.wall_time_s > 0
     # tracking was forced internally for timings, but the caller did not opt in
     assert result.tool_calls == []

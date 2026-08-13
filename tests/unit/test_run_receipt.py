@@ -126,7 +126,7 @@ async def test_collector_never_raises_on_malformed_response():
 
 
 @pytest.mark.asyncio
-async def test_build_receipt_aggregates_tools_and_cost():
+async def test_build_receipt_aggregates_tools_and_tokens():
     collector = RunMetricsCollector()
     await _run_call(
         collector,
@@ -142,51 +142,19 @@ async def test_build_receipt_aggregates_tools_and_cost():
     receipt = build_run_receipt(collector, tool_calls, wall_time_s=9.42)
 
     assert receipt is not None
-    assert receipt.cost_usd == 10.00  # $2 + $8 per 1M for gpt-4.1
     assert receipt.tool_call_count == 3
     assert receipt.slowest_tool == "crm.search"
     assert receipt.tool_time_s == 2.3
     assert receipt.wall_time_s == 9.42
 
 
-@pytest.mark.asyncio
-async def test_unknown_model_yields_cost_none():
-    collector = RunMetricsCollector()
-    await _run_call(
-        collector,
-        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-        model_name="self-hosted-model",
-    )
-
-    receipt = build_run_receipt(collector, [], wall_time_s=1.0)
-
-    assert receipt is not None
-    assert receipt.cost_usd is None
-    assert receipt.total_tokens == 15
-
-
-@pytest.mark.asyncio
-async def test_mixed_known_and_unknown_models_yields_cost_none():
-    collector = RunMetricsCollector()
-    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-    await _run_call(collector, usage_metadata=usage, model_name="gpt-4o")
-    await _run_call(collector, usage_metadata=usage, model_name="mystery-model")
-
-    receipt = build_run_receipt(collector, [], wall_time_s=1.0)
-
-    assert receipt is not None
-    assert receipt.cost_usd is None
-    assert sorted(receipt.models) == ["gpt-4o", "mystery-model"]
-
-
 def test_empty_receipt_builds_and_renders():
     receipt = build_run_receipt(RunMetricsCollector(), None, wall_time_s=0.0)
 
     assert receipt is not None
-    assert receipt.cost_usd is None
     rendered = str(receipt)
     assert "Run Receipt" in rendered
-    assert "n/a (unknown model)" in rendered
+    assert "tokens: 0 in / 0 out" in rendered
 
 
 def test_render_box_contains_all_key_lines():
@@ -195,7 +163,6 @@ def test_render_box_contains_all_key_lines():
         input_tokens=18342,
         output_tokens=2101,
         total_tokens=20443,
-        cost_usd=0.0535,
         llm_calls=7,
         tool_call_count=4,
         llm_time_s=6.1,
@@ -207,7 +174,6 @@ def test_render_box_contains_all_key_lines():
 
     rendered = str(receipt)
     assert "18,342 in / 2,101 out (20,443)" in rendered
-    assert "$0.0535" in rendered
     assert "crm.search_accounts 1.9s" in rendered
     # every line in the box has equal width
     widths = {len(line) for line in rendered.splitlines()}
