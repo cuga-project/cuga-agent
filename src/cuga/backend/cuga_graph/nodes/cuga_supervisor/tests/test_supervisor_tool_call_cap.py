@@ -23,6 +23,16 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool impo
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _reset_budget_context():
+    """Seeding leaves a live budget in the contextvar; clear it so ordering
+    between files can never make an unrelated test inherit one."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
+
+    yield
+    tracker_module._tool_call_budget_context.set(None)
+
+
 def _set_cap(monkeypatch, cap):
     """Pin the cap via cuga.config.settings (read inside enforce_call_budget),
     immune to dynaconf state left behind by other tests in the full suite."""
