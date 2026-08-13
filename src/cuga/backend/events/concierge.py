@@ -123,22 +123,30 @@ def _slash_parse(text: str) -> dict | None:
     # require a word boundary after it — each a single linear pass. Keep the two in lockstep;
     # test_the_door_and_the_concierge_agree_on_what_a_slash_command_is fails if they drift.
     s = (text or "").lstrip()
-    while s.startswith("<@"):
-        close = s.find(">")
-        if close < 3:  # `<@[^>]+>` needs a BODY — keep in lockstep with the door, see main.py
-            break
-        s = s[close + 1 :].lstrip()
-    if not s.startswith("/"):
-        return None
-    after = s[1:]
+    # Cursor, not slicing — re-slicing per mention made this quadratic on a long "<@=>" run. Keep in
+    # lockstep with server/main.py:_slash_verb, which carries the measurement.
+    n = len(s)
     i = 0
-    while i < len(after) and after[i].isalpha():
+    while i < n and s[i].isspace():
         i += 1
-    cmd = after[:i].lower()
-    nxt = after[i : i + 1]
+    while s.startswith("<@", i):
+        close = s.find(">", i)
+        if close < i + 3:  # `<@[^>]+>` needs a BODY — keep in lockstep with the door, see main.py
+            break
+        i = close + 1
+        while i < n and s[i].isspace():
+            i += 1
+    if not s.startswith("/", i):
+        return None
+    i += 1
+    j = i
+    while j < n and s[j].isalpha():
+        j += 1
+    cmd = s[i:j].lower()
+    nxt = s[j : j + 1]
     if cmd not in _SLASH_CMDS or (nxt and (nxt.isalnum() or nxt == "_")):
         return None
-    rest = after[i:].strip()
+    rest = s[j:].strip()
     if not rest:
         return {
             "cmd": cmd,
@@ -983,7 +991,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 import native_scheduler as _ns
             if _ns.enabled():
                 _now = _time.time()
-                _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
+                # Compute the first fire BEFORE storing anything: a cron nobody can ever satisfy
+                # ("*/0 * * * *", "0 0 30 2 *") should be refused here, not stored and then
+                # discovered by the scheduler when the row first comes due.
+                try:
+                    _next = (_now + interval) if interval else _ns.next_cron(cron, _now)
+                except Exception as e:  # noqa: BLE001 — a bad expression is user input, not a crash
+                    return f"error: {cron!r} is not a schedule I can satisfy ({e}). Try `every 5 minutes` or `0 9 * * 1-5`."
                 sub = Subscription(
                     id=sub_id,
                     mode=kind.upper(),

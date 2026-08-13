@@ -36,6 +36,43 @@ def bot_token() -> str:
     return _secret("TELEGRAM_BOT_TOKEN")
 
 
+BACKOFF_DEFAULT = 5.0  # any non-200 with nothing better to go on
+BACKOFF_MAX = 300.0  # a hostile or fat-fingered retry_after must not wedge the poller for hours
+
+
+def backoff_seconds(resp, default: float = BACKOFF_DEFAULT) -> float:
+    """How long to wait before re-polling after a non-200 ``getUpdates``.
+
+    On 429 Telegram states the wait AUTHORITATIVELY in the body — ``{"parameters": {"retry_after":
+    30}}`` — and retrying sooner just earns another 429, so ignoring it deepens the rate limit
+    instead of riding it out. A ``Retry-After`` header is honoured as a fallback because proxies in
+    front of the API set that one instead.
+
+    Pure and duck-typed on purpose (anything with ``.json()`` and ``.headers`` works), so the
+    back-off policy is unit-testable without a network or a real httpx response.
+    """
+    val = None
+    try:
+        body = resp.json()
+        params = body.get("parameters") if isinstance(body, dict) else None
+        if isinstance(params, dict):
+            val = params.get("retry_after")
+    except Exception:  # noqa: BLE001 — a non-JSON error page is normal here
+        val = None
+    if val is None:
+        try:
+            val = (resp.headers or {}).get("Retry-After")
+        except Exception:  # noqa: BLE001
+            val = None
+    try:
+        secs = float(val)
+    except (TypeError, ValueError):
+        return default
+    if secs != secs or secs <= 0:  # NaN, or a nonsense non-positive value
+        return default
+    return min(secs, BACKOFF_MAX)
+
+
 def _base() -> str:
     return f"{API}/bot{bot_token()}"
 
@@ -150,6 +187,23 @@ async def run_poller(
                 offset = res[-1]["update_id"] + 1
     except Exception:  # noqa: BLE001
         pass
+    # Handler tasks are RETAINED. asyncio keeps only a weak reference to a bare create_task, so a
+    # pending handler could be garbage-collected mid-flight — the message is simply lost, silently.
+    # The done-callback also surfaces exceptions that would otherwise vanish with the task.
+    pending: set[asyncio.Task] = set()
+
+    def _spawn(coro) -> None:
+        t = asyncio.create_task(coro)
+        pending.add(t)
+        t.add_done_callback(pending.discard)
+        t.add_done_callback(
+            lambda f: (
+                None
+                if f.cancelled() or f.exception() is None
+                else log.warning("telegram handler failed: %r", f.exception())
+            )
+        )
+
     while not (stop and stop.is_set()):
         try:
             async with httpx.AsyncClient(timeout=35) as c:
@@ -157,12 +211,29 @@ async def run_poller(
                 if offset is not None:
                     params["offset"] = offset
                 r = await c.get(f"{_base()}/getUpdates", params=params)
-                updates = (r.json() or {}).get("result") or [] if r.status_code == 200 else []
+                # A NON-200 returns immediately, and the old code turned it into an empty update
+                # list with no sleep — so the loop re-requested at full speed. Telegram answers 401
+                # for a revoked token, 409 while a webhook is registered, and 429 under rate
+                # limiting: each of those pinned a CPU core and, in the 429 case, deepened the
+                # limit. Back off exactly like the exception path does.
+                if r.status_code != 200:
+                    wait = backoff_seconds(r)
+                    log.warning(
+                        "telegram getUpdates HTTP %s: %s (retrying in %.0fs)",
+                        r.status_code,
+                        (r.text or "")[:200],
+                        wait,
+                    )
+                    if stop and stop.is_set():
+                        break
+                    await asyncio.sleep(wait)
+                    continue
+                updates = (r.json() or {}).get("result") or []
             for up in updates:
                 offset = up["update_id"] + 1
                 msg = up.get("message") or up.get("edited_message")
                 if msg and should_process(msg):
-                    asyncio.create_task(on_message(msg))
+                    _spawn(on_message(msg))
         except Exception as e:  # noqa: BLE001
             log.warning("telegram poll error: %s (retrying in 5s)", e)
             if stop and stop.is_set():

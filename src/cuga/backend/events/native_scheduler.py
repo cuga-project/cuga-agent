@@ -41,6 +41,12 @@ def _field_matches(spec: str, value: int, lo: int, hi: int) -> bool:
         if "/" in part:
             part, step_s = part.split("/", 1)
             step = int(step_s)
+            # `*/0` is not a schedule — it used to reach the modulo below and raise
+            # ZeroDivisionError from deep inside the tick. Refuse it here, as a ValueError like
+            # every other malformed field, so it is rejected when the expression is first parsed
+            # rather than exploding the first time the row comes due.
+            if step <= 0:
+                raise ValueError(f"cron step must be positive, got {step!r} in {spec!r}")
         if part == "*":
             start, end = lo, hi
         elif "-" in part:
@@ -131,7 +137,22 @@ async def process_due(store, now: float, fire_fn) -> list[str]:
             # Some transport exceptions (httpx timeouts, cancelled tasks) carry an EMPTY str(), so
             # "native fire X failed: " told an operator nothing at all. Always name the type.
             log.warning("native fire %s failed: %s: %s", sub.id, type(e).__name__, e or "(no detail)")
-        nxt = next_fire_after(sub, now)
+        # The RESCHEDULE needs the same guard as the fire. next_cron raises ValueError for an
+        # expression it can never satisfy (e.g. "0 0 30 2 *"), and _field_matches raises ValueError
+        # on a bad token or ZeroDivisionError on "*/0". Uncaught, that escaped the loop entirely: the
+        # remaining due subscriptions never fired, and because the bad row stays due it repeated on
+        # EVERY tick — one malformed cron silently stopping every schedule ordered after it.
+        try:
+            nxt = next_fire_after(sub, now)
+        except Exception as e:  # noqa: BLE001 — an unschedulable row must not stall the tick
+            log.warning(
+                "native scheduler cannot compute a next fire for %s (%s: %s) — retiring it",
+                sub.id,
+                type(e).__name__,
+                e or "(no detail)",
+            )
+            store.delete(sub.id)
+            continue
         if not nxt or (sub.expires_at and nxt > sub.expires_at):
             store.delete(sub.id)  # bounded run complete (or unschedulable)
             log.info("native scheduler completed %s (no further fire)", sub.id)

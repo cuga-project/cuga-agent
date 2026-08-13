@@ -36,7 +36,7 @@ export function ManageDashboard() {
   const [studioOn, setStudioOn] = useState(false);
   const navigate = useNavigate();
 
-  // Show the Studio entry only when the events layer is mounted (EVENTS_ENABLED).
+  // Show the Studio entry only when the events SERVICE answers (see getEventsStatus).
   // Vanilla CUGA (flag off) → getEventsStatus() returns null → nothing changes.
   useEffect(() => {
     api.getEventsStatus().then((s) => setStudioOn(!!s));

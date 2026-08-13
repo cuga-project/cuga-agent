@@ -21,7 +21,9 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-ROSTER = os.path.join(os.path.dirname(__file__), "..", "..", "supervisor_agents.yaml")
+ROSTER = os.path.join(
+    os.path.dirname(__file__), "..", "..", "docs", "examples", "events", "supervisor_agents.yaml"
+)
 
 # (label, fire/chat text, acceptable picks)  — some events legitimately fit >1 specialist
 CASES = [

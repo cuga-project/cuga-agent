@@ -9,8 +9,11 @@ concierge routes an end user's utterance to one of four outcomes:
 
 Prereqs (see events_docs/MCP_SETUP.md):
   registry with cuga-apps config +  the server:
-    EVENTS_ENABLED=1 EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 \\
-      .venv/bin/python -m uvicorn cuga.backend.server.main:app --port 7860
+    # CUGA (the worker) on :7860, then the events SERVICE on :8100 — the combined mount and its
+    # EVENTS_ENABLED flag are gone, so these are two processes now.
+    .venv/bin/python -m uvicorn cuga.backend.server.main:app --port 7860
+    EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 \\
+      .venv/bin/python -m cuga.backend.events.service
 Env: EVENTS_SERVER_URL (default http://localhost:7860).
 """
 

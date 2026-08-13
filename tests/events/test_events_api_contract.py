@@ -1080,28 +1080,12 @@ def test_admin_add_user_without_a_user_store_is_501():
     assert c.post("/api/events/admin/users", json={"user_id": "bob"}).status_code == 501
 
 
-# ── the spec must stay golden ─────────────────────────────────────────────────
-def test_api_spec_is_golden():
-    """`events_docs/api/api_spec.html` is generated from the endpoint table in `scripts/gen_api_spec.py`,
-    which is itself checked against the routes registered in `events/app.py`.
-
-    This fails in two situations, both of which mean the spec is lying:
-      1. a route exists in the code with no entry in the table (or vice versa);
-      2. the table changed but the checked-in HTML wasn't regenerated.
-
-    Fix: `python scripts/gen_api_spec.py`. Describe the new route while you're there — an endpoint
-    with no caller, no payload and no failure modes is not documented, it is merely listed.
-    """
-    import subprocess
-
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    p = subprocess.run(
-        [sys.executable, os.path.join(root, "scripts/gen_api_spec.py"), "--check"],
-        capture_output=True,
-        text=True,
-        cwd=root,
-    )
-    assert p.returncode == 0, p.stdout + p.stderr
+# NOTE: `test_api_spec_is_golden` lived here. It ran `scripts/gen_api_spec.py --check` against a
+# committed `events_docs/api/api_spec.html`. Both are gone: the HTML was 204 KB of generated markup
+# restating an endpoint table, carried in every clone so this test could diff against it, and the
+# generator was 2,901 lines whose only consumer was this test. FastAPI already publishes the real
+# contract at /docs and /openapi.json. Route documentation is still enforced by
+# `test_every_route_appears_in_the_api_reference` below, which reads the hand-written api.html.
 
 
 def test_examples_board_matches_the_catalog():

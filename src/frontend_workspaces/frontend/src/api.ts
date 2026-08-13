@@ -43,8 +43,8 @@ export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_na
 }
 
 // ── the eventing layer's origin ───────────────────────────────────────────────────────────────
-// Combined deployment: events is mounted on this same server, so same-origin is right and this
-// resolves to getApiBaseUrl() — nothing changes. SPLIT deployment: the UI is served by cuga-core
+// EVENTS_API_URL unset: nothing to redirect to, so this resolves to same-origin — which is also
+// the safe fallback when /api/ui/config cannot be read. SPLIT deployment: the UI is served by cuga-core
 // while /api/events/*, /api/concierge and /invoke live on the events service, so those calls must
 // be sent there. The server tells us where via /api/ui/config (EVENTS_API_URL); resolved once and
 // cached, and any failure falls back to same-origin rather than breaking the page.
@@ -70,6 +70,22 @@ export async function getEventsBaseUrl(): Promise<string> {
       });
   }
   return eventsBaseInFlight;
+}
+
+/** The resolved events origin, SYNCHRONOUSLY, for the few places that cannot await.
+ *
+ * `window.open(...)` must be called inside the click handler's user-gesture window; awaiting first
+ * hands the browser an un-gestured `open()` and Safari and Firefox block it. So the connect link
+ * reads the already-resolved cache instead — populated by the first `apiFetch` to an events path,
+ * which the Studio always issues before a Connect button can be on screen.
+ *
+ * Cold cache falls back to same-origin, which is exactly the old behaviour, and kicks off the
+ * resolution so a second attempt is right.
+ */
+export function eventsBaseUrlSync(): string {
+  if (eventsBaseCache !== null) return eventsBaseCache;
+  void getEventsBaseUrl();
+  return getApiBaseUrl();
 }
 
 export async function apiFetch(
@@ -467,7 +483,8 @@ export async function deleteSecret(id: string): Promise<Response> {
 }
 
 // ---------------------------------------------------------------------------
-// Events / Studio API (opt-in: EVENTS_ENABLED on the backend).
+// Events / Studio API. Opt-in by RUNNING the events service and pointing EVENTS_API_URL at it;
+// there is no backend feature flag any more.
 // These endpoints only exist when the events layer is mounted; the Studio UI
 // hides itself when getEventsStatus() is not ok. The UI is dumb — it renders
 // exactly what these return and never computes status itself.
@@ -485,11 +502,11 @@ export interface EventsStatus {
   features: Record<string, boolean>;
 }
 
-// Returns null unless the events layer is actually mounted AND enabled — callers
-// use that to hide the Studio entry point entirely. Robust against the SPA catch-all:
-// when EVENTS_ENABLED is off, /api/events/status is unrouted, so the server returns
-// index.html with HTTP 200. We therefore must NOT trust res.ok alone — we require a
-// JSON content-type AND an explicit enabled:true, or the Studio would leak into vanilla CUGA.
+// Returns null unless the events service actually answers — callers use that to hide the Studio
+// entry point entirely. Robust against the SPA catch-all: with no events service reachable,
+// /api/events/status is unrouted and CUGA serves index.html with HTTP 200. We therefore must NOT
+// trust res.ok alone — we require a JSON content-type AND an explicit enabled:true, or the Studio
+// would leak into vanilla CUGA.
 export async function getEventsStatus(): Promise<EventsStatus | null> {
   try {
     const res = await apiFetch("/api/events/status");
@@ -564,7 +581,7 @@ export async function getEventsInbox(
 }
 
 // The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
-// them internally. Source: supervisor_agents.yaml.
+// them internally. Source: docs/examples/events/supervisor_agents.yaml.
 export async function getEventsAgents(): Promise<Response> {
   return apiFetch("/api/events/agents");
 }
@@ -626,7 +643,11 @@ export async function getEventsSetupGuides(): Promise<Response> {
 
 export function eventsConnectUrl(app: string, ownership?: string): string {
   const own = ownership ? `?ownership=${encodeURIComponent(ownership)}` : "";
-  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}${own}`;
+  // The EVENTS origin, not CUGA's. This used to build on getApiBaseUrl(), so in a split deployment
+  // "Connect" opened cuga-core — which serves no /api/events/*, so the SPA catch-all swallowed the
+  // request and the OAuth consent simply never appeared. apiFetch already routes events paths this
+  // way; this is the one link that did not.
+  return `${eventsBaseUrlSync()}/api/events/connect/${encodeURIComponent(app)}${own}`;
 }
 
 // Set/modify one connector credential (its .env variable) from the Studio — persists to .env AND

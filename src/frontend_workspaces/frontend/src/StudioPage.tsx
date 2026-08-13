@@ -309,7 +309,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p className="studio-muted" style={{ margin: 0 }}>
           <b>One agent — CUGA.</b> These are its sub-agents (the roster), defined in{" "}
-          <code>supervisor_agents.yaml</code> — edit the file and <code>make reload</code> to change
+          <code>docs/examples/events/supervisor_agents.yaml</code> — edit the file and <code>make reload</code> to change
           them. CUGA routes to the right specialist internally; nothing here is addressed directly.
         </p>
       </div>
@@ -330,7 +330,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No sub-agents loaded"
-          subtitle="The roster lives in supervisor_agents.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
+          subtitle="The roster lives in docs/examples/events/supervisor_agents.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
       )}
       <div className="studio-grid">
         {data?.map((a) => (
@@ -372,7 +372,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
         ))}
       </div>
       {/* the editor is retired in the single-agent world — the roster lives in
-          supervisor_agents.yaml (edit + make reload); kept mounted for type stability */}
+          docs/examples/events/supervisor_agents.yaml (edit + make reload); kept mounted for type stability */}
       <AgentEditor open={editorOpen} editing={editing} onClose={onClose} />
     </div>
   );
@@ -1166,16 +1166,19 @@ function AdminTab({ refresh }: { refresh: number }) {
   );
 }
 
-// The API reference, embedded — both the human-readable guide and the full OpenAPI spec, served by
-// the backend (/api/events/docs/{api,spec,examples}) so they render inside the Studio.
+// The API reference, embedded — served by the backend (/api/events/docs/{api,examples,nlflow,slides})
+// so it renders inside the Studio.
 function ApiTab() {
   const base = api.getApiBaseUrl();
   const pages: { key: string; label: string }[] = [
     { key: "api", label: "API guide" },
-    { key: "spec", label: "OpenAPI spec" },
+    // No "OpenAPI spec" tab: it embedded events_docs/api/api_spec.html, 204 KB of generated markup
+    // carried in git so a --check test could diff against it. Both the page and its generator are
+    // gone; FastAPI publishes the real contract at /docs and /openapi.json.
     { key: "examples", label: "Examples board" },
-    { key: "nlflow", label: "NL→Flow" },
-    { key: "slides", label: "Slides" },
+    // No "NL→Flow" or "Slides" tabs: events_docs/slides.html exists on no branch, and the NL→Flow
+    // page is events_docs/runbook/nl-to-flow.html — a different directory and spelling than the
+    // route looked for, so both 404'd.
   ];
   const [page, setPage] = useState("api");
   const url = `${base}/api/events/docs/${page}`;
@@ -1183,7 +1186,8 @@ function ApiTab() {
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <p className="studio-muted" style={{ margin: 0, fontSize: 13, flex: "1 1 240px" }}>
-          The events API reference, embedded — the human-readable guide and the full OpenAPI spec.
+          The events API reference, embedded. The machine-readable contract is at /docs and
+          /openapi.json on the events service.
         </p>
         {pages.map((p) => (
           <Button key={p.key} size="sm" kind={page === p.key ? "primary" : "tertiary"}
@@ -1222,7 +1226,7 @@ export function StudioPage() {
         <div className="studio-content">
           <InlineNotification kind="info" lowContrast hideCloseButton
             title="Studio is off"
-            subtitle="The events layer is not enabled. Start CUGA with EVENTS_ENABLED=1 to use the Studio." />
+            subtitle="The events service isn't reachable. Start it (python -m cuga.backend.events.service) and set EVENTS_API_URL." />
           <Button kind="tertiary" onClick={() => navigate("/manage")} style={{ marginTop: 16 }}>
             Back to dashboard
           </Button>
