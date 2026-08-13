@@ -297,3 +297,38 @@ def test_uncited_answer_still_clears_stale_sources():
     state.sources = [{"n": 1, "cite_id": "s1", "filename": "stale.pdf"}]  # stale
     FinalAnswerNode.apply_citation_resolution(state)
     assert state.sources == []
+
+
+def test_tracked_trajectory_step_is_stripped_too(monkeypatch):
+    """The trajectory step is a delivered surface (persisted logs, analytics
+    annotations), and every other branch of node_handler tracks an already
+    stripped answer. This branch must match, or the trajectory is the one place
+    raw framing still shows up."""
+    import asyncio
+    import json as _json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langchain_core.messages import AIMessage
+
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.answer.final_answer.settings",
+        SimpleNamespace(features=SimpleNamespace(chat=False)),
+    )
+
+    collected = []
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.answer.final_answer.tracker.collect_step",
+        lambda step: collected.append(step),
+    )
+
+    state = _make_agent_state(chat_agent_messages=[AIMessage(content="")])
+    payload = _json.dumps({"thoughts": [], "final_answer": "The total is 42<|return|>"})
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=AIMessage(content=payload))
+
+    asyncio.run(FinalAnswerNode._generate_final_answer(state, agent, "FinalAnswerAgent"))
+
+    assert collected, "expected a trajectory step"
+    tracked = _json.loads(collected[-1].data)
+    assert "<|" not in tracked["final_answer"]
+    assert tracked["final_answer"] == "The total is 42"

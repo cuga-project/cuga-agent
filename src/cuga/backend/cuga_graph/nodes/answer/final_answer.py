@@ -237,8 +237,18 @@ class FinalAnswerNode(BaseNode):
             )
             state.append_to_last_chat_message(chat_message)
 
-        # Track the step
-        tracker.collect_step(Step(name=name, data=final_answer_output.model_dump_json()))
+        # Track the step. Sanitized like the chat copy above: every other branch
+        # of node_handler tracks an already-stripped answer, so without this the
+        # trajectory is the one surface still carrying raw framing. The raw text
+        # stays in state.messages, which is model context rather than output.
+        tracker.collect_step(
+            Step(
+                name=name,
+                data=final_answer_output.model_copy(
+                    update={"final_answer": strip_harmony_tokens(final_answer_output.final_answer)}
+                ).model_dump_json(),
+            )
+        )
 
         # Replace variables and update state
         final_answer_output.final_answer = state.variables_manager.replace_variables_placeholders(
