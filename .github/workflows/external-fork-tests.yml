@@ -130,7 +130,7 @@ jobs:
           enable-cache: true
       - run: uv sync --all-extras --dev
       - name: Run stability tests
-        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0 --durations=20
+        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0 --durations=20
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4

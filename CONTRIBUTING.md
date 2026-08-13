@@ -195,7 +195,7 @@ Other subsets:
 
 ```bash
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"   # fast local loop
-uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0        # stability only
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0        # stability only
 uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
 ```
 

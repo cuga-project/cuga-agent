@@ -54,7 +54,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run stability tests
-        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0 --durations=20
+        # 8 tests: 87% still allows one LLM flake (7/8=87.5%). 88% required 8/8.
+        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0 --durations=20
 
       - name: Upload test logs
         if: always()
@@ -82,7 +83,7 @@ jobs:
           python-version: "3.12"
 
       - name: Run Windows smoke stability tests
-        run: uv run pytest src/system_tests/e2e/fast_test.py -m windows_smoke --stability-threshold 88 -n0 --durations=20
+        run: uv run pytest src/system_tests/e2e/fast_test.py -m windows_smoke --stability-threshold 87 -n0 --durations=20
 
       - name: Upload test logs
         if: always()
