@@ -118,7 +118,13 @@ _BLOCKED_CLAIM_RE = re.compile(
     r"|(?:don['’]t|do\s+not|doesn['’]t|does\s+not)\s+have\s+(?:a|the|any)[^.]{0,40}\btools?\b"
     r"|\btools?\b[^.!\n]{0,60}(?:\bnot\b|\bun)available"
     r"|(?:is|are|isn['’]t|aren['’]t)\s+(?:not\s+)?available\s+in\s+"
-    r"(?:this|the\s+current)\s+(?:session|environment|context)",
+    r"(?:this|the\s+current)\s+(?:session|environment|context)"
+    # "there's no (available) tool …", "we have no tool listed", "no such tool":
+    # observed verbatim on gpt-oss-120b task 7574325_1 ("there's no available tool
+    # or API for updating Venmo credentials"), which the clauses above all missed.
+    # Kept as a bigram ("no … tool") so ordinary finals mentioning tools don't hit.
+    r"|\bno\s+(?:available\s+|such\s+|suitable\s+|matching\s+)?(?:tools?|apis?)\b"
+    r"|\black(?:s|ing)?\s+(?:a|the|any)\s+tool",
     re.IGNORECASE,
 )
 

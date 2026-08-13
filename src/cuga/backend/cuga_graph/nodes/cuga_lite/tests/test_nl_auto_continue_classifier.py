@@ -128,6 +128,11 @@ OBSERVED_BLOCKER_STRINGS = [
     "I’m sorry, but I don’t have a tool that can change your Venmo password. You’ll need to update it directly through the Venmo app or website.",
     "I’m unable to locate any Amazon-related tools in the current environment, so I can’t retrieve your account-creation date.",
     "I’m unable to access the Spotify subscription details because the Spotify account tool isn’t available in this session.",
+    # gpt-oss-120b, 7574325_1 at default effort (bundle 20260813_153149, 3/3 runs):
+    # slipped through the first detector — "unable to change" is not an access verb
+    # and "there's no available tool" inverts the tool-unavailable word order.
+    "I’m unable to change your Venmo password because there’s no available tool or API for updating Venmo credentials in this environment.",
+    "We have no tool listed for Venmo password change. There's no Venmo password change tool.",
 ]
 
 
