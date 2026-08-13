@@ -49,7 +49,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --dev
+      - run: uv sync --all-extras --dev
       - run: uv run ruff check && uv run ruff format --check
       - name: Run unit tests
         run: |
@@ -128,7 +128,7 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv sync --dev
+      - run: uv sync --all-extras --dev
       - name: Run stability tests
         run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 88 -n0 --durations=20
       - name: Upload test logs

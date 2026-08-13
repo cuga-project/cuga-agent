@@ -106,10 +106,12 @@ def wait_for_http_ready(
             raise RuntimeError(error_msg)
 
         try:
-            with urllib.request.urlopen(url, timeout=1.0) as response:
-                if 200 <= response.status < 300:
-                    print(f"Server on port {port} is ready!")
-                    return
+            urllib.request.urlopen(url, timeout=1.0)
+            print(f"Server on port {port} is ready!")
+            return
+        except urllib.error.HTTPError:
+            print(f"Server on port {port} is ready!")
+            return
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
         time.sleep(interval)

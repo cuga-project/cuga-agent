@@ -21,14 +21,37 @@ class _OkHandler(BaseHTTPRequestHandler):
         return
 
 
-@pytest.mark.unit
-def test_wait_for_http_ready_succeeds_when_server_is_up():
-    server = HTTPServer(("127.0.0.1", 0), _OkHandler)
-    port = server.server_address[1]
+class _NotFoundHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def _serve(handler_cls):
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    return server
+
+
+@pytest.mark.unit
+def test_wait_for_http_ready_succeeds_when_server_is_up():
+    server = _serve(_OkHandler)
     try:
-        wait_for_http_ready(port, timeout=5.0, interval=0.05)
+        wait_for_http_ready(server.server_address[1], timeout=5.0, interval=0.05)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.unit
+def test_wait_for_http_ready_treats_http_404_as_ready():
+    server = _serve(_NotFoundHandler)
+    try:
+        wait_for_http_ready(server.server_address[1], timeout=5.0, interval=0.05)
     finally:
         server.shutdown()
         server.server_close()

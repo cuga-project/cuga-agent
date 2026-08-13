@@ -14,5 +14,5 @@ runs:
         python-version: ${{ inputs.python-version }}
         enable-cache: true
     - name: Install dependencies
-      run: uv sync --dev
+      run: uv sync --all-extras --dev
       shell: bash
