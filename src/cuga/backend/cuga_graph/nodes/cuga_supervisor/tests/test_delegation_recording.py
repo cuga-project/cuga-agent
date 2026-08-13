@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -111,12 +111,23 @@ def test_record_delegation_updates_state_fields():
     assert state.metrics["last_delegated_agent"] == "crm_agent"
 
 
-@pytest.mark.asyncio
-async def test_delegation_func_records_internal_agent_result():
-    from cuga import CugaAgent
+class _FakeCugaAgent:
+    pass
 
-    adapter = _make_adapter()
-    state = SimpleNamespace(
+
+class _FakeVM:
+    def __init__(self, values):
+        self._values = dict(values)
+
+    def get_variable_names(self):
+        return list(self._values)
+
+    def get_variable(self, name):
+        return self._values.get(name)
+
+
+def _empty_delegation_state():
+    return SimpleNamespace(
         selected_agents=[],
         agent_results={},
         agent_variables={},
@@ -124,24 +135,70 @@ async def test_delegation_func_records_internal_agent_result():
         metrics={},
     )
 
-    mock_agent = CugaAgent(tools=[])
-    mock_result = SimpleNamespace(answer="worker answer", variables={"x": 1}, chat_messages=None)
-    mock_agent.invoke = AsyncMock(return_value=mock_result)
 
-    delegate = create_agent_delegation_func(adapter, "worker", mock_agent)
+def _fake_agent(*, answer="ok", variables=None, chat_messages=None):
+    agent = _FakeCugaAgent()
+    agent.invoke = AsyncMock(
+        return_value=SimpleNamespace(answer=answer, variables=variables, chat_messages=chat_messages)
+    )
+    return agent
 
+
+def _run_delegate(state, mock_agent, source, *, variable_manager=None):
+    delegate = create_agent_delegation_func(_make_adapter(), "worker", mock_agent)
     namespace = {
-        SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(state=state, variable_manager=None),
+        SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(state=state, variable_manager=variable_manager),
         "delegate": delegate,
     }
-    exec(
-        "async def _run():\n    return await delegate('do work')\n",
-        namespace,
-        namespace,
-    )
-    answer = await namespace["_run"]()
+    exec(source, namespace, namespace)
+    return namespace["_run"]()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delegation_func_records_internal_agent_result():
+    state = _empty_delegation_state()
+    mock_agent = _fake_agent(answer="worker answer", variables={"x": 1})
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        answer = await _run_delegate(
+            state,
+            mock_agent,
+            "async def _run():\n    return await delegate('do work')\n",
+        )
 
     assert answer == "worker answer"
     assert state.agent_results["worker"] == "worker answer"
     assert state.agent_variables["worker"] == {"x": 1}
     assert state.selected_agents == ["worker"]
+    mock_agent.invoke.assert_awaited_once()
+    assert mock_agent.invoke.await_args.kwargs.get("variables") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delegation_auto_passes_supervisor_variables_when_omitted():
+    mock_agent = _fake_agent()
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        await _run_delegate(
+            _empty_delegation_state(),
+            mock_agent,
+            "async def _run():\n    return await delegate('get account value')\n",
+            variable_manager=_FakeVM({"user_id": "user_alice_99"}),
+        )
+
+    assert mock_agent.invoke.await_args.kwargs["variables"] == {"user_id": "user_alice_99"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delegation_empty_variables_list_does_not_auto_pass():
+    mock_agent = _fake_agent()
+    with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+        await _run_delegate(
+            _empty_delegation_state(),
+            mock_agent,
+            "async def _run():\n    return await delegate('get account value', variables=[])\n",
+            variable_manager=_FakeVM({"user_id": "user_alice_99"}),
+        )
+
+    assert mock_agent.invoke.await_args.kwargs.get("variables") is None

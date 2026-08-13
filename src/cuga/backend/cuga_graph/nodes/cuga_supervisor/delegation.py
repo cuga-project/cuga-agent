@@ -36,6 +36,15 @@ def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]
     return resolved
 
 
+def _variables_from_supervisor_vm() -> Dict[str, Any]:
+    """Copy the active supervisor variable manager into a name→value dict."""
+    exec_ctx = resolve_supervisor_execution_context()
+    if exec_ctx is None or exec_ctx.variable_manager is None:
+        return {}
+    vm = exec_ctx.variable_manager
+    return {name: vm.get_variable(name) for name in vm.get_variable_names()}
+
+
 def _record_delegation(
     adapter: Any,
     agent_name: str,
@@ -78,9 +87,10 @@ def create_agent_delegation_func(
         logger.info(f"Delegating to {agent_name}: {task[:100]}...")
 
         if isinstance(agent_or_config, CugaAgent):
-            vars_to_pass = {}
             if variables is not None:
                 vars_to_pass = resolve_names_from_caller_frame(variables)
+            else:
+                vars_to_pass = _variables_from_supervisor_vm()
             result = await agent_or_config.invoke(
                 task,
                 thread_id=f"supervisor_conversational_{agent_name}",
