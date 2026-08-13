@@ -48,6 +48,9 @@ from cuga.config import (
     LOGGING_DIR,
     TRACES_DIR,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    assert_resolved_path_under,
+)
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.workspace_upload import (
@@ -4321,9 +4324,13 @@ async def get_attachment_snapshot(request: Request) -> Optional[List[Dict[str, A
 @app.get("/flows/{full_path:path}")
 async def serve_flows(full_path: str, request: Request):
     """Serves files from the flows directory."""
-    file_path = os.path.join(app_state.STATIC_DIR_FLOWS, full_path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
+    static_root = Path(app_state.STATIC_DIR_FLOWS)
+    try:
+        file_path = assert_resolved_path_under(Path(os.path.join(static_root, full_path)), static_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Flow file not found.")
+    if file_path.is_file():
+        return FileResponse(str(file_path))
     raise HTTPException(status_code=404, detail="Flow file not found.")
 
 
@@ -4333,10 +4340,16 @@ async def serve_react(full_path: str, request: Request):
     if not app_state.STATIC_DIR_HTML:
         raise HTTPException(status_code=500, detail="Frontend build directory not found.")
 
+    static_root = Path(app_state.STATIC_DIR_HTML)
     lookup_path = full_path[7:] if full_path.startswith("manage/") else full_path
-    file_path = os.path.join(app_state.STATIC_DIR_HTML, lookup_path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
+    try:
+        file_path = assert_resolved_path_under(Path(os.path.join(static_root, lookup_path)), static_root)
+    except ValueError:
+        # Resolved outside the static directory: refuse rather than falling through to
+        # the index.html SPA route, so the request gets one unambiguous answer.
+        raise HTTPException(status_code=404, detail="Frontend files not found.")
+    if file_path.is_file():
+        return FileResponse(str(file_path))
 
     index_path = os.path.join(app_state.STATIC_DIR_HTML, "index.html")
     if os.path.exists(index_path):
