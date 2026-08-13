@@ -518,7 +518,9 @@ def leg_agents_now(r: Report):
     """Every roster agent answers its signature catalog utterance through the supervisor."""
     import yaml
 
-    roster = yaml.safe_load(open(os.path.join(REPO_DIR, "supervisor_agents.yaml")))
+    roster = yaml.safe_load(
+        open(os.path.join(REPO_DIR, "docs", "examples", "events", "supervisor_agents.yaml"))
+    )
     agents = roster.get("agents", roster) if isinstance(roster, dict) else roster
     names = {a["name"] for a in agents}
     by_agent = {}

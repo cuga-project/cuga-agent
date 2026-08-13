@@ -1460,8 +1460,16 @@ def register_events_routes(
         scope = resolve_principal(headers=request.headers).scope
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         worker_backend = os.environ.get("EVENTS_WORKER_BACKEND", "cuga")
+        try:
+            from . import native_scheduler as _ns
+        except ImportError:  # flat load (offline tests put the events dir on sys.path)
+            import native_scheduler as _ns
+        native_clock = _ns.enabled()
         return {
             "ok": True,
+            # Always true when this endpoint answers — reaching it means the layer is mounted. The
+            # "off" signal is the REQUEST failing (in a split deployment CUGA's SPA catch-all returns
+            # HTML, which getEventsStatus treats as off). Kept because EventsStatus declares it.
             "enabled": True,
             "scope": scope,
             # concierge (NL→flow) = react; workers (answer the question) = cuga by default
@@ -1470,14 +1478,21 @@ def register_events_routes(
             "backends": ["react", "cuga"],
             "ap_configured": engine is not None,
             "project_grain": grain,
-            # all wired via AP when the engine is configured (inbound channel flows, PUSH
-            # watchers, and scheduled/poll flows that deliver via an appended channel send
-            # step). Telegram/Discord (AP) + Slack (direct) are round-trip-verified live.
+            # What can actually be armed right now. These used to report cron/poll/push as
+            # `engine is not None` — AP-only — which has been wrong since the native scheduler
+            # became the default: with no AP configured the Studio said schedules were unavailable
+            # while the in-process scheduler was firing them every tick.
+            "scheduler": "native" if native_clock else "ap",
             "features": {
                 "now": True,
-                "cron": engine is not None,
-                "poll": engine is not None,
+                # timers need a clock, not Activepieces: ours, or AP's schedule piece
+                "cron": native_clock or engine is not None,
+                "poll": native_clock or engine is not None,
+                # AP-backed integration webhooks (gmail, github, …) — these do need the engine
                 "push": engine is not None,
+                # channel + inbound-webhook triggers (slack/discord/telegram/webhook, box folder
+                # and comment events) are received by CUGA directly and need no AP at all
+                "push_direct": True,
                 "channels_inbound": engine is not None,
             },
             # the same tiered capability report printed at startup — queryable, so the Studio
@@ -1735,27 +1750,26 @@ def register_events_routes(
 
     @app.get("/api/events/docs/{page}")
     async def events_docs_page(page: str):
-        """Serve the API reference pages so the Studio's API tab can embed them:
-        ``api`` = human-readable, ``spec`` = full OpenAPI, ``examples`` = the examples board,
-        ``slides`` = the event-driven-agents deck, ``nlflow`` = the NL→Flow explainer (the last
-        two live one level up, in events_docs/).
-        Guarded to those files; path resolved from the repo (override with EVENTS_DOCS_DIR)."""
+        """Serve the two API reference pages the Studio's API tab embeds: ``api`` (the
+        human-readable guide) and ``examples`` (the examples board). Guarded to those files; path
+        resolved from the repo, override with EVENTS_DOCS_DIR.
+
+        Three pages were removed rather than left to 404:
+          * ``spec`` — 204 KB of generated HTML restating an endpoint table, kept in git only so a
+            --check test could diff against it. FastAPI serves the real contract at /docs.
+          * ``slides`` — events_docs/slides.html does not exist on any branch.
+          * ``nlflow`` — the file is events_docs/runbook/nl-to-flow.html, a different directory AND
+            a different spelling, so this never resolved either."""
         import pathlib
 
-        fname = {
-            "api": "api.html",
-            "spec": "api_spec.html",
-            "examples": "examples.html",
-            "slides": "slides.html",
-            "nlflow": "nl_to_flow.html",
-        }.get(page)
+        fname = {"api": "api.html", "examples": "examples.html"}.get(page)
         if not fname:
             return JSONResponse({"ok": False, "error": "unknown page"}, 404)
         base = pathlib.Path(
             os.environ.get("EVENTS_DOCS_DIR")
             or str(pathlib.Path(__file__).resolve().parents[4] / "events_docs" / "api")
         )
-        fp = (base.parent if page in ("slides", "nlflow") else base) / fname
+        fp = base / fname
         if not fp.is_file():
             return JSONResponse({"ok": False, "error": f"{fname} not found (set EVENTS_DOCS_DIR)"}, 404)
         return HTMLResponse(fp.read_text(encoding="utf-8"))

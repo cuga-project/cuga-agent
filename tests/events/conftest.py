@@ -12,6 +12,9 @@ mode: it looks like a hang in your new code, and it comes and goes with somethin
 So: point the loopback seams at a port nothing is bound to, for the whole session. Real network
 behaviour is covered by the LIVE harnesses (tests/events/live_*.py), which target a running stack on
 purpose.
+
+The same hazard applies to the DATABASE and the run log, which the machine's ``.env`` can point at
+real infrastructure — see ``_isolated_store`` below.
 """
 
 import os
@@ -34,7 +37,8 @@ def _closed_port() -> str:
 @pytest.fixture(autouse=True, scope="session")
 def _hermetic_loopback():
     dead = _closed_port()
-    saved = {k: os.environ.get(k) for k in ("EVENTS_CUGA_PORT", "CUGA_URL", "EVENTS_API_URL")}
+    keys = ("EVENTS_CUGA_PORT", "CUGA_URL", "EVENTS_API_URL")
+    saved = {k: os.environ.get(k) for k in keys}
     os.environ["EVENTS_CUGA_PORT"] = dead
     os.environ["CUGA_URL"] = f"http://127.0.0.1:{dead}"
     os.environ.pop("EVENTS_API_URL", None)  # CUGA's slash forwarder: off unless a test sets it
@@ -44,3 +48,27 @@ def _hermetic_loopback():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path, monkeypatch):
+    """Give every test its own database and run-log directory.
+
+    Two hazards, both invisible until they bite:
+
+    * ``cuga.config`` calls ``load_dotenv`` at import, so a developer's ``.env`` — where
+      ``EVENTS_DB`` is normally a real PostgreSQL DSN for local dev — is in the environment by the
+      time the suite runs. ``register_events_routes`` mounts the mailbox and the NOW-run store from
+      it, so the offline tests bind to whatever database that machine has. When that server is down
+      the web-inbox tests fail with a connection error unrelated to the code under test. CI never
+      sees it, because CI has no ``.env``. Note this must SET a value rather than unset one:
+      ``load_dotenv(override=False)`` fills an *absent* variable back in, so popping it does not hold.
+    * The run log defaults to ``<repo>/results/run_logs``, a real directory that accumulates across
+      tests and across runs. It is gitignored, so it never appears in ``git status``.
+
+    Function-scoped on purpose: the stores are built per ``register_events_routes`` call, so a fresh
+    path per test is what keeps one test's NOW-runs out of the next one's ``/api/events/runs``.
+    Postgres coverage is opt-in behind ``EVENTS_TEST_PG_DSN`` (test_db_postgres.py), untouched here.
+    """
+    monkeypatch.setenv("EVENTS_DB", str(tmp_path / "events.db"))
+    monkeypatch.setenv("EVENTS_RUN_LOG_DIR", str(tmp_path / "run_logs"))

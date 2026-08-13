@@ -119,7 +119,11 @@ _NO = {
 _EDIT_RX = re.compile(
     r"^(?:/edit )?(?:edit|change|update|set|make)? ?(?:the )?"
     r"(prompt|instruction|schedule|cadence|interval|delivery|destination|target|sink) ?"
-    r"(?:to|=|:|as)? ?(.+)$",
+    # A trailing separator after the keyword is SYNTAX, not content. "change the prompt to: X"
+    # matched `to` here and then swept the ":" into the value, so the stored prompt began with a
+    # colon the user never typed. Consume one optional separator as well — but ONLY when whitespace
+    # follows it, or "change prompt to :) keep the smiley" loses the colon of its emoticon.
+    r"(?:to|=|:|as)? ?(?:[:=](?=\s))? ?(.+)$",
     re.I | re.S,
 )
 

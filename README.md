@@ -37,7 +37,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Reasoning modes** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
-> | **Event-driven agents** (channels · triggers · standing flows) | **`make up-noap`** — Slack/Discord/Telegram/web chat, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (`cuga-core` + the eventing service); CUGA is unchanged when it is not deployed. Full stack incl. Activepieces + tunnels: `make up`. [Docs](events_docs/README.md) · [Setup](events_docs/SETUP.md) |
+> | **Event-driven agents** (channels · triggers · standing flows) | **`make up-noap`** — Slack/Discord/Telegram/web chat, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (`cuga-core` + the eventing service); CUGA is unchanged when it is not deployed. Full stack incl. Activepieces + tunnels: `make up`. [Connector setup guides](events_docs/setup/) |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
@@ -646,6 +646,17 @@ Orchestrate multiple agents with a single supervisor: delegate tasks to speciali
 ```bash
 cuga start demo_supervisor
 ```
+
+> [!IMPORTANT]
+> **Sub-agents are scoped to the registry apps they name.** An agent that lists `apps:` or
+> `mcp_servers:` receives tools from *those* only; an agent that lists neither still receives
+> everything.
+>
+> This was not always true. `_create_tool_provider` used to build the tool provider unscoped and
+> merely log the names, so every sub-agent silently got the whole registry and the declaration was
+> decorative. If a roster named one server while relying on tools from another, it worked by
+> accident and will now see only what it names — add the missing entry to `apps:`/`mcp_servers:`.
+> Hyphenated names are mapped to the registry's underscore keys (`cuga-finance` → `cuga_finance`).
 
 ### Quick Start
 

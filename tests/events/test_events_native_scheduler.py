@@ -18,6 +18,7 @@ if _EVENTS not in sys.path:
 
 os.environ.setdefault("EVENTS_VERIFY_ACTIONS", "0")  # deterministic (no LLM verifier)
 
+import pytest  # noqa: E402
 import native_scheduler as ns  # noqa: E402
 from subscriptions import SubscriptionStore, Subscription  # noqa: E402
 
@@ -162,6 +163,48 @@ def test_process_due_bounded_run_retires_after_deadline():
     assert s.get("c3") is None
 
 
+def test_cron_step_zero_is_refused_by_the_parser():
+    """`*/0` is not a schedule. It used to reach the modulo inside _field_matches and raise
+    ZeroDivisionError from deep inside a tick; now it is refused as a ValueError like any other
+    malformed field, so a bad expression fails where it is PARSED rather than when it first fires."""
+    for expr in ("*/0 * * * *", "* */0 * * *", "0 0 * * */0", "*/-1 * * * *"):
+        with pytest.raises(ValueError):
+            ns.next_cron(expr, time.time())
+
+
+def test_process_due_retires_an_unschedulable_row_without_stalling_the_tick():
+    """A malformed cron must cost ONE subscription, not every subscription behind it.
+
+    The reschedule used to sit outside the per-subscription try. `next_cron` raises ValueError for
+    an expression it can never satisfy and `_field_matches` raises on a bad token or `*/0`, so the
+    exception escaped `process_due` entirely: every row after the bad one was skipped, and because
+    the bad row stayed due it repeated on EVERY tick. One typo silently froze every later schedule.
+
+    Ordering is explicit here — the bad row must come FIRST, or the test passes without the fix.
+    """
+    s = SubscriptionStore(":memory:")
+    now = time.time()
+    for sid, cron, interval in (("bad", "*/0 * * * *", 0), ("good", "", 300)):
+        s.upsert(
+            Subscription(
+                id=sid,
+                mode="CRON",
+                target_agent="x",
+                backend="native",
+                interval_seconds=interval,
+                cron_expr=cron,
+                next_fire=now - 1,  # both due
+                prompt="p",
+            )
+        )
+    fired = []
+    got = asyncio.run(ns.process_due(s, now, lambda sub: _noop(fired, sub)))
+
+    assert "good" in got, "a later subscription was stalled by the unschedulable one"
+    assert s.get("bad") is None, "the unschedulable row must be retired, not left due forever"
+    assert s.get("good") is not None and s.get("good").next_fire > now
+
+
 def test_scheduler_gate():
     os.environ["EVENTS_SCHEDULER"] = "ap"
     assert ns.enabled() is False
@@ -206,6 +249,23 @@ def test_cron_arms_native_no_ap():
     sub = subs[0]
     assert sub.backend == "native" and sub.ap_flow_id is None
     assert sub.interval_seconds == 300 and sub.next_fire > 0
+    del os.environ["EVENTS_SCHEDULER"]
+
+
+def test_arming_refuses_an_unsatisfiable_cron_instead_of_storing_it():
+    """A cron nobody can satisfy must be refused at ARM time, with a message a human can act on.
+
+    Previously the first-fire calculation happened outside any guard, so `*/0` either raised out of
+    the tool (a stack trace to the user) or — before the parser rejected it — armed a row that blew
+    up the scheduler the moment it came due. Nothing should be stored either way.
+    """
+    os.environ["EVENTS_SCHEDULER"] = "native"
+    focf, store = _tools(engine=None)
+    reply = asyncio.run(
+        focf.ainvoke({"agent": "cuga", "kind": "cron", "prompt": "say hello", "cron": "*/0 * * * *"})
+    )
+    assert "error" in reply.lower() and "schedule" in reply.lower(), reply
+    assert store.list() == [], "an unsatisfiable schedule must not be armed"
     del os.environ["EVENTS_SCHEDULER"]
 
 

@@ -3,7 +3,7 @@
 Proves the identity foundation (decision 0007): two users are isolated, per-agent permissions
 gate what each may use, and channel account-linking binds a native id to a profile.
 
-Prereq: server with EVENTS_ENABLED=1 EVENTS_SEED_AGENTS=1 (seeds users admin/alice/bob +
+Prereq: the EVENTS SERVICE running with EVENTS_SEED_AGENTS=1 (seeds users admin/alice/bob +
 agents; market_briefer is access=[builder,admin]). Env: EVENTS_SERVER_URL, GATEWAY_TOKEN.
 """
 

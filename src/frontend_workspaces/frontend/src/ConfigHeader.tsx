@@ -12,7 +12,7 @@ export function ConfigHeader({
   onToggleWorkspace,
 }: ConfigHeaderProps) {
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
-  // Show the Events Studio entry only when the events layer is mounted (EVENTS_ENABLED).
+  // Show the Events Studio entry only when the events SERVICE answers (see getEventsStatus).
   // Vanilla CUGA (flag off) → getEventsStatus() returns null → link stays hidden.
   const [studioOn, setStudioOn] = useState(false);
   useEffect(() => {

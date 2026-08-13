@@ -66,3 +66,101 @@ def test_mention_gate_group_fails_open_without_username(monkeypatch):
     monkeypatch.delenv("EVENTS_TELEGRAM_BOT_USERNAME", raising=False)
     ok, _ = T.mention_gate(_msg(text="anything", chat_type="group"))
     assert ok is True  # can't detect a mention → never silently drop
+
+
+# ── non-200 back-off: the long-poll must never spin ──────────────────────────
+class _Resp:
+    """Minimal stand-in for an httpx response — backoff_seconds is duck-typed on purpose."""
+
+    def __init__(self, status=429, body=None, headers=None, text=""):
+        self.status_code = status
+        self._body = body
+        self.headers = headers or {}
+        self.text = text
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("not JSON")
+        return self._body
+
+
+def test_backoff_honours_retry_after_from_the_body():
+    """Telegram states the wait authoritatively in the 429 body. Retrying sooner earns another 429."""
+    r = _Resp(body={"ok": False, "error_code": 429, "parameters": {"retry_after": 30}})
+    assert T.backoff_seconds(r) == 30.0
+
+
+def test_backoff_falls_back_to_the_retry_after_header():
+    """A proxy in front of the API sets the header instead of the body."""
+    assert T.backoff_seconds(_Resp(body={"ok": False}, headers={"Retry-After": "12"})) == 12.0
+
+
+def test_backoff_defaults_when_the_body_is_not_json():
+    """401/409 return an HTML error page. Default rather than crash — and never zero."""
+    assert T.backoff_seconds(_Resp(status=401, text="<html>nope</html>")) == T.BACKOFF_DEFAULT
+
+
+def test_backoff_defaults_on_a_nonsense_value():
+    for bad in (0, -1, "soon", None):
+        r = _Resp(body={"parameters": {"retry_after": bad}})
+        assert T.backoff_seconds(r) == T.BACKOFF_DEFAULT, bad
+
+
+def test_backoff_is_capped():
+    """A hostile or fat-fingered retry_after must not wedge the poller for hours."""
+    r = _Resp(body={"parameters": {"retry_after": 99999}})
+    assert T.backoff_seconds(r) == T.BACKOFF_MAX
+
+
+def test_non_200_sleeps_instead_of_hot_looping(monkeypatch):
+    """The regression itself: a 429 used to complete the loop with updates=[] and NO sleep, so the
+    poller re-requested at full speed — pinning a CPU core and deepening the rate limit.
+
+    The loop is driven with a fake transport that always 429s; the assertion is that it slept the
+    body's retry_after on every pass rather than spinning.
+    """
+    import asyncio
+
+    slept, polls = [], []
+    stop = asyncio.Event()
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            if url.endswith("/deleteWebhook") or (params or {}).get("timeout") == 0:
+                return _Resp(status=200, body={"ok": True, "result": []})
+            # The POLL itself ends the loop after a few passes, so this test terminates whether or
+            # not the fix is present. Bounding on sleeps instead would hang forever on the buggy
+            # version — which is precisely the defect, and a hang is a useless failure report.
+            polls.append(1)
+            if len(polls) >= 4:
+                stop.set()
+            return _Resp(status=429, body={"parameters": {"retry_after": 7}}, text="Too Many Requests")
+
+    async def _sleep(sec):
+        slept.append(sec)
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setattr(T.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(T.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(T, "_get_me", lambda: _done({"username": "bot"}))
+
+    asyncio.run(T.run_poller(lambda msg: _done(None), stop=stop))
+    assert slept and all(s == 7.0 for s in slept), slept
+
+
+def _done(value):
+    """A coroutine that immediately returns `value` — for monkeypatching async seams."""
+
+    async def _c():
+        return value
+
+    return _c()

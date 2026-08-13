@@ -23,7 +23,7 @@ import seed  # noqa: E402
 import triggers  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-ROSTER = os.path.join(ROOT, "supervisor_agents.yaml")
+ROSTER = os.path.join(ROOT, "docs", "examples", "events", "supervisor_agents.yaml")
 
 
 def _roster():
