@@ -12,8 +12,6 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
-from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
 from cuga.backend.tools_env.registry.utils.schema_utils import json_schema_type
 
@@ -63,6 +61,25 @@ def resolve_cuga_lite_few_shots_enabled(
     if "cuga_lite_enable_few_shots" in prof:
         return _coerce_bool_setting(prof["cuga_lite_enable_few_shots"])
     return few_shots_enabled_from_settings()
+
+
+def _configurable_of(run_config: Optional[Any]) -> Dict[str, Any]:
+    """Pull ``configurable`` out of a RunnableConfig, tolerating any shape.
+
+    ``run_config`` reaches shortlisting from several call sites and is sometimes
+    a plain dict, sometimes absent. Shortlister settings are never important
+    enough to fail a run over, so anything unexpected reads as "no overrides".
+    """
+    if not run_config:
+        return {}
+    try:
+        if isinstance(run_config, dict):
+            configurable = run_config.get("configurable")
+        else:
+            configurable = getattr(run_config, "configurable", None)
+        return configurable if isinstance(configurable, dict) else {}
+    except Exception:
+        return {}
 
 
 class Tool(BaseModel):
@@ -301,18 +318,23 @@ class PromptUtils:
         all_apps: List[AppDefinition],
         llm: Optional[Any] = None,
         run_config: Optional[Any] = None,
+        task_context: Optional[str] = None,
     ) -> str:
         """
         Search tools from given applications and return the relevant matching tools with reasoning.
 
-        This method uses an LLM to analyze available tools from all loaded applications and
-        select the ones needed for the query (including chaining). No fixed result count.
-        Each returned tool includes reasoning plus parameter and response documentation.
+        Ranking is delegated to the configured shortlister strategy (``[shortlister]
+        strategy``, default ``"llm"`` — the original behavior). See
+        ``docs/design/pluggable-shortlister.md``.
 
         Args:
             query: A natural language query describing what tools are needed.
             all_tools: List of all available tools
             all_apps: List of all available app definitions
+            task_context: The initial user message, kept separate from ``query`` so a
+                non-LLM strategy can weight the two (the LLM strategy re-joins them into
+                the string it has always sent). When omitted, ``query`` is assumed to be
+                already composed.
 
         Returns:
             str: A markdown-formatted string of matching tools, each with:
@@ -321,141 +343,41 @@ class PromptUtils:
                  - parameters: Formatted parameter documentation
                  - response schema: Response/return value schema
         """
-        prompt = create_chat_prompt_from_templates(
-            system_path='./prompts/shortlister/system.jinja2',
-            message_templates=[
-                (
-                    'human',
-                    """
-                Current Apps: {all_apps}
-                Current Available Tools: {all_tools}
-                """,
-                ),
-                ('ai', 'Sure, now give me the intent'),
-                ('human', '{input}'),
-            ],
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+            ShortlistRequest,
+            ShortlisterRouter,
+            render_tools_markdown,
+            run_shortlister,
         )
-        tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
-        from cuga.backend.llm.models import LLMManager
-        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
-            ShortListerOutputLite,
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import compose_query
+
+        plan = ShortlisterRouter.resolve(
+            settings, seam="discovery", configurable=_configurable_of(run_config)
         )
-        from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
+        # Below the threshold the cosine stage would add cost without cutting
+        # anything, so the LLM ranks the full set exactly as it does today.
+        # Uniform on purpose: "at or below threshold, shortlisting behaves as it
+        # always did" is easier to reason about than per-strategy exceptions.
+        # Set ``threshold = 0`` to always engage the configured strategy.
+        engage_cosine = len(all_tools) > plan.threshold
+        if not engage_cosine:
+            plan = plan.model_copy(update={"strategy": "llm", "instance": None})
 
-        llm_manager = LLMManager()
-        model = llm or llm_manager.get_model(settings.agent.code.model)
-        chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": "",
-            },
-            config=nested_langgraph_invoke_config(run_config),
+        candidates = await run_shortlister(
+            plan,
+            ShortlistRequest(
+                query=query,
+                tools=all_tools,
+                apps=all_apps,
+                task_context=task_context,
+                top_k=plan.top_k if engage_cosine else None,
+                max_results=plan.max_results if engage_cosine else None,
+                llm=llm,
+                run_config=run_config,
+            ),
         )
-
-        enriched_tools = []
-        for api_detail in response.result:
-            # Find the actual tool to get input schema and output schema
-            actual_tool = None
-            for t in all_tools:
-                if t.name == api_detail.name:
-                    actual_tool = t
-                    break
-
-            if not actual_tool:
-                continue
-
-            params_doc, response_doc = PromptUtils.get_tool_docs(actual_tool)
-
-            # Get input schema from the actual tool
-            input_schema = {}
-            if hasattr(actual_tool, 'args_schema') and actual_tool.args_schema:
-                try:
-                    input_schema = actual_tool.args_schema.schema()
-                except Exception:
-                    input_schema = {}
-
-            # Get output schema from response_schemas if available
-            output_schema = {}
-            if hasattr(actual_tool, 'func') and hasattr(actual_tool.func, '_response_schemas'):
-                response_schemas = actual_tool.func._response_schemas
-                if response_schemas and isinstance(response_schemas, dict) and 'success' in response_schemas:
-                    raw_output_schema = response_schemas['success']
-                    # Ensure output_schema is always a dict
-                    if isinstance(raw_output_schema, list):
-                        # If it's a list, wrap it in a proper JSON schema format
-                        if len(raw_output_schema) > 0 and isinstance(raw_output_schema[0], dict):
-                            # List of objects - create array schema with items
-                            output_schema = {"type": "array", "items": raw_output_schema[0]}
-                        else:
-                            # List of primitives - create array schema
-                            output_schema = {
-                                "type": "array",
-                                "items": raw_output_schema[0] if raw_output_schema else {},
-                            }
-                    elif isinstance(raw_output_schema, dict):
-                        output_schema = raw_output_schema
-                    else:
-                        # Fallback for other types
-                        output_schema = {"value": raw_output_schema} if raw_output_schema is not None else {}
-
-            enriched_tool = Tool(
-                name=api_detail.name,
-                input=VariableUtils.sanitize_value(input_schema),
-                reasoning=api_detail.reasoning,
-                output_schema=VariableUtils.sanitize_value(output_schema),
-                params_doc=params_doc,
-                response_doc=response_doc,
-            )
-            enriched_tools.append(enriched_tool)
-
-        if not enriched_tools:
-            return "No matching tools found for your query."
-
-        tool_descriptions = {
-            tool.name: getattr(tool, 'description', None)
-            for tool in all_tools
-            if hasattr(tool, 'description')
-        }
-
-        markdown_lines = [
-            f"# Found {len(enriched_tools)} Matching Tool(s)\n",
-            f"**Query:** {query}\n",
-        ]
-
-        for idx, tool in enumerate(enriched_tools, 1):
-            markdown_lines.append(f"## {idx}. `{tool.name}`\n")
-
-            tool_description = tool_descriptions.get(tool.name)
-            if tool_description:
-                markdown_lines.append(f"**Description:** {tool_description}\n")
-
-            markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
-
-            if tool.params_doc:
-                markdown_lines.append("**Parameters:**\n")
-                markdown_lines.append(f"{tool.params_doc}\n")
-            else:
-                markdown_lines.append("**Parameters:** No parameters required\n")
-
-            if tool.response_doc:
-                markdown_lines.append("**Response Schema:**\n")
-                markdown_lines.append(f"{tool.response_doc}\n")
-
-            if tool.input_ and tool.input_ != {}:
-                markdown_lines.append("**Input Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
-
-            if tool.output_schema and tool.output_schema != {}:
-                markdown_lines.append("**Output Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
-
-            markdown_lines.append("---\n")
-
-        return "\n".join(markdown_lines)
+        display_query = compose_query(query, task_context) if task_context else query
+        return render_tools_markdown(candidates, all_tools, display_query)
 
     @staticmethod
     async def shortlist_tool_names(
@@ -481,62 +403,42 @@ class PromptUtils:
         if not query or not query.strip():
             return []
 
-        from cuga.backend.llm.models import LLMManager
-        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
-            ShortListerOutputLite,
-        )
-        from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-
-        effective_instructions = (
-            instructions
-            if instructions is not None
-            else (
-                f"Return the {top_k} most relevant tools (or fewer if not enough are relevant), "
-                "ordered best-first by relevance. Do not exceed this count."
-            )
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+            ShortlistRequest,
+            ShortlisterRouter,
+            run_shortlister,
         )
 
-        prompt = create_chat_prompt_from_templates(
-            system_path='./prompts/shortlister/system.jinja2',
-            message_templates=[
-                (
-                    'human',
-                    """
-                Current Apps: {all_apps}
-                Current Available Tools: {all_tools}
-                """,
-                ),
-                ('ai', 'Sure, now give me the intent'),
-                ('human', '{input}'),
-            ],
-        )
-        tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
+        plan = ShortlisterRouter.resolve(settings, seam="bind_cap", configurable=_configurable_of(run_config))
+        # ``top_k`` here is the provider cap the caller computed; it is a hard
+        # ceiling, so never let a configured value raise it.
+        effective_top_k = min(top_k, plan.top_k) if plan.top_k else top_k
+        if len(all_tools) <= plan.threshold:
+            plan = plan.model_copy(update={"strategy": "llm", "instance": None})
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
-
-        llm_manager = LLMManager()
-        model = llm or llm_manager.get_model(settings.agent.code.model)
-        chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": effective_instructions,
-            },
-            config=nested_langgraph_invoke_config(run_config),
+        candidates = await run_shortlister(
+            plan,
+            ShortlistRequest(
+                query=query,
+                tools=all_tools,
+                apps=all_apps,
+                top_k=effective_top_k,
+                llm=llm,
+                run_config=run_config,
+                instructions=instructions,
+            ),
         )
 
         valid_names = {t.name for t in all_tools}
         ranked: List[str] = []
         seen: set = set()
-        for api_detail in getattr(response, "result", None) or []:
-            name = getattr(api_detail, "name", None)
+        for candidate in candidates:
+            name = getattr(candidate, "name", None)
             if not name or name in seen or name not in valid_names:
                 continue
             seen.add(name)
             ranked.append(name)
-            if len(ranked) >= top_k:
+            if len(ranked) >= effective_top_k:
                 break
         return ranked
 
