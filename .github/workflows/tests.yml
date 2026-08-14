@@ -107,6 +107,10 @@ jobs:
           uv run pytest \
             tests/unit/test_knowledge_init_failure_isolation.py \
             tests/unit/test_shortlister_name_validation.py
+          # Pluggable shortlister (#624): every config surface must stay wired —
+          # a key reachable from settings but not the SDK reads as "config does nothing".
+          uv run pytest tests/unit/test_shortlister_config_surfaces.py \
+            tests/unit/test_find_tools_exception.py
           # call_model prompt assembly: the variables addendum must reach the model
           # but never be persisted into history (#600) — unbounded copies previously
           # exhausted the context window mid-task.

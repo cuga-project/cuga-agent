@@ -6,6 +6,7 @@ from typing import Any, ClassVar, List
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+    Shortlister,
     ShortlistRequest,
     ShortlistCandidate,
     ShortlisterPlan,
@@ -14,6 +15,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
     clear_instance_cache,
     resolve_shortlister,
     run_shortlister,
+    shortlister_to_configurable,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
@@ -123,14 +125,14 @@ def test_override_beats_configurable():
     plan = ShortlisterRouter.resolve(
         _settings(strategy="llm"),
         configurable={"shortlister_strategy": "embedding"},
-        override=SimpleNamespace(strategy="hybrid"),
+        override=Shortlister(strategy="hybrid"),
     )
     assert plan.strategy == "hybrid"
 
 
 def test_injected_instance_wins_over_named_strategy():
     custom = CustomShortlister()
-    plan = ShortlisterRouter.resolve(_settings(strategy="embedding"), override=custom)
+    plan = ShortlisterRouter.resolve(_settings(strategy="embedding"), override=Shortlister(instance=custom))
     assert resolve_shortlister(plan) is custom
 
 
@@ -210,3 +212,22 @@ async def test_ordinary_errors_are_not_swallowed():
     plan = ShortlisterPlan(strategy="embedding", instance=Boom())
     with pytest.raises(RuntimeError, match="ranking blew up"):
         await run_shortlister(plan, ShortlistRequest(query="q", tools=[], apps=[]))
+
+
+# --- SDK serialization ------------------------------------------------------
+
+
+def test_shortlister_to_configurable_is_empty_when_unset():
+    assert shortlister_to_configurable(None) == {}
+    assert shortlister_to_configurable(Shortlister()) == {}
+
+
+def test_shortlister_to_configurable_emits_only_set_fields():
+    cfg = shortlister_to_configurable(Shortlister(strategy="hybrid", top_k=32))
+    assert cfg == {"shortlister_strategy": "hybrid", "shortlister_top_k": 32}
+
+
+def test_shortlister_to_configurable_passes_an_instance_through():
+    custom = CustomShortlister()
+    cfg = shortlister_to_configurable(Shortlister(instance=custom))
+    assert cfg["shortlister_instance"] is custom
