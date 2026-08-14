@@ -15,6 +15,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
     resolve_shortlister,
     run_shortlister,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
 
 pytestmark = pytest.mark.unit
@@ -53,8 +55,12 @@ def _settings(**kwargs):
 # --- built-ins --------------------------------------------------------------
 
 
-def test_builtin_llm_strategy_resolves():
-    assert isinstance(resolve_shortlister(ShortlisterPlan(strategy="llm")), LLMShortlister)
+@pytest.mark.parametrize(
+    "name,expected",
+    [("llm", LLMShortlister), ("embedding", EmbeddingShortlister), ("hybrid", HybridShortlister)],
+)
+def test_builtin_strategies_resolve(name, expected):
+    assert isinstance(resolve_shortlister(ShortlisterPlan(strategy=name)), expected)
 
 
 def test_unknown_bare_name_is_rewritten_by_the_router():
@@ -79,6 +85,11 @@ def test_dotted_path_loads_a_custom_strategy():
     assert isinstance(strategy, CustomShortlister)
 
 
+def test_dotted_path_receives_the_plan():
+    plan = ShortlisterPlan(strategy=f"{__name__}.CustomShortlister", top_k=7)
+    assert resolve_shortlister(plan).plan.top_k == 7
+
+
 def test_broken_dotted_path_falls_back_rather_than_crashing():
     plan = ShortlisterPlan(strategy="does.not.Exist", fallback_strategy="llm")
     assert isinstance(resolve_shortlister(plan), LLMShortlister)
@@ -87,7 +98,74 @@ def test_broken_dotted_path_falls_back_rather_than_crashing():
 # --- precedence -------------------------------------------------------------
 
 
+def test_configurable_beats_settings():
+    plan = ShortlisterRouter.resolve(
+        _settings(strategy="llm", top_k=99),
+        configurable={"shortlister_strategy": "embedding", "shortlister_top_k": 12},
+    )
+    assert plan.strategy == "embedding"
+    assert plan.top_k == 12
+
+
+def test_per_seam_section_beats_global():
+    settings = SimpleNamespace(
+        shortlister=SimpleNamespace(
+            strategy="llm",
+            bind_cap=SimpleNamespace(strategy="embedding"),
+            discovery=SimpleNamespace(strategy="hybrid"),
+        )
+    )
+    assert ShortlisterRouter.resolve(settings, seam="bind_cap").strategy == "embedding"
+    assert ShortlisterRouter.resolve(settings, seam="discovery").strategy == "hybrid"
+
+
+def test_override_beats_configurable():
+    plan = ShortlisterRouter.resolve(
+        _settings(strategy="llm"),
+        configurable={"shortlister_strategy": "embedding"},
+        override=SimpleNamespace(strategy="hybrid"),
+    )
+    assert plan.strategy == "hybrid"
+
+
+def test_injected_instance_wins_over_named_strategy():
+    custom = CustomShortlister()
+    plan = ShortlisterRouter.resolve(_settings(strategy="embedding"), override=custom)
+    assert resolve_shortlister(plan) is custom
+
+
+def test_env_style_string_values_are_coerced():
+    """Env vars arrive as strings; ints/floats/bools must still land correctly."""
+    plan = ShortlisterRouter.resolve(_settings(top_k="64", min_score="0.42", threshold="256"))
+    assert plan.top_k == 64
+    assert plan.min_score == pytest.approx(0.42)
+    assert plan.threshold == 256
+
+
+def test_garbage_value_falls_through_to_the_default():
+    plan = ShortlisterRouter.resolve(_settings(top_k="not-a-number"))
+    assert plan.top_k == 128
+
+
 # --- caching ----------------------------------------------------------------
+
+
+def test_instances_are_cached_so_the_model_loads_once():
+    a = resolve_shortlister(ShortlisterPlan(strategy="embedding"))
+    b = resolve_shortlister(ShortlisterPlan(strategy="embedding"))
+    assert a is b
+
+
+def test_different_embedding_models_get_different_instances():
+    a = resolve_shortlister(ShortlisterPlan(strategy="embedding", embedding_model="model-a"))
+    b = resolve_shortlister(ShortlisterPlan(strategy="embedding", embedding_model="model-b"))
+    assert a is not b
+
+
+def test_per_call_knobs_do_not_fragment_the_cache():
+    a = resolve_shortlister(ShortlisterPlan(strategy="embedding", top_k=10))
+    b = resolve_shortlister(ShortlisterPlan(strategy="embedding", top_k=99))
+    assert a is b
 
 
 # --- fallback ---------------------------------------------------------------
@@ -132,29 +210,3 @@ async def test_ordinary_errors_are_not_swallowed():
     plan = ShortlisterPlan(strategy="embedding", instance=Boom())
     with pytest.raises(RuntimeError, match="ranking blew up"):
         await run_shortlister(plan, ShortlistRequest(query="q", tools=[], apps=[]))
-
-
-def test_configurable_beats_settings():
-    plan = ShortlisterRouter.resolve(
-        _settings(strategy="llm"), configurable={"shortlister_strategy": f"{__name__}.CustomShortlister"}
-    )
-    assert plan.strategy == f"{__name__}.CustomShortlister"
-
-
-def test_per_seam_section_beats_global():
-    dotted = f"{__name__}.CustomShortlister"
-    settings = SimpleNamespace(
-        shortlister=SimpleNamespace(strategy="llm", bind_cap=SimpleNamespace(strategy=dotted))
-    )
-    assert ShortlisterRouter.resolve(settings, seam="bind_cap").strategy == dotted
-    assert ShortlisterRouter.resolve(settings, seam="discovery").strategy == "llm"
-
-
-def test_injected_instance_wins_over_named_strategy():
-    custom = CustomShortlister()
-    plan = ShortlisterRouter.resolve(_settings(strategy="llm"), override=custom)
-    assert resolve_shortlister(plan) is custom
-
-
-def test_instances_are_cached():
-    assert resolve_shortlister(ShortlisterPlan()) is resolve_shortlister(ShortlisterPlan())

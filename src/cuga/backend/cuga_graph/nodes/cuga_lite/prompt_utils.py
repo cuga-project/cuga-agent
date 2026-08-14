@@ -465,6 +465,15 @@ class PromptUtils:
         plan = ShortlisterRouter.resolve(
             settings, seam="discovery", configurable=_configurable_of(run_config)
         )
+        # Below the threshold the cosine stage would add cost without cutting
+        # anything, so the LLM ranks the full set exactly as it does today.
+        # Uniform on purpose: "at or below threshold, shortlisting behaves as it
+        # always did" is easier to reason about than per-strategy exceptions.
+        # Set ``threshold = 0`` to always engage the configured strategy.
+        engage_cosine = len(all_tools) > plan.threshold
+        if not engage_cosine:
+            plan = plan.model_copy(update={"strategy": "llm", "instance": None})
+
         result = await run_shortlister(
             plan,
             ShortlistRequest(
@@ -472,12 +481,22 @@ class PromptUtils:
                 tools=all_tools,
                 apps=all_apps,
                 task_context=task_context,
+                top_k=plan.top_k if engage_cosine else None,
+                max_results=plan.max_results if engage_cosine else None,
                 llm=llm,
                 run_config=run_config,
             ),
         )
+        candidates = result.candidates
+        # Enforce the render cap here rather than inside a strategy: it is a
+        # property of what find_tools may print, not of how a ranker scores.
+        # Applied only when the cosine stage is engaged, so the default LLM path
+        # keeps its historical "no fixed result count" behavior untouched.
+        if engage_cosine and plan.max_results:
+            candidates = candidates[: plan.max_results]
+
         display_query = compose_query(query, task_context) if task_context else query
-        return render_tools_markdown(result.candidates, all_tools, display_query, result.notes)
+        return render_tools_markdown(candidates, all_tools, display_query, result.notes)
 
     @staticmethod
     async def shortlist_tool_names(
@@ -510,13 +529,19 @@ class PromptUtils:
         )
 
         plan = ShortlisterRouter.resolve(settings, seam="bind_cap", configurable=_configurable_of(run_config))
+        # ``top_k`` here is the provider cap the caller computed; it is a hard
+        # ceiling, so never let a configured value raise it.
+        effective_top_k = min(top_k, plan.top_k) if plan.top_k else top_k
+        if len(all_tools) <= plan.threshold:
+            plan = plan.model_copy(update={"strategy": "llm", "instance": None})
+
         result = await run_shortlister(
             plan,
             ShortlistRequest(
                 query=query,
                 tools=all_tools,
                 apps=all_apps,
-                top_k=top_k,
+                top_k=effective_top_k,
                 llm=llm,
                 run_config=run_config,
                 instructions=instructions,
@@ -535,7 +560,7 @@ class PromptUtils:
                 continue
             seen.add(name)
             ranked.append(name)
-            if len(ranked) >= top_k:
+            if len(ranked) >= effective_top_k:
                 break
         return ranked
 
