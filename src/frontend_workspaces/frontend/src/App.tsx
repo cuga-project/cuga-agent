@@ -17,7 +17,7 @@ import "./global.css";
 // every vanilla CUGA user downloaded it and never used it. React.lazy makes webpack emit it as a
 // separate chunk fetched on navigation.
 const StudioPage = React.lazy(() =>
-  import("./StudioPage").then((m) => ({ default: m.StudioPage }))
+  import("./events/StudioPage").then((m) => ({ default: m.StudioPage }))
 );
 
 function RouteRoot({ children }: { children: React.ReactNode }) {

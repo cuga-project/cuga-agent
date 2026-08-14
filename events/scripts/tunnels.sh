@@ -14,7 +14,7 @@
 #   events/scripts/tunnels.sh --down     # stop both tunnel agents
 #   events/scripts/tunnels.sh --restart  # down then up
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."   # events/scripts -> events -> repo root
 RUN=/tmp/events_up; mkdir -p "$RUN"
 AP_PORT=8081
 # The public tunnel fronts the EVENTING SERVICE (:8100), not CUGA (:7860) — Slack's Request URL and

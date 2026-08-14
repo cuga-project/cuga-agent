@@ -11,7 +11,7 @@
 #   events/scripts/events_up.sh --stop   # stop
 #   events/scripts/events_up.sh --status # show what's running + URLs
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."   # events/scripts -> events -> repo root
 REPO="$(pwd)"
 REGISTRY_PORT="${EVENTS_REGISTRY_PORT:-8001}"
 CUGA_PORT="${CUGA_PORT:-7860}"

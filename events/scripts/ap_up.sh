@@ -12,7 +12,7 @@
 # Secrets are generated once into .ap.env (gitignored) and reused, so the volume's encrypted data
 # keeps decrypting across recreates.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."   # events/scripts -> events -> repo root
 AP_PORT="${AP_PORT:-8081}"
 NET=ap-net
 D="$(command -v podman || command -v docker || true)"

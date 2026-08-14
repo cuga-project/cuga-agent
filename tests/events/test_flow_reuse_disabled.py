@@ -52,6 +52,8 @@ def _arm_tool(tmp_path):
     rt.upsert_agent(AgentSpec(name="cuga", prompt="a test agent"), scope="default")
     store = SubscriptionStore(str(tmp_path / "subs.db"))
     tools = concierge.make_concierge_tools(rt, store=store, engine=None, users=None)
+    # Arming is slash-only; stand in for the approval run() would have granted.
+    concierge._arm_allowed.set(True)
     return next(t for t in tools if t.name == "find_or_create_flow"), store
 
 

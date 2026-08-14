@@ -11,7 +11,7 @@
 #   events/scripts/arm_channels.sh            # arm all configured channels
 #   events/scripts/arm_channels.sh --status   # show inbound-channel state without changing anything
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."   # events/scripts -> events -> repo root
 # The EVENTING SERVICE, not CUGA — /api/events/* lives there now (CUGA :7860 serves the agent and
 # the UI only). Pointing this at 7860 made every channel report "✗ None": the route 404s.
 CUGA="${EVENTS_SERVER_URL:-${EVENTS_CUGA_URL:-http://localhost:${EVENTS_SERVICE_PORT:-8100}}}"

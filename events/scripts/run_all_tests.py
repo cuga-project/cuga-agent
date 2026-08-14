@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
+REPO = pathlib.Path(__file__).resolve().parents[2]  # events/scripts -> events -> repo root
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # (key, make target, extra env, what question it answers, rough minutes)
@@ -449,7 +449,7 @@ def write_html(prov, st, subs_after, results, outdir) -> pathlib.Path:
     Written twice: next to the logs (permanent record of this run) and to results/index.html (always
     the latest). They differ only in how the raw-log links resolve.
     """
-    sys.path.insert(0, str(REPO / "scripts"))
+    sys.path.insert(0, str(REPO / "events" / "scripts"))
     from report_html import render_html
 
     steps = load_steps(outdir)

@@ -13,8 +13,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# scripts/ -> setup/ -> events/docs/ -> <repo root>
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# scripts/ -> setup/ -> docs/ -> events/ -> <repo root>
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 PASS, FAIL, SKIP = 0, 1, 3
 _TTY = sys.stdout.isatty()
