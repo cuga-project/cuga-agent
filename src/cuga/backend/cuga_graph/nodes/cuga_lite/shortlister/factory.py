@@ -21,6 +21,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
     ShortlisterStrategy,
     ShortlisterUnavailableError,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.plan import BUILTIN_STRATEGIES, ShortlisterPlan
 
@@ -36,8 +38,24 @@ def _build_llm(plan: ShortlisterPlan) -> LLMShortlister:
     return LLMShortlister()
 
 
-#: Built-in strategies. Additional rankers register here.
-_BUILDERS: Dict[str, Callable[[ShortlisterPlan], Any]] = {"llm": _build_llm}
+def _build_embedding(plan: ShortlisterPlan) -> EmbeddingShortlister:
+    return EmbeddingShortlister(
+        model_name=plan.embedding_model,
+        provider=plan.embedding_provider,
+        query_weight=plan.query_weight,
+        min_score=plan.min_score,
+    )
+
+
+def _build_hybrid(plan: ShortlisterPlan) -> HybridShortlister:
+    return HybridShortlister(embedding=_build_embedding(plan), llm=_build_llm(plan))
+
+
+_BUILDERS: Dict[str, Callable[[ShortlisterPlan], Any]] = {
+    "llm": _build_llm,
+    "embedding": _build_embedding,
+    "hybrid": _build_hybrid,
+}
 
 
 def _build_from_dotted_path(path: str, plan: ShortlisterPlan) -> Any:

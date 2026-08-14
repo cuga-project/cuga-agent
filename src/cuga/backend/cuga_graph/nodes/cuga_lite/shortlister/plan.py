@@ -19,16 +19,28 @@ from pydantic import BaseModel, Field
 
 Seam = Literal["discovery", "bind_cap"]
 
-BUILTIN_STRATEGIES = ("llm",)
+BUILTIN_STRATEGIES = ("llm", "embedding", "hybrid")
 
 # Defaults live here, not in settings.toml, so a missing section can never break
 # resolution. settings.toml restates them for discoverability.
 DEFAULT_STRATEGY = "llm"
 DEFAULT_FALLBACK_STRATEGY = "llm"
+DEFAULT_THRESHOLD = 128
+DEFAULT_TOP_K = 128
+DEFAULT_MAX_RESULTS = 10
+DEFAULT_MIN_SCORE = 0.15
+DEFAULT_QUERY_WEIGHT = 0.7
+DEFAULT_EMBEDDING_PROVIDER = "local"
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-_INT_FIELDS: tuple = ()
-_FLOAT_FIELDS: tuple = ()
-_STR_FIELDS = ("strategy", "fallback_strategy")
+_INT_FIELDS = ("threshold", "top_k", "max_results")
+_FLOAT_FIELDS = ("min_score", "query_weight")
+_STR_FIELDS = (
+    "strategy",
+    "fallback_strategy",
+    "embedding_provider",
+    "embedding_model",
+)
 ALL_FIELDS = _INT_FIELDS + _FLOAT_FIELDS + _STR_FIELDS
 
 #: ``configurable`` keys, e.g. ``shortlister_strategy``.
@@ -41,15 +53,35 @@ class ShortlisterPlan(BaseModel):
     seam: Seam = "discovery"
     strategy: str = DEFAULT_STRATEGY
     fallback_strategy: str = DEFAULT_FALLBACK_STRATEGY
+    threshold: int = DEFAULT_THRESHOLD
+    top_k: int = DEFAULT_TOP_K
+    max_results: int = DEFAULT_MAX_RESULTS
+    min_score: float = DEFAULT_MIN_SCORE
+    query_weight: float = DEFAULT_QUERY_WEIGHT
+    embedding_provider: str = DEFAULT_EMBEDDING_PROVIDER
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
     #: Live strategy object injected via the SDK; bypasses ``strategy``.
     instance: Optional[Any] = Field(default=None, exclude=True)
     notes: List[str] = Field(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 
+    @property
+    def is_llm_only(self) -> bool:
+        """True when no cosine stage can run — i.e. today's behavior exactly."""
+        return self.instance is None and self.strategy == "llm"
+
     def cache_key(self) -> str:
         """Identity for the strategy-instance cache (excludes per-call knobs)."""
-        return "|".join([self.strategy, self.fallback_strategy])
+        return "|".join(
+            [
+                self.strategy,
+                self.fallback_strategy,
+                self.embedding_provider,
+                self.embedding_model,
+                f"qw={self.query_weight}",
+            ]
+        )
 
 
 def _coerce(field_name: str, raw: Any) -> Any:
@@ -131,6 +163,10 @@ class ShortlisterRouter:
                 f"or a dotted class path)"
             )
             plan.strategy = DEFAULT_STRATEGY
+        if plan.top_k < 0:
+            plan.top_k = 0
+        if plan.max_results <= 0:
+            plan.max_results = DEFAULT_MAX_RESULTS
         return plan
 
 

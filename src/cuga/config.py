@@ -223,6 +223,13 @@ validators = [
     # Defaults mirror shortlister/plan.py so a missing [shortlister] section is safe.
     Validator("shortlister.strategy", default="llm"),
     Validator("shortlister.fallback_strategy", default="llm"),
+    Validator("shortlister.threshold", default=128, is_type_of=int),
+    Validator("shortlister.top_k", default=128, is_type_of=int),
+    Validator("shortlister.max_results", default=10, is_type_of=int),
+    Validator("shortlister.min_score", default=0.15),
+    Validator("shortlister.query_weight", default=0.7),
+    Validator("shortlister.embedding_provider", default="local"),
+    Validator("shortlister.embedding_model", default="sentence-transformers/all-MiniLM-L6-v2"),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
