@@ -211,7 +211,7 @@ callbacks need a public URL. `make up` provisions both.
 There is exactly **one addressable agent — `cuga`**:
 
 - **`EVENTS_SUPERVISOR=1`** (recommended): `cuga` is a **supervisor** whose sub-agents load from
-  [`supervisor_agents.yaml`](../supervisor_agents.yaml) at the repo root — CUGA-main's canonical
+  [`supervisor_agents.yaml`](../docs/examples/events/supervisor_agents.yaml) — CUGA-main's canonical
   schema. It picks the right specialist per wake-up; answers bubble up. **Add/edit a sub-agent =
   edit the YAML + `make reload`.** Routing quality gate: `make test-delegation`.
 - **Unset**: `cuga` is the plain classic CUGA agent, exactly as main ships it (one generalist,
@@ -245,7 +245,7 @@ rosters (exec office, DevOps) need AP for their SaaS push triggers. See
 ### Adding a sub-agent (builder guide)
 
 A sub-agent is **a skill, not a deployment**: a name, a prompt, and tools. Append a block to your
-roster YAML (`supervisor_agents.yaml` by default):
+roster YAML (`docs/examples/events/supervisor_agents.yaml` by default):
 
 ```yaml
   - name: invoice_checker

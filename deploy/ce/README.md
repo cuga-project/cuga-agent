@@ -33,7 +33,7 @@ targets are unchanged; these are the CE parallels — `[CE]` in `make help`.**
 | Target | Does |
 |---|---|
 | `make ce-build` | cloud buildrun → ICR (`1_build_push_image.sh`) |
-| `make ce-deploy` | deploy/redeploy BOTH apps (supervisor + the 8-agent `supervisor_agents.yaml`; `CE_ROSTER=…` to change) |
+| `make ce-deploy` | deploy/redeploy BOTH apps (supervisor + the 8-agent `docs/examples/events/supervisor_agents.yaml`; `CE_ROSTER=…` to change) |
 | `make ce-smoke` | capability report + channels + a web-chat turn (`3_smoke.py`) |
 | **`make test-e2e-ce`** | **the CE parallel of `make test-e2e`** — real channel + fire e2e against the deployed app |
 | `make ce-status` | deploy status + the live capability report |
@@ -228,13 +228,13 @@ never changes):
 CUGA_CE_ADMIN=1 ./2_deploy.sh
 
 # supervisor over the full 27-agent roster (what the live deploy uses)
-CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=supervisor_agents.yaml ./2_deploy.sh
+CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=docs/examples/events/supervisor_agents.yaml ./2_deploy.sh
 
 # supervisor over a focused, curated roster
 CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy.sh
 ```
 `CE_EVENTS_SUPERVISOR=1` sets `EVENTS_SUPERVISOR=1`; `CE_ROSTER` sets
-`EVENTS_SUPERVISOR_ROSTER`. Every roster (`supervisor_agents.yaml` + all of `rosters/`)
+`EVENTS_SUPERVISOR_ROSTER`. Every roster (`docs/examples/events/supervisor_agents.yaml` + all of `rosters/`)
 is baked into the image, so any of them is available without a rebuild. Any
 `rosters/no_ap_*.yaml` (and the 27-agent default) runs with zero AP; the `ap_*` rosters
 only light up their SaaS triggers once Activepieces is deployed.
@@ -243,7 +243,7 @@ only light up their SaaS triggers once Activepieces is deployed.
 | File | Purpose |
 |---|---|
 | `config.sh` | account/region/project/registry + app sizing + admin guard |
-| `Dockerfile.events` | the image (`cuga start demo --events`) |
+| `Dockerfile.events` | the one image both apps run; `2_deploy.sh` picks the command per app |
 | `make_env_ce.sh` | build the gitignored `.env.ce` from your local `.env` |
 | `1_build_push_image.sh` | cloud buildrun → ICR |
 | `2_deploy.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |

@@ -15,7 +15,7 @@ It exercises, over real HTTP against the running server:
 
 Prereqs:
   registry (cuga-apps) + server with a live AP engine:
-    EVENTS_ENABLED=1 EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 AP_BASE_URL=… (AP up)
+    EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 AP_BASE_URL=… (AP up)
   For a FULL PUSH e2e, connect the integration first (per events_docs/setup/{BOX,GITHUB,GMAIL}.md):
     • Box/Gmail: GET /api/events/connect/{app}  (OAuth consent)
     • GitHub:    POST /api/events/connect/github/token  {token: <PAT>}

@@ -195,7 +195,7 @@ if [[ "${_n:-0}" -gt 1 ]]; then
 else
   echo "  ✗ roster: $_n agent(s) — the supervisor roster did NOT load."
   echo "    Every fired flow will run as the bare default agent with no sub-agents or scoped tools."
-  echo "    Fix: CE_EVENTS_SUPERVISOR=1 CE_ROSTER=supervisor_agents.yaml ./2_deploy.sh"
+  echo "    Fix: CE_EVENTS_SUPERVISOR=1 CE_ROSTER=docs/examples/events/supervisor_agents.yaml ./2_deploy.sh"
 fi
 
 # 2. Durability. "durable: false" means an instance replace silently deletes every armed flow.

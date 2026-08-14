@@ -120,6 +120,10 @@ deployment/certs/*.crt
 
 # Documentation — demo MCP sources now live under src/cuga/demo_tools (copied with image)
 docs/**
+# …except the events example rosters, which are RUNTIME config, not prose: CUGA_SUPERVISOR_ROSTER
+# points at docs/examples/events/supervisor_agents.yaml, so excluding it makes the deployed server
+# fall back to a single bare agent (FileNotFoundError at first /run/agents, roster: 0 agents).
+!docs/examples/events/**
 # Bundled demo tools: exclude local dev artifacts only
 src/cuga/demo_tools/**/.venv/
 src/cuga/demo_tools/**/build/

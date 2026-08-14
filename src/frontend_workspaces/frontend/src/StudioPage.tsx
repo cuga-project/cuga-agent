@@ -1166,7 +1166,7 @@ function AdminTab({ refresh }: { refresh: number }) {
   );
 }
 
-// The API reference, embedded — served by the backend (/api/events/docs/{api,examples,nlflow,slides})
+// The API reference, embedded — served by the backend (/api/events/docs/{api,examples})
 // so it renders inside the Studio.
 function ApiTab() {
   const base = api.getApiBaseUrl();

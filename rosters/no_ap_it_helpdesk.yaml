@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — IT Helpdesk / Support   [NO ACTIVEPIECES]
 # A support team that lives in team chat: answers IBM Cloud/doc questions, audits pasted code,
 # triages incidents, and posts digests. Every trigger is a DIRECT channel (Slack/Discord) — no AP.
-# Drop-in alternative to /supervisor_agents.yaml.
+# Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 # NOTE: incident_triage and support_digest normally also handles github/* and box/* — those need AP,
 # so they are trimmed here to the AP-free (Slack/Discord) triggers only.
 

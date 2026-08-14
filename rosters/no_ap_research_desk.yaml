@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Research & Strategy Desk   [NO ACTIVEPIECES]
 # A knowledge-worker team that answers deep questions and keeps an eye on the field.
 # Every trigger here is AP-free (Slack/Telegram direct channels + native RSS poll), so this
-# roster runs with ZERO Activepieces infra. Drop-in alternative to /supervisor_agents.yaml.
+# roster runs with ZERO Activepieces infra. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 # Agents are pulled verbatim from the canonical 27-agent roster — regrouped, not rewritten.
 
 supervisor:

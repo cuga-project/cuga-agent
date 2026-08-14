@@ -58,7 +58,7 @@ export MCP_SERVERS_FILE_IN_IMAGE="${MCP_SERVERS_FILE_IN_IMAGE:-/app/src/cuga/bac
 #
 # Set CE_EVENTS_SUPERVISOR=0 explicitly if you really want the classic generalist.
 export CE_EVENTS_SUPERVISOR="${CE_EVENTS_SUPERVISOR:-1}"     # "0" = classic, "1" = supervisor
-export CE_ROSTER="${CE_ROSTER:-supervisor_agents.yaml}"      # the 8-agent no-AP roster
+export CE_ROSTER="${CE_ROSTER:-docs/examples/events/supervisor_agents.yaml}"   # the 8-agent no-AP roster
 
 # ---- Secrets: pulled from a gitignored .env.ce into a CE secret -------------
 export SECRET_NAME="${SECRET_NAME:-cuga-events-secrets}"

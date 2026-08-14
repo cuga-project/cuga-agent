@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Team Comms Intelligence
 # A coherent family over team chat surfaces (Slack, Discord, Telegram): monitor channels,
 # triage incidents flagged by reactions, welcome/announce workspace-lifecycle events, and
-# post scheduled digests. Drop-in alternative to /supervisor_agents.yaml.
+# post scheduled digests. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 
 supervisor:
   name: cuga

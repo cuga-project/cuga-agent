@@ -4,9 +4,10 @@ Two new endpoints (events_docs/ARCHITECTURE.md):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
   - ``POST /api/concierge``  — NL → decide; ``?dry_run=1`` builds the flow without publishing.
 
-``register_events_routes(app, runtime=..., store=...)`` is called from CUGA's ``main.py``
-lifespan ONLY when the flag is on, so vanilla CUGA is untouched when off. fastapi is a CUGA
-dependency; the dependency-light core doesn't import this module.
+``register_events_routes(app, runtime=..., store=...)`` is called from ``events/service.py`` — the
+eventing service's OWN app. It is never called from CUGA's ``main.py``: the "combined" mode that
+mounted these routes onto CUGA, and the ``EVENTS_ENABLED`` flag that gated it, are both gone.
+Vanilla CUGA is untouched because it never imports this module at all.
 """
 
 from __future__ import annotations
@@ -1757,7 +1758,8 @@ def register_events_routes(
         Three pages were removed rather than left to 404:
           * ``spec`` — 204 KB of generated HTML restating an endpoint table, kept in git only so a
             --check test could diff against it. FastAPI serves the real contract at /docs.
-          * ``slides`` — events_docs/slides.html does not exist on any branch.
+          * ``slides`` — scripts/gen_slides.py can write events_docs/slides.html, but the file is
+            not committed, so the route 404'd on a clean checkout. Open the generated deck directly.
           * ``nlflow`` — the file is events_docs/runbook/nl-to-flow.html, a different directory AND
             a different spelling, so this never resolved either."""
         import pathlib

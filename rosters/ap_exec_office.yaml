@@ -2,7 +2,7 @@
 # A chief-of-staff team over the exec's inbox, calendar, and document flow. Its triggers are
 # SaaS push events (Gmail, Google Calendar, Box) that CUGA has no direct connection to, so this
 # roster REQUIRES Activepieces for the integration (piece) triggers. Chat still works AP-free;
-# it's the push triggers that need AP. Drop-in alternative to /supervisor_agents.yaml.
+# it's the push triggers that need AP. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 
 supervisor:
   name: cuga

@@ -9,7 +9,8 @@ Sources of truth (nothing in the deck is hand-typed twice):
     python scripts/gen_slides.py --check    # exit 1 if out of date (used by the consistency test)
 
 The deck is a single self-contained HTML file: ← → / space to navigate, `p` for print view
-(all slides), deep-linkable (#7). Served in the Studio via GET /api/events/docs/slides.
+(all slides), deep-linkable (#7). Open it directly — the Studio's API tab serves only api.html
+and examples.html, so this deck is not embedded there.
 """
 
 from __future__ import annotations
@@ -214,7 +215,12 @@ def build() -> str:
     try:
         import yaml as _yaml
 
-        n_roster = len((_yaml.safe_load(open(ROOT / "supervisor_agents.yaml")) or {}).get("agents") or [])
+        n_roster = len(
+            (
+                _yaml.safe_load(open(ROOT / "docs" / "examples" / "events" / "supervisor_agents.yaml")) or {}
+            ).get("agents")
+            or []
+        )
     except Exception:  # noqa: BLE001
         n_roster = 0
     slides.append(
@@ -228,7 +234,7 @@ def build() -> str:
 channels / triggers / webhooks ──► /invoke {{agent: "cuga", source, event}}
                                         │
                               cuga (SUPERVISOR, EVENTS_SUPERVISOR=1)
-                              reads its roster: supervisor_agents.yaml
+                              reads its roster: docs/examples/events/supervisor_agents.yaml
                                         │  picks ONE specialist per wake-up
                                         ▼
                      {n_roster} sub-agents — a skill each: prompt · tools · HANDLES-trigger hints

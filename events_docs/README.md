@@ -23,7 +23,7 @@ they post to `/run` like everyone else.
 | **[AUTOMATION_COOKBOOK.md](AUTOMATION_COOKBOOK.md)** | what to actually type — copy-pasteable asks matched to the 8 sub-agents in the roster |
 | **[CORE_VS_LAYER.md](CORE_VS_LAYER.md)** | how much of CUGA core we change (4 files, 17 lines removed), what works without Activepieces, and what re-enabling AP costs |
 | **[SETUP.md](SETUP.md)** + [setup/](setup/) | fresh machine → running stack, and a per-connector setup guide for each channel/integration (test-coupled: every trigger is documented here) |
-| **[api/](api/)** | the API reference ([api.html](api/api.html)), the try-it spec ([api_spec.html](api/api_spec.html)), and the examples board ([examples.html](api/examples.html)) — all generated and test-coupled to the code |
+| **[api/](api/)** | the API reference ([api.html](api/api.html)) and the examples board ([examples.html](api/examples.html)) — Studio UI assets, test-coupled to the code: a route with no entry in `api.html` fails the build |
 | **[runbook/](runbook/index.html)** | a technical deep-dive: architecture · channels · `/invoke` & concierge · NL→Flow · scheduler/polling · the API surface · per-agent examples — 8 self-contained no-AP HTML pages, each with a "Sources" footer naming the code it describes |
 | **[../deploy/ce/](../deploy/ce/README.md)** | deploy the events layer to IBM Code Engine (no-AP) and test/operate it from your machine (`make ce-*`, `make test-e2e-ce`) |
 
@@ -69,5 +69,6 @@ to keep the repo lean and drift-free. None of it is required to build, run, or t
 
 ## Conventions
 
-- **Generated, don't hand-edit:** `api/api_spec.html` (`scripts/gen_api_spec.py`), the examples
-  board's data (`scripts/gen_examples.py`). Offline tests fail the build if these drift from the code.
+- **Generated, don't hand-edit:** the examples board's data block (`scripts/gen_examples.py`).
+  An offline test fails the build if it drifts from the code. `api.html` is hand-written, and is
+  likewise test-coupled — every route must appear in it.

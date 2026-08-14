@@ -125,7 +125,7 @@ Automated version of exactly that:
 **Starting them by hand** (what `make up-noap` does for you):
 ```bash
 # 1. CUGA as the supervisor. The roster must be here: this is where execution happens.
-CUGA_SUPERVISOR_ROSTER=supervisor_agents.yaml \
+CUGA_SUPERVISOR_ROSTER=docs/examples/events/supervisor_agents.yaml \
 MCP_SERVERS_FILE=src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml \
   .venv/bin/cuga start demo                    # :7860
 

@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Market & Research Intelligence
 # A coherent family that WATCHES the outside world (feeds, videos, boards, markets, papers)
 # and delivers digests, briefs, and change-alerts. Built to run on schedules and content
-# triggers. Drop-in alternative to /supervisor_agents.yaml.
+# triggers. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 
 supervisor:
   name: cuga

@@ -1,5 +1,5 @@
 # CUGA supervisor — the EXTRAS roster: everything in the 27-agent example that is not
-# in the 8-agent core (supervisor_agents.yaml). Mostly variations on web/text —
+# in the 8-agent core (docs/examples/events/supervisor_agents.yaml). Mostly variations on web/text —
 # research, media, travel, ops. Nothing here needs Activepieces.
 #
 # Use it to try a different agent mix without editing the core:

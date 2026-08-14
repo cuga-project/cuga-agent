@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""One-shot conversion: the seeded worker fleet → supervisor_agents.yaml (CUGA-main's CANONICAL
+"""One-shot conversion: the seeded worker fleet → the canonical supervisor roster (CUGA-main's
 supervisor schema, consumed by load_supervisor_config).
 
-    python scripts/gen_supervisor_roster.py            # writes ./supervisor_agents.yaml
+    python scripts/gen_supervisor_roster.py   # writes docs/examples/events/supervisor_agents.yaml
 
 After conversion the YAML is the SOURCE OF TRUTH for sub-agents (edit it by hand; `make reload`
 rebuilds). This script stays only to re-derive the file during the transition — it is NOT a
@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
-OUT = ROOT / "supervisor_agents.yaml"
+OUT = ROOT / "docs" / "examples" / "events" / "supervisor_agents.yaml"
 
 SUPERVISOR_INSTRUCTIONS = """\
 You are CUGA. You coordinate specialist sub-agents. For EVERY task — even one that looks trivial,

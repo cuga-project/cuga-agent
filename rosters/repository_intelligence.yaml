@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Repository Intelligence
 # A coherent family over a GitHub repository: review code, triage issues, narrate lifecycle
 # events, compose release notes, and watch for security risk. Drop-in alternative to
-# /supervisor_agents.yaml. GitHub is trigger-rich (14 triggers) — this family covers them all.
+# docs/examples/events/supervisor_agents.yaml. GitHub is trigger-rich (14 triggers) — this family covers them all.
 
 supervisor:
   name: cuga

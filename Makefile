@@ -20,7 +20,7 @@ CE_CORE_APP ?= cuga-core           # vanilla CUGA (agent + UI)
 CE_PROJECT ?= ce-project-routing
 CE_REGION  ?= us-east
 CE_GROUP   ?= routing
-CE_ROSTER  ?= supervisor_agents.yaml
+CE_ROSTER  ?= docs/examples/events/supervisor_agents.yaml
 TAIL       ?= 60
 # The deployed events URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy.sh).
 CE_URL     := $(shell . deploy/ce/.ce_urls.env 2>/dev/null; echo $$CUGA_CE_URL)
@@ -33,7 +33,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-spec sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown run-events
+.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-docs sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown run-events
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -236,10 +236,9 @@ report: ## Open the latest HTML report (results/index.html) — does not run any
 	@test -f results/index.html || { echo "no report yet — run: make test-report"; exit 1; }
 	@open results/index.html 2>/dev/null || echo "results/index.html"
 
-api-spec: ## Regenerate events_docs/api/api_spec.html and SERVE it (Try-it needs http://, not file://)
-	@$(PY) scripts/gen_api_spec.py
-	@echo "API spec → http://localhost:8123/api_spec.html   (ctrl-c to stop)"
-	@open "http://localhost:8123/api_spec.html" 2>/dev/null || true
+api-docs: ## SERVE the API reference over http:// (Try-it needs http://, not file://)
+	@echo "API reference → http://localhost:8123/api.html   (ctrl-c to stop)"
+	@open "http://localhost:8123/api.html" 2>/dev/null || true
 	@$(PY) -m http.server 8123 --directory events_docs/api
 
 test-delegation:

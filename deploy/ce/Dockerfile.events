@@ -1,8 +1,12 @@
 # CUGA event-driven layer (NO Activepieces) for IBM Code Engine.
-# Extends the working root Dockerfile: same base + `uv sync`, but the entrypoint is
-# `cuga start demo --events` and the registry is pointed at the remote cuga-apps-mcp
-# servers. One self-contained image — only the LLM + those (already-deployed) MCP
-# routes are external.
+# Extends the working root Dockerfile: same base + `uv sync`, with the registry pointed at the
+# remote cuga-apps-mcp servers. One self-contained image — only the LLM + those (already-deployed)
+# MCP routes are external.
+#
+# ONE IMAGE, TWO ROLES. 2_deploy.sh overrides the command per app:
+#   cuga-core        uv run cuga start demo                     (the agent + UI + /run)
+#   cuga-events-svc  uv run python -m cuga.backend.events.service (channels, concierge, scheduler)
+# The CMD below is the cuga-core role, so a bare `docker run` of this image gives you plain CUGA.
 #
 # Built cloud-side by deploy/ce/1_build_push_image.sh (no local docker needed).
 
@@ -23,8 +27,8 @@ COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# The event-driven layer's agent model + rosters live at the repo root.
-COPY supervisor_agents.yaml ./
+# The alternative rosters live at the repo root; the default one (supervisor_agents.yaml) moved to
+# docs/examples/events/ and already arrives with `COPY docs/` above.
 COPY rosters/ ./rosters/
 
 RUN uv sync
@@ -48,7 +52,7 @@ ENV EVENTS_TELEGRAM_BACKEND=direct
 ENV EVENTS_DISCORD_BACKEND=direct
 ENV EVENTS_SLACK_BACKEND=direct
 
-# THE one entry point — identical to `make up-noap`, minus the tunnel (the CE route
-# is the public URL). Registry (8001) + agent (7860) boot as children; Telegram
-# long-poll + Discord Gateway auto-connect from the tokens in the environment.
-CMD ["uv", "run", "cuga", "start", "demo", "--events"]
+# Default role: vanilla CUGA — registry (8001) + agent (7860). The `--events` flag this used to
+# carry is GONE: the eventing layer is no longer mounted onto this server, it is the separate
+# service 2_deploy.sh starts as cuga-events-svc. Channel loops belong to that process, not this one.
+CMD ["uv", "run", "cuga", "start", "demo"]

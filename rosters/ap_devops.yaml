@@ -3,7 +3,7 @@
 # trending, and audit pasted code. The GitHub push triggers (PRs, issues, releases, pushes…) come in
 # through Activepieces, so this roster REQUIRES AP for those triggers. github_trending and
 # code_auditor are AP-free themselves but belong to the same team. Drop-in alternative to
-# /supervisor_agents.yaml.
+# docs/examples/events/supervisor_agents.yaml.
 
 supervisor:
   name: cuga

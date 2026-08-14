@@ -121,7 +121,7 @@ if [ "${1:-}" = "--reload" ]; then
   pkill -f "uvicorn cuga.backend.server.main" 2>/dev/null || true
   sleep 2
   export_public_url   # keep the server's EVENTS_PUBLIC_URL matched to the (unchanged) live tunnel
-  export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-supervisor_agents.yaml}"
+  export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-docs/examples/events/supervisor_agents.yaml}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
   # handed to the plain agent, which tries to IMPLEMENT the schedule.
@@ -211,7 +211,7 @@ fi
 echo "== 1/2 CUGA server :$CUGA_PORT  (registry :$REGISTRY_PORT boots inside it) =="
 # Plain CUGA — no events. CUGA_SUPERVISOR_ROSTER preloads it AS the supervisor, which is what the
 # eventing service targets over /run, and also puts the tool registry in FILE mode.
-export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-supervisor_agents.yaml}"
+export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-docs/examples/events/supervisor_agents.yaml}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
   # handed to the plain agent, which tries to IMPLEMENT the schedule.

@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Markets / Finance Desk   [NO ACTIVEPIECES]
 # A trading-floor team: live quotes, market briefs, competitor moves, and market feeds.
 # AP-free — quotes/briefs are on-demand, and the only trigger (feed_watcher) uses the NATIVE
-# RSS poll, not an AP piece. Drop-in alternative to /supervisor_agents.yaml.
+# RSS poll, not an AP piece. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 # NOTE: feed_watcher normally also handles pinterest/* — those need AP, so they are trimmed here.
 
 supervisor:

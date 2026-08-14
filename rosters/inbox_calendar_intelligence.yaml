@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Inbox & Calendar Intelligence
 # A coherent family over the user's Gmail + Google Calendar (their own Google login).
 # The unifying job: keep the user on top of what arrives in their inbox and what's coming
-# up on their calendar. Drop-in alternative to /supervisor_agents.yaml.
+# up on their calendar. Drop-in alternative to docs/examples/events/supervisor_agents.yaml.
 
 supervisor:
   name: cuga

@@ -1,9 +1,9 @@
 # DOMAIN ROSTER — Box & Document Intelligence
-# A drop-in alternative to /supervisor_agents.yaml. This roster is a COHERENT FAMILY:
+# A drop-in alternative to docs/examples/events/supervisor_agents.yaml. This roster is a COHERENT FAMILY:
 # one supervisor whose sub-agents all reason over documents & files that land in Box
 # (or arrive as email attachments). Each sub-agent does ONE meaningful thing well.
 #
-# To test: back up supervisor_agents.yaml, copy this over it, `make reload`.
+# To test: CUGA_SUPERVISOR_ROSTER=rosters/box_document_intelligence.yaml make reload
 
 supervisor:
   name: cuga

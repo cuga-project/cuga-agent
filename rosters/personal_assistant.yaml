@@ -1,7 +1,7 @@
 # DOMAIN ROSTER — Personal Assistant
 # A coherent family of everyday, STATELESS chat utilities — the "ask it anything" helpers.
 # These are conversation-driven (no event triggers); they answer a question and stop.
-# Drop-in alternative to /supervisor_agents.yaml. Good for exercising the conversational
+# Drop-in alternative to docs/examples/events/supervisor_agents.yaml. Good for exercising the conversational
 # (channel) path rather than the watch/act path.
 
 supervisor:

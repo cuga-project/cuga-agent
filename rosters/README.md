@@ -1,14 +1,13 @@
 # Domain Rosters — organized agent families
 
-The root `/supervisor_agents.yaml` is one flat supervisor over ~27 sub-agents thrown together —
+The default roster `docs/examples/events/supervisor_agents.yaml` is one flat supervisor over ~27 sub-agents thrown together —
 a grab-bag with no theme. These roster files reorganize the **same schema** into **coherent
 domain-intelligence families**: one supervisor per domain, each owning a *small set of focused
 sub-agents that belong together*, so an agent means something ("Box Intelligence") instead of
 being a random pile.
 
-Inspired by the groupings in
-`cuga-agent-skills-branch/docs/new/explorations/activepieces_agents.html` (Enterprise Productivity,
-Market & Research Intelligence, document-/recording-/code-centric flows).
+Grouped along the same lines as the Activepieces app catalogue — Enterprise Productivity,
+Market & Research Intelligence, and the document-/recording-/code-centric flows.
 
 > **Nothing here is wired in.** These are drop-in *alternatives* to the root roster, authored for
 > testing. No code changed, no server restarted. Each file is loader-compatible with the existing
@@ -36,7 +35,7 @@ A second, orthogonal cut for demoing "the teams an enterprise would deploy." The
 is a property of the *triggers*, not the agents** — an `ap_*` roster fields SaaS push events
 (Gmail/GitHub/Box/Calendar) that CUGA can't watch directly, so it needs AP; a `no_ap_*` roster's
 triggers are all direct channels (Slack/Discord/Telegram) + native cron/poll/RSS, so it runs with
-**zero AP infra**. All agents are pulled verbatim from `/supervisor_agents.yaml` — regrouped, not
+**zero AP infra**. All agents are pulled verbatim from `docs/examples/events/supervisor_agents.yaml` — regrouped, not
 rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim its
 `HANDLES TRIGGERS` lines down to only the AP-free triggers so the file is honestly no-AP.
 
@@ -62,13 +61,14 @@ rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files t
 
 ## How to test one
 
+Point `CUGA_SUPERVISOR_ROSTER` at the file you want and bounce the servers. Nothing is copied
+and nothing needs restoring — `make reload` on its own puts the default back.
+
 ```sh
 # from repo root
-cp supervisor_agents.yaml supervisor_agents.yaml.bak      # back up the flat roster
-cp rosters/box_document_intelligence.yaml supervisor_agents.yaml
-make reload                                                # rebuild the supervisor
+CUGA_SUPERVISOR_ROSTER=rosters/box_document_intelligence.yaml make reload
 # …exercise it (synth-fire a box/new_file, or chat)…
-cp supervisor_agents.yaml.bak supervisor_agents.yaml       # restore when done
+make reload                                                # back to the default roster
 ```
 
 Swap in a different file to test a different family. Because each is a smaller, themed roster, the
