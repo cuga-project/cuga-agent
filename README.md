@@ -940,6 +940,64 @@ mode = 'api'  # 'api', 'web', or 'hybrid'
 </details>
 
 <details>
+<summary>🔍 Tool Shortlisting</summary>
+
+## What it is
+
+When an app exposes many tools, CUGA shrinks the set before the model sees it. This happens in two places: `find_tools` (the agent asking "what tools exist for X?") and the `bind_tools` provider cap. Both are pluggable.
+
+## Strategies
+
+| Strategy | How it ranks | Cost |
+|---|---|---|
+| `llm` (default) | asks the model | one LLM call per shortlist |
+| `embedding` | local cosine similarity | no LLM call, ~65ms warm |
+| `hybrid` | cosine cuts to `top_k`, then the LLM picks | one LLM call, much smaller prompt |
+
+`embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
+
+Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached under `~/.cache/cuga/fastembed`): no network call, no API cost. The first call while the model is still downloading is served by the LLM strategy, so **a query never waits on a download**.
+
+## Configuration
+
+```toml
+[shortlister]
+strategy = "hybrid"   # llm | embedding | hybrid | "my.pkg.MyShortlister"
+threshold = 128       # engage the cosine stage only above this many candidates
+top_k = 128           # how many candidates the cosine stage keeps
+max_results = 10      # find_tools only: max tools shown to the agent
+```
+
+Equivalent via env: `DYNACONF_SHORTLISTER__STRATEGY=hybrid`. Or from the SDK, per agent or per call:
+
+```python
+from cuga import CugaAgent, Shortlister
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(strategy="hybrid"))
+await agent.invoke("...", shortlister=Shortlister(top_k=32))   # per-call override
+```
+
+**At or below `threshold` candidates nothing changes** — the cosine stage does not run and shortlisting behaves exactly as it always has. Set `threshold = 0` to always engage the configured strategy.
+
+> Note: `[shortlister] threshold` (128) is *not* `advanced_features.shortlisting_tool_threshold` (35). The latter decides when tools are hidden behind `find_tools` in the prompt; the former decides when the cosine stage engages inside the shortlister.
+
+## Custom strategies
+
+Point `strategy` at a dotted class path, or pass an instance:
+
+```python
+class MyShortlister:
+    name = "mine"
+    async def shortlist(self, request) -> "list[ShortlistCandidate]": ...
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(instance=MyShortlister()))
+```
+
+See `docs/design/pluggable-shortlister.md` for the full design.
+
+</details>
+
+<details>
 <summary>📝 Special Instructions Configuration</summary>
 
 ## How It Works

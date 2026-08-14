@@ -81,6 +81,7 @@ from cuga.config import settings
 
 if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import Shortlister
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
 from langchain_core.messages import BaseMessage
@@ -1743,6 +1744,7 @@ class CugaAgent:
         enable_citations: Optional[bool] = None,
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
+        shortlister: Optional["Shortlister"] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1762,6 +1764,9 @@ class CugaAgent:
             enable_citations: None = follow knowledge settings; True/False override knowledge.citations_enabled for this agent instance
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
             skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
+            shortlister: How to shrink a large tool set before the model sees it, e.g.
+                `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
+                (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
 
         Example with tool approval policy:
             ```python
@@ -1812,6 +1817,10 @@ class CugaAgent:
         # Skills configuration
         self._enable_skills = enable_skills  # None = auto from settings
         self._skills_folder = skills_folder  # None = use CUGA_FOLDER / cwd
+
+        # Tool shortlisting. None => [shortlister] settings, whose default ("llm")
+        # is the pre-feature behavior.
+        self._shortlister = shortlister
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -1920,6 +1929,29 @@ class CugaAgent:
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
         return run_config
+
+    def _apply_shortlister(self, run_config: dict, shortlister: Optional[Any] = None) -> None:
+        """Merge shortlister config into ``run_config['configurable']``.
+
+        A per-invoke ``shortlister`` overrides the constructor default. Raw
+        ``shortlister_*`` keys already set by the caller win over both — we
+        ``setdefault`` rather than overwrite. No-op when nothing is configured,
+        so the default (LLM shortlisting) path is untouched.
+        """
+        try:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+                shortlister_to_configurable,
+            )
+
+            effective = shortlister if shortlister is not None else self._shortlister
+            cfg = shortlister_to_configurable(effective)
+            if not cfg:
+                return
+            configurable = run_config["configurable"]
+            for key, value in cfg.items():
+                configurable.setdefault(key, value)
+        except Exception as e:
+            logger.warning(f"Applying Shortlister config failed; using default shortlisting: {e}")
 
     def _apply_callbacks(self, run_config: dict) -> None:
         """
@@ -2356,6 +2388,7 @@ class CugaAgent:
         user_context: Optional[str] = None,
         track_tool_calls: bool = False,
         variables: Optional[Dict[str, Any]] = None,
+        shortlister: Optional["Shortlister"] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -2441,6 +2474,7 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+        self._apply_shortlister(run_config, shortlister)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -2798,6 +2832,7 @@ class CugaAgent:
         thread_id: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         action_response: Optional[Any] = None,  # ActionResponse for resuming after HITL
+        shortlister: Optional["Shortlister"] = None,
     ):
         """
         Stream the agent's execution step by step.
@@ -2842,6 +2877,7 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+        self._apply_shortlister(run_config, shortlister)
 
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
