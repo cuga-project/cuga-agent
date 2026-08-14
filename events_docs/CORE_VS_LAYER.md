@@ -1,22 +1,36 @@
 # How much are we changing CUGA?
 
-Measured against the merge-base with `main` (`77372f85`, 2026-08-03), on branch `event_support`.
-Reproduce with `git diff $(git merge-base main HEAD)...HEAD --numstat`.
+Measured against `main`, on the merged `events-followup-tooling-docs` (PR #603, which contains
+#602). Reproduce with `git diff main --numstat`.
 
 ## The headline
 
 | Area | Files | Added | Deleted |
 |---|---:|---:|---:|
-| **CUGA core** — `server/main.py` + `cli/main.py` | **2** | **+465** | **−2** |
-| **CUGA core** — `supervisor_config.py` + MCP roster yaml | **2** | **+56** | **−15** |
-| Events layer (new subsystem) | 44 | +11,487 | −0 |
-| Tests | 54 | +12,266 | −0 |
-| Docs | 44 | +9,702 | −0 |
-| Deploy / scripts / Make | 24 | +5,431 | −0 |
-| Other (rosters, config) | 27 | +3,472 | −6 |
+| **CUGA core** (code) | **6** | **+763** | **−18** |
+| Events layer (new subsystem) | 47 | +16,331 | −0 |
+| Tests | 59 | +16,686 | −0 |
+| Docs | 44 | +8,067 | −0 |
+| Deploy / scripts / Make | 27 | +4,899 | −0 |
+| Frontend | 10 | +2,296 | −6 |
+| Other (rosters, config, examples) | 24 | +1,759 | −0 |
 
-**4 files of CUGA core touched, 17 lines removed in total.** Everything else is new code sitting
+**18 lines of CUGA core removed in total**, across six files. Everything else is new code sitting
 beside CUGA, not inside it.
+
+### What those six core files are
+
+| File | Δ | What it is |
+|---|---:|---|
+| `server/run_routes.py` | +505 | **new** — `POST /run`, `GET /run/agents`, the roster, the auth gate |
+| `server/events_bridge.py` | +142 | **new** — the slash forwarder; the only core file that knows the events service exists, and it knows only a URL |
+| `server/main.py` | +76 / −1 | five seams: the router mount, `events_api_url` on `/api/ui/config`, slash dispatch in `/stream`, and two comments |
+| `supervisor_utils/supervisor_config.py` | +32 / −16 | the one place existing CUGA *behaviour* changes — see the asterisk below |
+| `cli/main.py` | +4 / −1 | stop clobbering an exported `MCP_SERVERS_FILE` |
+| `.dockerignore` | +4 | re-admit `docs/examples/events/**`, which `docs/**` was excluding — without it the deployed roster is missing and every fire runs as one bare agent |
+
+The two new files were **extracted out of `main.py`**, not grown inside it (review #6). `main.py`
+peaked at 4,949 lines and is back to 4,433 — 75 over `main`.
 
 ## The only 2 lines removed from `main.py` / `cli/main.py`
 
@@ -27,12 +41,17 @@ Both are one-line *replacements*, not removals:
 + return JSONResponse({…, "events_api_url": …})     # the UI needs to find the events service
 
 - os.environ["MCP_SERVERS_FILE"] = "none"
-+ if not wants_roster: os.environ["MCP_SERVERS_FILE"] = "none"   # was clobbering CE's value
++ if not (os.environ.get("MCP_SERVERS_FILE", "") or "").strip():   # was clobbering an exported value
++     os.environ["MCP_SERVERS_FILE"] = "none"
 ```
 
 What core *gains* is additive: `POST /run`, `GET /run/agents`, an optional preloaded supervisor, one
-extra field on a config response, and a ~55-line HTTP forwarder (`_SLASH_VERBS`,
-`_forwards_to_events`, `_forward_slash_to_events`).
+extra field on a config response, and the HTTP forwarder (`SLASH_VERB_NAMES`, `forwards_to_events`,
+`forward_slash_to_events` — now in `events_bridge`, not `main.py`).
+
+`/run` is **mounted only when configured** (a token, a roster, or the explicit dev flag). Vanilla
+CUGA answers 404 there, not 401, and gains no new attack surface. With a token set, `/run` fails
+closed: no token on the request, no execution.
 
 ## The honest asterisk — `supervisor_config.py`
 
@@ -47,7 +66,7 @@ for a while — see below.
    Precedence: a per-agent `auto_load_policies:` key in the YAML wins; else the caller's default;
    else `None`, which lets `CugaAgent` fall back to `settings.policy.auto_load_policies` exactly as
    it always has. `CugaSupervisor.from_yaml()` and `cuga_graph/graph.py` pass nothing and are
-   untouched. Only the headless caller opts out, at its own call site — `server/main.py` passes
+   untouched. Only the headless caller opts out, at its own call site — `server/run_routes.py` passes
    `auto_load_policies=False` because everything that supervisor runs is a scheduled tick, a webhook
    or a channel event, and an approval interrupt with nobody present hangs the run until the caller
    times out.
@@ -102,12 +121,12 @@ You are right to be suspicious: **chat is proven far better than the watchers.**
 | Chat — all 4 channels, on Code Engine | **PROVEN** | `live_e2e.py --only channels` — 16 passed · 0 failed, real `chat.postMessage` / `sendMessage` / Discord REST |
 | Slack inbound from **Slack itself** | **PROVEN** | real `@mention` typed by a human → in-thread reply (2026-08-05) |
 | Arming + HITL gate over a real channel | **PROVEN** | real Slack `/automate` → card → `yes` → `ARMED` (2026-08-05) |
-| cron + poll fire | **PROVEN** | `live_fire.py` — 2/2 local, 3/3 on CE |
+| cron + poll fire | **PROVEN** | `live_fire.py` — 2/2 on Code Engine (2026-08-13), real tool answers, native scheduler, no AP |
 | Inbound webhook | **PROVEN** | `live_e2e.py` webhook × 3 modes |
-| Offline suite | **PROVEN** | 360 passed, hermetic (SQLite) · +20 against real Postgres via `make test-pg` |
+| Offline suite | **PROVEN** | 411 passed · 27 skipped, hermetic (SQLite); the 27 are the Postgres store tests, run via `make test-pg` |
 | **The 15 direct watchers** | **PARTIAL** | `live_direct_watchers.py` fires each with a *correctly signed* Slack callback — proves signature → routing → match → dispatch → delivery. It does **not** prove Slack/Discord actually deliver that event type; that depends on per-event app subscriptions. The harness's `--scopes` flag reports which are in place. |
 | Box direct | **UNPROVEN on CE** | `live_box_direct_check.py` exists and needs a fresh 60-min Box developer token; not run in this cycle |
-| Durable state | **FIXED — Postgres** | `EVENTS_DB` now takes a Postgres URL; local dev and the deployment run the same engine. 20 store tests against real Postgres (`make test-pg`) + 360 on SQLite. Proven locally: arm a flow, kill the process, cold-boot — the flow is still there with zero snapshot machinery. |
+| Durable state | **FIXED — Postgres** | `EVENTS_DB` now takes a Postgres URL; local dev and the deployment run the same engine. the store tests run against real Postgres (`make test-pg`) and the rest on SQLite. Proven locally: arm a flow, kill the process, cold-boot — the flow is still there with zero snapshot machinery. |
 
 So: **the transports are well tested; the 15 watcher event-types are only half tested** — our side
 is verified byte-for-byte, the provider's delivery side is not, except for Slack `app_mention` which
@@ -148,13 +167,13 @@ that need your hands. Getting AP running **on Code Engine** is the genuinely lar
 and the ephemeral-storage problem we already have for `events.db` applies to AP's Postgres with far
 worse consequences.
 
-**The sensible order:** fix durable state for `events.db` first (it is a prerequisite for AP on CE
-anyway), then AP locally, then AP on CE.
+**The sensible order:** durable state is **done** — `EVENTS_DB` is a managed PostgreSQL on Code
+Engine and `make pg` runs the same engine locally. So: AP locally, then AP on CE.
 
 ---
 
 ## Sources
 
-`git diff $(git merge-base main HEAD)...HEAD --numstat` · `src/cuga/backend/events/triggers.py`
-(registry) · `supervisor_agents.yaml` · `Makefile` (AP targets) · `deploy/ce/2_deploy.sh`
-(`EVENTS_DB` on ephemeral storage) · `tests/events/live_*.py`
+`git diff main --numstat` · `src/cuga/backend/events/triggers.py`
+(registry) · `docs/examples/events/supervisor_agents.yaml` · `Makefile` (AP targets) ·
+`deploy/ce/2_deploy.sh` · `tests/events/live_*.py`

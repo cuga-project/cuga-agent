@@ -33,7 +33,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-docs sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown run-events
+.PHONY: help env-check check-gateway-token preflight preflight-noap doctor ap cuga up up-noap up-noap-slack start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-e2e test-ap test-all bench test-live test-suite-now test-suite-flows test-matrix test-fire test-report report api-docs sync ce-url ce-status ce-logs ce-smoke test-e2e-ce ce-build ce-deploy ce-teardown run-events
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -81,7 +81,22 @@ up: preflight ap cuga ## Full dev stack: Activepieces + infra + CUGA (:7860) + e
 preflight-noap: ## Check the MINIMAL tools the no-AP path needs (uv + .venv only — no podman/tunnel)
 	@command -v uv >/dev/null || { echo "✗ uv missing — brew install uv"; exit 1; }
 	@test -d .venv || { echo "✗ no .venv — run: uv sync --python 3.12"; exit 1; }
+	@$(MAKE) --no-print-directory check-gateway-token
 	@echo "✓ minimal tools present.   → NEXT: make up-noap"
+
+# GATEWAY_TOKEN is not optional any more. CUGA's /run is the seam the eventing service calls for
+# EVERY channel message and every scheduled fire, and it now fails CLOSED — without a token each
+# call comes back 401 and nothing works, with no hint as to why. Checked here rather than at first
+# use so it fails before two servers are running.
+check-gateway-token:
+	@tok=$$(grep -E '^GATEWAY_TOKEN=' .env 2>/dev/null | tail -1 | cut -d= -f2- \
+	        | sed -e 's/[[:space:]]*#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' -e 's/^"//' -e 's/"$$//'); \
+	if [ -z "$$tok" ] || [ "$$tok" = "paste-a-generated-secret-here" ]; then \
+	  echo "✗ GATEWAY_TOKEN missing from .env — CUGA's /run fails closed, so every channel message"; \
+	  echo "  and every scheduled fire would come back 401. Generate one and add it to .env:"; \
+	  echo "      python -c \"import secrets; print(secrets.token_urlsafe(32))\""; \
+	  exit 1; \
+	fi
 
 up-noap: preflight-noap ## Boot BOTH services WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
 	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh --no-tunnel
@@ -281,6 +296,7 @@ preflight: ## Check the TOOLS `make up` needs are installed & running — fails 
 	if [ -n "$$dom" ]; then command -v ngrok >/dev/null 2>&1 || { echo "✗ ngrok missing but EVENTS_NGROK_DOMAIN=$$dom is set — brew install ngrok, verify email, reserve the domain (dashboard.ngrok.com)"; ok=0; }; \
 	  else echo "· EVENTS_NGROK_DOMAIN unset — CUGA will use an EPHEMERAL cloudflared tunnel (URL changes each run; re-point Slack/OAuth). ngrok is recommended — see setup/NGROK.md"; fi; \
 	command -v node >/dev/null 2>&1 || echo "· node missing — only needed to build the Studio UI (scripts/frontend_build.sh), NOT to run the stack"; \
+	$(MAKE) --no-print-directory check-gateway-token || ok=0; \
 	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events_docs/SETUP.md → Prerequisites.)"; exit 1; fi
 
 test-exhaustive:

@@ -71,8 +71,8 @@ core_args=(
   --env-from-secret "$SECRET_NAME"
   --env "MCP_SERVERS_FILE=$MCP_SERVERS_FILE_IN_IMAGE"
   --env "DEPLOY_REV=$DEPLOY_REV"
-  # No EVENTS_ENABLED: this is plain CUGA. /run is always available and is what the events
-  # service calls; it is guarded by GATEWAY_TOKEN, which rides in via the secret.
+  # No EVENTS_ENABLED: this is plain CUGA. /run mounts because GATEWAY_TOKEN rides in via the
+  # secret (unconfigured, it is not mounted at all), and every call must carry that token.
   --command "uv" --argument "run" --argument "cuga" --argument "start" --argument "demo"
 )
 # THE ROSTER LIVES WHERE EXECUTION LIVES. In the split, /run on THIS app is what actually runs the
