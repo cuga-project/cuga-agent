@@ -216,6 +216,13 @@ validators = [
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
+    # Read at prepare_node without a getattr guard; without this a settings.toml
+    # missing the key raises AttributeError mid-run instead of using the default.
+    Validator("advanced_features.shortlisting_tool_threshold", default=35),
+    # Pluggable shortlister — see docs/design/pluggable-shortlister.md.
+    # Defaults mirror shortlister/plan.py so a missing [shortlister] section is safe.
+    Validator("shortlister.strategy", default="llm"),
+    Validator("shortlister.fallback_strategy", default="llm"),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
