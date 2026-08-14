@@ -1,6 +1,6 @@
 """EXHAUSTIVE live matrix — every agent, every trigger, every channel: arm → FIRE → answer-VERIFIED.
 
-The three gates per case (events_docs/plans/EXHAUSTIVE_MATRIX.md):
+The three gates per case (events/docs/plans/EXHAUSTIVE_MATRIX.md):
   ARMED   — the flow/subscription really exists (not just a polite reply),
   FIRED   — an event traverses the REAL path (trigger/gateway → /invoke → supervisor → answer),
   QUALITY — the answer contains the case's planted facts (expect_any) and NONE of the failure
@@ -518,9 +518,7 @@ def leg_agents_now(r: Report):
     """Every roster agent answers its signature catalog utterance through the supervisor."""
     import yaml
 
-    roster = yaml.safe_load(
-        open(os.path.join(REPO_DIR, "docs", "examples", "events", "supervisor_agents.yaml"))
-    )
+    roster = yaml.safe_load(open(os.path.join(REPO_DIR, "events", "examples", "rosters", "default.yaml")))
     agents = roster.get("agents", roster) if isinstance(roster, dict) else roster
     names = {a["name"] for a in agents}
     by_agent = {}

@@ -1,4 +1,4 @@
-"""Integration credentials — the two ownership models (events_docs/decisions/0003-credentials-ownership.md).
+"""Integration credentials — the two ownership models (events/docs/decisions/0003-credentials-ownership.md).
 
 An integration on an agent declares HOW its credential is owned:
 

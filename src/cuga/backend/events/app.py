@@ -1,6 +1,6 @@
 """FastAPI wiring for the events layer — registered onto the eventing service's own app.
 
-Two new endpoints (events_docs/ARCHITECTURE.md):
+Two new endpoints (events/docs/ARCHITECTURE.md):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
   - ``POST /api/concierge``  — NL → decide; ``?dry_run=1`` builds the flow without publishing.
 
@@ -1798,9 +1798,9 @@ def register_events_routes(
         Three pages were removed rather than left to 404:
           * ``spec`` — 204 KB of generated HTML restating an endpoint table, kept in git only so a
             --check test could diff against it. FastAPI serves the real contract at /docs.
-          * ``slides`` — scripts/gen_slides.py can write events_docs/slides.html, but the file is
+          * ``slides`` — events/scripts/gen_slides.py can write events/docs/slides.html, but the file is
             not committed, so the route 404'd on a clean checkout. Open the generated deck directly.
-          * ``nlflow`` — the file is events_docs/runbook/nl-to-flow.html, a different directory AND
+          * ``nlflow`` — the file is events/docs/runbook/nl-to-flow.html, a different directory AND
             a different spelling, so this never resolved either."""
         import pathlib
 
@@ -1809,7 +1809,7 @@ def register_events_routes(
             return JSONResponse({"ok": False, "error": "unknown page"}, 404)
         base = pathlib.Path(
             os.environ.get("EVENTS_DOCS_DIR")
-            or str(pathlib.Path(__file__).resolve().parents[4] / "events_docs" / "api")
+            or str(pathlib.Path(__file__).resolve().parents[4] / "events/docs" / "api")
         )
         fp = base / fname
         if not fp.is_file():
@@ -2010,7 +2010,7 @@ def register_events_routes(
         # 3b) every OTHER event type (app_mention → new_slack_mention watchers, reaction_added,
         #     channel_created, team_join, emoji_changed, star_added, …) → the DIRECT watcher dispatcher.
         #     These used to be silently dropped at should_process — 15 of Slack's event types were
-        #     unreachable. Requires the Slack app to be SUBSCRIBED to the event (events_docs/setup/SLACK.md).
+        #     unreachable. Requires the Slack app to be SUBSCRIBED to the event (events/docs/setup/SLACK.md).
         ev_type = ev.get("type") or ""
         if ev_type and store is not None:
             from . import direct_events

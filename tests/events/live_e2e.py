@@ -32,7 +32,7 @@ WHY WE CHECK AP IS REACHABLE BEFORE ACCEPTING "CONNECT NEEDED": the connect gate
 "connect your credentials" when Activepieces is merely unreachable (concierge.py: a bare `except`
 swallows the AP error and sets exists=False). So an unreachable AP would otherwise make every PUSH leg
 "pass" as a legitimate connect-needed. We probe AP first and refuse to accept connect-needed if AP is
-down. See events_docs/GAPS.md.
+down. See events/docs/GAPS.md.
 
 NOTE ON POLL: there is no state primitive today — no poll_state.py, no /api/events/poll. A "poll" is a
 cron-scheduled flow plus a prompt line ("only report if changed"). We assert exactly that and no more.
@@ -178,7 +178,7 @@ class Report:
                 if s == FAIL:
                     print(f"    ✗ [{phase}] {name}" + (f" — {detail}" if detail else ""))
         if c[SKIP]:
-            print("\n  Skipped (not configured — see events_docs/setup/):")
+            print("\n  Skipped (not configured — see events/docs/setup/):")
             for phase, name, s, detail in self.rows:
                 if s == SKIP:
                     print(f"    – [{phase}] {name} — {detail}")
@@ -716,7 +716,7 @@ def flow_now(r: Report):
 def arm_with_confirm(utter: str, thread: str, *, timeout: int = 300, max_turns: int = 4):
     """Say an arming utterance and drive the HITL dialogue to completion.
 
-    Arming is a CONFIRM-gated conversation now (events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md):
+    Arming is a CONFIRM-gated conversation now (events/docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md):
     the concierge proposes, the human approves. A harness is that human — it answers the clarifying
     question if one comes back, then says "yes". Returns ``(code, body)`` of the LAST turn, so the
     caller sees the armed reply exactly as before the gate existed.

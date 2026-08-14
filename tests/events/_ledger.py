@@ -5,8 +5,8 @@ Any harness that proves something calls::
     from _ledger import record
     record("box", "fire_real", "ok", "real upload → detected → judged")
 
-Records land in events_docs/verification_data.json keyed by (surface, capability) — newest wins —
-and scripts/gen_ledger.py renders events_docs/verification.html from them. So the ledger updates
+Records land in events/docs/verification_data.json keyed by (surface, capability) — newest wins —
+and events/scripts/gen_ledger.py renders events/docs/verification.html from them. So the ledger updates
 itself every time a test runs, and a cell's date is always the date it was last PROVEN.
 """
 
@@ -19,7 +19,7 @@ import sys
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA = os.path.join(ROOT, "events_docs", "verification_data.json")
+DATA = os.path.join(ROOT, "events/docs", "verification_data.json")
 
 
 def record(surface: str, capability: str, verdict: str, note: str = "", source: str = "") -> None:

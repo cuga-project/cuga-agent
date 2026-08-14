@@ -581,7 +581,7 @@ export async function getEventsInbox(
 }
 
 // The one agent CUGA's sub-agent roster (geobot, pricebot, …) — read-only; the supervisor picks among
-// them internally. Source: docs/examples/events/supervisor_agents.yaml.
+// them internally. Source: events/examples/rosters/default.yaml.
 export async function getEventsAgents(): Promise<Response> {
   return apiFetch("/api/events/agents");
 }

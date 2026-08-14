@@ -309,7 +309,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p className="studio-muted" style={{ margin: 0 }}>
           <b>One agent — CUGA.</b> These are its sub-agents (the roster), defined in{" "}
-          <code>docs/examples/events/supervisor_agents.yaml</code> — edit the file and <code>make reload</code> to change
+          <code>events/examples/rosters/default.yaml</code> — edit the file and <code>make reload</code> to change
           them. CUGA routes to the right specialist internally; nothing here is addressed directly.
         </p>
       </div>
@@ -330,7 +330,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No sub-agents loaded"
-          subtitle="The roster lives in docs/examples/events/supervisor_agents.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
+          subtitle="The roster lives in events/examples/rosters/default.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
       )}
       <div className="studio-grid">
         {data?.map((a) => (
@@ -372,7 +372,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
         ))}
       </div>
       {/* the editor is retired in the single-agent world — the roster lives in
-          docs/examples/events/supervisor_agents.yaml (edit + make reload); kept mounted for type stability */}
+          events/examples/rosters/default.yaml (edit + make reload); kept mounted for type stability */}
       <AgentEditor open={editorOpen} editing={editing} onClose={onClose} />
     </div>
   );
@@ -1186,12 +1186,12 @@ function ApiTab() {
   }, []);
   const pages: { key: string; label: string }[] = [
     { key: "api", label: "API guide" },
-    // No "OpenAPI spec" tab: it embedded events_docs/api/api_spec.html, 204 KB of generated markup
+    // No "OpenAPI spec" tab: it embedded events/docs/api/api_spec.html, 204 KB of generated markup
     // carried in git so a --check test could diff against it. Both the page and its generator are
     // gone; FastAPI publishes the real contract at /docs and /openapi.json.
     { key: "examples", label: "Examples board" },
-    // No "NL→Flow" or "Slides" tabs: events_docs/slides.html exists on no branch, and the NL→Flow
-    // page is events_docs/runbook/nl-to-flow.html — a different directory and spelling than the
+    // No "NL→Flow" or "Slides" tabs: events/docs/slides.html exists on no branch, and the NL→Flow
+    // page is events/docs/runbook/nl-to-flow.html — a different directory and spelling than the
     // route looked for, so both 404'd.
   ];
   const [page, setPage] = useState("api");

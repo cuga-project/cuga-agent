@@ -1,4 +1,4 @@
-"""The reason→build **planner** — pure, testable core of NL→Flow (events_docs/ARCHITECTURE.md).
+"""The reason→build **planner** — pure, testable core of NL→Flow (events/docs/ARCHITECTURE.md).
 
 The real concierge uses an LLM to fill the typed slots; this module turns a decision
 (mode/source/cadence) into the deterministic AP flow via the builders. Used directly by

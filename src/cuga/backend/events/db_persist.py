@@ -32,7 +32,7 @@ SAFETY ENVELOPE
 ---------------
 Correct for exactly ONE writer. That is what we deploy (``min-scale 1 / max-scale 1``, because the
 scheduler and channel loops are process-wide singletons anyway). It is NOT a substitute for a real
-database once there are multiple replicas — see events_docs/ARCHITECTURE.md for the Postgres path.
+database once there are multiple replicas — see events/docs/ARCHITECTURE.md for the Postgres path.
 """
 
 from __future__ import annotations

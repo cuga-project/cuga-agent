@@ -14,16 +14,16 @@ EVENTS_PORT ?= 8100
 # owns /invoke, /api/events/* and /api/concierge. Every harness targets the eventing service.
 EVENTS_URL  := http://localhost:$(EVENTS_PORT)
 
-# ── Code Engine (deployed) — coordinates mirror deploy/ce/config.sh; override on the CLI ──
+# ── Code Engine (deployed) — coordinates mirror events/deploy/config.sh; override on the CLI ──
 CE_APP     ?= cuga-events-svc      # the eventing service = the front door
 CE_CORE_APP ?= cuga-core           # vanilla CUGA (agent + UI)
 CE_PROJECT ?= ce-project-routing
 CE_REGION  ?= us-east
 CE_GROUP   ?= routing
-CE_ROSTER  ?= docs/examples/events/supervisor_agents.yaml
+CE_ROSTER  ?= events/examples/rosters/default.yaml
 TAIL       ?= 60
-# The deployed events URL, read from deploy/ce/.ce_urls.env (written by deploy/ce/2_deploy.sh).
-CE_URL     := $(shell . deploy/ce/.ce_urls.env 2>/dev/null; echo $$CUGA_CE_URL)
+# The deployed events URL, read from events/deploy/.ce_urls.env (written by events/deploy/2_deploy.sh).
+CE_URL     := $(shell . events/deploy/.ce_urls.env 2>/dev/null; echo $$CUGA_CE_URL)
 
 # env-check: required must be present+non-empty; optional just reported.
 REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
@@ -49,30 +49,30 @@ PG_PORT      ?= 5433
 PG_DSN       ?= postgresql://cuga:cuga_dev_pw@localhost:$(PG_PORT)/cuga_events
 
 pg: ## Start the local events PostgreSQL (matches the deployed engine)
-	@scripts/events_pg.sh up
+	@events/scripts/events_pg.sh up
 
 pg-stop: ## Stop the local events PostgreSQL (data is kept in the container volume)
-	@scripts/events_pg.sh stop
+	@events/scripts/events_pg.sh stop
 
 pg-psql: ## Open a psql shell on the local events database
 	@podman exec -it $(PG_CONTAINER) psql -U cuga -d cuga_events
 
 pg-reset: ## DESTROY and recreate the local events database (drops every armed flow)
-	@scripts/events_pg.sh reset
+	@events/scripts/events_pg.sh reset
 
 test-pg: ## Run the store tests against the REAL PostgreSQL (proves the deployed SQL path)
-	@scripts/events_pg.sh up >/dev/null
+	@events/scripts/events_pg.sh up >/dev/null
 	EVENTS_TEST_PG_DSN=$(PG_DSN) $(PY) -m pytest tests/events/test_db_postgres.py -q
 
 ## ---- start / stop ---------------------------------------------------------
 ap: ## Start Activepieces (app + postgres + redis + tunnel)
-	scripts/ap_up.sh
+	events/scripts/ap_up.sh
 
 ap-pieces: ## Ensure AP has the integration pieces installed (fixes fresh-DB "piece_metadata_not_found")
-	@$(PY) scripts/ap_pieces.py
+	@$(PY) events/scripts/ap_pieces.py
 
 cuga: ## Provision infra (MCP registry + tunnels) then boot BOTH services (CUGA :7860 + eventing :8100)
-	scripts/events_up.sh
+	events/scripts/events_up.sh
 
 up: preflight ap cuga ## Full dev stack: Activepieces + infra + CUGA (:7860) + eventing service (:8100)
 	@echo "✓ stack up.   → NEXT: make status"
@@ -99,7 +99,7 @@ check-gateway-token:
 	fi
 
 up-noap: preflight-noap ## Boot BOTH services WITHOUT Activepieces & WITHOUT a tunnel (web · Telegram-direct · Discord-direct)
-	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh --no-tunnel
+	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct events/scripts/events_up.sh --no-tunnel
 	@$(MAKE) --no-print-directory channels
 	@echo
 	@echo "✓ CUGA up — NO Activepieces.   Chat channels (a channel with no token in .env is SKIPPED):"
@@ -108,7 +108,7 @@ up-noap: preflight-noap ## Boot BOTH services WITHOUT Activepieces & WITHOUT a t
 	@echo "   Want Slack too (still no AP)? make up-noap-slack   ·   → NEXT: make status"
 
 up-noap-slack: preflight-noap ## Boot events WITHOUT Activepieces but WITH the CUGA tunnel — so Slack works too (web · Telegram · Discord · Slack)
-	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct scripts/events_up.sh
+	EVENTS_TELEGRAM_BACKEND=direct EVENTS_DISCORD_BACKEND=direct events/scripts/events_up.sh
 	@$(MAKE) --no-print-directory channels
 	@echo
 	@echo "✓ CUGA up — NO Activepieces, WITH tunnel.   Chat channels live: web · Telegram · Discord · Slack."
@@ -119,13 +119,13 @@ up-noap-slack: preflight-noap ## Boot events WITHOUT Activepieces but WITH the C
 start: up ## Alias for `up`. Bare pair (no AP/tunnels): `make up-noap`
 
 stop: ## Stop everything (AP + CUGA + tunnels), keep data
-	-scripts/ap_up.sh --stop
-	-scripts/events_up.sh --stop
+	-events/scripts/ap_up.sh --stop
+	-events/scripts/events_up.sh --stop
 
 restart: stop up ## Stop then start both (NB: new tunnel URLs — re-point EVENTS_PUBLIC_URL after)
 
 reload: ## Bounce BOTH servers (pick up .env/code) — keeps AP + tunnels, URLs unchanged
-	scripts/events_up.sh --reload
+	events/scripts/events_up.sh --reload
 
 nuke: stop ## Stop everything AND wipe all data (AP volumes + events.db)
 	-$(DOCKER) volume rm $(VOLS)
@@ -135,7 +135,7 @@ nuke: stop ## Stop everything AND wipe all data (AP volumes + events.db)
 	@echo "   → NEXT: make fresh   # nuke-safe full cycle (or 'make up' to just start the stack)"
 
 reset-flows: ## Wipe ONLY CUGA's flow DB (events.db) + bounce CUGA — keeps AP connections/pieces/tunnels (no reconnect)
-	-scripts/events_up.sh --stop
+	-events/scripts/events_up.sh --stop
 	-rm -f $(DB)
 	@$(MAKE) --no-print-directory cuga
 	@echo "✅ flows reset: $(DB) wiped, CUGA restarted. AP connections + pieces + tunnels untouched — no reconnect needed."
@@ -145,7 +145,7 @@ fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels 
 	@echo "== 2/4 nuke =="; $(MAKE) --no-print-directory nuke
 	@echo "== 3/4 up (fresh AP + CUGA) =="; $(MAKE) --no-print-directory up
 	@echo "== 4/4 arm channels =="; $(MAKE) --no-print-directory channels
-	@scripts/events_up.sh --public-url
+	@events/scripts/events_up.sh --public-url
 	@echo; echo "✅ Fresh stack up. Now do these IN ORDER:"; \
 	  echo "   1. make status              # 2 servers 200 · 3 containers Up · tunnel URLs"; \
 	  echo "   2. make doctor              # creds green — paste a FRESH BOX_DEV_TOKEN, then: make reload"; \
@@ -158,14 +158,14 @@ fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels 
 
 ## ---- inspect --------------------------------------------------------------
 status: ## Show what's running + tunnel URLs + every channel & integration
-	@scripts/events_up.sh --status
+	@events/scripts/events_up.sh --status
 	@echo "--- containers ---"
 	@$(DOCKER) ps --filter name=activepieces --filter name=ap-postgres --filter name=ap-redis \
 	  --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
 	@echo "--- channels (inbound chat) ---"
-	@scripts/arm_channels.sh --status 2>/dev/null || echo "  (CUGA not reachable — is the stack up?)"
+	@events/scripts/arm_channels.sh --status 2>/dev/null || echo "  (CUGA not reachable — is the stack up?)"
 	@echo "--- AP pieces (integration Connect needs these installed) ---"
-	@$(PY) scripts/ap_pieces.py --status 2>/dev/null | sed 's/^/  /' \
+	@$(PY) events/scripts/ap_pieces.py --status 2>/dev/null | sed 's/^/  /' \
 	  || echo "  (AP not reachable — run: make ap-pieces)"
 	@echo "--- integrations (watch/act) ---"
 	@curl -s --max-time 5 localhost:$(EVENTS_PORT)/api/events/integrations 2>/dev/null \
@@ -182,30 +182,30 @@ print(f\"      (each opens a browser OAuth consent; youtube/rss need nothing —
 	@echo "   → NEXT (setup): make doctor"
 
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
-	@scripts/events_up.sh --public-url
+	@events/scripts/events_up.sh --public-url
 
 flows: ## Open the Events Dashboard (watchers · runs · channels · pause/resume/delete/run · dry-run)
 	@echo "Events Dashboard → http://localhost:$(EVENTS_PORT)/api/events/dashboard"
 	@open "http://localhost:$(EVENTS_PORT)/api/events/dashboard" 2>/dev/null || true
 
 tunnels: ## Status of both public tunnel agents (AP cloudflared + CUGA ngrok/cloudflared)
-	@scripts/tunnels.sh --status
+	@events/scripts/tunnels.sh --status
 
 tunnels-up: ## (Re)start any DOWN tunnel agent (ngrok CUGA is safe; AP needs `make ap`)
-	@scripts/tunnels.sh --up
+	@events/scripts/tunnels.sh --up
 
 tunnels-down: ## Stop both tunnel agents (cloudflared + ngrok)
-	@scripts/tunnels.sh --down
+	@events/scripts/tunnels.sh --down
 
 logs: ## Tail the runtime logs
 	@tail -n 40 -F /tmp/events_up/*.log
 
 channels: ## Connect + arm every inbound chat channel that has a token in .env (needs the stack up)
-	scripts/arm_channels.sh
+	events/scripts/arm_channels.sh
 	@echo "   → NEXT: make status   (then: make doctor → make test → CONNECT integrations in the Studio)"
 
 channels-status: ## Show inbound-channel state without changing anything
-	@scripts/arm_channels.sh --status
+	@events/scripts/arm_channels.sh --status
 
 ## ---- TESTS — 4 focused targets ---------------------------------------------
 ##   test       quick unit, no creds, CI-safe   ·   test-e2e   e2e WITHOUT AP (channels + native)
@@ -245,7 +245,7 @@ test-fire:
 	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_fire.py $(ARGS)
 
 test-report: ## Everything → one HTML report — runs test + test-e2e + test-ap + every matrix, timestamped (~40 min)
-	$(PY) scripts/run_all_tests.py $(ARGS)
+	$(PY) events/scripts/run_all_tests.py $(ARGS)
 
 report: ## Open the latest HTML report (results/index.html) — does not run anything
 	@test -f results/index.html || { echo "no report yet — run: make test-report"; exit 1; }
@@ -254,7 +254,7 @@ report: ## Open the latest HTML report (results/index.html) — does not run any
 api-docs: ## SERVE the API reference over http:// (Try-it needs http://, not file://)
 	@echo "API reference → http://localhost:8123/api.html   (ctrl-c to stop)"
 	@open "http://localhost:8123/api.html" 2>/dev/null || true
-	@$(PY) -m http.server 8123 --directory events_docs/api
+	@$(PY) -m http.server 8123 --directory events/docs/api
 
 test-delegation:
 	$(PY) tests/events/live_delegation_bench.py
@@ -263,7 +263,7 @@ test-delegation:
 doctor: ## Live credential doctor — hit each service with its real .env cred
 	-$(PY) tests/events/preflight.py
 	@echo; echo "--- Activepieces pieces (integration Connect needs these) ---"; \
-	  $(PY) scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
+	  $(PY) events/scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
 	@echo; echo "   → NEXT (setup): make test  (then: make up-noap → make test-e2e, or make up → make test-ap)"
 
 sync: ## uv sync the venv
@@ -297,7 +297,7 @@ preflight: ## Check the TOOLS `make up` needs are installed & running — fails 
 	  else echo "· EVENTS_NGROK_DOMAIN unset — CUGA will use an EPHEMERAL cloudflared tunnel (URL changes each run; re-point Slack/OAuth). ngrok is recommended — see setup/NGROK.md"; fi; \
 	command -v node >/dev/null 2>&1 || echo "· node missing — only needed to build the Studio UI (scripts/frontend_build.sh), NOT to run the stack"; \
 	$(MAKE) --no-print-directory check-gateway-token || ok=0; \
-	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events_docs/SETUP.md → Prerequisites.)"; exit 1; fi
+	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events/docs/SETUP.md → Prerequisites.)"; exit 1; fi
 
 test-exhaustive:
 	$(PY) tests/events/live_exhaustive.py $(ARGS)
@@ -308,7 +308,7 @@ test-new-pieces:
 # ============================================================================
 # Code Engine (DEPLOYED) — CE parallels of the local targets + ops.
 # These target the deployed app; the LOCAL targets above are unchanged. The CE
-# URL is read from deploy/ce/.ce_urls.env; channel creds + GATEWAY_TOKEN come
+# URL is read from events/deploy/.ce_urls.env; channel creds + GATEWAY_TOKEN come
 # from .env (must match the deployed secret). Needs `ibmcloud login`.
 # ============================================================================
 
@@ -328,7 +328,7 @@ ce-logs: ## [CE] Container logs — FOLLOW=1 to stream · GREP=term to filter ·
 	else ibmcloud ce app logs -n $(CE_APP) 2>/dev/null | tail -$(TAIL); fi
 
 ce-smoke: ## [CE] Smoke-test the deployed app (capability + channels + a web-chat turn)
-	$(PY) deploy/ce/3_smoke.py
+	$(PY) events/deploy/3_smoke.py
 
 test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e against the DEPLOYED app
 	@test -n "$(CE_URL)" || { echo "no CE URL — deploy first: make ce-deploy"; exit 1; }
@@ -337,11 +337,11 @@ test-e2e-ce: ## [CE] Parallel of test-e2e — the REAL channel + fire e2e agains
 	EVENTS_SERVER_URL=$(CE_URL) EVENTS_SCHEDULER=native $(PY) tests/events/live_fire.py --only cron poll $(ARGS)
 
 ce-build: ## [CE] Build + push the image (cloud buildrun → ICR)
-	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
+	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 ./1_build_push_image.sh
 
 ce-deploy: ## [CE] Deploy/redeploy BOTH services — cuga-core + cuga-events-svc (roster: $(CE_ROSTER))
-	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy.sh
+	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=$(CE_ROSTER) ./2_deploy.sh
 
 ce-teardown: ## [CE] Delete the app (keeps the image + registry secret)
-	cd deploy/ce && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh
+	cd events/deploy && CUGA_CE_ADMIN=1 YES=1 ./teardown.sh
 

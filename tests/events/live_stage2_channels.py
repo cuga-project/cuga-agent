@@ -1,6 +1,6 @@
 """LIVE Stage-2 — arm channels (Telegram/Discord/Slack) + the Box resume watcher via AP.
 
-Run once your bots + AP tunnel are set up (see events_docs/CHANNELS_SETUP.md). This arms the
+Run once your bots + AP tunnel are set up (see events/docs/CHANNELS_SETUP.md). This arms the
 INBOUND flows + the Box PUSH watcher in AP, then simulates an inbound channel message to /invoke
 to prove resolve → route (a human still sends the *real* inbound message; this drives the rest).
 

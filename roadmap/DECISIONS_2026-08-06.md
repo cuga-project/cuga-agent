@@ -20,7 +20,7 @@ chat's UUID) carries no `gw:` prefix, so `channel_origin()` returned `None` and 
 delivery address to use even if a sender had existed.
 
 **Why it was hard to see as a bug rather than a limitation.** It had actually been *written down* as
-one — `events_docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md` §5 said "Web same-thread is a known
+one — `events/docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md` §5 said "Web same-thread is a known
 limitation (no async connection)". That framing is half right: a browser genuinely cannot be pushed
 to. But it *can be drained*.
 

@@ -1,6 +1,6 @@
 """The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab AND the
-filterable ``events_docs/api/examples.html`` board. This file is the SOLE source of truth: the board's
-data array is generated from it by ``scripts/gen_examples.py`` and locked by a consistency test
+filterable ``events/docs/api/examples.html`` board. This file is the SOLE source of truth: the board's
+data array is generated from it by ``events/scripts/gen_examples.py`` and locked by a consistency test
 (``test_examples_board_matches_the_catalog``), so add examples HERE and regenerate — never hand-edit
 the HTML array.
 
@@ -1546,7 +1546,7 @@ def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
             "setup",
             "arms today as a CUGA-owned direct watcher (no AP flow). The Slack app "
             "must be SUBSCRIBED to this event type in its Event Subscriptions — see "
-            "events_docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
+            "events/docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
         )
     if integration == "discord":
         need = (

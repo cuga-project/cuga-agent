@@ -1081,7 +1081,7 @@ def test_admin_add_user_without_a_user_store_is_501():
 
 
 # NOTE: `test_api_spec_is_golden` lived here. It ran `scripts/gen_api_spec.py --check` against a
-# committed `events_docs/api/api_spec.html`. Both are gone: the HTML was 204 KB of generated markup
+# committed `events/docs/api/api_spec.html`. Both are gone: the HTML was 204 KB of generated markup
 # restating an endpoint table, carried in every clone so this test could diff against it, and the
 # generator was 2,901 lines whose only consumer was this test. FastAPI already publishes the real
 # contract at /docs and /openapi.json. Route documentation is still enforced by
@@ -1089,18 +1089,18 @@ def test_admin_add_user_without_a_user_store_is_501():
 
 
 def test_examples_board_matches_the_catalog():
-    """`events_docs/api/examples.html` is generated from `events/catalog.py` — the same source that
+    """`events/docs/api/examples.html` is generated from `events/catalog.py` — the same source that
     powers the Studio Examples tab. Adding an agent + a catalog example but forgetting to regenerate
     the board leaves the public doc showing fewer flows than the product actually does. This is exactly
     the drift that hid 8 agents (the cuga-apps set) from the board.
 
-    Fix: `python scripts/gen_examples.py`.
+    Fix: `python events/scripts/gen_examples.py`.
     """
     import subprocess
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     p = subprocess.run(
-        [sys.executable, os.path.join(root, "scripts/gen_examples.py"), "--check"],
+        [sys.executable, os.path.join(root, "events/scripts/gen_examples.py"), "--check"],
         capture_output=True,
         text=True,
         cwd=root,
@@ -1109,13 +1109,13 @@ def test_examples_board_matches_the_catalog():
 
 
 def test_every_trigger_appears_in_its_setup_guide():
-    """Every registry trigger must be named (as `event`) in its app's events_docs/setup/<APP>.md —
+    """Every registry trigger must be named (as `event`) in its app's events/docs/setup/<APP>.md —
     the setup guides are where a tester learns which scope/intent/subscription each trigger needs
     (Slack scopes, Discord privileged intents, the one-credential-covers-all note for gmail/github/
     box). A trigger added without its permissions documented is a support ticket waiting."""
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parents[2] / "events_docs" / "setup"
+    root = pathlib.Path(__file__).resolve().parents[2] / "events/docs" / "setup"
     from events import triggers as tr
 
     missing = []
@@ -1127,7 +1127,7 @@ def test_every_trigger_appears_in_its_setup_guide():
 
 
 def test_every_route_appears_in_the_api_reference():
-    """`events_docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
+    """`events/docs/api/api.html` is what we hand people. A route added without a doc row is a route nobody
     outside this repo can discover. Matching is on the path with `{param}`/`<param>` normalised away,
     so renaming a path parameter doesn't spuriously fail."""
     import html as _html
@@ -1135,7 +1135,7 @@ def test_every_route_appears_in_the_api_reference():
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     src = open(os.path.join(root, "src/cuga/backend/events/app.py")).read()
-    doc = _html.unescape(open(os.path.join(root, "events_docs/api/api.html")).read())
+    doc = _html.unescape(open(os.path.join(root, "events/docs/api/api.html")).read())
 
     def norm(s):
         return re.sub(r"\{[^}/]+\}|<[a-z_]+>", "*", s)
@@ -1143,5 +1143,5 @@ def test_every_route_appears_in_the_api_reference():
     routes = {norm(p) for _, p in re.findall(r'@app\.(get|post|delete|put)\("([^"]+)"\)', src)}
     undocumented = sorted(r for r in routes if r not in norm(doc))
     assert not undocumented, (
-        f"{len(undocumented)} route(s) missing from events_docs/api/api.html: {undocumented}"
+        f"{len(undocumented)} route(s) missing from events/docs/api/api.html: {undocumented}"
     )

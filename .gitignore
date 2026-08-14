@@ -126,13 +126,14 @@ src/cuga/frontend/dist/*.map
 .venv-events/
 .events.db
 
-# events_docs local cruft
-events_docs/**/__pycache__/
-events_docs/**/.DS_Store
+# events/docs local cruft
+events/docs/**/__pycache__/
+events/docs/**/.DS_Store
 
 # Code Engine deploy secrets / generated URLs
-deploy/ce/.env.ce
-deploy/ce/.ce_urls.env
+events/deploy/.env.ce
+events/deploy/.ce_urls.env
+events/deploy/.ce_urls_split.env
 
 # Roo AI assistant
 .roo/

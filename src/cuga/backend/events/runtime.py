@@ -1,7 +1,7 @@
 """The ``AgentRuntime`` port — the single seam between the event plane and "an agent".
 
 Everything agent-related (concierge, /invoke, channels) goes through this interface, so
-swapping frameworks = writing one adapter (events_docs/ARCHITECTURE.md). Implementations:
+swapping frameworks = writing one adapter (events/docs/ARCHITECTURE.md). Implementations:
 
   - ``HttpRuntime``       — **the production one.** Executes by calling CUGA's ``POST /run``.
   - ``AgentStoreRuntime`` — its base: scope-keyed storage on the shared AgentStore, no execution.
