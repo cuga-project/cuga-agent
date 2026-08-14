@@ -855,7 +855,17 @@ const CarbonChat = ({
   // and appends it. Fires therefore land at the END of the transcript rather than interleaved by
   // time, which is nearly always the true order anyway (a flow fires after the chat that armed it).
   useEffect(() => {
-    if (!threadId) return;
+    // EVERY failure below used to be silent. `if (!threadId) return` and a bare `.catch(() => {})`
+    // meant a poller that never started looked exactly like a poller with nothing to deliver: the
+    // flow fired, the answer was written to the mailbox, and the chat showed nothing, with no way
+    // to tell which of the two it was without reading the source. So each exit says so once.
+    const say = (...a: unknown[]) => console.info("[events:inbox]", ...a);
+    if (!threadId) {
+      say("poller NOT started — this chat has no threadId yet; a fire will land in the mailbox but");
+      say("nothing polls for it. Send a message first, then re-open the conversation.");
+      return;
+    }
+    say("poller starting for thread", threadId);
     let cancelled = false;
     let cursor = 0;
 
@@ -889,12 +899,19 @@ const CarbonChat = ({
     let timer: ReturnType<typeof setInterval> | null = null;
     let first: ReturnType<typeof setTimeout> | null = null;
     api.getEventsStatus().then((s) => {
-      if (cancelled || !s) return;
+      if (cancelled) return;
+      if (!s) {
+        say("poller NOT started — /api/events/status did not answer with enabled:true.");
+        say("Check it by hand:  await (await fetch(`${location.origin}/api/ui/config`)).json()");
+        say("then GET <events_api_url>/api/events/status from this tab. A CORS error here is the");
+        say("split-origin case: the events service must allow this origin (EVENTS_CORS_ORIGINS).");
+        return;
+      }
       // Hold the first drain briefly. Switching threads runs clearConversation() → insertHistory()
       // asynchronously; injecting a fire into that window gets it wiped by the clear.
       first = setTimeout(drain, 2500);
       timer = setInterval(drain, 15000);
-    }).catch(() => {});
+    }).catch((e) => say("poller NOT started — /api/events/status threw:", e));
     return () => {
       cancelled = true;
       if (first) clearTimeout(first);

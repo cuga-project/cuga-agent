@@ -1169,7 +1169,21 @@ function AdminTab({ refresh }: { refresh: number }) {
 // The API reference, embedded — served by the backend (/api/events/docs/{api,examples})
 // so it renders inside the Studio.
 function ApiTab() {
-  const base = api.getApiBaseUrl();
+  // The pages are served by the EVENTS service, not by whoever served this SPA. `getApiBaseUrl()`
+  // returns window.location.origin — CUGA's — so in a split deployment the iframe asked CUGA for
+  // /api/events/docs/api, hit the SPA catch-all, and rendered a 490-byte copy of CUGA itself
+  // inside the tab. Resolved asynchronously and held in state rather than read through the sync
+  // helper, because on first mount that cache is cold and would fall back to the same wrong origin.
+  const [base, setBase] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getEventsBaseUrl().then((b) => {
+      if (live) setBase(b);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   const pages: { key: string; label: string }[] = [
     { key: "api", label: "API guide" },
     // No "OpenAPI spec" tab: it embedded events_docs/api/api_spec.html, 204 KB of generated markup
@@ -1181,7 +1195,7 @@ function ApiTab() {
     // route looked for, so both 404'd.
   ];
   const [page, setPage] = useState("api");
-  const url = `${base}/api/events/docs/${page}`;
+  const url = base ? `${base}/api/events/docs/${page}` : "";
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -1191,13 +1205,19 @@ function ApiTab() {
         </p>
         {pages.map((p) => (
           <Button key={p.key} size="sm" kind={page === p.key ? "primary" : "tertiary"}
-            onClick={() => setPage(p.key)}>{p.label}</Button>
+            onClick={() => setPage(p.key)} disabled={!base}>{p.label}</Button>
         ))}
-        <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank">Open full page</Button>
+        <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank" disabled={!base}>
+          Open full page
+        </Button>
       </div>
-      <iframe title="API reference" src={url}
-        style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
-                 borderRadius: 6, background: "#fff" }} />
+      {base ? (
+        <iframe title="API reference" src={url}
+          style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
+                   borderRadius: 6, background: "#fff" }} />
+      ) : (
+        <p className="studio-muted" style={{ fontSize: 13 }}>Loading the API reference…</p>
+      )}
     </div>
   );
 }

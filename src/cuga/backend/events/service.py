@@ -179,15 +179,32 @@ def create_app():
                 t.cancel()
 
     app = FastAPI(title="CUGA eventing", lifespan=lifespan)
-    # The Studio UI is served by CUGA (it owns the SPA) but calls THIS service for /api/events/*.
-    # That is cross-origin in a split deployment, so the browser needs CORS. Origins are explicit
-    # (EVENTS_CORS_ORIGINS, comma-separated — the deploy script sets it to the CUGA app's URL);
-    # unset means combined mode, where the UI is same-origin and no CORS is needed at all.
+    # The Studio UI is served by CUGA (it owns the SPA) but calls THIS service for /api/events/*,
+    # /api/concierge and /invoke. That is cross-origin whenever the two run on different ports, so
+    # the browser needs CORS. EVENTS_CORS_ORIGINS (comma-separated) is the explicit setting; the CE
+    # deploy script sets it to the CUGA app's URL.
     _origins = [
         o.strip().rstrip("/")
         for o in (os.environ.get("EVENTS_CORS_ORIGINS", "") or "").split(",")
         if o.strip()
     ]
+    if not _origins:
+        # UNSET USED TO MEAN "combined mode, same origin, no CORS needed". That has been wrong ever
+        # since combined mode was removed: `make up-noap` puts CUGA on :7860 and this service on
+        # :8100, which a browser treats as two origins. The preflight OPTIONS then got a bare 405
+        # with no Access-Control-* headers, the browser cancelled the request, and the Studio's
+        # concierge box printed NOTHING — no error, no reply, because the fetch never completed.
+        # It only worked on Code Engine, which is the one place that sets the variable.
+        #
+        # So derive the default from CUGA_URL, which this service already must know in order to
+        # call /run at all. Both host spellings are listed because the SPA is reachable at either
+        # and the browser sends whichever the human typed.
+        _cuga = (os.environ.get("CUGA_URL", "") or "http://127.0.0.1:7860").rstrip("/")
+        _origins = [_cuga]
+        for a, b in (("127.0.0.1", "localhost"), ("localhost", "127.0.0.1")):
+            if a in _cuga:
+                _origins.append(_cuga.replace(a, b))
+        log.info("events service: CORS origins defaulted from CUGA_URL (%s)", ", ".join(_origins))
     if _origins:
         from fastapi.middleware.cors import CORSMiddleware
 

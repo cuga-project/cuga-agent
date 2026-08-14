@@ -91,6 +91,36 @@ def _slack_first_touch(ts: str) -> bool:
     return True
 
 
+_HONOUR_FALSE = {"0", "false", "no", "off"}
+
+
+def honour_channel(name: str) -> bool:
+    """Should this process serve ``name`` (``slack``/``discord``/``telegram``/``web``)?
+
+    A LOCAL-DEVELOPMENT switch, and deliberately opt-OUT: unset means honour, so a deployment that
+    sets none of these behaves exactly as before. Code Engine sets none of them.
+
+    It exists because bot credentials are singletons. Telegram's ``getUpdates`` allows one consumer
+    per token, so a laptop and a deployment polling the same bot fight over every message; two
+    Discord Gateway sessions on one token both receive every event and answer twice. Running a
+    local stack alongside a live one therefore corrupts the live one unless you can silence the
+    shared channels — which is what this does:
+
+        LOCAL_HONOR_SLACK=false LOCAL_HONOR_DISCORD=false LOCAL_HONOR_TELEGRAM=false make up-noap
+
+    leaving web chat, the concierge, cron/poll and webhooks fully live. Blanking the tokens works
+    too, but it is a worse habit: it edits the same ``.env`` you deploy from.
+
+    Both spellings are accepted (HONOR/HONOUR) — nobody should have to remember which.
+    """
+    key = name.strip().upper()
+    for var in (f"LOCAL_HONOR_{key}", f"LOCAL_HONOUR_{key}"):
+        raw = os.environ.get(var)
+        if raw is not None:
+            return raw.split("#", 1)[0].strip().lower() not in _HONOUR_FALSE
+    return True
+
+
 def register_events_routes(
     app,
     *,
@@ -1509,7 +1539,17 @@ def register_events_routes(
     async def events_channels(request: Request):
         from .connectors import channels_status
 
-        return {"channels": channels_status()}
+        rows = channels_status()
+        # Surface LOCAL_HONOR_<CHANNEL>. A silenced channel still reports "connected" — its token is
+        # valid and nothing is misconfigured — so without this the status board would say a channel
+        # is live while this process deliberately ignores it, which is exactly the confusion the
+        # switch is meant to avoid.
+        for row in rows:
+            name = (row.get("name") or row.get("channel") or "") if isinstance(row, dict) else ""
+            if name and not honour_channel(name):
+                row["honored"] = False
+                row["note"] = f"silenced locally (LOCAL_HONOR_{name.upper()}=false)"
+        return {"channels": rows}
 
     @app.get("/api/events/integrations")
     async def events_integrations(request: Request):
@@ -1901,6 +1941,11 @@ def register_events_routes(
         # 1) URL verification handshake (must echo the challenge; no signature yet)
         if body.get("type") == "url_verification":
             return PlainTextResponse(body.get("challenge", ""))
+        # LOCAL_HONOR_SLACK=false — ack and drop. Slack retries anything that is not a 2xx, so a
+        # local stack must still answer 200; it simply must not ALSO reply in the channel, which
+        # would double up on whatever deployment owns this Slack app.
+        if not honour_channel("slack"):
+            return JSONResponse({"ok": True, "ignored": "LOCAL_HONOR_SLACK=false"})
         # 2) verify it's really Slack
         ok_sig, why = slack_direct.verify_signature(request.headers, raw)
         if not ok_sig:
@@ -2464,7 +2509,7 @@ def register_events_routes(
 
     # register the Gateway as a startup background task (direct is the default). The server's
     # lifespan launches app.state.events_background; nothing to arm (the bot connects on boot).
-    if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
+    if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap" and honour_channel("discord"):
         from . import discord_direct as _dd
 
         if _dd.bot_token():
@@ -2539,7 +2584,7 @@ def register_events_routes(
 
     # register the long-poll loop as a startup background task (direct is the DEFAULT — no AP, no
     # tunnel). The AP webhook backend stays behind EVENTS_TELEGRAM_BACKEND=ap.
-    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap":
+    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct") != "ap" and honour_channel("telegram"):
         from . import telegram_direct as _tg
 
         if _tg.bot_token():

@@ -633,13 +633,33 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
                 f"{_task_tag}|{_owner_scope(spec, p)}"
             )
-            existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
-            if existing:
-                nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
-                return (
-                    f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
-                    f"(subscription {existing.id}). Nothing new created."
-                )
+            # REUSE IS OFF BY DEFAULT (EVENTS_FLOW_REUSE=1 to restore it).
+            #
+            # Silently answering "REUSING existing flow … Nothing new created" to a human who just
+            # confirmed an arming is the worst failure shape available: they typed yes, they were
+            # told nothing was created, and the flow they asked for does not exist. Observed on a
+            # real Slack arm — "every 3 minutes give me a joke" was folded into a pre-existing
+            # 1-minute flow.
+            #
+            # The identity was never trustworthy for cron/poll either. The task hash reads
+            # `_utterance`, a ContextVar the react-agent does not reliably propagate into tool
+            # execution (the same caveat documented at the poll-tier selection below) — so two
+            # different requests can hash identically, which is exactly a collision.
+            #
+            # Leaving dedup_key EMPTY (rather than deleting the column) is what actually disables
+            # this: the store's UNIQUE index is partial — `WHERE dedup_key != ''` — so an empty key
+            # cannot collide, and `upsert` can never raise DuplicateSubscription. Flip the flag on
+            # and both the lookup and the index constraint come back exactly as before.
+            if os.environ.get("EVENTS_FLOW_REUSE", "0").split(" #", 1)[0].strip() != "1":
+                dedup_key = ""
+            else:
+                existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
+                if existing:
+                    nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
+                    return (
+                        f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
+                        f"(subscription {existing.id}). Nothing new created."
+                    )
             origin = _origin.get()
             if kind == "push":
                 if not source:
