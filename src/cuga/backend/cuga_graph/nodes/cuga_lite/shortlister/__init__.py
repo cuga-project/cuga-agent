@@ -10,6 +10,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
     ShortlisterStrategy,
     ShortlisterUnavailableError,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.config import (
+    Shortlister,
+    shortlister_to_configurable,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.factory import (
     clear_instance_cache,
     resolve_shortlister,
@@ -24,6 +28,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.render import render_to
 
 __all__ = [
     "BUILTIN_STRATEGIES",
+    "Shortlister",
     "ShortlistCandidate",
     "ShortlistRequest",
     "ShortlisterPlan",
@@ -34,4 +39,5 @@ __all__ = [
     "render_tools_markdown",
     "resolve_shortlister",
     "run_shortlister",
+    "shortlister_to_configurable",
 ]
