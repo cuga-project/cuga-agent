@@ -31,9 +31,6 @@ _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _NON_WORD = re.compile(r"[^0-9a-zA-Z]+")
 _WS = re.compile(r"\s+")
 
-#: Trailing HTTP-verb noise that operationId-derived names accumulate.
-_NOISE_SUFFIXES = {"get", "post", "put", "patch", "delete"}
-
 
 def split_identifier(name: str) -> str:
     """Split a tool identifier into space-separated lowercase words.

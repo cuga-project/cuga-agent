@@ -109,10 +109,13 @@ async def test_crud_siblings_are_barely_separated(strategy):
     not simply to bump a number.
     """
     result = await strategy.shortlist(
-        ShortlistRequest(query="list all my contacts", tools=CATALOGUE, apps=[], top_k=2)
+        ShortlistRequest(query="list all my contacts", tools=CATALOGUE, apps=[], top_k=8)
     )
     scores = {c.name: c.score for c in result}
-    margin = abs(scores["crm_get_contacts_contacts_get"] - scores["crm_get_contact_contacts_contact_id_get"])
+    listing, by_id = "crm_get_contacts_contacts_get", "crm_get_contact_contacts_contact_id_get"
+    missing = [n for n in (listing, by_id) if n not in scores]
+    assert not missing, f"expected both CRUD siblings in the top 8, missing {missing}"
+    margin = abs(scores[listing] - scores[by_id])
     assert margin < 0.15, (
         f"list-vs-get-by-id margin is {margin:.3f}; cosine now separates CRUD siblings "
         f"better than assumed — re-measure before trusting it for final selection"

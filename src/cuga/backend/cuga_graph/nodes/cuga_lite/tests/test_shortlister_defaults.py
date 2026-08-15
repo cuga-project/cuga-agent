@@ -221,3 +221,66 @@ def _empty_result():
     from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistResult
 
     return ShortlistResult()
+
+
+@pytest.mark.asyncio
+async def test_max_results_caps_every_strategy_not_just_embedding():
+    """Regression: `max_results` used to be honoured only inside EmbeddingShortlister.
+
+    `hybrid` ends with an LLM pick, so the count was whatever the model returned —
+    which defeats the cap that exists to stop find_tools output overflowing
+    `execution_output_max_length` and being silently truncated mid-render.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistCandidate
+
+    tools = _tools(200)
+
+    async def _return_everything(self, request):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistResult
+
+        return ShortlistResult(
+            candidates=[ShortlistCandidate(name=t.name, score=1.0, reasoning="r") for t in request.tools]
+        )
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid.HybridShortlister.shortlist",
+            _return_everything,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils.settings",
+            _settings(strategy="hybrid", threshold=0, max_results=4),
+        ),
+    ):
+        out = await PromptUtils.find_tools(query="q", all_tools=tools, all_apps=[])
+
+    assert out.startswith("# Found 4 Matching Tool(s)"), out.splitlines()[0]
+
+
+@pytest.mark.asyncio
+async def test_default_llm_path_keeps_no_fixed_result_count():
+    """The cap must not leak into the default path — the LLM has always been
+    free to return as many tools as it judges relevant."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistCandidate
+
+    tools = _tools(20)
+
+    async def _return_everything(self, request):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistResult
+
+        return ShortlistResult(
+            candidates=[ShortlistCandidate(name=t.name, score=1.0, reasoning="r") for t in request.tools]
+        )
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm.LLMShortlister.shortlist",
+            _return_everything,
+        ),
+        patch("cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils.settings", _settings()),
+    ):
+        out = await PromptUtils.find_tools(query="q", all_tools=tools, all_apps=[])
+
+    assert out.startswith("# Found 20 Matching Tool(s)"), out.splitlines()[0]

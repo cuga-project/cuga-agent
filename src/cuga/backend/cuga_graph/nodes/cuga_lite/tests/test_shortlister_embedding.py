@@ -177,7 +177,7 @@ async def test_query_and_task_context_are_embedded_separately(fake_model):
     await strategy.shortlist(
         _request("list contacts", [_tool("contact_finder", "contact")], task_context="book a flight")
     )
-    assert fake_model.embed_calls[-1] == ["list contacts", "book a flight"]
+    assert fake_model.query_calls[-1] == ["list contacts", "book a flight"]
 
 
 @pytest.mark.asyncio
@@ -201,14 +201,18 @@ async def test_query_weight_shifts_ranking_toward_the_step_query(fake_model):
 async def test_missing_task_context_uses_query_alone(fake_model):
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
     await strategy.shortlist(_request("list contacts", [_tool("contact_finder", "contact")]))
-    assert fake_model.embed_calls[-1] == ["list contacts"]
+    assert fake_model.query_calls[-1] == ["list contacts"]
 
 
 @pytest.mark.asyncio
-async def test_blank_query_and_context_is_unavailable(fake_model):
+async def test_blank_query_returns_nothing_rather_than_claiming_unavailability(fake_model):
+    """An empty query is not a broken backend.
+
+    Raising ShortlisterUnavailableError here would wrongly trigger the fallback
+    strategy, which would receive the same empty query and fare no better.
+    """
     strategy = EmbeddingShortlister(MODEL)
-    with pytest.raises(ShortlisterUnavailableError):
-        await strategy.shortlist(_request("   ", [_tool("contact_finder")], task_context="  "))
+    assert await strategy.shortlist(_request("   ", [_tool("contact_finder")], task_context="  ")) == []
 
 
 # --- caching ----------------------------------------------------------------
@@ -220,25 +224,23 @@ async def test_tool_vectors_are_cached_across_calls(fake_model):
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
 
     await strategy.shortlist(_request("contact", tools))
-    documents_embedded_first = sum(len(c) for c in fake_model.embed_calls[:-1])
-    calls_after_first = len(fake_model.embed_calls)
+    documents_embedded_first = sum(len(c) for c in fake_model.passage_calls)
 
     await strategy.shortlist(_request("weather", tools))
 
-    # Second run embeds only the query, not the two tool documents again.
+    # Second run embeds only the query; the two tool documents come from cache.
     assert documents_embedded_first == 2
-    assert len(fake_model.embed_calls) == calls_after_first + 1
-    assert fake_model.embed_calls[-1] == ["weather"]
+    assert sum(len(c) for c in fake_model.passage_calls) == 2, "documents were re-embedded"
+    assert fake_model.query_calls[-1] == ["weather"]
 
 
 @pytest.mark.asyncio
 async def test_changed_description_reembeds(fake_model):
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
     await strategy.shortlist(_request("contact", [_tool("t", "contact")]))
-    before = len(fake_model.embed_calls)
+    docs_before = sum(len(c) for c in fake_model.passage_calls)
     await strategy.shortlist(_request("contact", [_tool("t", "totally different email text")]))
-    # One call for the new document + one for the query.
-    assert len(fake_model.embed_calls) == before + 2
+    assert sum(len(c) for c in fake_model.passage_calls) == docs_before + 1
 
 
 # --- cold start -------------------------------------------------------------

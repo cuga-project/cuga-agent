@@ -985,12 +985,12 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 | Strategy | How it ranks | Cost |
 |---|---|---|
 | `llm` (default) | asks the model | one LLM call per shortlist |
-| `embedding` | local cosine similarity | no LLM call, ~65ms warm |
+| `embedding` | local cosine similarity | no LLM call for ranking, ~65ms warm |
 | `hybrid` | cosine cuts to `top_k`, then the LLM picks | one LLM call, much smaller prompt |
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached under `~/.cache/cuga/fastembed`): no network call, no API cost. The first call while the model is still downloading is served by the LLM strategy, so **a query never waits on a download**.
+Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached under `~/.cache/cuga/fastembed`): ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 ## Configuration
 
@@ -1010,7 +1010,9 @@ Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached
 
 ### Four ways to set it
 
-Later rows win.
+**Precedence, highest first:** a strategy instance passed to the SDK → per-invoke `shortlister=` → constructor `shortlister=` → raw `shortlister_*` keys in `configurable` → `[shortlister.<seam>]` → `[shortlister]` → built-in defaults. Environment variables set `[shortlister]` values, so they sit at that level.
+
+A raw key already present in `configurable` is never overwritten by the SDK object — `_apply_shortlister` uses `setdefault`.
 
 **1. `settings.toml`** — deployment-wide:
 

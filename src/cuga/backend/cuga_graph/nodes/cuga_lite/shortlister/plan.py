@@ -167,6 +167,10 @@ class ShortlisterRouter:
             plan.top_k = 0
         if plan.max_results <= 0:
             plan.max_results = DEFAULT_MAX_RESULTS
+        # Both are documented as bounded; a value outside the range silently
+        # distorts ranking rather than failing, so clamp instead of trusting.
+        plan.query_weight = min(max(plan.query_weight, 0.0), 1.0)
+        plan.min_score = min(max(plan.min_score, -1.0), 1.0)
         return plan
 
 

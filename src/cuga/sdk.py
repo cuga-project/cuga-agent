@@ -1946,7 +1946,7 @@ class CugaAgent:
         run_config["configurable"] = dict(run_config.get("configurable") or {})
         return run_config
 
-    def _apply_shortlister(self, run_config: dict, shortlister: Optional[Any] = None) -> None:
+    def _apply_shortlister(self, run_config: dict, shortlister: Optional["Shortlister"] = None) -> None:
         """Merge shortlister config into ``run_config['configurable']``.
 
         A per-invoke ``shortlister`` overrides the constructor default. Raw
@@ -2442,6 +2442,8 @@ class CugaAgent:
                 result, operation_id, duration_ms, etc.) and returns them in result.tool_calls
             variables: Optional dict of variables to make available in the agent's context.
                 Used when delegating from a supervisor to pass context to sub-agents.
+            shortlister: Overrides the agent's shortlister for this call only, e.g.
+                `Shortlister(strategy="hybrid")`. None = use the agent default.
 
         Returns:
             InvokeResult containing:
@@ -2928,6 +2930,8 @@ class CugaAgent:
             thread_id: Thread ID (required for resume, auto-generated for new conversations)
             config: Optional LangGraph config
             action_response: Optional ActionResponse for resuming after approval/interruption
+            shortlister: Overrides the agent's shortlister for this call only, e.g.
+                `Shortlister(strategy="hybrid")`. None = use the agent default.
 
         Yields:
             State updates as the agent executes

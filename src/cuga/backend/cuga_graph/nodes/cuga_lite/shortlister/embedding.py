@@ -29,7 +29,7 @@ import asyncio
 import os
 import threading
 import time
-from typing import Any, ClassVar, Dict, List, Sequence, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from loguru import logger
@@ -281,7 +281,7 @@ class EmbeddingShortlister:
 
         return np.vstack([_VECTORS[f] for f in fingerprints])
 
-    async def _query_vector(self, backend: Any, request: ShortlistRequest) -> np.ndarray:
+    async def _query_vector(self, backend: Any, request: ShortlistRequest) -> Optional[np.ndarray]:
         """Blend the step query and task context as weighted unit vectors.
 
         String concatenation would let a long task context dominate a short step
@@ -292,7 +292,10 @@ class EmbeddingShortlister:
 
         texts = [t for t in (step, context) if t]
         if not texts:
-            raise ShortlisterUnavailableError("empty query — nothing to rank against")
+            # Not an unavailability: the backend is fine, there is simply
+            # nothing to rank against. Raising here would wrongly trigger the
+            # fallback strategy, which would receive the same empty query.
+            return None
 
         normalized = _normalize(await backend.aembed(texts, as_query=True))
         if len(texts) == 1:
@@ -332,8 +335,10 @@ class EmbeddingShortlister:
             return []
 
         backend = self._require_backend()
-        document_matrix = await self._document_matrix(backend, request.tools)
         query_vector = await self._query_vector(backend, request)
+        if query_vector is None:
+            return []
+        document_matrix = await self._document_matrix(backend, request.tools)
 
         scores = document_matrix @ query_vector
         selected = self._select(scores, request.tools, request)

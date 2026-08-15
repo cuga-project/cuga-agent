@@ -142,17 +142,13 @@ class ShortlistRequest:
     instructions: Optional[str] = None
 
 
-@dataclass
-class ShortlistResult:
-    candidates: List[ShortlistCandidate]
-    notes: List[str] = field(default_factory=list)   # e.g. PR #549's filtered-names footer
-
-
 class ShortlisterStrategy(Protocol):
     name: ClassVar[str]
 
-    async def shortlist(self, request: ShortlistRequest) -> ShortlistResult: ...
-    async def prewarm(self, tools: List[StructuredTool]) -> None: ...   # default no-op
+    async def shortlist(self, request: ShortlistRequest) -> List[ShortlistCandidate]: ...
+
+# NOTE: the design below also described a ShortlistResult wrapper and a prewarm()
+# hook. Neither shipped — see "What shipped" at the top of this document.
 
 
 class ShortlisterUnavailableError(RuntimeError):
@@ -222,16 +218,20 @@ cannot invent one. So PR #549's helpers — `_partition_shortlist_details`,
   O(N·d) in numpy, not a Python loop.
 - *Selection*: `top_k` when given. When `None` (seam A): every candidate with
   `score >= min_score`, capped at `[shortlister] top_k`.
-- **Never-empty rule**: if nothing clears `min_score`, return the best `min(3, N)` anyway.
-  Non-negotiable — `cap.py` raises `RuntimeError` on an empty ranking, and an empty
-  `find_tools` result is a dead end for the agent.
+- **Never-empty rule** (embedding strategy only): if nothing clears `min_score`, return
+  the best `min(3, N)` anyway. `cap.py` raises `RuntimeError` on an empty ranking, and an
+  empty `find_tools` result is a dead end for the agent. This is a property of the cosine
+  ranker, not a guarantee the seam imposes on every strategy — the `llm` strategy can and
+  does return nothing when the model finds no match.
 - `reasoning` = `f"Cosine similarity {score:.3f} to the query."` so the rendered markdown
   keeps its shape.
-- Raises `ShortlisterUnavailableError` if no embed fn can be built (offline, missing model).
+- Raises `ShortlisterUnavailableError` only when the *backend* cannot be built (offline,
+  missing model, unknown provider, absent API key). An empty query is not unavailability —
+  it returns no candidates, because the fallback strategy would receive the same empty query.
 
 **`hybrid`.** `embedding` prefilters to `[shortlister] top_k` (default 128), then
-`llm` ranks that reduced pool and its ordering wins. Cuts the LLM prompt from N tools to 50
-while keeping reasoning quality. If the embedding leg is unavailable it degrades to pure `llm`
+`llm` ranks that reduced pool and its ordering wins. Cuts the LLM prompt from N tools to
+`top_k` while keeping reasoning quality. If the embedding leg is unavailable it degrades to pure `llm`
 (logged once). The LLM leg's exceptions propagate unchanged — preserving each seam's existing
 failure contract.
 
@@ -253,9 +253,8 @@ query_weight = 0.7        # step query vs task context blend (§3A.3)
 # Deliberately does NOT inherit [storage.embedding] — that section may be set to "openai".
 embedding_provider = "local"
 embedding_model = "sentence-transformers/all-MiniLM-L6-v2"   # 384-dim, ~90MB, in LOCAL_MODEL_DIMS
-model = ""                # "" = keep today's settings.agent.code.model for the llm leg
-prewarm = false           # embed the catalogue in `prepare` instead of on first find_tools
-prompt_preselect = false  # layer-2 preselection (§3A.1 point 3) — later step, measure first
+# NOTE: `model`, `prewarm` and `prompt_preselect` were designed here but did not
+# ship — see "What shipped" at the top.
 
 # Optional per-seam overrides. Unset = inherit the values above.
 [shortlister.discovery]   # seam A — PromptUtils.find_tools
@@ -328,9 +327,9 @@ class ShortlisterPlan(BaseModel):
     max_results: int = 10
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None
-    model: Optional[str] = None
-    prewarm: bool = False
     notes: List[str] = Field(default_factory=list)   # like ExecutionPlan.fallbacks
+    # `model` and `prewarm` appear in the design above but did not ship —
+    # see "What shipped" at the top of this document.
 
 
 class ShortlisterRouter:
@@ -712,6 +711,8 @@ calling `PromptUtils.find_tools`, so the strategy cannot see them separately. Ad
 parameter — backward compatible, existing callers and test patches unaffected:
 
 ```python
+# Shipped signature — `task_context` appended last, so every existing caller and
+# test patch keeps working.
 async def find_tools(query, all_tools, all_apps, llm=None, run_config=None,
                      task_context: Optional[str] = None) -> str
 ```
