@@ -173,7 +173,7 @@ The container's env comes from three places, applied in this order — **last wi
 |---|---|---|---|---|
 | 1 | **Dockerfile `ENV`** ([Dockerfile.events](Dockerfile.events)) | **build time** | rarely-changing non-secret defaults: `CUGA_HOST=0.0.0.0`, `DYNACONF_SERVER_PORTS__DEMO=7860`, `MCP_SERVERS_FILE`, `EVENTS_SCHEDULER=native`, the direct channel backends | edit the Dockerfile → rebuild (step 1) |
 | 2 | **CE secret** `cuga-events-secrets` via `--env-from-secret` | **deploy time** (from `.env.ce`) | credentials + config-from-.env: `AGENT_SETTING_CONFIG`, `WATSONX_*`, `LLM_*`, `GATEWAY_TOKEN`, the channel tokens | edit `.env` → `./make_env_ce.sh` → step 2 |
-| 3 | **Deploy-time `--env` literals** ([2_deploy.sh](2_deploy.sh)) | **deploy time** | per-deploy runtime knobs: `EVENTS_WORKER_BACKEND`, `EVENTS_SCHEDULER`, the backends, `MCP_SERVERS_FILE`, `EVENTS_SUPERVISOR`(+roster), `DEPLOY_REV`, and **`EVENTS_PUBLIC_URL`** (see below) | env vars on the `2_deploy.sh` command line, or edit the script |
+| 3 | **Deploy-time `--env` literals** ([2_deploy.sh](2_deploy.sh)) | **deploy time** | per-deploy runtime knobs: `EVENTS_WORKER_BACKEND`, `EVENTS_SCHEDULER`, the backends, `MCP_SERVERS_FILE`, `CUGA_SUPERVISOR_ROSTER` (on cuga-core), `DEPLOY_REV`, and **`EVENTS_PUBLIC_URL`** (see below) | env vars on the `2_deploy.sh` command line, or edit the script |
 
 Precedence: a deploy-time `--env` (source 3) **overrides** the same key baked into the
 image (source 1). That's why `2_deploy.sh` re-passes `EVENTS_SCHEDULER=native`,
@@ -268,8 +268,9 @@ CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=events/examples/rosters/default
 # supervisor over a focused, curated roster
 CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy.sh
 ```
-`CE_EVENTS_SUPERVISOR=1` sets `EVENTS_SUPERVISOR=1`; `CE_ROSTER` sets
-`EVENTS_SUPERVISOR_ROSTER`. Every roster (`events/examples/rosters/default.yaml` + all of `rosters/`)
+`CE_EVENTS_SUPERVISOR=1` is the gate that makes the deploy pass a roster at all; `CE_ROSTER` sets
+`CUGA_SUPERVISOR_ROSTER` on **cuga-core** (see [2_deploy.sh](2_deploy.sh) — `EVENTS_SUPERVISOR`
+itself is inert and is deliberately not passed). Every roster (`events/examples/rosters/default.yaml` + all of `rosters/`)
 is baked into the image, so any of them is available without a rebuild. Any
 `rosters/no_ap_*.yaml` (and the 27-agent default) runs with zero AP; the `ap_*` rosters
 only light up their SaaS triggers once Activepieces is deployed.

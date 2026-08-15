@@ -79,8 +79,8 @@ restart. Without it you get an ephemeral cloudflared tunnel that changes each ru
   first boot and your AP-UI login), `EVENTS_AP_PROJECT_GRAIN=shared`.
 - **Events:** `CUGA_URL` (where the eventing service finds CUGA) and `EVENTS_API_URL` (where CUGA
   finds the eventing service — unset it and CUGA runs standalone), `EVENTS_WORKER_BACKEND=http`,
-  `EVENTS_SUPERVISOR=1` (the agent
-  model — one `cuga` supervising `supervisor_agents.yaml`; see below), `EVENTS_SEED_AGENTS=1` (seeds
+  `CUGA_SUPERVISOR_ROSTER` (the agent
+  model — one `cuga` supervising the roster YAML; read by CUGA, see below), `EVENTS_SEED_AGENTS=1` (seeds
   the demo **users** for identity/permissions — despite the name, the agent fleet it once seeded is
   retired), `EVENTS_DB` (**a `postgresql://` URL** — local dev runs the same engine as the deploy;
   `make pg` starts one. A filesystem path selects SQLite, for the offline suite and a
@@ -222,23 +222,34 @@ callbacks need a public URL. `make up` provisions both.
 
 There is exactly **one addressable agent — `cuga`**:
 
-- **`EVENTS_SUPERVISOR=1`** (recommended): `cuga` is a **supervisor** whose sub-agents load from
-  [`supervisor_agents.yaml`](../examples/rosters/default.yaml) — CUGA-main's canonical
+- **`CUGA_SUPERVISOR_ROSTER=<path>`** (recommended): `cuga` is a **supervisor** whose sub-agents
+  load from [`default.yaml`](../examples/rosters/default.yaml) — CUGA-main's canonical
   schema. It picks the right specialist per wake-up; answers bubble up. **Add/edit a sub-agent =
   edit the YAML + `make reload`.** Routing quality gate: `make test-delegation`.
 - **Unset**: `cuga` is the plain classic CUGA agent, exactly as main ships it (one generalist,
   no roster). Everything else (channels, triggers, flows) works identically — flows just wake a
   generalist instead of a supervised specialist.
 
+> **What loads the roster is `CUGA_SUPERVISOR_ROSTER`, not `EVENTS_SUPERVISOR`.** The roster is
+> read by CUGA in [`run_routes.py`](../../src/cuga/backend/server/run_routes.py#L109); no runtime
+> code reads `EVENTS_SUPERVISOR`, so setting it alone gets you the bare default agent.
+> It is not dead, though — [`run_all_tests.py`](../scripts/run_all_tests.py) reads it to decide
+> which fleet-era rungs to skip, which is why it still appears under testing below.
+> `make up` / `make up-noap` / `make ce-deploy` export the roster variable for you; it only
+> matters when you drive `cuga start demo` yourself.
+
 ### Bring your own agents
 
 The `supervisor_agents.yaml` in this repo is an **example roster** (27 demo specialists) — the
-platform assumes nothing about it. Point `EVENTS_SUPERVISOR_ROSTER` at *your* roster file (canonical
+platform assumes nothing about it. Point `CUGA_SUPERVISOR_ROSTER` at *your* roster file (canonical
 CUGA-main supervisor schema) and the same event-driven layer serves *your* agents:
 
 ```bash
-EVENTS_SUPERVISOR=1 EVENTS_SUPERVISOR_ROSTER=rosters/ap_devops.yaml  cuga start demo
+CUGA_SUPERVISOR_ROSTER=events/examples/rosters/ap_devops.yaml  cuga start demo
 ```
+
+`cuga start demo` is the preset to use — it is the only one that respects an exported
+`MCP_SERVERS_FILE`; the others force `"none"`, which strips the roster's tools.
 
 The roster is loaded by **CUGA**, not by the eventing service — the roster belongs to whoever
 executes. CUGA publishes it at `GET /run/agents`, and the eventing service reads it from there.
@@ -247,7 +258,7 @@ Nothing in the channels, triggers, flows, or NL→Flow compiler is tied to the d
 route to whatever sub-agents your roster names.
 
 **Ready-made rosters ship in [`rosters/`](../examples/rosters/README.md)** — drop-in alternatives to the flat
-27-agent default, so you can `EVENTS_SUPERVISOR_ROSTER=rosters/<file>.yaml` without authoring one.
+27-agent default, so you can `CUGA_SUPERVISOR_ROSTER=events/examples/rosters/<file>.yaml` without authoring one.
 Two cuts: **domain families** (`box_document_intelligence`, `repository_intelligence`,
 `market_research_intelligence`, …) and an **enterprise test bed split by AP dependency** —
 `no_ap_*` rosters (research desk, markets desk, IT helpdesk) run with **zero Activepieces**, `ap_*`
