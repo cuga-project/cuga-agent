@@ -1,7 +1,5 @@
 """Policy system for CUGA agent."""
 
-from typing import TYPE_CHECKING
-
 from cuga.backend.cuga_graph.policy.models import (
     Policy,
     PolicyAction,
@@ -27,18 +25,7 @@ from cuga.backend.cuga_graph.policy.models import (
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext, PlaybookEnactment
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable, check_policy_in_node
-
-if TYPE_CHECKING:
-    from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
-
-
-def __getattr__(name: str):
-    """Lazily expose enactment to avoid a policy/state import cycle."""
-    if name == "PolicyEnactment":
-        from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
-
-        return PolicyEnactment
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 
 
 __all__ = [

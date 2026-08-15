@@ -71,7 +71,7 @@ Tool Approval Example (with HITL):
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import uuid
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
@@ -82,10 +82,9 @@ from cuga.config import settings
 if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+    from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 from langchain_core.messages import BaseMessage
-from langchain_core.messages import BaseMessage
-from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 _llm_manager_instance = None
 
@@ -128,14 +127,59 @@ class InvokeResult(BaseModel):
         default_factory=dict,
         description="Variables computed by the sub-agent, bridged to the Supervisor's namespace",
     )
-    policy_decisions: List[PolicyDecision] = Field(
-        default_factory=list,
-        description="Ordered policy decisions made during this invocation",
-    )
+    if TYPE_CHECKING:
+        policy_decisions: List[PolicyDecision]
+    else:
+        policy_decisions: List[Any] = Field(
+            default_factory=list,
+            description="Ordered policy decisions made during this invocation",
+        )
+
+    @field_validator("policy_decisions", mode="before")
+    @classmethod
+    def _parse_policy_decisions(cls, value):
+        """Keep SDK imports lazy while returning typed public decisions."""
+        if not value:
+            return []
+
+        from cuga.backend.cuga_graph.policy.models import PolicyDecision
+
+        return [PolicyDecision.model_validate(item) for item in value]
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
         return self.answer
+
+
+def _policy_decisions_from_result(result: Any, metadata_key: str) -> list[dict[str, Any]]:
+    """Read the public decision trail from an invocation's existing metadata."""
+    from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
+
+    metadata = result.get(metadata_key, {}) if isinstance(result, dict) else getattr(result, metadata_key, {})
+    return serialize_policy_decisions(metadata)
+
+
+def _record_denied_policy_decision(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Record an SDK-wrapper denial using the same stored approval metadata."""
+    from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+    from cuga.backend.cuga_graph.policy.observability import (
+        append_policy_decisions,
+        decision_from_metadata,
+    )
+
+    updated = dict(metadata or {})
+    append_policy_decisions(
+        updated,
+        [decision_from_metadata(updated, outcome=PolicyDecisionOutcome.DENIED)],
+    )
+    return updated
+
+
+def _reset_policy_decisions(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Start a new SDK turn without carrying the previous turn's decision trail."""
+    updated = dict(metadata or {})
+    updated["policy_decisions"] = []
+    return updated
 
 
 class PoliciesManager:
@@ -2108,6 +2152,7 @@ class CugaAgent:
                     logger.warning("User denied tool execution - stopping execution")
                     # User denied - set final answer and end
                     policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
+                    state.cuga_lite_metadata = _record_denied_policy_decision(state.cuga_lite_metadata)
                     state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
                     # Set sender to CugaLite so FinalAnswerAgent handles it properly
                     state.sender = NodeNames.CUGA_LITE
@@ -2536,7 +2581,7 @@ class CugaAgent:
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
-                policy_decisions=result.get("policy_decisions", []) or [],
+                policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
             )
 
         # Normal invocation case
@@ -2598,7 +2643,9 @@ class CugaAgent:
             # InvokeResult reports decisions for this request, not the entire
             # checkpointed conversation. HITL resume bypasses this branch and
             # therefore preserves the interrupted request's decision lifecycle.
-            initial_state_dict["policy_decisions"] = []
+            initial_state_dict["cuga_lite_metadata"] = _reset_policy_decisions(
+                initial_state_dict.get("cuga_lite_metadata")
+            )
 
             # Update user_context (pi) if provided
             if user_context:
@@ -2629,6 +2676,7 @@ class CugaAgent:
                 "pi": user_context,
                 "input": new_messages[-1].content if new_messages else "",
                 "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+                "cuga_lite_metadata": _reset_policy_decisions(None),
             }
             initial_state_pydantic = AgentState(**initial_state)
 
@@ -2806,7 +2854,7 @@ class CugaAgent:
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
-            policy_decisions=result.get("policy_decisions", []) or [],
+            policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
         )
 
     async def stream(
@@ -2923,6 +2971,7 @@ class CugaAgent:
             "thread_id": thread_id,
             "input": messages[-1].content if messages else "",
             "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+            "cuga_lite_metadata": _reset_policy_decisions(None),
         }
 
         run_config["configurable"]["thread_id"] = thread_id
@@ -3235,6 +3284,7 @@ class CugaSupervisor:
                         state.sender = callback_name
                         return Command(update=state.model_dump(), goto="SupervisorSubgraph")
                     policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.supervisor_metadata = _record_denied_policy_decision(state.supervisor_metadata)
                     state.final_answer = (
                         f"❌ **Execution Cancelled**\n\nYou denied execution required by "
                         f"**{policy_name}**. The supervisor will not proceed with this task."
@@ -3444,12 +3494,7 @@ class CugaSupervisor:
             sources=sources,
             thread_id=thread_id,
             error=error_msg,
-            policy_decisions=(
-                result.get("policy_decisions", [])
-                if isinstance(result, dict)
-                else getattr(result, "policy_decisions", [])
-            )
-            or [],
+            policy_decisions=_policy_decisions_from_result(result, "supervisor_metadata"),
         )
 
     @property

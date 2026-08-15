@@ -104,8 +104,8 @@ _import_map: dict = {
         "expand_query_with_glossary",
     ),
     "PolicyDecision": (
-      "cuga.backend.cuga_graph.policy.models",
-      "PolicyDecision",
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecision",
     ),
     "PolicyDecisionOutcome": (
         "cuga.backend.cuga_graph.policy.models",

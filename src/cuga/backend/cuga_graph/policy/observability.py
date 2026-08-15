@@ -1,4 +1,4 @@
-"""Helpers for collecting policy decisions without exposing raw graph metadata."""
+"""Helpers for exposing policy decisions from existing graph metadata."""
 
 from typing import Any, Iterable, Optional
 
@@ -10,6 +10,20 @@ from cuga.backend.cuga_graph.policy.models import (
     PolicyMatch,
     PolicyType,
 )
+
+
+POLICY_DECISIONS_KEY = "policy_decisions"
+
+_ACTION_BY_METADATA_TYPE = {
+    PolicyType.INTENT_GUARD.value: PolicyActionType.BLOCK_INTENT,
+    PolicyType.PLAYBOOK.value: PolicyActionType.GUIDE_PROMPT,
+    PolicyType.TOOL_GUIDE.value: PolicyActionType.TOOL_INJECT_DESCRIPTION,
+    PolicyType.TOOL_APPROVAL.value: PolicyActionType.TOOL_REQUIRE_APPROVAL,
+    PolicyType.OUTPUT_FORMATTER.value: PolicyActionType.FORMAT_OUTPUT,
+    "tool_restriction": PolicyActionType.MODIFY_TOOLS,
+    "context_injection": PolicyActionType.INJECT_CONTEXT,
+    "log_only": PolicyActionType.LOG_ONLY,
+}
 
 
 def decision_from_match(
@@ -50,19 +64,37 @@ def decision_from_metadata(
     *,
     outcome: PolicyDecisionOutcome,
     stage: PolicyDecisionStage = PolicyDecisionStage.TOOL,
+    tool_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
 ) -> Optional[PolicyDecision]:
-    """Create an approval lifecycle decision from sanitized state metadata."""
+    """Create a public decision from policy metadata already stored on state."""
     policy_id = metadata.get("policy_id")
     policy_name = metadata.get("policy_name")
     if not policy_id or not policy_name:
         return None
 
-    policy_type = metadata.get("policy_type", PolicyType.TOOL_APPROVAL)
-    action_type = (
-        PolicyActionType.TOOL_REQUIRE_APPROVAL
-        if policy_type == PolicyType.TOOL_APPROVAL or policy_type == PolicyType.TOOL_APPROVAL.value
-        else None
-    )
+    raw_policy_type = metadata.get("policy_type", PolicyType.CUSTOM)
+    try:
+        policy_type = PolicyType(raw_policy_type)
+    except (TypeError, ValueError):
+        policy_type = PolicyType.CUSTOM
+
+    raw_action_type = metadata.get("action_type")
+    try:
+        action_type = PolicyActionType(raw_action_type) if raw_action_type else None
+    except (TypeError, ValueError):
+        action_type = None
+    if action_type is None:
+        metadata_type = raw_policy_type.value if isinstance(raw_policy_type, PolicyType) else raw_policy_type
+        action_type = _ACTION_BY_METADATA_TYPE.get(metadata_type)
+
+    if tool_name is None:
+        matched_tools = metadata.get("matched_tools") or []
+        required_tools = metadata.get("required_tools") or []
+        candidate_tools = matched_tools or required_tools
+        if candidate_tools:
+            tool_name = str(candidate_tools[0])
+
     return PolicyDecision(
         policy_id=policy_id,
         policy_name=policy_name,
@@ -72,16 +104,16 @@ def decision_from_metadata(
         outcome=outcome,
         confidence=metadata.get("policy_confidence"),
         reasoning=metadata.get("policy_reasoning"),
+        tool_name=tool_name,
+        agent_name=agent_name or metadata.get("agent_name"),
     )
 
 
 def append_policy_decisions(
-    state: Any, decisions: Iterable[Optional[PolicyDecision]]
+    metadata: dict[str, Any], decisions: Iterable[Optional[PolicyDecision]]
 ) -> list[PolicyDecision]:
-    """Append decisions to state in order, deduplicating identical lifecycle events."""
-    existing = [
-        PolicyDecision.model_validate(item) for item in (getattr(state, "policy_decisions", None) or [])
-    ]
+    """Append ordered decisions to a metadata dict, deduplicating identical events."""
+    existing = _valid_policy_decisions(metadata.get(POLICY_DECISIONS_KEY) or [])
     identities = {_decision_identity(item) for item in existing}
 
     for decision in decisions:
@@ -92,16 +124,24 @@ def append_policy_decisions(
             existing.append(decision)
             identities.add(identity)
 
-    setattr(state, "policy_decisions", existing)
+    metadata[POLICY_DECISIONS_KEY] = [item.model_dump(mode="json") for item in existing]
     return existing
 
 
-def serialize_policy_decisions(state: Any) -> list[dict[str, Any]]:
-    """Serialize decisions for LangGraph command updates and checkpoints."""
+def serialize_policy_decisions(metadata: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return checkpoint-safe decisions stored on a policy metadata dict."""
     return [
-        PolicyDecision.model_validate(item).model_dump(mode="json")
-        for item in (getattr(state, "policy_decisions", None) or [])
+        item.model_dump(mode="json")
+        for item in _valid_policy_decisions((metadata or {}).get(POLICY_DECISIONS_KEY) or [])
     ]
+
+
+def carry_policy_decisions(source: Optional[dict[str, Any]], target: dict[str, Any]) -> list[PolicyDecision]:
+    """Carry an existing decision trail into replacement policy metadata."""
+    return append_policy_decisions(
+        target,
+        [PolicyDecision.model_validate(item) for item in serialize_policy_decisions(source)],
+    )
 
 
 def _decision_identity(
@@ -115,3 +155,14 @@ def _decision_identity(
         decision.tool_name,
         decision.agent_name,
     )
+
+
+def _valid_policy_decisions(items: Iterable[Any]) -> list[PolicyDecision]:
+    """Ignore stale malformed entries so observability cannot disable enforcement."""
+    decisions = []
+    for item in items:
+        try:
+            decisions.append(PolicyDecision.model_validate(item))
+        except (TypeError, ValueError):
+            continue
+    return decisions

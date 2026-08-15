@@ -27,7 +27,6 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agen
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     resolve_supervisor_execution_context,
 )
-from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 
@@ -269,7 +268,6 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         }
         if adapter.get_metadata(state):
             update_payload[adapter.metadata_key] = adapter.get_metadata(state)
-        update_payload["policy_decisions"] = serialize_policy_decisions(state)
         if is_fresh_conversation:
             update_payload["task_todos"] = None
 

@@ -228,11 +228,12 @@ class CugaSupervisorNode(BaseNode):
             and state.hitl_response
             and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
         ):
+            metadata = state.supervisor_metadata or {}
             append_policy_decisions(
-                state,
+                metadata,
                 [
                     decision_from_metadata(
-                        state.supervisor_metadata or {},
+                        metadata,
                         outcome=(
                             PolicyDecisionOutcome.APPROVED
                             if state.hitl_response.confirmed
@@ -241,6 +242,7 @@ class CugaSupervisorNode(BaseNode):
                     )
                 ],
             )
+            state.supervisor_metadata = metadata
             if state.hitl_response.confirmed:
                 logger.info("User approved supervisor tool execution - resuming subgraph")
                 sd = state.model_dump()

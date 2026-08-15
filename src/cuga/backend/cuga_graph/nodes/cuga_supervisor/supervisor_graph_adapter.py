@@ -122,13 +122,15 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
 
         delegated_decisions = getattr(result, "policy_decisions", None) if result is not None else None
         if delegated_decisions:
+            metadata = dict(self.get_metadata(state))
             append_policy_decisions(
-                state,
+                metadata,
                 [
                     PolicyDecision.model_validate(decision).model_copy(update={"agent_name": agent_name})
                     for decision in delegated_decisions
                 ],
             )
+            self.set_metadata(state, metadata)
 
         metrics = dict(getattr(state, "metrics", None) or {})
         delegation_count = int(metrics.get("delegation_count", 0)) + 1

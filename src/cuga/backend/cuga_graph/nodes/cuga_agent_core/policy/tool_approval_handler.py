@@ -15,12 +15,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as _core_append_with_step_limit,
     create_error_command as _core_create_error_command,
 )
-from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome, PolicyDecisionStage
+from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
 from cuga.backend.cuga_graph.policy.observability import (
     append_policy_decisions,
-    decision_from_match,
     decision_from_metadata,
-    serialize_policy_decisions,
 )
 
 
@@ -74,6 +72,7 @@ class ToolApprovalHandler:
             "approval_required",
             "user_approved",
             "required_tools",
+            "matched_tools",
             "required_apps",
             "full_code",
             "code_preview",
@@ -99,7 +98,7 @@ class ToolApprovalHandler:
 
         metadata = adapter.get_metadata(state)
         append_policy_decisions(
-            state,
+            metadata,
             [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.APPROVED)],
         )
         cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(metadata)
@@ -109,7 +108,6 @@ class ToolApprovalHandler:
             update={
                 "script": code,
                 adapter.metadata_key: cleaned_metadata,
-                "policy_decisions": serialize_policy_decisions(state),
                 "step_count": state.step_count + 1,
             },
         )
@@ -144,17 +142,6 @@ class ToolApprovalHandler:
             policy = policy_match.policy
             logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
 
-            append_policy_decisions(
-                state,
-                [
-                    decision_from_match(
-                        policy_match,
-                        stage=PolicyDecisionStage.TOOL,
-                        outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
-                    )
-                ],
-            )
-
             code_lines = code.split("\n")
             preview_lines = code_lines
 
@@ -163,12 +150,25 @@ class ToolApprovalHandler:
                 "policy_type": "tool_approval",
                 "policy_id": policy.id,
                 "policy_name": policy.name,
+                "policy_confidence": policy_match.confidence,
+                "policy_reasoning": policy_match.reasoning,
                 "required_tools": policy.required_tools,
+                "matched_tools": policy_match.trigger_details.get("matched_tools", []),
                 "required_apps": policy.required_apps,
                 "approval_message": policy.approval_message
                 or "This tool requires your approval before execution.",
                 "show_code_preview": policy.show_code_preview,
             }
+
+            append_policy_decisions(
+                approval_metadata,
+                [
+                    decision_from_metadata(
+                        approval_metadata,
+                        outcome=PolicyDecisionOutcome.APPROVAL_REQUIRED,
+                    )
+                ],
+            )
 
             adapter.set_metadata(state, approval_metadata)
 
@@ -235,7 +235,6 @@ class ToolApprovalHandler:
                 "script": code,
                 "final_answer": final_answer_text,
                 adapter.metadata_key: approval_metadata,
-                "policy_decisions": serialize_policy_decisions(state),
                 "hitl_action": hitl_action,
                 "sender": adapter.sender_name,
                 "step_count": state.step_count + 1,
@@ -285,7 +284,7 @@ class ToolApprovalHandler:
             meta_key = adapter.metadata_key
             metadata = adapter.get_metadata(state)
             append_policy_decisions(
-                state,
+                metadata,
                 [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.DENIED)],
             )
             cleared_meta = {k: v for k, v in metadata.items() if k != "user_approved"}
@@ -296,7 +295,6 @@ class ToolApprovalHandler:
                     "final_answer": "Execution cancelled by user.",
                     "step_count": state.step_count + 1,
                     meta_key: cleared_meta,
-                    "policy_decisions": serialize_policy_decisions(state),
                 },
             )
         return None

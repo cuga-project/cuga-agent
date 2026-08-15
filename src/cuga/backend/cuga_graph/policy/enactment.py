@@ -22,8 +22,9 @@ from cuga.backend.cuga_graph.policy.models import (
 )
 from cuga.backend.cuga_graph.policy.observability import (
     append_policy_decisions,
+    carry_policy_decisions,
     decision_from_match,
-    serialize_policy_decisions,
+    decision_from_metadata,
 )
 from cuga.config import settings
 
@@ -37,6 +38,7 @@ class PolicyEnactment:
         config: Optional[RunnableConfig] = None,
         policy_types: Optional[List[PolicyType]] = None,
         adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Optional[Command], Optional[Dict[str, Any]]]:
         """
         Check for applicable policies and return enactment command or metadata.
@@ -149,32 +151,74 @@ class PolicyEnactment:
                 metadata["guides"] = []
                 metadata["guide_policies"] = []
 
-            decisions = []
-            if policy_match.matched:
-                outcome = (
-                    None if command is not None or metadata is not None else PolicyDecisionOutcome.MATCHED
-                )
-                decisions.append(
-                    decision_from_match(
-                        policy_match,
-                        stage=decision_stage,
-                        outcome=outcome,
-                    )
-                )
-            decisions.extend(
-                decision_from_match(
-                    guide_match,
-                    stage=PolicyDecisionStage.INPUT,
-                    outcome=PolicyDecisionOutcome.APPLIED,
-                )
-                for guide_match in guide_matches
-            )
-            append_policy_decisions(state, decisions)
-
-            # Blocking policy actions return before the normal prepare-node
-            # update, so explicitly persist the decision list on the command.
+            resolved_metadata_key = metadata_key or getattr(adapter, "metadata_key", "cuga_lite_metadata")
+            existing_metadata = getattr(state, resolved_metadata_key, None) or {}
+            decision_metadata = metadata
             if command is not None and isinstance(getattr(command, "update", None), dict):
-                command.update["policy_decisions"] = serialize_policy_decisions(state)
+                decision_metadata = command.update.get(resolved_metadata_key)
+
+            if decision_metadata is not None:
+                # A blocking action stores its own metadata on the Command,
+                # while independently matched guides live in ``metadata``.
+                # Merge the guide facts before deriving decisions so the
+                # command remains the single checkpointed source of truth.
+                if metadata is not None and metadata is not decision_metadata:
+                    guides = metadata.get("guides") or []
+                    if guides:
+                        decision_metadata["guides"] = guides
+                        decision_metadata["guide_policies"] = metadata.get("guide_policies") or [
+                            {
+                                "policy_id": guide.get("policy_id"),
+                                "policy_name": guide.get("policy_name"),
+                            }
+                            for guide in guides
+                        ]
+                        decision_metadata["has_guides"] = True
+
+                carry_policy_decisions(existing_metadata, decision_metadata)
+
+                if policy_match.matched:
+                    if decision_metadata.get("policy_blocked"):
+                        outcome = PolicyDecisionOutcome.BLOCKED
+                    else:
+                        outcome = PolicyDecisionOutcome.APPLIED
+                    append_policy_decisions(
+                        decision_metadata,
+                        [
+                            decision_from_metadata(
+                                decision_metadata,
+                                stage=decision_stage,
+                                outcome=outcome,
+                            )
+                        ],
+                    )
+
+                append_policy_decisions(
+                    decision_metadata,
+                    [
+                        decision_from_metadata(
+                            guide_metadata,
+                            stage=PolicyDecisionStage.INPUT,
+                            outcome=PolicyDecisionOutcome.APPLIED,
+                        )
+                        for guide_metadata in decision_metadata.get("guides", [])
+                    ],
+                )
+            elif policy_match.matched:
+                # Unknown/custom actions may not produce metadata. Keep the
+                # live match only as a compatibility fallback.
+                fallback_metadata = dict(existing_metadata)
+                append_policy_decisions(
+                    fallback_metadata,
+                    [
+                        decision_from_match(
+                            policy_match,
+                            stage=decision_stage,
+                            outcome=PolicyDecisionOutcome.MATCHED,
+                        )
+                    ],
+                )
+                metadata = fallback_metadata
 
             # Return command (if any) and merged metadata
             return command, metadata
@@ -203,6 +247,9 @@ class PolicyEnactment:
             guide_info = {
                 "policy_id": match.policy.id,
                 "policy_name": match.policy.name,
+                "policy_type": PolicyType.TOOL_GUIDE.value,
+                "policy_confidence": match.confidence,
+                "policy_reasoning": match.reasoning,
                 "guide_content": match.action.content,
                 "target_tools": match.action.modifications.get("target_tools", []),
                 "target_apps": match.action.modifications.get("target_apps"),

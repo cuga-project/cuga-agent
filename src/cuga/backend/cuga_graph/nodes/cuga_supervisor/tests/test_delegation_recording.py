@@ -94,7 +94,7 @@ def test_record_delegation_updates_state_fields():
         agent_results={},
         agent_variables={},
         agent_chat_messages={},
-        policy_decisions=[],
+        supervisor_metadata={},
         metrics={},
     )
 
@@ -122,8 +122,9 @@ def test_record_delegation_updates_state_fields():
     assert state.agent_results["crm_agent"] == "done"
     assert state.agent_variables["crm_agent"] == {"order_id": "42"}
     assert state.agent_chat_messages["crm_agent"] == ["msg1"]
-    assert state.policy_decisions[0].policy_id == "worker-guard"
-    assert state.policy_decisions[0].agent_name == "crm_agent"
+    decision = state.supervisor_metadata["policy_decisions"][0]
+    assert decision["policy_id"] == "worker-guard"
+    assert decision["agent_name"] == "crm_agent"
     assert state.metrics["delegation_count"] == 1
     assert state.metrics["last_delegated_agent"] == "crm_agent"
 

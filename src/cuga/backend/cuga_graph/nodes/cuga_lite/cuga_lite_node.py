@@ -61,15 +61,17 @@ class CugaLiteHumanInTheLoopHandler:
 
         # Check if user approved or denied
         confirmed = state.hitl_response.confirmed
+        metadata = state.cuga_lite_metadata or {}
         append_policy_decisions(
-            state,
+            metadata,
             [
                 decision_from_metadata(
-                    state.cuga_lite_metadata or {},
+                    metadata,
                     outcome=(PolicyDecisionOutcome.APPROVED if confirmed else PolicyDecisionOutcome.DENIED),
                 )
             ],
         )
+        state.cuga_lite_metadata = metadata
 
         if confirmed:
             logger.info("User approved tool execution - continuing with code execution")
