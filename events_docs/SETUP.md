@@ -42,7 +42,7 @@ variables win over the file in both (`override=False`).
 | `EVENTS_API_URL` | `http://127.0.0.1:8100` | Where the SPA sends `/api/events/*`. `/api/ui/config` hands it to the browser. Without it the SPA asks CUGA instead, gets the catch-all, and the Studio tab silently never appears. Also what the `/automate` forwarder needs — it is inert when unset. |
 | `CUGA_URL` | `http://127.0.0.1:7860` | The way back: the events worker calls CUGA's `POST /run`. |
 | `EVENTS_CORS_ORIGINS` | `http://localhost:7860,http://127.0.0.1:7860` | **Easy to miss.** CUGA serves the SPA, but the SPA calls *this* service for `/api/events/*` — cross-origin, since the port differs and `localhost` ≠ `127.0.0.1` to a browser. CORS middleware is added [only when this is set](../src/cuga/backend/events/service.py#L186), with `allow_credentials=True`, so `*` is rejected and origins must be listed. Unset → the browser blocks `/api/events/status` → **no Studio tab, no error anywhere**. |
-| `GATEWAY_TOKEN` | a generated secret | Guards `/run` **and** the events service's own `/invoke`. One value on both sides. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. |
+| `GATEWAY_TOKEN` | a generated secret | Guards `/run` **and** the events service's own `/invoke`. Nothing generates or registers it — you invent one and both sides present the same string (here, one `.env` covers both). `python -c "import secrets; print(secrets.token_urlsafe(32))"` gives 256 bits, URL-safe. **Rotating it means restarting both processes** — restart only one and every flow fires and 401s. |
 
 Those four must be set. `EVENTS_DB` is worth setting explicitly but has a working default:
 
