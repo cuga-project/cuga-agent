@@ -1,5 +1,7 @@
 """Unit tests for public policy decision collection."""
 
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -29,6 +31,30 @@ from cuga.backend.cuga_graph.policy.observability import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_policy_enactment_export_is_lazy():
+    script = """
+import sys
+
+import cuga.backend.cuga_graph.policy as policy
+
+module_name = "cuga.backend.cuga_graph.policy.enactment"
+assert "PolicyEnactment" in policy.__all__
+assert module_name not in sys.modules
+exported = policy.PolicyEnactment
+assert module_name in sys.modules
+assert exported.__module__ == module_name
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def _intent_guard_match() -> PolicyMatch:
@@ -219,6 +245,37 @@ async def test_blocking_enactment_persists_decision_on_command(monkeypatch):
     assert metadata is None
     assert command is not None
     decisions = command.update["cuga_lite_metadata"]["policy_decisions"]
+    assert decisions[0]["policy_id"] == "guard-delete"
+    assert decisions[0]["outcome"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_blocking_enactment_honors_custom_metadata_key_without_adapter(monkeypatch):
+    policy_system = SimpleNamespace(
+        match_policy=AsyncMock(return_value=_intent_guard_match()),
+        agent=SimpleNamespace(),
+    )
+    monkeypatch.setattr(PolicyConfigurable, "from_config", lambda _config: policy_system)
+    monkeypatch.setattr(
+        PolicyConfigurable,
+        "create_context_from_state",
+        lambda _state, _config: SimpleNamespace(user_input="delete all records"),
+    )
+    state = SimpleNamespace(
+        chat_messages=[HumanMessage(content="delete all records")],
+        supervisor_metadata={},
+    )
+
+    command, metadata = await PolicyEnactment.check_and_enact(
+        state,
+        policy_types=[PolicyType.INTENT_GUARD],
+        metadata_key="supervisor_metadata",
+    )
+
+    assert metadata is None
+    assert command is not None
+    assert "cuga_lite_metadata" not in command.update
+    decisions = command.update["supervisor_metadata"]["policy_decisions"]
     assert decisions[0]["policy_id"] == "guard-delete"
     assert decisions[0]["outcome"] == "blocked"
 

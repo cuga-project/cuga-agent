@@ -111,13 +111,19 @@ class PolicyEnactment:
             # If a policy matched, enact it (may return a blocking command)
             command = None
             metadata = None
+            resolved_metadata_key = metadata_key or getattr(adapter, "metadata_key", "cuga_lite_metadata")
 
             if policy_match.matched:
                 logger.info(
                     f"Policy matched: {policy_match.policy.name} (action: {policy_match.action.action_type})"
                 )
                 command, metadata = await PolicyEnactment._enact_policy_action(
-                    state, policy_match, policy_system, context, adapter
+                    state,
+                    policy_match,
+                    policy_system,
+                    context,
+                    adapter,
+                    resolved_metadata_key,
                 )
 
             # ALWAYS apply Tool Guide policies (merge metadata from all matches)
@@ -151,7 +157,6 @@ class PolicyEnactment:
                 metadata["guides"] = []
                 metadata["guide_policies"] = []
 
-            resolved_metadata_key = metadata_key or getattr(adapter, "metadata_key", "cuga_lite_metadata")
             existing_metadata = getattr(state, resolved_metadata_key, None) or {}
             decision_metadata = metadata
             if command is not None and isinstance(getattr(command, "update", None), dict):
@@ -274,6 +279,7 @@ class PolicyEnactment:
         policy_system: PolicyConfigurable,
         context: Any,
         adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Optional[Command], Optional[Dict[str, Any]]]:
         """
         Enact a specific policy action.
@@ -290,7 +296,12 @@ class PolicyEnactment:
         action_type = policy_match.action.action_type
 
         if action_type == PolicyActionType.BLOCK_INTENT:
-            return PolicyEnactment._enact_block_intent(state, policy_match, adapter)
+            return PolicyEnactment._enact_block_intent(
+                state,
+                policy_match,
+                adapter,
+                metadata_key,
+            )
 
         elif action_type == PolicyActionType.GUIDE_PROMPT:
             return await PolicyEnactment._enact_guide_prompt(state, policy_match, policy_system, context)
@@ -319,7 +330,10 @@ class PolicyEnactment:
 
     @staticmethod
     def _enact_block_intent(
-        state: Any, policy_match: PolicyMatch, adapter: Any = None
+        state: Any,
+        policy_match: PolicyMatch,
+        adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Command, None]:
         """
         Block the intent and return immediately with guard response.
@@ -340,11 +354,11 @@ class PolicyEnactment:
         if adapter is not None:
             base_messages = adapter.get_messages(state)
             messages_key = adapter.messages_key
-            metadata_key = adapter.metadata_key
+            resolved_metadata_key = metadata_key or adapter.metadata_key
         else:
             base_messages = state.chat_messages
             messages_key = "chat_messages"
-            metadata_key = "cuga_lite_metadata"
+            resolved_metadata_key = metadata_key or "cuga_lite_metadata"
 
         return (
             Command(
@@ -353,7 +367,7 @@ class PolicyEnactment:
                     messages_key: base_messages + [blocked_message],
                     "final_answer": policy_match.action.content,
                     "execution_complete": True,
-                    metadata_key: {
+                    resolved_metadata_key: {
                         "policy_blocked": True,
                         "policy_id": policy_match.policy.id,
                         "policy_name": policy_match.policy.name,

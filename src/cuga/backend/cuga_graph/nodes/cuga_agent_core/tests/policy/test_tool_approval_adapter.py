@@ -127,6 +127,7 @@ def test_handle_denial_lite_shape():
         },
         step_count=4,
     )
+    metadata_before = dict(denied.cuga_lite_metadata)
     cmd = ToolApprovalHandler.handle_denial(a, denied)
     assert cmd.goto == END
     assert cmd.update["execution_complete"] is True
@@ -136,6 +137,8 @@ def test_handle_denial_lite_shape():
     assert "user_approved" not in metadata
     assert metadata["policy_decisions"][0]["outcome"] == "denied"
     assert metadata["policy_decisions"][0]["tool_name"] == "delete_records"
+    assert denied.cuga_lite_metadata == metadata_before
+    assert metadata is not denied.cuga_lite_metadata
     assert "policy_decisions" not in cmd.update
     assert ToolApprovalHandler.handle_denial(a, SimpleNamespace(cuga_lite_metadata={})) is None
 
@@ -153,6 +156,7 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
         },
         step_count=2,
     )
+    metadata_before = dict(st.cuga_lite_metadata)
     cmd = ToolApprovalHandler.handle_approval_resumption(a, st)
     assert cmd.goto == "sandbox"
     assert cmd.update["script"] == "print('go')"
@@ -163,6 +167,8 @@ def test_handle_approval_resumption_routes_to_adapter_execute_node():
     decisions = cmd.update["cuga_lite_metadata"]["policy_decisions"]
     assert decisions[0]["outcome"] == "approved"
     assert decisions[0]["tool_name"] == "delete_records"
+    assert st.cuga_lite_metadata == metadata_before
+    assert cmd.update["cuga_lite_metadata"] is not st.cuga_lite_metadata
     assert "policy_decisions" not in cmd.update
 
 

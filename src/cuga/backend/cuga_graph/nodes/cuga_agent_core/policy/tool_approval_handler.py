@@ -96,7 +96,7 @@ class ToolApprovalHandler:
                 state.step_count,
             )
 
-        metadata = adapter.get_metadata(state)
+        metadata = dict(adapter.get_metadata(state) or {})
         append_policy_decisions(
             metadata,
             [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.APPROVED)],
@@ -282,7 +282,7 @@ class ToolApprovalHandler:
         if adapter.get_metadata(state).get("user_approved") is False:
             logger.warning("User denied tool approval - skipping execution")
             meta_key = adapter.metadata_key
-            metadata = adapter.get_metadata(state)
+            metadata = dict(adapter.get_metadata(state) or {})
             append_policy_decisions(
                 metadata,
                 [decision_from_metadata(metadata, outcome=PolicyDecisionOutcome.DENIED)],
