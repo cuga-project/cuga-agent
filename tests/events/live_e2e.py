@@ -720,7 +720,15 @@ def arm_with_confirm(utter: str, thread: str, *, timeout: int = 300, max_turns: 
     the concierge proposes, the human approves. A harness is that human — it answers the clarifying
     question if one comes back, then says "yes". Returns ``(code, body)`` of the LAST turn, so the
     caller sees the armed reply exactly as before the gate existed.
+
+    THE VERB IS PART OF THE PRODUCT. Plain English no longer arms anything: `/automate` is the only
+    phrase that reaches the events service, so a harness that omits it is testing the refusal path,
+    not the arming path. This went unnoticed because `_match_sub` accepts a PRE-EXISTING flow — with
+    a stale CRON on the server every case reported "reused an existing flow" and passed green while
+    arming zero flows. Callers pass a bare utterance; the verb is added here, once.
     """
+    if not utter.lstrip().startswith("/"):
+        utter = f"/automate {utter}"
     code, body = srv("POST", "/api/concierge", {"text": utter, "thread_id": thread}, timeout=timeout)
     for _ in range(max_turns):
         state = (body or {}).get("state")
@@ -751,12 +759,19 @@ def _arm_and_verify(
     if not r.ok(phase, f"{phase}: concierge accepted the utterance", code == 200, fail_detail=f"HTTP {code}"):
         return
     sub, is_new = _match_sub(before, mode)
+    # is_new is REQUIRED, not decoration. Flow reuse is off by default, so an arm that armed
+    # anything leaves a subscription that was not in `before`. Accepting a pre-existing one made
+    # this assertion pass on a months-old CRON while the server refused every single arm.
     if not r.ok(
         phase,
         f"{phase}: a {mode} subscription exists after arming",
-        bool(sub),
-        "created" if is_new else "reused an existing flow (dedup_key)",
-        fail_detail="no subscription — the concierge answered but never armed",
+        bool(sub) and is_new,
+        "created",
+        fail_detail=(
+            "matched only a PRE-EXISTING flow — nothing was armed by this run"
+            if sub
+            else "no subscription — the concierge answered but never armed"
+        ),
     ):
         return
     if is_new:
