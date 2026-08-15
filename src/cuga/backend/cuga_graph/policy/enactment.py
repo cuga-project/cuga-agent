@@ -934,17 +934,18 @@ You have been provided with a step-by-step playbook for this task. Follow these 
             formatted_content = format_config
 
         elif format_type == "markdown":
-            system_prompt = f"""You are an output formatter. Your task is to reformat the AI's response according to the following instructions:
+            # format_config is authoritative. The previous "preserve all facts / do not
+            # remove details" rules fought replace/redact instructions and caused CI
+            # failures when markdown mode was used for sensitive-data blocking.
+            system_prompt = f"""You are an output formatter. Transform the AI's response according to these instructions:
 
 {format_config}
 
 Important:
-- Preserve all factual information from the original response
-- Only change formatting, structure, and presentation
-- Do not add new information that wasn't in the original
-- Do not remove important details
-- Follow the formatting instructions exactly
-- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them."""
+- Follow the instructions above exactly; they take precedence over every other rule here
+- If the instructions say to replace, redact, withhold, or block content, do that — do not keep the original wording
+- Otherwise, only change formatting/structure/presentation and do not invent new facts
+- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them (unless the instructions require removing or replacing the response entirely)"""
 
             # Include user input if available
             user_input_section = ""
