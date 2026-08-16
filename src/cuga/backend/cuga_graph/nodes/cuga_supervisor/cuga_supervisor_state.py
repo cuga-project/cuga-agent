@@ -49,6 +49,12 @@ class CugaSupervisorState(AgentState):
     error: Optional[str] = None
     step_count: int = 0
     tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
+    # Never reset by prepare — this is what bounds a whole conversation
+    # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
+    tool_calls_used_thread: int = 0
+    # Set once a terminal budget (turn or conversation) is spent. call_model then
+    # withholds tools for one final synthesis pass and ends the turn.
+    tool_budget_exhausted: bool = False
 
     # Metadata for tracking
     supervisor_metadata: Dict[str, Any] = Field(default_factory=dict)

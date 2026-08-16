@@ -69,10 +69,13 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             SUPERVISOR_EXEC_KEY: exec_ctx,
         }
 
-        # Per-task tool-call budget: carry the count from earlier steps so
-        # advanced_features.max_tool_calls caps the whole task, not one block.
-        # Without this the supervisor's delegation tools escape the cap entirely.
-        ToolCallTracker.seed_call_budget(getattr(state, "tool_calls_used", 0))
+        # Tool-call budgets: carry the turn count from earlier steps and the
+        # conversation count from earlier turns. Without this the supervisor's
+        # delegation tools escape the caps entirely.
+        ToolCallTracker.seed_call_budget(
+            getattr(state, "tool_calls_used", 0),
+            getattr(state, "tool_calls_used_thread", 0),
+        )
 
         try:
             exec_plan = ExecutionRouter.resolve(settings)
@@ -122,6 +125,8 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "supervisor_variables": state.supervisor_variables,
                 "step_count": state.step_count + 1,
                 "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+                "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
                 **delegation_updates,
             }
             # The create_update_todos tool writes onto the run-local state via the execution
@@ -148,6 +153,8 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
                 "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+                "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
                 **_delegation_state_update(state),
             }
 

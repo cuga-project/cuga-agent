@@ -11,6 +11,7 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import thread_budget_exhausted
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
@@ -190,9 +191,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         runtime_thread_id = cfg.get("thread_id") or state.thread_id
         runtime_backends = resolve_runtime_backends(settings, cfg)
         runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=runtime_backends)
-        adapter._agent_tools_context.update(
-            {name: (fn) for name, fn in runtime_bundle.execution_callables.items()}
-        )
+        adapter._agent_tools_context.update(runtime_bundle.execution_callables)
         agent_tools_for_prompt.extend(prompt_tool_dicts(runtime_bundle.prompt_tools))
 
         skills_section = ""
@@ -275,8 +274,12 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
 
         # Per-task tool-call budget resets here: prepare runs once per graph
         # invocation (START -> prepare), so each user turn starts fresh. See the
-        # matching reset in the CugaLite prepare node.
+        # matching reset in the CugaLite prepare node — including why
+        # tool_calls_used_thread must NOT be reset alongside it.
         update_payload["tool_calls_used"] = 0
+        update_payload["tool_budget_exhausted"] = thread_budget_exhausted(
+            getattr(state, "tool_calls_used_thread", 0)
+        )
 
         return Command(
             goto="call_model",

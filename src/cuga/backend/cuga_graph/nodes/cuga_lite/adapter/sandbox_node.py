@@ -125,9 +125,14 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             enabled=bool(track_tool_calls) or needs_shape,
             timings_only=track_tool_calls == "timings_only" and not needs_shape,
         )
-        # Per-task tool-call budget: carry the count from earlier steps so
-        # advanced_features.max_tool_calls caps the whole task, not one block
-        ToolCallTracker.seed_call_budget(getattr(state, "tool_calls_used", 0))
+        # Tool-call budgets: carry the turn count from earlier steps and the
+        # conversation count from earlier turns, so max_tool_calls caps the task
+        # and max_tool_calls_per_thread caps the thread. The per-block budget is
+        # opened by the executor, once per code block.
+        ToolCallTracker.seed_call_budget(
+            getattr(state, "tool_calls_used", 0),
+            getattr(state, "tool_calls_used_thread", 0),
+        )
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -277,6 +282,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
                 "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+                "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
             }
             if todo_state_update is not None:
                 base_update["task_todos"] = todo_state_update
@@ -309,6 +316,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
                 "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+                "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
             }
 
     return sandbox

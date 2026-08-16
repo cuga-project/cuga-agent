@@ -19,7 +19,7 @@ from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import counted_tool_call
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker, counted_tool_call
 
 
 def _skills_enabled_for_run(state: AgentState | None) -> bool:
@@ -157,6 +157,11 @@ class CodeExecutor:
             else value
             for key, value in _locals.items()
         }
+
+        # Open a fresh per-block budget. This runs once per executed code block
+        # on every path, so max_tool_calls_per_block breaks a tight loop early
+        # and hands control back while the task budget is still spendable.
+        ToolCallTracker.seed_block_budget()
 
         skills_on = _skills_enabled_for_run(state)
         skills_token = set_skills_relaxed_execution(skills_on)

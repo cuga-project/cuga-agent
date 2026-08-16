@@ -103,6 +103,12 @@ class CugaLiteState(BaseModel):
     metrics: Dict[str, Any] = Field(default_factory=dict)
     step_count: int = 0  # Counter for number of steps (call_model + sandbox cycles)
     tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
+    # Never reset by prepare — this is what bounds a whole conversation
+    # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
+    tool_calls_used_thread: int = 0
+    # Set once a terminal budget (turn or conversation) is spent. call_model then
+    # withholds tools for one final synthesis pass and ends the turn.
+    tool_budget_exhausted: bool = False
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)

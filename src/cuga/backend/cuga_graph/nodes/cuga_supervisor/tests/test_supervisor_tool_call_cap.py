@@ -206,3 +206,69 @@ def test_default_cap_is_256():
 
     source = Path(tracker_module.__file__).read_text()
     assert '"max_tool_calls", 256' in source, "in-code fallback must match settings.toml"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_persists_the_thread_counter_and_exhausted_flag(monkeypatch):
+    """The supervisor must write back both new fields, not just tool_calls_used.
+
+    tool_calls_used_thread is the conversation ceiling (prepare never resets it)
+    and tool_budget_exhausted is what ends the turn in call_model. A node that
+    seeds them but forgets to persist them leaves the ceiling at 0 forever and
+    the turn thrashing until the step limit.
+    """
+    _set_cap(monkeypatch, 3)
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], None),
+    )
+
+    async def delegate_to_researcher(task: str) -> str:
+        return "ok"
+
+    node = create_execute_agent_tool_node(
+        _make_adapter({"delegate_to_researcher": counted_tool_call(delegate_to_researcher)})
+    )
+    state = _make_state("for _ in range(20):\n    await delegate_to_researcher('t')\n")
+    state.tool_calls_used_thread = 40
+    update = await node(state)
+
+    assert update["tool_calls_used"] == 3
+    assert update["tool_calls_used_thread"] == 43, "thread count must carry over from earlier turns"
+    assert update["tool_budget_exhausted"] is True, "a spent task budget must end the turn"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_thread_ceiling_bounds_what_the_task_cap_cannot(monkeypatch):
+    """With the task cap generous and the thread already near its ceiling, the
+    conversation ceiling is what stops the loop."""
+    monkeypatch.setattr(
+        "cuga.config.settings",
+        SimpleNamespace(
+            advanced_features=SimpleNamespace(
+                max_tool_calls=1000, max_tool_calls_per_thread=50, max_tool_calls_per_block=0
+            )
+        ),
+    )
+    _skip_policy(monkeypatch)
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], None),
+    )
+
+    seen = {"n": 0}
+
+    async def delegate_to_researcher(task: str) -> str:
+        seen["n"] += 1
+        return "ok"
+
+    node = create_execute_agent_tool_node(
+        _make_adapter({"delegate_to_researcher": counted_tool_call(delegate_to_researcher)})
+    )
+    state = _make_state("for _ in range(100):\n    await delegate_to_researcher('t')\n")
+    state.tool_calls_used_thread = 48
+    update = await node(state)
+
+    assert seen["n"] == 2, f"thread ceiling breached: {seen['n']} calls with 2 left in the conversation"
+    assert update["tool_budget_exhausted"] is True
