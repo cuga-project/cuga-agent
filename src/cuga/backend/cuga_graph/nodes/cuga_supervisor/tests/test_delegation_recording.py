@@ -236,3 +236,89 @@ async def test_delegation_empty_variables_list_does_not_auto_pass():
         )
 
     assert mock_agent.invoke.await_args.kwargs.get("variables") is None
+
+
+_A2A_CONFIG = {
+    "type": "external",
+    "config": {"a2a_protocol": {"endpoint": "http://a2a.test", "transport": "http"}},
+}
+_A2A_MODULE = "cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol"
+_DELEGATION_PASS_A2A = (
+    "cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation.settings.supervisor.pass_variables_a2a"
+)
+_OMITTED = "async def _run():\n    return await delegate('get account value')\n"
+_EXPLICIT = "async def _run():\n    return await delegate('get account value', variables=['user_id'])\n"
+_EMPTY = "async def _run():\n    return await delegate('get account value', variables=[])\n"
+_VM = _FakeVM({"user_id": "user_alice_99"})
+
+
+def _exec_delegate(delegate, source, *, variable_manager=None):
+    namespace = {
+        SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(
+            state=_empty_delegation_state(), variable_manager=variable_manager
+        ),
+        "delegate": delegate,
+    }
+    exec(source, namespace, namespace)
+    return namespace["_run"]()
+
+
+async def _run_a2a_sdk(source, *, pass_variables=True, variable_manager=_VM):
+    sdk = AsyncMock(return_value={"result": "ok"})
+    with (
+        patch(_DELEGATION_PASS_A2A, pass_variables),
+        patch(f"{_A2A_MODULE}.HAS_A2A_SDK", True),
+        patch(f"{_A2A_MODULE}.delegate_task_via_a2a_sdk", sdk),
+    ):
+        delegate = create_agent_delegation_func(_make_adapter(), "worker", _A2A_CONFIG, agent_card=object())
+        await _exec_delegate(delegate, source, variable_manager=variable_manager)
+    return sdk
+
+
+async def _run_legacy_a2a(source, *, pass_variables=True, variable_manager=_VM):
+    protocol = SimpleNamespace(
+        connect=AsyncMock(),
+        disconnect=AsyncMock(),
+        delegate_task=AsyncMock(return_value={"result": "ok"}),
+    )
+    with (
+        patch(_DELEGATION_PASS_A2A, pass_variables),
+        patch(f"{_A2A_MODULE}.A2AProtocol", return_value=protocol),
+    ):
+        delegate = create_agent_delegation_func(_make_adapter(), "worker", _A2A_CONFIG)
+        await _exec_delegate(delegate, source, variable_manager=variable_manager)
+    return protocol
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source, expected",
+    [(_OMITTED, None), (_EXPLICIT, {"user_id": "user_alice_99"}), (_EMPTY, None)],
+    ids=["omitted", "explicit", "empty"],
+)
+async def test_a2a_sdk_variable_forwarding(source, expected):
+    sdk = await _run_a2a_sdk(source)
+    sdk.assert_awaited_once()
+    assert sdk.await_args.kwargs["variables"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source, expected",
+    [(_OMITTED, {}), (_EXPLICIT, {"user_id": "user_alice_99"}), (_EMPTY, {})],
+    ids=["omitted", "explicit", "empty"],
+)
+async def test_legacy_a2a_variable_forwarding(source, expected):
+    protocol = await _run_legacy_a2a(source)
+    protocol.delegate_task.assert_awaited_once()
+    assert protocol.delegate_task.await_args.kwargs["variables"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_legacy_a2a_does_not_send_variables_when_setting_off():
+    protocol = await _run_legacy_a2a(_EXPLICIT, pass_variables=False)
+    protocol.delegate_task.assert_awaited_once()
+    assert protocol.delegate_task.await_args.kwargs["variables"] == {}
