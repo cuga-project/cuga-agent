@@ -7,10 +7,6 @@ A clean BPMN model executes fine on Kogito on its own — it just never asks any
 point where reasoning is wanted has to be made into a **script task that calls out**. This
 document covers what those classes provide and how each kind of control point is wired.
 
-Companion documents: [`README-KOGITO.md`](README-KOGITO.md) for the integration as a whole,
-and `docs/examples/flow_agent_app_inline/model_transform_knowledge/kogito/` for the
-element-by-element transformation procedure.
-
 ---
 
 ## Part 1 — The runtime, compiled into the service
