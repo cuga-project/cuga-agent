@@ -112,7 +112,22 @@ def contains_harmony_tokens(text: str) -> bool:
 
 
 def strip_harmony_tokens(text: str) -> str:
-    """Remove harmony framing from *text*, leaving everything else intact.
+    """Return the user-facing text with harmony framing removed.
+
+    Two shapes occur in practice and they need different treatment:
+
+    - A trailing/loose control token on otherwise plain text
+      (``"The total is 42<|return|>"``). Removing the token is exactly right.
+    - Fully channel-structured output
+      (``"<|channel|>analysis<|message|>…<|end|><|channel|>final<|message|>42"``).
+      Here removing tokens alone is actively harmful: it welds the channel names
+      onto the text (``"analysis…final42"``) and, worse, promotes the model's
+      private analysis channel into user-visible output.
+
+    So when the text is channel-structured, keep only the last channel's body —
+    the final channel is what the protocol designates as the answer — and strip
+    from that. Falls back to plain token removal when there is no channel
+    framing.
 
     Deliberately no ``.strip()``: a token sitting directly before an indented
     block would otherwise take that block's leading indentation with it and
@@ -123,4 +138,10 @@ def strip_harmony_tokens(text: str) -> str:
     if not harmony_handling_enabled():
         return text
     specials = harmony_special_tokens()
+
+    # Channel-structured: everything after the final ``<|message|>`` is the
+    # answer body; earlier channels (analysis/commentary) are not for the user.
+    if "<|message|>" in text and "<|message|>" in specials:
+        text = text.rsplit("<|message|>", 1)[1]
+
     return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)
