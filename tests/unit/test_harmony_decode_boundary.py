@@ -32,3 +32,27 @@ def test_legitimate_custom_markers_survive():
     text = "Use <|custom|> and <|im_end|> as delimiters."
     content, _ = CoreGraphAdapter.normalize_response(object(), AIMessage(content=text))
     assert content == text
+
+
+def test_analysis_channel_is_never_promoted_into_the_answer():
+    """Channel-structured output: the protocol puts the answer in the final
+    channel. Removing tokens alone welded the channel names on and surfaced the
+    model's private analysis — 'analysisLet me thinkfinal42'."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    raw = "<|channel|>analysis<|message|>Let me think<|end|><|channel|>final<|message|>42"
+    out = strip_harmony_tokens(raw)
+    assert out == "42"
+    assert "Let me think" not in out
+
+
+def test_loose_framing_and_plain_text_are_unaffected():
+    """The cases that already worked must keep working: a trailing control
+    token, indentation before a code block, and non-harmony markers."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    assert strip_harmony_tokens("The total is 42<|return|>") == "The total is 42"
+    assert strip_harmony_tokens("<|message|>    def foo():\n        return 1") == (
+        "    def foo():\n        return 1"
+    )
+    assert strip_harmony_tokens("Use <|custom|> here.") == "Use <|custom|> here."

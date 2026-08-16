@@ -114,6 +114,11 @@ def contains_harmony_tokens(text: str) -> bool:
 def strip_harmony_tokens(text: str) -> str:
     """Remove harmony framing from *text*, leaving everything else intact.
 
+    Channel-structured output keeps only the last channel's body: the protocol
+    puts the answer in the final channel, and removing tokens alone would weld
+    the channel names onto the text and promote the private ``analysis``
+    channel into the answer.
+
     Deliberately no ``.strip()``: a token sitting directly before an indented
     block would otherwise take that block's leading indentation with it and
     corrupt e.g. a Markdown code block.
@@ -123,4 +128,6 @@ def strip_harmony_tokens(text: str) -> str:
     if not harmony_handling_enabled():
         return text
     specials = harmony_special_tokens()
+    if "<|message|>" in text and "<|message|>" in specials:
+        text = text.rsplit("<|message|>", 1)[1]
     return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)
