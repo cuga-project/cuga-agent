@@ -91,6 +91,7 @@ jobs:
             tests/unit/test_citation_resolver.py \
             tests/unit/test_citation_settings.py \
             tests/unit/test_final_answer_citations.py \
+            tests/unit/test_harmony_decode_boundary.py \
             tests/unit/test_envelope_citations.py \
             tests/unit/test_sdk_citations.py \
             tests/unit/test_server_citation_egress.py \

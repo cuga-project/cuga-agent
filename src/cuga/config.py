@@ -158,6 +158,7 @@ validators = [
     Validator("advanced_features.enable_filesystem_tools", default=False),
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
+    Validator("advanced_features.strip_harmony_control_tokens", default="auto"),
     Validator("advanced_features.cuga_lite_warn_suspect_args", default=True),
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
