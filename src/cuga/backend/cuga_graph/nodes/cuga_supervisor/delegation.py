@@ -169,7 +169,7 @@ def create_agent_delegation_func(
             await a2a_protocol.connect()
             try:
                 vars_to_pass = {}
-                if variables is not None:
+                if pass_variables_a2a and variables is not None:
                     vars_to_pass = resolve_names_from_caller_frame(variables)
                 result = await a2a_protocol.delegate_task(
                     target_agent=agent_name,
