@@ -157,7 +157,7 @@ async def test_continuing_conversation_preserves_ref_and_omits_task_todos_in_upd
     ids=["first-turn", "follow-up-turn"],
 )
 async def test_tool_call_budget_resets_every_turn(chat_messages):
-    """advanced_features.max_tool_calls is a per-TASK budget, so prepare — which
+    """advanced_features.max_tool_calls_per_run is a per-RUN budget (one user turn), so prepare — which
     runs once per graph invocation (START -> prepare) — must zero the counter on
     every turn, not only on a fresh conversation.
 
@@ -179,8 +179,8 @@ async def test_tool_call_budget_resets_every_turn(chat_messages):
         node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
         result = await node(state, config={"configurable": {"enable_todos": False}})
 
-    assert result.update.get("tool_calls_used") == 0, (
-        "prepare must reset tool_calls_used so the cap is per task; without it "
+    assert result.update.get("tool_calls_used_run") == 0, (
+        "prepare must reset tool_calls_used_run so the cap is per run; without it "
         "the budget is per conversation and long threads starve"
     )
 

@@ -102,7 +102,9 @@ class CugaLiteState(BaseModel):
     error: Optional[str] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
     step_count: int = 0  # Counter for number of steps (call_model + sandbox cycles)
-    tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
+    tool_calls_used_run: int = (
+        0  # Counter of tool calls across the task (advanced_features.max_tool_calls_per_run cap)
+    )
     # Never reset by prepare — this is what bounds a whole conversation
     # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
     tool_calls_used_thread: int = 0

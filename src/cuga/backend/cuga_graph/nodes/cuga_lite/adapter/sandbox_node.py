@@ -126,11 +126,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             timings_only=track_tool_calls == "timings_only" and not needs_shape,
         )
         # Tool-call budgets: carry the turn count from earlier steps and the
-        # conversation count from earlier turns, so max_tool_calls caps the task
+        # conversation count from earlier turns, so max_tool_calls_per_run caps the run
         # and max_tool_calls_per_thread caps the thread. The per-block budget is
         # opened by the executor, once per code block.
         ToolCallTracker.seed_call_budget(
-            getattr(state, "tool_calls_used", 0),
+            getattr(state, "tool_calls_used_run", 0),
             getattr(state, "tool_calls_used_thread", 0),
         )
 
@@ -281,7 +281,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "variable_creation_order": state.variable_creation_order,
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
-                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
                 "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
             }
@@ -315,7 +315,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
-                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
                 "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
             }

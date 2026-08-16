@@ -18,7 +18,7 @@ import pytest
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking import tracker as tracker_module
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
     BlockToolCallBudgetExceeded,
-    TaskToolCallBudgetExceeded,
+    RunToolCallBudgetExceeded,
     ThreadToolCallBudgetExceeded,
     ToolCallBudgetExceeded,
     ToolCallTracker,
@@ -46,7 +46,7 @@ def _set_caps(monkeypatch, *, block=0, task=0, thread=0):
         SimpleNamespace(
             advanced_features=SimpleNamespace(
                 max_tool_calls_per_block=block,
-                max_tool_calls=task,
+                max_tool_calls_per_run=task,
                 max_tool_calls_per_thread=thread,
             )
         ),
@@ -92,7 +92,7 @@ def test_per_block_cap_alone_does_not_bound_the_task(monkeypatch):
 
 def test_task_cap_is_what_actually_bounds_the_same_loop(monkeypatch):
     """Identical 70-block retry loop, now with the task ceiling on: it stops at
-    max_tool_calls no matter how many times the model reflects and retries."""
+    max_tool_calls_per_run no matter how many times the model reflects and retries."""
     _set_caps(monkeypatch, block=100, task=256, thread=0)
     ToolCallTracker.seed_call_budget(0)
 
@@ -101,8 +101,8 @@ def test_task_cap_is_what_actually_bounds_the_same_loop(monkeypatch):
         made, _fired = _spend_one_block()
         total += made
 
-    assert total == 256, f"task ceiling breached: {total} calls against max_tool_calls=256"
-    assert ToolCallTracker.get_call_budget_used() == 256
+    assert total == 256, f"task ceiling breached: {total} calls against max_tool_calls_per_run=256"
+    assert ToolCallTracker.get_run_budget_used() == 256
 
 
 def test_thread_cap_bounds_what_the_task_cap_cannot(monkeypatch):
@@ -123,7 +123,7 @@ def test_thread_cap_bounds_what_the_task_cap_cannot(monkeypatch):
 
 
 def test_block_breach_leaves_the_task_budget_spendable(monkeypatch):
-    """A block breach must be recoverable: the task budget survives it, and the
+    """A block breach must be recoverable: the run budget survives it, and the
     next block starts with a fresh block budget."""
     _set_caps(monkeypatch, block=5, task=100, thread=0)
     ToolCallTracker.seed_call_budget(0)
@@ -134,7 +134,7 @@ def test_block_breach_leaves_the_task_budget_spendable(monkeypatch):
 
     made_again, fired_again = _spend_one_block()
     assert (made_again, fired_again) == (5, BlockToolCallBudgetExceeded)
-    assert ToolCallTracker.get_call_budget_used() == 10
+    assert ToolCallTracker.get_run_budget_used() == 10
 
 
 def test_block_breach_message_says_it_is_recoverable(monkeypatch):
@@ -147,8 +147,8 @@ def test_block_breach_message_says_it_is_recoverable(monkeypatch):
     assert (made, fired) == (2, BlockToolCallBudgetExceeded)
 
     # Re-raise the same refusal to read its text: it must name the remaining
-    # task budget, which is what tells the model retrying is worth it.
-    with pytest.raises(BlockToolCallBudgetExceeded, match="task budget still has 98 calls left"):
+    # run budget, which is what tells the model retrying is worth it.
+    with pytest.raises(BlockToolCallBudgetExceeded, match="run budget still has 98 calls left"):
         ToolCallTracker.enforce_call_budget()
 
 
@@ -182,7 +182,7 @@ def test_task_breach_reported_when_only_thread_has_room(monkeypatch):
     ToolCallTracker.seed_call_budget(5, 5)
     ToolCallTracker.seed_block_budget()
 
-    with pytest.raises(TaskToolCallBudgetExceeded):
+    with pytest.raises(RunToolCallBudgetExceeded):
         ToolCallTracker.enforce_call_budget()
 
 
@@ -202,7 +202,7 @@ def test_rejected_calls_never_inflate_any_counter(monkeypatch):
             ToolCallTracker.enforce_call_budget()
 
     assert ToolCallTracker.get_block_budget_used() == 2
-    assert ToolCallTracker.get_call_budget_used() == 2
+    assert ToolCallTracker.get_run_budget_used() == 2
     assert ToolCallTracker.get_thread_budget_used() == 2
 
 
@@ -255,7 +255,7 @@ def test_unseeded_context_is_a_no_op(monkeypatch):
 async def test_block_cap_fires_through_the_executor_and_stays_recoverable(monkeypatch):
     """CodeExecutor.eval_with_tools_async is where the block budget is opened,
     so the guard must hold on the real path — and the breach must come back as
-    execution output with the task budget intact, ready for the model's retry."""
+    execution output with the run budget intact, ready for the model's retry."""
     from unittest.mock import MagicMock
 
     from langchain_core.tools import StructuredTool
@@ -287,7 +287,7 @@ async def test_block_cap_fires_through_the_executor_and_stays_recoverable(monkey
     )
 
     assert "Tool call limit reached for this code block" in output  # recoverable, no raise
-    assert ToolCallTracker.get_call_budget_used() == 3, "the block guard must not spend the task budget"
+    assert ToolCallTracker.get_run_budget_used() == 3, "the block guard must not spend the run budget"
     assert not ToolCallTracker.budget_exhausted(), "a block breach must leave the turn alive"
 
 
@@ -319,7 +319,7 @@ def test_shipped_defaults_match_the_in_code_fallbacks():
 
     for key, expected in (
         ("max_tool_calls_per_block", 100),
-        ("max_tool_calls", 256),
+        ("max_tool_calls_per_run", 256),
         ("max_tool_calls_per_thread", 2000),
     ):
         assert config[key] == expected, f"settings.toml {key}"

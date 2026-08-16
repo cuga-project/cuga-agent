@@ -1,5 +1,5 @@
 """
-Tests for the per-task tool-call cap (advanced_features.max_tool_calls).
+Tests for the per-run tool-call cap (advanced_features.max_tool_calls_per_run).
 """
 
 from types import SimpleNamespace
@@ -18,7 +18,7 @@ def _set_cap(monkeypatch, cap):
     immune to dynaconf state left behind by other tests in the full suite."""
     monkeypatch.setattr(
         "cuga.config.settings",
-        SimpleNamespace(advanced_features=SimpleNamespace(max_tool_calls=cap)),
+        SimpleNamespace(advanced_features=SimpleNamespace(max_tool_calls_per_run=cap)),
     )
 
 
@@ -38,12 +38,12 @@ def test_enforce_raises_clear_error_past_cap(monkeypatch):
 
 @pytest.mark.unit
 def test_budget_carries_over_from_prior_steps(monkeypatch):
-    """Seeding with the count from earlier steps makes the cap per task, not per block."""
+    """Seeding with the count from earlier steps makes the cap per run, not per block."""
     _set_cap(monkeypatch, 100)
 
     ToolCallTracker.seed_call_budget(99)
     ToolCallTracker.enforce_call_budget()  # 100th call — still allowed
-    assert ToolCallTracker.get_call_budget_used() == 100
+    assert ToolCallTracker.get_run_budget_used() == 100
 
     with pytest.raises(RuntimeError, match="Tool call limit reached"):
         ToolCallTracker.enforce_call_budget()
@@ -52,7 +52,7 @@ def test_budget_carries_over_from_prior_steps(monkeypatch):
 @pytest.mark.unit
 def test_unseeded_context_and_zero_cap_are_not_enforced(monkeypatch):
     """Two no-op cases: outside a seeded sandbox context (non-CugaLite callers)
-    and with the cap disabled via max_tool_calls = 0."""
+    and with the cap disabled via max_tool_calls_per_run = 0."""
     _set_cap(monkeypatch, 1)
 
     # Outside a seeded sandbox context the budget is a no-op.
@@ -60,12 +60,12 @@ def test_unseeded_context_and_zero_cap_are_not_enforced(monkeypatch):
     for _ in range(5):
         ToolCallTracker.enforce_call_budget()
 
-    # max_tool_calls = 0 disables the cap entirely.
+    # max_tool_calls_per_run = 0 disables the cap entirely.
     _set_cap(monkeypatch, 0)
     ToolCallTracker.seed_call_budget(0)
     for _ in range(5):
         ToolCallTracker.enforce_call_budget()
-    assert ToolCallTracker.get_call_budget_used() == 5
+    assert ToolCallTracker.get_run_budget_used() == 5
 
 
 @pytest.mark.unit
@@ -177,4 +177,4 @@ async def test_registry_backed_tool_is_charged_once_not_twice(monkeypatch):
     await wrapped(value=1)
     await wrapped(value=2)
 
-    assert ToolCallTracker.get_call_budget_used() == 2
+    assert ToolCallTracker.get_run_budget_used() == 2

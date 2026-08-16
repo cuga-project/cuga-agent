@@ -48,7 +48,9 @@ class CugaSupervisorState(AgentState):
     execution_complete: bool = False
     error: Optional[str] = None
     step_count: int = 0
-    tool_calls_used: int = 0  # Counter of tool calls across the task (advanced_features.max_tool_calls cap)
+    tool_calls_used_run: int = (
+        0  # Counter of tool calls across the task (advanced_features.max_tool_calls_per_run cap)
+    )
     # Never reset by prepare — this is what bounds a whole conversation
     # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
     tool_calls_used_thread: int = 0

@@ -40,15 +40,21 @@ _timings_only_context: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # box so increments made inside child tasks (e.g. under asyncio.wait_for) stay
 # visible to the seeding context, like the calls list above.
 #
+# The two scopes match LangChain's ToolCallLimitMiddleware (thread_limit /
+# run_limit) — "run" is one graph invocation, i.e. one user turn. The block
+# scope has no analogue there because that middleware counts tool calls the
+# model *requests*, while CugaLite's are made by generated code inside a single
+# request. Same reason it cannot be reused here: our runaway is one code block.
+#
 # Only the two that do NOT reset are ceilings:
 #
 #   thread  max_tool_calls_per_thread  never reset      → conversation cost ceiling
-#   task    max_tool_calls             reset each turn  → per-turn cost ceiling
+#   run     max_tool_calls_per_run     reset each turn  → per-turn cost ceiling
 #   block   max_tool_calls_per_block   reset each block → fail-fast latency guard
 #
 # The block budget is deliberately NOT a bound: exceeding it is recoverable, so
 # the model reflects and writes another block with a fresh block budget. Without
-# the task ceiling above it, 70 blocks (cuga_lite_max_steps) x 100 calls = 7,000
+# the run ceiling above it, 70 blocks (cuga_lite_max_steps) x 100 calls = 7,000
 # calls would still get through — which is roughly the runaway that motivated
 # this cap in the first place. It exists to break one hung loop in seconds and
 # hand control back, not to bound spend.
@@ -91,26 +97,26 @@ class ToolCallBudgetExceeded(RuntimeError):
     which turns in-code exceptions into execution output — keep working
     unchanged. ``scope`` says which of the three budgets fired, which is what
     decides whether the situation is recoverable (block) or terminal for the
-    turn (task/thread).
+    turn (run/thread).
     """
 
-    scope: str = "task"
+    scope: str = "run"
 
 
 class BlockToolCallBudgetExceeded(ToolCallBudgetExceeded):
     """One code block exceeded ``max_tool_calls_per_block`` — recoverable.
 
-    The task budget survives, so the model is expected to reflect and retry
+    The run budget survives, so the model is expected to reflect and retry
     with a narrower loop. This is a latency guard, not a ceiling.
     """
 
     scope = "block"
 
 
-class TaskToolCallBudgetExceeded(ToolCallBudgetExceeded):
-    """The turn exceeded ``max_tool_calls`` — terminal for this turn."""
+class RunToolCallBudgetExceeded(ToolCallBudgetExceeded):
+    """The turn exceeded ``max_tool_calls_per_run`` — terminal for this turn."""
 
-    scope = "task"
+    scope = "run"
 
 
 class ThreadToolCallBudgetExceeded(ToolCallBudgetExceeded):
@@ -242,7 +248,7 @@ class ToolCallTracker:
         """Start counting tool calls for the current execution context.
 
         ``used`` carries the count accumulated by earlier steps of the *turn*
-        (``max_tool_calls``); ``thread_used`` the count accumulated by earlier
+        (``max_tool_calls_per_run``); ``thread_used`` the count accumulated by earlier
         turns of the *conversation* (``max_tool_calls_per_thread``, which
         ``prepare`` never resets).
 
@@ -259,7 +265,7 @@ class ToolCallTracker:
         _block_tool_call_budget_context.set([0])
 
     @staticmethod
-    def get_call_budget_used() -> int:
+    def get_run_budget_used() -> int:
         """Tool calls made so far this turn (0 when no budget is active)."""
         box = _tool_call_budget_context.get()
         return box[0] if box else 0
@@ -287,9 +293,9 @@ class ToolCallTracker:
         """
         from cuga.config import settings
 
-        max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 256)
+        max_tool_calls_per_run = getattr(settings.advanced_features, "max_tool_calls_per_run", 256)
         max_per_thread = getattr(settings.advanced_features, "max_tool_calls_per_thread", 2000)
-        if max_tool_calls and ToolCallTracker.get_call_budget_used() >= max_tool_calls:
+        if max_tool_calls_per_run and ToolCallTracker.get_run_budget_used() >= max_tool_calls_per_run:
             return True
         return bool(max_per_thread) and ToolCallTracker.get_thread_budget_used() >= max_per_thread
 
@@ -318,7 +324,7 @@ class ToolCallTracker:
             return
         from cuga.config import settings
 
-        max_tool_calls = getattr(settings.advanced_features, "max_tool_calls", 256)
+        max_tool_calls_per_run = getattr(settings.advanced_features, "max_tool_calls_per_run", 256)
         max_per_thread = getattr(settings.advanced_features, "max_tool_calls_per_thread", 2000)
         max_per_block = getattr(settings.advanced_features, "max_tool_calls_per_block", 100)
 
@@ -332,16 +338,16 @@ class ToolCallTracker:
                 "Do not call any more tools — produce a final answer from the data already retrieved. "
                 "(Configurable via advanced_features.max_tool_calls_per_thread; 0 disables.)"
             )
-        if max_tool_calls and box[0] >= max_tool_calls:
-            raise TaskToolCallBudgetExceeded(
-                f"Tool call limit reached: this task has already made {max_tool_calls} tool calls. "
+        if max_tool_calls_per_run and box[0] >= max_tool_calls_per_run:
+            raise RunToolCallBudgetExceeded(
+                f"Tool call limit reached: this run (one user turn) has already made {max_tool_calls_per_run} tool calls. "
                 "Do not call any more tools — produce a final answer from the data already retrieved. "
-                "(Configurable via advanced_features.max_tool_calls; 0 disables.)"
+                "(Configurable via advanced_features.max_tool_calls_per_run; 0 disables.)"
             )
         if max_per_block and block_box is not None and block_box[0] >= max_per_block:
             raise BlockToolCallBudgetExceeded(
                 f"Tool call limit reached for this code block: it made {max_per_block} tool calls. "
-                f"{ToolCallTracker._task_budget_remaining_hint(max_tool_calls, box[0])} "
+                f"{ToolCallTracker._run_budget_remaining_hint(max_tool_calls_per_run, box[0])} "
                 "Rewrite it to fetch less — batch, filter, or page fewer items — or answer from what "
                 "you already have. (Configurable via advanced_features.max_tool_calls_per_block; 0 disables.)"
             )
@@ -353,11 +359,11 @@ class ToolCallTracker:
             block_box[0] += 1
 
     @staticmethod
-    def _task_budget_remaining_hint(max_tool_calls: int, used: int) -> str:
+    def _run_budget_remaining_hint(max_tool_calls_per_run: int, used: int) -> str:
         """Tell the model the block breach is recoverable, and by how much."""
-        if not max_tool_calls:
-            return "The task budget is not exhausted, so you can still call tools."
-        return f"The task budget still has {max(0, max_tool_calls - used)} calls left."
+        if not max_tool_calls_per_run:
+            return "The run budget is not exhausted, so you can still call tools."
+        return f"The run budget still has {max(0, max_tool_calls_per_run - used)} calls left."
 
 
 def thread_budget_exhausted(used: int) -> bool:
@@ -380,7 +386,7 @@ def counted_tool_call(awaitable_func: Callable[..., Any]) -> Callable[..., Any]:
     sandbox invokes by name — MCP/SDK provider tools, direct LangChain tools,
     skills, filesystem/shell runtime tools, ``find_tools``, agent delegation —
     never pass through it, so without this they escape
-    ``advanced_features.max_tool_calls`` entirely.
+    ``advanced_features.max_tool_calls_per_run`` entirely.
 
     Applied once, in ``CodeExecutor.eval_with_tools_async``, to every coroutine
     function in the namespace handed to generated code. That is the single point

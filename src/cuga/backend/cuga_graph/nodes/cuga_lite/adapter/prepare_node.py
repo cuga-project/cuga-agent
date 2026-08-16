@@ -790,7 +790,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             update_payload["task_todos"] = None
 
         # START -> prepare runs once per graph invocation, i.e. once per user
-        # turn, so this is what makes max_tool_calls a per-TASK budget. Without
+        # turn, so this is what makes max_tool_calls_per_run a per-RUN budget (one user turn). Without
         # it the counter is restored from the checkpoint every turn and a long
         # thread eventually starves: turn N+1 inherits turn N's spend and can
         # begin with no budget at all.
@@ -799,7 +799,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # the conversation-wide ceiling (max_tool_calls_per_thread), and resetting
         # it would leave a long thread unbounded, which is exactly the gap the
         # per-turn reset opens.
-        update_payload["tool_calls_used"] = 0
+        update_payload["tool_calls_used_run"] = 0
         # A thread that is already over its ceiling starts the turn exhausted, so
         # it goes straight to a final synthesis pass instead of burning a step to
         # discover the budget is gone.

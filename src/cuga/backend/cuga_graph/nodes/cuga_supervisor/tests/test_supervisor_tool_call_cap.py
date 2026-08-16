@@ -1,6 +1,6 @@
-"""The per-task tool-call cap must hold on the supervisor graph too.
+"""The per-run tool-call cap must hold on the supervisor graph too.
 
-The cap (``advanced_features.max_tool_calls``) was enforced only inside the
+The cap (``advanced_features.max_tool_calls_per_run``) was enforced only inside the
 CugaLite sandbox. The supervisor graph runs its own executor with its own tool
 context, so delegation, skill, runtime and provider tools escaped it entirely —
 for two independent reasons, one per test below.
@@ -37,7 +37,7 @@ def _set_cap(monkeypatch, cap):
     immune to dynaconf state left behind by other tests in the full suite."""
     monkeypatch.setattr(
         "cuga.config.settings",
-        SimpleNamespace(advanced_features=SimpleNamespace(max_tool_calls=cap)),
+        SimpleNamespace(advanced_features=SimpleNamespace(max_tool_calls_per_run=cap)),
     )
 
 
@@ -65,7 +65,7 @@ def _make_state(script, used=0):
         script=script,
         thread_id="t-cap",
         step_count=0,
-        tool_calls_used=used,
+        tool_calls_used_run=used,
         task_todos=None,
         supervisor_variables={},
         selected_agents=[],
@@ -103,13 +103,13 @@ async def test_supervisor_executor_seeds_the_budget(monkeypatch):
     update = await node(state)
 
     assert seen["n"] == 3, f"cap=3 but the supervisor made {seen['n']} delegation calls"
-    # And the count is persisted so the cap spans the task, not one block.
-    assert update["tool_calls_used"] == 3
+    # And the count is persisted so the cap spans the run, not one block.
+    assert update["tool_calls_used_run"] == 3
 
 
 @pytest.mark.asyncio
 async def test_supervisor_budget_carries_across_steps(monkeypatch):
-    """tool_calls_used seeds the next step, making the cap per task."""
+    """tool_calls_used_run seeds the next step, making the cap per run."""
     _set_cap(monkeypatch, 3)
     _skip_policy(monkeypatch)
     monkeypatch.setattr(
@@ -130,7 +130,7 @@ async def test_supervisor_budget_carries_across_steps(monkeypatch):
     state = _make_state("for _ in range(20):\n    await delegate_to_researcher('t')\n", used=2)
     await node(state)
 
-    assert seen["n"] == 1, "the second step must only get the 1 call left in the task budget"
+    assert seen["n"] == 1, "the second step must only get the 1 call left in the run budget"
 
 
 @pytest.mark.asyncio
@@ -190,7 +190,7 @@ def test_variables_are_not_charged_as_tool_calls(monkeypatch):
 
     assert seen["n"] == 5, "a plain callable was charged against the tool budget"
     assert update.get("error") is None, f"wrapping broke a sync call site: {update.get('error')}"
-    assert update["tool_calls_used"] == 0
+    assert update["tool_calls_used_run"] == 0
 
 
 def test_default_cap_is_256():
@@ -202,15 +202,15 @@ def test_default_cap_is_256():
 
     settings_path = Path(tracker_module.__file__).resolve().parents[5] / "settings.toml"
     config = tomllib.loads(settings_path.read_text())
-    assert config["advanced_features"]["max_tool_calls"] == 256
+    assert config["advanced_features"]["max_tool_calls_per_run"] == 256
 
     source = Path(tracker_module.__file__).read_text()
-    assert '"max_tool_calls", 256' in source, "in-code fallback must match settings.toml"
+    assert '"max_tool_calls_per_run", 256' in source, "in-code fallback must match settings.toml"
 
 
 @pytest.mark.asyncio
 async def test_supervisor_persists_the_thread_counter_and_exhausted_flag(monkeypatch):
-    """The supervisor must write back both new fields, not just tool_calls_used.
+    """The supervisor must write back both new fields, not just tool_calls_used_run.
 
     tool_calls_used_thread is the conversation ceiling (prepare never resets it)
     and tool_budget_exhausted is what ends the turn in call_model. A node that
@@ -234,9 +234,9 @@ async def test_supervisor_persists_the_thread_counter_and_exhausted_flag(monkeyp
     state.tool_calls_used_thread = 40
     update = await node(state)
 
-    assert update["tool_calls_used"] == 3
+    assert update["tool_calls_used_run"] == 3
     assert update["tool_calls_used_thread"] == 43, "thread count must carry over from earlier turns"
-    assert update["tool_budget_exhausted"] is True, "a spent task budget must end the turn"
+    assert update["tool_budget_exhausted"] is True, "a spent run budget must end the turn"
 
 
 @pytest.mark.asyncio
@@ -247,7 +247,7 @@ async def test_supervisor_thread_ceiling_bounds_what_the_task_cap_cannot(monkeyp
         "cuga.config.settings",
         SimpleNamespace(
             advanced_features=SimpleNamespace(
-                max_tool_calls=1000, max_tool_calls_per_thread=50, max_tool_calls_per_block=0
+                max_tool_calls_per_run=1000, max_tool_calls_per_thread=50, max_tool_calls_per_block=0
             )
         ),
     )

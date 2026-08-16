@@ -73,7 +73,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
         # conversation count from earlier turns. Without this the supervisor's
         # delegation tools escape the caps entirely.
         ToolCallTracker.seed_call_budget(
-            getattr(state, "tool_calls_used", 0),
+            getattr(state, "tool_calls_used_run", 0),
             getattr(state, "tool_calls_used_thread", 0),
         )
 
@@ -124,7 +124,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "supervisor_chat_messages": updated_messages,
                 "supervisor_variables": state.supervisor_variables,
                 "step_count": state.step_count + 1,
-                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
                 "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
                 **delegation_updates,
@@ -152,7 +152,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "error": error_msg,
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
-                "tool_calls_used": ToolCallTracker.get_call_budget_used(),
+                "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
                 "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
                 **_delegation_state_update(state),
