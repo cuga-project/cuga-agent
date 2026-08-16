@@ -72,7 +72,14 @@ class ShortlisterPlan(BaseModel):
         return self.instance is None and self.strategy == "llm"
 
     def cache_key(self) -> str:
-        """Identity for the strategy-instance cache (excludes per-call knobs)."""
+        """Identity for the strategy-instance cache.
+
+        Must include every field passed to a strategy *constructor*, or two
+        plans differing only in that field share one cached instance and the
+        second silently keeps the first one's value. ``top_k`` and
+        ``max_results`` are deliberately absent: they travel per request, not
+        per instance.
+        """
         return "|".join(
             [
                 self.strategy,
@@ -80,6 +87,7 @@ class ShortlisterPlan(BaseModel):
                 self.embedding_provider,
                 self.embedding_model,
                 f"qw={self.query_weight}",
+                f"ms={self.min_score}",
             ]
         )
 

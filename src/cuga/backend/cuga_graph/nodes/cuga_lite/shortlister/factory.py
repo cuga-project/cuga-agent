@@ -61,16 +61,26 @@ _BUILDERS: Dict[str, Callable[[ShortlisterPlan], Any]] = {
 def _build_from_dotted_path(path: str, plan: ShortlisterPlan) -> Any:
     """Instantiate a user-supplied strategy class.
 
-    Tries ``Cls(plan=plan)`` first so custom strategies can read configuration,
-    falling back to a no-argument constructor.
+    Passes ``plan=`` when the constructor accepts it, so custom strategies can
+    read configuration. The signature is *inspected* rather than probed with
+    ``try/except TypeError``: a ``TypeError`` raised inside a constructor that
+    does accept ``plan`` would otherwise be misread as "does not accept plan",
+    silently building an unconfigured strategy or masking the original error.
     """
+    import inspect
+
     from cuga.config import get_class
 
     cls = get_class(path)
     try:
-        return cls(plan=plan)
-    except TypeError:
+        parameters = inspect.signature(cls).parameters
+    except (TypeError, ValueError):
+        # Un-introspectable callable (C extension, unusual __init__); assume no plan.
         return cls()
+    accepts_plan = "plan" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    return cls(plan=plan) if accepts_plan else cls()
 
 
 def resolve_shortlister(plan: ShortlisterPlan) -> ShortlisterStrategy:

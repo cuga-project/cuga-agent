@@ -520,8 +520,9 @@ Two guards on K, both tested:
   `cuga_lite_bind_tools_max_count`, the effective K is the cap — `cap.py`'s existing
   `_materialize_shortlist` defense-in-depth clamp already enforces this and must keep working.
   A user-set K can lower the bound list, never raise it past what the provider accepts.
-- **`top_k <= 0` disables the cosine stage** rather than returning nothing, matching
-  `shortlist_tool_names`'s existing `top_k <= 0 → []` guard being a *skip*, not an error.
+- **`top_k <= 0` returns no candidates.** `EmbeddingShortlister.shortlist` short-circuits to
+  `[]`, matching `shortlist_tool_names`'s existing `top_k <= 0 → []` guard. It is not an
+  error, and it does not mean "rank without a limit".
 
 ### 3.6 Failure semantics — preserved per seam
 

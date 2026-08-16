@@ -165,9 +165,31 @@ def test_different_embedding_models_get_different_instances():
 
 
 def test_per_call_knobs_do_not_fragment_the_cache():
+    """top_k / max_results travel per request, so they must not split the cache."""
     a = resolve_shortlister(ShortlisterPlan(strategy="embedding", top_k=10))
     b = resolve_shortlister(ShortlisterPlan(strategy="embedding", top_k=99))
     assert a is b
+
+
+def test_constructor_fields_do_fragment_the_cache():
+    """Regression: `min_score` is a constructor argument of EmbeddingShortlister.
+
+    It was missing from `cache_key`, so two plans differing only in `min_score`
+    shared one instance and the second silently kept the first one's floor —
+    a per-invoke `shortlister_min_score` override did nothing after the first
+    resolution. Every constructor field must be part of the key.
+    """
+    strict = resolve_shortlister(ShortlisterPlan(strategy="embedding", min_score=0.9))
+    loose = resolve_shortlister(ShortlisterPlan(strategy="embedding", min_score=0.1))
+    assert strict is not loose
+    assert strict._min_score == pytest.approx(0.9)
+    assert loose._min_score == pytest.approx(0.1)
+
+
+def test_query_weight_also_fragments_the_cache():
+    a = resolve_shortlister(ShortlisterPlan(strategy="embedding", query_weight=0.9))
+    b = resolve_shortlister(ShortlisterPlan(strategy="embedding", query_weight=0.2))
+    assert a is not b
 
 
 # --- fallback ---------------------------------------------------------------
@@ -231,3 +253,28 @@ def test_shortlister_to_configurable_passes_an_instance_through():
     custom = CustomShortlister()
     cfg = shortlister_to_configurable(Shortlister(instance=custom))
     assert cfg["shortlister_instance"] is custom
+
+
+class ExplodingShortlister:
+    """Accepts `plan=` but fails during its own initialization."""
+
+    name = "exploding"
+
+    def __init__(self, plan=None):
+        raise TypeError("something broke inside __init__")
+
+    async def shortlist(self, request):  # pragma: no cover
+        return []
+
+
+def test_constructor_failure_is_not_mistaken_for_a_signature_mismatch():
+    """Regression: `except TypeError` around `cls(plan=plan)` could not tell
+    "does not accept plan" from "raised TypeError while initializing", so a
+    broken strategy was silently retried as `cls()` — running unconfigured or
+    masking the real error. The signature is inspected instead."""
+    plan = ShortlisterPlan(strategy=f"{__name__}.ExplodingShortlister", fallback_strategy="llm")
+    # The failure is reported (here: swallowed into the documented fallback),
+    # never turned into a no-arg construction of the same class.
+    strategy = resolve_shortlister(plan)
+    assert not isinstance(strategy, ExplodingShortlister)
+    assert isinstance(strategy, LLMShortlister)

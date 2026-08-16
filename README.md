@@ -1010,9 +1010,16 @@ Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached
 
 ### Four ways to set it
 
-**Precedence, highest first:** a strategy instance passed to the SDK → per-invoke `shortlister=` → constructor `shortlister=` → raw `shortlister_*` keys in `configurable` → `[shortlister.<seam>]` → `[shortlister]` → built-in defaults. Environment variables set `[shortlister]` values, so they sit at that level.
+**Precedence, highest first:**
 
-A raw key already present in `configurable` is never overwritten by the SDK object — `_apply_shortlister` uses `setdefault`.
+1. raw `shortlister_*` keys you set yourself in `configurable`
+2. per-invoke `invoke(..., shortlister=...)`
+3. constructor `CugaAgent(shortlister=...)`
+4. `[shortlister.discovery]` / `[shortlister.bind_cap]`
+5. `[shortlister]` — also where environment variables land
+6. built-in defaults
+
+Raw keys sit **above** the SDK objects because `_apply_shortlister` merges with `setdefault`: a key you already placed in `configurable` is never overwritten.
 
 **1. `settings.toml`** — deployment-wide:
 

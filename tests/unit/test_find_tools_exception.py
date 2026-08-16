@@ -120,6 +120,7 @@ async def test_find_tools_forwards_query_and_task_context_separately(mock_tools,
     assert call_kw["task_context"] == "Book a flight to NYC"
 
 
+@pytest.mark.unit
 def test_compose_query_matches_legacy_find_tools_format():
     """The text the LLM sees is byte-identical to the pre-split composition.
 
