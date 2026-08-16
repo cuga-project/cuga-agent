@@ -1,0 +1,86 @@
+# OpenAI-platform profile: stock budgets + reasoning_effort=high.
+#
+# Differs from settings.openai.toml by exactly ONE thing: extra_params.reasoning_effort.
+# Budgets are left at the stock 16000 / 400 so an A/B against a default-effort run has a
+# single independent variable. If reasoning tokens crowd out visible output on your
+# workload (empty-content completions), use settings.openai.reasoning-high-32k.toml,
+# which pairs high effort with enlarged budgets.
+#
+# Use with:  AGENT_SETTING_CONFIG="settings.openai.reasoning-high.toml"
+#
+# Works with any model served over an OpenAI-compatible endpoint (including LiteLLM
+# gateways via OPENAI_BASE_URL). What differs by model is how models.py reads it:
+# for gpt-5*/o-series, _is_reasoning_model() drops the temperature line below; for
+# gpt-oss and other unmatched models it is sent and honored. reasoning_effort reaches
+# the provider on either path — both branches merge extra_params into client kwargs.
+# Whether the endpoint HONORS it is provider-specific: after a run, check
+# output_token_details.reasoning (usage) — if it stays near zero on hard tasks, the
+# endpoint is swallowing the parameter.
+#
+# Verified end-to-end with gpt-oss-120b behind an OpenAI-compatible LiteLLM gateway:
+# mean reasoning tokens/call rose ~5x vs the default-effort profile on the same tasks.
+#
+# Budget note: reasoning tokens are billed against the same max_tokens
+# (max_completion_tokens) budget. A long enough think can consume the whole budget and
+# return empty content; if that appears, it is a budget artifact, not a model result.
+# See cuga-agent#622 for making both knobs first-class instead of extra_params.
+
+[agent.task_decomposition.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.planner.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.chat.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.shortlister.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.plan_controller.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.final_answer.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.code.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.code_planner.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.qa.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 16000
+extra_params = { reasoning_effort = "high" }
+
+[agent.action.model]
+platform = "openai"
+temperature = 0.1
+max_tokens = 400
+extra_params = { reasoning_effort = "high" }

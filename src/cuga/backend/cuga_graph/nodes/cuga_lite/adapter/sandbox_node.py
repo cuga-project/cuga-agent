@@ -115,8 +115,16 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         context = {**existing_vars, **adapter._tools_context}
 
         # Start tool call tracking (enabled via invoke parameter, or internally
-        # whenever a weak-schema tool's output shape hasn't been observed yet)
-        ToolCallTracker.start_tracking(enabled=track_tool_calls or _needs_shape_tracking(adapter))
+        # whenever a weak-schema tool's output shape hasn't been observed yet).
+        # "timings_only" (set when tracking is forced for the run receipt) records
+        # tool name/duration but never arguments/results/errors — but shape
+        # tracking reads the result payload, so it takes precedence and forces
+        # full recording when a weak-schema shape still needs to be observed.
+        needs_shape = _needs_shape_tracking(adapter)
+        ToolCallTracker.start_tracking(
+            enabled=bool(track_tool_calls) or needs_shape,
+            timings_only=track_tool_calls == "timings_only" and not needs_shape,
+        )
         # Per-task tool-call budget: carry the count from earlier steps so
         # advanced_features.max_tool_calls caps the whole task, not one block
         ToolCallTracker.seed_call_budget(getattr(state, "tool_calls_used", 0))
