@@ -76,9 +76,11 @@ async def test_configurable_reaches_find_tools_through_run_config():
     captured = {}
 
     async def _capture(self, request):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import ShortlistResult
+
         captured["max_results"] = request.max_results
         captured["top_k"] = request.top_k
-        return []
+        return ShortlistResult()
 
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding.EmbeddingShortlister.shortlist",
