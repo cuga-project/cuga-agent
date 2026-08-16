@@ -541,9 +541,8 @@ if __name__ == "__main__":
 
 ### Run Receipt
 
-Answer "what did this run cost and where did the time go?" without any external
-observability stack. Enable the flag and every `invoke()` returns a per-run receipt
-with token usage, estimated cost, and an LLM-vs-tools time split:
+Answer "where did the tokens and the time go?" without an external observability
+stack. Enable the flag and every `invoke()` returns a per-run receipt:
 
 ```toml
 # settings.toml
@@ -561,23 +560,18 @@ print(result.receipt)
 # │ time: 9.4s (llm 6.1s / tools 2.8s)            │
 # │ slowest tool: get_accounts 1.9s               │
 # └───────────────────────────────────────────────┘
-result.receipt.input_tokens    # structured access: 18342
-result.receipt.output_tokens   # 2101
+result.receipt.input_tokens    # 18342
 result.receipt.tool_timings    # per-tool call counts and total durations
 ```
 
-The receipt reports **token counts, not cost**. CUGA runs against self-hosted and
-internal deployments whose price we don't know, so any figure here would be wrong
-for some users — multiply `input_tokens` / `output_tokens` by your own rates
-instead. `cache_read_tokens` and `reasoning_tokens` are reported when the provider
-supplies them, since they're often billed differently.
+**Tokens, not cost** — CUGA runs against self-hosted and internal deployments
+whose prices we don't know, so multiply by your own rates. `cache_read_tokens`
+and `reasoning_tokens` are included when the provider reports them.
 
-What enabling costs: tool tracking runs in a **timings-only** mode when the
-caller has not passed `track_tool_calls=True` — only tool name, app, and
-duration are appended to the thread state; arguments, results, and error
-payloads are never captured for the receipt. Tool timings follow the same
-semantics as `track_tool_calls`: they cover registry/MCP tools and functions
-decorated with `@tracked_tool`.
+Enabling it puts tool tracking in a **timings-only** mode unless you passed
+`track_tool_calls=True`: only name, app and duration are recorded — never
+arguments, results or errors. Coverage matches `track_tool_calls` (registry/MCP
+tools and `@tracked_tool` functions).
 
 ### Knowledge Base
 
