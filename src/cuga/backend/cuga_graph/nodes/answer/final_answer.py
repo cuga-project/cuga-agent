@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
+from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds, MessagePrefixes
 
 tracker = ActivityTracker()
@@ -102,6 +103,13 @@ class FinalAnswerNode(BaseNode):
             )
 
             text = state.final_answer or ""
+            # Defence in depth. The decode boundary (normalize_response) is what
+            # actually keeps framing out of delivered text; this catches an
+            # answer assembled from some other source, and costs one substring
+            # check when there is nothing to do.
+            if "<|" in text:
+                text = strip_harmony_tokens(text)
+                state.final_answer = text
             if not has_citation_markers(text):
                 # No [sN] markers to resolve. Two cases land here: a genuinely
                 # uncited answer, and an ALREADY-resolved one (the supervisor
@@ -225,12 +233,14 @@ class FinalAnswerNode(BaseNode):
         # Parse and process output
         final_answer_output = FinalAnswerOutput(**json.loads(response.content))
 
-        # Add to chat if enabled
+        # Add to chat if enabled. No sanitizing here: harmony framing is removed
+        # at the decode boundary (adapter.normalize_response), so every copy
+        # taken from the model response is already clean.
         if settings.features.chat:
             chat_message = f"{MessagePrefixes.ANSWER_PREFIX}{final_answer_output.final_answer}"
             state.append_to_last_chat_message(chat_message)
 
-        # Track the step
+        # Track the step (already clean — see the chat copy above).
         tracker.collect_step(Step(name=name, data=final_answer_output.model_dump_json()))
 
         # Replace variables and update state

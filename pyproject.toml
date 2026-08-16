@@ -49,6 +49,10 @@ dependencies = [
     # two distributions writing the same fastmcp/ directory: whichever installed last won, and
     # uninstalling either deleted the shared directory. Same split as typer / typer-slim above.
     "fastmcp>=3.3.0,<4",
+    # Authoritative harmony special-token vocabulary
+    # (see cuga_graph.utils.harmony.harmony_special_tokens); avoids
+    # hand-maintaining the list.
+    "openai-harmony>=0.0.4",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "langchain-groq>=0.3.8",
