@@ -51,9 +51,9 @@ class CugaSupervisorState(AgentState):
     tool_calls_used_run: int = (
         0  # Counter of tool calls across the task (advanced_features.max_tool_calls_per_run cap)
     )
-    # Never reset by prepare — this is what bounds a whole conversation
-    # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
-    tool_calls_used_thread: int = 0
+    # tool_calls_used_thread is inherited from AgentState, where it carries the
+    # ``max`` reducer that keeps the conversation ceiling monotonic. Redeclaring
+    # it here would drop that reducer and let a rebuilt state reset the ceiling.
     # Set once a terminal budget (turn or conversation) is spent. call_model then
     # withholds tools for one final synthesis pass and ends the turn.
     tool_budget_exhausted: bool = False
