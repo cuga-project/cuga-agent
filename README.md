@@ -539,6 +539,40 @@ if __name__ == "__main__":
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
+### Run Receipt
+
+Answer "where did the tokens and the time go?" without an external observability
+stack. Enable the flag and every `invoke()` returns a per-run receipt:
+
+```toml
+# settings.toml
+[advanced_features]
+run_receipt = true  # default: false — zero overhead when disabled
+```
+
+```python
+result = await agent.invoke("how many accounts are there?")
+print(result.receipt)
+# ┌─ Run Receipt ─────────────────────────────────┐
+# │ model: gpt-4o                                 │
+# │ tokens: 18,342 in / 2,101 out (20,443)        │
+# │ llm calls: 7   tool calls: 4                  │
+# │ time: 9.4s (llm 6.1s / tools 2.8s)            │
+# │ slowest tool: get_accounts 1.9s               │
+# └───────────────────────────────────────────────┘
+result.receipt.input_tokens    # 18342
+result.receipt.tool_timings    # per-tool call counts and total durations
+```
+
+**Tokens, not cost** — CUGA runs against self-hosted and internal deployments
+whose prices we don't know, so multiply by your own rates. `cache_read_tokens`
+and `reasoning_tokens` are included when the provider reports them.
+
+Enabling it puts tool tracking in a **timings-only** mode unless you passed
+`track_tool_calls=True`: only name, app and duration are recorded — never
+arguments, results or errors. Coverage matches `track_tool_calls` (registry/MCP
+tools and `@tracked_tool` functions).
+
 ### Knowledge Base
 
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
