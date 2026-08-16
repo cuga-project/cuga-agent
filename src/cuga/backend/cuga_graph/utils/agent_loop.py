@@ -38,9 +38,22 @@ class TokenUsageTracker(AsyncCallbackHandler):
         self.tracker = tracker
 
     async def on_llm_end(self, response: LLMResult, **kwargs):
-        generation = response.generations[0][0].text
-        self.tracker.collect_prompt(role="assistant", value=generation)
-        self.tracker.collect_tokens_usage(response.llm_output.get("token_usage").get("total_tokens"))
+        # generations can be empty on malformed provider responses — the same
+        # silent-loss class as the llm_output guard below.
+        generations = response.generations or []
+        first = generations[0][0] if generations and generations[0] else None
+        if first is not None:
+            self.tracker.collect_prompt(role="assistant", value=first.text)
+        # llm_output is None (or lacks token_usage) for LiteLLM/watsonx/streaming
+        # responses; fall back to the message's usage_metadata before giving up.
+        token_usage = (response.llm_output or {}).get("token_usage") or {}
+        total_tokens = token_usage.get("total_tokens")
+        if total_tokens is None and first is not None:
+            usage_metadata = getattr(getattr(first, "message", None), "usage_metadata", None)
+            if usage_metadata:
+                total_tokens = usage_metadata.get("total_tokens")
+        if total_tokens:
+            self.tracker.collect_tokens_usage(total_tokens)
 
     def split_system_human(self, text):
         """

@@ -142,6 +142,7 @@ validators = [
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),
+    Validator("advanced_features.run_receipt", default=False),
     Validator("advanced_features.local_sandbox", default=True),
     Validator("advanced_features.message_window_limit", default=20),
     Validator("advanced_features.max_input_length", default=50000),

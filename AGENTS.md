@@ -79,10 +79,9 @@ If a test fails with `AttributeError: <module 'cuga.backend.llm.models' ...> doe
 
 ## Creating issues and pull requests
 
-When creating a new GitHub issue or pull request, use the AI agent commands documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-commands) instead of inventing an ad-hoc flow. Prefer:
+When creating a new GitHub issue or pull request, use the AI agent skills documented in [CONTRIBUTING.md](CONTRIBUTING.md#ai-agent-skills) instead of inventing an ad-hoc flow. Prefer:
 
-- `/cuga-report-bug` — open a bug issue from the `bug_report.yml` template
-- `/cuga-new-feature` — open a feature request from the `feature_request.yml` template
-- `/cuga-create-pr` — validate local state, pick the right PR template, and open the PR via `gh`
+- `cuga-github-issues` — open bugs, features, epics, and related issues (`bug_report.yml` / `feature_request.yml`), with epic → feature → issue hierarchy
+- `cuga-contributor-workflows` — commit (Conventional Commits), create PRs via `gh`, and run ruff check/format
 
-These commands live under `.cursor/commands/`, `.claude/commands/`, and `.bob/commands/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).
+These skills are mirrored under `.cursor/skills/`, `.claude/skills/`, and `.bob/skills/` and follow repo conventions (templates, Conventional Commits, DCO signoff expectations, no promotional footers).

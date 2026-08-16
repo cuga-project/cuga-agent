@@ -32,6 +32,10 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
     "tracking_enabled", default=False
 )
 
+_timings_only_context: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "tracking_timings_only", default=False
+)
+
 # Holds a mutable counter dict so the count survives context copies:
 # ``asyncio.wait_for`` runs each code block in a new Task whose context is a
 # *copy* of the executor's, but the copy references the SAME dict, so
@@ -82,16 +86,20 @@ class ToolCallTracker:
         return _tracking_enabled_context.get()
 
     @staticmethod
-    def start_tracking(enabled: bool = True) -> None:
+    def start_tracking(enabled: bool = True, timings_only: bool = False) -> None:
         """Start a new tracking session.
 
         Args:
             enabled: Whether tracking should be enabled for this session
+            timings_only: Record only tool name/app/duration — never arguments,
+                results, or error payloads. Used when tracking is forced for
+                run-receipt metrics rather than requested by the caller.
         """
         _tracking_enabled_context.set(enabled)
+        _timings_only_context.set(timings_only if enabled else False)
         if enabled:
             _tool_calls_context.set([])
-            logger.debug("Tool call tracking started")
+            logger.debug(f"Tool call tracking started (timings_only={timings_only})")
 
     @staticmethod
     def stop_tracking() -> List[Dict[str, Any]]:
@@ -102,6 +110,7 @@ class ToolCallTracker:
         calls = _tool_calls_context.get()
         _tool_calls_context.set(None)
         _tracking_enabled_context.set(False)
+        _timings_only_context.set(False)
         logger.debug(f"Tool call tracking stopped, collected {len(calls) if calls else 0} calls")
         return calls or []
 
@@ -135,15 +144,16 @@ class ToolCallTracker:
 
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 
+        timings_only = _timings_only_context.get()
         record = {
             "name": tool_name,
-            "arguments": VariableUtils.sanitize_value(arguments),
-            "result": VariableUtils.sanitize_value(result),
+            "arguments": None if timings_only else VariableUtils.sanitize_value(arguments),
+            "result": None if timings_only else VariableUtils.sanitize_value(result),
             "app_name": app_name,
             "operation_id": operation_id,
             "timestamp": datetime.now().isoformat(),
             "duration_ms": duration_ms,
-            "error": error,
+            "error": None if timings_only else error,
         }
 
         calls.append(record)
