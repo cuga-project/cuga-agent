@@ -13,8 +13,11 @@ import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as mod
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+    BlockedClaimEvidence,
     classify_nl_auto_continue,
+    classify_nl_auto_continue_decision,
     looks_like_planning_text,
+    looks_like_unverified_blocker,
 )
 
 
@@ -113,12 +116,6 @@ async def test_disabled_flag_finalizes_planning_text(monkeypatch):
 # the harness can positively verify otherwise (tools bound, nothing executed,
 # retry unspent) must be auto-continued once with a corrective message.
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (  # noqa: E402
-    BlockedClaimEvidence,
-    classify_nl_auto_continue_decision,
-    looks_like_unverified_blocker,
-)
-
 # Verbatim observed failures (AppWorld bundles, gpt-5.6-luna and gpt-oss-120b).
 OBSERVED_BLOCKER_STRINGS = [
     "I’m sorry, but I couldn’t access the Amazon cart and wishlist data needed to calculate the total.",
@@ -150,6 +147,9 @@ def test_observed_blocker_strings_detected(text):
         "I can help you browse Amazon products, manage Gmail threads, and track expenses.",
         "Which account should I use?",
         "The order was placed successfully. Order ID: 3146.",
+        # Positive availability statement — the availability clause requires an
+        # explicit negation (PR #657 review): must NOT read as an inability claim.
+        "The Spotify tool is available in this session.",
     ],
 )
 def test_non_blocker_text_not_detected(text):
@@ -224,3 +224,31 @@ async def test_bool_wrapper_never_overrides():
     """The back-compat bool API passes no evidence, so behavior is unchanged."""
     result = await classify_nl_auto_continue(_finalize_llm(), OBSERVED_BLOCKER_STRINGS[0], None)
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_override_requires_confirmed_finalize_verdict_on_error():
+    """PR #657 review, finding 1: a classifier *error* must finalize without the
+    override, even with blocker text and full evidence — the override's
+    precondition is a confirmed finalize verdict, not the absence of one."""
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(side_effect=RuntimeError("transient network error"))
+    decision = await classify_nl_auto_continue_decision(
+        llm, OBSERVED_BLOCKER_STRINGS[0], None, evidence=_FULL_EVIDENCE
+    )
+    assert decision.auto_continue is False
+    assert decision.blocked_override is False
+
+
+@pytest.mark.asyncio
+async def test_blocked_override_requires_confirmed_finalize_verdict_on_unparsable():
+    """Same guard for unparsable classifier output — identical hole, same fix."""
+    llm = MagicMock()
+    resp = MagicMock()
+    resp.content = "definitely not json"
+    llm.ainvoke = AsyncMock(return_value=resp)
+    decision = await classify_nl_auto_continue_decision(
+        llm, OBSERVED_BLOCKER_STRINGS[0], None, evidence=_FULL_EVIDENCE
+    )
+    assert decision.auto_continue is False
+    assert decision.blocked_override is False

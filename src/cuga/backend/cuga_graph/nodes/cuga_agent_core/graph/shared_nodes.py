@@ -33,6 +33,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction imp
     extract_code_from_model_response,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EXECUTION_OUTPUT_PREFIX,
     CoreGraphAdapter,
     enforce_step_limit,
 )
@@ -252,16 +253,15 @@ def create_call_model_node(
         should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
         if should_continue:
             # A str result is a corrective directive (e.g. Lite's unverified-blocker
-            # retry, issue #610) — use it as the synthetic user message and re-read
-            # metadata, which the adapter may have updated during classification
-            # (the meta_update above was built before the classify call).
+            # retry, issue #610) — use it as the synthetic user message.
             continue_text = should_continue if isinstance(should_continue, str) else "continue"
-            if isinstance(should_continue, str):
-                meta_update = {
-                    adapter.metadata_key: adapter.build_metadata_update(
-                        state, playbook_fired=playbook_fired
-                    )
-                }
+            # Rebuild metadata unconditionally: classify_auto_continue may mutate
+            # state (Lite's spent-retry marker), and the meta_update above was
+            # snapshotted before the classify call. build_metadata_update re-reads
+            # state, so this is a no-op when nothing changed.
+            meta_update = {
+                adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
+            }
             logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
             return Command(
                 goto="call_model",
@@ -280,7 +280,7 @@ def create_call_model_node(
         if not (final_answer or "").strip() and reasoning:
             final_answer = (reasoning or "").strip()
         if not (final_answer or "").strip():
-            exec_prefix = "Execution output:\n"
+            exec_prefix = EXECUTION_OUTPUT_PREFIX + "\n"
             for msg in reversed(modified_messages):
                 if isinstance(msg, HumanMessage):
                     text = msg.content or ""

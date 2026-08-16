@@ -117,7 +117,7 @@ _BLOCKED_CLAIM_RE = re.compile(
     r"(?:access|locate|find|retrieve|reach|execute|use|continue|proceed)"
     r"|(?:don['’]t|do\s+not|doesn['’]t|does\s+not)\s+have\s+(?:a|the|any)[^.]{0,40}\btools?\b"
     r"|\btools?\b[^.!\n]{0,60}(?:\bnot\b|\bun)available"
-    r"|(?:is|are|isn['’]t|aren['’]t)\s+(?:not\s+)?available\s+in\s+"
+    r"|(?:(?:is|are)\s+not|isn['’]t|aren['’]t)\s+available\s+in\s+"
     r"(?:this|the\s+current)\s+(?:session|environment|context)"
     # "there's no (available) tool …", "we have no tool listed", "no such tool":
     # observed verbatim on gpt-oss-120b task 7574325_1 ("there's no available tool
@@ -306,14 +306,20 @@ async def classify_nl_auto_continue_decision(
         parsed = parse_auto_continue_json(getattr(resp, "content", "") or "")
         if parsed is None:
             logger.warning("NL auto-continue classifier returned unparsable output; treating as finalize")
-        elif parsed:
+            return finalize
+        if parsed:
             return AutoContinueDecision(auto_continue=True)
     except Exception as e:
         logger.warning(f"NL auto-continue classifier failed: {e}")
+        return finalize
 
-    # The classifier chose finalize. If that finalize is an inability claim the
-    # harness can positively contradict (tools bound, nothing executed, retry
-    # unspent), override once with a corrective continue instead.
+    # The classifier explicitly chose finalize (parsed False). Only that verdict
+    # reaches the override — a classifier error or unparsable output finalizes
+    # above, exactly like the pre-existing bool path, so the override never
+    # fires on anything but a confirmed finalize (PR #657 review, finding 1).
+    # If the finalize is an inability claim the harness can positively
+    # contradict (tools bound, nothing executed, retry unspent), override once
+    # with a corrective continue instead.
     if _blocked_override_applies(visible, reasoning, evidence):
         logger.warning(
             "NL auto-continue: turn-1 inability claim with tools bound and zero executed "

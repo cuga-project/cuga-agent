@@ -16,7 +16,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_current_plan_section,
     format_task_todos_system_block,
 )
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EXECUTION_OUTPUT_PREFIX,
+    CoreGraphAdapter,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import create_prepare_tools_and_apps_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
     clean_empty_response_retry_meta,
@@ -223,13 +226,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return decision.auto_continue
 
     def _any_execution_ran(self, state: Any) -> bool:
-        """Has any sandbox execution produced feedback this task? Mirrors the
-        ``Execution output:`` message prefix emitted by ``execution_output_text``."""
+        """Has any sandbox execution produced feedback this task? Detected via the
+        shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text``."""
         for msg in self.get_messages(state):
             if not isinstance(msg, HumanMessage):
                 continue
             content = getattr(msg, "content", None)
-            if isinstance(content, str) and content.startswith("Execution output:"):
+            if isinstance(content, str) and content.startswith(EXECUTION_OUTPUT_PREFIX):
                 return True
         return False
 
