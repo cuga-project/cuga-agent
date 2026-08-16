@@ -128,6 +128,8 @@ def strip_harmony_tokens(text: str) -> str:
     if not harmony_handling_enabled():
         return text
     specials = harmony_special_tokens()
-    if "<|message|>" in text and "<|message|>" in specials:
+    # Require real channel framing, not a stray <|message|>: dropping everything
+    # before the token is only right when earlier channels precede it.
+    if "<|channel|>" in text and "<|message|>" in text and "<|message|>" in specials:
         text = text.rsplit("<|message|>", 1)[1]
     return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)

@@ -56,3 +56,12 @@ def test_loose_framing_and_plain_text_are_unaffected():
         "    def foo():\n        return 1"
     )
     assert strip_harmony_tokens("Use <|custom|> here.") == "Use <|custom|> here."
+
+
+def test_stray_message_token_does_not_discard_preceding_text():
+    """Dropping everything before <|message|> is only correct when real channel
+    framing precedes it. Without a <|channel|> header the token is stray, and
+    the text before it is content, not a discarded channel."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    assert strip_harmony_tokens("Here is the answer<|message|>42") == "Here is the answer42"
