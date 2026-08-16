@@ -279,6 +279,10 @@ litellm_local_model_cost_map = true
 # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
 
+traceloop = false  # Enable Traceloop LLM observability via OpenTelemetry. Requires: pip install cuga[observability-traceloop]
+traceloop_exporter = "file"   # "file" | "otlp" — see Phase 1
+traceloop_file_path = ""      # empty = default under TRACES_DIR, see Phase 1
+
 [evolve]
 enabled = true             # Master toggle for Evolve integration
 url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint

@@ -107,6 +107,14 @@ evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
 observability = ["openlit>=1.40.3"]
 # profiling-only — never a runtime dep. memray has no Windows or Python 3.14 wheels.
 profiling = ["memray>=1.11; sys_platform != 'win32' and python_version < '3.14'"]
+# Dedicated extra, deliberately not merged into `observability` above — keeps Traceloop's
+# dependency footprint isolated from OpenLit's (see docs/traceloop-instrumentation-spec.md DP12).
+observability-traceloop = [
+    "traceloop-sdk>=0.30",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-httpx",
+    "opentelemetry-instrumentation-aiohttp-client",
+]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -151,6 +159,9 @@ constraint-dependencies = [
     "joserfc>=1.6.8",  # GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
     "json-repair>=0.60.1",  # GHSA-xf7x-x43h-rpqh: circular JSON Schema $ref DoS (<=0.60.0)
     "datamodel-code-generator>=0.64.0",  # GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
+    # traceloop-sdk pulls in opentelemetry-instrumentation-langchain, which silently fails to
+    # load under wrapt 2.x (confirmed via Indigo's gaia_agent precedent) — pin below 2.0.
+    "wrapt<2.0",
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
