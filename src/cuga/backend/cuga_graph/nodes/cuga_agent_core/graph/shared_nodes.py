@@ -37,6 +37,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     apply_context_summarization,
     truncate_text_for_context,
@@ -303,7 +304,12 @@ def create_call_model_node(
         # ponytail: reasoning-only models may finalize with empty visible content
         final_answer = content
         if not (final_answer or "").strip() and reasoning:
-            final_answer = (reasoning or "").strip()
+            candidate = (reasoning or "").strip()
+            # Never surface raw harmony protocol framing as an answer. Detection
+            # is gated + vocabulary-driven (see utils.harmony), so reasoning that
+            # merely mentions other special tokens is still usable.
+            if not contains_harmony_tokens(candidate):
+                final_answer = candidate
         if not (final_answer or "").strip():
             exec_prefix = "Execution output:\n"
             for msg in reversed(modified_messages):
