@@ -66,6 +66,7 @@ cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-cl
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
+# Tool-call budgets — rationale for these defaults and tuning guidance: docs/design/tool-call-budgets.md
 max_tool_calls_per_run = 256  # Max tool/API calls per run — one user turn (prepare resets it), across every tool path (registry, MCP/SDK providers, plain python tools, skills, runtime fs/shell, agent delegation). 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_RUN
 max_tool_calls_per_block = 100  # Max tool/API calls in ONE generated code block. Fail-fast guard, not a ceiling: breaching it is recoverable, the model reflects and retries with a fresh block budget — max_tool_calls_per_run above is what actually bounds spend. 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_BLOCK
 max_tool_calls_per_thread = 2000  # Max tool/API calls per conversation, never reset. The absolute ceiling: bounds a long thread that max_tool_calls_per_run (per turn) cannot. 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_THREAD
