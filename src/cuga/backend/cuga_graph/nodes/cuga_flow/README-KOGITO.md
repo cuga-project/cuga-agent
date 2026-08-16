@@ -68,15 +68,11 @@ Confirmed REST contract:
 
 ### CUGA FLO Kogito runtime — `backend/server/kogito/*.java`
 
-Compiled **into** each generated service, shared across all apps because both classes are
-parameterised entirely through the arguments their BPMN script tasks pass:
+`CugaFlo.java` (the MCP client) and `FlowRedirect.java` (the in-process jump) are compiled
+into every generated service and shared across all apps.
 
-- **`CugaFlo.java`** — MCP client for `execute_task`, `route_gateway`, `evaluate_hook`,
-  `complete_process`. Ships the full process-variable map on every call and reads the MCP
-  endpoint from the `cugaMcpUrl` process variable, injected by
-  `MCPFlowBridge.register_kogito_engine`.
-- **`FlowRedirect.java`** — the in-process jump. Cancels the calling node, then triggers the
-  target. `redirectspike.bpmn` beside it is its verification model.
+**See [`kogito-to-CUGA-FLO.md`](kogito-to-CUGA-FLO.md)** for what they provide and how each
+control point is wired to them.
 
 ### `MCPFlowBridge.register_kogito_engine`
 
@@ -116,6 +112,10 @@ from `--port`, else the app's `workflow_engine.url`, else 8081.
 ---
 
 ## Writing the Kogito model
+
+**[`kogito-to-CUGA-FLO.md`](kogito-to-CUGA-FLO.md)** is the working reference: what the two
+runtime classes provide, what the process must declare, and how a task agent, a decision
+gateway, a hook and the completion callback are each wired to them, with the XML for each.
 
 The full transformation procedure — clean `BPMNdiagram.bpmn` to `*-kogito.bpmn`, element by
 element — is in
