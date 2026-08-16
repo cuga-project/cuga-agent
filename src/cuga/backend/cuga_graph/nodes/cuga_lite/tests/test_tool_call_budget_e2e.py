@@ -167,3 +167,43 @@ async def test_a_turn_within_budget_is_untouched(monkeypatch):
     assert len(CALLS_MADE) == 10, "an in-budget loop was interfered with"
     assert result["tool_calls_used_run"] == 10
     assert result["final_answer"] == FINAL_ANSWER
+
+
+LOOP_3 = "```python\nfor i in range(3):\n    await echo(value=i)\n```"
+
+
+@pytest.mark.asyncio
+async def test_resuming_mid_turn_does_not_reset_the_run_budget(monkeypatch):
+    """An interrupt mid-turn (tool approval / HITL) must not re-enter prepare.
+
+    prepare is what zeroes ``tool_calls_used_run``, and it runs on START ->
+    prepare only. If a resume re-entered the graph from the top instead of the
+    interrupted node, every approval would silently hand the task a fresh
+    budget — a runaway would just need to trip one approval per 256 calls, and
+    nothing would look wrong until the bill arrived.
+
+    Interrupting before ``sandbox`` reproduces the resume path without needing
+    the policy engine: the assertion is on the budget, which is what the
+    approval flow would put at risk.
+    """
+    _set_caps(monkeypatch, block=0, run=5, thread=0)
+
+    model = _ScriptedModel([LOOP_3, LOOP_3, FINAL_ANSWER])
+    graph = create_cuga_lite_graph(
+        model=model, tool_provider=_tool_provider(), apps_list=[], thread_id="budget-resume"
+    ).compile(checkpointer=MemorySaver(), interrupt_before=["sandbox"])
+    config = {"configurable": {"thread_id": "budget-resume", "enable_todos": False}}
+
+    await graph.ainvoke(CugaLiteState(chat_messages=[HumanMessage(content="call echo")]), config=config)
+    assert CALLS_MADE == [], "interrupt should land before the block executes"
+
+    await graph.ainvoke(None, config=config)  # resume 1 -> first block runs
+    assert len(CALLS_MADE) == 3
+
+    await graph.ainvoke(None, config=config)  # resume 2 -> second block runs
+    state = graph.get_state(config).values
+
+    assert len(CALLS_MADE) == 5, (
+        f"{len(CALLS_MADE)} calls against run cap 5 — resuming re-ran prepare and reset the budget"
+    )
+    assert state["tool_calls_used_run"] == 5
