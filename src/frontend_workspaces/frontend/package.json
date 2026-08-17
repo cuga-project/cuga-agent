@@ -65,7 +65,7 @@
     "webpack": "5.104.1",
     "webpack-bundle-analyzer": "^5.0.1",
     "webpack-cli": "5.1.4",
-    "webpack-dev-server": "5.1.0",
+    "webpack-dev-server": "5.2.6",
     "@playwright/test": "^1.49.0",
     "electron-builder-squirrel-windows": "26.15.7"
   }

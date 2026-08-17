@@ -88,6 +88,7 @@ jobs:
             tests/unit/test_citation_resolver.py \
             tests/unit/test_citation_settings.py \
             tests/unit/test_final_answer_citations.py \
+            tests/unit/test_harmony_decode_boundary.py \
             tests/unit/test_envelope_citations.py \
             tests/unit/test_sdk_citations.py \
             tests/unit/test_server_citation_egress.py \
@@ -102,6 +103,9 @@ jobs:
           uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
             tests/unit/test_bind_tools_safe_fallback.py \
             tests/unit/test_tool_use_failed_recovery.py
+          uv run pytest \
+            tests/unit/test_knowledge_init_failure_isolation.py \
+            tests/unit/test_shortlister_name_validation.py
           uv run pytest tests/unit/test_variables_addendum_not_persisted.py
           uv run pytest \
             tests/unit/test_toolguard_provider.py \
@@ -112,6 +116,10 @@ jobs:
             tests/unit/test_tool_guard_generation_route_sync.py \
             tests/unit/test_policy_frontend_dict_guards_enabled.py \
             tests/unit/test_toolguard_reuse_roundtrip.py
+          # Trajectory-write containment (#636) and the recording path it must not break.
+          uv run pytest \
+            tests/unit/test_tracker_external_path_containment.py \
+            tests/unit/test_registry_trajectory_recording.py
           uv run pytest tests/integration/a2a/ tests/unit/test_a2a_simple_runner_hitl.py
 
   policy-a:
