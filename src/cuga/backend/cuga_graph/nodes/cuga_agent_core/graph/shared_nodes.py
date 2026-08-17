@@ -37,9 +37,18 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.utils.harmony import contains_harmony_tokens
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     apply_context_summarization,
     truncate_text_for_context,
+)
+
+
+TOOL_BUDGET_EXHAUSTED_INSTRUCTION = (
+    "The tool-call budget for this task is spent, so no further tool calls are possible "
+    "and no tools are available to you on this turn. Write the final answer now, in prose, "
+    "using only the data already retrieved. Do not write code. If the data is incomplete, "
+    "answer with what you have and state plainly what is missing and why."
 )
 
 
@@ -189,8 +198,26 @@ def create_call_model_node(
             adapter.sender_name,
         )
 
+        # ── Tool budget exhausted: one final synthesis pass, then END ──────
+        # A spent turn/conversation budget makes every tool call raise, so
+        # letting the model keep trying burns a step per attempt until the step
+        # limit trips and the task ends in an error — with an answer the model
+        # could have written from data it already had. Instead: withhold the
+        # tools, ask for the answer, and end the turn whatever comes back.
+        # Asking nicely is not a constraint; an empty tool list is.
+        budget_exhausted = bool(getattr(state, "tool_budget_exhausted", False))
+        if budget_exhausted:
+            logger.warning("{}: tool budget exhausted — final synthesis pass, no tools", adapter.sender_name)
+            # Outbound only, like the variables addendum: this instruction is
+            # rebuilt per turn and must not accumulate in persisted history.
+            messages_for_model.append({"role": "user", "content": TOOL_BUDGET_EXHAUSTED_INSTRUCTION})
+
         # ── Resolve bound model (bind-tools, Lite-only) ────────────────────
-        bound = await adapter.resolve_bind_tools(state, active_model, configurable, config) or active_model
+        bound = (
+            active_model
+            if budget_exhausted
+            else (await adapter.resolve_bind_tools(state, active_model, configurable, config) or active_model)
+        )
 
         # ── Model invocation ───────────────────────────────────────────────
         # Pass the full node config so LangChain keeps parent_run_id linkage for
@@ -213,13 +240,24 @@ def create_call_model_node(
         new_step_count: int = state.step_count + 1
 
         # ── Step limit enforcement ─────────────────────────────────────────
+        # Exempt the grace turn. It is the LAST model call of the turn — it has
+        # no tools and routes straight to END below — so the step limit has
+        # nothing left to protect against, and enforcing it here would replace
+        # the answer the model just synthesised with "Maximum step limit
+        # reached". That is the case the grace turn exists for: summarization is
+        # what lets a looping turn reach the step wall at all, so a runaway
+        # arrives here having already exhausted its budget.
         max_steps = adapter.resolve_max_steps(state, configurable.get("cuga_lite_max_steps"))
-        limit_cmd = enforce_step_limit(
-            adapter,
-            state=state,
-            messages=final_messages,
-            new_step_count=new_step_count,
-            limit=max_steps,
+        limit_cmd = (
+            None
+            if budget_exhausted
+            else enforce_step_limit(
+                adapter,
+                state=state,
+                messages=final_messages,
+                new_step_count=new_step_count,
+                limit=max_steps,
+            )
         )
         if limit_cmd is not None:
             return limit_cmd
@@ -238,6 +276,12 @@ def create_call_model_node(
         }
 
         # ── Route: code → execute node; text → END or auto-continue ────────
+        # With the budget spent, any code the model still emitted would only hit
+        # the same wall, and auto-continue would loop forever — fall through to
+        # the END path below, which already handles empty/reasoning-only content.
+        if budget_exhausted:
+            code = None
+
         if code:
             return Command(
                 goto=adapter.execute_node_name,
@@ -249,7 +293,11 @@ def create_call_model_node(
                 },
             )
 
-        should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
+        should_continue = (
+            False
+            if budget_exhausted
+            else await adapter.classify_auto_continue(state, active_model, content, reasoning)
+        )
         if should_continue:
             logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
             return Command(
@@ -267,7 +315,12 @@ def create_call_model_node(
         # ponytail: reasoning-only models may finalize with empty visible content
         final_answer = content
         if not (final_answer or "").strip() and reasoning:
-            final_answer = (reasoning or "").strip()
+            candidate = (reasoning or "").strip()
+            # Never surface raw harmony protocol framing as an answer. Detection
+            # is gated + vocabulary-driven (see utils.harmony), so reasoning that
+            # merely mentions other special tokens is still usable.
+            if not contains_harmony_tokens(candidate):
+                final_answer = candidate
         if not (final_answer or "").strip():
             exec_prefix = "Execution output:\n"
             for msg in reversed(modified_messages):

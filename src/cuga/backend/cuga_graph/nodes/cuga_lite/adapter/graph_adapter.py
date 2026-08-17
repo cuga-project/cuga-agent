@@ -17,6 +17,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
     format_task_todos_system_block,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
+from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import create_prepare_tools_and_apps_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
     clean_empty_response_retry_meta,
@@ -164,7 +165,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         return None
 
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
-        content = normalize_assistant_text(response.content)
+        # Harmony framing is removed here, at the decode boundary, so every
+        # downstream surface inherits clean text (see the base implementation).
+        content = strip_harmony_tokens(normalize_assistant_text(response.content))
         if not content:
             tool_code = extract_code_from_response_tool_calls(response)
             if tool_code:

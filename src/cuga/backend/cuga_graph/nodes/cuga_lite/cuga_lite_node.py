@@ -18,6 +18,11 @@ from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 from langchain_core.messages import HumanMessage
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
+from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    decision_from_metadata,
+)
 
 
 tracker = ActivityTracker()
@@ -56,6 +61,17 @@ class CugaLiteHumanInTheLoopHandler:
 
         # Check if user approved or denied
         confirmed = state.hitl_response.confirmed
+        metadata = state.cuga_lite_metadata or {}
+        append_policy_decisions(
+            metadata,
+            [
+                decision_from_metadata(
+                    metadata,
+                    outcome=(PolicyDecisionOutcome.APPROVED if confirmed else PolicyDecisionOutcome.DENIED),
+                )
+            ],
+        )
+        state.cuga_lite_metadata = metadata
 
         if confirmed:
             logger.info("User approved tool execution - continuing with code execution")

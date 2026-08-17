@@ -10,6 +10,11 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
+from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    decision_from_metadata,
+)
 
 
 class CugaSupervisorNode(BaseNode):
@@ -223,6 +228,21 @@ class CugaSupervisorNode(BaseNode):
             and state.hitl_response
             and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
         ):
+            metadata = state.supervisor_metadata or {}
+            append_policy_decisions(
+                metadata,
+                [
+                    decision_from_metadata(
+                        metadata,
+                        outcome=(
+                            PolicyDecisionOutcome.APPROVED
+                            if state.hitl_response.confirmed
+                            else PolicyDecisionOutcome.DENIED
+                        ),
+                    )
+                ],
+            )
+            state.supervisor_metadata = metadata
             if state.hitl_response.confirmed:
                 logger.info("User approved supervisor tool execution - resuming subgraph")
                 sd = state.model_dump()

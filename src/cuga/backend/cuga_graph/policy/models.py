@@ -31,6 +31,25 @@ class PolicyActionType(str, Enum):
     LOG_ONLY = "log_only"
 
 
+class PolicyDecisionStage(str, Enum):
+    """Execution stage at which a policy decision was made."""
+
+    INPUT = "input"
+    TOOL = "tool"
+    OUTPUT = "output"
+
+
+class PolicyDecisionOutcome(str, Enum):
+    """Externally observable outcome of a policy decision."""
+
+    MATCHED = "matched"
+    APPLIED = "applied"
+    BLOCKED = "blocked"
+    APPROVAL_REQUIRED = "approval_required"
+    APPROVED = "approved"
+    DENIED = "denied"
+
+
 # Trigger Models
 class NaturalLanguageTrigger(BaseModel):
     """Trigger based on natural language matching using semantic similarity."""
@@ -380,4 +399,21 @@ class PolicyMatch(BaseModel):
     reasoning: str = Field("", description="Explanation of why this policy matched or didn't match")
     trigger_details: Dict[str, Any] = Field(
         default_factory=dict, description="Details about which triggers matched"
+    )
+
+
+class PolicyDecision(BaseModel):
+    """Safe, public summary of a policy decision made during an invocation."""
+
+    policy_id: str = Field(..., description="ID of the policy that matched")
+    policy_name: str = Field(..., description="Human-readable name of the matched policy")
+    policy_type: PolicyType = Field(..., description="Type of policy that matched")
+    action_type: Optional[PolicyActionType] = Field(None, description="Action selected by the policy")
+    stage: PolicyDecisionStage = Field(..., description="Execution stage where the decision occurred")
+    outcome: PolicyDecisionOutcome = Field(..., description="Observable outcome of the decision")
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Match confidence when available")
+    reasoning: Optional[str] = Field(None, description="Matcher explanation for the decision")
+    tool_name: Optional[str] = Field(None, description="Affected tool for tool-stage decisions")
+    agent_name: Optional[str] = Field(
+        None, description="Delegated agent that made the decision; unset for the current agent"
     )
