@@ -83,19 +83,25 @@ class TestPublishSetsLLMOverride:
 
         config = {"llm": VAULT_MODE_CONFIG}
         app_state = _make_app_state()
+        fake_llm = MagicMock()
+        fake_llm.model_name = "gpt-4o-mini"
 
         fake_secrets = _vault_settings_stub()
         with patch("cuga.config.settings") as mock_cfg:
             mock_cfg.secrets = fake_secrets
             with patch("cuga.backend.server.manage_routes.logger"):
-                import cuga.config as cfg_mod
+                with patch(
+                    "cuga.backend.llm.models.create_llm_from_config",
+                    return_value=fake_llm,
+                ):
+                    import cuga.config as cfg_mod
 
-                real_secrets = getattr(cfg_mod.settings, "secrets", None)
-                try:
-                    cfg_mod.settings.secrets = fake_secrets
-                    await _apply_published_config(app_state, config)
-                finally:
-                    cfg_mod.settings.secrets = real_secrets
+                    real_secrets = getattr(cfg_mod.settings, "secrets", None)
+                    try:
+                        cfg_mod.settings.secrets = fake_secrets
+                        await _apply_published_config(app_state, config)
+                    finally:
+                        cfg_mod.settings.secrets = real_secrets
 
         assert getattr(app_state, "current_llm", None) is not None
         llm = app_state.current_llm
@@ -110,19 +116,25 @@ class TestPublishSetsLLMOverride:
 
         config = {"llm": VAULT_MODE_CONFIG}
         app_state = _make_app_state()
+        fake_llm = MagicMock()
+        fake_llm.model_name = "gpt-4o-mini"
 
         fake_secrets = _vault_settings_stub()
         with patch("cuga.config.settings") as mock_cfg:
             mock_cfg.secrets = fake_secrets
             with patch("cuga.backend.server.manage_routes.logger"):
-                import cuga.config as cfg_mod
+                with patch(
+                    "cuga.backend.llm.models.create_llm_from_config",
+                    return_value=fake_llm,
+                ):
+                    import cuga.config as cfg_mod
 
-                real_secrets = getattr(cfg_mod.settings, "secrets", None)
-                try:
-                    cfg_mod.settings.secrets = fake_secrets
-                    await _apply_published_config(app_state, config)
-                finally:
-                    cfg_mod.settings.secrets = real_secrets
+                    real_secrets = getattr(cfg_mod.settings, "secrets", None)
+                    try:
+                        cfg_mod.settings.secrets = fake_secrets
+                        await _apply_published_config(app_state, config)
+                    finally:
+                        cfg_mod.settings.secrets = real_secrets
 
         assert getattr(app_state, "current_llm", None) is not None, (
             "current_llm should be set after publish in vault mode"

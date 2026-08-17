@@ -62,7 +62,7 @@ jobs:
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
           uv run pytest tests/unit tests/integration \
-            -m "not manual and not pgvector and not load and not e2e and not stability"
+            -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
           uv run pytest src/cuga/backend/cuga_graph/policy/tests
           uv run pytest ./src/cuga/sdk_core/tests/
           uv run pytest tests/system src/system_tests/load/tests/

@@ -78,7 +78,7 @@ jobs:
       - name: Run tests/unit and tests/integration
         run: >
           uv run pytest tests/unit tests/integration
-          -m "not manual and not pgvector and not load and not e2e and not stability"
+          -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
 
   policy-a:
     name: Policy (e2e)

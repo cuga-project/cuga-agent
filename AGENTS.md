@@ -12,6 +12,7 @@ Every new or changed test must be marked with a pytest marker that declares its 
 - `@pytest.mark.slow` — long-running integration tests
 - `@pytest.mark.manual` — needs manually started services
 - `@pytest.mark.windows_smoke` — Windows CI smoke subset
+- `@pytest.mark.opensandbox` — optional OpenSandbox extra; skipped in CI
 
 Do not leave tests unmarked when a type marker applies.
 
@@ -21,19 +22,20 @@ CI shards in `.github/workflows/tests.yml` (and the matching commands in `extern
 
 | New test lives in | CI job | Notes |
 |---|---|---|
-| `tests/unit/` or `tests/integration/` | `unit-b` | Default; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) |
+| `tests/unit/` or `tests/integration/` | `unit-b` | Default; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`, `opensandbox`) |
 | `src/cuga/backend/**/tests/` (colocated, except policy) | `unit-a` | Separate pytest processes per suite (singleton isolation) |
 | `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
 | `src/cuga/sdk_core/tests/` | `sdk` | |
 | `tests/system/` or `src/system_tests/load/tests/` | `extras` | |
 | `@pytest.mark.load` mocked load | `load` | |
+| `@pytest.mark.opensandbox` | skipped | Optional extra; not installed in CI |
 | `@pytest.mark.pgvector` | `pgvector-integration` | Needs the pgvector service job |
 | `@pytest.mark.stability` | stability workflow | Not the unit-tests aggregator |
 
 Rules:
 
 1. Put a new unit test in `tests/unit/` or next to the code under `src/.../tests/`. Do not list it in a workflow file.
-2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) — not by omitting it from YAML.
+2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`, `opensandbox`) — not by omitting it from YAML.
 3. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
 4. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
 5. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.

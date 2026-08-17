@@ -21,6 +21,7 @@ imported.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,6 +40,14 @@ sys.modules.setdefault("code_interpreter", MagicMock())
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_executor import (  # noqa: E402
     OpenSandboxExecutor,
 )
+
+pytestmark = [
+    pytest.mark.opensandbox,
+    pytest.mark.skipif(
+        os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true",
+        reason="opensandbox extra is not installed in CI",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -327,16 +336,12 @@ def test_release_sandbox_clears_all_state() -> None:
     executor._skills_config[key] = ("/path/.cuga", True)
     executor._locks[key] = asyncio.Lock()
 
-    # release_sandbox is async, but we only need to test state cleanup here
-    # by calling the synchronous dict manipulations it performs before the await.
-    # We invoke it via asyncio.run to keep this test synchronous-style.
     async def _run():
-        # Prevent the actual kill/close calls from failing (sandbox is a MagicMock)
         executor._sandboxes[key].sandbox.kill = AsyncMock()
         executor._sandboxes[key].sandbox.close = AsyncMock()
         await executor.release_sandbox(key)
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    asyncio.run(_run())
 
     assert key not in executor._sandboxes
     assert key not in executor._active_skills_config
