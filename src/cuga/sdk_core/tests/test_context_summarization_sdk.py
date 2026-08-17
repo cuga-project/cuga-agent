@@ -18,6 +18,10 @@ from langchain_core.tools import tool
 from cuga import CugaAgent
 from cuga.backend.cuga_graph.policy.tests.helpers import setup_langfuse_tracing
 
+# Live LLM + large-context regression suite. Overlaps
+# tests/integration/test_context_summarization.py; both are e2e and excluded from PR CI.
+pytestmark = pytest.mark.e2e
+
 
 def _load_conversation_messages(json_path: Path):
     """Load and convert conversation_messages.json to LangChain messages."""

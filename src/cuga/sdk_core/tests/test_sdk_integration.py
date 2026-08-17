@@ -3,6 +3,10 @@ Integration tests for CUGA SDK
 
 These tests actually run the agent with real LLM calls and tool execution.
 They test the full SDK functionality end-to-end.
+
+PR CI (`sdk` job, `-m "not e2e"`) keeps a small invoke/stream/`run_agent` smoke.
+Extra invoke variants are `@pytest.mark.e2e` — they duplicate that smoke against
+a live model and are not needed to gate every PR.
 """
 
 import pytest
@@ -87,6 +91,7 @@ class TestSDKInvokeIntegration:
         # The agent should use the tool and return 15
         assert "15" in result.answer
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_with_direct_tools_greeting(self):
         """Test invoke with direct tools - random hex tool to ensure uniqueness"""
@@ -137,6 +142,7 @@ class TestSDKInvokeIntegration:
                 os.environ.pop("DYNACONF_POLICY__ENABLED", None)
             settings.reload()
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_with_thread_id(self):
         """Test invoke with thread_id for E2B caching"""
@@ -149,6 +155,7 @@ class TestSDKInvokeIntegration:
         assert "56" in result.answer
         assert result.thread_id == "test-thread-123"
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_with_tool_provider(self):
         """Test invoke with custom tool provider"""
@@ -161,6 +168,7 @@ class TestSDKInvokeIntegration:
         assert result is not None
         assert "150" in result.answer
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_multi_step_task(self):
         """Test invoke with task requiring multiple tool calls"""
@@ -172,6 +180,7 @@ class TestSDKInvokeIntegration:
         assert result is not None
         assert "45" in result.answer
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_with_tool_tracking(self):
         """Test invoke with track_tool_calls=True returns tool call metadata"""
@@ -185,6 +194,7 @@ class TestSDKInvokeIntegration:
         # Tool calls should be tracked when enabled
         assert isinstance(result.tool_calls, list)
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_invoke_result_str_compatibility(self):
         """Test that InvokeResult converts to string for backward compatibility"""
@@ -241,6 +251,7 @@ class TestSDKStreamIntegration:
         assert final_answer is not None
         assert "42" in final_answer
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     async def test_stream_observes_code_execution(self):
         """Test that streaming allows observing code execution"""
@@ -268,6 +279,7 @@ class TestSDKStreamIntegration:
         assert any("print" in code.lower() for code in code_blocks)
 
 
+@pytest.mark.e2e
 class TestSDKModelConfiguration:
     """Integration tests for model configuration"""
 
@@ -303,6 +315,7 @@ class TestSDKModelConfiguration:
         assert "11" in result.answer
 
 
+@pytest.mark.e2e
 class TestSDKToolManagement:
     """Integration tests for dynamic tool management"""
 
@@ -348,6 +361,7 @@ class TestSDKHelperFunctions:
         assert "25" in result.answer
 
 
+@pytest.mark.e2e
 class TestSDKToolProvider:
     """Integration tests for custom tool provider"""
 
@@ -378,6 +392,7 @@ class TestSDKToolProvider:
         assert "Bob" in result2.answer or "bob" in result2.answer.lower()
 
 
+@pytest.mark.e2e
 class TestSDKErrorHandling:
     """Integration tests for error handling"""
 

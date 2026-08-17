@@ -64,7 +64,7 @@ jobs:
           uv run pytest tests/unit tests/integration \
             -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
           uv run pytest src/cuga/backend/cuga_graph/policy/tests
-          uv run pytest ./src/cuga/sdk_core/tests/
+          uv run pytest ./src/cuga/sdk_core/tests/ -m "not e2e"
           uv run pytest tests/system src/system_tests/load/tests/
           uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 

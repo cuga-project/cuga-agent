@@ -25,7 +25,7 @@ CI shards in `.github/workflows/tests.yml` (and the matching commands in `extern
 | `tests/unit/` or `tests/integration/` | `unit-b` | Default; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`, `opensandbox`) |
 | `src/cuga/backend/**/tests/` (colocated, except policy) | `unit-a` | Separate pytest processes per suite (singleton isolation) |
 | `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
-| `src/cuga/sdk_core/tests/` | `sdk` | |
+| `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, supervisor policy e2e, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
 | `tests/system/` or `src/system_tests/load/tests/` | `extras` | |
 | `@pytest.mark.load` mocked load | `load` | |
 | `@pytest.mark.opensandbox` | skipped | Optional extra; not installed in CI |

@@ -311,8 +311,12 @@ class TestSupervisorPolicyContext:
         assert context.chat_messages == ["delete all records"]
 
 
+@pytest.mark.e2e
 class TestSupervisorPolicyE2E:
-    """Invoke-level e2e tests: policies must affect supervisor runtime, not just CRUD."""
+    """Invoke-level e2e tests: policies must affect supervisor runtime, not just CRUD.
+
+    Duplicates ``policy/tests/test_e2e_*.py`` (policy-a) at the supervisor ``invoke`` layer.
+    """
 
     @pytest.mark.asyncio
     async def test_e2e_intent_guard_blocks_invoke(self):

@@ -118,7 +118,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-cuga
-      - run: uv run pytest ./src/cuga/sdk_core/tests/
+      - run: uv run pytest ./src/cuga/sdk_core/tests/ -m "not e2e"
 
   extras:
     name: Manager and load units

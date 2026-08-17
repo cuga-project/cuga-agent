@@ -14,6 +14,10 @@ from loguru import logger  # noqa: E402
 # Import SDK
 from cuga.sdk import CugaAgent  # noqa: E402
 
+# Sequential live invokes per JSON utterance. Policy-a already covers graph-level
+# intent_guard / playbook / tool approval e2e.
+pytestmark = pytest.mark.e2e
+
 
 @pytest_asyncio.fixture
 async def agent():
