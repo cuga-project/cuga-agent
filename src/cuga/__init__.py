@@ -31,6 +31,9 @@ __all__ = [
     "CugaSupervisor",
     "run_agent",
     "InvokeResult",
+    "PolicyDecision",
+    "PolicyDecisionOutcome",
+    "PolicyDecisionStage",
     "tracked_tool",
     "KnowledgeClient",
     "KnowledgeEngine",
@@ -64,6 +67,11 @@ if TYPE_CHECKING:
         KnowledgeConfig,
         client_adaptation_hash,
         client_glossary_hash,
+    )
+    from cuga.backend.cuga_graph.policy.models import (
+        PolicyDecision,
+        PolicyDecisionOutcome,
+        PolicyDecisionStage,
     )
     from cuga.backend.knowledge.query_expansion import expand_query_with_glossary
 
@@ -109,6 +117,18 @@ _import_map: dict = {
     "expand_query_with_glossary": (
         "cuga.backend.knowledge.query_expansion",
         "expand_query_with_glossary",
+    ),
+    "PolicyDecision": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecision",
+    ),
+    "PolicyDecisionOutcome": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecisionOutcome",
+    ),
+    "PolicyDecisionStage": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecisionStage",
     ),
 }
 
