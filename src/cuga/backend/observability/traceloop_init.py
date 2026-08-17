@@ -145,7 +145,7 @@ def init_traceloop() -> None:
         if exporter_kind == "file":
             default_path = os.path.join(TRACES_DIR, "traceloop_spans.jsonl")
             path = getattr(obs, "traceloop_file_path", "") or default_path
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             exporter = LocalOtlpFileSpanExporter(path)
         else:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter

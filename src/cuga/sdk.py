@@ -2553,10 +2553,10 @@ class CugaAgent:
         # TracerProvider is set yet; ProxyTracer resolves the real provider lazily,
         # but only at the moment start_as_current_span() is actually invoked — if
         # no real provider exists yet at that moment, it falls back to a no-op
-        # NonRecordingSpan permanently for that span (a later init_traceloop() call,
-        # e.g. the one inside _invoke_impl below, cannot retroactively fix an
-        # already-created span). Calling it here guarantees the root span below is
-        # real on the very first invoke() in a process, not just on subsequent ones.
+        # NonRecordingSpan permanently for that span, and cannot be retroactively
+        # fixed by later initialization. Calling it here guarantees the root span
+        # below is real on the very first invoke() in a process, not just on
+        # subsequent ones.
         init_traceloop()
 
         tracer = otel_trace.get_tracer("cuga")

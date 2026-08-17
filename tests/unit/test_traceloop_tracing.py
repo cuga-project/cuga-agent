@@ -71,6 +71,33 @@ def test_init_traceloop_noop_when_disabled(monkeypatch):
 
 
 @pytest.mark.unit
+def test_init_traceloop_handles_bare_relative_filename(monkeypatch, tmp_path):
+    """init_traceloop() with a bare relative filename (no directory component) must not
+    raise FileNotFoundError when os.makedirs() tries to create directories.
+
+    Regression test for: os.path.dirname("spans.jsonl") returns "", and
+    os.makedirs("", exist_ok=True) raises FileNotFoundError. The fix is
+    os.makedirs(dirname or ".", exist_ok=True).
+    """
+    from cuga.backend.observability import traceloop_init
+    from cuga.config import settings as real_settings
+
+    # Simulate user setting traceloop_file_path to a bare relative filename
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", "spans.jsonl")
+
+    # Mock Traceloop.init so we don't trigger real auto-instrumentation
+    with patch("traceloop.sdk.Traceloop.init") as mock_init:
+        # This must not raise FileNotFoundError
+        traceloop_init.init_traceloop()
+
+    mock_init.assert_called_once()
+    assert traceloop_init._initialized is True
+
+
+@pytest.mark.unit
 def test_invoke_produces_real_otlp_file_with_cuga_run_span(monkeypatch, tmp_path):
     """End-to-end: with traceloop_exporter='file', a trivial CugaAgent.invoke() call
     must produce a real trace file with at least one valid-JSON OTLP line, and the
