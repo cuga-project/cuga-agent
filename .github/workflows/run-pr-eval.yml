@@ -82,7 +82,7 @@ jobs:
 
           mkdir -p "${HOME}/pr-regression-testing/logs"
 
-          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/run-pr-eval.sh" \
+          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/run-pr-regression-eval.sh" \
             "${COMMENT_BODY}" \
             > "${HOME}/pr-regression-testing/logs/run-pr-eval-output.md" 2>&1
 
