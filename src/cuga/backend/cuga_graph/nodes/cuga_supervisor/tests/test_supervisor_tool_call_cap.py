@@ -72,6 +72,8 @@ def _make_state(script, used=0):
         agent_results={},
         agent_variables={},
         agent_chat_messages={},
+        # Read by _delegation_state_update, which every exit from the node calls.
+        supervisor_metadata={},
         metrics={},
     )
 
