@@ -208,6 +208,10 @@ The default `uv run pytest` excludes `@pytest.mark.manual` and `@pytest.mark.pgv
 > a single session can resurface cross-test state leaks unrelated to your change. If
 > `uv run pytest` surfaces failures a single scoped run doesn't reproduce, try
 > running just the affected file(s) in isolation before assuming a regression.
+>
+> Jobs select **directories and markers**, not individual test files. Do not add a
+> `test_*.py` path to `.github/workflows/tests.yml` — put the file in `tests/unit/`
+> (or the matching colocated `src/.../tests/` directory) and mark it. See AGENTS.md.
 
 
 ## AI Agent Skills
