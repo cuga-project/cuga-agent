@@ -74,6 +74,24 @@ def _needs_shape_tracking(adapter: Any) -> bool:
     return bool(weak_schema_tool_names - observed.keys())
 
 
+def _budget_updates() -> dict:
+    """The tool-call budget fields every exit from the sandbox must carry.
+
+    Every path out of the node runs *after* the code block, so every one of them
+    can be leaving spent budget behind — including the error and step-limit
+    paths. A path that omits these leaves the keys absent from the state update,
+    and LangGraph then keeps the checkpoint's pre-block values, silently
+    under-counting the conversation ceiling.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
+
+    return {
+        "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
+        "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+        "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
+    }
+
+
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
     async def sandbox(state: Any, config: Optional[RunnableConfig] = None):
         """Execute code in sandbox and return results."""
@@ -270,6 +288,12 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
                         "tool_calls": accumulated_tool_calls,
+                        # The block already ran and may have spent budget. Omitting
+                        # these leaves the key absent from the update, so the
+                        # checkpoint keeps its pre-block value and those calls
+                        # vanish from the thread ceiling — keep_highest cannot
+                        # rescue a value that was never written.
+                        **_budget_updates(),
                     },
                 )
 
@@ -305,7 +329,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             if limit_error_message:
                 return core_create_error_command(
-                    adapter, updated_messages, limit_error_message, state.step_count
+                    adapter,
+                    updated_messages,
+                    limit_error_message,
+                    state.step_count,
+                    additional_updates=_budget_updates(),
                 )
 
             return {

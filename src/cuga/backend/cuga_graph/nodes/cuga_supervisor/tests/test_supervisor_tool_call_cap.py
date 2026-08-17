@@ -272,3 +272,47 @@ async def test_supervisor_thread_ceiling_bounds_what_the_task_cap_cannot(monkeyp
 
     assert seen["n"] == 2, f"thread ceiling breached: {seen['n']} calls with 2 left in the conversation"
     assert update["tool_budget_exhausted"] is True
+
+
+@pytest.mark.asyncio
+async def test_step_limit_exit_still_persists_the_spent_budget(monkeypatch):
+    """Every exit from the execute node runs AFTER the block, so every one of
+    them can be leaving spent budget behind.
+
+    The step-limit path used to return a Command with no budget fields at all.
+    An absent key is not a zero — LangGraph keeps the checkpoint's pre-block
+    value, so those calls vanish from the conversation ceiling and keep_highest
+    has nothing to work with.
+
+    Asserted against what the tool actually executed rather than a literal, so
+    the test pins the accounting rather than a property of the harness.
+    """
+    from langchain_core.messages import AIMessage
+
+    _set_cap(monkeypatch, 100)
+    _skip_policy(monkeypatch)
+    # Force the step-limit branch: append returns an error message.
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool.core_append",
+        lambda adapter, state, msgs: ([], AIMessage(content="Maximum step limit (50) reached.")),
+    )
+
+    executed = {"n": 0}
+
+    async def delegate_to_researcher(task: str) -> str:
+        executed["n"] += 1
+        return "ok"
+
+    node = create_execute_agent_tool_node(
+        _make_adapter({"delegate_to_researcher": counted_tool_call(delegate_to_researcher)})
+    )
+    state = _make_state("for _ in range(4):\n    await delegate_to_researcher('t')\n")
+    state.tool_calls_used_thread = 30
+    result = await node(state)
+    update = result.update if hasattr(result, "update") else result
+
+    assert executed["n"] > 0, "nothing ran; the test would pass vacuously"
+    assert update.get("tool_calls_used_run") == executed["n"], "spent run budget lost on the step-limit exit"
+    assert update.get("tool_calls_used_thread") == 30 + executed["n"], (
+        "spent thread budget lost on the step-limit exit"
+    )

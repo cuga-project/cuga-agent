@@ -240,13 +240,24 @@ def create_call_model_node(
         new_step_count: int = state.step_count + 1
 
         # ── Step limit enforcement ─────────────────────────────────────────
+        # Exempt the grace turn. It is the LAST model call of the turn — it has
+        # no tools and routes straight to END below — so the step limit has
+        # nothing left to protect against, and enforcing it here would replace
+        # the answer the model just synthesised with "Maximum step limit
+        # reached". That is the case the grace turn exists for: summarization is
+        # what lets a looping turn reach the step wall at all, so a runaway
+        # arrives here having already exhausted its budget.
         max_steps = adapter.resolve_max_steps(state, configurable.get("cuga_lite_max_steps"))
-        limit_cmd = enforce_step_limit(
-            adapter,
-            state=state,
-            messages=final_messages,
-            new_step_count=new_step_count,
-            limit=max_steps,
+        limit_cmd = (
+            None
+            if budget_exhausted
+            else enforce_step_limit(
+                adapter,
+                state=state,
+                messages=final_messages,
+                new_step_count=new_step_count,
+                limit=max_steps,
+            )
         )
         if limit_cmd is not None:
             return limit_cmd

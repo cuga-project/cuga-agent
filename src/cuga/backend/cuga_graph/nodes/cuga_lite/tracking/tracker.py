@@ -254,7 +254,18 @@ class ToolCallTracker:
 
         Clears any block budget left behind by a previous execution so a stale
         one can never be inherited; :meth:`seed_block_budget` opens the next.
+
+        **Inherits instead of replacing inside a delegated call.** A child graph
+        (``delegate_to_*``, sync ``spawn_agent``) runs its own sandbox on the
+        caller's Task, and that sandbox seeds a budget too. Replacing the boxes
+        there did two bad things: the child got a fresh, effectively unbounded
+        budget, and the parent's counters were destroyed — ``ContextVar.set`` has
+        no token to unwind, so the caller came back to the child's boxes. Seeding
+        while already inside a counted call therefore keeps the caller's boxes,
+        so the whole delegation tree charges one ceiling.
         """
+        if _counting_tool_call_context.get() and _tool_call_budget_context.get() is not None:
+            return
         _tool_call_budget_context.set([used])
         _thread_tool_call_budget_context.set([thread_used])
         _block_tool_call_budget_context.set(None)
@@ -397,15 +408,33 @@ def counted_tool_call(awaitable_func: Callable[..., Any]) -> Callable[..., Any]:
     internally calls ``call_api`` is still charged exactly once.
     """
 
+    # Idempotent. Now that each wrapper charges regardless of an outer counted
+    # call, wrapping twice would charge one call twice — and a tool wrapped at a
+    # registration site AND by the executor is exactly that. Before, the nested
+    # guard absorbed the second layer; it deliberately no longer does.
+    if getattr(awaitable_func, "_cuga_budget_counted", False):
+        return awaitable_func
+
     @functools.wraps(awaitable_func)
     async def _counted(*args, **kwargs):
-        ToolCallTracker.enforce_call_budget()
-        token = _counting_tool_call_context.set(True)
+        # A wrapped tool is ALWAYS its own logical call, even when reached from
+        # inside another counted call. The nested guard exists for exactly one
+        # case — the un-wrapped ``call_api`` a registry-backed tool calls in its
+        # own body — and must not extend to tools a *child graph* runs. Letting
+        # it extend made every tool below a ``delegate_to_*`` / ``spawn_agent``
+        # free: a child made 50 calls against a cap of 5.
+        outer_nested = _counting_tool_call_context.get()
+        _counting_tool_call_context.set(False)
         try:
+            ToolCallTracker.enforce_call_budget()
+            # Suppress only the body's own inner call_api, nothing deeper.
+            _counting_tool_call_context.set(True)
             return await awaitable_func(*args, **kwargs)
         finally:
-            _counting_tool_call_context.reset(token)
+            _counting_tool_call_context.set(outer_nested)
 
+    # Set after functools.wraps, which copies __dict__ from the wrapped function.
+    _counted._cuga_budget_counted = True
     return _counted
 
 

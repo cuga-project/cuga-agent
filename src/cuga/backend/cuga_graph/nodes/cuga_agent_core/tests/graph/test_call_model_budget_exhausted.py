@@ -206,3 +206,48 @@ async def test_state_without_the_field_behaves_normally(mock_summarize):
     result = await node(state, config=None)
 
     assert result.goto == "sandbox"
+
+
+@pytest.mark.asyncio
+@patch(_SUMMARIZE, new_callable=AsyncMock)
+async def test_grace_turn_survives_the_step_wall(mock_summarize):
+    """The grace turn must not be killed by the step limit.
+
+    This is the case the grace turn exists for. Summarization is what lets a
+    looping turn reach `cuga_lite_max_steps` at all, so a runaway arrives here
+    having already spent its budget — and enforcing the step limit on the
+    synthesis pass replaces the answer the model just wrote with "Maximum step
+    limit reached". The turn ends either way; the only difference is whether the
+    user gets the answer.
+
+    Every other test in this file seeds step_count=0, which is why this hid.
+    """
+    mock_summarize.side_effect = lambda messages, *a, **kw: messages
+
+    adapter = _TestAdapter()
+    answer = "You have 42 overdue invoices, totalling $18,300."
+    node = create_call_model_node(adapter, _mock_model(answer), _mock_settings())
+
+    # step_count=50 with max_steps=50 -> new_step_count 51 trips the limit.
+    result = await node(_make_state(exhausted=True, step_count=50), config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == answer, (
+        f"step limit overwrote the synthesised answer: {result.update['final_answer']!r}"
+    )
+
+
+@pytest.mark.asyncio
+@patch(_SUMMARIZE, new_callable=AsyncMock)
+async def test_step_limit_still_applies_to_normal_turns(mock_summarize):
+    """The exemption is scoped to the grace turn only — an ordinary turn at the
+    wall must still stop, or the step limit stops meaning anything."""
+    mock_summarize.side_effect = lambda messages, *a, **kw: messages
+
+    adapter = _TestAdapter()
+    node = create_call_model_node(adapter, _mock_model("```python\nprint(1)\n```"), _mock_settings())
+
+    result = await node(_make_state(exhausted=False, step_count=50), config=None)
+
+    assert result.goto == END
+    assert "Maximum step limit" in (result.update.get("final_answer") or "")
