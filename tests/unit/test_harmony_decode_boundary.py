@@ -65,3 +65,39 @@ def test_stray_message_token_does_not_discard_preceding_text():
     from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 
     assert strip_harmony_tokens("Here is the answer<|message|>42") == "Here is the answer42"
+
+
+# Harmony defines three assistant channels: final (user-facing), analysis
+# (chain-of-thought) and commentary (tool calls). No positional rule picks the
+# answer out, which is why these are parsed rather than pattern-matched.
+
+
+def test_tool_call_channel_is_not_surfaced_as_the_answer():
+    """commentary carries tool calls. A 'last message wins' rule would show raw
+    tool JSON to the user."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    raw = (
+        "<|channel|>analysis<|message|>I should call a tool<|end|>"
+        '<|channel|>commentary<|message|>{"name":"get_secret"}<|call|>'
+    )
+    out = strip_harmony_tokens(raw)
+    assert out == ""
+    assert "get_secret" not in out
+    assert "I should call a tool" not in out
+
+
+def test_analysis_only_output_yields_no_answer():
+    """No final channel means no user-facing answer. Returning the analysis
+    would be the very leak this guards against."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    assert strip_harmony_tokens("<|channel|>analysis<|message|>Thinking out loud<|end|>") == ""
+
+
+def test_final_channel_wins_even_when_it_is_not_last():
+    """A trailing commentary message must not displace the answer."""
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    raw = '<|channel|>final<|message|>42<|end|><|channel|>commentary<|message|>{"t":"x"}<|call|>'
+    assert strip_harmony_tokens(raw) == "42"
