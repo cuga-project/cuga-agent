@@ -1257,7 +1257,7 @@ Please follow the contribution guide in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=cuga-project/cuga-agent&type=Timeline)](https://star-history.com/#cuga-project/cuga-agent&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=cuga-project/cuga-agent&type=Timeline)](https://star-history.dera.page/#cuga-project/cuga-agent&Date)
 
 ## Contributors
 
