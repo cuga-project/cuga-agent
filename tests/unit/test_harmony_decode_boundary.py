@@ -101,3 +101,41 @@ def test_final_channel_wins_even_when_it_is_not_last():
 
     raw = '<|channel|>final<|message|>42<|end|><|channel|>commentary<|message|>{"t":"x"}<|call|>'
     assert strip_harmony_tokens(raw) == "42"
+
+
+def test_unexpected_content_shape_falls_back_instead_of_raising(monkeypatch):
+    """The parser path promises a safe fallback. A final-channel part without
+    `.text` must not raise out of strip_harmony_tokens and break answer
+    delivery — it should degrade to plain token removal."""
+    from types import SimpleNamespace
+
+    from cuga.backend.cuga_graph.utils import harmony as harmony_mod
+
+    class _Encoding:
+        def encode(self, text, allowed_special=None):
+            return [1]
+
+        def parse_messages_from_completion_tokens(self, tokens, role=None):
+            # a content part carrying no .text at all
+            return [SimpleNamespace(channel="final", content=[object()])]
+
+    monkeypatch.setattr(
+        harmony_mod,
+        "_final_channel_text",
+        harmony_mod._final_channel_text,  # keep the real function
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai_harmony",
+        SimpleNamespace(
+            HarmonyEncodingName=SimpleNamespace(HARMONY_GPT_OSS="x"),
+            Role=SimpleNamespace(ASSISTANT="assistant"),
+            load_harmony_encoding=lambda _n: _Encoding(),
+        ),
+    )
+
+    # Must not raise. The fallback is the plain token strip, which for
+    # channel-structured text is lossy ("final" welds on) — acceptable as a last
+    # resort, and strictly better than an exception escaping into the answer path.
+    out = harmony_mod.strip_harmony_tokens("<|channel|>final<|message|>42<|return|>")
+    assert out == "final42"

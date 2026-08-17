@@ -130,12 +130,14 @@ def _final_channel_text(text: str):
         repaired = _MISSING_START_RE.sub(r"\1<|start|>assistant", text)
         tokens = encoding.encode(repaired, allowed_special="all")
         messages = encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
+        if not messages:
+            return None
+        # Inside the try on purpose: a content part with no ``.text`` would
+        # otherwise raise past the fallback this function promises.
+        return "".join(part.text for m in messages if m.channel == "final" for part in m.content)
     except Exception as e:
         logger.debug("harmony parse failed; falling back to token strip: {}", e)
         return None
-    if not messages:
-        return None
-    return "".join(part.text for m in messages if m.channel == "final" for part in m.content)
 
 
 def strip_harmony_tokens(text: str) -> str:
