@@ -55,14 +55,26 @@ Only if the tree is clean and both counts are zero, continue.
 
 1. Pick the right template from `.github/PULL_REQUEST_TEMPLATE/` (typically `bugfix.md`, `feature.md`, `docs.md`, or `chore.md`).
 2. Ask which GitHub issue this PR closes or relates to. If the user skips / says none, leave Related Issue blank or note none — do not block.
-3. Fill the template from current commits and changes:
+3. **Assign linked issue (hard gate).** If an issue number was provided in step 2, assign it to the PR author before continuing. Skip if no issue was linked.
+
+   Add the author; do not remove existing assignees. `@me` resolves to the authenticated `gh` user.
+
+   ```bash
+   gh issue edit "$issue" --repo "$origin_repo" --add-assignee @me
+   gh issue view "$issue" --repo "$origin_repo" --json assignees \
+     --jq --arg me "$(gh api user -q .login)" 'any(.assignees[].login; . == $me)'
+   ```
+
+   If the verification prints `false`, **STOP**. Do not create the PR. Report the failure (permissions, not a collaborator, etc.) and let the user fix it.
+
+4. Fill the template from current commits and changes:
    - Related Issue
    - Description
    - Type of Changes
    - Root Cause / Solution (bugfixes)
    - Testing
    - Checklist
-4. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown):
+5. Create (pass title via a variable; pass body via `--body-file` so shell does not interpolate the Markdown):
 
 ```bash
 title="<title in commit convention>"
