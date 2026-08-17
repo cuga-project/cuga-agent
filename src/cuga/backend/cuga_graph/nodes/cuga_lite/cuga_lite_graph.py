@@ -5,7 +5,7 @@ All node logic lives in ``cuga_lite.adapter`` (prepare/sandbox nodes + hook over
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -26,7 +26,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.agent_state import AgentState, keep_highest
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
@@ -102,6 +102,21 @@ class CugaLiteState(BaseModel):
     error: Optional[str] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
     step_count: int = 0  # Counter for number of steps (call_model + sandbox cycles)
+    tool_calls_used_run: int = (
+        0  # Counter of tool calls across the task (advanced_features.max_tool_calls_per_run cap)
+    )
+    # Never reset by prepare — this is what bounds a whole conversation
+    # (advanced_features.max_tool_calls_per_thread), which the per-turn counter cannot.
+    #
+    # Same key and same reducer as AgentState so the value crosses the subgraph
+    # boundary: CugaLite runs as a compiled subgraph node of the parent graph and
+    # is re-entered fresh each turn, sharing only keys the parent also declares.
+    # ``keep_highest`` keeps it monotonic, so a caller rebuilding state with the default 0
+    # (the server does this every turn) cannot reset the ceiling.
+    tool_calls_used_thread: Annotated[int, keep_highest] = 0
+    # Set once a terminal budget (turn or conversation) is spent. call_model then
+    # withholds tools for one final synthesis pass and ends the turn.
+    tool_budget_exhausted: bool = False
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
