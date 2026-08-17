@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Literal, Any
+from typing import Annotated, Dict, List, Optional, Literal, Any
 import json
 import inspect
 import traceback
@@ -24,6 +24,20 @@ from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decompositio
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 from cuga.backend.activity_tracker.tracker import ActivityTracker
+
+
+def keep_highest(current: Optional[int], incoming: Optional[int]) -> int:
+    """LangGraph reducer: a counter that can only ever go up.
+
+    Used for ``tool_calls_used_thread``. Builtin ``max`` cannot be used directly —
+    LangGraph inspects the reducer's signature and builtins have none.
+
+    Monotonicity is what makes the conversation ceiling hold regardless of caller:
+    the server rebuilds state from the checkpoint on every turn, so the incoming
+    value is sometimes the field's default 0, which would otherwise silently reset
+    the ceiling mid-conversation.
+    """
+    return max(current or 0, incoming or 0)
 
 
 class ToolCallRecord(BaseModel):
@@ -952,6 +966,14 @@ class AgentState(BaseModel):
     # page: Page  # The Playwright web page lets us interact with the web environment
     user_id: Optional[str] = "default"  # TODO: this should be updated in multi user scenario
     thread_id: Optional[str] = None  # Thread ID for multi-user isolation
+    # Conversation-wide tool-call count backing advanced_features.max_tool_calls_per_thread.
+    # It lives on the PARENT state because CugaLite/CugaSupervisor run as subgraphs: a
+    # subgraph is re-entered fresh on every turn and only shares state keys the parent
+    # also declares, so a counter that existed solely on the subgraph state would restart
+    # at 0 each turn and the conversation ceiling would never bind. The ``max`` reducer
+    # makes it monotonic, so a caller that rebuilds state and passes the default 0 (the
+    # server does exactly this per turn) cannot silently reset the ceiling.
+    tool_calls_used_thread: Annotated[int, keep_highest] = 0
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""},
         description="Tenant and instance context for multi-tenant/prod DB scoping",
