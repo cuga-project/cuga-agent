@@ -22,6 +22,8 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.execute_agent_tool impo
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
     create_prepare_agents_and_prompt_node,
 )
+from cuga.backend.cuga_graph.policy.models import PolicyDecision
+from cuga.backend.cuga_graph.policy.observability import append_policy_decisions
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 from cuga.config import settings
 
@@ -117,6 +119,18 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         chat_messages = getattr(result, "chat_messages", None) if result is not None else None
         if chat_messages:
             state.agent_chat_messages[agent_name] = list(chat_messages)
+
+        delegated_decisions = getattr(result, "policy_decisions", None) if result is not None else None
+        if delegated_decisions:
+            metadata = dict(self.get_metadata(state))
+            append_policy_decisions(
+                metadata,
+                [
+                    PolicyDecision.model_validate(decision).model_copy(update={"agent_name": agent_name})
+                    for decision in delegated_decisions
+                ],
+            )
+            self.set_metadata(state, metadata)
 
         metrics = dict(getattr(state, "metrics", None) or {})
         delegation_count = int(metrics.get("delegation_count", 0)) + 1
