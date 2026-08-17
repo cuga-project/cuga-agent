@@ -13,15 +13,13 @@ Three architectural properties verified here:
            the requested skills config differs from what was active at sandbox
            creation time.
 
-opensandbox and code_interpreter are optional packages not installed in the dev
-environment; they are replaced with MagicMock modules before the executor is
-imported.
+opensandbox and code_interpreter are replaced with MagicMock modules before the
+executor is imported, so these tests never touch a real sandbox.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,23 +29,20 @@ import pytest
 # Inject mock modules BEFORE the executor is imported
 # ---------------------------------------------------------------------------
 
+# Assign rather than setdefault: the opensandbox extra is in uv.lock and CI runs
+# `uv sync --all-extras`, so setdefault would leave the real package installed in
+# CI and mock it only on dev machines.
 _mock_write_entry_cls = MagicMock()
-sys.modules.setdefault("opensandbox", MagicMock())
-sys.modules.setdefault("opensandbox.config", MagicMock())
-sys.modules.setdefault("opensandbox.models", MagicMock(WriteEntry=_mock_write_entry_cls))
-sys.modules.setdefault("code_interpreter", MagicMock())
+sys.modules["opensandbox"] = MagicMock()
+sys.modules["opensandbox.config"] = MagicMock()
+sys.modules["opensandbox.models"] = MagicMock(WriteEntry=_mock_write_entry_cls)
+sys.modules["code_interpreter"] = MagicMock()
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_executor import (  # noqa: E402
     OpenSandboxExecutor,
 )
 
-pytestmark = [
-    pytest.mark.opensandbox,
-    pytest.mark.skipif(
-        os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true",
-        reason="opensandbox extra is not installed in CI",
-    ),
-]
+pytestmark = [pytest.mark.unit]
 
 
 # ---------------------------------------------------------------------------

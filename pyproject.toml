@@ -294,5 +294,4 @@ markers = [
     "stability: LLM-backed e2e stability suite (src/system_tests/e2e)",
     "windows_smoke: Windows CI smoke subset of stability tests",
     "manual: requires manually started services; excluded from default collection",
-    "opensandbox: optional OpenSandbox extra; skipped in default CI",
 ]

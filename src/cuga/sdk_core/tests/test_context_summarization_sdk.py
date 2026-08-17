@@ -20,6 +20,8 @@ from cuga.backend.cuga_graph.policy.tests.helpers import setup_langfuse_tracing
 
 # Live LLM + large-context regression suite. Overlaps
 # tests/integration/test_context_summarization.py; both are e2e and excluded from PR CI.
+# PR CI keeps the mocked summarizer logic in tests/unit/test_context_summarizer.py —
+# what is given up here is only the live large-context behaviour.
 pytestmark = pytest.mark.e2e
 
 

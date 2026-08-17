@@ -311,11 +311,12 @@ class TestSupervisorPolicyContext:
         assert context.chat_messages == ["delete all records"]
 
 
-@pytest.mark.e2e
 class TestSupervisorPolicyE2E:
     """Invoke-level e2e tests: policies must affect supervisor runtime, not just CRUD.
 
-    Duplicates ``policy/tests/test_e2e_*.py`` (policy-a) at the supervisor ``invoke`` layer.
+    Kept in PR CI on purpose. ``policy/tests`` covers the graph layer and asserts
+    nothing about supervisor state, so these are the only tests gating
+    ``supervisor_metadata``, ``selected_agents`` and ``metrics.delegation_count``.
     """
 
     @pytest.mark.asyncio

@@ -109,9 +109,13 @@ def wait_for_http_ready(
             urllib.request.urlopen(url, timeout=1.0)
             print(f"Server on port {port} is ready!")
             return
-        except urllib.error.HTTPError:
-            print(f"Server on port {port} is ready!")
-            return
+        except urllib.error.HTTPError as exc:
+            # 4xx means the app is up and routing (the probe path may not exist);
+            # 5xx means it is still starting or broken, so keep waiting.
+            if exc.code < 500:
+                print(f"Server on port {port} is ready!")
+                return
+            last_error = exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
         time.sleep(interval)

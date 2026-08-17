@@ -38,7 +38,9 @@ jobs:
     name: Unit Tests (fork, external-testing)
     if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Runs sequentially what tests.yml shards in parallel, so this must exceed
+    # the sum of those jobs, not the longest one.
+    timeout-minutes: 35
     environment: external-testing
     steps:
       - name: Checkout fork head
@@ -62,10 +64,10 @@ jobs:
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
           uv run pytest tests/unit tests/integration \
-            -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
+            -m "not manual and not pgvector and not load and not e2e and not stability"
           uv run pytest src/cuga/backend/cuga_graph/policy/tests
           uv run pytest ./src/cuga/sdk_core/tests/ \
-            -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
+            -m "not manual and not pgvector and not load and not e2e and not stability"
           uv run pytest tests/system src/system_tests/load/tests/
           uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 

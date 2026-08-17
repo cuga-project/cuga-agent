@@ -12,30 +12,30 @@ Every new or changed test must be marked with a pytest marker that declares its 
 - `@pytest.mark.slow` — long-running integration tests
 - `@pytest.mark.manual` — needs manually started services
 - `@pytest.mark.windows_smoke` — Windows CI smoke subset
-- `@pytest.mark.opensandbox` — optional OpenSandbox extra; skipped in CI
 
 Do not leave tests unmarked when a type marker applies.
 
 ## CI discovers tests by directory — do not edit workflow YAML
 
-CI shards in `.github/workflows/tests.yml` (and the matching commands in `external-fork-tests.yml`) select **directories and markers**, not individual `test_*.py` files. A new test is in CI when it lives in the right path; adding a file path to YAML is the wrong change.
+CI shards in `.github/workflows/tests.yml` (and the matching commands in `external-fork-tests.yml`) select **directories and markers**, not individual `test_*.py` files. A new test is in CI when its directory is one of the shard roots below; adding a file path to YAML is the wrong change.
 
 | New test lives in | CI job | Notes |
 |---|---|---|
-| `tests/unit/` or `tests/integration/` | `unit-b` | Default; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`, `opensandbox`) |
-| `src/cuga/backend/**/tests/` (colocated, except policy) | `unit-a` | Separate pytest processes per suite (singleton isolation) |
+| `tests/unit/` or `tests/integration/` | `unit-b` | Whole tree is collected; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) |
+| One of the 7 colocated dirs listed in the `unit-a` step | `unit-a` | **Not** a `src/**/tests/` glob — an explicit list, one pytest process per suite (singleton isolation) |
 | `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
-| `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, supervisor policy e2e, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
+| `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, supervisor policy invoke tests, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
 | `tests/system/` or `src/system_tests/load/tests/` | `extras` | |
 | `@pytest.mark.load` mocked load | `load` | |
-| `@pytest.mark.opensandbox` | skipped | Optional extra; not installed in CI |
 | `@pytest.mark.pgvector` | `pgvector-integration` | Needs the pgvector service job |
 | `@pytest.mark.stability` | stability workflow | Not the unit-tests aggregator |
 
+Known gap: `unit-a`'s directory list does not cover every colocated suite. `backend/evolve/tests`, `demo_tools/crm/tests`, `tools_env/code_sandbox/tests`, `cuga_lite/executors/filesystem/tests` and `tests/e2e/` currently run in **no** job. Adding a test there means it runs locally but never in CI — extend the `unit-a` list (a directory, not a file) if you need coverage.
+
 Rules:
 
-1. Put a new unit test in `tests/unit/` or next to the code under `src/.../tests/`. Do not list it in a workflow file.
-2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`, `opensandbox`) — not by omitting it from YAML.
+1. Put a new unit test in `tests/unit/` or in a colocated dir that `unit-a` already collects. Do not list an individual file in a workflow.
+2. Opt a test out of default PR CI with a marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) — not by omitting it from YAML.
 3. If a suite cannot share a process with others, give it its own **job** (or its own `pytest` invocation of a directory). Do not start a file allowlist.
 4. Keep fork CI on the same directories as internal CI so a test cannot pass one and skip the other.
 5. Local `uv run pytest` remains full discovery. CI is a disjoint partition of that set.
