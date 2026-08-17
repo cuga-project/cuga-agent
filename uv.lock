@@ -1181,7 +1181,7 @@ opensandbox = [
     { name = "opensandbox-code-interpreter" },
 ]
 profiling = [
-    { name = "memray" },
+    { name = "memray", marker = "sys_platform != 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -1247,7 +1247,7 @@ requires-dist = [
     { name = "loguru" },
     { name = "markdownify" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.28.1" },
-    { name = "memray", marker = "extra == 'profiling'", specifier = ">=1.11" },
+    { name = "memray", marker = "sys_platform != 'win32' and extra == 'profiling'", specifier = ">=1.11" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
     { name = "openlit", marker = "extra == 'observability'", specifier = ">=1.40.3" },
     { name = "opensandbox", marker = "extra == 'opensandbox'" },
@@ -3502,7 +3502,7 @@ name = "linkify-it-py"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "uc-micro-py" },
+    { name = "uc-micro-py", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/c9/06ea13676ef354f0af6169587ae292d3e2406e212876a413bf9eece4eb23/linkify_it_py-2.1.0.tar.gz", hash = "sha256:43360231720999c10e9328dc3691160e27a718e280673d444c38d7d3aaa3b98b", size = 29158, upload-time = "2026-03-01T07:48:47.683Z" }
 wheels = [
@@ -3704,7 +3704,7 @@ wheels = [
 
 [package.optional-dependencies]
 linkify = [
-    { name = "linkify-it-py" },
+    { name = "linkify-it-py", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 
 [[package]]
@@ -3828,7 +3828,7 @@ name = "mdit-py-plugins"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown-it-py" },
+    { name = "markdown-it-py", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz", hash = "sha256:a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0", size = 56114, upload-time = "2026-05-13T09:03:38.91Z" }
 wheels = [
@@ -3849,9 +3849,9 @@ name = "memray"
 version = "1.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2" },
-    { name = "rich" },
-    { name = "textual" },
+    { name = "jinja2", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "rich", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "textual", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/99/3b/8f9736cbf698e62cb7efb0e1715a30d6d06b3cffd980b435209eb522d5f8/memray-1.20.0.tar.gz", hash = "sha256:ce1f1d900948d57d7db5b5d8d81f4ebfcb798eff674493503ce5bfaafcea84dc", size = 2416480, upload-time = "2026-08-07T20:16:20.295Z" }
 wheels = [
@@ -7790,12 +7790,12 @@ name = "textual"
 version = "8.2.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown-it-py", extra = ["linkify"] },
-    { name = "mdit-py-plugins" },
-    { name = "platformdirs" },
-    { name = "pygments" },
-    { name = "rich" },
-    { name = "typing-extensions" },
+    { name = "markdown-it-py", extra = ["linkify"], marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "mdit-py-plugins", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "platformdirs", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "pygments", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "rich", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/00/21/39a76b01bd5eea82a04baaca7580e105d8c59450df03998345bb2cfb307b/textual-8.2.8.tar.gz", hash = "sha256:3f106a9fbc73e39dd266c9712432087de78a6d644084c7c241d6a25c3169115b", size = 1860502, upload-time = "2026-06-30T06:51:24.495Z" }
 wheels = [
