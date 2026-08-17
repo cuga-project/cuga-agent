@@ -118,7 +118,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-cuga
-      - run: uv run pytest ./src/cuga/sdk_core/tests/ -m "not e2e"
+      # A CLI -m replaces addopts' -m, so restate the full exclusion list.
+      - run: >
+          uv run pytest ./src/cuga/sdk_core/tests/
+          -m "not manual and not pgvector and not load and not e2e and not stability and not opensandbox"
 
   extras:
     name: Manager and load units

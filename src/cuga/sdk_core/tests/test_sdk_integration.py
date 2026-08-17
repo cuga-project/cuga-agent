@@ -9,6 +9,8 @@ Extra invoke variants are `@pytest.mark.e2e` — they duplicate that smoke again
 a live model and are not needed to gate every PR.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 from langchain_core.tools import tool
 
@@ -313,6 +315,48 @@ class TestSDKModelConfiguration:
         result = await agent.invoke("What is 5 + 6?")
         assert result is not None
         assert "11" in result.answer
+
+
+@pytest.mark.unit
+class TestSDKToolRegistration:
+    """add_tool()/add_tools() reach the provider and reset the graph without an LLM call.
+
+    Passing an explicit ``model`` keeps these hermetic: no provider credentials, no
+    network. They are the only coverage of the public ``add_tool``/``add_tools`` API,
+    since the invoke-based variants below are e2e.
+    """
+
+    @staticmethod
+    def _agent(**kwargs):
+        return CugaAgent(model=MagicMock(), **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_add_tool_registers_tool_and_resets_graph(self):
+        agent = self._agent(tools=[add_numbers])
+        agent._graph = object()
+        agent._compiled_graph = object()
+
+        agent.add_tool(multiply_numbers)
+
+        names = {t.name for t in await agent.tool_provider.get_all_tools()}
+        assert names == {"add_numbers", "multiply_numbers"}
+        assert agent._graph is None
+        assert agent._compiled_graph is None
+
+    @pytest.mark.asyncio
+    async def test_add_tools_registers_every_tool(self):
+        agent = self._agent(tools=[])
+
+        agent.add_tools([add_numbers, multiply_numbers, get_greeting])
+
+        names = {t.name for t in await agent.tool_provider.get_all_tools()}
+        assert names == {"add_numbers", "multiply_numbers", "get_greeting"}
+
+    def test_add_tool_rejects_incompatible_provider(self):
+        agent = self._agent(tool_provider=TestToolProvider(tools=[add_numbers]))
+
+        with pytest.raises(ValueError, match="add_tool"):
+            agent.add_tool(multiply_numbers)
 
 
 @pytest.mark.e2e
