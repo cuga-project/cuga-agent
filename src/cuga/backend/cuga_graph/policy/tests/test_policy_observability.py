@@ -11,9 +11,12 @@ from langchain_core.messages import HumanMessage
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.policy.models import (
+    AlwaysTrigger,
     IntentGuard,
     IntentGuardResponse,
     KeywordTrigger,
+    OutputFormatter,
+    Playbook,
     PolicyAction,
     PolicyActionType,
     PolicyDecisionOutcome,
@@ -104,6 +107,53 @@ def _tool_guide_match() -> PolicyMatch:
         ),
         confidence=0.9,
         reasoning="Deletion guide matched",
+    )
+
+
+def _playbook_match() -> PolicyMatch:
+    policy = Playbook(
+        id="playbook-onboard",
+        name="Customer onboarding playbook",
+        description="Guide customer onboarding requests",
+        triggers=[AlwaysTrigger()],
+        markdown_content="Follow the customer onboarding process.",
+    )
+    return PolicyMatch(
+        matched=True,
+        policy=policy,
+        action=PolicyAction(
+            action_type=PolicyActionType.GUIDE_PROMPT,
+            policy_id=policy.id,
+            policy_type=PolicyType.PLAYBOOK,
+            content=policy.markdown_content,
+            modifications={"steps": []},
+        ),
+        confidence=0.92,
+        reasoning="The request requires the onboarding playbook",
+    )
+
+
+def _output_formatter_match() -> PolicyMatch:
+    policy = OutputFormatter(
+        id="formatter-json",
+        name="JSON response formatter",
+        description="Return the onboarding response in the required format",
+        triggers=[AlwaysTrigger()],
+        format_type="direct",
+        format_config='{"status": "formatted"}',
+    )
+    return PolicyMatch(
+        matched=True,
+        policy=policy,
+        action=PolicyAction(
+            action_type=PolicyActionType.FORMAT_OUTPUT,
+            policy_id=policy.id,
+            policy_type=PolicyType.OUTPUT_FORMATTER,
+            content=policy.format_config,
+            modifications={},
+        ),
+        confidence=0.97,
+        reasoning="The response requires the JSON formatter",
     )
 
 
@@ -353,3 +403,111 @@ async def test_cuga_agent_invoke_exposes_real_guard_decision(monkeypatch):
     assert len(result.policy_decisions) == 1
     assert result.policy_decisions[0].policy_id == "guard-delete"
     assert result.policy_decisions[0].outcome == PolicyDecisionOutcome.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_cuga_agent_invoke_preserves_sequential_input_and_output_decisions(monkeypatch):
+    """Exercise the prepare-to-callback metadata trail through the public SDK."""
+    from langchain_core.messages import AIMessage
+
+    from cuga import CugaAgent
+    from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import (
+        FinalAnswerAgent,
+    )
+    from cuga.config import settings
+
+    playbook_match = _playbook_match()
+    formatter_match = _output_formatter_match()
+    no_match = PolicyMatch(matched=False, confidence=0.0, reasoning="No policy matched")
+
+    class StubPolicyAgent:
+        def __init__(self):
+            self.calls = []
+
+        async def match_policy(self, context, target="intent", policy_types=None):
+            self.calls.append((target, context.agent_response))
+            if target == "intent":
+                return playbook_match
+            if target == "agent_response":
+                return formatter_match
+            return no_match
+
+        async def check_tool_guide_policies(self, _context):
+            return []
+
+    class DeterministicAsyncModel:
+        model_name = "policy-observability-test"
+        _llm_type = "policy-observability-test"
+
+        def __init__(self):
+            self.calls = []
+
+        async def ainvoke(self, messages, config=None):
+            self.calls.append(list(messages))
+            return AIMessage(content="Original onboarding response")
+
+    stub_policy_agent = StubPolicyAgent()
+    policy_system = PolicyConfigurable(agent=stub_policy_agent)
+    policy_system._initialized = True
+    model = DeterministicAsyncModel()
+    agent = CugaAgent(
+        tools=[],
+        model=model,
+        policy_system=policy_system,
+        auto_load_policies=False,
+        filesystem_sync=False,
+        enable_knowledge=False,
+        enable_skills=False,
+    )
+    monkeypatch.setattr(agent, "_build_callbacks", lambda: [])
+    monkeypatch.setattr(settings.policy, "enabled", True)
+    monkeypatch.setattr(settings.policy, "playbook_refine", False)
+    monkeypatch.setattr(settings.agent_spawn, "enabled", False)
+    monkeypatch.setattr(
+        FinalAnswerAgent,
+        "create",
+        staticmethod(lambda: SimpleNamespace(name="FinalAnswerAgent")),
+    )
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "cuga.backend.evolve.memory.build_evolve_special_instructions_extension",
+        AsyncMock(return_value=""),
+    )
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+        AsyncMock(side_effect=lambda messages, *_args, **_kwargs: messages),
+    )
+    monkeypatch.setattr(
+        "cuga.backend.llm.models.LLMManager.get_model",
+        lambda *_args, **_kwargs: model,
+    )
+
+    result = await agent.invoke(
+        "Help me onboard a customer",
+        thread_id="sdk-observability-sequential",
+        config={
+            "configurable": {
+                "enable_todos": False,
+                "cuga_lite_bind_tools_mode": "none",
+                "cuga_lite_enable_few_shots": False,
+                "knowledge_engine": False,
+            }
+        },
+    )
+
+    assert result.answer == '{"status": "formatted"}'
+    assert stub_policy_agent.calls == [
+        ("intent", None),
+        ("agent_response", "Original onboarding response"),
+    ]
+    assert len(model.calls) == 1
+    assert "## Task Guidance" in model.calls[0][-1]["content"]
+    assert [
+        (decision.policy_id, decision.stage, decision.outcome) for decision in result.policy_decisions
+    ] == [
+        ("playbook-onboard", PolicyDecisionStage.INPUT, PolicyDecisionOutcome.APPLIED),
+        ("formatter-json", PolicyDecisionStage.OUTPUT, PolicyDecisionOutcome.APPLIED),
+    ]
