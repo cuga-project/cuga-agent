@@ -27,6 +27,11 @@ KEEP_FIRST=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --runs)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --runs requires a value" >&2
+                echo "Usage: $0 [--runs N | N] [--keep-first]" >&2
+                exit 1
+            fi
             RUNS="$2"
             shift 2
             ;;
@@ -50,6 +55,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --runs must be a positive integer, got: '$RUNS'" >&2
+    echo "Usage: $0 [--runs N | N] [--keep-first]" >&2
+    exit 1
+fi
+
 echo "========================================" >&2
 echo "  CUGA Memory Benchmark  (runs=${RUNS})" >&2
 echo "========================================" >&2
@@ -60,7 +71,7 @@ echo "========================================" >&2
 MEASURE_SCRIPTS=(
     "measure_sdk_memory.py"
     "measure_server_memory.py"
-    "measure_agent_memory.py"
+    "measure_tree_memory.py"
 )
 
 mkdir -p results
@@ -80,9 +91,10 @@ for ((i = 1; i <= RUNS; i++)); do
         echo "--- Run ${i}/${RUNS}: ${script} ---" >&2
         ts="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
         out_file="results/run-${script%.py}-${i}-${ts}.json"
+        log_file="results/run-${script%.py}-${i}-${ts}.log"
 
-        if ! uv run python "${script}" --isolated > "${out_file}" 2>/dev/null; then
-            echo "Warning: ${script} run ${i} failed — skipping" >&2
+        if ! uv run python "${script}" --isolated > "${out_file}" 2>"${log_file}"; then
+            echo "Warning: ${script} run ${i} failed — see ${log_file}" >&2
             rm -f "${out_file}"
             continue
         fi

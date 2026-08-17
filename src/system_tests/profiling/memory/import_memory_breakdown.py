@@ -23,6 +23,8 @@ import statistics
 import subprocess
 import sys
 
+WORKER_TIMEOUT_S = 300.0
+
 # ---------------------------------------------------------------------------
 # Subprocess payload — injected as a -c script string
 # ---------------------------------------------------------------------------
@@ -116,11 +118,15 @@ print(json.dumps({"delta_mb": max(0.0, (a - b) / 1024 / 1024)}))
 
 def _run_worker(stmt: str) -> dict[str, float]:
     """Run the memory-tracking worker subprocess and return {module: self_mb}."""
-    result = subprocess.run(
-        [sys.executable, "-c", _WORKER_SCRIPT, stmt],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _WORKER_SCRIPT, stmt],
+            capture_output=True,
+            text=True,
+            timeout=WORKER_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Worker subprocess timed out after {WORKER_TIMEOUT_S}s") from exc
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         sys.exit(f"Worker subprocess failed with exit code {result.returncode}")
@@ -132,28 +138,34 @@ def _run_worker(stmt: str) -> dict[str, float]:
     return json.loads(stdout_lines[-1])
 
 
-def _cross_check_module(mod_name: str) -> float:
-    """Run `python -c "import <mod>"` standalone and return RSS delta in MB."""
-    result = subprocess.run(
-        [sys.executable, "-c", _BASELINE_RSS_SCRIPT, f"import {mod_name}"],
-        capture_output=True,
-        text=True,
-    )
+def _cross_check_module(mod_name: str) -> float | None:
+    """Run `python -c "import <mod>"` standalone and return RSS delta in MB, or None on failure."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _BASELINE_RSS_SCRIPT, f"import {mod_name}"],
+            capture_output=True,
+            text=True,
+            timeout=WORKER_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if result.returncode != 0:
-        return 0.0
+        return None
     try:
         lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
         return json.loads(lines[-1])["delta_mb"]
     except (json.JSONDecodeError, KeyError, IndexError):
-        return 0.0
+        return None
 
 
 def _compute_cumulative(self_mb: dict[str, float]) -> dict[str, float]:
     """Compute cumulative MB by walking sys.modules parent–child relationships.
 
-    Since we cannot observe the exact import tree from the outside, we use a
-    heuristic: a module is a child of its longest matching prefix parent.
-    E.g. ``cuga.sdk.tools`` is a child of ``cuga.sdk`` which is a child of ``cuga``.
+    Receives the *complete* unfiltered self_mb mapping so that intermediate
+    packages excluded by MIN_SELF_MB filtering do not break the parent chain.
+    A module is a child of its immediate dotted-name parent; contributions are
+    walked from deepest to shallowest so each parent accumulates the full
+    subtree exactly once.
     cumulative[parent] = self(parent) + sum of self() for all direct/indirect children.
     """
     mods = list(self_mb.keys())
@@ -166,7 +178,11 @@ def _compute_cumulative(self_mb: dict[str, float]) -> dict[str, float]:
         parts = mod.rsplit(".", 1)
         if len(parts) == 2:
             parent = parts[0]
-            if parent in cumulative:
+            # Walk up the chain until we find a registered ancestor.
+            while parent and parent not in cumulative:
+                parts2 = parent.rsplit(".", 1)
+                parent = parts2[0] if len(parts2) == 2 else ""
+            if parent:
                 cumulative[parent] = cumulative[parent] + cumulative[mod]
 
     return cumulative
@@ -288,10 +304,11 @@ def main() -> None:
         present_vals = [run[mod] for run in run_results if mod in run]
         self_mb[mod] = statistics.median(present_vals) if present_vals else 0.0
 
-    # Filter to modules ≥ MIN_SELF_MB.
-    filtered = {m: v for m, v in self_mb.items() if v >= MIN_SELF_MB}
+    # Compute roll-ups on the full unfiltered map so parent chains are intact.
+    cumulative_mb = _compute_cumulative(self_mb)
 
-    cumulative_mb = _compute_cumulative(filtered)
+    # Filter to modules ≥ MIN_SELF_MB for display only.
+    filtered = {m: v for m, v in self_mb.items() if v >= MIN_SELF_MB}
 
     # Build rows.
     rows: list[dict] = [

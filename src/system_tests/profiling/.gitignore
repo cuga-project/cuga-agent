@@ -33,6 +33,8 @@ startup/findings.md
 
 # memory profiling
 memory/results/*.json
+memory/results/*.bin
+memory/results/*.html
 !memory/results/.gitkeep
 memory/findings.md
 memory/*.bin

@@ -23,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
-TS=$(date +%Y%m%dT%H%M%S)
+TS=$(date +%Y%m%dT%H%M%S)-$$
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -120,13 +120,14 @@ if [[ "$RUN_SDK" == "true" ]]; then
 
     # Inline worker script: import + construct CugaAgent; no real LLM calls.
     SDK_SCRIPT=$(cat <<'PYEOF'
-import asyncio
-from cuga.sdk import CugaAgent
+import itertools
+from cuga import CugaAgent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
-model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-agent = CugaAgent(tools=[], llm=model)
+_canned = itertools.cycle([AIMessage(content="ok")])
+model = GenericFakeChatModel(messages=_canned)
+agent = CugaAgent(tools=[], model=model)
 PYEOF
 )
 
@@ -156,17 +157,21 @@ s.close()
 
     # Run uvicorn under memray; time-box at 15 s with a background kill.
     SERVER_BIN_TMP="$SERVER_BIN"
-    (
-        # shellcheck disable=SC2086
-        uv run memray run $NATIVE_FLAG --output "$SERVER_BIN_TMP" \
-            -- python -m uvicorn cuga.backend.server.main:app \
-            --host 127.0.0.1 --port "$EPHEMERAL_PORT" \
-            --timeout-graceful-shutdown 2 2>&1 &
-        MEMRAY_PID=$!
-        sleep 10
-        kill "$MEMRAY_PID" 2>/dev/null || true
-        wait "$MEMRAY_PID" 2>/dev/null || true
-    )
+    # shellcheck disable=SC2086
+    uv run memray run $NATIVE_FLAG --output "$SERVER_BIN_TMP" \
+        -- python -m uvicorn cuga.backend.server.main:app \
+        --host 127.0.0.1 --port "$EPHEMERAL_PORT" \
+        --timeout-graceful-shutdown 2 2>&1 &
+    MEMRAY_PID=$!
+    sleep 10
+    # Kill the server; ignore "already exited" but propagate unexpected failures.
+    kill "$MEMRAY_PID" 2>/dev/null || true
+    wait "$MEMRAY_PID"
+    _exit=$?
+    # 143 = SIGTERM (expected); 0 = clean exit (also fine); anything else = failure.
+    if [[ $_exit -ne 0 && $_exit -ne 143 ]]; then
+        echo "[WARNING] memray/uvicorn exited with unexpected status $_exit" >&2
+    fi
 
     if [[ -f "$SERVER_BIN" ]]; then
         echo "" >&2

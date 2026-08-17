@@ -110,10 +110,11 @@ _WORKER_CODE = (
     "\n"
     "# ── checkpoint: converged ───────────────────────────────────────────────\n"
     "import asyncio\n"
+    "invoke_error = None\n"
     "try:\n"
     "    asyncio.run(agent.invoke('hello'))\n"
-    "except Exception:\n"
-    "    pass\n"
+    "except Exception as _exc:\n"
+    "    invoke_error = str(_exc)\n"
     "snap_converged, rss_converged = _snap()\n"
     "\n"
     "tracemalloc.stop()\n"
@@ -156,6 +157,7 @@ _WORKER_CODE = (
     ")\n"
     "print(json.dumps({'surface': 'tracemalloc', 'warning': _WARN,\n"
     "                  'start_checkpoint': START_CP, 'top_n': TOP_N,\n"
+    "                  'invoke_error': invoke_error,\n"
     "                  'checkpoints': results}))\n"
 )
 
@@ -185,12 +187,16 @@ def run_worker(start_checkpoint: str, top_n: int) -> dict:
     env["_TRACEMALLOC_START_CP"] = start_checkpoint
     env["_TRACEMALLOC_TOP_N"] = str(top_n)
 
-    result = subprocess.run(
-        [sys.executable, "-c", _WORKER_CODE],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _WORKER_CODE],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Worker subprocess timed out after 300s") from exc
 
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
@@ -199,8 +205,10 @@ def run_worker(start_checkpoint: str, top_n: int) -> dict:
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
 
-    last_line = result.stdout.strip().splitlines()[-1]
-    return json.loads(last_line)
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        raise RuntimeError("Worker subprocess produced no stdout")
+    return json.loads(lines[-1])
 
 
 def main() -> None:
@@ -235,6 +243,9 @@ def main() -> None:
     )
 
     data = run_worker(start_checkpoint=args.start_checkpoint, top_n=args.top)
+
+    if data.get("invoke_error"):
+        print(f"WARNING: agent.invoke failed in worker: {data['invoke_error']}", file=sys.stderr)
 
     # Overwrite warning with the canonical string.
     data["warning"] = _TRACEMALLOC_WARNING

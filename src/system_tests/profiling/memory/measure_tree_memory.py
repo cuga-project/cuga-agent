@@ -296,7 +296,7 @@ def measure(extra_flags: list[str]) -> dict:
                 }
                 for r in enriched
             ],
-            "total_uss_mb": round(effective_total_mb, 2),
+            "total_mb": round(effective_total_mb, 2),
             "metric_used": effective_metric,
             "total_rss_mb_sum": round(total_rss_mb, 2),
             "config": capture_config(),
@@ -351,7 +351,7 @@ def main() -> None:
             file=sys.stderr,
         )
     metric = result.get("metric_used", "uss")
-    total = result.get("total_uss_mb", 0.0)
+    total = result.get("total_mb", 0.0)
     print(f"\n  Total {metric.upper()}: {total:.1f} MB  (metric_used={metric})", file=sys.stderr)
     print("[measure_tree_memory] ───────────────────────\n", file=sys.stderr)
 

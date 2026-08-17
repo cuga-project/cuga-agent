@@ -27,8 +27,8 @@ bash src/system_tests/profiling/memory/run_memory_bench.sh --runs 5
 bash src/system_tests/profiling/memory/run_memory_bench.sh --runs 5 --keep-first
 ```
 
-Scripts must be run from the **repo root** or any directory — `run_memory_bench.sh`
-`cd`s to its own directory automatically.
+Scripts can be run from **any directory** — `run_memory_bench.sh` automatically
+`cd`s to its own directory.
 
 ---
 

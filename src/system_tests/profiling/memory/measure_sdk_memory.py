@@ -17,6 +17,8 @@ import json
 import subprocess
 import sys
 
+WORKER_TIMEOUT_S = 300.0
+
 # ---------------------------------------------------------------------------
 # Worker code snippets (executed in fresh subprocesses; must be self-contained)
 # ---------------------------------------------------------------------------
@@ -54,17 +56,22 @@ memlib.emit(rec)
 """
 
 _WORKER_CONSTRUCTED = """\
+import itertools
 import sys
 import memlib
 from cuga import CugaAgent
 from langchain_core.tools import tool
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
 
 @tool
 def echo(x: str) -> str:
     \"\"\"Echo x back.\"\"\"
     return x
 
-agent = CugaAgent(tools=[echo])
+_canned = itertools.cycle([AIMessage(content='ok')])
+fake_model = GenericFakeChatModel(messages=_canned)
+agent = CugaAgent(tools=[echo], model=fake_model)
 rec = memlib.sample('constructed')
 memlib.emit(rec)
 """
@@ -197,12 +204,16 @@ def _run_worker(code: str, memlib_dir: str) -> dict:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{memlib_dir}:{existing}" if existing else memlib_dir
 
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=WORKER_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Worker subprocess timed out after {WORKER_TIMEOUT_S}s") from exc
 
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)

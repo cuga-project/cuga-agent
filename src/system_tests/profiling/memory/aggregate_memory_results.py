@@ -195,16 +195,29 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    all_runs: list[list[dict]] = []
+    # Load each file, retaining its source path so we can group by run index.
+    import re as _re
+
+    loaded: list[tuple[str, list[dict]]] = []
     for fpath in args.files:
         try:
             records = _load_records(Path(fpath))
-            all_runs.append(records)
+            loaded.append((fpath, records))
         except Exception as exc:
             print(f"Warning: could not load {fpath}: {exc}", file=sys.stderr)
 
-    if not args.keep_first and len(all_runs) > 1:
-        all_runs = all_runs[1:]
+    if not args.keep_first and loaded:
+        # Filenames follow run-<script>-<i>-<ts>.json.  Extract the numeric run
+        # index (third dash-separated token) and drop every file whose index
+        # equals the minimum, i.e. run #1.
+        def _run_idx(fpath: str) -> int:
+            m = _re.search(r"-(\d+)-\d{8}T", Path(fpath).name)
+            return int(m.group(1)) if m else 0
+
+        min_idx = min(_run_idx(fp) for fp, _ in loaded)
+        loaded = [(fp, recs) for fp, recs in loaded if _run_idx(fp) != min_idx]
+
+    all_runs: list[list[dict]] = [recs for _, recs in loaded]
 
     if not all_runs:
         print("Error: no valid run files found.", file=sys.stderr)
@@ -213,11 +226,14 @@ def main() -> None:
     stats = aggregate(all_runs)
     meta = _platform_block(all_runs)
 
+    # Distinct run indices remaining (for reporting)
+    n_distinct_runs = len({_run_idx(fp) for fp, _ in loaded}) if loaded else len(all_runs)  # type: ignore[possibly-undefined]
+
     # Build output record
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     output = {
         "timestamp": timestamp,
-        "n_runs": len(all_runs),
+        "n_runs": n_distinct_runs,
         "keep_first": args.keep_first,
         "stats": {f"{s}/{c}": v for (s, c), v in stats.items()},
         "meta": meta,
@@ -230,7 +246,7 @@ def main() -> None:
     out_path.write_text(json.dumps(output, indent=2))
     print(f"Results written to: {out_path}", file=sys.stderr)
 
-    print_table(stats, meta, len(all_runs))
+    print_table(stats, meta, n_distinct_runs)
 
     print(f"results_file={out_path}")
 

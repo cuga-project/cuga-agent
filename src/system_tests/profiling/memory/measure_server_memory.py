@@ -81,7 +81,7 @@ CONVERGED_ROUTE = "/api/commands"
 def _find_free_port() -> int:
     """Bind to port 0 and let the OS pick a free ephemeral port."""
     with socket.socket() as s:
-        s.bind(("", 0))
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
@@ -284,7 +284,13 @@ def _measure_baseline() -> dict:
                     file=sys.stderr,
                 )
             else:
-                rec = process_sample(-1, "uvicorn_baseline")
+                rec = {
+                    "label": "uvicorn_baseline",
+                    "pid": None,
+                    "rss_mb": None,
+                    "uss_mb": None,
+                    "available": False,
+                }
         finally:
             _kill_proc(proc)
             reader_thread.join(timeout=2)
@@ -350,21 +356,24 @@ def _measure_cuga(port: int) -> tuple[dict, dict, dict]:
             growth_rec["label"] = "growth"
             return cold_rec, converged_rec, growth_rec
 
+        def _fmt_rss(v: object) -> str:
+            return f"{v:.1f}" if v is not None else "n/a"
+
         cold_rec = process_sample(proc.pid, "cold")
-        print(f"  [cuga] cold rss_mb={cold_rec['rss_mb']:.1f}", file=sys.stderr)
+        print(f"  [cuga] cold rss_mb={_fmt_rss(cold_rec['rss_mb'])}", file=sys.stderr)
 
         # converged — one request to CONVERGED_ROUTE
         status = _get(converged_url)
         print(f"  [cuga] converged request → HTTP {status}", file=sys.stderr)
         converged_rec = process_sample(proc.pid, "converged")
-        print(f"  [cuga] converged rss_mb={converged_rec['rss_mb']:.1f}", file=sys.stderr)
+        print(f"  [cuga] converged rss_mb={_fmt_rss(converged_rec['rss_mb'])}", file=sys.stderr)
 
         # growth — GROWTH_N additional requests (total = 1 converged + GROWTH_N growth)
         for i in range(GROWTH_N):
             _get(converged_url)
         growth_rec = process_sample(proc.pid, "growth")
         print(
-            f"  [cuga] growth rss_mb={growth_rec['rss_mb']:.1f} (after {GROWTH_N + 1} requests: 1 converged + {GROWTH_N} growth)",
+            f"  [cuga] growth rss_mb={_fmt_rss(growth_rec['rss_mb'])} (after {GROWTH_N + 1} requests: 1 converged + {GROWTH_N} growth)",
             file=sys.stderr,
         )
 
