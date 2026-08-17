@@ -105,6 +105,8 @@ evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
+# profiling-only — never a runtime dep. memray is Linux/macOS only (no Windows wheels).
+profiling = ["memray>=1.11; sys_platform != 'win32'"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
