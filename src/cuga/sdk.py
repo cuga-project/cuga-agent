@@ -69,6 +69,7 @@ Tool Approval Example (with HITL):
 """
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import time
 import uuid
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
@@ -85,6 +86,17 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 from langchain_core.messages import BaseMessage
+
+# Eager by necessity, unlike the lazy imports elsewhere in this module: pydantic
+# resolves ``InvokeResult.receipt``'s annotation when the model class is built,
+# and this module has no postponed annotations. Importing the module for
+# ``RunReceipt`` also brings its siblings, so deferring those would buy nothing.
+# Its own deps (langchain_core, pydantic, loguru) are already imported above.
+from cuga.backend.cuga_graph.utils.run_receipt import (
+    RunMetricsCollector,
+    RunReceipt,
+    build_run_receipt,
+)
 
 _llm_manager_instance = None
 
@@ -145,6 +157,11 @@ class InvokeResult(BaseModel):
         from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
         return [PolicyDecision.model_validate(item) for item in value]
+
+    receipt: Optional[RunReceipt] = Field(
+        default=None,
+        description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
+    )
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
@@ -1971,11 +1988,14 @@ class CugaAgent:
         run_config["configurable"] = dict(run_config.get("configurable") or {})
         return run_config
 
-    def _apply_callbacks(self, run_config: dict) -> None:
+    def _apply_callbacks(
+        self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
+    ) -> None:
         """
         Merge built-in callbacks (TokenUsageTracker + user callbacks) with any
         caller-supplied callbacks in run_config, writing the result to both the
-        top-level and ``configurable`` slots.
+        top-level and ``configurable`` slots. ``extra_callbacks`` are per-call
+        handlers appended last (e.g. the run-receipt metrics collector).
 
         Only ``run_config["callbacks"]`` is read for caller-supplied handlers;
         any pre-existing ``run_config["configurable"]["callbacks"]`` is replaced
@@ -2006,10 +2026,28 @@ class CugaAgent:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
 
         merged = built_callbacks + existing
+        if extra_callbacks:
+            merged = merged + list(extra_callbacks)
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
 
         sync_langfuse_callbacks_from_config(run_config)
+
+    def _build_run_receipt(
+        self,
+        collector: Optional[RunMetricsCollector],
+        started_at: Optional[float],
+        tool_calls: List[Dict[str, Any]],
+    ) -> Optional[RunReceipt]:
+        """Assemble the per-run receipt; None when disabled or on any failure."""
+        if collector is None:
+            return None
+        try:
+            wall_time_s = time.monotonic() - started_at if started_at is not None else 0.0
+            return build_run_receipt(collector, tool_calls, wall_time_s)
+        except Exception as e:
+            logger.debug(f"Run receipt skipped: {e}")
+            return None
 
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
@@ -2501,6 +2539,23 @@ class CugaAgent:
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
 
+        # Run receipt (advanced_features.run_receipt, default off): per-run
+        # token/cost/timing metrics, collected fail-safe so a receipt problem
+        # can never affect the run itself.
+        receipt_collector: Optional[RunMetricsCollector] = None
+        receipt_started_at: Optional[float] = None
+        try:
+            if settings.advanced_features.run_receipt:
+                receipt_collector = RunMetricsCollector()
+                receipt_started_at = time.monotonic()
+                if not track_tool_calls:
+                    # Tool durations for the receipt require tracking, but the
+                    # caller did not opt into payload capture: timings-only mode
+                    # records tool name/duration, never arguments/results/errors.
+                    run_config["configurable"]["track_tool_calls"] = "timings_only"
+        except Exception as e:
+            logger.debug(f"Run receipt disabled: {e}")
+
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
             run_config["configurable"]["skills_enabled"] = self._enable_skills
@@ -2530,9 +2585,23 @@ class CugaAgent:
             self._inject_knowledge_to_config(run_config)
 
             # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-            self._apply_callbacks(run_config)
+            self._apply_callbacks(
+                run_config, extra_callbacks=[receipt_collector] if receipt_collector else None
+            )
 
             from langgraph.types import Command
+
+            # tool_calls accumulate on the thread state across turns; snapshot
+            # the prior count so the receipt covers only this resume segment
+            # (matching the token/time scope of the fresh collector).
+            resume_prior_tool_calls = 0
+            if receipt_collector is not None:
+                try:
+                    prior_state = self.graph.get_state(run_config)
+                    if prior_state and prior_state.values:
+                        resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
+                except Exception as e:
+                    logger.debug(f"Run receipt: could not snapshot prior tool_calls: {e}")
 
             if action_response:
                 logger.info(
@@ -2582,6 +2651,11 @@ class CugaAgent:
                 error=error_msg,
                 variables=_hitl_variables,
                 policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+                receipt=self._build_run_receipt(
+                    receipt_collector,
+                    receipt_started_at,
+                    (result.get("tool_calls") or [])[resume_prior_tool_calls:],
+                ),
             )
 
         # Normal invocation case
@@ -2701,10 +2775,14 @@ class CugaAgent:
             run_config["configurable"]["policy_system"] = self._policy_system
 
         # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-        self._apply_callbacks(run_config)
+        self._apply_callbacks(run_config, extra_callbacks=[receipt_collector] if receipt_collector else None)
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
+
+        # tool_calls accumulate on the thread state across turns; snapshot the
+        # prior count so the receipt only covers this invocation.
+        prior_tool_calls_count = len(initial_state_pydantic.tool_calls or [])
 
         # Invoke the graph
         total_messages = len(initial_state_pydantic.chat_messages or [])
@@ -2855,6 +2933,11 @@ class CugaAgent:
             error=error_msg,
             variables=_result_variables,
             policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+            receipt=self._build_run_receipt(
+                receipt_collector,
+                receipt_started_at,
+                (result.get("tool_calls") or [])[prior_tool_calls_count:],
+            ),
         )
 
     async def stream(
