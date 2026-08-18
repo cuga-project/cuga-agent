@@ -24,4 +24,26 @@
 # An earlier version of this comment claimed default setup auto-discovers model
 # extensions *because of this file*. That was wrong in both directions: this file is
 # not read, and the extensions directory does not depend on it. See issue #633.
+#
+# WHICH RULES `barrierModel` CAN ACTUALLY SANITIZE
+#
+# A `barrierModel` row only affects a query whose Customizations.qll calls
+# `ModelOutput::barrierNode`. Upstream (python/ql/lib/semmle/python/security/dataflow)
+# that is exactly:
+#
+#   CodeInjection, SqlInjection, UnsafeDeserialization, ReflectedXSS, PathInjection,
+#   LogInjection, CommandInjection, UrlRedirect, ServerSideRequestForgery,
+#   and HardcodedCredentials.
+#
+# The sanitizer pack here targets `path-injection`, which is on that list, so it works.
+#
+# It does NOT work for py/stack-trace-exposure, py/clear-text-logging-sensitive-data,
+# or py/weak-sensitive-data-hashing. StackTraceExposureCustomizations.qll, for example,
+# declares `abstract class Sanitizer extends DataFlow::Node { }` with no models-as-data
+# subclass — so a row naming `stack-trace-exposure` would load and silently do nothing,
+# which is the same trap as #633, one level down.
+#
+# For those rules the fix has to be real: stop the tainted value from reaching the sink.
+# See cuga/backend/server/error_responses.py, whose helpers never return anything
+# derived from the exception, so there is no barrier to declare.
 name: cuga-agent-codeql
