@@ -128,6 +128,7 @@ class TestSupervisorAdvanced:
         answer_lower = result.answer.lower()
         assert "bonus" in answer_lower
 
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     @pytest.mark.skipif(not HAS_A2A_SDK, reason="a2a-sdk not installed")
     @pytest.mark.skipif(not HAS_A2A_HTTP_SERVER, reason="a2a-sdk[http-server] not installed")

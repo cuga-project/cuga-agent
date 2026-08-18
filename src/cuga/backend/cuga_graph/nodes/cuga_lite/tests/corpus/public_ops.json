@@ -1,0 +1,538 @@
+{
+  "openapi": [
+    {
+      "id": "https://petstore3.swagger.io/api/v3/openapi.json:GET:/store/inventory",
+      "source": "https://petstore3.swagger.io/api/v3/openapi.json",
+      "kind": "openapi",
+      "method": "GET",
+      "path": "/store/inventory",
+      "operation_id": "getInventory",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "_response_hint": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "https://petstore3.swagger.io/api/v3/openapi.json:POST:/pet",
+      "source": "https://petstore3.swagger.io/api/v3/openapi.json",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/pet",
+      "operation_id": "addPet",
+      "input_schema": {
+        "type": "object",
+        "required": ["name", "photoUrls"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "photoUrls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": ["available", "pending", "sold"]
+          }
+        }
+      }
+    },
+    {
+      "id": "https://spec.openapis.org/oas/v3.1.0#style-values:GET:/free-form-query",
+      "source": "https://spec.openapis.org/oas/v3.1.0#style-values",
+      "kind": "openapi",
+      "method": "GET",
+      "path": "/free-form-query",
+      "operation_id": "freeFormQuery",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "https://github.com/github/rest-api-description:GET:/repos/{owner}/{repo}/issues",
+      "source": "https://github.com/github/rest-api-description",
+      "kind": "openapi",
+      "method": "GET",
+      "path": "/repos/{owner}/{repo}/issues",
+      "operation_id": "issues/list-for-repo",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "per_page": {
+            "type": "integer",
+            "default": 30,
+            "minimum": 1,
+            "maximum": 100
+          },
+          "page": {
+            "type": "integer",
+            "default": 1,
+            "minimum": 1
+          }
+        },
+        "required": ["owner", "repo"]
+      }
+    },
+    {
+      "id": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json:POST:/v1/payment_intents",
+      "source": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/v1/payment_intents",
+      "operation_id": "postPaymentIntents",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        },
+        "required": ["amount", "currency"]
+      }
+    },
+    {
+      "id": "https://json.schemastore.org/json-patch.json:POST:/json-patch",
+      "source": "https://json.schemastore.org/json-patch.json",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/json-patch",
+      "operation_id": "applyJsonPatch",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "_body": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "const": "remove"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": ["op", "path"]
+            }
+          }
+        },
+        "required": ["_body"]
+      }
+    },
+    {
+      "id": "https://json-schema.org/understanding-json-schema/reference/conditionals#dependentrequired:POST:/credit-card",
+      "source": "https://json-schema.org/understanding-json-schema/reference/conditionals#dependentrequired",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/credit-card",
+      "operation_id": "creditCardBilling",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "credit_card": {
+            "type": "number"
+          },
+          "billing_address": {
+            "type": "string"
+          }
+        },
+        "dependentRequired": {
+          "credit_card": ["billing_address"]
+        }
+      }
+    },
+    {
+      "id": "https://json-schema.org/understanding-json-schema/reference/conditionals#if-then-else:POST:/membership",
+      "source": "https://json-schema.org/understanding-json-schema/reference/conditionals#if-then-else",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/membership",
+      "operation_id": "membershipByCountry",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "default": "United States of America"
+          },
+          "postal_code": {
+            "type": "string"
+          }
+        },
+        "if": {
+          "properties": {
+            "country": {
+              "const": "United States of America"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "postal_code": {
+              "pattern": "[0-9]{5}(-[0-9]{4})?"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "postal_code": {
+              "pattern": "[A-Z][0-9][A-Z] [0-9][A-Z][0-9]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "https://datatracker.ietf.org/doc/html/rfc7946#section-3.1.2:POST:/geojson-point",
+      "source": "https://datatracker.ietf.org/doc/html/rfc7946#section-3.1.2",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/geojson-point",
+      "operation_id": "createGeoJsonPoint",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "coordinates": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              },
+              {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 3
+          }
+        },
+        "required": ["coordinates"]
+      }
+    },
+    {
+      "id": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/:POST:/pod-resources",
+      "source": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/pod-resources",
+      "operation_id": "setPodResources",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "resources": {
+            "type": "object",
+            "properties": {
+              "limits": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[0-9]+m?$"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "https://spec.openapis.org/oas/v3.1.0#considerations-for-file-uploads:POST:/upload",
+      "source": "https://spec.openapis.org/oas/v3.1.0#considerations-for-file-uploads",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/upload",
+      "operation_id": "uploadPng",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "contentMediaType": "image/png"
+          }
+        },
+        "required": ["file"]
+      }
+    },
+    {
+      "id": "https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-tagging.html:POST:/tags",
+      "source": "https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-tagging.html",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/tags",
+      "operation_id": "applyAwsTags",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools#no-parameters:POST:/mcp-sep-no-params",
+      "source": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools#no-parameters",
+      "kind": "openapi",
+      "method": "POST",
+      "path": "/mcp-sep-no-params",
+      "operation_id": "mcpSepNoParams",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
+  ],
+  "mcp": [
+    {
+      "id": "@modelcontextprotocol/server-filesystem:read_file",
+      "source": "@modelcontextprotocol/server-filesystem",
+      "kind": "mcp",
+      "operation_id": "read_file",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-filesystem:write_file",
+      "source": "@modelcontextprotocol/server-filesystem",
+      "kind": "mcp",
+      "operation_id": "write_file",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-github:search_repositories",
+      "source": "@modelcontextprotocol/server-github",
+      "kind": "mcp",
+      "operation_id": "search_repositories",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "page": {
+            "type": "integer",
+            "default": 1,
+            "minimum": 1
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-github:create_issue",
+      "source": "@modelcontextprotocol/server-github",
+      "kind": "mcp",
+      "operation_id": "create_issue",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["owner", "repo", "title"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-memory:create_entities",
+      "source": "@modelcontextprotocol/server-memory",
+      "kind": "mcp",
+      "operation_id": "create_entities",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "entityType": {
+                  "type": "string"
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["name", "entityType", "observations"]
+            }
+          }
+        },
+        "required": ["entities"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-fetch:fetch",
+      "source": "@modelcontextprotocol/server-fetch",
+      "kind": "mcp",
+      "operation_id": "fetch",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "id": "@modelcontextprotocol/server-everything:echo",
+      "source": "@modelcontextprotocol/server-everything",
+      "kind": "mcp",
+      "operation_id": "echo",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["message"]
+      }
+    },
+    {
+      "id": "playwright-mcp:browser_navigate",
+      "source": "playwright-mcp",
+      "kind": "mcp",
+      "operation_id": "browser_navigate",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "id": "mcp-time:get_current_time",
+      "source": "mcp-time",
+      "kind": "mcp",
+      "operation_id": "get_current_time",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "json-patch:remove",
+      "source": "json-patch",
+      "kind": "mcp",
+      "operation_id": "remove",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": ["op", "path"]
+      }
+    }
+  ]
+}

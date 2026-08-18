@@ -4,26 +4,12 @@ import unittest
 import uuid
 
 from system_tests.e2e.base_crm_test import BaseCRMTestServerStream
-from system_tests.e2e.digital_sales_test_helpers import DigitalSalesTestHelpers
 
 pytestmark = pytest.mark.e2e
 
 
 class TestCRMFollowup(BaseCRMTestServerStream):
-    """
-    Test class for CRM follow-up queries with lite mode enabled.
-    Tests the flow of querying contacts.txt, then following up with detail queries.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.helpers = DigitalSalesTestHelpers()
-        self.thread_id = None
-
     async def asyncSetUp(self):
-        """Set up test environment and generate thread ID."""
-        await super().asyncSetUp()
-        # Generate a unique thread ID for this test
         self.thread_id = str(uuid.uuid4())
         print(f"\n=== Test thread ID: {self.thread_id} ===")
 
@@ -73,11 +59,6 @@ class TestCRMFollowup(BaseCRMTestServerStream):
         # Check for at least a few initials (being flexible as format might vary)
         print(f"Initials answer received: {initials_answer_str}")
 
-        # Sleep to allow traces to be saved
-        print("\n--- Sleeping for 5 seconds to allow traces to save ---")
-        await asyncio.sleep(10)
-        print("--- Sleep complete ---")
-
     async def test_crm_contacts_revenue_percentile_email(self):
         """Test filtering contacts from CRM, calculating revenue percentile, and drafting email in parallel."""
         n_tasks = 1
@@ -115,17 +96,11 @@ class TestCRMFollowup(BaseCRMTestServerStream):
         results = await asyncio.gather(*(run_one(i) for i in range(n_tasks)))
         success_count = sum(results)
         print(f"\nSuccess rate: {success_count}/{n_tasks}")
-
-        # Assert that all tasks succeeded
-        await asyncio.sleep(10)
         self.assertEqual(
             success_count,
             n_tasks,
             f"{n_tasks - success_count} out of {n_tasks} tasks failed. Check the output above for error details.",
         )
-
-        # Sleep to allow traces to be saved
-        print("--- Sleep complete ---")
 
 
 if __name__ == "__main__":
