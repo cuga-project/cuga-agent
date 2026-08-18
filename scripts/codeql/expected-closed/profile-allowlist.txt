@@ -1,0 +1,3 @@
+# Alerts closed by confining RAG profile loading to the profile allowlist.
+# GitHub alerts #68, #69.
+py/path-injection	src/cuga/backend/knowledge/config.py

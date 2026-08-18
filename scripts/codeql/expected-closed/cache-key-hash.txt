@@ -1,0 +1,3 @@
+# Alerts closed by using SHA-256 for the model cache key.
+# GitHub alert #170.
+py/weak-sensitive-data-hashing	src/cuga/backend/llm/models.py
