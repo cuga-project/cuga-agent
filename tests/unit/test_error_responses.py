@@ -9,6 +9,7 @@ name. Only a caller-supplied literal and a random reference.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -99,12 +100,46 @@ def test_ref_is_random_and_not_derived_from_the_exception() -> None:
 
 
 @pytest.mark.unit
+def test_traceback_is_bound_to_the_exception_not_the_ambient_one() -> None:
+    """The helper must work outside a live ``except`` block.
+
+    ``.exception()`` reads ``sys.exc_info()``, so calling it from a done-callback
+    or from ``asyncio.gather(return_exceptions=True)`` handling would log
+    "NoneType: None" and leave the ref pointing at an entry with no traceback.
+    """
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("test_error_responses.detached")
+    logger.setLevel(logging.ERROR)
+    logger.addHandler(_Capture())
+
+    # Note: captured, then used *after* the except block has exited.
+    exc = _boom()
+    assert sys.exc_info() == (None, None, None), "precondition: no ambient exception"
+
+    ref = log_error_ref(exc, log=logger, context="Detached failure")
+
+    assert len(records) == 1
+    assert ref in records[0].getMessage()
+    assert records[0].exc_info is not None, "traceback must come from the argument"
+    assert records[0].exc_info[1] is exc
+
+
+@pytest.mark.unit
 def test_ref_reaches_the_log_so_detail_is_recoverable() -> None:
     """The traceback is not lost — it goes to the log under the returned ref."""
     records: list[str] = []
 
     class _SpyLogger:
-        def exception(self, message: str) -> None:
+        """Shaped like a stdlib logger: `.error(msg, exc_info=...)`."""
+
+        def error(self, message: str, exc_info: object = None) -> None:
             records.append(message)
 
     try:

@@ -51,9 +51,24 @@ def log_error_ref(
     it is safe to put in a response body.
     """
     ref = uuid.uuid4().hex[:12]
-    # The exception class name is safe to log and makes triage faster; the
-    # traceback itself comes from .exception() reading the active exception.
-    (log if log is not None else _default_logger).exception(f"[{ref}] {context} ({type(exc).__name__})")
+    target = log if log is not None else _default_logger
+    # The exception class name is safe to log and makes triage faster.
+    message = f"[{ref}] {context} ({type(exc).__name__})"
+
+    # Bind the traceback to `exc` explicitly rather than relying on
+    # `.exception()`, which reads the *ambient* sys.exc_info(). Called from a
+    # done-callback, from `asyncio.gather(return_exceptions=True)` handling, or
+    # anywhere else outside a live `except` block, `.exception()` logs
+    # "NoneType: None" and the ref then points at an entry containing no
+    # traceback — quietly breaking the one promise this module makes.
+    opt = getattr(target, "opt", None)
+    if callable(opt):  # loguru
+        opt(exception=exc).error(message)
+    else:  # stdlib logging, and test spies
+        try:
+            target.error(message, exc_info=exc)
+        except TypeError:
+            target.exception(message)
     return ref
 
 
