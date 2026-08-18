@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
+from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
 
 
 class CoreGraphAdapter(ABC):
@@ -131,11 +132,18 @@ class CoreGraphAdapter(ABC):
         """Extract ``(content, reasoning)`` from the model response.
 
         Default passes through ``response.content`` and the
-        ``reasoning_content`` additional kwarg unchanged.
+        ``reasoning_content`` additional kwarg.
         Lite overrides to run ``normalize_assistant_text`` and recover
         tool-call code from proxy responses.
+
+        ``content`` is stripped of harmony protocol framing here because this is
+        the one point every user-visible surface derives from — the delivered
+        answer, ``state.messages``, the streamed ``CodeAgent`` event, the chat
+        copy, the trajectory step. Sanitizing per surface leaks: a new surface is
+        a new leak. ``reasoning`` is left raw so ``call_model`` can still tell
+        framing from a real answer when visible content is empty.
         """
-        content = response.content or ""
+        content = strip_harmony_tokens(response.content or "")
         reasoning = (getattr(response, "additional_kwargs", None) or {}).get("reasoning_content")
         return content, reasoning
 

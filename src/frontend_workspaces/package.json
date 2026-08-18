@@ -36,7 +36,7 @@
       "glob": "^10.5.0",
       "mdast-util-to-hast": "^13.2.1",
       "lodash-es": ">=4.18.0",
-      "qs": "^6.14.2",
+      "qs": "^6.15.2",
       "@isaacs/brace-expansion": ">=5.0.1",
       "brace-expansion": ">=5.0.9",
       "lodash": ">=4.18.0",
@@ -50,10 +50,10 @@
       "rollup": ">=4.59.0",
       "basic-ftp": ">=5.2.2",
       "minimatch": ">=10.2.3",
-      "markdown-it": ">=14.1.1",
-      "dompurify": ">=3.3.2",
+      "markdown-it": "^14.2.0",
+      "dompurify": "^3.4.13",
       "vite": ">=8.0.16",
-      "electron": ">=39.8.5",
+      "electron": "^42.5.1",
       "@xmldom/xmldom": ">=0.8.12",
       "path-to-regexp": ">=8.4.2",
       "defu": ">=6.1.5",
@@ -74,7 +74,14 @@
       "builder-util-runtime": ">=9.7.0",
       "dmg-builder": ">=26.15.0",
       "electron-builder": ">=26.15.0",
-      "electron-builder-squirrel-windows": "26.15.7"
+      "electron-builder-squirrel-windows": "26.15.7",
+      "@babel/core": "^7.29.6",
+      "body-parser": "^1.20.6",
+      "esbuild": "^0.28.1",
+      "http-proxy-middleware": "^2.0.10",
+      "launch-editor": "^2.14.1",
+      "uuid": "^11.1.1",
+      "webpack-dev-server": "^5.2.6"
     }
   },
   "packageManager": "pnpm@10.28.0+sha512.05df71d1421f21399e053fde567cea34d446fa02c76571441bfc1c7956e98e363088982d940465fd34480d4d90a0668bc12362f8aa88000a64e83d0b0e47be48"

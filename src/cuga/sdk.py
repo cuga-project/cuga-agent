@@ -69,9 +69,10 @@ Tool Approval Example (with HITL):
 """
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+import time
 import uuid
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
@@ -82,8 +83,20 @@ from cuga.config import settings
 if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+    from cuga.backend.cuga_graph.policy.models import PolicyDecision
 
 from langchain_core.messages import BaseMessage
+
+# Eager by necessity, unlike the lazy imports elsewhere in this module: pydantic
+# resolves ``InvokeResult.receipt``'s annotation when the model class is built,
+# and this module has no postponed annotations. Importing the module for
+# ``RunReceipt`` also brings its siblings, so deferring those would buy nothing.
+# Its own deps (langchain_core, pydantic, loguru) are already imported above.
+from cuga.backend.cuga_graph.utils.run_receipt import (
+    RunMetricsCollector,
+    RunReceipt,
+    build_run_receipt,
+)
 
 _llm_manager_instance = None
 
@@ -126,10 +139,64 @@ class InvokeResult(BaseModel):
         default_factory=dict,
         description="Variables computed by the sub-agent, bridged to the Supervisor's namespace",
     )
+    if TYPE_CHECKING:
+        policy_decisions: List[PolicyDecision]
+    else:
+        policy_decisions: List[Any] = Field(
+            default_factory=list,
+            description="Ordered policy decisions made during this invocation",
+        )
+
+    @field_validator("policy_decisions", mode="before")
+    @classmethod
+    def _parse_policy_decisions(cls, value):
+        """Keep SDK imports lazy while returning typed public decisions."""
+        if not value:
+            return []
+
+        from cuga.backend.cuga_graph.policy.models import PolicyDecision
+
+        return [PolicyDecision.model_validate(item) for item in value]
+
+    receipt: Optional[RunReceipt] = Field(
+        default=None,
+        description="Per-run token/cost/timing receipt (populated when advanced_features.run_receipt is enabled)",
+    )
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
         return self.answer
+
+
+def _policy_decisions_from_result(result: Any, metadata_key: str) -> list[dict[str, Any]]:
+    """Read the public decision trail from an invocation's existing metadata."""
+    from cuga.backend.cuga_graph.policy.observability import serialize_policy_decisions
+
+    metadata = result.get(metadata_key, {}) if isinstance(result, dict) else getattr(result, metadata_key, {})
+    return serialize_policy_decisions(metadata)
+
+
+def _record_denied_policy_decision(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Record an SDK-wrapper denial using the same stored approval metadata."""
+    from cuga.backend.cuga_graph.policy.models import PolicyDecisionOutcome
+    from cuga.backend.cuga_graph.policy.observability import (
+        append_policy_decisions,
+        decision_from_metadata,
+    )
+
+    updated = dict(metadata or {})
+    append_policy_decisions(
+        updated,
+        [decision_from_metadata(updated, outcome=PolicyDecisionOutcome.DENIED)],
+    )
+    return updated
+
+
+def _reset_policy_decisions(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Start a new SDK turn without carrying the previous turn's decision trail."""
+    updated = dict(metadata or {})
+    updated["policy_decisions"] = []
+    return updated
 
 
 class PoliciesManager:
@@ -1921,11 +1988,14 @@ class CugaAgent:
         run_config["configurable"] = dict(run_config.get("configurable") or {})
         return run_config
 
-    def _apply_callbacks(self, run_config: dict) -> None:
+    def _apply_callbacks(
+        self, run_config: dict, extra_callbacks: Optional[List[BaseCallbackHandler]] = None
+    ) -> None:
         """
         Merge built-in callbacks (TokenUsageTracker + user callbacks) with any
         caller-supplied callbacks in run_config, writing the result to both the
-        top-level and ``configurable`` slots.
+        top-level and ``configurable`` slots. ``extra_callbacks`` are per-call
+        handlers appended last (e.g. the run-receipt metrics collector).
 
         Only ``run_config["callbacks"]`` is read for caller-supplied handlers;
         any pre-existing ``run_config["configurable"]["callbacks"]`` is replaced
@@ -1956,10 +2026,28 @@ class CugaAgent:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
 
         merged = built_callbacks + existing
+        if extra_callbacks:
+            merged = merged + list(extra_callbacks)
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
 
         sync_langfuse_callbacks_from_config(run_config)
+
+    def _build_run_receipt(
+        self,
+        collector: Optional[RunMetricsCollector],
+        started_at: Optional[float],
+        tool_calls: List[Dict[str, Any]],
+    ) -> Optional[RunReceipt]:
+        """Assemble the per-run receipt; None when disabled or on any failure."""
+        if collector is None:
+            return None
+        try:
+            wall_time_s = time.monotonic() - started_at if started_at is not None else 0.0
+            return build_run_receipt(collector, tool_calls, wall_time_s)
+        except Exception as e:
+            logger.debug(f"Run receipt skipped: {e}")
+            return None
 
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
@@ -2102,6 +2190,7 @@ class CugaAgent:
                     logger.warning("User denied tool execution - stopping execution")
                     # User denied - set final answer and end
                     policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
+                    state.cuga_lite_metadata = _record_denied_policy_decision(state.cuga_lite_metadata)
                     state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
                     # Set sender to CugaLite so FinalAnswerAgent handles it properly
                     state.sender = NodeNames.CUGA_LITE
@@ -2379,6 +2468,7 @@ class CugaAgent:
             - tool_calls: List of tool calls made (when track_tool_calls=True)
             - thread_id: Thread ID used for this invocation
             - error: Error message if execution failed
+            - policy_decisions: Ordered policy outcomes for this invocation
 
         Example:
             ```python
@@ -2386,6 +2476,10 @@ class CugaAgent:
             result = await agent.invoke("What's 2+2?", track_tool_calls=True)
             print(result.answer)  # Access the answer
             print(result.tool_calls)  # Access tool calls
+
+            # Inspect policies that affected this invocation
+            for decision in result.policy_decisions:
+                print(decision.policy_id, decision.stage, decision.outcome)
 
             # The result also converts to string for backward compatibility
             print(result)  # Prints the answer
@@ -2445,6 +2539,23 @@ class CugaAgent:
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
 
+        # Run receipt (advanced_features.run_receipt, default off): per-run
+        # token/cost/timing metrics, collected fail-safe so a receipt problem
+        # can never affect the run itself.
+        receipt_collector: Optional[RunMetricsCollector] = None
+        receipt_started_at: Optional[float] = None
+        try:
+            if settings.advanced_features.run_receipt:
+                receipt_collector = RunMetricsCollector()
+                receipt_started_at = time.monotonic()
+                if not track_tool_calls:
+                    # Tool durations for the receipt require tracking, but the
+                    # caller did not opt into payload capture: timings-only mode
+                    # records tool name/duration, never arguments/results/errors.
+                    run_config["configurable"]["track_tool_calls"] = "timings_only"
+        except Exception as e:
+            logger.debug(f"Run receipt disabled: {e}")
+
         # Pass skills configuration via configurable (overrides settings when set)
         if self._enable_skills is not None:
             run_config["configurable"]["skills_enabled"] = self._enable_skills
@@ -2474,9 +2585,23 @@ class CugaAgent:
             self._inject_knowledge_to_config(run_config)
 
             # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-            self._apply_callbacks(run_config)
+            self._apply_callbacks(
+                run_config, extra_callbacks=[receipt_collector] if receipt_collector else None
+            )
 
             from langgraph.types import Command
+
+            # tool_calls accumulate on the thread state across turns; snapshot
+            # the prior count so the receipt covers only this resume segment
+            # (matching the token/time scope of the fresh collector).
+            resume_prior_tool_calls = 0
+            if receipt_collector is not None:
+                try:
+                    prior_state = self.graph.get_state(run_config)
+                    if prior_state and prior_state.values:
+                        resume_prior_tool_calls = len(prior_state.values.get("tool_calls") or [])
+                except Exception as e:
+                    logger.debug(f"Run receipt: could not snapshot prior tool_calls: {e}")
 
             if action_response:
                 logger.info(
@@ -2525,6 +2650,12 @@ class CugaAgent:
                 thread_id=thread_id,
                 error=error_msg,
                 variables=_hitl_variables,
+                policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+                receipt=self._build_run_receipt(
+                    receipt_collector,
+                    receipt_started_at,
+                    (result.get("tool_calls") or [])[resume_prior_tool_calls:],
+                ),
             )
 
         # Normal invocation case
@@ -2583,6 +2714,12 @@ class CugaAgent:
             initial_state_dict = existing_state.model_dump()
             initial_state_dict["chat_messages"] = updated_chat_messages
             initial_state_dict["input"] = new_messages[-1].content if new_messages else ""
+            # InvokeResult reports decisions for this request, not the entire
+            # checkpointed conversation. HITL resume bypasses this branch and
+            # therefore preserves the interrupted request's decision lifecycle.
+            initial_state_dict["cuga_lite_metadata"] = _reset_policy_decisions(
+                initial_state_dict.get("cuga_lite_metadata")
+            )
 
             # Update user_context (pi) if provided
             if user_context:
@@ -2613,6 +2750,7 @@ class CugaAgent:
                 "pi": user_context,
                 "input": new_messages[-1].content if new_messages else "",
                 "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+                "cuga_lite_metadata": _reset_policy_decisions(None),
             }
             initial_state_pydantic = AgentState(**initial_state)
 
@@ -2637,10 +2775,14 @@ class CugaAgent:
             run_config["configurable"]["policy_system"] = self._policy_system
 
         # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
-        self._apply_callbacks(run_config)
+        self._apply_callbacks(run_config, extra_callbacks=[receipt_collector] if receipt_collector else None)
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
+
+        # tool_calls accumulate on the thread state across turns; snapshot the
+        # prior count so the receipt only covers this invocation.
+        prior_tool_calls_count = len(initial_state_pydantic.tool_calls or [])
 
         # Invoke the graph
         total_messages = len(initial_state_pydantic.chat_messages or [])
@@ -2790,6 +2932,12 @@ class CugaAgent:
             thread_id=thread_id,
             error=error_msg,
             variables=_result_variables,
+            policy_decisions=_policy_decisions_from_result(result, "cuga_lite_metadata"),
+            receipt=self._build_run_receipt(
+                receipt_collector,
+                receipt_started_at,
+                (result.get("tool_calls") or [])[prior_tool_calls_count:],
+            ),
         )
 
     async def stream(
@@ -2906,6 +3054,7 @@ class CugaAgent:
             "thread_id": thread_id,
             "input": messages[-1].content if messages else "",
             "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+            "cuga_lite_metadata": _reset_policy_decisions(None),
         }
 
         run_config["configurable"]["thread_id"] = thread_id
@@ -3218,6 +3367,7 @@ class CugaSupervisor:
                         state.sender = callback_name
                         return Command(update=state.model_dump(), goto="SupervisorSubgraph")
                     policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.supervisor_metadata = _record_denied_policy_decision(state.supervisor_metadata)
                     state.final_answer = (
                         f"❌ **Execution Cancelled**\n\nYou denied execution required by "
                         f"**{policy_name}**. The supervisor will not proceed with this task."
@@ -3427,6 +3577,7 @@ class CugaSupervisor:
             sources=sources,
             thread_id=thread_id,
             error=error_msg,
+            policy_decisions=_policy_decisions_from_result(result, "supervisor_metadata"),
         )
 
     @property

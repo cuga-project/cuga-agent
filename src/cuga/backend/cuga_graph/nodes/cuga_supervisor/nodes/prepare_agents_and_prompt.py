@@ -11,6 +11,7 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import thread_budget_exhausted
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
@@ -270,6 +271,15 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             update_payload[adapter.metadata_key] = adapter.get_metadata(state)
         if is_fresh_conversation:
             update_payload["task_todos"] = None
+
+        # Per-task tool-call budget resets here: prepare runs once per graph
+        # invocation (START -> prepare), so each user turn starts fresh. See the
+        # matching reset in the CugaLite prepare node — including why
+        # tool_calls_used_thread must NOT be reset alongside it.
+        update_payload["tool_calls_used_run"] = 0
+        update_payload["tool_budget_exhausted"] = thread_budget_exhausted(
+            getattr(state, "tool_calls_used_thread", 0)
+        )
 
         return Command(
             goto="call_model",

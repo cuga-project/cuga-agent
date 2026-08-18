@@ -191,6 +191,42 @@ def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> 
     return bool(getattr(config, "citations_enabled", True))
 
 
+async def _rollback_partial_knowledge_engine(app_state) -> None:
+    """Tear down a partially initialized knowledge engine before clearing it."""
+    engine = getattr(app_state, "knowledge_engine", None)
+    if engine is None:
+        return
+    try:
+        await engine.aclose()
+    except Exception as e:
+        logger.debug(f"Knowledge engine aclose during failed init: {e}")
+    try:
+        engine.shutdown()
+    except Exception as e:
+        logger.debug(f"Knowledge engine shutdown during failed init: {e}")
+    app_state.knowledge_engine = None
+
+
+async def run_knowledge_startup(app_state, kb_config, *, init_fn) -> None:
+    """Lifespan knowledge boot: isolate init failures so the server still starts."""
+    if kb_config.enabled:
+        try:
+            await init_fn(app_state, kb_config)
+        except Exception as e:
+            logger.warning(f"Failed to initialize knowledge engine: {e}")
+            await _rollback_partial_knowledge_engine(app_state)
+            app_state.set_subsystem_status(
+                "knowledge",
+                "failed",
+                "Knowledge subsystem failed to initialize",
+                {"error": str(e)},
+            )
+    else:
+        app_state.knowledge_engine = None
+        logger.info("Knowledge features disabled (knowledge.enabled=false)")
+        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+
+
 def _format_sources_footer(sources: list[dict]) -> str:
     """Build a plain-text sources footer for WXO-mode answers."""
     lines = []
@@ -755,12 +791,11 @@ async def lifespan(app: FastAPI):
         kb_config = KnowledgeConfig()
 
     async def _init_knowledge() -> None:
-        if kb_config.enabled:
-            await initialize_knowledge_engine(app_state, kb_config)
-        else:
-            app_state.knowledge_engine = None
-            logger.info("Knowledge features disabled (knowledge.enabled=false)")
-            app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+        await run_knowledge_startup(
+            app_state,
+            kb_config,
+            init_fn=initialize_knowledge_engine,
+        )
 
     await asyncio.gather(_init_policy(), _init_knowledge())
 
