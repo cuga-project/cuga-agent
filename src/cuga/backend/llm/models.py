@@ -577,7 +577,10 @@ class LLMManager:
             d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
-        return hashlib.md5(settings_str.encode()).hexdigest()
+        # SHA-256 rather than MD5: this is only an in-process dict key, but the
+        # settings it digests carry credential fields, so a weak-hash finding
+        # here is noise we don't want to keep re-triaging.
+        return hashlib.sha256(settings_str.encode()).hexdigest()
 
     def _get_model_name(self, model_settings: Dict[str, Any], platform: str) -> str:
         """Get model name: config (JSON) first, then env, then TOML."""
