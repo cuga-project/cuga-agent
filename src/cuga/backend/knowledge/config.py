@@ -411,12 +411,33 @@ def knowledge_vector_backend_for_settings(settings: Any) -> str:
 def load_profile(profile_name: str) -> dict[str, Any]:
     """Load a single RAG profile from its TOML file.
 
+    ``profile_name`` arrives from published config (``KnowledgeConfig.from_settings``
+    reads it straight out of ``search.rag_profile``, and ``awareness`` passes it
+    through), so it is treated as untrusted here rather than at each call site:
+    only names in :data:`VALID_PROFILES` are accepted, and the filename is joined
+    with ``child_path_under`` so a separator or ``..`` cannot escape
+    ``_PROFILES_DIR``.
+
+    The allowlist is not a new contract — ``KnowledgeConfig.__post_init__`` already
+    rejects an out-of-set ``rag_profile``; it just was not enforced before the path
+    was built.
+
     Returns a dict with keys: profile, search, chunking, instructions.
-    Raises FileNotFoundError if the profile file doesn't exist.
+    Raises ValueError for an unknown profile name, FileNotFoundError if the profile
+    file doesn't exist.
     """
     import tomllib
 
-    path = _PROFILES_DIR / f"{profile_name}.toml"
+    # Deferred: the paths module pulls in the cuga_lite executor stack (~2800
+    # modules, ~1.6s), which profile loading has no other reason to import.
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+        child_path_under,
+    )
+
+    if profile_name not in VALID_PROFILES:
+        raise ValueError(f"Unknown RAG profile {profile_name!r}; expected one of {VALID_PROFILES}")
+
+    path = child_path_under(_PROFILES_DIR, f"{profile_name}.toml")
     if not path.exists():
         raise FileNotFoundError(f"Profile file not found: {path}")
     with open(path, "rb") as f:
