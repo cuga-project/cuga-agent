@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import HumanMessage
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import AutoContinueDecision
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.policy.models import (
@@ -468,9 +469,11 @@ async def test_cuga_agent_invoke_preserves_sequential_input_and_output_decisions
         "create",
         staticmethod(lambda: SimpleNamespace(name="FinalAnswerAgent")),
     )
+    # The adapter calls the decision-returning classifier (#610); a plain False
+    # would not carry the blocked_override field the caller reads.
     monkeypatch.setattr(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
-        AsyncMock(return_value=False),
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        AsyncMock(return_value=AutoContinueDecision(auto_continue=False)),
     )
     monkeypatch.setattr(
         "cuga.backend.evolve.memory.build_evolve_special_instructions_extension",
