@@ -45,7 +45,18 @@ if [ -z "$MANIFEST" ]; then
 fi
 
 WORKDIR="$(mktemp -d)"
-[ "$KEEP" -eq 1 ] || trap 'rm -rf "$WORKDIR"' EXIT
+BASE_WORKTREE=""
+
+# Registered up-front, not after the analysis: `set -e` means a failing baseline
+# analysis aborts the script, and deleting the directory without deregistering
+# the worktree leaves a stale entry in .git/worktrees pointing at nothing.
+cleanup() {
+  if [ -n "$BASE_WORKTREE" ]; then
+    git -C "$REPO_ROOT" worktree remove --force "$BASE_WORKTREE" 2>/dev/null || true
+  fi
+  [ "$KEEP" -eq 1 ] || rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
 echo "scratch: $WORKDIR"
 
 # Keep the extractor out of vendored and virtualenv trees. Passing
@@ -68,9 +79,9 @@ BASELINE_SARIF=""
 if [ -n "$BASELINE_REF" ]; then
   echo "==> analyzing baseline $BASELINE_REF"
   git -C "$REPO_ROOT" worktree add --detach "$WORKDIR/base" "$BASELINE_REF" >/dev/null
+  BASE_WORKTREE="$WORKDIR/base"
   analyze "$WORKDIR/base" "$WORKDIR/db-base" "$WORKDIR/base.sarif"
   BASELINE_SARIF="$WORKDIR/base.sarif"
-  git -C "$REPO_ROOT" worktree remove --force "$WORKDIR/base"
 fi
 
 python3 "$REPO_ROOT/scripts/codeql/check_sarif.py" \

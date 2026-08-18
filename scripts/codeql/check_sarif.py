@@ -63,17 +63,31 @@ def main() -> int:
 
     failures: list[str] = []
 
+    base = load_results(args.baseline_sarif) if args.baseline_sarif else None
+
     print("== alerts expected to be closed ==")
     for rule, path in expected_closed:
         lines = head.get((rule, path))
         if lines:
             failures.append(f"{rule} still fires in {path} at line(s) {sorted(lines)}")
             print(f"  STILL OPEN  {rule}  {path}  lines={sorted(lines)}")
+        elif base is not None and (rule, path) not in base:
+            # Absence only means "fixed" if it was ever present. Without this,
+            # a typo'd rule id, a path the extractor skipped, or an empty
+            # analysis all report a confident PASS.
+            failures.append(
+                f"{rule} / {path} is absent from the baseline too — "
+                "manifest row is stale, misspelled, or the file was not analyzed"
+            )
+            print(f"  NOT IN BASE {rule}  {path}  (cannot have been closed by this branch)")
         else:
-            print(f"  closed      {rule}  {path}")
+            suffix = "" if base is None else f"  (baseline had lines={sorted(base[(rule, path)])})"
+            print(f"  closed      {rule}  {path}{suffix}")
 
-    if args.baseline_sarif:
-        base = load_results(args.baseline_sarif)
+    if base is None:
+        print("\n  note: no --baseline given, so 'closed' only means 'absent now'.")
+
+    if base is not None:
         new = sorted(set(head) - set(base))
         print("\n== new alerts vs baseline ==")
         if new:
