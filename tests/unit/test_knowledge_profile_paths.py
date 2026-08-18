@@ -1,9 +1,10 @@
-"""RAG profile loading is confined to the VALID_PROFILES allowlist.
+"""Loading a RAG profile only accepts the names listed in VALID_PROFILES.
 
-``load_profile`` is reachable with attacker-influenced input: ``KnowledgeConfig.
-from_settings`` passes ``search.rag_profile`` straight from published config, and
-``awareness`` forwards the same value. Before the allowlist it joined that string
-into a path (CodeQL alerts #68/#69, ``py/path-injection``).
+``load_profile`` can be reached with a name that a user supplied:
+``KnowledgeConfig.from_settings`` passes ``search.rag_profile`` straight from
+published configuration, and ``awareness`` passes on the same value. Before this
+check existed, that name was joined into a file path directly, which is what
+CodeQL reported as alerts #68 and #69 under the rule ``py/path-injection``.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def test_every_valid_profile_loads(name: str) -> None:
     ],
 )
 def test_traversal_attempts_are_rejected(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A traversal payload must be refused before any file is touched."""
+    """A name that tries to escape the directory is refused before any file is opened."""
     opened: list[object] = []
     real_open = builtins.open
 
@@ -58,7 +59,7 @@ def test_traversal_attempts_are_rejected(name: str, monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.unit
 def test_unknown_but_harmless_name_is_rejected() -> None:
-    """A plain unknown name is a ValueError, not a FileNotFoundError."""
+    """An ordinary unknown name raises ValueError, not FileNotFoundError."""
     with pytest.raises(ValueError) as excinfo:
         load_profile("not_a_profile")
     assert "not_a_profile" in str(excinfo.value)
@@ -66,7 +67,7 @@ def test_unknown_but_harmless_name_is_rejected() -> None:
 
 @pytest.mark.unit
 def test_absolute_path_outside_profiles_dir_is_not_read(tmp_path: Path) -> None:
-    """Even a readable file outside the profiles dir cannot be loaded."""
+    """A readable file outside the profiles directory still cannot be loaded."""
     outsider = tmp_path / "outsider.toml"
     outsider.write_text('[search]\ndefault_limit = 99\n', encoding="utf-8")
 

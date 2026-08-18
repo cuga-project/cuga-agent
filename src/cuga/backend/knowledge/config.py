@@ -411,30 +411,33 @@ def knowledge_vector_backend_for_settings(settings: Any) -> str:
 def load_profile(profile_name: str) -> dict[str, Any]:
     """Load a single RAG profile from its TOML file.
 
-    ``profile_name`` arrives from published config (``KnowledgeConfig.from_settings``
-    reads it straight out of ``search.rag_profile``, and ``awareness`` passes it
-    through), so it is treated as untrusted here rather than at each call site:
-    only names in :data:`VALID_PROFILES` are accepted, and the filename is joined
-    with ``child_path_under`` so a separator or ``..`` cannot escape
-    ``_PROFILES_DIR``.
+    The profile name can come from configuration that a user has published:
+    ``KnowledgeConfig.from_settings`` reads it directly from ``search.rag_profile``,
+    and ``awareness`` passes the same value along. It is therefore checked here,
+    once, rather than at each place that calls this function. Only the names in
+    :data:`VALID_PROFILES` are accepted, and the file name is joined to the
+    directory with ``child_path_under``, which refuses any name containing a
+    directory separator or ``..``. Together these mean a name cannot be used to
+    read a file outside the profiles directory.
 
-    The allowlist is not a new contract — ``KnowledgeConfig.__post_init__`` already
-    rejects an out-of-set ``rag_profile``; it just was not enforced before the path
-    was built.
+    Restricting the name to that list is not a new rule.
+    ``KnowledgeConfig.__post_init__`` already rejects a profile name outside the
+    list; it simply was not being applied before the file path was built.
 
-    Returns a dict with keys: profile, search, chunking, instructions.
-    Raises ValueError for an unknown profile name, FileNotFoundError if the profile
-    file doesn't exist.
+    Returns a dictionary with the keys: profile, search, chunking, instructions.
+    Raises ValueError if the profile name is not a known one, and
+    FileNotFoundError if the file for a known profile is missing.
     """
-    # Reject first: the allowlist only needs a module-level constant, so an
-    # untrusted name never reaches the imports below.
+    # Check the name first. This only needs a constant defined in this module, so
+    # a name we are going to reject never reaches the imports below.
     if profile_name not in VALID_PROFILES:
         raise ValueError(f"Unknown RAG profile {profile_name!r}; expected one of {VALID_PROFILES}")
 
     import tomllib
 
-    # Deferred: the paths module pulls in the cuga_lite executor stack (~2800
-    # modules, ~1.6s), which profile loading has no other reason to import.
+    # Imported here rather than at the top of the file: this module brings in a
+    # large part of the code base with it, about 2800 modules and 1.6 seconds,
+    # and loading a profile is the only reason this file would need it.
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
         child_path_under,
     )
