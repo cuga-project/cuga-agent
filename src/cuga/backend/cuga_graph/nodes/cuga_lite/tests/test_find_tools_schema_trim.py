@@ -25,7 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "n", "title": "Name"},
-                "count": {"type": "integer", "default": 1},
+                "count": {"type": "integer"},
                 "ok": {"type": "boolean"},
                 "score": {"type": "number"},
             },
@@ -49,8 +49,16 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
                 "tags": {"type": "array", "items": {"type": "string"}},
             },
         },
+        {"type": "object", "prefixItems": []},
     ],
-    ids=["empty", "flat-primitives", "optional-anyOf-null", "optional-type-list-null", "array-of-primitives"],
+    ids=[
+        "empty",
+        "flat-primitives",
+        "optional-anyOf-null",
+        "optional-type-list-null",
+        "array-of-primitives",
+        "empty-prefix-items",
+    ],
 )
 def test_input_schema_adds_detail_false_for_lossy_safe_schemas(schema):
     assert input_schema_adds_detail(schema) is False
@@ -155,6 +163,30 @@ def test_input_schema_adds_detail_false_for_lossy_safe_schemas(schema):
             },
             "properties": {"payload": {"$ref": "#/$defs/Nested"}},
         },
+        {
+            "type": "object",
+            "properties": {"count": {"type": "integer", "multipleOf": 5}},
+        },
+        {
+            "type": "object",
+            "properties": {"items": {"type": "array", "uniqueItems": True}},
+        },
+        {
+            "type": "object",
+            "patternProperties": {"^x-": {"type": "string"}},
+        },
+        {
+            "type": "object",
+            "properties": {"items": {"type": "array", "contains": {"type": "string"}}},
+        },
+        {
+            "type": "object",
+            "dependentSchemas": {"mode": {"required": ["value"]}},
+        },
+        {
+            "type": "object",
+            "properties": {"value": {"not": {"type": "null"}}},
+        },
     ],
     ids=[
         "pydantic-defs-ref",
@@ -169,9 +201,21 @@ def test_input_schema_adds_detail_false_for_lossy_safe_schemas(schema):
         "real-union",
         "legacy-definitions",
         "richness-only-under-defs",
+        "multiple-of",
+        "unique-items",
+        "pattern-properties",
+        "contains",
+        "dependent-schemas",
+        "not",
     ],
 )
 def test_input_schema_adds_detail_true_for_rich_schemas(schema):
+    assert input_schema_adds_detail(schema) is True
+
+
+@pytest.mark.unit
+def test_input_schema_adds_detail_true_for_default():
+    schema = {"type": "object", "properties": {"page": {"type": "integer", "default": 1}}}
     assert input_schema_adds_detail(schema) is True
 
 

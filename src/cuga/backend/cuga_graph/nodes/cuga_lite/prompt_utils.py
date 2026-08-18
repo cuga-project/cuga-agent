@@ -45,6 +45,10 @@ _RICH_SCHEMA_KEYS = frozenset(
         "maxLength",
         "minItems",
         "maxItems",
+        "const",
+        "default",
+        "multipleOf",
+        "uniqueItems",
     }
 )
 
@@ -89,6 +93,16 @@ def _schema_node_adds_detail(node: Any) -> bool:
     if any(k in node for k in _RICH_SCHEMA_KEYS):
         return True
 
+    ap = node.get("additionalProperties")
+    if isinstance(ap, dict) and ap:
+        return True
+    if "patternProperties" in node or "contains" in node:
+        return True
+    if node.get("dependentRequired") or node.get("dependentSchemas") or "if" in node or "not" in node:
+        return True
+    if any(k in node for k in ("contentEncoding", "contentMediaType")):
+        return True
+
     if "anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list):
         variants = _non_null_variants(node)
         if len(variants) > 1:
@@ -105,6 +119,10 @@ def _schema_node_adds_detail(node: Any) -> bool:
     elif isinstance(items, list):
         if any(_schema_node_adds_detail(i) for i in items if isinstance(i, dict)):
             return True
+
+    prefix = node.get("prefixItems")
+    if "prefixItems" in node and isinstance(prefix, list) and prefix:
+        return True
 
     props = node.get("properties")
     if isinstance(props, dict):
