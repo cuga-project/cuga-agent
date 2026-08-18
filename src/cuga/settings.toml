@@ -63,6 +63,7 @@ cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
+cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
