@@ -67,7 +67,6 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          DYNACONF_SERVER_PORTS__REGISTRY: "8100"
           AGENT_SETTING_CONFIG: settings.rits.toml
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}
