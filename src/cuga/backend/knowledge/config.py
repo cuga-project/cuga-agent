@@ -426,6 +426,11 @@ def load_profile(profile_name: str) -> dict[str, Any]:
     Raises ValueError for an unknown profile name, FileNotFoundError if the profile
     file doesn't exist.
     """
+    # Reject first: the allowlist only needs a module-level constant, so an
+    # untrusted name never reaches the imports below.
+    if profile_name not in VALID_PROFILES:
+        raise ValueError(f"Unknown RAG profile {profile_name!r}; expected one of {VALID_PROFILES}")
+
     import tomllib
 
     # Deferred: the paths module pulls in the cuga_lite executor stack (~2800
@@ -433,9 +438,6 @@ def load_profile(profile_name: str) -> dict[str, Any]:
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
         child_path_under,
     )
-
-    if profile_name not in VALID_PROFILES:
-        raise ValueError(f"Unknown RAG profile {profile_name!r}; expected one of {VALID_PROFILES}")
 
     path = child_path_under(_PROFILES_DIR, f"{profile_name}.toml")
     if not path.exists():
