@@ -22,7 +22,9 @@ import pytest
 a2a_types = pytest.importorskip("a2a.compat.v0_3.types")
 
 
-pytestmark = pytest.mark.anyio
+# `unit` because these drive the router in-process over an ASGI transport with
+# a scripted runner: no port is bound and no external service is needed.
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 async def test_well_known_agent_card_returns_valid_card(asgi_client):

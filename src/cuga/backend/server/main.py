@@ -2028,7 +2028,11 @@ async def event_stream(
         except Exception as tracker_error:
             logger.warning(f"Failed to finish task in tracker on error: {tracker_error}")
 
-        yield StreamEvent(name="Error", data=str(e)).format()
+        # Not str(e): this event's data is forwarded verbatim to the extension
+        # client by the /extension/agent_query handler, so the text of the
+        # exception would reach the caller the same way a response body would.
+        _ref = log_error_ref(e, context="Agent event stream failed")
+        yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -41,6 +41,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -z "$BASELINE_REF" ]; then
+  echo "--baseline is required: without a starting point to compare against, an" >&2
+  echo "alert that was never reported looks identical to one that was fixed." >&2
+  exit 2
+fi
+
 if [ -z "$MANIFEST" ]; then
   echo "--manifest is required; pick one from scripts/codeql/expected-closed/" >&2
   ls "$REPO_ROOT/scripts/codeql/expected-closed/"*.txt >&2
