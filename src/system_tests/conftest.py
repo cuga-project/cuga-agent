@@ -12,33 +12,56 @@ from system_tests.e2e.server_stack import start_crm_stack, start_digital_sales_s
 _MISSING = object()
 
 
-def _sync_server_urls(env_ports: dict[str, str]) -> None:
+def _iter_server_url_modules():
     from system_tests.e2e import base_test
 
+    yield base_test, ("SERVER_URL", "STREAM_ENDPOINT", "STOP_ENDPOINT")
+    try:
+        import system_tests.load.load_test as load_mod
+
+        yield load_mod, ("SERVER_URL", "STATE_ENDPOINT")
+    except ImportError:
+        pass
+    try:
+        import system_tests.load.load_test_with_mocked_llm as mocked_load_mod
+
+        yield mocked_load_mod, ("SERVER_URL", "STATE_ENDPOINT")
+    except ImportError:
+        pass
+
+
+def _snapshot_server_urls() -> list[tuple[object, str, object]]:
+    saved = []
+    for mod, names in _iter_server_url_modules():
+        for name in names:
+            saved.append((mod, name, getattr(mod, name, _MISSING)))
+    return saved
+
+
+def _restore_server_urls(saved: list[tuple[object, str, object]]) -> None:
+    for mod, name, value in saved:
+        if value is _MISSING:
+            if hasattr(mod, name):
+                delattr(mod, name)
+        else:
+            setattr(mod, name, value)
+
+
+def _sync_server_urls(env_ports: dict[str, str]) -> None:
     demo_port = env_ports.get("DYNACONF_SERVER_PORTS__DEMO")
     if not demo_port:
         return
 
     server_url = f"http://localhost:{demo_port}"
-    base_test.SERVER_URL = server_url
-    base_test.STREAM_ENDPOINT = f"{server_url}/stream"
-    base_test.STOP_ENDPOINT = f"{server_url}/stop"
-
-    try:
-        import system_tests.load.load_test as load_mod
-
-        load_mod.STATE_ENDPOINT = f"{server_url}/api/agent/state"
-        load_mod.SERVER_URL = server_url
-    except ImportError:
-        pass
-
-    try:
-        import system_tests.load.load_test_with_mocked_llm as mocked_load_mod
-
-        mocked_load_mod.STATE_ENDPOINT = f"{server_url}/api/agent/state"
-        mocked_load_mod.SERVER_URL = server_url
-    except ImportError:
-        pass
+    for mod, names in _iter_server_url_modules():
+        if "SERVER_URL" in names:
+            mod.SERVER_URL = server_url
+        if "STREAM_ENDPOINT" in names:
+            mod.STREAM_ENDPOINT = f"{server_url}/stream"
+        if "STOP_ENDPOINT" in names:
+            mod.STOP_ENDPOINT = f"{server_url}/stop"
+        if "STATE_ENDPOINT" in names:
+            mod.STATE_ENDPOINT = f"{server_url}/api/agent/state"
 
 
 def _sync_settings_ports(env_ports: dict[str, str]) -> None:
@@ -99,15 +122,17 @@ def e2e_class_stack(request):
 
     settings.reload()
     _sync_settings_ports(env_ports)
+    saved_urls = _snapshot_server_urls()
+    saved_log_dir = os.environ.get("CUGA_LOGGING_DIR", _MISSING)
     _sync_server_urls(env_ports)
 
     class_name = cls.__name__
-    if stack_kind == "crm":
-        handles = start_crm_stack(class_name, mode=getattr(cls, "mode", "default"))
-    else:
-        handles = start_digital_sales_stack(class_name)
-
+    handles = None
     try:
+        if stack_kind == "crm":
+            handles = start_crm_stack(class_name, mode=getattr(cls, "mode", "default"))
+        else:
+            handles = start_digital_sales_stack(class_name)
         yield
     finally:
         stop_stack(handles)
@@ -117,4 +142,9 @@ def e2e_class_stack(request):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old
+        if saved_log_dir is _MISSING:
+            os.environ.pop("CUGA_LOGGING_DIR", None)
+        else:
+            os.environ["CUGA_LOGGING_DIR"] = saved_log_dir
+        _restore_server_urls(saved_urls)
         settings.reload()

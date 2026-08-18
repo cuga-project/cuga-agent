@@ -157,54 +157,58 @@ def start_digital_sales_stack(class_name: str) -> StackHandles:
     env = get_subprocess_env()
     preexec = get_preexec_fn()
 
-    ds_proc = subprocess.Popen(
-        DIGITAL_SALES_MCP_COMMAND,
-        stdout=ds_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        preexec_fn=preexec,
-    )
-    handles.processes.append(ds_proc)
-    wait_for_http_ready(
-        settings.server_ports.digital_sales_api,
-        process=ds_proc,
-        log_file=str(ds_log),
-        process_name="Digital sales MCP server",
-    )
+    try:
+        ds_proc = subprocess.Popen(
+            DIGITAL_SALES_MCP_COMMAND,
+            stdout=ds_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            preexec_fn=preexec,
+        )
+        handles.processes.append(ds_proc)
+        wait_for_http_ready(
+            settings.server_ports.digital_sales_api,
+            process=ds_proc,
+            log_file=str(ds_log),
+            process_name="Digital sales MCP server",
+        )
 
-    registry_proc = subprocess.Popen(
-        REGISTRY_COMMAND,
-        stdout=registry_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        preexec_fn=preexec,
-    )
-    handles.processes.append(registry_proc)
-    wait_for_http_ready(
-        settings.server_ports.registry,
-        process=registry_proc,
-        log_file=str(registry_log),
-        process_name="Registry server",
-    )
+        registry_proc = subprocess.Popen(
+            REGISTRY_COMMAND,
+            stdout=registry_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            preexec_fn=preexec,
+        )
+        handles.processes.append(registry_proc)
+        wait_for_http_ready(
+            settings.server_ports.registry,
+            process=registry_proc,
+            log_file=str(registry_log),
+            process_name="Registry server",
+        )
 
-    demo_proc = subprocess.Popen(
-        DEMO_COMMAND,
-        stdout=demo_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        preexec_fn=preexec,
-    )
-    handles.processes.append(demo_proc)
-    wait_for_http_ready(
-        settings.server_ports.demo,
-        process=demo_proc,
-        log_file=str(demo_log),
-        process_name="Demo server",
-    )
-    return handles
+        demo_proc = subprocess.Popen(
+            DEMO_COMMAND,
+            stdout=demo_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            preexec_fn=preexec,
+        )
+        handles.processes.append(demo_proc)
+        wait_for_http_ready(
+            settings.server_ports.demo,
+            process=demo_proc,
+            log_file=str(demo_log),
+            process_name="Demo server",
+        )
+        return handles
+    except Exception:
+        stop_stack(handles)
+        raise
 
 
 def start_crm_stack(class_name: str, mode: str = "default") -> StackHandles:
@@ -218,22 +222,26 @@ def start_crm_stack(class_name: str, mode: str = "default") -> StackHandles:
     if mode in ("hf",):
         command.extend(["--no-email", "--read-only"])
 
-    demo_proc = subprocess.Popen(
-        command,
-        stdout=demo_handle,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=get_subprocess_env(),
-        preexec_fn=get_preexec_fn(),
-    )
-    handles.processes.append(demo_proc)
-    wait_for_http_ready(
-        settings.server_ports.demo,
-        process=demo_proc,
-        log_file=str(demo_log),
-        process_name="Demo CRM server",
-    )
-    return handles
+    try:
+        demo_proc = subprocess.Popen(
+            command,
+            stdout=demo_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=get_subprocess_env(),
+            preexec_fn=get_preexec_fn(),
+        )
+        handles.processes.append(demo_proc)
+        wait_for_http_ready(
+            settings.server_ports.demo,
+            process=demo_proc,
+            log_file=str(demo_log),
+            process_name="Demo CRM server",
+        )
+        return handles
+    except Exception:
+        stop_stack(handles)
+        raise
 
 
 def stop_stack(handles: Optional[StackHandles]) -> None:

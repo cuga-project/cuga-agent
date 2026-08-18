@@ -5,10 +5,16 @@ from __future__ import annotations
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import MagicMock
 
 import pytest
 
-from system_tests.e2e.server_stack import wait_for_http_ready
+from system_tests.e2e import server_stack as stack_mod
+from system_tests.e2e.server_stack import (
+    start_crm_stack,
+    start_digital_sales_stack,
+    wait_for_http_ready,
+)
 
 
 class _OkHandler(BaseHTTPRequestHandler):
@@ -24,6 +30,15 @@ class _OkHandler(BaseHTTPRequestHandler):
 class _NotFoundHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+class _ServerErrorHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(500)
         self.end_headers()
 
     def log_message(self, format, *args):
@@ -63,3 +78,101 @@ def test_wait_for_http_ready_raises_if_process_dies():
     process.wait(timeout=5)
     with pytest.raises(RuntimeError, match="died with return code"):
         wait_for_http_ready(1, process=process, process_name="dead", timeout=1.0, interval=0.05)
+
+
+@pytest.mark.unit
+def test_wait_for_http_ready_treats_http_5xx_as_not_ready():
+    server = _serve(_ServerErrorHandler)
+    try:
+        with pytest.raises(TimeoutError, match="did not become ready"):
+            wait_for_http_ready(server.server_address[1], timeout=0.4, interval=0.05)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _FakePopen:
+    def __init__(self, *args, **kwargs):
+        self.pid = id(self)
+        self._alive = True
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def wait(self, timeout=None):
+        self._alive = False
+        return 0
+
+    def terminate(self):
+        self._alive = False
+
+    def kill(self):
+        self._alive = False
+
+
+def _patch_stack_launch(monkeypatch, tmp_path, popen_cls, ready_side_effect):
+    monkeypatch.setattr(stack_mod.subprocess, "Popen", popen_cls)
+    monkeypatch.setattr(stack_mod, "wait_for_http_ready", ready_side_effect)
+    monkeypatch.setattr(stack_mod, "_class_log_dir", lambda name: tmp_path)
+    monkeypatch.setattr(stack_mod, "_open_log", lambda path: MagicMock())
+    monkeypatch.setattr(stack_mod, "get_preexec_fn", lambda: None)
+
+
+@pytest.mark.unit
+def test_start_digital_sales_stack_stops_partial_launch(monkeypatch, tmp_path):
+    launched: list[_FakePopen] = []
+    stopped: list = []
+
+    class TrackingPopen(_FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            launched.append(self)
+
+    calls = {"n": 0}
+
+    def fail_on_second(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("registry died")
+
+    def spy_stop(handles):
+        stopped.append(list(handles.processes))
+        for proc in handles.processes:
+            proc._alive = False
+
+    _patch_stack_launch(monkeypatch, tmp_path, TrackingPopen, fail_on_second)
+    monkeypatch.setattr(stack_mod, "stop_stack", spy_stop)
+
+    with pytest.raises(RuntimeError, match="registry died"):
+        start_digital_sales_stack("Klass")
+
+    assert len(launched) >= 2
+    assert stopped and stopped[0] == launched
+
+
+@pytest.mark.unit
+def test_start_crm_stack_stops_partial_launch(monkeypatch, tmp_path):
+    launched: list[_FakePopen] = []
+    stopped: list = []
+
+    class TrackingPopen(_FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            launched.append(self)
+
+    def fail_ready(*args, **kwargs):
+        raise RuntimeError("crm died")
+
+    def spy_stop(handles):
+        stopped.append(list(handles.processes))
+        for proc in handles.processes:
+            proc._alive = False
+
+    _patch_stack_launch(monkeypatch, tmp_path, TrackingPopen, fail_ready)
+    monkeypatch.setattr(stack_mod, "stop_stack", spy_stop)
+
+    with pytest.raises(RuntimeError, match="crm died"):
+        start_crm_stack("Klass")
+
+    assert launched
+    assert stopped and stopped[0] == launched
