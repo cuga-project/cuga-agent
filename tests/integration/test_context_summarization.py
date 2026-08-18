@@ -29,8 +29,12 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.config import settings
 
 
-# Skip if no API key available
-pytestmark = pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
+# Live OpenAI ChatOpenAI(gpt-4o-mini) tests — not the WatsonX stack CI uses.
+# unit-b excludes e2e; skip locally unless OPENAI_API_KEY is set.
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set"),
+]
 
 
 @pytest.fixture(scope="function", autouse=True)
