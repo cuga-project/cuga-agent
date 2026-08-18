@@ -1,17 +1,15 @@
 """Render ranked candidates as the markdown ``find_tools`` returns.
 
-Extracted verbatim from ``PromptUtils.find_tools`` so that ranking and
-presentation can vary independently: a cosine strategy produces the same output
-shape as the LLM one, just with ``reasoning`` supplied differently.
+Ranking and presentation stay independent: cosine and LLM strategies produce
+the same markdown shape, with ``reasoning`` supplied differently.
 
-Output format is load-bearing — the agent reads this string from sandbox stdout
-— so changes here are behavior changes. Keep byte-compatible with the pre-split
-implementation.
+Markdown assembly is ``_render_find_tools_markdown`` (schema trim from #644).
+The agent reads this string from sandbox stdout, so changes here are behavior
+changes.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
@@ -64,7 +62,11 @@ def render_tools_markdown(
     preserving the original ``if not actual_tool: continue``.
     """
     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
-    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils, Tool
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+        PromptUtils,
+        Tool,
+        _render_find_tools_markdown,
+    )
 
     by_name = {t.name: t for t in tools}
     note_text = "\n\n".join(n for n in (notes or []) if n)
@@ -93,41 +95,7 @@ def render_tools_markdown(
         tool.name: getattr(tool, 'description', None) for tool in tools if hasattr(tool, 'description')
     }
 
-    markdown_lines = [
-        f"# Found {len(enriched_tools)} Matching Tool(s)\n",
-        f"**Query:** {display_query}\n",
-    ]
-
-    for idx, tool in enumerate(enriched_tools, 1):
-        markdown_lines.append(f"## {idx}. `{tool.name}`\n")
-
-        tool_description = tool_descriptions.get(tool.name)
-        if tool_description:
-            markdown_lines.append(f"**Description:** {tool_description}\n")
-
-        markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
-
-        if tool.params_doc:
-            markdown_lines.append("**Parameters:**\n")
-            markdown_lines.append(f"{tool.params_doc}\n")
-        else:
-            markdown_lines.append("**Parameters:** No parameters required\n")
-
-        if tool.response_doc:
-            markdown_lines.append("**Response Schema:**\n")
-            markdown_lines.append(f"{tool.response_doc}\n")
-
-        if tool.input_ and tool.input_ != {}:
-            markdown_lines.append("**Input Schema:**\n")
-            markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
-
-        if tool.output_schema and tool.output_schema != {}:
-            markdown_lines.append("**Output Schema:**\n")
-            markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
-
-        markdown_lines.append("---\n")
-
+    markdown = _render_find_tools_markdown(display_query, enriched_tools, tool_descriptions)
     if note_text:
-        markdown_lines.append(note_text)
-
-    return "\n".join(markdown_lines)
+        return f"{markdown}\n{note_text}"
+    return markdown

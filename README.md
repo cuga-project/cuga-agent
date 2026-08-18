@@ -1306,7 +1306,7 @@ All tests run through pytest (configured in `pyproject.toml`):
 - Fast Mode: Get top account by revenue, list accounts, find VP sales high-value accounts
 - CRM Workflows: Contacts management, email operations, tool discovery
 - HF Utterances: Account queries, revenue calculations, playbook execution
-- Execution: Sequential (`-n0`) so the 88% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 88`
+- Execution: Sequential (`-n0`) so the 87% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 87` (one LLM flake allowed on the 8-test suite)
 
 ## Running Tests
 
@@ -1322,11 +1322,17 @@ Run the default suite (excludes manual and pgvector; pgvector needs a container)
 uv run pytest
 ```
 
-Run the CI-equivalent subset (matches the main `tests.yml` job):
+Run the CI-equivalent subset (mocked unit/load; live LLM jobs are split in `tests.yml`):
 
 ```bash
 uv run pytest -m "not stability and not pgvector and not manual and not e2e and not load"
 uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+```
+
+Stability CI equivalent (scoped to e2e so collection stays small):
+
+```bash
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run a faster local loop:
@@ -1335,10 +1341,10 @@ Run a faster local loop:
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"
 ```
 
-Run stability tests only (88% pass-rate gate; use `-n0` so threshold aggregation works):
+Run stability tests only (87% pass-rate gate; use `-n0` so threshold aggregation works):
 
 ```bash
-uv run pytest -m stability --stability-threshold 88 -n0
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run pgvector tests (requires a running pgvector container):

@@ -30,6 +30,116 @@ _WEAK_SCHEMA_PROBE_DIRECTIVE = (
 # import dependency).
 _SYNTHETIC_PLACEHOLDER_KEY = "_synthetic_placeholder"
 
+_RICH_SCHEMA_KEYS = frozenset(
+    {
+        "enum",
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "const",
+        "default",
+        "multipleOf",
+        "uniqueItems",
+    }
+)
+
+
+def input_schema_adds_detail(schema: Any) -> bool:
+    """True when raw Input Schema JSON carries detail Parameters would lose."""
+    if not isinstance(schema, dict) or not schema:
+        return False
+    return _schema_node_adds_detail(schema)
+
+
+def should_emit_output_schema(response_doc: str, output_schema: Any) -> bool:
+    """Emit Output Schema JSON only when Response Schema text is absent."""
+    if response_doc and str(response_doc).strip():
+        return False
+    return isinstance(output_schema, dict) and bool(output_schema)
+
+
+def _non_null_variants(node: dict) -> list:
+    variants: list = []
+    for key in ("anyOf", "oneOf"):
+        for variant in node.get(key) or []:
+            if isinstance(variant, dict) and variant.get("type") != "null":
+                variants.append(variant)
+    t = node.get("type")
+    if isinstance(t, list):
+        for x in t:
+            if x != "null":
+                variants.append({"type": x})
+    return variants
+
+
+def _schema_node_adds_detail(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if "$ref" in node:
+        return True
+    for map_key in ("$defs", "definitions"):
+        defs = node.get(map_key)
+        if isinstance(defs, dict) and defs:
+            return True
+    if any(k in node for k in _RICH_SCHEMA_KEYS):
+        return True
+
+    ap = node.get("additionalProperties")
+    if isinstance(ap, dict) and ap:
+        return True
+    if "patternProperties" in node or "contains" in node:
+        return True
+    if node.get("dependentRequired") or node.get("dependentSchemas") or "if" in node or "not" in node:
+        return True
+    if any(k in node for k in ("contentEncoding", "contentMediaType")):
+        return True
+
+    if "anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list):
+        variants = _non_null_variants(node)
+        if len(variants) > 1:
+            return True
+        if len(variants) == 1 and _schema_node_adds_detail(variants[0]):
+            return True
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        if items.get("type") == "object" or "properties" in items or "$ref" in items:
+            return True
+        if _schema_node_adds_detail(items):
+            return True
+    elif isinstance(items, list):
+        if any(_schema_node_adds_detail(i) for i in items if isinstance(i, dict)):
+            return True
+
+    prefix = node.get("prefixItems")
+    if "prefixItems" in node and isinstance(prefix, list) and prefix:
+        return True
+
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for prop in props.values():
+            if not isinstance(prop, dict):
+                continue
+            if "$ref" in prop:
+                return True
+            if "properties" in prop and isinstance(prop.get("properties"), dict):
+                return True
+            if _schema_node_adds_detail(prop):
+                return True
+
+    for variant in node.get("allOf") or []:
+        if _schema_node_adds_detail(variant):
+            return True
+
+    return False
+
 
 def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, bool):
@@ -121,6 +231,48 @@ class FindToolsOutput(BaseModel):
         ...,
         description="Matching tools ordered by relevance to the query. Include all tools needed for the workflow.",
     )
+
+
+def _render_find_tools_markdown(
+    query: str,
+    enriched_tools: List[Tool],
+    tool_descriptions: Dict[str, Optional[str]],
+) -> str:
+    """Assemble find_tools discovery markdown with conditional schema blocks."""
+    markdown_lines = [
+        f"# Found {len(enriched_tools)} Matching Tool(s)\n",
+        f"**Query:** {query}\n",
+    ]
+    for idx, tool in enumerate(enriched_tools, 1):
+        markdown_lines.append(f"## {idx}. `{tool.name}`\n")
+
+        tool_description = tool_descriptions.get(tool.name)
+        if tool_description:
+            markdown_lines.append(f"**Description:** {tool_description}\n")
+
+        markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
+
+        if tool.params_doc:
+            markdown_lines.append("**Parameters:**\n")
+            markdown_lines.append(f"{tool.params_doc}\n")
+        else:
+            markdown_lines.append("**Parameters:** No parameters required\n")
+
+        if tool.response_doc:
+            markdown_lines.append("**Response Schema:**\n")
+            markdown_lines.append(f"{tool.response_doc}\n")
+
+        if tool.input_ and tool.input_ != {} and input_schema_adds_detail(tool.input_):
+            markdown_lines.append("**Input Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
+
+        if should_emit_output_schema(tool.response_doc, tool.output_schema):
+            markdown_lines.append("**Output Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
+
+        markdown_lines.append("---\n")
+
+    return "\n".join(markdown_lines)
 
 
 # Bounded LLM retries when the shortlister invents tool names (#546).
