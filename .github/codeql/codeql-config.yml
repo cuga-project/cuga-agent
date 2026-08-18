@@ -25,25 +25,28 @@
 # extensions *because of this file*. That was wrong in both directions: this file is
 # not read, and the extensions directory does not depend on it. See issue #633.
 #
-# WHICH RULES `barrierModel` CAN ACTUALLY SANITIZE
+# WHICH RULES THE SANITIZER MODEL CAN AFFECT
 #
-# A `barrierModel` row only affects a query whose Customizations.qll calls
-# `ModelOutput::barrierNode`. Upstream (python/ql/lib/semmle/python/security/dataflow)
-# that is exactly:
+# The model pack in .github/codeql/extensions/ lets us tell CodeQL that a given
+# function makes a value safe, so the analysis stops reporting it. Each entry
+# names a "kind", which is the rule the entry applies to.
 #
-#   CodeInjection, SqlInjection, UnsafeDeserialization, ReflectedXSS, PathInjection,
-#   LogInjection, CommandInjection, UrlRedirect, ServerSideRequestForgery,
-#   and HardcodedCredentials.
+# This only works for rules whose CodeQL source asks for these entries. Those
+# rules are: CodeInjection, SqlInjection, UnsafeDeserialization, ReflectedXSS,
+# PathInjection, LogInjection, CommandInjection, UrlRedirect,
+# ServerSideRequestForgery, and HardcodedCredentials.
 #
-# The sanitizer pack here targets `path-injection`, which is on that list, so it works.
+# The sanitizer pack here is written for PathInjection, which is on that list,
+# so it takes effect.
 #
-# It does NOT work for py/stack-trace-exposure, py/clear-text-logging-sensitive-data,
-# or py/weak-sensitive-data-hashing. StackTraceExposureCustomizations.qll, for example,
-# declares `abstract class Sanitizer extends DataFlow::Node { }` with no models-as-data
-# subclass — so a row naming `stack-trace-exposure` would load and silently do nothing,
-# which is the same trap as #633, one level down.
+# It would NOT work for py/stack-trace-exposure, py/clear-text-logging-sensitive-data
+# or py/weak-sensitive-data-hashing. Those rules do not read these entries, so an
+# entry naming one of them would be loaded and then ignored, with no warning.
+# That is the same kind of mistake as issue #633: something that looks configured
+# but does nothing.
 #
-# For those rules the fix has to be real: stop the tainted value from reaching the sink.
-# See cuga/backend/server/error_responses.py, whose helpers never return anything
-# derived from the exception, so there is no barrier to declare.
+# For those rules the code itself has to change so the value never reaches the
+# place being reported. See src/cuga/backend/server/error_responses.py, whose
+# helpers never copy anything out of the exception, so there is nothing to
+# declare safe in the first place.
 name: cuga-agent-codeql

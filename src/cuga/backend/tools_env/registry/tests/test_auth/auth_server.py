@@ -15,9 +15,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Fixed, and deliberately so: mcp_servers_auth_test.yaml and README.md hardcode
-# these same values on the client side, so making the server side configurable
-# would just desynchronise the two and 401 the whole suite.
+# These stay fixed on purpose. mcp_servers_auth_test.yaml and README.md contain
+# the same values for the client side, so allowing the server side to be changed
+# would let the two disagree and make every test request fail to authenticate.
 VALID_API_KEY = "test-secret-key"  # pragma: allowlist secret
 VALID_BEARER_TOKEN = "test-bearer-token"  # pragma: allowlist secret
 VALID_BASIC_AUTH = "testuser:testpass"  # pragma: allowlist secret
@@ -138,8 +138,9 @@ if __name__ == "__main__":
     import uvicorn
 
     print("\nAuth Test API Server starting on http://localhost:8002")
-    # Which methods are wired up, never the values. Echoing the credentials here
-    # put them in CI logs and terminal scrollback for no benefit — anyone who
-    # needs them can read mcp_servers_auth_test.yaml or README.md.
+    # Print which sign-in methods are available, never the values themselves.
+    # Printing the values copied them into continuous integration logs and into
+    # the terminal history, with no benefit: anyone who needs them can read
+    # mcp_servers_auth_test.yaml or README.md.
     print("Enabled auth methods: X-API-Key, Bearer token, Basic auth, query key\n")
     uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")

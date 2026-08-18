@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 #
-# Prove locally that a branch closes the CodeQL alerts it claims to.
+# Check, on your own machine, that a branch closes the CodeQL alerts it claims to.
 #
-# GitHub only rescans after a merge to main, so without this you find out whether
-# a fix worked *after* it has landed. This builds a database from the working
-# tree, runs the same query suite default setup runs, and checks two things:
+# GitHub only re-scans after a change is merged, so without this you find out
+# whether a fix worked after it has already landed. This builds a CodeQL database
+# from the current working tree, runs the same set of queries GitHub runs, and
+# checks two things:
 #
-#   1. every row in the manifest produces zero results   (the fix worked)
-#   2. no result appears that the baseline did not have  (the fix broke nothing)
+#   1. every entry in the chosen list produces no results   (the fix worked)
+#   2. no result appears that the starting point did not have (nothing else broke)
 #
-# Check 2 is the one that catches a "fix" that just moved the leak somewhere else.
+# The second check matters. A change that stops one report by moving the problem
+# somewhere else would still pass the first check on its own.
 #
 # Usage:
 #   scripts/codeql/verify.sh --manifest <file> [--baseline <git-ref>] [--keep]
 #
-# Manifests live in scripts/codeql/expected-closed/. A manifest only passes on a
-# branch that contains the matching fix.
+# The lists live in scripts/codeql/expected-closed/. A list only passes on a
+# branch that actually contains the matching fix.
 #
-# Requires the codeql CLI on PATH. Note the pack is pinned: CLI 2.26.2 cannot
-# parse a manifest produced by 2.26.3, so "latest" breaks on an older CLI.
+# Needs the codeql command available. Note that the query pack version is fixed
+# below: a newer pack cannot be read by an older codeql version, so asking for
+# the latest one fails on an older install.
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -59,9 +62,9 @@ cleanup() {
 trap cleanup EXIT
 echo "scratch: $WORKDIR"
 
-# Keep the extractor out of vendored and virtualenv trees. Passing
-# --codescanning-config instead would make `database create` resolve the newest
-# query pack, which is exactly the version skew this script pins around.
+# Skip third-party and virtual environment directories when scanning. The
+# --codescanning-config option would do this too, but it also makes the database
+# step fetch the newest query pack, which is the version problem noted above.
 export LGTM_INDEX_FILTERS=$'exclude:**/node_modules/**\nexclude:.venv*/**\nexclude:src/frontend_workspaces/**\nexclude:src/cuga/frontend/dist/**'
 
 analyze() {  # <source-root> <db-path> <sarif-out>

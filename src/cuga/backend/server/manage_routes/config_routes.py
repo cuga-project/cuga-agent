@@ -440,9 +440,10 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
                         except Exception as mig_err:
-                            # This dict is handed to the caller as
-                            # response_data["reindex"], so it carries a stable
-                            # code plus a log reference, never the exception text.
+                            # This is sent to the caller further down, as the
+                            # "reindex" part of the response. It carries a fixed
+                            # code and a log reference code, not the text of the
+                            # error.
                             reindex_info = {
                                 "status": "failed",
                                 "error": "migration_failed",

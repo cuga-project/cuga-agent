@@ -7,24 +7,24 @@ from loguru import logger
 from cuga.config import settings
 
 
-# Header names whose values are credentials rather than diagnostics.
+# Headers whose values are sign-in credentials rather than useful detail.
 _SENSITIVE_HEADERS = frozenset(
     {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key"}
 )
 
 
 def _redact_headers(headers: Any) -> dict[str, str]:
-    """Copy headers, replacing credential-bearing values with a placeholder."""
+    """Copy the headers, replacing any credential values with a placeholder."""
     return {
         key: ("***" if key.lower() in _SENSITIVE_HEADERS else value) for key, value in dict(headers).items()
     }
 
 
 def _mask_identifier(value: str) -> str:
-    """Mask an email or phone number kept for diagnostics.
+    """Hide most of an email address or phone number kept for troubleshooting.
 
-    Enough survives to tell two accounts apart in a log; not enough to be a
-    usable identifier on its own.
+    Enough is left to tell two accounts apart when reading a log, but not enough
+    to identify the person or to be used to sign in.
     """
     if not value or len(value) <= 2:
         return "***"
@@ -37,19 +37,19 @@ def _log_http_status_error(
     *,
     request_body: str | None = None,
 ) -> Any:
-    """Log a failed supervisor call and return the parsed response body.
+    """Write details of a failed request to the log, and return the response body.
 
-    Shared by the three handlers below, which each carried their own copy of
-    this dump. Two things are deliberately never read here:
+    The three places below all report failures the same way, and each used to
+    carry its own copy of this code. Two things are deliberately never read here:
 
-    * ``exc.request.content`` — every one of these endpoints carries either a
-      login form (``username=...&password=...``) or account credentials, so the
-      raw request body is a password in transit. Callers pass a hand-built
-      ``request_body`` summary when one is useful.
-    * unredacted headers — ``Authorization`` and friends are replaced.
+    * The body that was sent. Each of these requests is either a sign-in form,
+      which contains a username and password, or a request for stored account
+      passwords, so the body itself is a credential. Where a summary of the body
+      helps, the caller passes one in that it has written itself.
+    * The original headers. Any header holding a credential is replaced first.
 
-    Identifiers the caller supplies should be masked with
-    :func:`_mask_identifier` before they get here.
+    Email addresses and phone numbers passed in by the caller should be put
+    through :func:`_mask_identifier` first.
     """
     try:
         response_body = exc.response.json()
@@ -238,7 +238,8 @@ class AppWorldAuthManager(BaseAuthManager):
             response_body = _log_http_status_error(
                 e,
                 f"fetching token for {app_name}",
-                # Hand-built: the real body is username=...&password=...
+                # Written here rather than read from the request, whose real
+                # body contains the username and the password.
                 request_body=f"username={_mask_identifier(user_name)}&password=***",
             )
 

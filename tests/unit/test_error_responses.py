@@ -1,9 +1,10 @@
-"""The shared error helpers must never hand exception detail to the caller.
+"""The shared error helpers must never give exception details to the caller.
 
-These back the fix for CodeQL's py/stack-trace-exposure findings. The property
-under test is deliberately blunt: nothing derived from the exception may appear
-in the response body — not str(exc), not repr(exc), not exc.args, not the class
-name. Only a caller-supplied literal and a random reference.
+These tests cover the fix for the CodeQL rule py/stack-trace-exposure. What they
+check is deliberately simple: nothing taken from the exception may appear in the
+response body. Not str(exc), not repr(exc), not exc.args, and not the name of the
+exception class. Only fixed text written by the caller, plus a random reference
+code.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ SECRET = "/srv/secret/path.toml and api_key=sk-live-abcdef"
 
 
 def _boom() -> Exception:
-    """An exception whose text is exactly what must not escape."""
+    """An exception whose text is exactly what must not reach the caller."""
     try:
         raise RuntimeError(SECRET)
     except RuntimeError as exc:
@@ -101,11 +102,12 @@ def test_ref_is_random_and_not_derived_from_the_exception() -> None:
 
 @pytest.mark.unit
 def test_traceback_is_bound_to_the_exception_not_the_ambient_one() -> None:
-    """The helper must work outside a live ``except`` block.
+    """The helper must work when called outside an ``except`` block.
 
-    ``.exception()`` reads ``sys.exc_info()``, so calling it from a done-callback
-    or from ``asyncio.gather(return_exceptions=True)`` handling would log
-    "NoneType: None" and leave the ref pointing at an entry with no traceback.
+    Python's ``.exception()`` logging call looks up whichever exception is being
+    handled right now. Called from somewhere else, such as a callback that runs
+    after a task has finished, it would record no stack trace, and the reference
+    code would point at a log entry with nothing useful in it.
     """
     import logging
 
@@ -119,25 +121,25 @@ def test_traceback_is_bound_to_the_exception_not_the_ambient_one() -> None:
     logger.setLevel(logging.ERROR)
     logger.addHandler(_Capture())
 
-    # Note: captured, then used *after* the except block has exited.
+    # Captured first, then used after the except block has finished.
     exc = _boom()
-    assert sys.exc_info() == (None, None, None), "precondition: no ambient exception"
+    assert sys.exc_info() == (None, None, None), "this test needs no exception being handled"
 
     ref = log_error_ref(exc, log=logger, context="Detached failure")
 
     assert len(records) == 1
     assert ref in records[0].getMessage()
-    assert records[0].exc_info is not None, "traceback must come from the argument"
+    assert records[0].exc_info is not None, "the stack trace must come from the argument"
     assert records[0].exc_info[1] is exc
 
 
 @pytest.mark.unit
 def test_ref_reaches_the_log_so_detail_is_recoverable() -> None:
-    """The traceback is not lost — it goes to the log under the returned ref."""
+    """The stack trace is not lost. It goes to the log under the returned code."""
     records: list[str] = []
 
     class _SpyLogger:
-        """Shaped like a stdlib logger: `.error(msg, exc_info=...)`."""
+        """Shaped like a standard library logger."""
 
         def error(self, message: str, exc_info: object = None) -> None:
             records.append(message)

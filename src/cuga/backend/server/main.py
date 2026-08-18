@@ -3242,8 +3242,9 @@ async def generate_tool_guard_for_policy(
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
-        # Sibling handlers below already answer with fixed strings; the specific
-        # validation failure goes to the log under the returned ref.
+        # The handlers just below already reply with fixed text. The details of
+        # what failed validation go to the log, under the reference code that is
+        # returned to the caller.
         ref = log_error_ref(exc, context="Tool guard generation rejected the policy")
         return JSONResponse(
             {

@@ -1,8 +1,9 @@
-"""AppWorld auth diagnostics must not carry credentials into the logs.
+"""Failure details from AppWorld sign-in must not put credentials in the logs.
 
-Backs CodeQL's py/clear-text-logging-sensitive-data findings. The endpoints these
-handlers talk to are a login form and an account-passwords feed, so the request
-body and the Authorization header are the sensitive parts.
+These tests cover the fix for the CodeQL rule py/clear-text-logging-sensitive-data.
+The addresses these handlers call are a sign-in form and a list of stored account
+passwords, so the body that was sent and the authorisation header are the parts
+that must not be recorded.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def test_credential_headers_are_replaced() -> None:
     assert redacted["Authorization"] == "***"
     assert redacted["Cookie"] == "***"
     assert redacted["X-API-Key"] == "***"
-    # Non-credential headers stay useful for debugging.
+    # Headers that are not credentials stay readable, as they help with troubleshooting.
     assert redacted["Content-Type"] == "application/x-www-form-urlencoded"
 
 
@@ -57,7 +58,7 @@ def test_identifier_masking(value: str, expected: str) -> None:
 
 @pytest.mark.unit
 def test_request_body_is_never_read_off_the_wire(caplog: pytest.LogCaptureFixture) -> None:
-    """The real login body is username=...&password=...; it must not be logged."""
+    """The real sign-in body contains a username and password, so it must not be logged."""
     request = httpx.Request(
         "POST",
         "http://localhost:9000/phone/auth/token",
@@ -85,8 +86,8 @@ def test_request_body_is_never_read_off_the_wire(caplog: pytest.LogCaptureFixtur
     assert "hunter2" not in blob
     assert "sk-live-abcdef" not in blob
     assert "user@example.com" not in blob
-    # Still useful: status, method, and the masked summary survive.
+    # The parts that help with troubleshooting are still there.
     assert "401" in blob
     assert "password=***" in blob
-    # The parsed response body is returned so TokenFetchError can still be built.
+    # The response body is returned so the caller can still build its error.
     assert body == {"message": "bad credentials"}

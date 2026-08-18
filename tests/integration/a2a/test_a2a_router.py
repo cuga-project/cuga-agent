@@ -278,8 +278,9 @@ async def test_context_id_propagates_to_graph_runner(asgi_client, scripted_runne
 
 
 async def test_parse_error_carries_no_decoder_detail(asgi_client):
-    """The JSONDecodeError message quotes the offending payload back at the
-    caller. JSON-RPC 2.0 makes ``data`` optional, so it is simply omitted."""
+    """The JSON parser's message quotes the text it failed on back to the caller.
+    The JSON-RPC specification allows the extra detail field to be left out, so
+    it is."""
     resp = await asgi_client.post(
         "/a2a",
         content=b'{"jsonrpc": "2.0", "secret-marker-in-payload": ',
@@ -293,8 +294,9 @@ async def test_parse_error_carries_no_decoder_detail(asgi_client):
 
 
 async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
-    """Clients still need to know *which* param was wrong, so ``loc`` and
-    ``type`` survive; pydantic's ``msg``/``input``/``url`` do not."""
+    """A client still needs to know which parameter was wrong, so the field name
+    and the kind of error are kept. The written description, the value that was
+    sent, and the documentation link are not."""
     resp = await asgi_client.post(
         "/a2a",
         json={
@@ -309,9 +311,9 @@ async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
     assert body["error"]["message"] == "Invalid params"
 
     blob = json.dumps(body)
-    assert "secret-marker-value" not in blob, "submitted values must not be echoed"
-    assert "Field required" not in blob, "pydantic prose must not be echoed"
-    assert "pydantic.dev" not in blob, "pydantic help URLs must not be echoed"
+    assert "secret-marker-value" not in blob, "values sent by the caller must not be returned"
+    assert "Field required" not in blob, "the written description must not be returned"
+    assert "pydantic.dev" not in blob, "documentation links must not be returned"
 
     data = body["error"].get("data")
     if data is not None:
@@ -321,9 +323,9 @@ async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
 
 
 async def test_smuggled_key_name_is_not_echoed_for_extra_forbidden(asgi_client):
-    """`loc` normally names a schema field, but for extra_forbidden its last
-    segment is the caller's own key — echoing it back defeats the point of
-    dropping `input`."""
+    """The field name normally comes from our own schema. When the error is that
+    an unexpected field was supplied, its last part is the name the caller
+    invented, and returning that undoes the point of dropping the value."""
     resp = await asgi_client.post(
         "/a2a",
         json={

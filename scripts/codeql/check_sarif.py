@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Compare a CodeQL SARIF run against the alerts a branch claims to close.
+"""Compare a CodeQL results file against the alerts a branch claims to close.
 
-Two independent checks, because either one alone is misleading:
+There are two checks here, because either one on its own can mislead:
 
-* **Expected-closed** — every ``<rule-id>\\t<path>`` row in the manifest must
-  produce no result. This is the "did the fix work" half.
-* **No new alerts** — with ``--baseline-sarif``, any ``(rule, path)`` pair not
-  present in the baseline fails the run. This is the "did the fix just move the
-  problem" half, and it is the one that catches a sanitizer that quietly routes
-  the tainted value to a different sink.
+* **Expected to be closed.** Every ``<rule id>`` and ``<file>`` entry in the list
+  must produce no result. This answers "did the fix work".
+* **Nothing new.** When a starting-point results file is supplied, any rule and
+  file pair not present in it causes a failure. This answers "did the fix break
+  something else", and it is what catches a change that stops one report by
+  moving the problem to a different place.
 
-Rows match on rule id and file, never line number: the line moves the moment the
-file is edited, so pinning it would make every run a false pass.
+Entries are matched on the rule and the file, never on the line number. The line
+moves as soon as the file is edited, so recording it would make every run pass
+without really checking anything.
+
+CodeQL writes its results in a format called SARIF, which is JSON. That is what
+this script reads.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from pathlib import Path
 
 
 def load_results(sarif_path: Path) -> dict[tuple[str, str], list[int]]:
-    """Map (rule id, file path) -> the lines it fired on."""
+    """Return a mapping of (rule id, file path) to the lines that were reported."""
     data = json.loads(sarif_path.read_text())
     found: dict[tuple[str, str], list[int]] = defaultdict(list)
     for run in data.get("runs", []):
@@ -69,37 +73,39 @@ def main() -> int:
     for rule, path in expected_closed:
         lines = head.get((rule, path))
         if lines:
-            failures.append(f"{rule} still fires in {path} at line(s) {sorted(lines)}")
+            failures.append(f"{rule} is still reported in {path} at line(s) {sorted(lines)}")
             print(f"  STILL OPEN  {rule}  {path}  lines={sorted(lines)}")
         elif base is not None and (rule, path) not in base:
-            # Absence only means "fixed" if it was ever present. Without this,
-            # a typo'd rule id, a path the extractor skipped, or an empty
-            # analysis all report a confident PASS.
+            # A missing result only means "fixed" if it was there to begin with.
+            # Without this check, a misspelled rule id, a file skipped during
+            # scanning, or a scan that produced nothing at all would each be
+            # reported as a success.
             failures.append(
-                f"{rule} / {path} is absent from the baseline too — "
-                "manifest row is stale, misspelled, or the file was not analyzed"
+                f"{rule} / {path} was not reported at the starting point either, "
+                "so this entry is out of date, misspelled, or names a file that "
+                "was not scanned"
             )
-            print(f"  NOT IN BASE {rule}  {path}  (cannot have been closed by this branch)")
+            print(f"  NOT AT START {rule}  {path}  (so this branch cannot have closed it)")
         else:
-            suffix = "" if base is None else f"  (baseline had lines={sorted(base[(rule, path)])})"
+            suffix = "" if base is None else f"  (was reported at lines {sorted(base[(rule, path)])})"
             print(f"  closed      {rule}  {path}{suffix}")
 
     if base is None:
-        print("\n  note: no --baseline given, so 'closed' only means 'absent now'.")
+        print("\n  note: no starting point given, so 'closed' only means 'not reported now'.")
 
     if base is not None:
         new = sorted(set(head) - set(base))
-        print("\n== new alerts vs baseline ==")
+        print("\n== alerts not present at the starting point ==")
         if new:
             for rule, path in new:
-                failures.append(f"NEW alert {rule} in {path}")
+                failures.append(f"new alert {rule} in {path}")
                 print(f"  NEW         {rule}  {path}  lines={sorted(head[(rule, path)])}")
         else:
             print("  none")
 
         fixed = sorted(set(base) - set(head))
         if fixed:
-            print("\n== also newly clean (informational) ==")
+            print("\n== also no longer reported, for information ==")
             for rule, path in fixed:
                 print(f"  cleared     {rule}  {path}")
 
@@ -109,7 +115,7 @@ def main() -> int:
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("PASS: every targeted alert is closed and no new alert appeared.")
+    print("PASS: every listed alert is closed, and no new alert appeared.")
     return 0
 
 

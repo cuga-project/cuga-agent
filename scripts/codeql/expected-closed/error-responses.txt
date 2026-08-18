@@ -1,4 +1,4 @@
-# Alerts closed by "stop emitting internal detail to external surfaces".
+# Alerts closed by the change that stops internal details being sent out.
 # GitHub alerts #2, #29, #53, #54, #55, #146, #166, #167, #168, #169, #175.
 py/stack-trace-exposure	src/cuga/backend/server/main.py
 py/stack-trace-exposure	src/cuga/backend/server/manage_routes/config_routes.py

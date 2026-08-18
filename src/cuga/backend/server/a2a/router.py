@@ -39,11 +39,12 @@ logger = logging.getLogger(__name__)
 
 
 def _validation_detail(exc: Exception) -> list[dict[str, str]] | None:
-    """Field names and error kinds from a pydantic failure — never its text.
+    """Return the field names and error kinds from a validation failure.
 
-    JSON-RPC clients need to know *which* param was wrong to be able to fix it,
-    so this keeps ``loc`` and ``type`` and drops ``msg``/``input``/``url``,
-    which can echo submitted values and library internals back to the caller.
+    A client needs to know which parameter was wrong so it can correct the
+    request, so this keeps the field name and the kind of error. It drops the
+    written description, the submitted value, and the documentation link, since
+    those can send the caller's own input and internal details back to them.
     """
     errors = getattr(exc, "errors", None)
     if not callable(errors):
@@ -53,9 +54,10 @@ def _validation_detail(exc: Exception) -> list[dict[str, str]] | None:
         for err in errors():
             err_type = str(err.get("type", ""))
             loc_parts = [str(part) for part in err.get("loc", ())]
-            # For "extra_forbidden" the final loc segment is the caller's own
-            # key name, not a schema field, so echoing it back would reintroduce
-            # exactly what dropping `input` was meant to avoid.
+            # When the error is that an unexpected field was supplied, the last
+            # part of the field name is the name the caller invented, not one
+            # from our schema. Sending it back would repeat the problem that
+            # dropping the submitted value was meant to prevent.
             if err_type == "extra_forbidden" and loc_parts:
                 loc_parts = loc_parts[:-1]
             detail.append({"loc": ".".join(loc_parts), "type": err_type})
@@ -251,9 +253,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            # The decoder message quotes the offending payload, so it stays out
-            # of the response (data is optional in JSON-RPC 2.0) — but it is
-            # logged, so "your endpoint keeps rejecting me" is still diagnosable.
+            # The message from the JSON parser quotes the text it failed on, so
+            # it is not sent back. The JSON-RPC specification allows the extra
+            # detail field to be left out. It is written to the log instead, so
+            # a report of repeated rejections can still be investigated.
             logger.warning("A2A request body was not valid JSON", exc_info=True)
             return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error"))
 
