@@ -34,6 +34,10 @@ class HybridShortlister:
         self._embedding = embedding
         self._llm = llm
 
+    async def warm(self, tools: List[Any]) -> int:
+        """Warm the embedding leg; the LLM leg has nothing to preload."""
+        return await self._embedding.warm(tools)
+
     async def shortlist(self, request: ShortlistRequest) -> ShortlistResult:
         if not request.tools:
             return ShortlistResult()

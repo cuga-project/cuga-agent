@@ -338,6 +338,23 @@ class EmbeddingShortlister:
             kept = [(int(i), float(scores[i])) for i in order[:fallback]]
         return kept
 
+    async def warm(self, tools: List[Any]) -> int:
+        """Load the session and embed ``tools``, returning the number embedded.
+
+        Server mode calls this at startup and whenever the tool catalogue
+        changes, so the first user query does not fall back to the LLM. Only
+        cache misses cost anything — vectors are keyed by content hash, so a
+        re-warm after adding two tools embeds two documents, not the catalogue.
+
+        Blocking here is correct: it runs at boot, not on a query.
+        """
+        loaded = await asyncio.to_thread(prewarm, self._provider, self._model_name)
+        if not loaded or not tools:
+            return 0
+        before = len(_VECTORS)
+        await self._document_matrix(_MODELS[self._key], tools)
+        return len(_VECTORS) - before
+
     async def shortlist(self, request: ShortlistRequest) -> ShortlistResult:
         if not request.tools or (request.top_k is not None and request.top_k <= 0):
             return ShortlistResult()

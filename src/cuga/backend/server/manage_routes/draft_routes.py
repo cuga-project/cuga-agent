@@ -192,6 +192,9 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         state.tools_include_version = current_version + 1
 
         tool_errors = {}
+        # Bound before the try so the shortlister re-warm below can reference it
+        # even if the reload path fails early.
+        draft_agent_id = None
         try:
             base_agent_id = _parse_agent_id(str(agent_id))
             draft_agent_id = f"{base_agent_id}--draft"
@@ -212,6 +215,17 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
                 await rebuild_agent_from_config(draft_agent, full_draft)
         except Exception as rebuild_err:
             logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
+
+        # The catalogue just changed, so embed anything new for cosine
+        # shortlisting. Vectors are keyed by content hash, so adding two tools
+        # embeds two documents rather than re-embedding everything, and the
+        # model stays loaded. No-op on the default LLM strategy.
+        try:
+            from cuga.backend.server.main import warm_shortlister_catalogue
+
+            await warm_shortlister_catalogue(agent_id=draft_agent_id)
+        except Exception as warm_err:
+            logger.warning(f"Shortlister re-warm after PATCH tools skipped: {warm_err}")
 
         response_data = {
             "status": "partial" if tool_errors else "success",

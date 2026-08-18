@@ -11,7 +11,7 @@ once per process rather than once per call.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from loguru import logger
 
@@ -24,7 +24,11 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
-from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.plan import BUILTIN_STRATEGIES, ShortlisterPlan
+from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.plan import (
+    BUILTIN_STRATEGIES,
+    ShortlisterPlan,
+    ShortlisterRouter,
+)
 
 _INSTANCES: Dict[str, ShortlisterStrategy] = {}
 
@@ -141,3 +145,33 @@ async def run_shortlister(plan: ShortlisterPlan, request: ShortlistRequest) -> S
             fallback_name,
         )
         return await _BUILDERS[fallback_name](plan).shortlist(request)
+
+
+async def warm_tool_vectors(tools: Any, *, configurable: Optional[Dict[str, Any]] = None) -> int:
+    """Embed ``tools`` into the shortlister cache ahead of the first query.
+
+    A no-op unless a cosine-backed strategy is configured, so the default LLM
+    deployment pays nothing. Intended for server mode — at startup and whenever
+    the tool catalogue changes — where falling back to the LLM on the first
+    ``find_tools`` after boot would be a visible regression. The SDK stays lazy.
+
+    Never raises: warming is an optimization, and a server must start even when
+    the embedding model cannot load.
+    """
+    from cuga.config import settings
+
+    try:
+        plan = ShortlisterRouter.resolve(settings, seam="discovery", configurable=configurable)
+        if plan.is_llm_only:
+            return 0
+        strategy = resolve_shortlister(plan)
+        warm = getattr(strategy, "warm", None)
+        if warm is None:
+            return 0
+        embedded = await warm(list(tools or []))
+        if embedded:
+            logger.info("Shortlister: embedded {} tool document(s) (strategy={})", embedded, plan.strategy)
+        return embedded
+    except Exception as e:
+        logger.warning("Shortlister warm-up skipped: {}", e)
+        return 0

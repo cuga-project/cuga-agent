@@ -992,6 +992,8 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
+In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
+
 ## Configuration
 
 ### Every option

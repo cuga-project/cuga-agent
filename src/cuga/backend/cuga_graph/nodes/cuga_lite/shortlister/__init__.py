@@ -19,6 +19,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.factory import (
     clear_instance_cache,
     resolve_shortlister,
     run_shortlister,
+    warm_tool_vectors,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.plan import (
     BUILTIN_STRATEGIES,
@@ -41,5 +42,6 @@ __all__ = [
     "render_tools_markdown",
     "resolve_shortlister",
     "run_shortlister",
+    "warm_tool_vectors",
     "shortlister_to_configurable",
 ]
