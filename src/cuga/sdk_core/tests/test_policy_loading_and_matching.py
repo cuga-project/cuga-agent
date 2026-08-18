@@ -7,12 +7,27 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
+from unittest.mock import MagicMock  # noqa: E402
+
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 from loguru import logger  # noqa: E402
 
 # Import SDK
 from cuga.sdk import CugaAgent  # noqa: E402
+
+
+def _locate_policies_json():
+    """Return the policy export fixture, or None if it is not checked out."""
+    possible_paths = [
+        Path(__file__).parent / "policies-export-2025-12-31.json",
+        Path(__file__).parent.parent.parent / "Downloads" / "policies-export-2025-12-31.json",
+        Path("policies-export-2025-12-31.json"),
+    ]
+    for path in possible_paths:
+        if path.exists():
+            return path
+    return None
 
 
 @pytest_asyncio.fixture
@@ -40,24 +55,51 @@ async def agent():
         logger.warning(f"Cleanup warning: {e}")
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_policies_from_json_populates_storage():
+    """`policies.load_from_json` imports the export into storage. No LLM involved.
+
+    The matching half of this file needs a live model; this half must not, so the
+    public ``load_from_json`` API stays covered by the default PR CI shard. An explicit
+    ``model`` keeps it hermetic (no provider credentials, no network).
+    """
+    json_file = _locate_policies_json()
+    if json_file is None:
+        pytest.skip("policies-export-2025-12-31.json fixture not found")
+
+    agent = CugaAgent(
+        tools=[],
+        model=MagicMock(),
+        auto_load_policies=False,
+        filesystem_sync=False,
+    )
+
+    result = await agent.policies.load_from_json(str(json_file), clear_existing=True)
+
+    assert result["count"] > 0, f"Expected to load at least one policy, got {result['count']}"
+    assert not result["errors"], f"Import reported errors: {result['errors']}"
+
+    stored = await agent.policies.list()
+    assert len(stored) == result["count"]
+    assert {p["type"] for p in stored} <= {
+        "intent_guard",
+        "playbook",
+        "tool_approval",
+        "tool_guide",
+        "output_formatter",
+    }
+
+
+# Sequential live invokes per JSON utterance. Policy-a already covers graph-level
+# intent_guard / playbook / tool approval e2e.
+@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_load_policies_from_json_and_match(agent):
     """Test loading policies from JSON file and matching them with example utterances using SDK."""
-    # Path to the test JSON file (try multiple locations)
-    possible_paths = [
-        Path(__file__).parent / "policies-export-2025-12-31.json",  # tests/integration/
-        Path(__file__).parent.parent.parent / "Downloads" / "policies-export-2025-12-31.json",  # Downloads/
-        Path("policies-export-2025-12-31.json"),  # Current directory
-    ]
-
-    json_file = None
-    for path in possible_paths:
-        if path.exists():
-            json_file = path
-            break
-
-    if not json_file or not json_file.exists():
-        pytest.skip(f"Test JSON file not found. Tried: {[str(p) for p in possible_paths]}")
+    json_file = _locate_policies_json()
+    if json_file is None:
+        pytest.skip("policies-export-2025-12-31.json fixture not found")
 
     logger.info(f"Loading policies from: {json_file}")
 
