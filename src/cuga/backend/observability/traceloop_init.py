@@ -55,39 +55,37 @@ import threading
 
 from loguru import logger
 
-from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
 from cuga.backend.observability.openlit_init import _merge_otel_resource_attributes
 
 # ---------------------------------------------------------------------------
-# Set OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES at MODULE LEVEL — before any
-# other import that might trigger some other library to call
-# trace.set_tracer_provider() first. Same rationale as openlit_init.py's own
-# comment: whichever library creates the TracerProvider first should see
-# correct resource attributes. Safe to repeat here even when openlit_init.py
-# already did this (dedup by key via _merge_otel_resource_attributes).
+# NOTE: no static resource-attrs block (agent.id/service.version) here.
+#
+# This module imports openlit_init (above, for _merge_otel_resource_attributes),
+# and Python guarantees openlit_init.py's own module body — including its own
+# identical static-attrs block (same keys, same values) — always runs first as
+# a side effect of that import. A second copy here would only ever be a no-op
+# dedup-by-key merge on top of what openlit_init.py already set. See
+# openlit_init.py's own module-level comment for the full rationale.
+#
+# OTEL_SERVICE_NAME *is* still set here (kept intentionally, not dead code):
+# it's an idempotent `if not os.getenv(...)` check, so whichever of this
+# module or openlit_init.py runs first "wins" with zero behavioral difference
+# either way — unlike the static-attrs dict merge above, there's no dedup
+# logic to make redundant, so keeping it costs nothing and protects against
+# a hypothetical future where this module no longer imports openlit_init.
 # ---------------------------------------------------------------------------
 
 if not os.getenv("OTEL_SERVICE_NAME"):
     os.environ["OTEL_SERVICE_NAME"] = "cuga"
 
-try:
-    from importlib.metadata import version as _pkg_version
-
-    _cuga_version = _pkg_version("cuga")
-except Exception:
-    _cuga_version = "unknown"
-
-_static_attrs_dict = {
-    "agent.id": "CugaAgent",
-    "service.version": _cuga_version,
-}
-_existing_resource_attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
-os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(
-    _existing_resource_attrs, _static_attrs_dict
-)
-
 
 _initialized = False  # Module-level guard: prevents redundant init on multiple calls
+_init_attempted = False  # True once one init attempt (success OR failure) has happened
+# this process — distinguishes "never attempted" from "attempted and failed, don't
+# retry" from "succeeded" (_initialized). Without this, a failed/unavailable init
+# (missing extra, or a caught construction error) would re-attempt settings read +
+# directory creation + exporter construction + re-log the same warning on every
+# single subsequent invoke()/stream()/etc. call, forever, for the life of the process.
 _init_lock = threading.Lock()  # Protects initialization from race conditions
 
 
@@ -109,14 +107,19 @@ def init_traceloop() -> None:
         env var:        OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318  # "otlp" mode only
         env var:        OTEL_EXPORTER_OTLP_HEADERS=...                     # "otlp" mode only
     """
-    global _initialized
-    if _initialized:
+    global _initialized, _init_attempted
+    if _initialized or _init_attempted:
         return
 
     with _init_lock:
         # Double-check inside the lock to prevent race conditions
-        if _initialized:
+        if _initialized or _init_attempted:
             return
+        # Mark "attempted" up front, before anything that can fail below — a
+        # failed attempt (missing extra, or a caught exporter-construction
+        # error) must not be retried on subsequent calls. See _init_attempted
+        # module docstring above.
+        _init_attempted = True
 
         try:
             from cuga.config import settings, TRACES_DIR
@@ -142,18 +145,34 @@ def init_traceloop() -> None:
             os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(existing, dynamic_attrs)
 
         exporter_kind = getattr(obs, "traceloop_exporter", "file")
-        if exporter_kind == "file":
-            default_path = os.path.join(TRACES_DIR, "traceloop_spans.jsonl")
-            path = getattr(obs, "traceloop_file_path", "") or default_path
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            exporter = LocalOtlpFileSpanExporter(path)
-        else:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            from opentelemetry.util.re import parse_env_headers
+        # Observability must never crash the main agent path (this function runs
+        # unguarded as the first thing in CugaAgent.invoke()/initialize()/stream()
+        # and CugaSupervisor.invoke()) — so resolving/constructing the exporter for
+        # either mode is guarded the same way as the Traceloop.init() call below.
+        try:
+            if exporter_kind == "file":
+                # Lazy import: local_otlp_file_exporter pulls in
+                # google.protobuf.json_format + opentelemetry.exporter.otlp.proto.common
+                # (~58ms cold-import cost) — only worth paying in "file" mode, same
+                # pattern as the "otlp" branch's own lazy imports just below.
+                from cuga.backend.observability.local_otlp_file_exporter import (
+                    LocalOtlpFileSpanExporter,
+                )
 
-            endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-            headers = parse_env_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")) or None
-            exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+                default_path = os.path.join(TRACES_DIR, "traceloop_spans.jsonl")
+                path = getattr(obs, "traceloop_file_path", "") or default_path
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                exporter = LocalOtlpFileSpanExporter(path)
+            else:
+                from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+                from opentelemetry.util.re import parse_env_headers
+
+                endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+                headers = parse_env_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")) or None
+                exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+        except Exception as e:
+            logger.error(f"Failed to construct Traceloop exporter (mode={exporter_kind}): {e}")
+            return
 
         try:
             from traceloop.sdk import Traceloop
@@ -168,7 +187,15 @@ def init_traceloop() -> None:
             Traceloop.init(
                 app_name="cuga",
                 exporter=exporter,
-                disable_batch=True,  # flush promptly, especially for local file mode
+                # SimpleSpanProcessor (file) vs BatchSpanProcessor (otlp). File mode:
+                # synchronous flush so "see the trace file immediately" (Phase 1's
+                # "Done when" bar) actually holds — a cheap local write, fine to do
+                # inline. OTLP mode: a SimpleSpanProcessor would turn every span into
+                # a blocking HTTP POST on the agent's own thread/event loop, with the
+                # installed exporter retrying up to 6x with exponential backoff on
+                # failure — a slow/down collector would stall the agent on every
+                # span. Batched/async export avoids blocking on network I/O.
+                disable_batch=(exporter_kind == "file"),
                 instruments=None,  # enable everything (DP4) — no allow-list
                 block_instruments=None,  # block nothing — no REQUESTS/URLLIB3 exclusion
             )
@@ -210,4 +237,7 @@ def set_task_association_properties(
         if v is not None
     }
     if props:
-        Traceloop.set_association_properties(props)
+        try:
+            Traceloop.set_association_properties(props)
+        except Exception as e:
+            logger.error(f"Failed to set Traceloop task association properties: {e}")
