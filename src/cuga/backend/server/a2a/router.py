@@ -49,10 +49,17 @@ def _validation_detail(exc: Exception) -> list[dict[str, str]] | None:
     if not callable(errors):
         return None
     try:
-        return [
-            {"loc": ".".join(str(part) for part in err.get("loc", ())), "type": str(err.get("type", ""))}
-            for err in errors()
-        ] or None
+        detail = []
+        for err in errors():
+            err_type = str(err.get("type", ""))
+            loc_parts = [str(part) for part in err.get("loc", ())]
+            # For "extra_forbidden" the final loc segment is the caller's own
+            # key name, not a schema field, so echoing it back would reintroduce
+            # exactly what dropping `input` was meant to avoid.
+            if err_type == "extra_forbidden" and loc_parts:
+                loc_parts = loc_parts[:-1]
+            detail.append({"loc": ".".join(loc_parts), "type": err_type})
+        return detail or None
     except Exception:  # non-pydantic validation error
         return None
 
@@ -244,8 +251,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            # The decoder message quotes the offending payload; the code alone
-            # tells the client what it needs (data is optional in JSON-RPC 2.0).
+            # The decoder message quotes the offending payload, so it stays out
+            # of the response (data is optional in JSON-RPC 2.0) — but it is
+            # logged, so "your endpoint keeps rejecting me" is still diagnosable.
+            logger.warning("A2A request body was not valid JSON", exc_info=True)
             return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error"))
 
         if not isinstance(payload, dict):
@@ -262,6 +271,7 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
+                logger.warning("A2A %s params failed validation", method, exc_info=exc)
                 return JSONResponse(
                     _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
                 )
@@ -287,6 +297,7 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
+                logger.warning("A2A %s params failed validation", method, exc_info=exc)
                 return JSONResponse(
                     _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
                 )

@@ -318,3 +318,26 @@ async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
         assert isinstance(data, list)
         for entry in data:
             assert set(entry) == {"loc", "type"}
+
+
+async def test_smuggled_key_name_is_not_echoed_for_extra_forbidden(asgi_client):
+    """`loc` normally names a schema field, but for extra_forbidden its last
+    segment is the caller's own key — echoing it back defeats the point of
+    dropping `input`."""
+    resp = await asgi_client.post(
+        "/a2a",
+        json={
+            "jsonrpc": "2.0",
+            "id": "smuggle",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "go"}],
+                    "messageId": "m-1",
+                    "x-smuggled-key-name": 1,
+                }
+            },
+        },
+    )
+    assert "x-smuggled-key-name" not in json.dumps(resp.json())
