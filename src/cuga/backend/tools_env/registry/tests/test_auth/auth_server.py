@@ -4,8 +4,6 @@ Lightweight FastAPI server for testing authentication.
 Supports multiple authentication methods: header, bearer, api-key, basic, and query.
 """
 
-import os
-
 from fastapi import FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel
 from typing import Optional, List
@@ -17,11 +15,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Overridable so a shared or CI environment does not have to run with the
-# published defaults. The defaults keep existing local test invocations working.
-VALID_API_KEY = os.environ.get("CUGA_TEST_AUTH_API_KEY", "test-secret-key")
-VALID_BEARER_TOKEN = os.environ.get("CUGA_TEST_AUTH_BEARER_TOKEN", "test-bearer-token")
-VALID_BASIC_AUTH = os.environ.get("CUGA_TEST_AUTH_BASIC", "testuser:testpass")
+# Fixed, and deliberately so: mcp_servers_auth_test.yaml and README.md hardcode
+# these same values on the client side, so making the server side configurable
+# would just desynchronise the two and 401 the whole suite.
+VALID_API_KEY = "test-secret-key"  # pragma: allowlist secret
+VALID_BEARER_TOKEN = "test-bearer-token"  # pragma: allowlist secret
+VALID_BASIC_AUTH = "testuser:testpass"  # pragma: allowlist secret
 
 
 class Item(BaseModel):
@@ -139,11 +138,8 @@ if __name__ == "__main__":
     import uvicorn
 
     print("\nAuth Test API Server starting on http://localhost:8002")
-    # Print which methods are wired up, never the values — echoing the
-    # credentials to stdout put them in CI logs and scrollback.
-    print("Enabled auth methods: X-API-Key, Bearer token, Basic auth, query key")
-    print(
-        "Override the defaults with CUGA_TEST_AUTH_API_KEY, "
-        "CUGA_TEST_AUTH_BEARER_TOKEN, CUGA_TEST_AUTH_BASIC\n"
-    )
+    # Which methods are wired up, never the values. Echoing the credentials here
+    # put them in CI logs and terminal scrollback for no benefit — anyone who
+    # needs them can read mcp_servers_auth_test.yaml or README.md.
+    print("Enabled auth methods: X-API-Key, Bearer token, Basic auth, query key\n")
     uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
