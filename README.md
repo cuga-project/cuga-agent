@@ -990,7 +990,7 @@ When an app exposes many tools, CUGA shrinks the set before the model sees it. T
 
 `embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
 
-Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached under `~/.cache/cuga/fastembed`): ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
 
 ## Configuration
 
@@ -1006,7 +1006,7 @@ Embeddings are local by default (`all-MiniLM-L6-v2` via fastembed, ~90MB, cached
 | `min_score` | `0.15` | Cosine floor. Deliberately low: this is a **recall** filter, not a precision knob |
 | `query_weight` | `0.7` | Blend of step query vs. initial user message when embedding the query (0–1) |
 | `embedding_provider` | `"local"` | `local` (fastembed, offline, free) or `openai` |
-| `embedding_model` | `all-MiniLM-L6-v2` | Any fastembed model, or an OpenAI embedding model |
+| `embedding_model` | `bge-small-en-v1.5` | Any fastembed model, or an OpenAI embedding model |
 
 ### Four ways to set it
 

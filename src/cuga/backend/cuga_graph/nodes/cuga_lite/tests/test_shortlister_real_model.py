@@ -23,7 +23,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import (
 
 pytestmark = [pytest.mark.stability, pytest.mark.slow]
 
-MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL = "BAAI/bge-small-en-v1.5"
 
 
 class _Args(BaseModel):
@@ -76,7 +76,7 @@ async def _rank(strategy, query, top_k=5, task_context=None):
     result = await strategy.shortlist(
         ShortlistRequest(query=query, tools=CATALOGUE, apps=[], top_k=top_k, task_context=task_context)
     )
-    return [c.name for c in result]
+    return [c.name for c in result.candidates]
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_crud_siblings_are_barely_separated(strategy):
     result = await strategy.shortlist(
         ShortlistRequest(query="list all my contacts", tools=CATALOGUE, apps=[], top_k=8)
     )
-    scores = {c.name: c.score for c in result}
+    scores = {c.name: c.score for c in result.candidates}
     listing, by_id = "crm_get_contacts_contacts_get", "crm_get_contact_contacts_contact_id_get"
     missing = [n for n in (listing, by_id) if n not in scores]
     assert not missing, f"expected both CRUD siblings in the top 8, missing {missing}"

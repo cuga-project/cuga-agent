@@ -231,7 +231,7 @@ validators = [
     Validator("shortlister.min_score", default=0.15),
     Validator("shortlister.query_weight", default=0.7),
     Validator("shortlister.embedding_provider", default="local"),
-    Validator("shortlister.embedding_model", default="sentence-transformers/all-MiniLM-L6-v2"),
+    Validator("shortlister.embedding_model", default="BAAI/bge-small-en-v1.5"),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),

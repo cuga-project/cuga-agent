@@ -17,8 +17,8 @@ from typing import Any, ClassVar, List
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
-    ShortlistCandidate,
     ShortlistRequest,
+    ShortlistResult,
     ShortlisterUnavailableError,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
@@ -34,9 +34,9 @@ class HybridShortlister:
         self._embedding = embedding
         self._llm = llm
 
-    async def shortlist(self, request: ShortlistRequest) -> List[ShortlistCandidate]:
+    async def shortlist(self, request: ShortlistRequest) -> ShortlistResult:
         if not request.tools:
-            return []
+            return ShortlistResult()
 
         pool: List[Any] = request.tools
 
@@ -53,7 +53,7 @@ class HybridShortlister:
                     )
                 )
                 by_name = {t.name: t for t in pool}
-                narrowed = [by_name[c.name] for c in prefiltered if c.name in by_name]
+                narrowed = [by_name[c.name] for c in prefiltered.candidates if c.name in by_name]
                 if narrowed:
                     logger.debug("Hybrid shortlister: cosine cut {} tools to {}", len(pool), len(narrowed))
                     pool = narrowed

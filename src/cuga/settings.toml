@@ -103,7 +103,7 @@ query_weight = 0.7 # blend of step query vs initial user message when embedding 
 # Embeddings are self-contained by default: always local, never a network call, never billed.
 # Deliberately does NOT inherit [storage.embedding], which may be set to "openai".
 embedding_provider = "local"
-embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+embedding_model = "BAAI/bge-small-en-v1.5"  # same weights knowledge/policy load — one ONNX session
 # Per-seam overrides are supported and inherit the values above; add a
 # [shortlister.discovery] (find_tools) or [shortlister.bind_cap] (provider cap)
 # section only when the two seams need different settings.

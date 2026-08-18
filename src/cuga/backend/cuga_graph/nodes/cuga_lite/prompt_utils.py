@@ -465,12 +465,14 @@ class PromptUtils:
         plan = ShortlisterRouter.resolve(
             settings, seam="discovery", configurable=_configurable_of(run_config)
         )
-        # Below the threshold the cosine stage would add cost without cutting
-        # anything, so the LLM ranks the full set exactly as it does today.
-        # Uniform on purpose: "at or below threshold, shortlisting behaves as it
-        # always did" is easier to reason about than per-strategy exceptions.
+        # Two conditions, both required. Keying only on catalogue size would cap
+        # the *default* LLM path above the threshold — injecting a top_k
+        # instruction and truncating the render — which #624 requires stay
+        # byte-for-byte unchanged at every N.
+        #   1. a non-default ranker is configured, and
+        #   2. there is actually something to cut.
         # Set ``threshold = 0`` to always engage the configured strategy.
-        engage_cosine = len(all_tools) > plan.threshold
+        engage_cosine = not plan.is_llm_only and len(all_tools) > plan.threshold
         if not engage_cosine:
             plan = plan.model_copy(update={"strategy": "llm", "instance": None})
 
@@ -529,11 +531,14 @@ class PromptUtils:
         )
 
         plan = ShortlisterRouter.resolve(settings, seam="bind_cap", configurable=_configurable_of(run_config))
-        # ``top_k`` here is the provider cap the caller computed; it is a hard
-        # ceiling, so never let a configured value raise it.
-        effective_top_k = min(top_k, plan.top_k) if plan.top_k else top_k
-        if len(all_tools) <= plan.threshold:
+        # Same gate as find_tools: only a configured non-default ranker may
+        # narrow the caller's cap. On the default LLM path ``top_k`` stays
+        # exactly what the caller computed, as it always has.
+        engage_cosine = not plan.is_llm_only and len(all_tools) > plan.threshold
+        if not engage_cosine:
             plan = plan.model_copy(update={"strategy": "llm", "instance": None})
+        # ``top_k`` is the provider cap; a configured value may lower it, never raise it.
+        effective_top_k = min(top_k, plan.top_k) if (engage_cosine and plan.top_k) else top_k
 
         result = await run_shortlister(
             plan,

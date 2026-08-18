@@ -109,7 +109,7 @@ async def test_ranks_by_cosine_similarity(fake_model):
         _tool("flight_booker", "book a flight"),
     ]
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
-    result = await strategy.shortlist(_request("find the contact email", tools))
+    result = (await strategy.shortlist(_request("find the contact email", tools))).candidates
 
     assert result[0].name == "contact_finder"
     assert result[0].score > result[-1].score
@@ -118,7 +118,7 @@ async def test_ranks_by_cosine_similarity(fake_model):
 @pytest.mark.asyncio
 async def test_reasoning_is_populated_for_rendering(fake_model):
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
-    result = await strategy.shortlist(_request("contact", [_tool("contact_finder", "contact")]))
+    result = (await strategy.shortlist(_request("contact", [_tool("contact_finder", "contact")]))).candidates
     assert "Cosine similarity" in result[0].reasoning
 
 
@@ -127,7 +127,7 @@ async def test_never_returns_empty_even_when_nothing_clears_min_score(fake_model
     """An empty result is a dead end for the agent and makes the bind cap raise."""
     tools = [_tool("weather_lookup", "weather"), _tool("flight_booker", "flight")]
     strategy = EmbeddingShortlister(MODEL, min_score=0.99)
-    result = await strategy.shortlist(_request("contact email", tools))
+    result = (await strategy.shortlist(_request("contact email", tools))).candidates
 
     assert result, "must fall back to best-guess rather than returning nothing"
     assert len(result) <= 3
@@ -137,7 +137,7 @@ async def test_never_returns_empty_even_when_nothing_clears_min_score(fake_model
 async def test_min_score_filters_when_some_clear_it(fake_model):
     tools = [_tool("contact_finder", "contact email"), _tool("weather_lookup", "weather")]
     strategy = EmbeddingShortlister(MODEL, min_score=0.5)
-    result = await strategy.shortlist(_request("contact email", tools))
+    result = (await strategy.shortlist(_request("contact email", tools))).candidates
 
     assert [c.name for c in result] == ["contact_finder"]
 
@@ -147,24 +147,24 @@ async def test_top_k_and_max_results_cap_the_result(fake_model):
     tools = [_tool(f"contact_{i}", "contact email") for i in range(10)]
     strategy = EmbeddingShortlister(MODEL, min_score=0.0)
 
-    assert len(await strategy.shortlist(_request("contact", tools, top_k=3))) == 3
-    assert len(await strategy.shortlist(_request("contact", tools, max_results=2))) == 2
+    assert len((await strategy.shortlist(_request("contact", tools, top_k=3))).candidates) == 3
+    assert len((await strategy.shortlist(_request("contact", tools, max_results=2))).candidates) == 2
     # The tighter of the two wins.
     capped = await strategy.shortlist(_request("contact", tools, top_k=8, max_results=4))
-    assert len(capped) == 4
+    assert len(capped.candidates) == 4
 
 
 @pytest.mark.asyncio
 async def test_top_k_zero_returns_nothing(fake_model):
     strategy = EmbeddingShortlister(MODEL)
-    result = await strategy.shortlist(_request("contact", [_tool("contact_finder")], top_k=0))
+    result = (await strategy.shortlist(_request("contact", [_tool("contact_finder")], top_k=0))).candidates
     assert result == []
 
 
 @pytest.mark.asyncio
 async def test_empty_tools_returns_empty(fake_model):
     strategy = EmbeddingShortlister(MODEL)
-    assert await strategy.shortlist(_request("contact", [])) == []
+    assert (await strategy.shortlist(_request("contact", []))).candidates == []
 
 
 # --- query blending ---------------------------------------------------------
@@ -190,8 +190,8 @@ async def test_query_weight_shifts_ranking_toward_the_step_query(fake_model):
     query_heavy = EmbeddingShortlister(MODEL, query_weight=1.0, min_score=0.0)
     context_heavy = EmbeddingShortlister(MODEL, query_weight=0.0, min_score=0.0)
 
-    top_query = (await query_heavy.shortlist(_request("contact", tools, **request)))[0]
-    top_context = (await context_heavy.shortlist(_request("contact", tools, **request)))[0]
+    top_query = (await query_heavy.shortlist(_request("contact", tools, **request))).candidates[0]
+    top_context = (await context_heavy.shortlist(_request("contact", tools, **request))).candidates[0]
 
     assert top_query.name == "contact_finder"
     assert top_context.name == "flight_booker"
@@ -212,7 +212,9 @@ async def test_blank_query_returns_nothing_rather_than_claiming_unavailability(f
     strategy, which would receive the same empty query and fare no better.
     """
     strategy = EmbeddingShortlister(MODEL)
-    assert await strategy.shortlist(_request("   ", [_tool("contact_finder")], task_context="  ")) == []
+    assert (
+        await strategy.shortlist(_request("   ", [_tool("contact_finder")], task_context="  "))
+    ).candidates == []
 
 
 # --- caching ----------------------------------------------------------------

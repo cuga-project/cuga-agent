@@ -188,12 +188,12 @@ async def test_configured_top_k_can_lower_bind_cap():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm.LLMShortlister.shortlist",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding.EmbeddingShortlister.shortlist",
             _capture,
         ),
         patch(
             "cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils.settings",
-            _settings(top_k=4, threshold=0),
+            _settings(strategy="embedding", top_k=4, threshold=0),
         ),
     ):
         await PromptUtils.shortlist_tool_names(query="q", all_tools=_tools(50), all_apps=[], top_k=32)

@@ -18,9 +18,12 @@ Three properties worth knowing before changing anything here:
   them lets a long first message drown a short per-step query, which would make
   every step of a multi-step task retrieve the same tools.
 
-Local (``provider = "local"``, the default) runs entirely offline via fastembed
-— no network call, nothing billed. ``provider = "openai"`` is available when a
-deployment explicitly wants it, and trades those properties for a hosted model.
+Local (``provider = "local"``, the default) runs entirely offline via fastembed,
+reusing the same session knowledge and policy already load — no second ONNX
+session, and nothing extra for airgapped preload to fetch. ``provider =
+"openai"`` is available when a deployment explicitly wants it, and trades those
+properties for a hosted model. This section deliberately does not inherit
+``[storage.embedding]``, which a deployment may have pointed at OpenAI.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
     ShortlistCandidate,
     ShortlistRequest,
+    ShortlistResult,
     ShortlisterUnavailableError,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.doc import (
@@ -72,26 +76,30 @@ def backend_key(provider: str, model_name: str) -> str:
 def _is_asymmetric(model_name: str) -> bool:
     """Whether the model wants distinct query/passage encodings.
 
-    ``BAAI/bge-*`` models are trained with a query-side instruction prefix.
-    ``all-MiniLM-L6-v2`` (our default) is symmetric — applying bge's prefix to
-    it *degrades* results. Default to symmetric so an unknown model behaves
-    sanely rather than oddly.
+    ``BAAI/bge-*`` (our default) is trained with a query-side instruction
+    prefix, so queries and documents are encoded differently. MiniLM-class
+    models are symmetric, and applying bge's prefix to one *degrades* results.
+    Default to symmetric so an unknown model behaves sanely rather than oddly.
     """
     lowered = (model_name or "").lower()
     return "bge" in lowered and "reranker" not in lowered
 
 
 class _LocalBackend:
-    """fastembed, on-device. No network at query time, nothing billed."""
+    """fastembed, on-device. No network at query time, nothing billed.
+
+    Uses the process-wide session from ``embedding_service`` so the shortlister
+    shares weights with knowledge and policy rather than loading a second copy.
+    """
 
     def __init__(self, model_name: str) -> None:
-        from fastembed import TextEmbedding
+        from cuga.backend.storage.embedding.embedding_service import get_shared_text_embedding
 
-        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
-        local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
         self._model_name = model_name
         self._asymmetric = _is_asymmetric(model_name)
-        self._model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
+        # Shared with knowledge and policy: one ONNX session per model for the
+        # whole process, and one entry in the airgapped preload list.
+        self._model = get_shared_text_embedding(model_name)
 
     def _embed_sync(self, texts: Sequence[str], *, as_query: bool) -> np.ndarray:
         if self._asymmetric:
@@ -330,24 +338,26 @@ class EmbeddingShortlister:
             kept = [(int(i), float(scores[i])) for i in order[:fallback]]
         return kept
 
-    async def shortlist(self, request: ShortlistRequest) -> List[ShortlistCandidate]:
+    async def shortlist(self, request: ShortlistRequest) -> ShortlistResult:
         if not request.tools or (request.top_k is not None and request.top_k <= 0):
-            return []
+            return ShortlistResult()
 
         backend = self._require_backend()
         query_vector = await self._query_vector(backend, request)
         if query_vector is None:
-            return []
+            return ShortlistResult()
         document_matrix = await self._document_matrix(backend, request.tools)
 
         scores = document_matrix @ query_vector
         selected = self._select(scores, request.tools, request)
 
-        return [
-            ShortlistCandidate(
-                name=request.tools[index].name,
-                score=score,
-                reasoning=f"Cosine similarity {score:.3f} to the query.",
-            )
-            for index, score in selected
-        ]
+        return ShortlistResult(
+            candidates=[
+                ShortlistCandidate(
+                    name=request.tools[index].name,
+                    score=score,
+                    reasoning=f"Cosine similarity {score:.3f} to the query.",
+                )
+                for index, score in selected
+            ]
+        )

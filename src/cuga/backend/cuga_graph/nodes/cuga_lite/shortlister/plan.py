@@ -31,7 +31,7 @@ DEFAULT_MAX_RESULTS = 10
 DEFAULT_MIN_SCORE = 0.15
 DEFAULT_QUERY_WEIGHT = 0.7
 DEFAULT_EMBEDDING_PROVIDER = "local"
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 _INT_FIELDS = ("threshold", "top_k", "max_results")
 _FLOAT_FIELDS = ("min_score", "query_weight")

@@ -21,7 +21,7 @@ def test_settings_toml_ships_the_shortlister_section():
     assert settings.shortlister.threshold == 128
     assert settings.shortlister.top_k == 128
     assert settings.shortlister.max_results == 10
-    assert settings.shortlister.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
+    assert settings.shortlister.embedding_model == "BAAI/bge-small-en-v1.5"
     assert settings.shortlister.embedding_provider == "local"
 
 
