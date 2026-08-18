@@ -577,32 +577,39 @@ class LLMManager:
             d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
-        # CodeQL alert #170 (py/weak-sensitive-data-hashing) fires here and is
-        # dismissed as a false positive rather than fixed. Worth writing down,
-        # because the obvious fixes all fail:
+        # CodeQL reports this line under the rule py/weak-sensitive-data-hashing,
+        # as alert #170. That alert has been dismissed as a false positive rather
+        # than fixed, because none of the available fixes is an improvement.
+        # Recording the reasoning here so it does not have to be worked out again:
         #
-        # * The alert is from the rule's ComputationallyExpensiveHashFunction
-        #   module, which accepts only bcrypt/scrypt/argon2/PBKDF2 — so SHA-256
-        #   does not satisfy it any more than MD5 did. Nothing short of a real
-        #   KDF clears it in code.
-        # * PBKDF2 is the wrong tool: this runs on every get_model() call, and a
-        #   KDF at usable iteration counts costs 100ms+ each time. A per-call
-        #   salt would also change the digest every call, so the cache would
-        #   never hit.
-        # * `usedforsecurity=False` does nothing — CodeQL does not model it in
-        #   any language (github/codeql#13637, open since 2023).
-        # * Scrubbing the credential out of `d` first does not work either:
-        #   CodeQL tracks dict content per key, and assigning `d[k]` with a
-        #   computed `k` is a weak update, so the tainted value is never cleared.
+        # * The rule is asking for a password-hashing function that is slow on
+        #   purpose, such as bcrypt, scrypt, argon2 or PBKDF2. SHA-256 does not
+        #   satisfy it, and neither did MD5, so changing the algorithm does not
+        #   help. This was checked by running CodeQL locally.
+        # * A slow password-hashing function is the wrong tool here. This runs
+        #   every time a model is requested, and those functions take upwards of
+        #   100 milliseconds by design. They also need a random value mixed in,
+        #   which would change the result on every call, so the cache would never
+        #   find anything.
+        # * Passing usedforsecurity=False, which normally tells tools that a hash
+        #   is not being used for security, has no effect: CodeQL does not read
+        #   that argument in any language. See github/codeql issue 13637, open
+        #   since 2023.
+        # * Removing the credential from the data before hashing does not work
+        #   either. CodeQL follows values held in a dictionary by their key, and
+        #   it does not treat assigning to a key that is worked out at runtime as
+        #   replacing what was there, so it still considers the credential
+        #   present. Also checked by running CodeQL locally.
         #
-        # The finding is a false positive on impact. This digest is an
-        # in-process dict key for `self._models`. It is never persisted,
-        # transmitted, or compared against a stored value, and it lives in the
-        # same memory as the plaintext credential it derives from — anyone who
-        # can read it can already read the key itself.
+        # The report is a false positive in terms of what it would let someone do.
+        # This value is only used as a key in the self._models dictionary. It is
+        # never saved, never sent anywhere, and never compared against a stored
+        # value, and it is held in the same memory as the credential it was made
+        # from, so anyone able to read it can already read the credential itself.
         #
-        # SHA-256 rather than MD5 is kept as plain hygiene; it has no observable
-        # effect, since the cache is in-process and rebuilt every start.
+        # SHA-256 is used in place of MD5 simply because there is no reason to
+        # prefer MD5. It changes nothing that can be observed: the cache only
+        # exists while the program is running and is rebuilt on every start.
         return hashlib.sha256(settings_str.encode()).hexdigest()
 
     def _get_model_name(self, model_settings: Dict[str, Any], platform: str) -> str:
