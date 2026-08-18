@@ -42,7 +42,9 @@ STARTUP_LOG_NEEDLE = "Application finished starting up..."
 def find_free_port() -> int:
     """Bind to port 0 and let the OS pick a free ephemeral port."""
     with socket.socket() as s:
-        s.bind(("", 0))
+        # Loopback, not every interface: the port is handed straight to a
+        # locally-spawned server, so there is nothing to gain from binding wider.
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
