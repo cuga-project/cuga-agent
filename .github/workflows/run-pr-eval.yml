@@ -148,7 +148,7 @@ jobs:
               .filter(Boolean);
 
             if (reportBlocks.length > 0) {
-              output = reportBlocks.join("\n\n---\n\n");
+              output = reportBlocks.join("\n\n");
             } else {
               output = "No report section found between REPORT START and REPORT END markers.";
             }
@@ -159,7 +159,7 @@ jobs:
 
             const result = exitCode === "0" ? "SUCCESS" : `FAILED (${exitCode})`;
             const body = [
-              "## PR Evaluation Report",
+              "## PR Evaluation",
               "",
               `- Triggered by: @${context.payload.comment.user.login}`,
               `- Command: \`${context.payload.comment.body}\``,
