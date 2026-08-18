@@ -42,6 +42,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
+> | **Tool-call budgets** | `[advanced_features] max_tool_calls_per_block / _per_run / _per_thread` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
@@ -539,6 +540,40 @@ if __name__ == "__main__":
   - **Output Formatter**: Format agent responses based on triggers
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
+
+### Run Receipt
+
+Answer "where did the tokens and the time go?" without an external observability
+stack. Enable the flag and every `invoke()` returns a per-run receipt:
+
+```toml
+# settings.toml
+[advanced_features]
+run_receipt = true  # default: false — zero overhead when disabled
+```
+
+```python
+result = await agent.invoke("how many accounts are there?")
+print(result.receipt)
+# ┌─ Run Receipt ─────────────────────────────────┐
+# │ model: gpt-4o                                 │
+# │ tokens: 18,342 in / 2,101 out (20,443)        │
+# │ llm calls: 7   tool calls: 4                  │
+# │ time: 9.4s (llm 6.1s / tools 2.8s)            │
+# │ slowest tool: get_accounts 1.9s               │
+# └───────────────────────────────────────────────┘
+result.receipt.input_tokens    # 18342
+result.receipt.tool_timings    # per-tool call counts and total durations
+```
+
+**Tokens, not cost** — CUGA runs against self-hosted and internal deployments
+whose prices we don't know, so multiply by your own rates. `cache_read_tokens`
+and `reasoning_tokens` are included when the provider reports them.
+
+Enabling it puts tool tracking in a **timings-only** mode unless you passed
+`track_tool_calls=True`: only name, app and duration are recorded — never
+arguments, results or errors. Coverage matches `track_tool_calls` (registry/MCP
+tools and `@tracked_tool` functions).
 
 ### Knowledge Base
 

@@ -32,6 +32,116 @@ _WEAK_SCHEMA_PROBE_DIRECTIVE = (
 # import dependency).
 _SYNTHETIC_PLACEHOLDER_KEY = "_synthetic_placeholder"
 
+_RICH_SCHEMA_KEYS = frozenset(
+    {
+        "enum",
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "const",
+        "default",
+        "multipleOf",
+        "uniqueItems",
+    }
+)
+
+
+def input_schema_adds_detail(schema: Any) -> bool:
+    """True when raw Input Schema JSON carries detail Parameters would lose."""
+    if not isinstance(schema, dict) or not schema:
+        return False
+    return _schema_node_adds_detail(schema)
+
+
+def should_emit_output_schema(response_doc: str, output_schema: Any) -> bool:
+    """Emit Output Schema JSON only when Response Schema text is absent."""
+    if response_doc and str(response_doc).strip():
+        return False
+    return isinstance(output_schema, dict) and bool(output_schema)
+
+
+def _non_null_variants(node: dict) -> list:
+    variants: list = []
+    for key in ("anyOf", "oneOf"):
+        for variant in node.get(key) or []:
+            if isinstance(variant, dict) and variant.get("type") != "null":
+                variants.append(variant)
+    t = node.get("type")
+    if isinstance(t, list):
+        for x in t:
+            if x != "null":
+                variants.append({"type": x})
+    return variants
+
+
+def _schema_node_adds_detail(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if "$ref" in node:
+        return True
+    for map_key in ("$defs", "definitions"):
+        defs = node.get(map_key)
+        if isinstance(defs, dict) and defs:
+            return True
+    if any(k in node for k in _RICH_SCHEMA_KEYS):
+        return True
+
+    ap = node.get("additionalProperties")
+    if isinstance(ap, dict) and ap:
+        return True
+    if "patternProperties" in node or "contains" in node:
+        return True
+    if node.get("dependentRequired") or node.get("dependentSchemas") or "if" in node or "not" in node:
+        return True
+    if any(k in node for k in ("contentEncoding", "contentMediaType")):
+        return True
+
+    if "anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list):
+        variants = _non_null_variants(node)
+        if len(variants) > 1:
+            return True
+        if len(variants) == 1 and _schema_node_adds_detail(variants[0]):
+            return True
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        if items.get("type") == "object" or "properties" in items or "$ref" in items:
+            return True
+        if _schema_node_adds_detail(items):
+            return True
+    elif isinstance(items, list):
+        if any(_schema_node_adds_detail(i) for i in items if isinstance(i, dict)):
+            return True
+
+    prefix = node.get("prefixItems")
+    if "prefixItems" in node and isinstance(prefix, list) and prefix:
+        return True
+
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for prop in props.values():
+            if not isinstance(prop, dict):
+                continue
+            if "$ref" in prop:
+                return True
+            if "properties" in prop and isinstance(prop.get("properties"), dict):
+                return True
+            if _schema_node_adds_detail(prop):
+                return True
+
+    for variant in node.get("allOf") or []:
+        if _schema_node_adds_detail(variant):
+            return True
+
+    return False
+
 
 def _coerce_bool_setting(val: Any) -> bool:
     if isinstance(val, bool):
@@ -106,8 +216,161 @@ class FindToolsOutput(BaseModel):
     )
 
 
+def _render_find_tools_markdown(
+    query: str,
+    enriched_tools: List[Tool],
+    tool_descriptions: Dict[str, Optional[str]],
+) -> str:
+    """Assemble find_tools discovery markdown with conditional schema blocks."""
+    markdown_lines = [
+        f"# Found {len(enriched_tools)} Matching Tool(s)\n",
+        f"**Query:** {query}\n",
+    ]
+    for idx, tool in enumerate(enriched_tools, 1):
+        markdown_lines.append(f"## {idx}. `{tool.name}`\n")
+
+        tool_description = tool_descriptions.get(tool.name)
+        if tool_description:
+            markdown_lines.append(f"**Description:** {tool_description}\n")
+
+        markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
+
+        if tool.params_doc:
+            markdown_lines.append("**Parameters:**\n")
+            markdown_lines.append(f"{tool.params_doc}\n")
+        else:
+            markdown_lines.append("**Parameters:** No parameters required\n")
+
+        if tool.response_doc:
+            markdown_lines.append("**Response Schema:**\n")
+            markdown_lines.append(f"{tool.response_doc}\n")
+
+        if tool.input_ and tool.input_ != {} and input_schema_adds_detail(tool.input_):
+            markdown_lines.append("**Input Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
+
+        if should_emit_output_schema(tool.response_doc, tool.output_schema):
+            markdown_lines.append("**Output Schema:**\n")
+            markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
+
+        markdown_lines.append("---\n")
+
+    return "\n".join(markdown_lines)
+
+
+# Bounded LLM retries when the shortlister invents tool names (#546).
+_SHORTLIST_NAME_MAX_RETRIES = 2
+
+
 class PromptUtils:
     """Utilities for creating prompts and finding tools."""
+
+    @staticmethod
+    def _partition_shortlist_details(
+        result: List[Any],
+        valid_names: set,
+    ) -> tuple[List[Any], List[str]]:
+        """Split shortlister details into known tools vs hallucinated names."""
+        valid_details: List[Any] = []
+        invalid_names: List[str] = []
+        seen: set = set()
+        for detail in result or []:
+            name = getattr(detail, "name", None)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if name in valid_names:
+                valid_details.append(detail)
+            else:
+                invalid_names.append(name)
+        return valid_details, invalid_names
+
+    @staticmethod
+    def _shortlist_retry_instructions(
+        base_instructions: str,
+        invalid_names: List[str],
+    ) -> str:
+        feedback = (
+            "Your previous response included tool names that are not in the available "
+            f"tools list: {', '.join(invalid_names)}. "
+            "Reply again using ONLY exact names from the available tools. "
+            "Do not invent names."
+        )
+        base = (base_instructions or "").strip()
+        return f"{base}\n\n{feedback}" if base else feedback
+
+    @staticmethod
+    def _format_filtered_tool_names_note(invalid_names: List[str]) -> str:
+        if not invalid_names:
+            return ""
+        unique = list(dict.fromkeys(invalid_names))
+        quoted = ", ".join(f"`{n}`" for n in unique)
+        count = len(unique)
+        noun = "name" if count == 1 else "names"
+        return (
+            f"**Note:** Filtered out {count} unrecognized tool {noun} returned by the shortlister: {quoted}."
+        )
+
+    @staticmethod
+    async def _ainvoke_shortlister_with_name_validation(
+        *,
+        chain: Any,
+        query: str,
+        apps_as_dict: Dict[str, Any],
+        tools_as_dict: Dict[str, Any],
+        base_instructions: str,
+        valid_names: set,
+        run_config: Optional[Any] = None,
+        max_retries: int = _SHORTLIST_NAME_MAX_RETRIES,
+    ) -> tuple[List[Any], List[str]]:
+        """Invoke the shortlister and retry when returned names are unknown.
+
+        Returns ``(valid_details, filtered_invalid_names)``. After retries are
+        exhausted, unknown names are dropped (never forwarded as discoveries).
+        """
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
+
+        instructions = base_instructions or ""
+        accumulated: dict[str, Any] = {}
+        seen_invalid: List[str] = []
+        seen_invalid_set: set[str] = set()
+        for attempt in range(max_retries + 1):
+            response = await chain.ainvoke(
+                {
+                    "input": query,
+                    "all_apps": apps_as_dict,
+                    "all_tools": tools_as_dict,
+                    "instructions": instructions,
+                },
+                config=nested_langgraph_invoke_config(run_config),
+            )
+            valid, invalid = PromptUtils._partition_shortlist_details(
+                getattr(response, "result", None) or [],
+                valid_names,
+            )
+            for detail in valid:
+                accumulated.setdefault(getattr(detail, "name", None), detail)
+            for name in invalid:
+                if name not in seen_invalid_set:
+                    seen_invalid_set.add(name)
+                    seen_invalid.append(name)
+            if not invalid:
+                return list(accumulated.values()), []
+            logger.warning(
+                "Shortlister returned unrecognized tool names (attempt {}/{}): {}",
+                attempt + 1,
+                max_retries + 1,
+                invalid,
+            )
+            # Retry only when the shortlist is unusable — avoid 3x cost when
+            # mostly-valid results already have names we can keep.
+            if accumulated or attempt >= max_retries:
+                break
+            instructions = PromptUtils._shortlist_retry_instructions(
+                base_instructions or "",
+                seen_invalid,
+            )
+        return list(accumulated.values()), seen_invalid
 
     @staticmethod
     def get_tool_params_str(tool: StructuredTool) -> str:
@@ -341,23 +604,26 @@ class PromptUtils:
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": "",
-            },
-            config=nested_langgraph_invoke_config(run_config),
+        valid_names = {t.name for t in all_tools}
+        (
+            validated_details,
+            filtered_invalid_names,
+        ) = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=chain,
+            query=query,
+            apps_as_dict=apps_as_dict,
+            tools_as_dict=tools_as_dict,
+            base_instructions="",
+            valid_names=valid_names,
+            run_config=run_config,
         )
 
         enriched_tools = []
-        for api_detail in response.result:
+        for api_detail in validated_details:
             # Find the actual tool to get input schema and output schema
             actual_tool = None
             for t in all_tools:
@@ -412,7 +678,11 @@ class PromptUtils:
             )
             enriched_tools.append(enriched_tool)
 
+        filtered_note = PromptUtils._format_filtered_tool_names_note(filtered_invalid_names)
+
         if not enriched_tools:
+            if filtered_note:
+                return f"No matching tools found for your query.\n\n{filtered_note}"
             return "No matching tools found for your query."
 
         tool_descriptions = {
@@ -421,41 +691,10 @@ class PromptUtils:
             if hasattr(tool, 'description')
         }
 
-        markdown_lines = [
-            f"# Found {len(enriched_tools)} Matching Tool(s)\n",
-            f"**Query:** {query}\n",
-        ]
-
-        for idx, tool in enumerate(enriched_tools, 1):
-            markdown_lines.append(f"## {idx}. `{tool.name}`\n")
-
-            tool_description = tool_descriptions.get(tool.name)
-            if tool_description:
-                markdown_lines.append(f"**Description:** {tool_description}\n")
-
-            markdown_lines.append(f"**Reasoning:** {tool.reasoning}\n")
-
-            if tool.params_doc:
-                markdown_lines.append("**Parameters:**\n")
-                markdown_lines.append(f"{tool.params_doc}\n")
-            else:
-                markdown_lines.append("**Parameters:** No parameters required\n")
-
-            if tool.response_doc:
-                markdown_lines.append("**Response Schema:**\n")
-                markdown_lines.append(f"{tool.response_doc}\n")
-
-            if tool.input_ and tool.input_ != {}:
-                markdown_lines.append("**Input Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.input_, indent=2)}\n```\n")
-
-            if tool.output_schema and tool.output_schema != {}:
-                markdown_lines.append("**Output Schema:**\n")
-                markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
-
-            markdown_lines.append("---\n")
-
-        return "\n".join(markdown_lines)
+        markdown = _render_find_tools_markdown(query, enriched_tools, tool_descriptions)
+        if filtered_note:
+            return f"{markdown}\n{filtered_note}"
+        return markdown
 
     @staticmethod
     async def shortlist_tool_names(
@@ -512,29 +751,30 @@ class PromptUtils:
         )
         tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
-
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": effective_instructions,
-            },
-            config=nested_langgraph_invoke_config(run_config),
-        )
-
         valid_names = {t.name for t in all_tools}
+        validated_details, filtered_invalid = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=chain,
+            query=query,
+            apps_as_dict=apps_as_dict,
+            tools_as_dict=tools_as_dict,
+            base_instructions=effective_instructions,
+            valid_names=valid_names,
+            run_config=run_config,
+        )
+        if filtered_invalid:
+            logger.warning(
+                "shortlist_tool_names: dropping unrecognized names after retries: {}",
+                filtered_invalid,
+            )
+
         ranked: List[str] = []
-        seen: set = set()
-        for api_detail in getattr(response, "result", None) or []:
+        for api_detail in validated_details:
             name = getattr(api_detail, "name", None)
-            if not name or name in seen or name not in valid_names:
+            if not name:
                 continue
-            seen.add(name)
             ranked.append(name)
             if len(ranked) >= top_k:
                 break
