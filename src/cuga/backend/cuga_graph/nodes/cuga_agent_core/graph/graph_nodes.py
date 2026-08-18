@@ -181,12 +181,10 @@ class CoreGraphAdapter(ABC):
 
     async def classify_auto_continue(
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
-    ) -> bool | str:
+    ) -> bool:
         """Return ``True`` when the NL response should loop back automatically.
-        A truthy ``str`` also loops back, but is used verbatim as the synthetic
-        user message instead of the plain ``"continue"`` (Lite's unverified-
-        blocker retry, issue #610). Default: ``False`` (Supervisor never
-        auto-continues). Lite overrides with ``classify_nl_auto_continue_decision``."""
+        Default: ``False`` (Supervisor never auto-continues).
+        Lite overrides with ``classify_nl_auto_continue``."""
         return False
 
 
@@ -219,16 +217,9 @@ def append_chat_messages_with_step_limit(
     return base + new_messages, None
 
 
-# Prefix of every execution-feedback HumanMessage. Consumers that *detect*
-# execution history by matching message text (Lite's blocked-claim evidence,
-# the reasoning-only finalize fallback, reflection task extraction) must use
-# this constant so they cannot drift from the producer below.
-EXECUTION_OUTPUT_PREFIX = "Execution output:"
-
-
 def execution_output_text(output: str) -> str:
     """The execution-feedback message body shared by both execute nodes."""
-    return f"{EXECUTION_OUTPUT_PREFIX}\n{output}"
+    return f"Execution output:\n{output}"
 
 
 def enforce_step_limit(

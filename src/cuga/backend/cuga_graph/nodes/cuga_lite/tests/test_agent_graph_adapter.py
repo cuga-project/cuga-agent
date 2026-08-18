@@ -281,90 +281,31 @@ def test_build_metadata_update_adds_playbook_flag_when_fired():
 # ── 8. classify_auto_continue hook ───────────────────────────────────────
 
 
-def _decision(auto_continue: bool, blocked_override: bool = False):
-    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
-        AutoContinueDecision,
-    )
-
-    return AutoContinueDecision(auto_continue=auto_continue, blocked_override=blocked_override)
-
-
 @pytest.mark.asyncio
 async def test_classify_auto_continue_delegates_to_nl_classifier():
     adapter = _make_adapter()
-    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
+    state = SimpleNamespace()
     mock_model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
         new_callable=AsyncMock,
-        return_value=_decision(True),
+        return_value=True,
     ) as mock_classify:
         result = await adapter.classify_auto_continue(state, mock_model, "Let me continue.", "thought")
-        assert mock_classify.call_count == 1
-        args, kwargs = mock_classify.call_args
-        assert args == (mock_model, "Let me continue.", "thought")
-        assert "evidence" in kwargs
+        mock_classify.assert_called_once_with(mock_model, "Let me continue.", "thought")
         assert result is True
-
-
-@pytest.mark.asyncio
-async def test_classify_auto_continue_blocked_override_returns_correction_and_marks_retry():
-    """The unverified-blocker retry (issue #610): a blocked_override decision
-    yields the corrective directive string and spends the one-shot marker."""
-    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
-        BLOCKED_CLAIM_CORRECTION,
-    )
-
-    adapter = _make_adapter()
-    adapter._tools_context = {"find_tools": object()}
-    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
-
-    with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
-        new_callable=AsyncMock,
-        return_value=_decision(True, blocked_override=True),
-    ):
-        result = await adapter.classify_auto_continue(
-            state, None, "I'm unable to access the Amazon tools in this session.", None
-        )
-    assert result == BLOCKED_CLAIM_CORRECTION
-    assert state.cuga_lite_metadata["_blocked_claim_retry"] is True
-
-
-@pytest.mark.asyncio
-async def test_classify_auto_continue_evidence_reflects_state():
-    """Evidence must report executed code (Execution output: message) and a
-    spent retry marker so the classifier can refuse a second override."""
-    adapter = _make_adapter()
-    adapter._tools_context = {"find_tools": object()}
-    state = SimpleNamespace(
-        chat_messages=[HumanMessage(content="Execution output:\nsome result")],
-        cuga_lite_metadata={"_blocked_claim_retry": True},
-    )
-
-    with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
-        new_callable=AsyncMock,
-        return_value=_decision(False),
-    ) as mock_classify:
-        result = await adapter.classify_auto_continue(state, None, "text", None)
-    assert result is False
-    evidence = mock_classify.call_args.kwargs["evidence"]
-    assert evidence.tools_available is True
-    assert evidence.code_executed is True
-    assert evidence.retry_used is True
 
 
 @pytest.mark.asyncio
 async def test_classify_auto_continue_returns_false_when_not_continuing():
     adapter = _make_adapter()
-    state = SimpleNamespace(chat_messages=[], cuga_lite_metadata={})
+    state = SimpleNamespace()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue_decision",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
         new_callable=AsyncMock,
-        return_value=_decision(False),
+        return_value=False,
     ):
         result = await adapter.classify_auto_continue(state, None, "All done.", None)
         assert result is False

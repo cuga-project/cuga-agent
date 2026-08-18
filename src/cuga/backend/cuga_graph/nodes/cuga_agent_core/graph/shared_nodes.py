@@ -33,7 +33,6 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction imp
     extract_code_from_model_response,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
-    EXECUTION_OUTPUT_PREFIX,
     CoreGraphAdapter,
     enforce_step_limit,
 )
@@ -300,21 +299,11 @@ def create_call_model_node(
             else await adapter.classify_auto_continue(state, active_model, content, reasoning)
         )
         if should_continue:
-            # A str result is a corrective directive (e.g. Lite's unverified-blocker
-            # retry, issue #610) — use it as the synthetic user message.
-            continue_text = should_continue if isinstance(should_continue, str) else "continue"
-            # Rebuild metadata unconditionally: classify_auto_continue may mutate
-            # state (Lite's spent-retry marker), and the meta_update above was
-            # snapshotted before the classify call. build_metadata_update re-reads
-            # state, so this is a no-op when nothing changed.
-            meta_update = {
-                adapter.metadata_key: adapter.build_metadata_update(state, playbook_fired=playbook_fired)
-            }
             logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
             return Command(
                 goto="call_model",
                 update={
-                    adapter.messages_key: final_messages + [HumanMessage(content=continue_text)],
+                    adapter.messages_key: final_messages + [HumanMessage(content="continue")],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
@@ -333,7 +322,7 @@ def create_call_model_node(
             if not contains_harmony_tokens(candidate):
                 final_answer = candidate
         if not (final_answer or "").strip():
-            exec_prefix = EXECUTION_OUTPUT_PREFIX + "\n"
+            exec_prefix = "Execution output:\n"
             for msg in reversed(modified_messages):
                 if isinstance(msg, HumanMessage):
                     text = msg.content or ""
