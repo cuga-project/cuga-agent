@@ -38,6 +38,25 @@ from cuga.backend.server.a2a.task_adapter import stream_events_to_a2a
 logger = logging.getLogger(__name__)
 
 
+def _validation_detail(exc: Exception) -> list[dict[str, str]] | None:
+    """Field names and error kinds from a pydantic failure — never its text.
+
+    JSON-RPC clients need to know *which* param was wrong to be able to fix it,
+    so this keeps ``loc`` and ``type`` and drops ``msg``/``input``/``url``,
+    which can echo submitted values and library internals back to the caller.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return None
+    try:
+        return [
+            {"loc": ".".join(str(part) for part in err.get("loc", ())), "type": str(err.get("type", ""))}
+            for err in errors()
+        ] or None
+    except Exception:  # non-pydantic validation error
+        return None
+
+
 class GraphRunner(Protocol):
     """Minimal contract a graph runner must satisfy.
 
@@ -224,8 +243,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         raw = await request.body()
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error", str(exc)))
+        except json.JSONDecodeError:
+            # The decoder message quotes the offending payload; the code alone
+            # tells the client what it needs (data is optional in JSON-RPC 2.0).
+            return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error"))
 
         if not isinstance(payload, dict):
             return JSONResponse(_rpc_error(None, _INVALID_REQUEST, "Invalid Request"))
@@ -241,7 +262,9 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
-                return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
+                return JSONResponse(
+                    _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
+                )
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
             approval = _extract_approval(params)
@@ -264,7 +287,9 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
-                return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
+                return JSONResponse(
+                    _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
+                )
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
             approval = _extract_approval(params)

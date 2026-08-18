@@ -275,3 +275,46 @@ async def test_context_id_propagates_to_graph_runner(asgi_client, scripted_runne
     await asgi_client.post("/a2a", json=payload)
     contexts = [ctx for (_msg, ctx) in scripted_runner.received]
     assert "ctx-existing-thread" in contexts
+
+
+async def test_parse_error_carries_no_decoder_detail(asgi_client):
+    """The JSONDecodeError message quotes the offending payload back at the
+    caller. JSON-RPC 2.0 makes ``data`` optional, so it is simply omitted."""
+    resp = await asgi_client.post(
+        "/a2a",
+        content=b'{"jsonrpc": "2.0", "secret-marker-in-payload": ',
+        headers={"content-type": "application/json"},
+    )
+    body = resp.json()
+    assert body["error"]["code"] == -32700
+    assert "secret-marker-in-payload" not in json.dumps(body)
+    # No echo of "Expecting value: line 1 column ..." either.
+    assert "Expecting" not in json.dumps(body)
+
+
+async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
+    """Clients still need to know *which* param was wrong, so ``loc`` and
+    ``type`` survive; pydantic's ``msg``/``input``/``url`` do not."""
+    resp = await asgi_client.post(
+        "/a2a",
+        json={
+            "jsonrpc": "2.0",
+            "id": "bad-params",
+            "method": "message/send",
+            "params": {"message": {"role": "user", "smuggled": "secret-marker-value"}},
+        },
+    )
+    body = resp.json()
+    assert body["error"]["code"] == -32602
+    assert body["error"]["message"] == "Invalid params"
+
+    blob = json.dumps(body)
+    assert "secret-marker-value" not in blob, "submitted values must not be echoed"
+    assert "Field required" not in blob, "pydantic prose must not be echoed"
+    assert "pydantic.dev" not in blob, "pydantic help URLs must not be echoed"
+
+    data = body["error"].get("data")
+    if data is not None:
+        assert isinstance(data, list)
+        for entry in data:
+            assert set(entry) == {"loc", "type"}
