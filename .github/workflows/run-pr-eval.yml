@@ -67,6 +67,7 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RITS_API_KEY: ${{ secrets.RITS_API_KEY }}
           AGENT_SETTING_CONFIG: settings.rits.toml
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}

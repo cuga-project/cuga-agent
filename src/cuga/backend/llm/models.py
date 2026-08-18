@@ -1165,10 +1165,10 @@ class LLMManager:
             # also send the real key on the Authorization header — matches the
             # `openai` branch's pattern when auth_headers are in play.
             rits_params: Dict[str, Any] = {
-                "api_key": "dummy" if api_key else None,
-                "base_url": base_url,
+                "openai_api_key": "/",
+                "openai_api_base": base_url,
                 "max_tokens": max_tokens,
-                "model": model_name,
+                "model_name": model_name,
                 "seed": 42,
                 "default_headers": {"RITS_API_KEY": api_key} if api_key else None,
             }
