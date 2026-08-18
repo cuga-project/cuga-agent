@@ -577,9 +577,32 @@ class LLMManager:
             d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
-        # SHA-256 rather than MD5: this is only an in-process dict key, but the
-        # settings it digests carry credential fields, so a weak-hash finding
-        # here is noise we don't want to keep re-triaging.
+        # CodeQL alert #170 (py/weak-sensitive-data-hashing) fires here and is
+        # dismissed as a false positive rather than fixed. Worth writing down,
+        # because the obvious fixes all fail:
+        #
+        # * The alert is from the rule's ComputationallyExpensiveHashFunction
+        #   module, which accepts only bcrypt/scrypt/argon2/PBKDF2 — so SHA-256
+        #   does not satisfy it any more than MD5 did. Nothing short of a real
+        #   KDF clears it in code.
+        # * PBKDF2 is the wrong tool: this runs on every get_model() call, and a
+        #   KDF at usable iteration counts costs 100ms+ each time. A per-call
+        #   salt would also change the digest every call, so the cache would
+        #   never hit.
+        # * `usedforsecurity=False` does nothing — CodeQL does not model it in
+        #   any language (github/codeql#13637, open since 2023).
+        # * Scrubbing the credential out of `d` first does not work either:
+        #   CodeQL tracks dict content per key, and assigning `d[k]` with a
+        #   computed `k` is a weak update, so the tainted value is never cleared.
+        #
+        # The finding is a false positive on impact. This digest is an
+        # in-process dict key for `self._models`. It is never persisted,
+        # transmitted, or compared against a stored value, and it lives in the
+        # same memory as the plaintext credential it derives from — anyone who
+        # can read it can already read the key itself.
+        #
+        # SHA-256 rather than MD5 is kept as plain hygiene; it has no observable
+        # effect, since the cache is in-process and rebuilt every start.
         return hashlib.sha256(settings_str.encode()).hexdigest()
 
     def _get_model_name(self, model_settings: Dict[str, Any], platform: str) -> str:
