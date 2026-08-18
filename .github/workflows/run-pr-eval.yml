@@ -80,21 +80,25 @@ jobs:
           set +e
 
           mkdir -p "${HOME}/pr-regression-testing/logs"
+          run_started_at="$(date -u +"%Y%m%dT%H%M%SZ")"
+          short_sha="${PR_HEAD_SHA:0:12}"
+          log_prefix="pr-${PR_NUMBER}-${short_sha}-${run_started_at}"
+          output_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-output.md"
+          exit_code_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-exit-code.txt"
 
           bash "${HOME}/pr-regression-testing/cuga-eval/scripts/run-pr-regression-eval.sh" \
             "${COMMENT_BODY}" \
-            > "${HOME}/pr-regression-testing/logs/run-pr-eval-output.md" 2>&1
+            > "${output_log}" 2>&1
 
           status=$?
 
-          echo "${status}" \
-            > "${HOME}/pr-regression-testing/logs/run-pr-eval-exit-code.txt"
+          echo "${status}" > "${exit_code_log}"
 
-          cp "${HOME}/pr-regression-testing/logs/run-pr-eval-output.md" \
-            "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
+          echo "Saved output log: ${output_log}"
+          echo "Saved exit code log: ${exit_code_log}"
 
-          cp "${HOME}/pr-regression-testing/logs/run-pr-eval-exit-code.txt" \
-            "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
+          cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
+          cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
 
           exit 0
 
