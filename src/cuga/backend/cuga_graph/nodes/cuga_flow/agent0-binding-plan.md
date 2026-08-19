@@ -8,14 +8,20 @@ Each of CUGA FLO's three wrapper agents holds a local `CugaAgent` and reasons wi
 plan lets any of them reach a remote agent — "agent 0" — through a single uniform contract,
 without changing who is responsible for what.
 
-Agent 0 is a LangGraph agent, exposed as a service by its own team. It **always answers free
-text**. It never returns a flow id, a `HookResult`, or any CUGA FLO structure.
+Agent 0 is a LangGraph agent, exposed as a service by its own team. It **answers free text by
+default**; a caller may attach an `expected_output` schema, in which case agent 0 returns
+matching JSON. Either way it never returns a flow id, a `HookResult`, or any CUGA FLO
+structure — it supplies *input to* a decision, never the decision.
 
-| Wrapper | Agent 0's text becomes | Who concludes |
+| Wrapper | Agent 0 returns | Who concludes |
 |---|---|---|
-| `TaskAgent` | the task result → `output_mapping` | agent 0 — delegated work |
-| `DecisionAgent` | a section in the decide prompt | `DecisionAgent` picks the flow |
-| `FlowAgent` | a section in the hook prompt | `FlowAgent` forms the `HookResult` |
+| `TaskAgent` | free text → `output_mapping` | agent 0 — delegated work |
+| `DecisionAgent` | text, or a typed preference | `DecisionAgent` picks the flow |
+| `FlowAgent` | text, or a typed preference | `FlowAgent` forms the `HookResult` |
+
+The optional schema exists because prose loses signal a policy may legitimately route on:
+*"probably the cheaper option"* does not carry `certainty: ambiguous`. Keep it optional —
+most consultations are lookups needing no envelope.
 
 The existing parsers are untouched: `DecisionAgent` still parses `<flow_id>|<reason>` from
 *its own* CugaAgent, `FlowAgent` still parses JSON from *its own* hook agent. Agent 0 is
@@ -40,8 +46,16 @@ Two integration modes, one adapter:
 
 ```python
 class Agent0Client:
-    async def ask(self, question: str) -> str: ...
+    async def ask(self, goal: str, context: dict | None = None,
+                  expected_output: dict | None = None) -> str | dict: ...
 ```
+
+`goal` is a delegated objective, not a literal question — *"find out the user's preference
+regarding this routing choice"*, not *"ask exactly this and return this field"*. That
+distinction is why this is A2A and not MCP elicitation: agent 0 decides **how** to obtain the
+answer, and may explain the options, ask clarifying questions, or resolve ambiguity over
+several turns. Given `expected_output`, validate the returned JSON locally and treat a
+validation failure as a failed consultation.
 
 Reuses `cuga_supervisor/a2a_protocol.py`, which already wraps `a2a-sdk`
 (`A2ACardResolver`, `A2AClient`) — the client side exists and should not be rebuilt.
@@ -128,9 +142,17 @@ MCP server is required.
 Use `a2a-sdk` — the same package CUGA's client side already depends on, so both ends agree
 by construction.
 
-### B1. An agent card
+### B1. An agent card with two skills
 
-`name`, `description`, `version`, `url`, `capabilities`, `skills`.
+`name`, `description`, `version`, `url`, `capabilities`, and at least two `skills`:
+
+- **`fulfill_task`** — perform a delegated subtask, return free text. Backs `TaskAgent`.
+- **`elicit_user_preference`** — obtain the user's preference across supplied options and
+  return it structured. Backs the consultant role. Agent 0 owns the conversation: explaining
+  alternatives, asking clarifying questions, resolving ambiguity.
+
+The division to hold: **agent 0 determines *how* to obtain the preference; CUGA FLO
+determines *what to do* with it.**
 
 **This is the highest-leverage part.** `format_agent_card_for_prompt()` puts `description`
 and `skills` **into the deciding LLM's prompt**, and the tool wrapper reuses them as the
@@ -159,15 +181,17 @@ between versions and has not been verified here beyond confirming those pieces e
 
 These are CUGA FLO constraints rather than A2A ones, and matter more than the plumbing:
 
-- **Free text in, free text out.** No knowledge of BPMN, process variables, or CUGA FLO.
-- **Answer in seconds.** A consultation runs *inside* `route_gateway` or `evaluate_hook`,
-  which blocks the workflow engine and counts against `KOGITO_TIMEOUT`. See the constraint
-  below.
-- **Report, don't rule.** As a consultant, return facts, not verdicts. Nothing enforces
+- **Goal in, answer out.** No knowledge of BPMN, process variables, or CUGA FLO.
+- **Honour `expected_output` when supplied.** Return JSON matching it, including any
+  ambiguity or no-preference cases the schema allows, rather than prose approximating it.
+- **Report, don't rule.** Return facts and preferences, not verdicts. Nothing enforces
   this technically, so state it in the card: an agent 0 that answers *"reject the loan"*
   rather than *"three prior defaults on record"* quietly moves authority out of the harness.
-- **Say `input-required` rather than block.** If a human is involved and may take longer
-  than seconds, return that state instead of holding the connection.
+- **Say `input-required` rather than hold the connection.** A consultation runs *inside*
+  `route_gateway` or `evaluate_hook`, which blocks the workflow engine. Only sub-second
+  lookups can complete in-line; anything involving a human must return `input-required` and
+  let the escalation branch take over. See the constraint below — for
+  `elicit_user_preference` this is the normal path, not an edge case.
 
 ---
 
@@ -178,11 +202,17 @@ workflow engine. On Kogito, `POST /{processId}` is synchronous for the whole pro
 is what produced the duplicate-instance bug when a 32-second call exceeded a 30-second
 timeout.
 
-- **Lookups (seconds):** fine as a tool.
-- **Human approval (minutes to days):** no protocol fixes this. It needs the escalation
-  branch — a modelled BPMN user task where the *engine* owns the wait, with agent 0 driving
-  the conversation and completing the task. `KogitoProxy.complete_task` already exists; no
-  know-how covers user tasks yet.
+- **Lookups (seconds):** fine as a tool, in-line.
+- **Anything conversational (minutes to days):** no protocol fixes this. It needs the
+  escalation branch — a modelled BPMN user task where the *engine* owns the wait, with agent
+  0 driving the conversation and completing the task. `KogitoProxy.complete_task` already
+  exists; no know-how covers user tasks yet.
+
+**`elicit_user_preference` is the second regime.** A multi-turn dialogue — explain the
+options, ask a clarifying question, confirm — cannot run inside a blocking control point, so
+the in-line tool path only ever suits `fulfill_task` and fast lookups. Modelling that user
+task is therefore a prerequisite for preference elicitation, not a later refinement, and is
+the largest piece of work this plan implies.
 
 Decide per hook and per gateway which regime applies, because the two cost very differently.
 
@@ -194,8 +224,13 @@ Decide per hook and per gateway which regime applies, because the two cost very 
   already validates the returned id against `available_flows` and falls back safely, so a
   remote decider could not invent a branch. Excluded because free-text-only keeps agent 0's
   contract uniform and leaves all structural authority local.
-- **MCP.** Only worth it if agent 0 later offers several distinct typed operations. Even
-  then `CugaAgent` cannot consume MCP directly, so it would need its own adapter.
+- **MCP.** It fits a thin form/UI surface — *"ask exactly this question, return exactly this
+  field"*. Agent 0 is an autonomous elicitation agent instead, which is delegation, so A2A
+  is the right relationship. `CugaAgent` cannot consume MCP directly in any case.
+- **A repair loop.** The PDF proposes re-prompting agent 0 to fix a response that fails
+  validation. Deferred: treat a validation failure as a failed consultation and let the
+  policy proceed without it. Add the loop once a real agent 0 is observed returning
+  malformed artifacts — it is a retry state machine, against one JSON check today.
 
 ## Related defect to fix first
 
@@ -214,8 +249,10 @@ before external input starts shaping those decisions.
 2. **Executor role** — a task with `delegate_to: agent_0` completes and its output lands via
    `output_mapping`.
 3. **Consultant role** — a gateway with `tools: [agent_0]` where the policy needs an
-   external fact: assert the tool was called, the text appears in the decide prompt, and the
-   chosen flow is still one of `available_flows`.
+   external fact: assert the tool was called, the answer appears in the decide prompt, and
+   the chosen flow is still one of `available_flows`.
+   With an `expected_output` schema, assert valid JSON is parsed and malformed JSON degrades
+   to a failed consultation rather than an exception.
 4. **Not-called path** — a decision resolving on its condition alone makes no A2A call, so
    the round trip is genuinely conditional.
 5. **Audit** — the consultation appears in the trace, not only in agent 0's logs.
