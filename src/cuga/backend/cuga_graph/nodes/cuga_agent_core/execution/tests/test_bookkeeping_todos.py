@@ -43,6 +43,12 @@ BOOKKEEPING = [
     "Report completion",
     "Report back",
     "Report deletion summary",
+    "Report actions taken",
+    # additional confirm-family strings from the Aug17 med census
+    "Confirm update",
+    "Confirm creation",
+    "Confirm withdrawal and report",
+    "Finalize and report success",
     # final-answer / summary-artifact family
     "Generate summary report",
     "Prepare final answer",
@@ -75,6 +81,8 @@ LEGITIMATE = [
     "Record a voice memo for the meeting",
     "Save the playlist as Random Songs",
     "Report the outage via the support form",
+    # borderline answer-delivery step (325d6ec_1) — conservative keep
+    "Report final track details",
 ]
 
 

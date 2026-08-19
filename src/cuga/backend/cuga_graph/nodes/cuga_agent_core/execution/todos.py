@@ -39,10 +39,10 @@ _BOOKKEEPING_PATTERNS: List[tuple] = [
         ),
         False,
     ),
-    # "Report completion", "Report back", "Report deletion summary".
+    # "Report completion", "Report back", "Report actions taken", "Report deletion summary".
     (
         re.compile(
-            r"^report\s*(?:$|(?:back|completion|success|outcome|status|progress|results?|(?:\w+\s+)?summary|to (?:the )?user)\b)",
+            r"^report\s*(?:$|(?:back|completion|success|outcome|status|progress|results?|actions?|(?:\w+\s+)?summary|to (?:the )?user)\b)",
             re.I,
         ),
         False,
