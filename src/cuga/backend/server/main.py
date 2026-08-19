@@ -213,6 +213,28 @@ async def _rollback_partial_knowledge_engine(app_state) -> None:
     app_state.knowledge_engine = None
 
 
+async def warm_shortlister_catalogue(agent_id: Optional[str] = None) -> int:
+    """Embed the current tool catalogue for cosine shortlisting.
+
+    Called at startup and whenever the registry reloads. Returns the number of
+    documents embedded — 0 when the default LLM strategy is configured, which is
+    the common case, so this costs nothing unless cosine is switched on.
+
+    Deliberately swallows everything: neither boot nor a tools update should
+    fail because an embedding model is unavailable.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import ToolRegistryProvider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import warm_tool_vectors
+
+        provider = ToolRegistryProvider(agent_id=agent_id)
+        tools = await provider.get_all_tools()
+        return await warm_tool_vectors(tools)
+    except Exception as e:
+        logger.warning(f"Shortlister catalogue warm-up skipped: {e}")
+        return 0
+
+
 async def run_knowledge_startup(app_state, kb_config, *, init_fn) -> None:
     """Lifespan knowledge boot: isolate init failures so the server still starts."""
     if kb_config.enabled:
@@ -1117,6 +1139,12 @@ async def lifespan(app: FastAPI):
             logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
     except Exception:
         logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
+    # Embed the tool catalogue for cosine shortlisting. Lazy loading is right for
+    # the SDK, but in server mode it would make the first find_tools after boot
+    # silently fall back to the LLM. A no-op on the default LLM strategy, and it
+    # never blocks startup on failure.
+    await warm_shortlister_catalogue()
 
     yield
     logger.info("Application is shutting down...")
