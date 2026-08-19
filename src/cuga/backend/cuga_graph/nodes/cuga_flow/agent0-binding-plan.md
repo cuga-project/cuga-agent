@@ -27,46 +27,81 @@ The existing parsers are untouched: `DecisionAgent` still parses `<flow_id>|<rea
 *its own* CugaAgent, `FlowAgent` still parses JSON from *its own* hook agent. Agent 0 is
 never on those paths, so no external system can emit a routing decision or a hook action.
 
-Two integration modes, one adapter:
+Two integration modes over one existing client:
 
 ```
-  TaskAgent ──delegate──▶ ┌──────────────┐
-                          │ Agent0Client │──A2A──▶ agent 0
-  DecisionAgent ──┐       │ ask(q) → str │
-  FlowAgent ──────┴─tool─▶└──────────────┘
+  TaskAgent ──delegate──▶ ┌────────────────────────────┐
+                          │ delegate_task_via_a2a_sdk  │──A2A──▶ agent 0
+  DecisionAgent ──┐       │ (a2a_protocol.py, existing)│
+  FlowAgent ──────┴─tool─▶└────────────────────────────┘
 ```
 
 ---
 
 ## Part A — CUGA FLO side
 
-### A1. The adapter — new, the only substantial code
+### A1. Two small functions — no client class
 
-`backend/server/agent0/` (or alongside the existing A2A client), one class:
+`cuga_supervisor/a2a_protocol.py` already exposes what is needed, **module-level and
+supervisor-independent**:
+
+- `fetch_agent_card(...)` — resolves the card
+- `delegate_task_via_a2a_sdk(agent_card, task, auth=None, timeout=30.0, variables=None)`
+  → `{"result": str, "variables": dict, "status": str}`
+
+So there is no `Agent0Client` class to write. Cache the card once at config load — that is
+the only state involved — and add two wrappers.
+
+**Consultant role** — a LangChain `@tool`, since `CugaAgent` takes LangChain tools, not MCP
+servers. Its docstring carries agent 0's card `description`, which is what the LLM reads to
+decide whether to ask:
 
 ```python
-class Agent0Client:
-    async def ask(self, goal: str, context: dict | None = None,
-                  expected_output: dict | None = None) -> str | dict: ...
+@tool
+async def ask_agent_0(question: str) -> str:
+    """<agent 0's card description>"""
+    return (await delegate_task_via_a2a_sdk(_card, question, timeout=90))["result"]
 ```
 
-`goal` is a delegated objective, not a literal question — *"find out the user's preference
-regarding this routing choice"*, not *"ask exactly this and return this field"*. That
-distinction is why this is A2A and not MCP elicitation: agent 0 decides **how** to obtain the
-answer, and may explain the options, ask clarifying questions, or resolve ambiguity over
-several turns. Given `expected_output`, validate the returned JSON locally and treat a
-validation failure as a failed consultation.
+**Executor role** — a shim exposing `invoke()`, because `TaskAgent` is duck-typed
+(`await self.agent.invoke(task_input)`) and its `_process_output` reads `output` or
+`content`. `delegate_task_via_a2a_sdk` returns `result`, so an unmapped dict would fall
+through to `str(result)` and store the whole repr as the task output. Rename the key:
 
-Reuses `cuga_supervisor/a2a_protocol.py`, which already wraps `a2a-sdk`
-(`A2ACardResolver`, `A2AClient`) — the client side exists and should not be rebuilt.
+```python
+class _Agent0Task:  # ponytail: 3 lines beats a class hierarchy; TaskAgent only calls invoke()
+    async def invoke(self, task_input):
+        return {"output": (await delegate_task_via_a2a_sdk(_card, str(task_input)))["result"]}
+```
 
-Two façades over it:
+**Pass `timeout` explicitly.** The default is `30.0` — the fourth timeout in the stack, and
+below the 120s Kogito ceiling, so leaving it silently truncates a task agent that would
+otherwise have finished.
 
-- **`invoke(x) -> obj with .answer`** — satisfies what `TaskAgent` already calls, so
-  `TaskAgent` itself needs no change (it is duck-typed: `await self.agent.invoke(...)`).
-- **a LangChain `@tool`** — `CugaAgent` takes LangChain tools, not MCP servers, so the tool
-  wrapper is required and belongs here. Its docstring should carry agent 0's card
-  `description`, since that text is what the LLM reads to decide whether to ask.
+**`a2a-sdk` is a soft dependency.** The module raises `ImportError` behind a `HAS_A2A_SDK`
+guard. Catch that at config load, not mid-process, so a missing package fails the app rather
+than a running instance.
+
+#### The `goal` framing
+
+`task` should read as a delegated objective, not a literal question — *"find out the user's
+preference regarding this routing choice"*, not *"ask exactly this and return this field"*.
+That distinction is why this is A2A rather than MCP elicitation: agent 0 decides **how** to
+obtain the answer, and may explain options, ask clarifying questions, or resolve ambiguity
+over several turns.
+
+#### Structured responses need a decision first
+
+The plan's `expected_output` schema has no return channel today. `delegate_task_via_a2a_sdk`
+accepts `variables` as **request** metadata, but every return path hardcodes
+`"variables": {}` — nothing comes back through it. Two options:
+
+- **Parse it out of the text** (`result`) with a local `json.loads` and validate. No changes
+  to shared supervisor code; ugly but contained.
+- **Extend the function to read response metadata.** Correct, but it is shared with the
+  supervisor, so it widens the blast radius of this work.
+
+Start with the parse; revisit if elicitation becomes common.
 
 ### A2. Declare agent 0 once
 
@@ -82,7 +117,7 @@ remote_agents:
 ### A3. Wire the executor role — `TaskAgent`
 
 `FlowConfig.create_task_agents()` is the single construction site. Add a `delegate_to`
-branch that builds the adapter instead of a `CugaAgent`:
+branch that injects the A1 shim instead of a `CugaAgent`:
 
 ```yaml
 tasks:
@@ -244,8 +279,9 @@ before external input starts shaping those decisions.
 
 ## Verification
 
-1. **Adapter in isolation** — `Agent0Client.ask()` against a stub A2A server; assert the
-   card is resolved and text returns.
+1. **Wrappers in isolation** — both against a stub A2A server: the card resolves, the tool
+   returns text, and the shim returns a dict keyed `output` (not `result`, which
+   `_process_output` would stringify wholesale).
 2. **Executor role** — a task with `delegate_to: agent_0` completes and its output lands via
    `output_mapping`.
 3. **Consultant role** — a gateway with `tools: [agent_0]` where the policy needs an
