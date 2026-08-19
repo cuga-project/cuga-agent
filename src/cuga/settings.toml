@@ -34,6 +34,8 @@ shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools e
 cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
+skip_reflection_on_todo_only = true  # Skip the reflection pass after a code block that only calls create_update_todos — it changed no application state, so reflection can only report that nothing happened. Env: DYNACONF_ADVANCED_FEATURES__SKIP_REFLECTION_ON_TODO_ONLY
+filter_bookkeeping_todos = true  # Drop self-referential todo items ("Confirm completion", "Provide summary to user") before storing the plan; discharging them has produced unrequested side effects (files/notes written to record progress). Env: DYNACONF_ADVANCED_FEATURES__FILTER_BOOKKEEPING_TODOS
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
 decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app

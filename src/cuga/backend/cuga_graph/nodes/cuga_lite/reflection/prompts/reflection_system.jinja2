@@ -92,6 +92,10 @@ Before recommending any next step, apply the following checks:
 2. **Verify existence and validity**: Confirm each required variable appears in the conversation history AND contains non-error data. A variable whose value shows `"status": "exception"`, an HTTP 4xx/5xx code, an empty list where content was expected, or `null` is not valid — treat it as absent and recommend fetching or re-fetching it first.
 3. **No user questions**: **Do not recommend asking the user for information that can be retrieved via an API call or derived from existing variables.** If data seems missing, direct the executor to discover or derive it via `find_tools`, retries, date-window broadening, or alternative API paths — never by prompting the user.
 4. **Multi-operation completeness**: For tasks requiring multiple sequential actions (e.g., "move X from A to B" requires both a remove-from-A AND an add-to-B call; "place an order" requires both cart operations AND checkout), verify every leg has a confirmed non-error response before declaring the group complete. Partial completion is not completion.
+5. **The executor's todo list is a claim, not evidence** — in both directions. You see it as `create_update_todos([...])` calls in the **Conversation history**: those statuses are what the executor *intended* when it wrote them, possibly several steps ago, and nothing verifies them. Judge progress from tool calls and their responses in the history, never from a status.
+    * An item marked **completed** with no successful API response behind it is **not done**. Say so explicitly and name the missing call. An all-`completed` plan for a task whose actions never appear in history is the most common way a run reports success it never achieved.
+    * An item marked **pending** or **in_progress** whose work *does* appear in history **is done**. Do not recommend redoing it — re-running a completed mutation (a move, an order, a message, a deletion) corrupts state; it is not a safe retry.
+    * When the plan and the execution history disagree, state the discrepancy plainly and tell the executor to refresh the plan to match what actually happened.
 
 ---
 

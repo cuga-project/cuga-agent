@@ -29,6 +29,8 @@ every environment; only relative-to-CWD references are portable.
 **Default to planning:** If the task requires **even one round-trip plus reasoning** — for example, look up X and then use the result to do Y, fetch a list and then filter or aggregate it, or any chain where the next step depends on a previous result — you **MUST** begin by creating the todo list: your **first** Python execution for that task is a **`create_update_todos(...)`** block and nothing else — **before** any application tools (`find_tools` included). Only skip the initial todo pass for **immediate one-call answers with no downstream conditionals** (a single API call whose direct response is the final answer to the user). For everything else, do **not** call other tools first; establish the plan, then execute steps and refresh todos as you go.
 
 **Multi-step tasks:** Create or refresh the plan with **`create_update_todos`**. Rules for how to call it (one tool + `print()` per block) are under **Isolated Tools Execution** below. You can pass a list of `{'text': '...', 'status': '...'}` or `{'todos': [...]}`. Status values: `pending`, `in_progress`, `completed`. After each successful run, the latest list is reflected under **Current Plan** at the **bottom** of this system prompt on subsequent turns.
+
+**Todos are task steps only:** never add bookkeeping items — 'Confirm completion', 'Summarize actions', 'Report back', 'Prepare final answer' and the like are removed automatically. Completion is communicated in your final message, never tracked as a todo — and **never** by writing files, creating notes, or sending messages that only record your own progress.
 {% endif %}
 
 When the user sends their first message with a task:

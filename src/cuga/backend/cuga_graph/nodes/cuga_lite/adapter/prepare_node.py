@@ -107,6 +107,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         if is_fresh_conversation:
             adapter._task_todos_ref.clear()
             state.task_todos = None
+            # Same cross-task leak as the ref itself (#314): a stamp left from the
+            # previous task would make a fresh plan look stale, or vice versa.
+            adapter._task_todos_updated_at_step = None
 
         configurable = config.get("configurable", {}) if config else {}
         enable_todos = (
@@ -292,8 +295,23 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         # Add create_update_todos tool for complex task management if enabled
         if enable_todos:
+
+            def _count_todos_call(_serialized: list) -> None:
+                # Only reached after the tool parsed its input, so the counter
+                # tracks successful calls — the signal the sandbox node uses to
+                # decide whether a todo-only block is safe to leave unreflected.
+                adapter._task_todos_call_count = getattr(adapter, "_task_todos_call_count", 0) + 1
+
+            filter_bookkeeping_todos = (
+                configurable.get("filter_bookkeeping_todos")
+                if "filter_bookkeeping_todos" in configurable
+                else getattr(settings.advanced_features, "filter_bookkeeping_todos", True)
+            )
             todos_tool = await create_update_todos_tool(
-                agent_state=state, todos_store_ref=adapter._task_todos_ref
+                agent_state=state,
+                todos_store_ref=adapter._task_todos_ref,
+                write_todos=_count_todos_call,
+                filter_bookkeeping=filter_bookkeeping_todos,
             )
             tools_for_prompt.append(todos_tool)
             # Add to tools context for sandbox execution

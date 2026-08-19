@@ -10,7 +10,10 @@ from langchain_core.runnables import RunnableConfig
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import Step
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
+    extract_task_todos_from_new_vars,
+    is_todo_only_script,
+)
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     append_chat_messages_with_step_limit as core_append_with_step_limit,
     create_error_command as core_create_error_command,
@@ -119,6 +122,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if "reflection_enabled" in configurable
             else settings.advanced_features.reflection_enabled
         )
+        skip_reflection_on_todo_only = (
+            configurable.get("skip_reflection_on_todo_only")
+            if "skip_reflection_on_todo_only" in configurable
+            else getattr(settings.advanced_features, "skip_reflection_on_todo_only", True)
+        )
 
         # Get existing variables using CugaLiteState's own variables_manager
         existing_vars = {}
@@ -151,6 +159,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             getattr(state, "tool_calls_used_run", 0),
             getattr(state, "tool_calls_used_thread", 0),
         )
+
+        todos_calls_before = getattr(adapter, "_task_todos_call_count", 0)
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -195,8 +205,34 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     value, name=name, description="Created during code execution"
                 )
 
+            todo_state_update = extract_task_todos_from_new_vars(new_vars)
+
+            # A todo-only block changed no application state, and the plan it wrote is
+            # re-rendered into the system prompt regardless — reflecting on it costs a
+            # full LLM call to report that nothing happened. Requiring a *successful*
+            # todo call as well as a todo-only script keeps reflection for blocks that
+            # meant to update todos but failed before doing so.
+            #
+            # The call counter is the signal, not new_vars: a block that reassigns an
+            # existing variable name ("todos = await create_update_todos(...)" for the
+            # second time) produces no new variable, so the payload check alone missed
+            # 12 of 28 todo-only turns in the first branch run. new_vars stays as a
+            # fallback for callers that build the tool without the counter callback.
+            todos_call_ran = getattr(adapter, "_task_todos_call_count", 0) > todos_calls_before
+            if todos_call_ran or todo_state_update is not None:
+                # Stamp the step the plan was written at so the system prompt can report
+                # its age rather than presenting it as current fact (issue #676).
+                adapter._task_todos_updated_at_step = state.step_count + 1
+            skip_reflection = (
+                skip_reflection_on_todo_only
+                and (todos_call_ran or todo_state_update is not None)
+                and is_todo_only_script(state.script or "")
+            )
+            if skip_reflection:
+                logger.debug("Skipping reflection: todo-only block changed no application state")
+
             reflection_output = ""
-            if reflection_enabled:
+            if reflection_enabled and not skip_reflection:
                 try:
                     active_model = configurable.get("llm") or _llm_manager.get_model(
                         settings.agent.planner.model
@@ -297,7 +333,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     },
                 )
 
-            todo_state_update = extract_task_todos_from_new_vars(new_vars)
             base_update = {
                 "chat_messages": updated_messages,
                 "variables_storage": state.variables_storage,

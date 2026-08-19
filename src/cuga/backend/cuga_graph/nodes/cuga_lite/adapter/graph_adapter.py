@@ -87,6 +87,14 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._spawn_futures: Dict[str, Any] = spawn_futures_ref if spawn_futures_ref is not None else {}
         self._weak_schema_tool_names: frozenset = frozenset()
         self._observed_tool_shapes: Dict[str, str] = {}
+        # Bumped by create_update_todos on every successful call. The sandbox node
+        # diffs it across a block to tell whether the todo update actually ran —
+        # new_vars cannot answer that, because a block reassigning an existing
+        # variable name produces no new variable (issue #676).
+        self._task_todos_call_count: int = 0
+        # step_count at which the plan was last written, so the system prompt can say
+        # how stale it is instead of presenting it as current fact.
+        self._task_todos_updated_at_step: Optional[int] = None
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
         return list(state.chat_messages or [])
@@ -106,12 +114,26 @@ class AgentGraphAdapter(CoreGraphAdapter):
     def get_pi(self, state: Any) -> Optional[str]:
         return getattr(state, "pi", None)
 
+    def _steps_since_todos_update(self, state: Any) -> Optional[int]:
+        written_at = self._task_todos_updated_at_step
+        if written_at is None:
+            return None
+        current = getattr(state, "step_count", None)
+        if current is None:
+            return None
+        return max(0, current - written_at)
+
     def prepare_system_content(self, state: Any, configurable: dict, base_prompt: str) -> str:
+        staleness = self._steps_since_todos_update(state)
         if self._task_todos_ref:
-            content = base_prompt + format_task_todos_system_block(self._task_todos_ref)
+            content = base_prompt + format_task_todos_system_block(self._task_todos_ref, staleness)
         else:
             task_todos = getattr(state, "task_todos", None)
-            content = base_prompt + format_current_plan_section(task_todos) if task_todos else base_prompt
+            content = (
+                base_prompt + format_current_plan_section(task_todos, staleness)
+                if task_todos
+                else base_prompt
+            )
 
         if self._observed_tool_shapes:
             content += _format_observed_tool_shapes_block(self._observed_tool_shapes)
