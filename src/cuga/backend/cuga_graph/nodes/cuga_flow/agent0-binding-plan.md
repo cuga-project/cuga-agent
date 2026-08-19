@@ -40,6 +40,23 @@ Two integration modes over one existing client:
 
 ## Part A — CUGA FLO side
 
+### A0. Prerequisite — tool names are never resolved today
+
+`TaskAgentConfig.tools` is `list[str]`, and `create_task_agents` passes those strings
+straight through:
+
+```python
+tools_config = agent_config.get("tools") or []          # list[str] from YAML
+cuga_agent = CugaAgent(tools=tools_config if tools_config else None)
+```
+
+`CugaAgent` expects `Optional[List[BaseTool]]`. Every shipped app declares `tools: []`, so
+the mismatch has never fired — but `tools: [agent_0]` would hand it the *string*
+`"agent_0"`. A name → `BaseTool` mapping has to be written before any of A3/A4 works; there
+is no existing resolution to reuse.
+
+Keep it a dict built once at config load, not a plugin registry — there is one entry.
+
 ### A1. Two small functions — no client class
 
 `cuga_supervisor/a2a_protocol.py` already exposes what is needed, **module-level and
@@ -56,12 +73,22 @@ the only state involved — and add two wrappers.
 servers. Its docstring carries agent 0's card `description`, which is what the LLM reads to
 decide whether to ask:
 
+Lives in one new module beside its only consumer — `cuga_flow/agent0.py`. A factory rather
+than a module-level `@tool`, since the card is only known after config load:
+
 ```python
-@tool
-async def ask_agent_0(question: str) -> str:
-    """<agent 0's card description>"""
-    return (await delegate_task_via_a2a_sdk(_card, question, timeout=90))["result"]
+def make_agent_0_tool(card, timeout=90) -> BaseTool:
+    @tool
+    async def ask_agent_0(question: str) -> str:
+        return (await delegate_task_via_a2a_sdk(card, question, timeout=timeout))["result"]
+    # the card's own text is what the LLM reads to decide whether to ask
+    ask_agent_0.description = _agent_card_description(card)
+    return ask_agent_0
 ```
+
+`_agent_card_description` already exists in `a2a_protocol.py`. Setting `description` from the
+card rather than writing a literal docstring is the point: agent 0's team controls when it
+gets consulted, without a CUGA FLO code change.
 
 **Executor role** — a shim exposing `invoke()`, because `TaskAgent` is duck-typed
 (`await self.agent.invoke(task_input)`) and its `_process_output` reads `output` or
@@ -137,8 +164,8 @@ Both build their `CugaAgent` lazily today with `special_instructions` and `model
 field. Three small changes:
 
 - add `tools: list[str]` to `GatewayConfig` and `HookConfig`
-- resolve the names the way `create_task_agents` already resolves task tools
-- pass them into `DecisionAgent._get_agent()` and `FlowAgent._get_hook_agent()`
+- **write the name → `BaseTool` resolution, which does not exist yet** (see A0)
+- pass the resolved tools into `DecisionAgent._get_agent()` and `FlowAgent._get_hook_agent()`
 
 ```yaml
 gateways:
