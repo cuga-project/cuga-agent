@@ -106,7 +106,7 @@ def test_user_retention_route_returns_active_agent_policy_summary(client):
 
     assert response.status_code == 200
     assert response.json() == summary
-    get_summary.assert_awaited_once_with("cuga-default", None)
+    get_summary.assert_awaited_once_with("cuga-default", app.state.ev_engine)
 
 
 def test_admin_retention_route_forwards_policy_and_clock(client):
