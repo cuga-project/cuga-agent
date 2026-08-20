@@ -2501,6 +2501,11 @@ class KnowledgeEngine:
             progress_futures: list[_cf.Future] = []
 
             async def _emit_progress(stage: str, done: int, total: int) -> None:
+                # Like the "parsed" emit above, this omits ``status`` on
+                # purpose, and ``update_task`` replaces the whole entry — so a
+                # task killed here leaves a status-less file-task behind.
+                # Readers must tolerate that; see ``normalize_file_tasks`` in
+                # knowledge/metadata/base.py (#683).
                 await self._metadata.update_task(
                     task_id,
                     file_tasks={
