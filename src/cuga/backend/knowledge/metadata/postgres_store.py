@@ -202,14 +202,20 @@ class PostgresKnowledgeMetadata(ProdRelationalStore):
         count = 0
         for row in rows:
             task_id = row["task_id"]
-            file_tasks = json.loads(row["file_tasks_json"])
-            for ft in file_tasks.values():
-                if ft["status"] in ("pending", "processing"):
-                    ft["status"] = "failed"
-                    ft["error"] = "interrupted by server restart"
+            try:
+                file_tasks = json.loads(row["file_tasks_json"]) or {}
+            except (TypeError, ValueError):
+                file_tasks = {}
+            if isinstance(file_tasks, dict):
+                for ft in file_tasks.values():
+                    if not isinstance(ft, dict):
+                        continue
+                    if ft.get("status", "pending") in ("pending", "processing"):
+                        ft["status"] = "failed"
+                        ft["error"] = ft.get("error") or "interrupted by server restart"
             await self.execute(
-                f"UPDATE {_TASK} SET status = 'failed', file_tasks_json = ?, updated_at = ? WHERE task_id = ?",
-                (json.dumps(file_tasks), now, task_id),
+                f"UPDATE {_TASK} SET status = ?, file_tasks_json = ?, updated_at = ? WHERE task_id = ?",
+                ("failed", json.dumps(file_tasks), now, task_id),
             )
             count += 1
         await self.commit()

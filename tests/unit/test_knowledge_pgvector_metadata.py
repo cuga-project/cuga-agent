@@ -84,6 +84,12 @@ class _FakePostgresMetadata(PostgresKnowledgeMetadata):
         return None
 
     async def fetchall(self, sql: str, params: tuple = ()):  # type: ignore[override]
+        if "_tasks" in sql and "status IN" in sql:
+            return [
+                {"task_id": row["task_id"], "file_tasks_json": row["file_tasks_json"]}
+                for row in self._rows_by_task_id.values()
+                if row["status"] in ("running", "pending")
+            ]
         return []
 
     async def commit(self) -> None:  # type: ignore[override]
@@ -263,3 +269,43 @@ async def test_no_kwarg_silently_dropped_during_progress_emit():
     assert task["failed_files"] == 0
     assert task["total_files"] == 1
     assert task["file_tasks"]["f.pdf"]["status"] == "indexed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recover_stale_tasks_handles_progress_entries_without_status():
+    """Progress emits replace file_tasks_json without a ``status`` key.
+
+    Postgres recovery used to KeyError on that shape and fail knowledge
+    warmup. Must match SQLite: close the parent task and not raise.
+    """
+    store = _FakePostgresMetadata()
+    await store.ensure_ready()
+    await store.create_task(
+        "t-progress",
+        "col1",
+        3,
+        {
+            "summary-plan-description.md": {
+                "filename": "summary-plan-description.md",
+                "stage": "parsed",
+                "progress": {"done": 182, "total": 182},
+            },
+            "bad_type.md": "not a dict",
+            "ok.pdf": {"filename": "ok.pdf", "status": "processing"},
+        },
+    )
+    await store.update_task("t-progress", status="running")
+
+    count = await store.recover_stale_tasks()
+    assert count == 1
+
+    task = await store.get_task("t-progress")
+    assert task is not None
+    assert task["status"] == "failed"
+    assert task["file_tasks"]["ok.pdf"]["status"] == "failed"
+    assert "restart" in task["file_tasks"]["ok.pdf"]["error"]
+    ms = task["file_tasks"]["summary-plan-description.md"]
+    assert isinstance(ms, dict)
+    assert ms["status"] == "failed"
+    assert "restart" in ms["error"]
