@@ -408,3 +408,46 @@ async def test_cancel_before_worker_registers_its_event_is_still_honoured():
     task = await eng._metadata.get_task("t1")
     assert task["status"] == "cancelled", f"cancelled row was resurrected to {task['status']}"
     assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+async def test_row_and_document_never_disagree_when_cancel_races_completion():
+    """Close the last interleaving: a "cancelled" row over an indexed document.
+
+    ``update_task`` is last-write-wins with no CAS. Without a lock around
+    read-decide-write, the worker's ``status="completed"`` could land between
+    ``cancel_task``'s read (which saw ``running``) and its UPDATE, leaving the
+    row ``cancelled`` while the document really is indexed.
+
+    Asserted as an invariant rather than a fixed outcome, because either side
+    may legitimately win the race. What must never happen is the two
+    disagreeing.
+    """
+    eng = _engine()
+    await _new_task(eng)
+    entered, gate = _park_at_insert(eng)
+
+    cancel_event = asyncio.Event()
+    eng._active_tasks["t1"] = cancel_event
+    worker = asyncio.create_task(
+        eng._ingest_inner(COLL, MISSING, FNAME, "t1", True, cancel_event, skip_file_copy=True)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+
+    # Release the insert and cancel in the same tick so the terminal write and
+    # the cancel write contend for the task write lock.
+    gate.set()
+    cancelled, _ = await asyncio.gather(eng.cancel_task("t1"), worker)
+
+    task = await eng._metadata.get_task("t1")
+    indexed = await eng._metadata.document_exists(COLL, FNAME)
+    assert task["status"] in ("completed", "cancelled")
+    if task["status"] == "cancelled":
+        assert not indexed, "row says cancelled but the document is indexed"
+    else:
+        assert indexed, "row says completed but no document was indexed"
+    # The returned row may legitimately be the pre-read snapshot: when the
+    # cancel is refused past the point of no return we hand back the live row
+    # so the caller keeps polling to the real terminal status. What it must
+    # never do is claim "cancelled" for a task that indexed its document.
+    assert cancelled["status"] != "cancelled" or not indexed
