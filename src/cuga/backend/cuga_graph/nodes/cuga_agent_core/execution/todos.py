@@ -28,8 +28,19 @@ _AWAITED_CALL_RE = re.compile(r"await\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
 _BOOKKEEPING_PATTERNS: List[tuple] = [
     # "Confirm completion", "Confirm order placement and provide summary", ... —
     # every leading-"Confirm" item observed across three bundles was bookkeeping.
-    # "before" exempts pre-action checks ("Confirm cart contents before purchase").
-    (re.compile(r"^confirm\b(?!.*\bbefore\b)", re.I), False),
+    # Two exemptions keep verification that is real work:
+    #  - "before" (pre-action checks: "Confirm cart contents before purchase")
+    #  - concrete state-check wording ("contains", "matches", "is/are updated",
+    #    "is/are correct", quantity/count): 9bf2c8a_1 planned "Confirm the cart is
+    #    updated and wish list contains the items", the filter dropped it, and the
+    #    task then failed on exactly that unverified end state (quantity 1 vs 3).
+    (
+        re.compile(
+            r"^confirm\b(?!.*\b(?:before|contains?|match\w*|(?:is|are)\s+(?:updated|correct)|quantit\w+|counts?)\b)",
+            re.I,
+        ),
+        False,
+    ),
     # "Verify completion", "Verify everything is done" — not "Verify the transfer amount".
     (re.compile(r"^verify\b.*\b(complet\w+|success|everything|all (?:steps|items|todos))\b", re.I), False),
     # "Summarize actions taken" — not "Summarize the article" (real content work).

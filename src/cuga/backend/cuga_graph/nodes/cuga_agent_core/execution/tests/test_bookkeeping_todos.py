@@ -49,6 +49,10 @@ BOOKKEEPING = [
     "Confirm creation",
     "Confirm withdrawal and report",
     "Finalize and report success",
+    # live drops from the Aug19 smoke / Aug20 runs — pure completion confirms
+    "Confirm all befriending actions completed",
+    "Confirm actions and summarize results",
+    "Confirm move and report",
     # final-answer / summary-artifact family
     "Generate summary report",
     "Prepare final answer",
@@ -72,6 +76,13 @@ LEGITIMATE = [
     # verification that IS the task (pre-action checks)
     "Confirm cart contents before purchase",
     "Verify the transfer amount matches the invoice",
+    # post-action STATE checks — kept since 9bf2c8a_1 (run2, Aug20): the filter dropped
+    # "Confirm the cart is updated and wish list contains the items" and the task then
+    # failed on exactly that unverified end state (wish-list quantity 1 vs 3)
+    "Confirm the cart is updated and wish list contains the items",
+    "Confirm wish list matches the expected products",
+    "Confirm the order quantity is correct",
+    "Confirm the playlist contains all 14 songs",
     # user-requested artifacts — a named destination defeats the artifact patterns
     "Write summary to Simple Note",
     "Create a summary report in ~/documents/work/",
