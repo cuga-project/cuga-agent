@@ -13,8 +13,10 @@ from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
 from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_config
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
+    is_secret_field_name,
     load_and_patch_draft,
     policies_list_from_config,
+    save_draft_section_unlocked,
 )
 
 
@@ -146,9 +148,24 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
     if agent_id is None:
         agent_id = "cuga-default"
     try:
+        from cuga.backend.server.config_store import load_draft
+
         data = await request.json()
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=422, detail="Request body must be a JSON object")
         llm = data.get("llm", data)
-        full_draft = await load_and_patch_draft(agent_id, "llm", llm if isinstance(llm, dict) else {})
+        if not isinstance(llm, dict):
+            llm = {}
+        async with agent_draft_lock(agent_id):
+            existing_draft = await load_draft(agent_id) or {}
+            existing_llm = existing_draft.get("llm") or {}
+            if not isinstance(existing_llm, dict):
+                existing_llm = {}
+            for k in list(llm.keys()):
+                if is_secret_field_name(k) and llm[k] == "":
+                    llm.pop(k, None)
+            merged_llm = {**existing_llm, **llm}
+            full_draft = await save_draft_section_unlocked(agent_id, "llm", merged_llm)
         state = getattr(request.app.state, "draft_app_state", None)
         if state:
             apply_llm_to_draft_state(state, full_draft.get("llm") or {})
@@ -156,6 +173,8 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
             if draft_agent:
                 draft_agent.llm_config = full_draft.get("llm") or None
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft LLM: {e}")
         raise HTTPException(status_code=500, detail=str(e))
