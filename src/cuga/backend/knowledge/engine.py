@@ -1840,6 +1840,15 @@ class KnowledgeEngine:
         # head on, so a terminal write here would corrupt data.
         self._uncancellable_tasks: set[str] = set()
 
+        # Serializes "read a task's status, decide, write a terminal status".
+        # update_task is last-write-wins with no CAS, so without this a
+        # worker's status="completed" could land between cancel_task's read
+        # and its UPDATE — leaving the row "cancelled" while the document is
+        # actually indexed. Holding this across read+decide+write makes the
+        # check-then-act atomic: whichever side goes second re-reads, sees the
+        # terminal status the other just wrote, and declines to overwrite it.
+        self._task_write_lock = asyncio.Lock()
+
         # Reindex coordination flags (in-memory, single-process only — flock ensures this)
         self._reindex_in_progress: set[str] = set()
         self._reindex_deferred: set[str] = set()
@@ -2799,20 +2808,23 @@ class KnowledgeEngine:
             stage_timings["finalize_s"] = round(time.monotonic() - t_finalize, 3)
             stage_timings["total_s"] = round(time.monotonic() - start, 3)
 
-            await self._metadata.update_task(
-                task_id,
-                status="completed",
-                processed_files=1,
-                successful_files=1,
-                file_tasks={
-                    filename: {
-                        "filename": filename,
-                        "status": "indexed",
-                        "duration_seconds": round(duration, 2),
-                        "timings": dict(stage_timings),
-                    }
-                },
-            )
+            # Locked so this cannot land between cancel_task's read and its
+            # write. Whichever side goes second re-reads and stands down.
+            async with self._task_write_lock:
+                await self._metadata.update_task(
+                    task_id,
+                    status="completed",
+                    processed_files=1,
+                    successful_files=1,
+                    file_tasks={
+                        filename: {
+                            "filename": filename,
+                            "status": "indexed",
+                            "duration_seconds": round(duration, 2),
+                            "timings": dict(stage_timings),
+                        }
+                    },
+                )
             logger.info(
                 f"Ingested {filename} -> {len(docs)} chunks in {collection} "
                 f"(added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)})"
@@ -2866,54 +2878,57 @@ class KnowledgeEngine:
             # (e.g. cancel arrived while the worker was queued on _ingest_sem).
             duration = time.monotonic() - start
             logger.info(f"Task {task_id} cancelled by user for {filename} after {duration:.1f}s")
-            await self._metadata.update_task(
-                task_id,
-                status="cancelled",
-                processed_files=1,
-                file_tasks={
-                    filename: {
-                        "filename": filename,
-                        "status": "cancelled",
-                        "reason": "cancelled by user",
-                        "duration_seconds": round(duration, 2),
-                    }
-                },
-            )
+            async with self._task_write_lock:
+                await self._metadata.update_task(
+                    task_id,
+                    status="cancelled",
+                    processed_files=1,
+                    file_tasks={
+                        filename: {
+                            "filename": filename,
+                            "status": "cancelled",
+                            "reason": "cancelled by user",
+                            "duration_seconds": round(duration, 2),
+                        }
+                    },
+                )
         except ReindexSupersededError as e:
             # SQL status "cancelled" (CHECK admits no new value); supersede
             # audit lives in file_tasks[filename].
             duration = time.monotonic() - start
             logger.info(f"Task {task_id} superseded for {filename} after {duration:.1f}s ({e})")
-            await self._metadata.update_task(
-                task_id,
-                status="cancelled",
-                processed_files=1,
-                file_tasks={
-                    filename: {
-                        "filename": filename,
-                        "status": "superseded",
-                        "reason": f"config changed mid-ingest (gen {e.worker_gen} -> {e.current_gen})",
-                        "duration_seconds": round(duration, 2),
-                    }
-                },
-            )
+            async with self._task_write_lock:
+                await self._metadata.update_task(
+                    task_id,
+                    status="cancelled",
+                    processed_files=1,
+                    file_tasks={
+                        filename: {
+                            "filename": filename,
+                            "status": "superseded",
+                            "reason": f"config changed mid-ingest (gen {e.worker_gen} -> {e.current_gen})",
+                            "duration_seconds": round(duration, 2),
+                        }
+                    },
+                )
         except Exception as e:
             duration = time.monotonic() - start
             logger.error(f"Failed to ingest {filename}: {e}")
-            await self._metadata.update_task(
-                task_id,
-                status="failed",
-                processed_files=1,
-                failed_files=1,
-                file_tasks={
-                    filename: {
-                        "filename": filename,
-                        "status": "failed",
-                        "error": str(e),
-                        "duration_seconds": round(duration, 2),
-                    }
-                },
-            )
+            async with self._task_write_lock:
+                await self._metadata.update_task(
+                    task_id,
+                    status="failed",
+                    processed_files=1,
+                    failed_files=1,
+                    file_tasks={
+                        filename: {
+                            "filename": filename,
+                            "status": "failed",
+                            "error": str(e),
+                            "duration_seconds": round(duration, 2),
+                        }
+                    },
+                )
         finally:
             self._active_tasks.pop(task_id, None)
             self._uncancellable_tasks.discard(task_id)
@@ -3890,16 +3905,29 @@ class KnowledgeEngine:
         reindex, all three of which read the same status filter.
         """
         await self._ensure_metadata_ready()
-        task = await self._metadata.get_task(task_id)
-        if not task:
-            return None
-        if task["status"] in ("completed", "failed", "cancelled"):
-            return task
 
+        # Set the event BEFORE taking the write lock. The worker's checkpoints
+        # are synchronous reads of this event, so setting it first means a
+        # worker that runs while we wait for the lock still sees the cancel.
         cancel_event = self._active_tasks.get(task_id)
         if cancel_event:
             cancel_event.set()
 
+        # Read, decide and write under one lock. Without it the worker's
+        # status="completed" could land between our read and our UPDATE,
+        # leaving the row "cancelled" while the document is really indexed.
+        async with self._task_write_lock:
+            task = await self._metadata.get_task(task_id)
+            if not task:
+                return None
+            # Re-read inside the lock: if the worker reached a terminal status
+            # while we were waiting, that is the truth — do not overwrite it.
+            if task["status"] in ("completed", "failed", "cancelled"):
+                return task
+            return await self._cancel_task_locked(task_id, task)
+
+    async def _cancel_task_locked(self, task_id: str, task: dict[str, Any]) -> dict[str, Any] | None:
+        """Write the cancellation. Caller must hold ``_task_write_lock``."""
         if task_id in self._uncancellable_tasks:
             # Past the point of no return: the insert is in flight and the
             # document WILL land. Persisting "cancelled" would both lie and
