@@ -167,9 +167,15 @@ def init_traceloop() -> None:
                 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
                 from opentelemetry.util.re import parse_env_headers
 
-                endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+                # Deliberately do NOT pass `endpoint=` explicitly: OTLPSpanExporter's own
+                # constructor, when endpoint is left None, reads OTEL_EXPORTER_OTLP_ENDPOINT
+                # itself and appends the "/v1/traces" signal path automatically (per the
+                # OTel spec) — the same behavior Langfuse's/every collector's docs assume
+                # ("just set OTEL_EXPORTER_OTLP_ENDPOINT to the base URL"). Passing endpoint=
+                # explicitly here bypasses that auto-append and silently 404s. Verified
+                # empirically in Phase 3 (docs/traceloop-instrumentation-plan.md).
                 headers = parse_env_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")) or None
-                exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+                exporter = OTLPSpanExporter(headers=headers)
         except Exception as e:
             logger.error(f"Failed to construct Traceloop exporter (mode={exporter_kind}): {e}")
             return
