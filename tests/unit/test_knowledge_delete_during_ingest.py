@@ -20,7 +20,12 @@ import threading
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from langchain_core.documents import Document
+
+from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.routes import knowledge_router
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge import engine as engine_mod
@@ -204,3 +209,46 @@ async def test_delete_refuses_rather_than_lying_when_the_ingest_outlives_the_dea
     # Once the ingest is done, the delete succeeds and sticks.
     await eng.delete_document(COLL, FNAME)
     assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+def test_delete_route_maps_ingest_still_finishing_to_409():
+    """The engine's retryable error must reach the client as 409, not 500.
+
+    The handler has to live on the route that actually calls
+    ``delete_document``. Attached to any other route it is dead code, and a
+    timed-out delete surfaces as an unhandled 500 — which tells the caller
+    "the server is broken" instead of "retry shortly".
+    """
+    from types import SimpleNamespace
+
+    class _Engine:
+        def __init__(self):
+            self._config = SimpleNamespace(enabled=True)
+
+        async def delete_document(self, collection, filename):
+            raise IngestStillFinishingError(filename, "task_abc123")
+
+    async def _identity(request: Request) -> KnowledgeIdentity:
+        return KnowledgeIdentity(
+            user_id=None,
+            tenant_id=None,
+            agent_id="cuga-default",
+            thread_id=None,
+            auth_mode="external",
+        )
+
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity
+    app.state.app_state = SimpleNamespace(knowledge_engine=_Engine(), knowledge_provider=None)
+
+    resp = TestClient(app).request(
+        "DELETE",
+        "/api/knowledge/documents",
+        json={"scope": "agent", "filename": FNAME},
+    )
+
+    assert resp.status_code == 409, f"expected 409, got {resp.status_code}: {resp.text[:200]}"
+    detail = resp.json()["detail"]
+    assert "task_abc123" in detail and "retry" in detail.lower()
