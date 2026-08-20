@@ -151,6 +151,8 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
         from cuga.backend.server.config_store import load_draft
 
         data = await request.json()
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=422, detail="Request body must be a JSON object")
         llm = data.get("llm", data)
         if not isinstance(llm, dict):
             llm = {}
@@ -171,6 +173,8 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
             if draft_agent:
                 draft_agent.llm_config = full_draft.get("llm") or None
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft LLM: {e}")
         raise HTTPException(status_code=500, detail=str(e))

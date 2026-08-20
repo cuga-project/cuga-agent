@@ -43,7 +43,12 @@ export function matchSecretRef(
   const storedId = secretIdFromRef(storedRef);
   if (storedId) {
     const idMatch = options.find((s) => s.id === storedId);
-    if (idMatch) return idMatch.ref;
+    if (idMatch) {
+      if (storedRef.startsWith("env://")) {
+        return `env://${storedId}`;
+      }
+      return idMatch.ref;
+    }
   }
 
   return storedRef;

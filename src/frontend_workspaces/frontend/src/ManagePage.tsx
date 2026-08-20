@@ -854,7 +854,7 @@ export function ManagePage() {
           ref: s.source === "vault" || mode === "vault"
             ? `vault://secret/${s.id}#value`
             : s.source === "env"
-              ? s.id
+              ? `env://${s.id}`
               : s.source === "aws"
                 ? `aws://${s.id}`
                 : `db://${s.id}`,
