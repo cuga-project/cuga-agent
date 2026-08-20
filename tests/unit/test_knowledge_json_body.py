@@ -1,5 +1,9 @@
 """A missing or malformed JSON body must be 400, never 500.
 
+The 400 detail deliberately reuses the exact string ``patch_session_settings``
+already returned, so this fix changes status codes only — no shipped message
+text moves under a client that might be matching on it.
+
 ``await request.json()`` raises ``JSONDecodeError`` when the body is absent or
 not JSON. Unhandled, that escapes as an ASGI 500 with a full traceback — the
 wrong contract for bad client input, and log noise that buries real failures
@@ -64,7 +68,7 @@ BODY_ENDPOINTS = [
 def test_missing_body_is_400_not_500(client, method, path):
     r = client.request(method, path)
     assert r.status_code == 400, f"{method} {path} -> {r.status_code}: {r.text[:200]}"
-    assert "JSON" in r.json()["detail"] or "json" in r.json()["detail"]
+    assert r.json()["detail"] == "request body must be a JSON object"
 
 
 @pytest.mark.unit
@@ -72,7 +76,7 @@ def test_missing_body_is_400_not_500(client, method, path):
 def test_malformed_body_is_400_not_500(client, method, path):
     r = client.request(method, path, content=b"not json at all", headers={"Content-Type": "application/json"})
     assert r.status_code == 400, f"{method} {path} -> {r.status_code}: {r.text[:200]}"
-    assert r.json()["detail"] == "invalid JSON body"
+    assert r.json()["detail"] == "request body must be a JSON object"
 
 
 @pytest.mark.unit
@@ -104,7 +108,7 @@ def test_reindex_rejects_a_malformed_body(client):
         headers={"Content-Type": "application/json"},
     )
     assert r.status_code == 400, f"-> {r.status_code}: {r.text[:200]}"
-    assert r.json()["detail"] == "invalid JSON body"
+    assert r.json()["detail"] == "request body must be a JSON object"
 
 
 @pytest.mark.unit

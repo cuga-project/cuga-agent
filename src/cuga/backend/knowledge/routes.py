@@ -70,17 +70,18 @@ async def _json_body(request: Request, *, allow_empty: bool = False) -> dict[str
     ``allow_empty`` accepts a request with no body at all and yields ``{}``,
     for endpoints where every field is optional.
     """
+    detail = "request body must be a JSON object"
     raw = await request.body()
     if not raw.strip():
         if allow_empty:
             return {}
-        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        raise HTTPException(status_code=400, detail=detail)
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="invalid JSON body")
+        raise HTTPException(status_code=400, detail=detail)
     if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+        raise HTTPException(status_code=400, detail=detail)
     return body
 
 
