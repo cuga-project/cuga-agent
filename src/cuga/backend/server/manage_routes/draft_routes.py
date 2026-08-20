@@ -13,8 +13,10 @@ from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
 from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_config
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
+    is_secret_field_name,
     load_and_patch_draft,
     policies_list_from_config,
+    save_draft_section_unlocked,
 )
 
 
@@ -146,9 +148,24 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
     if agent_id is None:
         agent_id = "cuga-default"
     try:
+        from cuga.backend.server.config_store import load_draft
+
         data = await request.json()
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=422, detail="Request body must be a JSON object")
         llm = data.get("llm", data)
-        full_draft = await load_and_patch_draft(agent_id, "llm", llm if isinstance(llm, dict) else {})
+        if not isinstance(llm, dict):
+            llm = {}
+        async with agent_draft_lock(agent_id):
+            existing_draft = await load_draft(agent_id) or {}
+            existing_llm = existing_draft.get("llm") or {}
+            if not isinstance(existing_llm, dict):
+                existing_llm = {}
+            for k in list(llm.keys()):
+                if is_secret_field_name(k) and llm[k] == "":
+                    llm.pop(k, None)
+            merged_llm = {**existing_llm, **llm}
+            full_draft = await save_draft_section_unlocked(agent_id, "llm", merged_llm)
         state = getattr(request.app.state, "draft_app_state", None)
         if state:
             apply_llm_to_draft_state(state, full_draft.get("llm") or {})
@@ -156,6 +173,8 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
             if draft_agent:
                 draft_agent.llm_config = full_draft.get("llm") or None
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to patch draft LLM: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -192,6 +211,9 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         state.tools_include_version = current_version + 1
 
         tool_errors = {}
+        # Bound before the try so the shortlister re-warm below can reference it
+        # even if the reload path fails early.
+        draft_agent_id = None
         try:
             base_agent_id = _parse_agent_id(str(agent_id))
             draft_agent_id = f"{base_agent_id}--draft"
@@ -212,6 +234,17 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
                 await rebuild_agent_from_config(draft_agent, full_draft)
         except Exception as rebuild_err:
             logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
+
+        # The catalogue just changed, so embed anything new for cosine
+        # shortlisting. Vectors are keyed by content hash, so adding two tools
+        # embeds two documents rather than re-embedding everything, and the
+        # model stays loaded. No-op on the default LLM strategy.
+        try:
+            from cuga.backend.server.main import warm_shortlister_catalogue
+
+            await warm_shortlister_catalogue(agent_id=draft_agent_id)
+        except Exception as warm_err:
+            logger.warning(f"Shortlister re-warm after PATCH tools skipped: {warm_err}")
 
         response_data = {
             "status": "partial" if tool_errors else "success",

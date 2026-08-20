@@ -63,6 +63,12 @@ import { useToolsDraftSave } from "./manage/hooks/useToolsDraftSave";
 import { useKnowledgeDraftSave, type AdaptationServerErrorShape } from "./manage/hooks/useKnowledgeDraftSave";
 import { useFullDraftSave } from "./manage/hooks/useFullDraftSave";
 import { usePublishConfig } from "./manage/hooks/usePublishConfig";
+import {
+  isSecretRef,
+  matchSecretRef,
+  secretIdFromRef,
+  storedRefMissingFromList,
+} from "./secretRefUtils";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -326,11 +332,6 @@ function policiesSummary(policies: unknown[]): { total: number; byType: Record<s
     byType[t] = (byType[t] ?? 0) + 1;
   }
   return { total: policies.length, byType };
-}
-
-function isSecretRef(v: unknown): boolean {
-  if (typeof v !== "string") return false;
-  return v.startsWith("db://") || v.startsWith("vault://") || v.startsWith("aws://") || v.startsWith("env://");
 }
 
 function maskSecrets(obj: unknown): unknown {
@@ -853,7 +854,7 @@ export function ManagePage() {
           ref: s.source === "vault" || mode === "vault"
             ? `vault://secret/${s.id}#value`
             : s.source === "env"
-              ? s.id
+              ? `env://${s.id}`
               : s.source === "aws"
                 ? `aws://${s.id}`
                 : `db://${s.id}`,
@@ -867,10 +868,7 @@ export function ManagePage() {
   }, [refreshSecrets]);
 
   useEffect(() => {
-    const key = llmConfig?.api_key ?? "";
-    setLlmUseSavedSecret(
-      typeof key === "string" && (key.startsWith("db://") || key.startsWith("vault://") || key.startsWith("aws://"))
-    );
+    setLlmUseSavedSecret(isSecretRef(llmConfig?.api_key ?? ""));
   }, [llmConfig?.api_key]);
 
   useEffect(() => {
@@ -1151,6 +1149,7 @@ export function ManagePage() {
       } else {
         (next as Record<string, unknown>)[field] = value;
       }
+      llmConfigRef.current = next;
       return next;
     });
   };
@@ -1282,6 +1281,13 @@ export function ManagePage() {
   );
 
   const llm = llmConfig ?? {};
+  const llmSecretStoredRef = typeof llm.api_key === "string" ? llm.api_key : "";
+  const llmSecretSelectValue = matchSecretRef(llmSecretStoredRef, llmSecretsList);
+  const llmSecretOrphanInList = storedRefMissingFromList(
+    llmSecretStoredRef,
+    llmSecretsList,
+    llmSecretSelectValue
+  );
   const flags = featureFlags ?? {};
   const policiesList = policies?.policies ?? [];
   const summary = policiesSummary(policiesList);
@@ -1438,10 +1444,16 @@ export function ManagePage() {
                           <Select
                             id="llm-api-key-secret"
                             labelText={llm.auth_type === "auth_header" ? "Header value (saved secret)" : "API Key (saved secret)"}
-                            value={llm.api_key ?? ""}
+                            value={llmSecretSelectValue}
                             onChange={(e) => { updateLlm("api_key", e.target.value); setTimeout(saveLlmDraft, 0); }}
                           >
                             <SelectItem value="" text="Select a secret" />
+                            {llmSecretOrphanInList && (
+                              <SelectItem
+                                value={llmSecretStoredRef}
+                                text={`${secretIdFromRef(llmSecretStoredRef)} (configured)`}
+                              />
+                            )}
                             {llmSecretsList.map((s) => (
                               <SelectItem
                                 key={s.id}

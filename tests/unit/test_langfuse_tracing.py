@@ -307,7 +307,6 @@ class TestNestedCallSites:
     @pytest.mark.asyncio
     async def test_nl_auto_continue_passes_invoke_config(self):
         from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as mod
-        from cuga.config import settings
 
         cb = _fake_langfuse_handler()
         set_langfuse_callbacks([cb])
@@ -317,7 +316,9 @@ class TestNestedCallSites:
         mock_resp.content = '{"auto_continue": false}'
         mock_llm.ainvoke = AsyncMock(return_value=mock_resp)
 
-        with patch.object(settings.advanced_features, "cuga_lite_nl_auto_continue", True, create=True):
+        fake_settings = MagicMock()
+        fake_settings.advanced_features.cuga_lite_nl_auto_continue = True
+        with patch.object(mod, "settings", fake_settings):
             result = await mod.classify_nl_auto_continue(
                 mock_llm,
                 assistant_visible="done with the task",
@@ -332,14 +333,15 @@ class TestNestedCallSites:
     async def test_nl_auto_continue_without_sync_fails_propagation(self):
         """Documents pre-fix behaviour: no callbacks in nested ainvoke config."""
         from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as mod
-        from cuga.config import settings
 
         mock_llm = MagicMock()
         mock_resp = MagicMock()
         mock_resp.content = '{"auto_continue": false}'
         mock_llm.ainvoke = AsyncMock(return_value=mock_resp)
 
-        with patch.object(settings.advanced_features, "cuga_lite_nl_auto_continue", True, create=True):
+        fake_settings = MagicMock()
+        fake_settings.advanced_features.cuga_lite_nl_auto_continue = True
+        with patch.object(mod, "settings", fake_settings):
             await mod.classify_nl_auto_continue(
                 mock_llm,
                 assistant_visible="partial answer here",

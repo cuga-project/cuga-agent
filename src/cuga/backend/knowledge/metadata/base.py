@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
+
+#: Error recorded on file-task entries that a restart interrupted mid-ingest.
+INTERRUPTED_ERROR = "interrupted by server restart"
+
+#: File-task statuses that a restart should re-mark as ``failed``. A missing
+#: ``status`` is treated as ``pending`` and therefore recovered too — see
+#: ``normalize_file_tasks`` for why the key can be absent.
+_RECOVERABLE_FILE_STATUSES = ("pending", "processing")
 
 
 def utc_now_iso() -> str:
@@ -12,6 +21,55 @@ def utc_now_iso() -> str:
 
 def iso_cutoff_days_ago(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def normalize_file_tasks(raw: Any) -> dict[str, Any]:
+    """Coerce a stored ``file_tasks_json`` value into a mapping.
+
+    Accepts the raw JSON text from the DB or an already-deserialized value,
+    and always returns a dict so callers can iterate and re-serialize without
+    guarding every access.
+
+    Two shapes on disk make this necessary:
+
+    1. **A file-task entry may legitimately have no ``status`` key.** The
+       ingest worker's progress emits replace the whole entry with
+       ``{filename, stage, progress}`` on purpose, so a late emit cannot
+       un-flip ``status="completed"`` back to ``"processing"``
+       (see ``_emit_progress`` in ``knowledge/engine.py``). Any task killed
+       mid-ingest therefore leaves a status-less entry behind. Readers must
+       treat a missing status as *non-terminal*, never assume the key exists
+       — assuming it crashed Postgres warmup with ``KeyError: 'status'``
+       (#683) while SQLite tolerated it, and the two backends silently
+       diverged for weeks.
+    2. **The payload may not be an object at all** — corrupt or truncated
+       JSON, ``null``, or a list written by an older build. Returning ``{}``
+       keeps the caller's re-serialization from persisting a non-object back
+       into a column the rest of the code reads as a mapping.
+    """
+    if isinstance(raw, (str, bytes, bytearray)):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def mark_file_tasks_interrupted(file_tasks: dict[str, Any]) -> dict[str, Any]:
+    """Re-mark non-terminal file-task entries as failed, in place.
+
+    Shared by every backend's ``recover_stale_tasks`` so the tolerance rules
+    live in one place. Entries that are not dicts are skipped rather than
+    dropped, and an existing ``error`` is preserved because it is more
+    specific than the generic restart message.
+    """
+    for ft in file_tasks.values():
+        if not isinstance(ft, dict):
+            continue
+        if ft.get("status", "pending") in _RECOVERABLE_FILE_STATUSES:
+            ft["status"] = "failed"
+            ft["error"] = ft.get("error") or INTERRUPTED_ERROR
+    return file_tasks
 
 
 class KnowledgeMetadataStore(Protocol):

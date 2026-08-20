@@ -14,6 +14,8 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
 
+pytestmark = pytest.mark.unit
+
 
 def _make_adapter(**kwargs):
     return SupervisorGraphAdapter(
@@ -92,13 +94,26 @@ def test_record_delegation_updates_state_fields():
         agent_results={},
         agent_variables={},
         agent_chat_messages={},
+        supervisor_metadata={},
         metrics={},
     )
 
     adapter.record_delegation(
         state,
         "crm_agent",
-        result=SimpleNamespace(chat_messages=["msg1"]),
+        result=SimpleNamespace(
+            chat_messages=["msg1"],
+            policy_decisions=[
+                {
+                    "policy_id": "worker-guard",
+                    "policy_name": "Worker guard",
+                    "policy_type": "intent_guard",
+                    "action_type": "block_intent",
+                    "stage": "input",
+                    "outcome": "blocked",
+                }
+            ],
+        ),
         answer="done",
         variables={"order_id": "42"},
     )
@@ -107,6 +122,9 @@ def test_record_delegation_updates_state_fields():
     assert state.agent_results["crm_agent"] == "done"
     assert state.agent_variables["crm_agent"] == {"order_id": "42"}
     assert state.agent_chat_messages["crm_agent"] == ["msg1"]
+    decision = state.supervisor_metadata["policy_decisions"][0]
+    assert decision["policy_id"] == "worker-guard"
+    assert decision["agent_name"] == "crm_agent"
     assert state.metrics["delegation_count"] == 1
     assert state.metrics["last_delegated_agent"] == "crm_agent"
 

@@ -48,7 +48,10 @@ async def apply_output_formatter_policies(
 
         logger.debug(f"{context}: Checking OutputFormatter policies...")
         command, metadata = await PolicyEnactment.check_and_enact(
-            state, config, policy_types=[PolicyType.OUTPUT_FORMATTER]
+            state,
+            config,
+            policy_types=[PolicyType.OUTPUT_FORMATTER],
+            metadata_key=metadata_key,
         )
 
         if metadata and metadata.get("formatted_response"):
@@ -96,6 +99,7 @@ def _update_output_formatter_metadata(
         "policy_id": metadata.get("policy_id"),
         "policy_reasoning": metadata.get("policy_reasoning", ""),
         "policy_confidence": metadata.get("policy_confidence"),
+        "policy_decisions": metadata.get("policy_decisions", []),
     }
 
     # Add formatter-specific metadata

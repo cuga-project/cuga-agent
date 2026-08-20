@@ -31,10 +31,16 @@ __all__ = [
     "CugaSupervisor",
     "run_agent",
     "InvokeResult",
+    "PolicyDecision",
+    "PolicyDecisionOutcome",
+    "PolicyDecisionStage",
     "tracked_tool",
     "KnowledgeClient",
     "KnowledgeEngine",
     "KnowledgeConfig",
+    # Tool shortlisting: how a large tool set is shrunk before the model sees it.
+    "Shortlister",
+    "ShortlisterStrategy",
     # Client-adaptation SDK surface — operators can build / validate / hash
     # adaptation text without going through the HTTP layer.
     "CLIENT_ADAPTATION_MAX_CHARS",
@@ -49,6 +55,10 @@ __all__ = [
 if TYPE_CHECKING:
     from cuga.sdk import CugaAgent, CugaSupervisor, run_agent, InvokeResult
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+        Shortlister,
+        ShortlisterStrategy,
+    )
     from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
     from cuga.backend.knowledge.config import (
         CLIENT_ADAPTATION_MAX_CHARS,
@@ -57,6 +67,11 @@ if TYPE_CHECKING:
         KnowledgeConfig,
         client_adaptation_hash,
         client_glossary_hash,
+    )
+    from cuga.backend.cuga_graph.policy.models import (
+        PolicyDecision,
+        PolicyDecisionOutcome,
+        PolicyDecisionStage,
     )
     from cuga.backend.knowledge.query_expansion import expand_query_with_glossary
 
@@ -74,6 +89,14 @@ _import_map: dict = {
     "KnowledgeClient": ("cuga.backend.knowledge", "KnowledgeClient"),
     "KnowledgeEngine": ("cuga.backend.knowledge", "KnowledgeEngine"),
     "KnowledgeConfig": ("cuga.backend.knowledge.config", "KnowledgeConfig"),
+    "Shortlister": (
+        "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister",
+        "Shortlister",
+    ),
+    "ShortlisterStrategy": (
+        "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister",
+        "ShortlisterStrategy",
+    ),
     "CLIENT_ADAPTATION_MAX_CHARS": (
         "cuga.backend.knowledge.config",
         "CLIENT_ADAPTATION_MAX_CHARS",
@@ -94,6 +117,18 @@ _import_map: dict = {
     "expand_query_with_glossary": (
         "cuga.backend.knowledge.query_expansion",
         "expand_query_with_glossary",
+    ),
+    "PolicyDecision": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecision",
+    ),
+    "PolicyDecisionOutcome": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecisionOutcome",
+    ),
+    "PolicyDecisionStage": (
+        "cuga.backend.cuga_graph.policy.models",
+        "PolicyDecisionStage",
     ),
 }
 

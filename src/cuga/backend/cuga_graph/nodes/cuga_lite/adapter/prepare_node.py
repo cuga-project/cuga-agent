@@ -36,7 +36,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import DirectLangChainToolsProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
-from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import make_recording_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import (
+    make_recording_awaitable,
+    thread_budget_exhausted,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     PromptUtils,
     create_mcp_prompt,
@@ -785,6 +788,24 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             # state.task_todos fallback path in prepare_system_content sees an
             # empty value on the next turn.
             update_payload["task_todos"] = None
+
+        # START -> prepare runs once per graph invocation, i.e. once per user
+        # turn, so this is what makes max_tool_calls_per_run a per-RUN budget (one user turn). Without
+        # it the counter is restored from the checkpoint every turn and a long
+        # thread eventually starves: turn N+1 inherits turn N's spend and can
+        # begin with no budget at all.
+        #
+        # tool_calls_used_thread is deliberately NOT reset here — that counter is
+        # the conversation-wide ceiling (max_tool_calls_per_thread), and resetting
+        # it would leave a long thread unbounded, which is exactly the gap the
+        # per-turn reset opens.
+        update_payload["tool_calls_used_run"] = 0
+        # A thread that is already over its ceiling starts the turn exhausted, so
+        # it goes straight to a final synthesis pass instead of burning a step to
+        # discover the budget is gone.
+        update_payload["tool_budget_exhausted"] = thread_budget_exhausted(
+            getattr(state, "tool_calls_used_thread", 0)
+        )
 
         return Command(goto="call_model", update=update_payload)
 

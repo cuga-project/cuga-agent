@@ -1,5 +1,8 @@
 name: Smoke pip install (isolated)
 
+# "Wheel install + demo_crm OpenAPI" is a required context in main's branch
+# protection. Do not add paths filters: a PR that skips this workflow never
+# reports that context and can never be merged.
 on:
   push:
     branches: [main, develop]
@@ -21,7 +24,7 @@ jobs:
     name: Wheel install + demo_crm OpenAPI
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     env:
       AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
       WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}

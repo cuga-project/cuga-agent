@@ -41,6 +41,10 @@ __all__ = [
 # vocabulary are treated as framing, so text like "<|custom|>" survives.
 _SPECIAL_TOKEN_SHAPE_RE = re.compile(r"<\|[^|>]*\|>")
 
+# Providers hand back decoded strings that drop the ``<|start|>assistant``
+# header between messages; the official parser requires it before each one.
+_MISSING_START_RE = re.compile(r"(<\|end\|>)(?=<\|channel\|>)")
+
 # Used only when openai-harmony can't be imported — the framing tokens the
 # protocol defines, so a missing wheel degrades rather than disabling handling.
 _FALLBACK_CONTROL_TOKENS = frozenset(
@@ -111,8 +115,40 @@ def contains_harmony_tokens(text: str) -> bool:
     return any(m.group(0) in specials for m in _SPECIAL_TOKEN_SHAPE_RE.finditer(text))
 
 
+def _final_channel_text(text: str):
+    """The ``final`` channel body, parsed with ``openai-harmony``.
+
+    ``None`` when *text* is not parseable harmony, so the caller falls back to
+    plain token removal. ``""`` when it parses but carries no ``final`` channel:
+    analysis-only or tool-call-only output has no user-facing answer, and
+    showing another channel is exactly the leak this prevents.
+    """
+    try:
+        from openai_harmony import HarmonyEncodingName, Role, load_harmony_encoding
+
+        encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        repaired = _MISSING_START_RE.sub(r"\1<|start|>assistant", text)
+        tokens = encoding.encode(repaired, allowed_special="all")
+        messages = encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
+        if not messages:
+            return None
+        # Inside the try on purpose: a content part with no ``.text`` would
+        # otherwise raise past the fallback this function promises.
+        return "".join(part.text for m in messages if m.channel == "final" for part in m.content)
+    except Exception as e:
+        logger.debug("harmony parse failed; falling back to token strip: {}", e)
+        return None
+
+
 def strip_harmony_tokens(text: str) -> str:
     """Remove harmony framing from *text*, leaving everything else intact.
+
+    Channel-structured output is *parsed*, keeping only the ``final`` channel.
+    Harmony defines three assistant channels — ``final`` (user-facing),
+    ``analysis`` (chain-of-thought, never shown) and ``commentary`` (tool
+    calls) — so no positional rule identifies the answer: the last message may
+    be a tool call, and analysis-only output has no answer at all. Text the
+    parser rejects is not harmony and falls back to plain token removal.
 
     Deliberately no ``.strip()``: a token sitting directly before an indented
     block would otherwise take that block's leading indentation with it and
@@ -122,5 +158,9 @@ def strip_harmony_tokens(text: str) -> str:
         return text
     if not harmony_handling_enabled():
         return text
+    if "<|channel|>" in text:
+        final = _final_channel_text(text)
+        if final is not None:
+            return final
     specials = harmony_special_tokens()
     return _SPECIAL_TOKEN_SHAPE_RE.sub(lambda m: "" if m.group(0) in specials else m.group(0), text)

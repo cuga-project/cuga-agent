@@ -82,15 +82,28 @@ def is_secret_field_name(name: str) -> bool:
     return any(s in (name or "").upper() for s in _SECRET_FIELD_SUBSTRINGS)
 
 
+def is_secret_ref(value: Any) -> bool:
+    """True when value is a vault/db/aws/env pointer, not a plaintext secret."""
+    if not isinstance(value, str) or not value:
+        return False
+    return (
+        value.startswith("vault://")
+        or value.startswith("db://")
+        or value.startswith("aws://")
+        or value.startswith("env://")
+    )
+
+
 def redact_secrets_in_config(config: dict[str, Any]) -> None:
     """In-place: replace secret-named non-empty string fields with ''.
-    Walks nested dicts. PATCH preserves stored values on empty incoming
-    (see patch_draft_knowledge)."""
+    Walks nested dicts. Secret refs (vault://, db://, aws://, env://) are kept
+    so Manage can hydrate "Use saved secret". PATCH preserves stored values on
+    empty incoming (see patch_draft_knowledge / patch_draft_llm)."""
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for k, v in list(node.items()):
-                if is_secret_field_name(k) and isinstance(v, str) and v:
+                if is_secret_field_name(k) and isinstance(v, str) and v and not is_secret_ref(v):
                     node[k] = ""
                 elif isinstance(v, (dict, list)):
                     _walk(v)
