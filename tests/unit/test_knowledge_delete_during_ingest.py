@@ -59,9 +59,7 @@ def _engine() -> KnowledgeEngine:
 
 async def _new_task(eng: KnowledgeEngine, task_id: str = "t1") -> None:
     await eng._ensure_metadata_ready()
-    await eng._metadata.create_task(
-        task_id, COLL, 1, {FNAME: {"filename": FNAME, "status": "pending"}}
-    )
+    await eng._metadata.create_task(task_id, COLL, 1, {FNAME: {"filename": FNAME, "status": "pending"}})
 
 
 def _blocking_parse(started: threading.Event, release: threading.Event):
