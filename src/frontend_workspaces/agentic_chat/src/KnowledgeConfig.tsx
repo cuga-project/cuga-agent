@@ -560,6 +560,10 @@ export default function KnowledgePanel({
       // waiting on the per-collection ingest lock). Lets the UI render a
       // distinct "Queued" state rather than a frozen 3% bar.
       queued?: boolean;
+      // Set when the server refused a cancel because the ingest is already
+      // past its point of no return. The row keeps polling to its real
+      // terminal state; this just stops the click reading as a no-op.
+      finishing?: boolean;
     }[]
   >([]);
 
@@ -1566,34 +1570,55 @@ export default function KnowledgePanel({
     [loadDocuments],
   );
 
-  // Cancel an in-flight upload. Best-effort by design: the backend's
-  // cancel_event is only checked between stages, so an embed in progress
-  // may complete anyway. We always flip the row to "cancelled" locally —
-  // if the ingest happens to finish, a duplicate-upload will 409 cleanly.
+  // Cancel an in-flight upload. We await the server and only tear down the
+  // local poll + resume entry once it confirms a terminal status.
+  //
+  // The old version painted "cancelled" locally BEFORE calling the server and
+  // treated the resulting 409-on-re-upload as acceptable. It was not: the
+  // backend left the task "running", so the row lied, and the next upload of
+  // the same file was rejected with "already indexed" (#685). The backend now
+  // persists status="cancelled" for a running task, so a confirmed cancel
+  // really does release the filename.
+  //
+  // A cancel can still legitimately NOT take effect: once the ingest is inside
+  // the vector insert it is past the point of no return and the server returns
+  // the still-running row. Then we leave the poll attached so the row resolves
+  // to its real terminal state instead of claiming a cancel that did not
+  // happen.
   const handleCancelUpload = useCallback(
     async (taskId: string | undefined): Promise<void> => {
       if (!taskId) return;
-      // Abort first so the poll loop stops immediately and stops fighting
-      // us for setUploadingFiles ownership.
-      const controller = uploadControllersRef.current.get(taskId);
-      if (controller) {
-        controller.abort();
-        uploadControllersRef.current.delete(taskId);
-      }
-      setUploadingFiles((prev) =>
-        prev.map((f) => f.taskId === taskId
-          ? { ...f, status: "cancelled" as const, error: undefined }
-          : f)
-      );
-      removeActiveUpload(taskId);
-      // Fire-and-forget the server cancel — non-blocking by design.
+      let serverStatus: string | undefined;
       try {
-        await api.cancelKnowledgeTask(taskId);
+        const res = await api.cancelKnowledgeTask(taskId);
+        if (res.ok) {
+          serverStatus = (await res.json().catch(() => null))?.status;
+        }
       } catch {
-        // Server-side cancel is best-effort. If the network ate the
-        // request the row is already cancelled locally; the next file
-        // ingest of the same name will 409 if needed.
+        // Network failure — fall through and leave the poll attached rather
+        // than assume a cancel that may never have reached the server.
       }
+
+      if (serverStatus === "cancelled" || serverStatus === "failed") {
+        const controller = uploadControllersRef.current.get(taskId);
+        if (controller) {
+          controller.abort();
+          uploadControllersRef.current.delete(taskId);
+        }
+        removeActiveUpload(taskId);
+        setUploadingFiles((prev) =>
+          prev.map((f) => f.taskId === taskId
+            ? { ...f, status: "cancelled" as const, error: undefined, finishing: false }
+            : f)
+        );
+        return;
+      }
+
+      // Refused (too late) or the request failed: keep polling. The loop
+      // already paints success/error from the server's own terminal write.
+      setUploadingFiles((prev) =>
+        prev.map((f) => f.taskId === taskId ? { ...f, finishing: true } : f)
+      );
     },
     [],
   );
@@ -1920,9 +1945,14 @@ export default function KnowledgePanel({
                                   ? "Failed"
                                   : isCancelled
                                     ? "Cancelled"
-                                    : isQueued
-                                      ? "Queued"
-                                      : "Processing";
+                                    : f.finishing
+                                      // Cancel arrived too late to stop the
+                                      // insert. Say so rather than let the
+                                      // click look like a no-op.
+                                      ? "Finishing…"
+                                      : isQueued
+                                        ? "Queued"
+                                        : "Processing";
                               // Visual fill driven by backend weighted_pct.
                               // Clamped 0..1, monotonic forward via the poll
                               // loop. No numeric label — the strip's WIDTH

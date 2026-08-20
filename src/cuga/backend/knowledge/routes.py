@@ -584,6 +584,18 @@ async def upload_documents(
         except ReindexInProgressError:
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail="Reindex in progress, try again later")
+        except DocumentExistsError as e:
+            # The ATOMIC layer (``_create_task_entry_internal``, under the
+            # collection lock) can reject where the advisory pre-check above
+            # passed — two uploads of the same file racing that window. It is
+            # the same 409 the pre-check raises, not a 500. Cancel makes this
+            # more reachable: a cancel can land between the two checks.
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail=f"file already indexed: {e.filename}")
+        except Exception:
+            # Anything else still must not leak the temp file on disk.
+            tmp_path.unlink(missing_ok=True)
+            raise
 
         if wait:
             try:
