@@ -59,6 +59,31 @@ def _ensure_enabled(engine: KnowledgeEngine) -> None:
         raise HTTPException(status_code=503, detail="Knowledge engine is disabled")
 
 
+async def _json_body(request: Request, *, allow_empty: bool = False) -> dict[str, Any]:
+    """Parse a JSON object body, or raise 400.
+
+    ``await request.json()`` raises ``JSONDecodeError`` on an absent or
+    malformed body, and an unhandled raise here escapes as a 500 with a full
+    traceback — the wrong contract for bad client input, and noise that buries
+    real failures in error monitoring (#689).
+
+    ``allow_empty`` accepts a request with no body at all and yields ``{}``,
+    for endpoints where every field is optional.
+    """
+    raw = await request.body()
+    if not raw.strip():
+        if allow_empty:
+            return {}
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    return body
+
+
 def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed") -> str:
     """Return the most useful per-file ingestion error from a task payload."""
     file_tasks = task.get("file_tasks")
@@ -262,7 +287,7 @@ async def get_settings(request: Request):
 @knowledge_agent_manage_router.post("/settings")
 async def update_settings(request: Request):
     engine = _get_engine(request)
-    body = await request.json()
+    body = await _json_body(request)
     knowledge_settings = body.get("knowledge", body)
     try:
         return engine.update_settings(**knowledge_settings)
@@ -310,7 +335,7 @@ async def search(
 
     engine = _get_engine(request)
     _ensure_enabled(engine)
-    body = await request.json()
+    body = await _json_body(request)
     scope = body.get("scope", "agent")
     query = body.get("query", "")
     limit = body.get("limit", engine._config.default_limit)
@@ -650,7 +675,7 @@ async def ingest_url(
 ):
     engine = _get_engine(request)
     _ensure_enabled(engine)
-    body = await request.json()
+    body = await _json_body(request)
     scope = body.get("scope", "agent")
     ensure_agent_scope_manage_if_needed(identity, scope)
     collection = resolve_collection(identity, scope, request)
@@ -748,7 +773,7 @@ async def delete_document(
 ):
     engine = _get_engine(request)
     _ensure_enabled(engine)
-    body = await request.json()
+    body = await _json_body(request)
     scope = body.get("scope", "agent")
     ensure_agent_scope_manage_if_needed(identity, scope)
     filename = body.get("filename", "")
@@ -849,12 +874,7 @@ async def patch_session_settings(
     if not identity.thread_id:
         raise HTTPException(status_code=400, detail="X-Thread-ID header required")
     provider = _resolve_session_provider(request, identity)
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="request body must be a JSON object")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    body = await _json_body(request)
     try:
         state = _apply_session_settings_patch(
             provider,
@@ -878,7 +898,7 @@ async def reindex_collection(
 ):
     engine = _get_engine(request)
     _ensure_enabled(engine)
-    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = await _json_body(request, allow_empty=True)
     scope = body.get("scope", "agent")
     ensure_agent_scope_manage_if_needed(identity, scope)
     collection = resolve_collection(identity, scope, request)
