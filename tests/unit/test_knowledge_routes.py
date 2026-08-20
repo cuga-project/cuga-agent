@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import tempfile
 from types import SimpleNamespace
+
+import pytest
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.engine import DocumentExistsError
 from cuga.backend.knowledge.routes import knowledge_router
 
 
@@ -297,3 +301,95 @@ def test_get_document_file_supports_non_ascii_filename(tmp_path):
     assert cd.startswith("inline")
     assert "filename*=utf-8''" in cd  # RFC 5987 encoding for the non-ASCII name
     cd.encode("latin-1")  # the header must be latin-1 safe (raised pre-fix)
+
+
+class _AtomicRejectEngine(_FakeEngine):
+    """Passes the advisory dedup check, then rejects in the atomic layer.
+
+    That is a real interleaving: ``_sanitize_and_validate`` takes no lock, so
+    a second upload of the same file (or a cancel landing between the two
+    checks) can change the answer by the time ``_create_task_entry`` runs
+    under the collection lock.
+    """
+
+    async def _create_task_entry(self, collection: str, filename: str) -> dict[str, str]:
+        raise DocumentExistsError(f"{filename} (an ingest for this file is already running; task_id=task-9)")
+
+
+def _atomic_reject_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity_override
+    app.state.app_state = SimpleNamespace(
+        knowledge_engine=_AtomicRejectEngine({}),
+        knowledge_provider=None,
+    )
+    return TestClient(app)
+
+
+@pytest.mark.unit
+def test_upload_maps_atomic_document_exists_to_409_not_500():
+    """The atomic guard raised straight through FastAPI as a 500 before."""
+    response = _atomic_reject_client().post(
+        "/api/knowledge/documents",
+        files={"files": ("notes.txt", b"hello", "text/plain")},
+        data={"scope": "agent", "replace_duplicates": "true", "wait": "false"},
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("file already indexed: notes.txt")
+    assert "task_id=task-9" in detail
+
+
+@pytest.mark.unit
+def test_upload_unlinks_temp_file_when_atomic_guard_rejects(tmp_path, monkeypatch):
+    """The 500 path also leaked the uploaded temp file on disk."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+    response = _atomic_reject_client().post(
+        "/api/knowledge/documents",
+        files={"files": ("notes.txt", b"hello", "text/plain")},
+        data={"scope": "agent", "replace_duplicates": "true", "wait": "false"},
+    )
+
+    assert response.status_code == 409
+    assert list(tmp_path.iterdir()) == [], "upload temp file leaked after the guard rejected"
+
+
+class _CancelEngine(_FakeEngine):
+    def __init__(self, task: dict):
+        super().__init__(task)
+        self.cancelled: list[str] = []
+
+    async def cancel_task(self, task_id: str) -> dict:
+        self.cancelled.append(task_id)
+        return {**self._task, "status": "cancelled"}
+
+
+@pytest.mark.unit
+def test_cancel_endpoint_returns_the_cancelled_task_row():
+    """First coverage of POST /tasks/{id}/cancel.
+
+    The frontend now trusts this response to decide whether to tear down its
+    poll, so the row it returns is a contract, not a formality.
+    """
+    engine = _CancelEngine(
+        {
+            "task_id": "task-1",
+            "collection": "kb_agent_cuga_default",
+            "status": "running",
+            "file_tasks": {"notes.txt": {"filename": "notes.txt", "status": "processing"}},
+        }
+    )
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity_override
+    app.state.app_state = SimpleNamespace(knowledge_engine=engine, knowledge_provider=None)
+
+    response = TestClient(app).post("/api/knowledge/tasks/task-1/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+    assert engine.cancelled == ["task-1"]
