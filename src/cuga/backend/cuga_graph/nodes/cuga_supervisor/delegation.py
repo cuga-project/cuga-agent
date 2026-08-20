@@ -109,13 +109,6 @@ def create_agent_delegation_func(
                 vars_to_pass = resolve_names_from_caller_frame(variables)
             else:
                 vars_to_pass = _variables_from_supervisor_vm()
-            # TODO(traceloop, Phase 2): this delegated .invoke() emits its own nested
-            # cuga.run span (tagged cuga.entry_point="sdk") instead of being
-            # suppressed/relabeled as a delegation call — a supervisor run with N
-            # delegations produces N nested cuga.run spans, not one root span per
-            # entry point. Phase 2 needs to resolve entry-point identity for this
-            # path (and for CugaSupervisor.invoke()/CugaAgent.stream(), which
-            # currently get init_traceloop() but no root span of their own at all).
             result = await agent_or_config.invoke(
                 task,
                 thread_id=f"supervisor_conversational_{agent_name}",

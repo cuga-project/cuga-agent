@@ -1,4 +1,5 @@
-"""Traceloop observability: init_traceloop() + the cuga.run root span (Phase 1).
+"""Traceloop observability: init_traceloop() (Phase 1) + ensuring it's called
+before every graph invocation, everywhere (Phase 2).
 
 See docs/traceloop-instrumentation-plan.md — this file grows in later phases.
 """
@@ -7,29 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
-
-
-class _StubGraph:
-    """Minimal stand-in for the compiled LangGraph graph in invoke().
-
-    Mirrors tests/unit/test_sdk_citations.py's _StubGraph.
-    """
-
-    def __init__(self, result: dict):
-        self._result = result
-
-    async def ainvoke(self, *_args, **_kwargs):
-        return self._result
-
-    def get_state(self, *_args, **_kwargs):
-        # values=None -> invoke() finds no existing state; next=() -> not interrupted.
-        return SimpleNamespace(values=None, next=())
 
 
 @pytest.mark.unit
@@ -198,28 +181,53 @@ def test_init_traceloop_does_not_retry_after_failed_attempt(monkeypatch, tmp_pat
     assert traceloop_init._init_attempted is True
 
 
-@pytest.mark.unit
-def test_invoke_produces_real_otlp_file_with_cuga_run_span(monkeypatch, tmp_path):
-    """End-to-end: with traceloop_exporter='file', a trivial CugaAgent.invoke() call
-    must produce a real trace file with at least one valid-JSON OTLP line, and the
-    cuga.run span on it must carry cuga.entry_point/gen_ai.task.input/gen_ai.task.output.
-
-    Exercises the real span-export path (LocalOtlpFileSpanExporter writing to a
-    tmp_path file) end to end — nothing about the OTel/Traceloop plumbing is mocked.
-    """
+def _reset_tracer_provider(monkeypatch):
+    """opentelemetry.trace.set_tracer_provider() is a process-wide one-shot
+    (guarded by _TRACER_PROVIDER_SET_ONCE) — reset it so Traceloop.init() can
+    actually install its own provider regardless of what ran earlier in this
+    test session, and so this test's state doesn't leak into other tests
+    either (monkeypatch restores both attributes on teardown)."""
     import opentelemetry.trace as otel_trace_module
 
-    from cuga.backend.observability import traceloop_init
-    from cuga.config import settings as real_settings
-    from cuga.sdk import CugaAgent
-
-    # opentelemetry.trace.set_tracer_provider() is a process-wide one-shot
-    # (guarded by _TRACER_PROVIDER_SET_ONCE) — reset it so Traceloop.init() below
-    # can actually install its own provider regardless of what ran earlier in this
-    # test session, and so this test's state doesn't leak into other tests either
-    # (monkeypatch restores both attributes on teardown).
     monkeypatch.setattr(otel_trace_module, "_TRACER_PROVIDER", None)
     monkeypatch.setattr(otel_trace_module._TRACER_PROVIDER_SET_ONCE, "_done", False)
+
+
+def _all_spans(trace_file) -> list[dict]:
+    lines = [line for line in trace_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    spans = []
+    for line in lines:
+        payload = json.loads(line)  # each line must be valid JSON on its own
+        assert "resourceSpans" in payload, "line must parse as an ExportTraceServiceRequest"
+        for resource_span in payload["resourceSpans"]:
+            for scope_span in resource_span.get("scopeSpans", []):
+                spans.extend(scope_span.get("spans", []))
+    return spans
+
+
+@pytest.mark.unit
+def test_nested_graph_call_produces_one_coherent_trace(monkeypatch, tmp_path):
+    """Phase 2 regression test (an early, narrower version of Phase 10's DP14
+    check): a real, non-stubbed LangGraph graph whose one node calls a second,
+    nested graph — mirroring delegation.py's supervisor -> sub-agent pattern —
+    must produce ONE trace_id across the outer graph, its nodes, the nested
+    sub-graph call, and the sub-graph's own nodes, entirely from LangGraph's
+    own auto-instrumentation (opentelemetry-instrumentation-langchain, active
+    since instruments=None). No manual span is involved anywhere in CUGA's own
+    code for this to hold — see docs/traceloop-instrumentation-plan.md Phase 2.
+
+    Drives astream(stream_mode="updates", subgraphs=True), the exact call
+    shape CugaAgent.stream() uses, fully consumed via `async for`.
+    """
+    from typing import TypedDict
+
+    from langgraph.graph import END, StateGraph
+
+    from cuga.backend.observability import traceloop_init
+    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
+    from cuga.config import settings as real_settings
+
+    _reset_tracer_provider(monkeypatch)
     monkeypatch.setattr(traceloop_init, "_initialized", False)
     monkeypatch.setattr(traceloop_init, "_init_attempted", False)
 
@@ -228,35 +236,105 @@ def test_invoke_produces_real_otlp_file_with_cuga_run_span(monkeypatch, tmp_path
     monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
     monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
 
-    agent = CugaAgent(auto_load_policies=False)
+    from traceloop.sdk import Traceloop
 
-    async def _noop_initialized():
-        return None
+    exporter = LocalOtlpFileSpanExporter(str(trace_file))
+    Traceloop.init(
+        app_name="cuga-test",
+        exporter=exporter,
+        disable_batch=True,
+        instruments=None,
+        block_instruments=None,
+    )
 
-    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
-    agent._compiled_graph = _StubGraph({"final_answer": "the answer"})
+    class SubState(TypedDict):
+        task: str
+        result: str
 
-    result = asyncio.run(agent.invoke("hello world", thread_id="traceloop-test-thread"))
+    async def sub_node(state: SubState) -> SubState:
+        return {"result": f"sub-agent handled: {state['task']}"}
 
-    assert result.answer == "the answer"
-    assert trace_file.exists(), "traceloop_exporter='file' must produce a trace file"
+    sub_builder = StateGraph(SubState)
+    sub_builder.add_node("do_work", sub_node)
+    sub_builder.set_entry_point("do_work")
+    sub_builder.add_edge("do_work", END)
+    sub_graph = sub_builder.compile()
+    sub_graph.name = "SubAgentGraph"
 
-    lines = [line for line in trace_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) >= 1
+    class OuterState(TypedDict):
+        goal: str
+        delegated_answer: str
 
-    cuga_run_spans = []
-    for line in lines:
-        payload = json.loads(line)  # each line must be valid JSON on its own
-        assert "resourceSpans" in payload, "line must parse as an ExportTraceServiceRequest"
-        for resource_span in payload["resourceSpans"]:
-            for scope_span in resource_span.get("scopeSpans", []):
-                for span in scope_span.get("spans", []):
-                    if span.get("name") == "cuga.run":
-                        cuga_run_spans.append(span)
+    async def delegate_node(state: OuterState) -> OuterState:
+        # Mirrors delegation.py calling agent_or_config.invoke(task, ...), which
+        # internally calls the sub-agent's OWN compiled graph.ainvoke().
+        sub_result = await sub_graph.ainvoke({"task": state["goal"], "result": ""})
+        return {"delegated_answer": sub_result["result"]}
 
-    assert len(cuga_run_spans) == 1, f"expected exactly one cuga.run span, found {len(cuga_run_spans)}"
+    outer_builder = StateGraph(OuterState)
+    outer_builder.add_node("delegate_to_subagent", delegate_node)
+    outer_builder.set_entry_point("delegate_to_subagent")
+    outer_builder.add_edge("delegate_to_subagent", END)
+    outer_graph = outer_builder.compile()
+    outer_graph.name = "SupervisorGraph"
 
-    attrs = {a["key"]: a["value"] for a in cuga_run_spans[0].get("attributes", [])}
-    assert attrs["cuga.entry_point"]["stringValue"] == "sdk"
-    assert attrs["gen_ai.task.input"]["stringValue"] == "hello world"
-    assert attrs["gen_ai.task.output"]["stringValue"] == "the answer"
+    async def _run():
+        collected = []
+        async for update in outer_graph.astream(
+            {"goal": "test goal", "delegated_answer": ""},
+            stream_mode="updates",
+            subgraphs=True,
+        ):
+            collected.append(update)
+        return collected
+
+    asyncio.run(_run())
+
+    spans = _all_spans(trace_file)
+    assert len(spans) > 0, "expected real spans from LangGraph auto-instrumentation"
+
+    trace_ids = {span["traceId"] for span in spans}
+    assert len(trace_ids) == 1, (
+        f"expected one coherent trace_id across the outer graph and the nested "
+        f"sub-graph call, found {len(trace_ids)}: {trace_ids}"
+    )
+
+    span_names = [span.get("name", "") for span in spans]
+    assert any(name.startswith("invoke_agent") and "SupervisorGraph" in name for name in span_names), (
+        f"expected an invoke_agent span for the outer graph, got names: {span_names}"
+    )
+    assert any(name.startswith("invoke_agent") and "SubAgentGraph" in name for name in span_names), (
+        f"expected an invoke_agent span for the nested sub-graph call, got names: {span_names}"
+    )
+
+    delegate_spans = [span for span in spans if span.get("name", "").endswith("delegate_to_subagent")]
+    assert delegate_spans, f"expected a span for the delegating node, got names: {span_names}"
+    attrs = {a["key"]: a["value"] for a in delegate_spans[0].get("attributes", [])}
+    assert "test goal" in attrs["gen_ai.task.input"]["stringValue"]
+    assert "sub-agent handled: test goal" in attrs["gen_ai.task.output"]["stringValue"]
+
+
+@pytest.mark.unit
+def test_traceloop_init_module_self_initializes_on_import(monkeypatch, tmp_path):
+    """traceloop_init.py must self-initialize at module import time, mirroring
+    openlit_init.py's existing pattern — the web UI / A2A-simple / evaluate-CLI
+    path never imports cuga.sdk (only cuga.backend.observability.traceloop_init
+    directly, see main.py/evaluate_cuga.py), so nothing else would call
+    init_traceloop() on that path otherwise (Phase 2)."""
+    import importlib
+
+    from cuga.backend.observability import traceloop_init
+    from cuga.config import settings as real_settings
+
+    _reset_tracer_provider(monkeypatch)
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(tmp_path / "spans.jsonl"))
+
+    with patch("traceloop.sdk.Traceloop.init") as mock_init:
+        importlib.reload(traceloop_init)
+
+    mock_init.assert_called_once()
+    assert traceloop_init._initialized is True

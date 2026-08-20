@@ -241,3 +241,14 @@ def set_task_association_properties(
             Traceloop.set_association_properties(props)
         except Exception as e:
             logger.error(f"Failed to set Traceloop task association properties: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Initialize Traceloop at module import time (process level), mirroring
+# openlit_init.py. init_traceloop() checks the settings flag before any heavy
+# import, so this is cheap when the feature is off, and ensures the
+# LangChain/LangGraph auto-instrumentation is active before any graph call —
+# regardless of entry point (server, SDK, CLI, tests) — not just when one of
+# cuga.sdk's own call sites happens to run first.
+# ---------------------------------------------------------------------------
+init_traceloop()

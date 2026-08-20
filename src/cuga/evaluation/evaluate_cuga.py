@@ -1,3 +1,8 @@
+# This process drives the agent graph directly via AgentRunner (not through
+# cuga.sdk), so nothing else here would otherwise trigger init_traceloop()
+# before a graph call happens. Mirrors main.py's own import-time init.
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.utils.controller import AgentRunner, ExperimentResult
 from cuga.evaluation.langfuse.get_langfuse_data import LangfuseTraceHandler

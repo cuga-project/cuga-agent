@@ -77,7 +77,6 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
-from opentelemetry import trace as otel_trace
 from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
 from cuga.backend.observability.traceloop_init import init_traceloop
 from cuga.config import settings
@@ -2548,59 +2547,20 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
-        # init_openlit() and init_traceloop() must run BEFORE the tracer/span are
-        # created, not just somewhere inside this call. get_tracer() returns a
-        # ProxyTracer when no TracerProvider is set yet; ProxyTracer resolves the
-        # real provider lazily, but only at the moment start_as_current_span() is
-        # actually invoked — if no real provider exists yet at that moment, it
-        # falls back to a no-op NonRecordingSpan permanently for that span, and
-        # cannot be retroactively fixed by later initialization. Calling both here
-        # guarantees the root span below is real on the very first invoke() in a
-        # process, not just on subsequent ones. Both are idempotent, so calling
-        # them here (instead of, or in addition to, inside _invoke_impl) is safe.
+        # init_openlit() and init_traceloop() must run BEFORE the graph call below,
+        # not just somewhere inside this call. Both patch LangChain/LangGraph at
+        # init time; a graph call that happens before that patch is applied
+        # produces no spans, and can't be retroactively fixed by later
+        # initialization. Calling both here guarantees the auto-instrumentation
+        # is active on the very first invoke() in a process, not just on
+        # subsequent ones. Both are idempotent, so calling them here is safe.
+        # No manual span is created here: verified (see
+        # docs/traceloop-instrumentation-plan.md Phase 2) that LangGraph's own
+        # auto-instrumentation already produces a coherent, correctly-nested
+        # trace with real input/output content on its own, per graph
+        # invocation, with nothing further needed from CUGA.
         init_openlit()
         init_traceloop()
-
-        tracer = otel_trace.get_tracer("cuga")
-        task_input = message if isinstance(message, str) else (str(message) if message is not None else "")
-        with tracer.start_as_current_span("cuga.run") as span:
-            span.set_attribute("cuga.entry_point", "sdk")
-            span.set_attribute("gen_ai.task.input", task_input)
-            result = await self._invoke_impl(
-                message=message,
-                thread_id=thread_id,
-                config=config,
-                action_response=action_response,
-                user_context=user_context,
-                track_tool_calls=track_tool_calls,
-                variables=variables,
-            )
-            span.set_attribute("gen_ai.task.output", result.answer)
-            if result.error:
-                span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, result.error))
-            return result
-
-    async def _invoke_impl(
-        self,
-        message: Union[str, List[BaseMessage], None] = None,
-        thread_id: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
-        action_response: Optional[Any] = None,
-        user_context: Optional[str] = None,
-        track_tool_calls: bool = False,
-        variables: Optional[Dict[str, Any]] = None,
-    ) -> InvokeResult:
-        """Implementation of invoke() — see invoke() for the public docstring.
-
-        Extracted so invoke() can wrap the whole call in a ``cuga.run`` root
-        OTel span (DP8) without reindenting this entire body.
-        """
-        # OpenLit and Traceloop are deliberately NOT (re-)initialized here: invoke()
-        # (the only caller) already calls init_openlit() and init_traceloop() before
-        # this method runs — both must happen before get_tracer()/start_as_current_span()
-        # are reached, so they live in invoke(), not here (see invoke()'s comment).
-        # Both init_*() functions are idempotent, so this isn't load-bearing for
-        # correctness elsewhere, just avoids a redundant no-op call on every invocation.
 
         slash_result = None
         if isinstance(message, str):
@@ -3565,11 +3525,6 @@ class CugaSupervisor:
         # Initialize OpenLit / Traceloop observability (idempotent, no-op if disabled or not installed)
         init_openlit()
         init_traceloop()
-        # TODO(traceloop, Phase 2): CugaSupervisor.invoke() gets init_traceloop()
-        # here but no root span of its own — delegated CugaAgent.invoke() calls
-        # each emit their own nested cuga.run span instead (see the TODO at
-        # delegation.py's .invoke() call site). Phase 2 needs to resolve
-        # entry-point identity for this path.
 
         needs_init = self._auto_load_policies and (
             not hasattr(self, "_policy_system") or self._policy_system is None

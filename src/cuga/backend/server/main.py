@@ -39,6 +39,11 @@ from fastapi.middleware.cors import CORSMiddleware
 # The module also calls init_openlit() at import time to set up instrumentation.
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
 
+# Same reasoning as above, for Traceloop: this process drives the agent graph
+# directly via AgentLoop/AgentRunner (not through cuga.sdk), so nothing else
+# here would otherwise trigger init_traceloop() before a graph call happens.
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+
 from loguru import logger
 from cuga.config import (
     get_app_name_from_url,
