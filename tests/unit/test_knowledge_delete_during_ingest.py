@@ -20,10 +20,20 @@ import threading
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 
+from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.routes import knowledge_router
+
 from cuga.backend.knowledge.config import KnowledgeConfig
-from cuga.backend.knowledge.engine import DocumentNotFoundError, KnowledgeEngine
+from cuga.backend.knowledge import engine as engine_mod
+from cuga.backend.knowledge.engine import (
+    DocumentNotFoundError,
+    IngestStillFinishingError,
+    KnowledgeEngine,
+)
 
 COLL = "c"
 FNAME = "f.txt"
@@ -148,3 +158,97 @@ async def test_delete_of_an_indexed_document_still_works():
     await eng.delete_document(COLL, FNAME)
 
     assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+async def test_delete_refuses_rather_than_lying_when_the_ingest_outlives_the_deadline(monkeypatch):
+    """An uncancellable ingest that finishes AFTER the wait must not be reported as deleted.
+
+    Past the point of no return the worker still has ``add_document`` ahead of
+    it. Deleting anyway would return success and then be silently undone by
+    that write — the exact resurrection this whole path exists to prevent,
+    just inside the timeout window. So the delete fails retryably instead.
+    """
+    # Collapse the deadline so the test does not actually wait 30s.
+    monkeypatch.setattr(engine_mod, "_DELETE_INGEST_WAIT_S", 0.3)
+
+    eng = _engine()
+    await eng._ensure_metadata_ready()
+    await eng._metadata.add_document(COLL, FNAME, 3, preview="hi")
+    await _new_task(eng, "t3")
+
+    # Park the worker inside the insert, i.e. past the point of no return, so
+    # the cancel is refused and it outlives the deadline.
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def fake_insert(*a, **k):
+        entered.set()
+        await gate.wait()
+        return {"num_added": 1, "num_skipped": 0}
+
+    eng._insert_documents_async = fake_insert
+    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+
+    cancel_event = asyncio.Event()
+    eng._active_tasks["t3"] = cancel_event
+    worker = asyncio.create_task(
+        eng._ingest_inner(COLL, MISSING, FNAME, "t3", True, cancel_event, skip_file_copy=True)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    assert "t3" in eng._uncancellable_tasks, "worker should be past the point of no return"
+
+    with pytest.raises(IngestStillFinishingError):
+        await eng.delete_document(COLL, FNAME)
+
+    # And the document is still there — we did not half-delete it.
+    assert await eng._metadata.document_exists(COLL, FNAME)
+
+    gate.set()
+    await worker
+
+    # Once the ingest is done, the delete succeeds and sticks.
+    await eng.delete_document(COLL, FNAME)
+    assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+def test_delete_route_maps_ingest_still_finishing_to_409():
+    """The engine's retryable error must reach the client as 409, not 500.
+
+    The handler has to live on the route that actually calls
+    ``delete_document``. Attached to any other route it is dead code, and a
+    timed-out delete surfaces as an unhandled 500 — which tells the caller
+    "the server is broken" instead of "retry shortly".
+    """
+    from types import SimpleNamespace
+
+    class _Engine:
+        def __init__(self):
+            self._config = SimpleNamespace(enabled=True)
+
+        async def delete_document(self, collection, filename):
+            raise IngestStillFinishingError(filename, "task_abc123")
+
+    async def _identity(request: Request) -> KnowledgeIdentity:
+        return KnowledgeIdentity(
+            user_id=None,
+            tenant_id=None,
+            agent_id="cuga-default",
+            thread_id=None,
+            auth_mode="external",
+        )
+
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity
+    app.state.app_state = SimpleNamespace(knowledge_engine=_Engine(), knowledge_provider=None)
+
+    resp = TestClient(app).request(
+        "DELETE",
+        "/api/knowledge/documents",
+        json={"scope": "agent", "filename": FNAME},
+    )
+
+    assert resp.status_code == 409, f"expected 409, got {resp.status_code}: {resp.text[:200]}"
+    detail = resp.json()["detail"]
+    assert "task_abc123" in detail and "retry" in detail.lower()

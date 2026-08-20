@@ -25,6 +25,7 @@ from cuga.backend.knowledge.engine import (
     DocumentExistsError,
     DocumentNotFoundError,
     FileTooLargeError,
+    IngestStillFinishingError,
     IngestionQueueFullError,
     KnowledgeEngine,
     ReindexBusyError,
@@ -808,6 +809,10 @@ async def delete_document(
         return {"status": "ok"}
     except DocumentNotFoundError:
         raise HTTPException(status_code=404, detail="document not found")
+    except IngestStillFinishingError as e:
+        # Retryable: the ingest is past its point of no return and still has an
+        # add_document ahead of it, so a "deleted" answer here would be undone.
+        raise HTTPException(status_code=409, detail=str(e))
     except ReindexInProgressError:
         # Delete is rejected while this collection is being reindexed —
         # otherwise the doc would be re-embedded into the in-flight target and
