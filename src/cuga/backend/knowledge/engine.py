@@ -798,6 +798,22 @@ class ReindexInProgressError(Exception):
     pass
 
 
+class IngestStillFinishingError(Exception):
+    """A delete could not complete because an uncancellable ingest is still writing.
+
+    Retryable: the ingest is past its point of no return, so it cannot be
+    stopped and it will still call ``add_document``. Deleting now would report
+    success and then be undone by that write.
+    """
+
+    def __init__(self, filename: str, task_id: str):
+        self.filename = filename
+        self.task_id = task_id
+        super().__init__(
+            f"An ingest for {filename} is still finishing (task {task_id}); retry the delete shortly."
+        )
+
+
 class ReindexSupersededError(Exception):
     """Stale ingest worker: ``_apply_generation`` moved past the captured value."""
 
@@ -3088,10 +3104,17 @@ class KnowledgeEngine:
                     break
                 await asyncio.sleep(0.1)
             else:
+                # Do NOT delete anyway. That worker is past the point of no
+                # return, so it still has an add_document ahead of it: deleting
+                # now would report success and then be silently undone by that
+                # write — reintroducing the exact resurrection this method
+                # exists to prevent, just in the timeout window. Fail
+                # retryably instead of lying about the outcome.
                 logger.warning(
-                    f"Delete {filename}: ingest {task_id} still running after "
-                    f"{_DELETE_INGEST_WAIT_S}s; deleting anyway"
+                    f"Delete {filename}: ingest {task_id} still writing after "
+                    f"{_DELETE_INGEST_WAIT_S}s; refusing to report a delete it would undo"
                 )
+                raise IngestStillFinishingError(filename, task_id)
         return stopped
 
     async def delete_document(self, collection: str, filename: str) -> None:
