@@ -68,6 +68,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           RITS_API_KEY: ${{ secrets.RITS_API_KEY }}
+          LITE_LLM_KEY: ${{ secrets.LITE_LLM_KEY }}
           AGENT_SETTING_CONFIG: settings.rits.toml
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}
