@@ -1588,17 +1588,18 @@ export default function KnowledgePanel({
   const handleCancelUpload = useCallback(
     async (taskId: string | undefined): Promise<void> => {
       if (!taskId) return;
-      let serverStatus: string | undefined;
+      let serverTask: { status?: string; file_tasks?: Record<string, { error?: string }> } | null = null;
       try {
         const res = await api.cancelKnowledgeTask(taskId);
         if (res.ok) {
-          serverStatus = (await res.json().catch(() => null))?.status;
+          serverTask = await res.json().catch(() => null);
         }
       } catch {
         // Network failure — fall through and leave the poll attached rather
         // than assume a cancel that may never have reached the server.
       }
 
+      const serverStatus = serverTask?.status;
       if (serverStatus === "cancelled" || serverStatus === "failed") {
         const controller = uploadControllersRef.current.get(taskId);
         if (controller) {
@@ -1606,9 +1607,20 @@ export default function KnowledgePanel({
           uploadControllersRef.current.delete(taskId);
         }
         removeActiveUpload(taskId);
+        // A task that was ALREADY failed when we asked to cancel it must keep
+        // reading as failed — painting it "Cancelled" and dropping its error
+        // would hide a real ingest failure behind a user action that did not
+        // actually cause it.
+        const failed = serverStatus === "failed";
+        const failureError = failed
+          ? (Object.values(serverTask?.file_tasks || {})[0] as { error?: string } | undefined)?.error
+            || "Ingestion failed"
+          : undefined;
         setUploadingFiles((prev) =>
           prev.map((f) => f.taskId === taskId
-            ? { ...f, status: "cancelled" as const, error: undefined, finishing: false }
+            ? failed
+              ? { ...f, status: "error" as const, error: failureError, finishing: false }
+              : { ...f, status: "cancelled" as const, error: undefined, finishing: false }
             : f)
         );
         return;

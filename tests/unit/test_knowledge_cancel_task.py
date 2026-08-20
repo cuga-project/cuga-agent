@@ -370,3 +370,41 @@ def test_blocks_reupload_treats_unknown_status_as_live():
     # Parent terminal, or the file simply absent.
     assert not eng._blocks_reupload({"status": "completed", "file_tasks": {FNAME: {}}}, FNAME)
     assert not eng._blocks_reupload({"status": "running", "file_tasks": {}}, FNAME)
+
+
+@pytest.mark.unit
+async def test_cancel_before_worker_registers_its_event_is_still_honoured():
+    """Cancel can land before ``_run_ingest`` registers its cancel event.
+
+    routes.py creates the task row, then schedules ``_run_ingest`` as a
+    background task. Between those two points ``_active_tasks`` has no entry,
+    so ``cancel_task`` persists ``cancelled`` without any event to set. The
+    worker then builds a *fresh, unset* event — so an in-memory-only check
+    sails straight past it, writes ``running``, and goes on to insert. That
+    resurrects a row the dedup guard has already released, which is exactly
+    the duplicate-content race the point-of-no-return design exists to stop.
+
+    The worker must therefore also consult the persisted status before its
+    first write.
+    """
+    eng = _engine()
+    await _new_task(eng)
+
+    async def _must_not_insert(*a, **k):
+        raise AssertionError("cancelled task reached the vector store")
+
+    eng._insert_documents_async = _must_not_insert
+    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+
+    # Cancel arrives while the row is pending and BEFORE any event registration.
+    assert "t1" not in eng._active_tasks
+    await eng.cancel_task("t1")
+    assert (await eng._metadata.get_task("t1"))["status"] == "cancelled"
+
+    # Now the worker finally starts, with its own freshly created (unset) event,
+    # exactly as _run_ingest builds it.
+    await eng._ingest_inner(COLL, MISSING, FNAME, "t1", True, asyncio.Event(), skip_file_copy=True)
+
+    task = await eng._metadata.get_task("t1")
+    assert task["status"] == "cancelled", f"cancelled row was resurrected to {task['status']}"
+    assert not await eng._metadata.document_exists(COLL, FNAME)

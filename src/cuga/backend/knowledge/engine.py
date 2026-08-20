@@ -2508,6 +2508,26 @@ class KnowledgeEngine:
             # reorder these two statements.
             _check_cancelled()
 
+            # The event alone is not enough. ``cancel_task`` can land before
+            # ``_run_ingest`` registers it at all — routes.py creates the task
+            # row and only then schedules that coroutine, so in that window
+            # ``_active_tasks`` has no entry, cancel_task has nothing to set,
+            # and this worker builds its own fresh (unset) event. An
+            # in-memory-only check sails past a row that is already terminal,
+            # writes "running", and goes on to insert — resurrecting a task the
+            # dedup guard has already released, which is precisely the
+            # duplicate-content race the point of no return exists to prevent.
+            # Trust the persisted outcome, not just the in-process signal.
+            persisted = await self._metadata.get_task(task_id)
+            if persisted and persisted.get("status") in ("completed", "failed", "cancelled"):
+                # Return rather than raise: the row already carries its real
+                # outcome and the cancel handler would overwrite it.
+                logger.info(
+                    f"Task {task_id}: already {persisted['status']} before the worker started; "
+                    f"not running {filename}"
+                )
+                return
+
             await self._metadata.update_task(task_id, status="running")
             await self._metadata.update_task(
                 task_id,
