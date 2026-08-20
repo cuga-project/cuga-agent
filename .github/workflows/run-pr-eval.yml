@@ -88,7 +88,7 @@ jobs:
           output_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-output.md"
           exit_code_log="${HOME}/pr-regression-testing/logs/${log_prefix}-run-pr-eval-exit-code.txt"
 
-          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/run-pr-regression-eval.sh" \
+          bash "${HOME}/pr-regression-testing/cuga-eval/scripts/pr-regression-testing/run-pr-regression-eval.sh" \
             "${COMMENT_BODY}" \
             > "${output_log}" 2>&1
 
