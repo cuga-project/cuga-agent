@@ -63,6 +63,11 @@ _BACKGROUND_REINDEX_TASKS: set[Any] = set()
 # terminal: doing so would let a second ingest race a live insert.
 _TERMINAL_FILE_STATUSES = frozenset({"indexed", "failed", "skipped", "cancelled", "superseded"})
 
+# How long a delete waits for an ingest it could not cancel (already past the
+# point of no return) to finish writing. Bounded so a wedged provider call
+# cannot hang the delete request; on expiry the delete proceeds anyway.
+_DELETE_INGEST_WAIT_S = 30
+
 
 # Docling's plugin factory emits a WARNING every time it scans for plugins:
 #   "The plugin langchain_docling will not be loaded because Docling is being
@@ -3048,6 +3053,47 @@ class KnowledgeEngine:
 
     # --- Delete (5-step compensating flow per plan) ---
 
+    async def _stop_ingest_for(self, collection: str, filename: str) -> bool:
+        """Stop any in-flight ingest that owns ``filename``. Returns whether one was.
+
+        Delete used to ignore active tasks entirely (#691), which made the
+        button do nothing in two different ways:
+
+        * during a first upload the documents row does not exist yet — it is
+          written near the END of ingest — so ``mark_deleting`` found nothing
+          and the delete 404'd while the ingest carried on and indexed it;
+        * during a re-upload the delete succeeded, then the ingest reached
+          ``add_document`` and wrote the document straight back.
+
+        Must be called BEFORE taking the collection lock: waiting on a worker
+        while holding that lock would deadlock, since the worker needs it to
+        insert.
+        """
+        stopped = False
+        for task in await self._metadata.list_tasks(collection):
+            if not self._blocks_reupload(task, filename):
+                continue
+            task_id = task["task_id"]
+            logger.info(f"Delete {filename}: stopping in-flight ingest {task_id}")
+            await self.cancel_task(task_id)
+            stopped = True
+            # A cancel past the point of no return is refused, and that worker
+            # WILL write the document. Wait for it to reach a terminal status —
+            # which it only does after add_document — so our delete runs last
+            # instead of being resurrected by it.
+            deadline = time.monotonic() + _DELETE_INGEST_WAIT_S
+            while time.monotonic() < deadline:
+                current = await self._metadata.get_task(task_id)
+                if not current or current.get("status") in ("completed", "failed", "cancelled"):
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                logger.warning(
+                    f"Delete {filename}: ingest {task_id} still running after "
+                    f"{_DELETE_INGEST_WAIT_S}s; deleting anyway"
+                )
+        return stopped
+
     async def delete_document(self, collection: str, filename: str) -> None:
         """Delete a document. Idempotent compensating flow across stores."""
         await self._ensure_metadata_ready()
@@ -3069,6 +3115,9 @@ class KnowledgeEngine:
                 f"Reindex in progress for {collection}; deletes are rejected until it completes."
             )
 
+        # Outside the lock on purpose — see _stop_ingest_for.
+        stopped_ingest = await self._stop_ingest_for(collection, filename)
+
         async with self._get_collection_lock(collection):
             # Re-check under the lock: reindex() flags the collection AND
             # snapshots its file_list under this same lock, so a delete that
@@ -3079,6 +3128,13 @@ class KnowledgeEngine:
                     f"Reindex in progress for {collection}; deletes are rejected until it completes."
                 )
             if not await self._metadata.mark_deleting(collection, filename):
+                if stopped_ingest:
+                    # There is no documents row because the ingest never got
+                    # far enough to write one — but we did stop it, so the
+                    # user's intent ("make this not be here") is satisfied.
+                    # 404 here would be a lie about work we actually did.
+                    logger.info(f"Delete {filename}: ingest stopped before it indexed anything")
+                    return
                 raise DocumentNotFoundError(filename)
             await self._ensure_vector_store_cached(collection)
             try:
