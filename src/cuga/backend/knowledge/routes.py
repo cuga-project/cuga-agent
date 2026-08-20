@@ -25,6 +25,7 @@ from cuga.backend.knowledge.engine import (
     DocumentExistsError,
     DocumentNotFoundError,
     FileTooLargeError,
+    IngestStillFinishingError,
     IngestionQueueFullError,
     KnowledgeEngine,
     ReindexBusyError,
@@ -772,6 +773,10 @@ async def get_document_file(
         file_path = engine.get_document_file_path(collection, filename)
     except DocumentNotFoundError:
         raise HTTPException(status_code=404, detail="document not found")
+    except IngestStillFinishingError as e:
+        # Retryable: the ingest is past its point of no return and still has an
+        # add_document ahead of it, so a "deleted" answer here would be undone.
+        raise HTTPException(status_code=409, detail=str(e))
 
     media_type, _ = mimetypes.guess_type(str(file_path))
     # Let Starlette build Content-Disposition. It RFC 5987-encodes non-ASCII
