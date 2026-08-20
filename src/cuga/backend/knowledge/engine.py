@@ -56,6 +56,13 @@ _REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock
 # that clears the busy flag. done_callback discards on completion.
 _BACKGROUND_REINDEX_TASKS: set[Any] = set()
 
+# File-task statuses that mean "this file is done, whatever the parent row says".
+# Anything else — including a MISSING status — counts as still in flight. The
+# ingest worker's progress emits write {filename, stage, progress} with no
+# status on purpose (see _emit_progress), so "unknown" must never be read as
+# terminal: doing so would let a second ingest race a live insert.
+_TERMINAL_FILE_STATUSES = frozenset({"indexed", "failed", "skipped", "cancelled", "superseded"})
+
 
 # Docling's plugin factory emits a WARNING every time it scans for plugins:
 #   "The plugin langchain_docling will not be loaded because Docling is being
@@ -793,6 +800,15 @@ class ReindexSupersededError(Exception):
         self.worker_gen = worker_gen
         self.current_gen = current_gen
         super().__init__(f"Reindex superseded: gen {worker_gen} -> {current_gen}")
+
+
+class IngestCancelledError(Exception):
+    """Ingest worker observed a user cancel at one of its checkpoints."""
+
+    def __init__(self, task_id: str, filename: str):
+        self.task_id = task_id
+        self.filename = filename
+        super().__init__(f"Ingest cancelled by user: {filename} (task {task_id})")
 
 
 # --- Prepared update result ---
@@ -1808,6 +1824,17 @@ class KnowledgeEngine:
         # Active tasks for cancellation
         self._active_tasks: dict[str, asyncio.Event] = {}
 
+        # Task ids past the point of no return: the worker cleared its last
+        # cancel checkpoint and WILL write to the vector store. ``cancel_task``
+        # must not terminalize these. Writing "cancelled" here would be a lie,
+        # and worse, it would release the dedup guard — a re-upload of the same
+        # filename would then race this insert, and since
+        # _insert_documents_async does delete_by_source + add_documents under
+        # replace_duplicates, the LOSER of that race wins the content. The
+        # user's actual flow ("cancel, re-upload a corrected file") hits this
+        # head on, so a terminal write here would corrupt data.
+        self._uncancellable_tasks: set[str] = set()
+
         # Reindex coordination flags (in-memory, single-process only — flock ensures this)
         self._reindex_in_progress: set[str] = set()
         self._reindex_deferred: set[str] = set()
@@ -2299,6 +2326,27 @@ class KnowledgeEngine:
 
     # --- Ingest ---
 
+    @staticmethod
+    def _blocks_reupload(task: dict[str, Any], filename: str) -> bool:
+        """Does this task still own ``filename`` for dedup purposes?
+
+        A task blocks only while its PARENT status is non-terminal — that is
+        the outcome record, and it is why ``cancel_task`` must persist one
+        (#685). The per-file check is defence in depth: a file-task entry has
+        NO ``status`` key while it is actively embedding (a progress emit
+        replaces the whole entry), so unknown MUST count as non-terminal.
+        Reading unknown as terminal would let a second ingest race a live
+        insert — the exact duplicate-content race this guard exists to stop.
+        """
+        if task.get("status") not in ("pending", "running"):
+            return False
+        ft = (task.get("file_tasks") or {}).get(filename)
+        if ft is None:
+            return False
+        if isinstance(ft, dict) and ft.get("status", "processing") in _TERMINAL_FILE_STATUSES:
+            return False
+        return True
+
     async def _sanitize_and_validate(
         self, collection: str, file_path: Path, replace_duplicates: bool, original_filename: str | None = None
     ) -> str:
@@ -2323,7 +2371,7 @@ class KnowledgeEngine:
         # The atomic guarantee lives in ``_create_task_entry_internal``; this
         # check just surfaces a clear 409 earlier in the request flow.
         for t in pending:
-            if filename in (t.get("file_tasks") or {}):
+            if self._blocks_reupload(t, filename):
                 raise DocumentExistsError(
                     f"{filename} (an ingest for this file is already {t.get('status', 'pending')}; "
                     f"task_id={t.get('task_id')})"
@@ -2358,9 +2406,7 @@ class KnowledgeEngine:
         async with self._get_collection_lock(collection):
             existing = None
             for t in await self._metadata.list_tasks(collection):
-                if t.get("status") not in ("pending", "running"):
-                    continue
-                if filename in (t.get("file_tasks") or {}):
+                if self._blocks_reupload(t, filename):
                     existing = t
                     break
             if existing is not None:
@@ -2446,21 +2492,48 @@ class KnowledgeEngine:
             if current != worker_apply_gen:
                 raise ReindexSupersededError(worker_apply_gen, current)
 
+        def _check_cancelled() -> None:
+            # Cheap and synchronous, exactly like _check_supersede. Called at
+            # every point where abandoning the ingest costs nothing — and
+            # deliberately NOT after the insert commits, because by then the
+            # chunks are in the store and completing is the honest outcome.
+            if cancel_event.is_set():
+                raise IngestCancelledError(task_id, filename)
+
         try:
+            # BEFORE the status="running" write, not after. A cancel that lands
+            # while this worker is queued on _ingest_sem already wrote
+            # status="cancelled"; flipping the row back to "running" here would
+            # re-block the dedup guard for the rest of the ingest. Do not
+            # reorder these two statements.
+            _check_cancelled()
+
+            # The event alone is not enough. ``cancel_task`` can land before
+            # ``_run_ingest`` registers it at all — routes.py creates the task
+            # row and only then schedules that coroutine, so in that window
+            # ``_active_tasks`` has no entry, cancel_task has nothing to set,
+            # and this worker builds its own fresh (unset) event. An
+            # in-memory-only check sails past a row that is already terminal,
+            # writes "running", and goes on to insert — resurrecting a task the
+            # dedup guard has already released, which is precisely the
+            # duplicate-content race the point of no return exists to prevent.
+            # Trust the persisted outcome, not just the in-process signal.
+            persisted = await self._metadata.get_task(task_id)
+            if persisted and persisted.get("status") in ("completed", "failed", "cancelled"):
+                # Return rather than raise: the row already carries its real
+                # outcome and the cancel handler would overwrite it.
+                logger.info(
+                    f"Task {task_id}: already {persisted['status']} before the worker started; "
+                    f"not running {filename}"
+                )
+                return
+
             await self._metadata.update_task(task_id, status="running")
             await self._metadata.update_task(
                 task_id,
                 file_tasks={filename: {"filename": filename, "status": "processing"}},
             )
             logger.info(f"Task {task_id}: pending -> running for {filename} in {collection}")
-
-            if cancel_event.is_set():
-                await self._metadata.update_task(
-                    task_id,
-                    status="cancelled",
-                    file_tasks={filename: {"filename": filename, "status": "skipped"}},
-                )
-                return
 
             _check_supersede()
 
@@ -2470,6 +2543,11 @@ class KnowledgeEngine:
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
             _check_supersede()
+            # The checkpoint that makes cancelling a multi-minute Docling parse
+            # actually work. asyncio.to_thread above is not interruptible, so
+            # the parse burns CPU until it returns — but the worker abandons
+            # here without ever touching the vector store.
+            _check_cancelled()
 
             # C5 (issue #183 step 6): emit "parsed" stage so callers polling
             # get_ingestion_status see progress as soon as Docling finishes
@@ -2610,6 +2688,10 @@ class KnowledgeEngine:
                 logger.debug(f"Sample metadata for {filename}: {docs[0].metadata}")
 
             _check_supersede()
+            # Last cheap exit: abandoning here avoids even queuing behind the
+            # collection lock, which a large concurrent ingest may hold for
+            # minutes.
+            _check_cancelled()
 
             logger.info(
                 f"Inserting {len(docs)} chunks into {self._knowledge_vector_backend()} "
@@ -2628,8 +2710,20 @@ class KnowledgeEngine:
                 # NEW provider/dim and write old-embedder vectors under it — a
                 # name-vs-content mismatch within the target collection.
                 _check_supersede()
+                _check_cancelled()
                 await self._ensure_collection_config(collection)
                 await self._ensure_vector_store_cached(collection)
+                # POINT OF NO RETURN. Past this line the chunks land, so
+                # cancel_task must stop writing a terminal status for this task
+                # (see _uncancellable_tasks) — otherwise it would release the
+                # dedup guard and let a re-upload race this insert.
+                #
+                # The check and the add are adjacent and synchronous ON PURPOSE:
+                # with no await between them the event loop cannot interleave
+                # cancel_task, which is what makes the handoff atomic without a
+                # lock. DO NOT introduce an await here.
+                _check_cancelled()
+                self._uncancellable_tasks.add(task_id)
                 result = await self._insert_documents_async(
                     collection,
                     docs,
@@ -2758,6 +2852,28 @@ class KnowledgeEngine:
                 chunks=len(docs),
             )
 
+        except IngestCancelledError:
+            # Same trick as the supersede handler below: parent status is
+            # "cancelled" because the SQL CHECK admits no new value, and the
+            # user-cancel nuance lives in the file-task entry. cancel_task has
+            # usually written this already — repeating it is harmless and
+            # covers the case where the event was set without a live row write
+            # (e.g. cancel arrived while the worker was queued on _ingest_sem).
+            duration = time.monotonic() - start
+            logger.info(f"Task {task_id} cancelled by user for {filename} after {duration:.1f}s")
+            await self._metadata.update_task(
+                task_id,
+                status="cancelled",
+                processed_files=1,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "status": "cancelled",
+                        "reason": "cancelled by user",
+                        "duration_seconds": round(duration, 2),
+                    }
+                },
+            )
         except ReindexSupersededError as e:
             # SQL status "cancelled" (CHECK admits no new value); supersede
             # audit lives in file_tasks[filename].
@@ -2795,6 +2911,7 @@ class KnowledgeEngine:
             )
         finally:
             self._active_tasks.pop(task_id, None)
+            self._uncancellable_tasks.discard(task_id)
 
     async def _insert_documents_async(
         self,
@@ -3708,6 +3825,14 @@ class KnowledgeEngine:
         return await self._metadata.get_task(task_id)
 
     async def cancel_task(self, task_id: str) -> dict[str, Any] | None:
+        """Cancel a task and record the OUTCOME, not just the intent.
+
+        The in-memory event alone was not enough (#685): for a ``running``
+        task nothing was persisted, so the row stayed ``running`` forever and
+        the pending/running dedup guard kept 409-ing re-uploads of that
+        filename — it also held a ``max_pending_tasks`` slot and blocked
+        reindex, all three of which read the same status filter.
+        """
         await self._ensure_metadata_ready()
         task = await self._metadata.get_task(task_id)
         if not task:
@@ -3719,14 +3844,32 @@ class KnowledgeEngine:
         if cancel_event:
             cancel_event.set()
 
-        if task["status"] == "pending":
-            file_tasks = task["file_tasks"]
-            for ft in file_tasks.values():
-                if ft["status"] == "pending":
-                    ft["status"] = "skipped"
-            await self._metadata.update_task(task_id, status="cancelled", file_tasks=file_tasks)
-            logger.debug(f"Task {task_id}: cancelled (was pending)")
+        if task_id in self._uncancellable_tasks:
+            # Past the point of no return: the insert is in flight and the
+            # document WILL land. Persisting "cancelled" would both lie and
+            # release the dedup guard, letting a re-upload race that insert.
+            # Return the live row; the caller keeps polling and sees the real
+            # terminal status.
+            logger.info(f"Task {task_id}: cancel requested but ingest is past the point of no return")
+            return task
 
+        file_tasks = task.get("file_tasks") or {}
+        if isinstance(file_tasks, dict):
+            for ft in file_tasks.values():
+                if not isinstance(ft, dict):
+                    continue
+                # A missing ``status`` means a progress emit replaced the entry
+                # mid-ingest, so the file is still in flight — default
+                # NON-terminal or we would leave it unmarked (#683).
+                if ft.get("status", "processing") not in _TERMINAL_FILE_STATUSES:
+                    ft["status"] = "cancelled" if task["status"] == "running" else "skipped"
+        else:
+            file_tasks = {}
+
+        await self._metadata.update_task(
+            task_id, status="cancelled", processed_files=1, file_tasks=file_tasks
+        )
+        logger.info(f"Task {task_id}: cancelled (was {task['status']})")
         return await self._metadata.get_task(task_id)
 
     # --- Knowledge config update (prepare / commit) ---
