@@ -96,7 +96,7 @@ def test_reindex_still_accepts_an_empty_body(client):
     400. It previously special-cased content-length for exactly this.
     """
     r = client.post("/api/knowledge/reindex")
-    assert r.status_code != 400, f"empty-body reindex regressed to 400: {r.text[:200]}"
+    assert r.status_code == 200, f"empty-body reindex regressed: {r.status_code} {r.text[:200]}"
 
 
 @pytest.mark.unit
@@ -112,13 +112,29 @@ def test_reindex_rejects_a_malformed_body(client):
 
 
 @pytest.mark.unit
-def test_whitespace_only_body_is_treated_as_empty(client):
-    """A proxy that pads the body must not produce a 500."""
+@pytest.mark.parametrize(
+    ("method", "path"),
+    BODY_ENDPOINTS + [("POST", "/api/knowledge/reindex")],
+)
+def test_whitespace_only_body_is_rejected(client, method, path):
+    """Whitespace is a malformed body, not an absent one.
+
+    ``allow_empty`` covers a request with no body at all. Letting it also
+    swallow ``b"   "`` would make /reindex accept invalid content, so
+    whitespace falls through to parsing and 400s on every endpoint.
+    """
+    r = client.request(method, path, content=b"   \n  ", headers={"Content-Type": "application/json"})
+    assert r.status_code == 400, f"{method} {path} -> {r.status_code}: {r.text[:200]}"
+    assert r.json()["detail"] == "request body must be a JSON object"
+
+
+@pytest.mark.unit
+def test_non_utf8_body_is_400_not_500(client):
+    """A body that is not decodable at all must not escape as a 500."""
     r = client.request(
         "DELETE",
         "/api/knowledge/documents",
-        content=b"   \n  ",
+        content=b"\xff\xfe\x00bad",
         headers={"Content-Type": "application/json"},
     )
-    assert r.status_code == 400
-    assert r.json()["detail"] == "request body must be a JSON object"
+    assert r.status_code == 400, f"-> {r.status_code}: {r.text[:200]}"

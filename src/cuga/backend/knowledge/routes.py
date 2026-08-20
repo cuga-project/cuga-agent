@@ -67,18 +67,27 @@ async def _json_body(request: Request, *, allow_empty: bool = False) -> dict[str
     traceback — the wrong contract for bad client input, and noise that buries
     real failures in error monitoring (#689).
 
-    ``allow_empty`` accepts a request with no body at all and yields ``{}``,
-    for endpoints where every field is optional.
+    ``allow_empty`` accepts a request with **no body at all** and yields
+    ``{}``, for endpoints where every field is optional. It deliberately does
+    not extend to whitespace-only content: that is a malformed body, not an
+    absent one, so it still falls through to parsing and 400s.
+
+    The detail string is the one ``patch_session_settings`` already returned,
+    so this changes status codes only — no shipped message moves under a
+    client that might match on it.
     """
     detail = "request body must be a JSON object"
     raw = await request.body()
-    if not raw.strip():
+    if not raw:
         if allow_empty:
             return {}
         raise HTTPException(status_code=400, detail=detail)
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
+        # Only decoding failures become a 400. Anything else (a disconnect
+        # mid-read, for one) is not the client sending bad JSON and must
+        # propagate rather than be reported as a malformed request.
         raise HTTPException(status_code=400, detail=detail)
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail=detail)
