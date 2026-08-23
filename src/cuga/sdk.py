@@ -68,7 +68,7 @@ Tool Approval Example (with HITL):
     ```
 """
 
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import time
 import uuid
 from loguru import logger
@@ -81,6 +81,7 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
     from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import Shortlister
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
@@ -1812,6 +1813,7 @@ class CugaAgent:
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
+        final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1834,6 +1836,12 @@ class CugaAgent:
             shortlister: How to shrink a large tool set before the model sees it, e.g.
                 `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
                 (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
+            final_answer: How the final answer is shaped. A `str` adds guidance for the
+                answer-composing LLM; a callable `(str) -> str` is applied deterministically
+                to the delivered answer instead (must be pure; applied once per delivered
+                answer); `FinalAnswerConfig(instructions=..., function=...)` combines both.
+                None = unchanged behavior. Non-SDK deployments use the `[final_answer]`
+                settings section. Not applied to supervisor-composed synthesis (#621).
 
         Example with tool approval policy:
             ```python
@@ -1866,6 +1874,41 @@ class CugaAgent:
         self._compiled_graph = None
         self._policy_system = policy_system
         self._special_instructions = special_instructions
+
+        # final_answer: str -> LLM guidance; callable -> deterministic function;
+        # FinalAnswerConfig -> both. In the SDK graph the answer is composed by
+        # CugaLite, so guidance is injected into its prompt (special_instructions
+        # channel); the function is installed on FinalAnswerNode at build time.
+        self._answer_function: Optional[Callable[[str], str]] = None
+        if final_answer is not None:
+            from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
+
+            fa_instructions: Optional[str] = None
+            # Classes are callable: a bare class here (e.g. FinalAnswerConfig
+            # with a forgotten `()`) would silently install as the answer
+            # function and never format anything — reject it explicitly.
+            if isinstance(final_answer, type):
+                raise TypeError(
+                    f"final_answer got the class {final_answer.__name__} — pass an instance "
+                    f"(e.g. {final_answer.__name__}(...)) or a plain (str) -> str function"
+                )
+            if isinstance(final_answer, str):
+                fa_instructions = final_answer
+            elif isinstance(final_answer, FinalAnswerConfig):
+                self._answer_function = final_answer.function
+                fa_instructions = final_answer.instructions
+            elif callable(final_answer):
+                self._answer_function = final_answer
+            else:
+                raise TypeError(
+                    "final_answer must be a str (LLM guidance), a callable (str) -> str, "
+                    f"or FinalAnswerConfig — got {type(final_answer).__name__}"
+                )
+            if fa_instructions:
+                block = f"## Final answer instructions\n{fa_instructions}"
+                self._special_instructions = (
+                    f"{self._special_instructions}\n\n{block}" if self._special_instructions else block
+                )
 
         # Use settings defaults if not provided
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
@@ -2257,7 +2300,7 @@ class CugaAgent:
         # Create nodes
         suggest_actions = SuggestHumanActions()
         wait_for_response = WaitForResponse()
-        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create())
+        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create(), answer_function=self._answer_function)
 
         # Create wrapper graph using AgentState (compatible with HITL nodes)
         wrapper = StateGraph(AgentState)
@@ -2850,8 +2893,18 @@ class CugaAgent:
                     break
 
             # Chat transcript keeps raw [sN] markers by design; the
-            # fallback text bypassed FinalAnswerNode resolution, so
-            # resolve here before returning it to the caller.
+            # fallback text bypassed FinalAnswerNode entirely, so mirror
+            # finalize_answer here: answer function first, then citation
+            # resolution, before returning it to the caller.
+            if final_answer:
+                from types import SimpleNamespace as _NS
+
+                from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
+
+                _shim = _NS(final_answer=final_answer)
+                apply_answer_function(_shim, self._answer_function)
+                final_answer = _shim.final_answer
+
             from cuga.backend.knowledge.sources import (
                 get_ledger,
                 has_citation_markers,
@@ -3431,6 +3484,10 @@ class CugaSupervisor:
                 metadata_key="supervisor_metadata",
             )
 
+            # NOTE: no [final_answer].function application here — sub-agents
+            # apply it in their own FinalAnswerNode (already-shaped text with
+            # resolved [n] chips must not be re-shaped); supervisor-composed
+            # synthesis is a documented v1 gap (#621).
             # NOTE: no citation resolution here — sub-agents resolve their own
             # answers via FinalAnswerNode; if supervisor-level retrieval is ever
             # added, resolve [sN] markers before END (see
