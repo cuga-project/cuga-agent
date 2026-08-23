@@ -176,6 +176,11 @@ dim = 384  # Embedding dimension (1536 for OpenAI, 384 for BAAI/bge-small-en-v1.
 base_url = ""  # Optional: custom endpoint for OpenAI-compatible embeddings (e.g. hosted service)
 api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_API_KEY
 
+[final_answer]
+# How the final answer is produced. Composer model: [agent.final_answer.model]; composer on/off: features.final_answer.
+instructions = ""  # Guidance for the LLM composer (fills the {{ instructions }} slot; lite mode uses special_instructions instead). Env: DYNACONF_FINAL_ANSWER__INSTRUCTIONS
+function = ""      # Dotted path to a pure, idempotent (str) -> str applied to the delivered answer. Env: DYNACONF_FINAL_ANSWER__FUNCTION
+
 [policy]
 enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
 collection_name = "cuga_policies"  # Collection name for storing policies
