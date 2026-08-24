@@ -16,6 +16,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from cuga.backend.evolve.integration import EvolveIntegration
 
+pytestmark = pytest.mark.unit
+
 
 class TestIsEnabled:
     """Test EvolveIntegration.is_enabled() with various config combinations."""
