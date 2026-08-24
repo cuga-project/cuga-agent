@@ -9,6 +9,8 @@ import time
 
 import pandas as pd
 
+from opentelemetry import trace as otel_trace
+from traceloop.sdk.decorators import tool as traceloop_tool_span
 
 from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
 
@@ -27,6 +29,16 @@ try:
 except Exception:
     AGENT_ANALYTICS = False
     logger.warning("Ignoring agent analytics")
+
+
+def _json_span_value(value: Any) -> str:
+    """JSON-encode a span attribute value; OTel attributes must be strings/
+    primitives, and span code must never crash the caller over a serialization
+    edge case."""
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class MergeResult(BaseModel):
@@ -94,6 +106,7 @@ class ActivityTracker(object):
             cls._instance = super(ActivityTracker, cls).__new__(cls)
         return cls._instance
 
+    @traceloop_tool_span(name="invoke_tool")
     async def invoke_tool(self, server_name: str, tool_name: str, args: dict):
         if server_name not in self.tools:
             raise ValueError(f"Server '{server_name}' not found")
@@ -101,6 +114,10 @@ class ActivityTracker(object):
         # Find the tool by name
         for tool in self.tools[server_name]:
             if tool.name == tool_name:
+                span = otel_trace.get_current_span()
+                span.set_attribute("gen_ai.operation.name", "tool")
+                span.set_attribute("tool.name", tool_name)
+                span.set_attribute("tool.arguments", _json_span_value(args))
                 result = await tool.ainvoke(args)
                 logger.debug(f"type of {type(result)}")
                 # logger.debug(f"Tool output call {result.con}")
@@ -111,17 +128,18 @@ class ActivityTracker(object):
                         result = result.text
                 if isinstance(result, str):
                     try:
-                        res = json.loads(result)
+                        output = json.loads(result)
                         logger.debug("json res worked!")
-                        return res
                     except (json.JSONDecodeError, TypeError):
                         logger.debug("no json tool output !!")
                         # Not valid JSON, return original result
-                        return result
+                        output = result
                 else:
                     logger.debug(f"answer is not str answer is of type {type(result)}")
                     # Result is not a string, return as-is
-                    return result
+                    output = result
+                span.set_attribute("tool.output", _json_span_value(output))
+                return output
 
         # Tool not found
         available_tools = [tool.name for tool in self.tools[server_name]]
@@ -129,6 +147,7 @@ class ActivityTracker(object):
             f"Tool '{tool_name}' not found in server '{server_name}'. Available tools: {available_tools}"
         )
 
+    @traceloop_tool_span(name="invoke_tool_sync")
     def invoke_tool_sync(self, server_name: str, tool_name: str, args: dict):
         """Synchronous version of invoke_tool to avoid async/sync context issues"""
         import asyncio
@@ -140,6 +159,10 @@ class ActivityTracker(object):
         # Find the tool by name
         for tool in self.tools[server_name]:
             if tool.name == tool_name:
+                span = otel_trace.get_current_span()
+                span.set_attribute("gen_ai.operation.name", "tool")
+                span.set_attribute("tool.name", tool_name)
+                span.set_attribute("tool.arguments", _json_span_value(args))
                 # Try synchronous invoke first
                 try:
                     result = tool.invoke(args)  # Use synchronous invoke
@@ -185,17 +208,18 @@ class ActivityTracker(object):
                         result = result.text
                 if isinstance(result, str):
                     try:
-                        res = json.loads(result)
+                        output = json.loads(result)
                         logger.debug("json res worked!")
-                        return res
                     except (json.JSONDecodeError, TypeError):
                         logger.debug("no json tool output !!")
                         # Not valid JSON, return original result
-                        return result
+                        output = result
                 else:
                     logger.debug(f"answer is not str answer is of type {type(result)}")
                     # Result is not a string, return as-is
-                    return result
+                    output = result
+                span.set_attribute("tool.output", _json_span_value(output))
+                return output
 
         # Tool not found
         available_tools = [tool.name for tool in self.tools[server_name]]
