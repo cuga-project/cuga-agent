@@ -18,6 +18,28 @@ async def test_cuga_browser_node_routes_to_subgraph():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cuga_browser_node_refreshes_task_for_followup_turn():
+    node = CugaBrowserNode()
+    state = AgentState(
+        input="open the dashboard",
+        current_app="dashboard",
+        url="http://example.test",
+    )
+
+    await node.node(state)
+    state.input = "open the reports page"
+    state.current_app = "reports"
+
+    command = await node.node(state)
+
+    assert state.sub_task == "open the reports page"
+    assert state.sub_task_type == "web"
+    assert state.sub_task_app == "reports"
+    assert command.goto == "CugaBrowserSubgraph"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cuga_browser_callback_promotes_last_planner_answer():
     node = CugaBrowserNode()
     state = AgentState(input="done", url="http://example.test")
