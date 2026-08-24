@@ -26,6 +26,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+pytestmark = pytest.mark.e2e
+
 
 def _normalize_final_answer_text(text: str) -> str:
     """Normalize LLM final answers for stable substring assertions."""
