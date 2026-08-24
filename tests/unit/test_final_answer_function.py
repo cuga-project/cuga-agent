@@ -33,9 +33,15 @@ def setup_function():
 
 @pytest.fixture(autouse=True)
 def _clean_final_answer_settings():
-    """Snapshot/restore the [final_answer] settings around every test."""
+    """Force-empty the [final_answer] settings for every test, restore after.
+
+    Force-set (not just restore): a developer's DYNACONF_FINAL_ANSWER__*
+    env vars must not leak into tests that assert empty-settings behavior.
+    """
     before_fn = settings.final_answer.function
     before_instr = settings.final_answer.instructions
+    settings.set("final_answer.function", "")
+    settings.set("final_answer.instructions", "")
     yield
     settings.set("final_answer.function", before_fn)
     settings.set("final_answer.instructions", before_instr)
@@ -169,6 +175,28 @@ def test_resolver_rejects_non_callable():
         resolve_answer_function("json.__name__")
 
 
+def test_resolver_rejects_class_paths():
+    # A class is callable but constructs an instance — silent never-formats.
+    with pytest.raises(TypeError, match="is a class"):
+        resolve_answer_function("collections.OrderedDict")
+
+
+def test_settings_class_path_delivers_original():
+    settings.set("final_answer.function", "collections.OrderedDict")
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state)
+    assert state.final_answer == "safe answer"
+
+
+def test_non_str_settings_values_never_break_delivery():
+    settings.set("final_answer.function", 1)
+    settings.set("final_answer.instructions", 1)
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state)  # must not raise
+    assert state.final_answer == "safe answer"
+    assert resolve_final_answer_instructions() == ""
+
+
 # --- instructions override ----------------------------------------------------
 
 
@@ -194,6 +222,8 @@ def test_sdk_rejects_class_passed_as_final_answer():
         cuga.CugaAgent(final_answer=FinalAnswerConfig)
     with pytest.raises(TypeError, match="must be a str"):
         cuga.CugaAgent(final_answer=123)
+    with pytest.raises(TypeError, match="not a class"):
+        cuga.CugaAgent(final_answer=FinalAnswerConfig(function=dict))
 
 
 def test_final_answer_config_dataclass_and_lazy_export():
