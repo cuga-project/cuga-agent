@@ -1895,6 +1895,11 @@ class CugaAgent:
             if isinstance(final_answer, str):
                 fa_instructions = final_answer
             elif isinstance(final_answer, FinalAnswerConfig):
+                if isinstance(final_answer.function, type):
+                    raise TypeError(
+                        f"FinalAnswerConfig.function got the class {final_answer.function.__name__} — "
+                        "pass a (str) -> str function, not a class"
+                    )
                 self._answer_function = final_answer.function
                 fa_instructions = final_answer.instructions
             elif callable(final_answer):
