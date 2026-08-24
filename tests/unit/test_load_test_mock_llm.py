@@ -1,5 +1,6 @@
 """Unit tests for LoadTestMockChatModel response selection."""
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from cuga.backend.llm.load_test_mock import (
@@ -7,6 +8,8 @@ from cuga.backend.llm.load_test_mock import (
     _ACCOUNTS_QUERY_CODE,
     is_mock_llm_enabled,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_is_mock_llm_enabled_reads_env(monkeypatch):
