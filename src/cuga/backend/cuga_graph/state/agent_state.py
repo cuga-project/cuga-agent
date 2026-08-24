@@ -943,8 +943,8 @@ def default_state(page, observation, goal, chat_messages=None):
         input=goal,
         url=page.url if page else "",
         chat_messages=chat_messages if chat_messages else [],
-        sub_task=goal,
-        sub_task_type="web",
+        sub_task=goal if page else None,
+        sub_task_type="web" if page else None,
     )
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
     return state

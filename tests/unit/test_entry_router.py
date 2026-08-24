@@ -1,7 +1,7 @@
 import pytest
 
 from cuga.backend.cuga_graph.nodes.entry_router import EntryRouter
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.agent_state import AgentState, default_state
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from cuga.config import settings
 
@@ -62,3 +62,27 @@ async def test_entry_router_routes_to_browser_when_url_and_app_are_set(monkeypat
     command = await EntryRouter.node_handler(state, NodeNames.ENTRY_ROUTER)
 
     assert command.goto == NodeNames.CUGA_BROWSER
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_default_state_without_page_routes_to_lite_in_api_mode(monkeypatch):
+    monkeypatch.setattr(settings.features, "chat", False)
+    monkeypatch.setattr(settings.supervisor, "enabled", False)
+    monkeypatch.setattr(settings.advanced_features, "mode", "api")
+
+    state = default_state(page=None, observation=None, goal="")
+    state.input = "list all my accounts, how many are there?"
+
+    command = await EntryRouter.node_handler(state, NodeNames.ENTRY_ROUTER)
+
+    assert state.sub_task_type is None
+    assert command.goto == NodeNames.CUGA_LITE
+
+
+@pytest.mark.unit
+def test_default_state_with_page_marks_web_subtask():
+    page = type("Page", (), {"url": "https://example.test/app"})()
+    state = default_state(page=page, observation=None, goal="open the dashboard")
+    assert state.sub_task_type == "web"
+    assert state.sub_task == "open the dashboard"
