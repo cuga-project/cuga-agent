@@ -451,3 +451,105 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
     assert attrs.get("gen_ai.operation.name", {}).get("stringValue") == "tool", (
         f"expected gen_ai.operation.name='tool', got {attrs.get('gen_ai.operation.name')}"
     )
+
+
+@pytest.mark.unit
+def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
+    """Phase 6 test: invoke_tool_sync() produces a span with DP9 attributes
+    (tool.name, tool.arguments, tool.output, gen_ai.operation.name) set
+    correctly via the @traceloop_tool_span decorator and explicit span code."""
+    from langchain_core.tools import StructuredTool
+
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.observability import traceloop_init
+    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
+    from cuga.config import settings as real_settings
+
+    _reset_tracer_provider(monkeypatch)
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
+
+    trace_file = tmp_path / "spans.jsonl"
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
+
+    from traceloop.sdk import Traceloop
+
+    exporter = LocalOtlpFileSpanExporter(str(trace_file))
+    Traceloop.init(
+        app_name="cuga-test-invoke-tool-sync",
+        exporter=exporter,
+        disable_batch=True,
+        instruments=None,
+        block_instruments=None,
+    )
+
+    # Create a simple tool: add two integers
+    def add_numbers(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    tool = StructuredTool.from_function(add_numbers)
+
+    # Get ActivityTracker singleton and register the tool
+    tracker = ActivityTracker()
+    tracker.tools["test_server"] = [tool]
+
+    # Call invoke_tool_sync and verify return value
+    result = tracker.invoke_tool_sync("test_server", tool.name, {"a": 3, "b": 4})
+    assert result == 7, f"expected result 7, got {result}"
+
+    # Force flush of spans to file
+    from opentelemetry import trace as otel_trace_module
+    try:
+        provider = otel_trace_module.get_tracer_provider()
+        if hasattr(provider, 'force_flush'):
+            provider.force_flush()
+    except Exception:
+        pass
+
+    # Parse exported spans
+    spans = _all_spans(trace_file)
+
+    # Find the tool span (should be named "invoke_tool_sync.tool" based on decorator config)
+    tool_spans = [span for span in spans if span.get("name", "") == "invoke_tool_sync.tool"]
+    assert len(tool_spans) > 0, (
+        f"expected to find a tool span named 'invoke_tool_sync.tool', got span names: "
+        f"{[span.get('name', '') for span in spans]}"
+    )
+
+    tool_span = tool_spans[0]
+    attrs = {a["key"]: a["value"] for a in tool_span.get("attributes", [])}
+
+    # Assert decorator's own attributes
+    assert attrs.get("traceloop.span.kind", {}).get("stringValue") == "tool", (
+        f"expected traceloop.span.kind='tool', got {attrs.get('traceloop.span.kind')}"
+    )
+    assert attrs.get("traceloop.entity.name", {}).get("stringValue") == "invoke_tool_sync", (
+        f"expected traceloop.entity.name='invoke_tool_sync', got {attrs.get('traceloop.entity.name')}"
+    )
+
+    # Assert explicit DP9 attributes
+    assert attrs.get("tool.name", {}).get("stringValue") == tool.name, (
+        f"expected tool.name={tool.name}, got {attrs.get('tool.name')}"
+    )
+
+    # tool.arguments should be a JSON string that round-trips
+    tool_arguments_attr = attrs.get("tool.arguments", {}).get("stringValue")
+    assert tool_arguments_attr is not None, "expected tool.arguments attribute"
+    tool_arguments_parsed = json.loads(tool_arguments_attr)
+    assert tool_arguments_parsed == {"a": 3, "b": 4}, (
+        f"expected tool.arguments to parse to {{'a': 3, 'b': 4}}, got {tool_arguments_parsed}"
+    )
+
+    # tool.output should be "7" (JSON-encoded int 7)
+    tool_output_attr = attrs.get("tool.output", {}).get("stringValue")
+    assert tool_output_attr == "7", (
+        f"expected tool.output='7', got {tool_output_attr}"
+    )
+
+    # gen_ai.operation.name should be "tool"
+    assert attrs.get("gen_ai.operation.name", {}).get("stringValue") == "tool", (
+        f"expected gen_ai.operation.name='tool', got {attrs.get('gen_ai.operation.name')}"
+    )

@@ -78,6 +78,14 @@ from cuga.backend.observability.openlit_init import _merge_otel_resource_attribu
 if not os.getenv("OTEL_SERVICE_NAME"):
     os.environ["OTEL_SERVICE_NAME"] = "cuga"
 
+# @tool-decorated functions (activity_tracker/tracker.py's invoke_tool/invoke_tool_sync,
+# Phase 6) call TracerWrapper.verify_initialized() on every invocation; without this,
+# it prints a warning to stdout on every call whenever Traceloop is disabled (the
+# default). This module's whole design (Phase 1) is to degrade silently, not spam
+# stdout, when tracing isn't configured.
+if not os.getenv("TRACELOOP_SUPPRESS_WARNINGS"):
+    os.environ["TRACELOOP_SUPPRESS_WARNINGS"] = "true"
+
 
 _initialized = False  # Module-level guard: prevents redundant init on multiple calls
 _init_attempted = False  # True once one init attempt (success OR failure) has happened
