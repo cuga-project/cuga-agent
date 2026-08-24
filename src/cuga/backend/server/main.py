@@ -2059,6 +2059,14 @@ async def event_stream(
 
 
 app = FastAPI(lifespan=lifespan)
+
+# A2A trace-context propagation (DP4b) — must run on this exact app
+# instance, not a global instrument() call (see instrument_fastapi_app()'s
+# docstring). No-op if Traceloop isn't enabled.
+from cuga.backend.observability.traceloop_init import instrument_fastapi_app  # noqa: E402
+
+instrument_fastapi_app(app)
+
 app.state.app_state = app_state
 app.state.draft_app_state = draft_app_state
 

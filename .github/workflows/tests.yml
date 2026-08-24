@@ -54,7 +54,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-cuga
       # Separate pytest processes: these suites share process-global singletons
-      # (FastAPI app, policy/config DB, variables manager).
+      # (FastAPI app, policy/config DB, variables manager, traceloop-sdk's
+      # TracerWrapper/LangChain-instrumentor singletons).
       - name: Run colocated graph unit tests
         run: |
           uv run pytest ./src/cuga/backend/tools_env/registry/tests/
@@ -64,6 +65,7 @@ jobs:
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
+          uv run pytest ./src/cuga/backend/observability/tests/
 
   unit-b:
     name: Unit (tests/)

@@ -320,21 +320,38 @@ def init_openlit() -> None:
             # from capturing auth cookies (cuga_session JWT) or headers.
             # OpenLIT instruments these via standard OTel contrib packages.
             # We only need LLM/agent tracing (OpenAI, LangChain, LangGraph, MCP, etc.).
-            try:
-                from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            #
+            # Skip when Traceloop is also enabled: Traceloop needs httpx/aiohttp
+            # instrumented for A2A trace propagation (DP4b) and always
+            # initializes after this module (traceloop_init.py imports this
+            # module at its top), so skipping avoids undoing work Traceloop
+            # would just redo. Header/cookie capture on these packages is
+            # opt-in-only and off by default, so this isn't a regression of the
+            # original security concern (confirmed via source, DP4b/DP5).
+            #
+            # FastAPI specifically: this uninstrument() call never actually
+            # reached CUGA's real server app either way — server/main.py
+            # imports `FastAPI` before any observability module runs, so its
+            # app always binds the pre-patch class regardless. Traceloop
+            # instruments that app instance directly instead (see
+            # traceloop_init.instrument_fastapi_app()). Skipped here anyway for
+            # symmetry with httpx.
+            if not getattr(obs, "traceloop", False):
+                try:
+                    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-                FastAPIInstrumentor().uninstrument()
-                logger.debug("FastAPI instrumentation disabled for security")
-            except ImportError:
-                pass
+                    FastAPIInstrumentor().uninstrument()
+                    logger.debug("FastAPI instrumentation disabled for security")
+                except ImportError:
+                    pass
 
-            try:
-                from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+                try:
+                    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-                HTTPXClientInstrumentor().uninstrument()
-                logger.debug("httpx instrumentation disabled for security")
-            except ImportError:
-                pass
+                    HTTPXClientInstrumentor().uninstrument()
+                    logger.debug("httpx instrumentation disabled for security")
+                except ImportError:
+                    pass
 
             # Register SessionSpanProcessor to auto-tag spans with session.id
             # This works in server mode where set_session_attribute() is called from AgentLoop

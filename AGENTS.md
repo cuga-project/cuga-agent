@@ -22,7 +22,7 @@ CI shards in `.github/workflows/tests.yml` (and the matching commands in `extern
 | New test lives in | CI job | Notes |
 |---|---|---|
 | `tests/unit/` or `tests/integration/` | `unit-b` | Whole tree is collected; excluded only by marker (`manual`, `pgvector`, `load`, `e2e`, `stability`) |
-| One of the 7 colocated dirs listed in the `unit-a` step | `unit-a` | **Not** a `src/**/tests/` glob — an explicit list, one pytest process per suite (singleton isolation) |
+| One of the 8 colocated dirs listed in the `unit-a` step | `unit-a` | **Not** a `src/**/tests/` glob — an explicit list, one pytest process per suite (singleton isolation) |
 | `src/cuga/backend/cuga_graph/policy/tests/` | `policy-a` / `policy-b` | `test_e2e_*.py` vs the rest of that directory |
 | `src/cuga/sdk_core/tests/` | `sdk` | CRUD, mocks, supervisor policy invoke tests, and a small live invoke smoke (`-m "not e2e"`). Live-LLM duplicates (summarization, extra invoke variants, JSON utterance matching) are `@pytest.mark.e2e` — same opt-out as `unit-b`. |
 | `tests/system/` or `src/system_tests/load/tests/` | `extras` | |

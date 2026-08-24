@@ -213,6 +213,56 @@ def init_traceloop() -> None:
             logger.info(f"✅ Traceloop observability initialized (exporter={exporter_kind})")
         except Exception as e:
             logger.error(f"Failed to initialize Traceloop: {e}")
+            return
+
+        # A2A cross-process trace-context propagation (DP4b). Traceloop's own
+        # `Instruments` enum has no FastAPI/ASGI member, so `instruments=None`
+        # above doesn't cover the A2A HTTP boundary. httpx covers outbound
+        # calls (delegate_task_via_a2a_sdk/fetch_agent_card); aiohttp covers
+        # the legacy A2AProtocol class. Header/cookie capture stays opt-in and
+        # unset here, so this doesn't reopen OpenLit's uninstrument concern.
+        #
+        # Runs after openlit_init.py (import order, see above) — both
+        # packages patch methods in place (`wrap_function_wrapper`), so this
+        # reliably wins over OpenLit's own uninstrument step regardless of
+        # when httpx/aiohttp were imported.
+        #
+        # FastAPI isn't enabled here — see instrument_fastapi_app() below.
+        try:
+            from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+            HTTPXClientInstrumentor().instrument()
+            AioHttpClientInstrumentor().instrument()
+        except Exception as e:
+            logger.warning(f"Traceloop: failed to enable A2A HTTP instrumentors: {e}")
+
+
+def instrument_fastapi_app(app) -> None:
+    """
+    Instrument one FastAPI app instance for A2A trace-context propagation.
+
+    Not done via the global `FastAPIInstrumentor().instrument()` (used for
+    httpx/aiohttp above): that swaps the `fastapi.FastAPI` class reference,
+    which only affects code that imports `FastAPI` *after* the patch runs.
+    `server/main.py` imports `FastAPI` before this module, so its app always
+    binds the pre-patch class regardless of init order — confirmed
+    empirically to silently drop inbound `traceparent` headers.
+    `instrument_app()` wraps the given instance's middleware stack directly
+    instead, sidestepping the class-identity issue entirely.
+
+    Call once, right after the app instance is created (see
+    `server/main.py`). No-op if Traceloop isn't initialized — safe to call
+    unconditionally at the app-creation site.
+    """
+    if not _initialized:
+        return
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor().instrument_app(app)
+    except Exception as e:
+        logger.warning(f"Traceloop: failed to instrument FastAPI app for A2A tracing: {e}")
 
 
 def set_task_association_properties(
