@@ -8,6 +8,8 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 from cuga.config import settings
 
+pytestmark = pytest.mark.unit
+
 
 class FakeChatAgent:
     def __init__(self):
