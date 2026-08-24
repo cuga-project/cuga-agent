@@ -940,7 +940,11 @@ def default_state(page, observation, goal, chat_messages=None):
     from cuga.config import get_service_instance_id, get_tenant_id
 
     state = AgentState(
-        input=goal, url=page.url if page else "", chat_messages=chat_messages if chat_messages else []
+        input=goal,
+        url=page.url if page else "",
+        chat_messages=chat_messages if chat_messages else [],
+        sub_task=goal,
+        sub_task_type="web",
     )
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
     return state
@@ -1089,7 +1093,8 @@ class AgentState(BaseModel):
             self.supervisor_chat_messages = self.supervisor_chat_messages[-limit:]
 
     def format_subtask(self):
-        return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])
+        app = (self.sub_task_app or "")[:30]
+        return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, app)
 
     async def manage_message_context(
         self,

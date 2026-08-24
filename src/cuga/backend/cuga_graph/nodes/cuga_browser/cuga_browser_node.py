@@ -17,6 +17,12 @@ class CugaBrowserNode(BaseNode):
         self.name = NodeNames.CUGA_BROWSER
 
     async def node(self, state: AgentState, config: Optional[RunnableConfig] = None) -> Command:
+        if not state.sub_task:
+            state.sub_task = state.input
+        if not state.sub_task_type:
+            state.sub_task_type = "web"
+        if not state.sub_task_app:
+            state.sub_task_app = state.current_app or ""
         logger.info("Routing to CugaBrowserSubgraph")
         return Command(update=state.model_dump(), goto="CugaBrowserSubgraph")
 
