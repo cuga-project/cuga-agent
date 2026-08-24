@@ -197,12 +197,14 @@ class CugaEntryGraph:
 
         if getattr(settings.supervisor, "enabled", False):
             graph.add_node(self.cuga_supervisor.name, self.cuga_supervisor.node)
-            agents = await self._load_supervisor_agents(llm_manager, model_config)
+            agents, supervisor_special_instructions = await self._load_supervisor_agents(
+                llm_manager, model_config
+            )
             supervisor_model = llm_manager.get_model(model_config.copy())
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
-                special_instructions=None,
+                special_instructions=supervisor_special_instructions,
             )
             compiled_supervisor_subgraph = supervisor_subgraph.compile()
             graph.add_node("CugaSupervisorSubgraph", compiled_supervisor_subgraph)
@@ -225,7 +227,7 @@ class CugaEntryGraph:
 
         supervisor_config_path = getattr(settings.supervisor, "config_path", "")
         agents = {}
-        supervisor_config = None
+        supervisor_special_instructions = None
 
         if supervisor_config_path:
             from cuga.supervisor_utils.supervisor_config import load_supervisor_config
@@ -235,6 +237,7 @@ class CugaEntryGraph:
                 try:
                     supervisor_config = await load_supervisor_config(config_path)
                     agents = supervisor_config.agents
+                    supervisor_special_instructions = supervisor_config.supervisor.get("special_instructions")
                 except Exception as e:
                     logger.error(f"Failed to load supervisor config: {e}", exc_info=True)
 
@@ -261,7 +264,7 @@ class CugaEntryGraph:
                 "filesystem_agent": CugaAgent(tools=[read_file]),
             }
 
-        return agents
+        return agents, supervisor_special_instructions
 
     def add_edges(self, graph):
         graph.add_edge(START, self.chat.chat_agent.name)
