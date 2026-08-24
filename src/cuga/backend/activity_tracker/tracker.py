@@ -12,6 +12,8 @@ import pandas as pd
 from opentelemetry import trace as otel_trace
 from traceloop.sdk.decorators import tool as traceloop_tool_span
 
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+
 from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
 
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
@@ -37,8 +39,12 @@ def _json_span_value(value: Any) -> str:
     edge case."""
     try:
         return json.dumps(value, default=str)
-    except (TypeError, ValueError):
+    except Exception:
         return str(value)
+
+
+def _should_capture_tool_content() -> bool:
+    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true"
 
 
 class MergeResult(BaseModel):
@@ -117,7 +123,8 @@ class ActivityTracker(object):
                 span = otel_trace.get_current_span()
                 span.set_attribute("gen_ai.operation.name", "tool")
                 span.set_attribute("tool.name", tool_name)
-                span.set_attribute("tool.arguments", _json_span_value(args))
+                if _should_capture_tool_content():
+                    span.set_attribute("tool.arguments", _json_span_value(args))
                 result = await tool.ainvoke(args)
                 logger.debug(f"type of {type(result)}")
                 # logger.debug(f"Tool output call {result.con}")
@@ -138,7 +145,8 @@ class ActivityTracker(object):
                     logger.debug(f"answer is not str answer is of type {type(result)}")
                     # Result is not a string, return as-is
                     output = result
-                span.set_attribute("tool.output", _json_span_value(output))
+                if _should_capture_tool_content():
+                    span.set_attribute("tool.output", _json_span_value(output))
                 return output
 
         # Tool not found
@@ -162,7 +170,8 @@ class ActivityTracker(object):
                 span = otel_trace.get_current_span()
                 span.set_attribute("gen_ai.operation.name", "tool")
                 span.set_attribute("tool.name", tool_name)
-                span.set_attribute("tool.arguments", _json_span_value(args))
+                if _should_capture_tool_content():
+                    span.set_attribute("tool.arguments", _json_span_value(args))
                 # Try synchronous invoke first
                 try:
                     result = tool.invoke(args)  # Use synchronous invoke
@@ -218,7 +227,8 @@ class ActivityTracker(object):
                     logger.debug(f"answer is not str answer is of type {type(result)}")
                     # Result is not a string, return as-is
                     output = result
-                span.set_attribute("tool.output", _json_span_value(output))
+                if _should_capture_tool_content():
+                    span.set_attribute("tool.output", _json_span_value(output))
                 return output
 
         # Tool not found

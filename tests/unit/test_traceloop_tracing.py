@@ -390,9 +390,11 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
 
     tool = StructuredTool.from_function(add_numbers)
 
-    # Get ActivityTracker singleton and register the tool
+    # Get ActivityTracker singleton and register the tool. `tools` is a class
+    # attribute shared process-wide, so use monkeypatch.setitem to revert this
+    # entry on teardown instead of permanently mutating the singleton.
     tracker = ActivityTracker()
-    tracker.tools["test_server"] = [tool]
+    monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
 
     # Call invoke_tool and verify return value
     result = asyncio.run(tracker.invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
@@ -400,6 +402,7 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
 
     # Force flush of spans to file
     from opentelemetry import trace as otel_trace_module
+
     try:
         provider = otel_trace_module.get_tracer_provider()
         if hasattr(provider, 'force_flush'):
@@ -443,9 +446,7 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
 
     # tool.output should be "7" (JSON-encoded int 7)
     tool_output_attr = attrs.get("tool.output", {}).get("stringValue")
-    assert tool_output_attr == "7", (
-        f"expected tool.output='7', got {tool_output_attr}"
-    )
+    assert tool_output_attr == "7", f"expected tool.output='7', got {tool_output_attr}"
 
     # gen_ai.operation.name should be "tool"
     assert attrs.get("gen_ai.operation.name", {}).get("stringValue") == "tool", (
@@ -492,9 +493,11 @@ def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_pat
 
     tool = StructuredTool.from_function(add_numbers)
 
-    # Get ActivityTracker singleton and register the tool
+    # Get ActivityTracker singleton and register the tool. `tools` is a class
+    # attribute shared process-wide, so use monkeypatch.setitem to revert this
+    # entry on teardown instead of permanently mutating the singleton.
     tracker = ActivityTracker()
-    tracker.tools["test_server"] = [tool]
+    monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
 
     # Call invoke_tool_sync and verify return value
     result = tracker.invoke_tool_sync("test_server", tool.name, {"a": 3, "b": 4})
@@ -502,6 +505,7 @@ def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_pat
 
     # Force flush of spans to file
     from opentelemetry import trace as otel_trace_module
+
     try:
         provider = otel_trace_module.get_tracer_provider()
         if hasattr(provider, 'force_flush'):
@@ -545,11 +549,103 @@ def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_pat
 
     # tool.output should be "7" (JSON-encoded int 7)
     tool_output_attr = attrs.get("tool.output", {}).get("stringValue")
-    assert tool_output_attr == "7", (
-        f"expected tool.output='7', got {tool_output_attr}"
-    )
+    assert tool_output_attr == "7", f"expected tool.output='7', got {tool_output_attr}"
 
     # gen_ai.operation.name should be "tool"
     assert attrs.get("gen_ai.operation.name", {}).get("stringValue") == "tool", (
         f"expected gen_ai.operation.name='tool', got {attrs.get('gen_ai.operation.name')}"
+    )
+
+
+@pytest.mark.unit
+def test_invoke_tool_respects_trace_content_opt_out(monkeypatch, tmp_path):
+    """TRACELOOP_TRACE_CONTENT=false must suppress tool.arguments/tool.output
+    (the content-bearing attributes CUGA sets manually), mirroring Traceloop's
+    own _should_send_prompts() gate on its traceloop.entity.input/output
+    attributes. tool.name and gen_ai.operation.name are not content and must
+    remain present even with content capture off."""
+    from langchain_core.tools import StructuredTool
+
+    from cuga.backend.activity_tracker.tracker import ActivityTracker
+    from cuga.backend.observability import traceloop_init
+    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
+    from cuga.config import settings as real_settings
+
+    _reset_tracer_provider(monkeypatch)
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
+    monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+
+    trace_file = tmp_path / "spans.jsonl"
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
+
+    from traceloop.sdk import Traceloop
+
+    exporter = LocalOtlpFileSpanExporter(str(trace_file))
+    Traceloop.init(
+        app_name="cuga-test-invoke-tool-content-opt-out",
+        exporter=exporter,
+        disable_batch=True,
+        instruments=None,
+        block_instruments=None,
+    )
+
+    # Create a simple tool: add two integers
+    def add_numbers(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    tool = StructuredTool.from_function(add_numbers)
+
+    # Get ActivityTracker singleton and register the tool. `tools` is a class
+    # attribute shared process-wide, so use monkeypatch.setitem to revert this
+    # entry on teardown instead of permanently mutating the singleton.
+    tracker = ActivityTracker()
+    monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
+
+    # Call invoke_tool and verify return value
+    result = asyncio.run(tracker.invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
+    assert result == 7, f"expected result 7, got {result}"
+
+    # Force flush of spans to file
+    from opentelemetry import trace as otel_trace_module
+
+    try:
+        provider = otel_trace_module.get_tracer_provider()
+        if hasattr(provider, 'force_flush'):
+            provider.force_flush()
+    except Exception:
+        pass
+
+    # Parse exported spans
+    spans = _all_spans(trace_file)
+
+    tool_spans = [span for span in spans if span.get("name", "") == "invoke_tool.tool"]
+    assert len(tool_spans) > 0, (
+        f"expected to find a tool span named 'invoke_tool.tool', got span names: "
+        f"{[span.get('name', '') for span in spans]}"
+    )
+
+    tool_span = tool_spans[0]
+    attrs = {a["key"]: a["value"] for a in tool_span.get("attributes", [])}
+
+    # Tool identity attributes must still be present with content capture off.
+    assert attrs.get("tool.name", {}).get("stringValue") == tool.name, (
+        f"expected tool.name={tool.name} even with content capture off, got {attrs.get('tool.name')}"
+    )
+    assert attrs.get("gen_ai.operation.name", {}).get("stringValue") == "tool", (
+        f"expected gen_ai.operation.name='tool' even with content capture off, "
+        f"got {attrs.get('gen_ai.operation.name')}"
+    )
+
+    # Content-bearing attributes must be absent when TRACELOOP_TRACE_CONTENT=false.
+    assert "tool.arguments" not in attrs, (
+        f"expected tool.arguments to be absent with TRACELOOP_TRACE_CONTENT=false, "
+        f"got {attrs.get('tool.arguments')}"
+    )
+    assert "tool.output" not in attrs, (
+        f"expected tool.output to be absent with TRACELOOP_TRACE_CONTENT=false, "
+        f"got {attrs.get('tool.output')}"
     )
