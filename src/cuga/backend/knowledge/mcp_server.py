@@ -20,6 +20,13 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     resolve_workspace_path,
 )
 
+# Stdio mode (`-m cuga.backend.knowledge.mcp_server`) runs as its own OS
+# process — instrumentation from the main backend's process doesn't reach
+# it. HTTP mode (run_http(), started from a thread in server/main.py) is
+# already instrumented via that process's own import; this is a harmless
+# no-op there (idempotent, see traceloop_init.py).
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+
 logger = logging.getLogger("cuga.knowledge")
 
 # --- Configuration ---

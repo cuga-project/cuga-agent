@@ -14,6 +14,12 @@ from pydantic import BaseModel, Field
 
 from cuga.config import settings
 
+# This MCP server runs as its own OS process — instrumentation patches
+# applied in the main backend's process don't reach it. Mirrors
+# server/main.py's own import-time init (see traceloop_init.py module
+# docstring); Instruments.MCP (DP4) is enabled by that same call.
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401,E402
+
 load_dotenv()
 
 mcp = FastMCP("Docs MCP Server")

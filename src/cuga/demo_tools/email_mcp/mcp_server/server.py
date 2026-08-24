@@ -38,6 +38,15 @@ from pydantic import BaseModel, Field
 
 from utils import send_email_smtp, list_emails_fs, get_email_fs
 
+# This MCP server runs as its own OS process, launched via app_manager.py
+# inside the full cuga env — but this script has no other cuga dependency
+# and can also run fully standalone (per this file's own docstring), so the
+# import is guarded rather than hard, unlike CUGA-only servers.
+try:
+    import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+except ImportError:
+    pass
+
 mcp = FastMCP(name="LocalEmailMCP")
 
 # --------- Schemas -----------------------------------------------------------

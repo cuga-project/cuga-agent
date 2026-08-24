@@ -16,6 +16,14 @@ from fastmcp.server.providers.openapi import (
 
 import os
 
+# This MCP server runs as its own OS process, and this crm/ subtree is
+# vendored to also run standalone (its own README/pytest.ini), without
+# cuga installed — so the import is guarded rather than hard.
+try:
+    import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
+except ImportError:
+    pass
+
 # Configuration
 API_BASE_URL = f"http://localhost:{os.environ.get('DYNACONF_SERVER_PORTS__CRM_API', '8007')}"
 OPENAPI_SPEC_URL = f"{API_BASE_URL}/openapi.json"

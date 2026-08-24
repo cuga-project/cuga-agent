@@ -126,6 +126,10 @@ def generate_or_update_server(
         server_content = f'''# {output_file.name}
 
 from fastmcp import FastMCP
+
+# This generated server runs as its own OS process — instrumentation from
+# the main backend's process doesn't reach it (see traceloop_init.py).
+import cuga.backend.observability.traceloop_init as _traceloop_init  # noqa: F401
 {imports_section}
 {get_premable(is_local=settings.features.local_sandbox)}
 
