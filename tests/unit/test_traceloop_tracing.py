@@ -186,11 +186,22 @@ def _reset_tracer_provider(monkeypatch):
     (guarded by _TRACER_PROVIDER_SET_ONCE) — reset it so Traceloop.init() can
     actually install its own provider regardless of what ran earlier in this
     test session, and so this test's state doesn't leak into other tests
-    either (monkeypatch restores both attributes on teardown)."""
+    either (monkeypatch restores both attributes on teardown).
+
+    Also resets traceloop-sdk's own TracerWrapper singleton (a separate,
+    harder one-shot): TracerWrapper.__new__ caches `cls.instance` on the
+    class itself, and every later Traceloop.init() call just returns that
+    cached instance, silently ignoring its new exporter/config. Without this
+    reset, a second real (non-mocked) Traceloop.init() anywhere later in the
+    same pytest session binds to the FIRST test's already-closed exporter
+    instead of its own, and its own trace file is never written."""
     import opentelemetry.trace as otel_trace_module
+    from traceloop.sdk.tracing.tracing import TracerWrapper
 
     monkeypatch.setattr(otel_trace_module, "_TRACER_PROVIDER", None)
     monkeypatch.setattr(otel_trace_module._TRACER_PROVIDER_SET_ONCE, "_done", False)
+    if hasattr(TracerWrapper, "instance"):
+        monkeypatch.delattr(TracerWrapper, "instance")
 
 
 def _all_spans(trace_file) -> list[dict]:
