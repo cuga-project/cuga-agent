@@ -146,6 +146,7 @@ class TestPublishSetsLLMOverride:
         )
 
 
+@pytest.mark.unit
 class TestDynamicAgentGraphPicksUpLLMConfig:
     """DynamicAgentGraph.build_graph uses create_llm_from_config when llm_config is set."""
 
