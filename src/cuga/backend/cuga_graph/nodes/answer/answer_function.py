@@ -28,8 +28,13 @@ class FinalAnswerConfig:
 
 
 def resolve_final_answer_instructions() -> str:
-    """``[final_answer].instructions`` from settings/env, stripped ('' when unset)."""
-    return (settings.final_answer.instructions or "").strip()
+    """``[final_answer].instructions`` from settings/env, stripped ('' when unset).
+
+    Non-string TOML values are treated as unset: config.py only warns on
+    validator failures, so this guard is what keeps answer delivery alive.
+    """
+    value = settings.final_answer.instructions
+    return value.strip() if isinstance(value, str) else ""
 
 
 def resolve_answer_function(path: str) -> Callable[[str], str]:
@@ -42,6 +47,10 @@ def resolve_answer_function(path: str) -> Callable[[str], str]:
     if "." not in path:
         raise ValueError(f"[final_answer].function must be a dotted 'module.attr' path, got '{path}'")
     fn = get_class(path)
+    if isinstance(fn, type):
+        # Classes are callable but calling one constructs an instance — the
+        # answer would silently never be formatted (non-str result is dropped).
+        raise TypeError(f"[final_answer].function '{path}' is a class; point it at a (str) -> str function")
     if not callable(fn):
         raise TypeError(f"[final_answer].function '{path}' is not callable")
     return fn
@@ -56,8 +65,13 @@ def apply_answer_function(state, answer_function: Optional[Callable[[str], str]]
         return
     fn = answer_function
     if fn is None:
-        path = (settings.final_answer.function or "").strip()
+        configured = settings.final_answer.function
+        path = configured.strip() if isinstance(configured, str) else ""
         if not path:
+            if configured and not isinstance(configured, str):
+                logger.warning(
+                    f"[final_answer].function is {type(configured).__name__}, expected str; ignoring"
+                )
             return
         try:
             fn = resolve_answer_function(path)
