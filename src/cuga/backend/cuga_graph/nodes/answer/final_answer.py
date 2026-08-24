@@ -131,7 +131,7 @@ class FinalAnswerNode(BaseNode):
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
             return Command(update=state.model_dump(), goto=NodeNames.END)
 
-        # Handle TaskAnalyzerAgent when final_answer is already set (no apps matched)
+        # Handle EntryRouter when final_answer is already set (no apps matched)
         if state.sender == NodeNames.ENTRY_ROUTER and state.final_answer:
             state.sender = name
             FinalAnswerNode.apply_citation_resolution(state)

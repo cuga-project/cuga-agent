@@ -70,8 +70,6 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 
 - **Policy System** — Configure agent behavior with 5 policy types (Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter) via the Python SDK or standalone UI in demo mode. Includes human-in-the-loop approval gates for safe agent behavior in enterprise contexts. See [SDK Docs](https://docs.cuga.dev/docs/sdk/cuga_agent/) and [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
-- **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
-
 - **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
 
 - **Knowledge engine** — Built-in RAG over your documents: ingest PDFs, Office files, HTML, Markdown, and images through **Docling**, then search and reason over them via auto-injected knowledge tools. Documents can be scoped to **agent-level** (permanent, shared across conversations) or **session-level** (per-thread, isolated to a single conversation) — so long-lived reference material and ephemeral per-user uploads can coexist (see [Knowledge Base](#knowledge-base))
@@ -140,43 +138,6 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
    ```
 
 **What you'll see:** CUGA will fetch data from the Digital Sales API and then interact with the web page to add the account information directly to the current page - demonstrating seamless API-to-web workflow integration!
-
-</details>
-
-### Human in the Loop Task Execution
-
-Watch CUGA pause for human approval during critical decision points:
-
-**Example Task:** `get best accounts`
-
-https://github.com/user-attachments/assets/d103c299-3280-495a-ba66-373e72554e78
-
-<details>
-<summary><b>Would you like to try this? (HITL Demo)</b></summary>
-
-Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for human approval at key decision points:
-
-### Setup Steps:
-
-1. **Enable HITL mode:**
-
-   ```bash
-   # Edit ./src/cuga/settings.toml and ensure:
-   api_planner_hitl = true  # under [advanced_features] section
-   ```
-
-2. **Start the demo:**
-
-   ```bash
-   cuga start demo
-   ```
-
-3. **Try the HITL task:**
-   ```
-   get best accounts
-   ```
-
-**What you'll see:** CUGA will pause at critical decision points, showing you the planned actions and waiting for your approval before proceeding.
 
 </details>
 
@@ -1084,9 +1045,7 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 
 ## How It Works
 
-Each `.md` file contains specialized instructions that are automatically integrated into the CUGA's internal prompts when that component is active. Simply edit the markdown files to customize behavior for each node type.
-
-**Available instruction sets:** `answer`, `api_planner`, `code_agent`, `plan_controller`, `reflection`, `shortlister`, `task_decomposition`
+Custom instructions support `## Plan` for execution guidance and `## Answer` for final-response formatting. Unsectioned text is treated as plan guidance. The default instruction set keeps reusable answer instructions in `answer.md`; runtime plan instructions can be supplied by clients such as Langflow.
 
 ## Configuration
 
@@ -1095,13 +1054,7 @@ configurations/
 └── instructions/
     ├── instructions.toml
     ├── default/
-    │   ├── answer.md
-    │   ├── api_planner.md
-    │   ├── code_agent.md
-    │   ├── plan_controller.md
-    │   ├── reflection.md
-    │   ├── shortlister.md
-    │   └── task_decomposition.md
+    │   └── answer.md
     └── [other instruction sets]/
 ```
 
@@ -1115,15 +1068,14 @@ instruction_set = "default"  # or any instruction set above
 </details>
 
 <details>
-<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
+<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CUGA</em></summary>
 
-Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+Evolve can bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
 
 This flow is:
 
 - **Opt-in** - disabled by default
 - **Non-blocking** - Evolve failures do not fail the task
-- **CugaLite-focused** - enabled for lite mode by default
 - **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
 ### Setup Steps:
@@ -1154,18 +1106,14 @@ OPENAI_BASE_URL=env://OPENAI_BASE_URL
 
 Each `env://...` value tells CUGA to read the real secret or setting from its own process environment at runtime, so make sure PostgreSQL is reachable, `pgvector` is available, and the configured OpenAI/LiteLLM-compatible model is one your gateway is allowed to use.
 
-1. **[Optional]** Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+3. **[Optional]** Edit `./src/cuga/settings.toml` to configure Evolve:
 
 ```toml
-[advanced_features]
-lite_mode = true
-
 [evolve]
 enabled = true
 url = "http://127.0.0.1:8201/sse"
 mode = "auto"
 app_name = "evolve"
-lite_mode_only = true
 save_on_success = true
 save_on_failure = true
 async_save = true
@@ -1193,7 +1141,7 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 ### What happens during a run?
 
 1. CUGA derives the task description from the current sub-task or first user message
-2. CugaLite asks Evolve for relevant guidelines
+2. CUGA asks Evolve for relevant guidelines
 3. Returned guidelines are appended to the system prompt under an `Evolve Guidelines` section
 4. The task executes normally
 5. The user / assistant trajectory is saved back to Evolve after completion

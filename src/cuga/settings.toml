@@ -14,10 +14,8 @@ cuga_mode = "balanced"
 [advanced_features]
 web_arena_eval = false
 use_vision = true
-use_paraphrase = false
 tracker_enabled = false
 run_receipt = false  # Attach a per-run token/cost/timing receipt to SDK InvokeResult (backend/cuga_graph/utils/run_receipt.py)
-use_location_resolver = false
 langfuse_tracing = false
 wxo_integration = false
 benchmark = "default"
@@ -25,8 +23,6 @@ benchmark = "default"
 appworld_final_answer_plain = true
 mode = 'api'
 use_extension = false
-code_planner_enabled = true
-api_planner_hitl = false
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
@@ -42,7 +38,6 @@ e2b_cleanup_on_create = true  # Run periodic cleanup when creating new sandboxes
 e2b_cleanup_frequency = 0  # Check all sandboxes every N get_or_create calls (0 = only on create)
 message_window_limit = 500  # Maximum number of messages to keep in history (sliding window)
 max_input_length = 20000  # Maximum characters allowed in user input (prevents abuse)
-sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 sandbox_execution_timeout = 30  # Seconds; per-block wall clock for sandbox code execution (incl. embedded LLM calls like find_tools). Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT

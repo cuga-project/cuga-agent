@@ -34,12 +34,6 @@ class InstructionsManager:
         # Hard-coded mapping from alternative names to actual keys
         self._key_mappings = {
             NodeNames.FINAL_ANSWER_AGENT: "answer",
-            "api_code_planner": "api_code_planner",
-            "plan_controller": "plan_controller",
-            "task_decomposition": "task_decomposition",
-            "api_planner": "api_planner",
-            "shortlister": "shortlister",
-            "code_agent": "code_agent",
         }
 
         # You can also create reverse mappings if needed
@@ -246,7 +240,7 @@ class InstructionsManager:
             if resolved_key:
                 self._in_memory_cache[resolved_key.upper()] = res.answer
         if res.plan:
-            resolved_key = self._resolve_key('api_planner')
+            resolved_key = self._resolve_key('plan')
             if resolved_key:
                 self._in_memory_cache[resolved_key.upper()] = res.plan
 

@@ -568,7 +568,7 @@ class ActivityTracker(object):
             except Exception:
                 step.image_before = None
         if AGENT_ANALYTICS:
-            if step.name in ("TaskAnalyzerAgent", "EntryRouter"):
+            if step.name == "EntryRouter":
                 AIEventRecorder.record_data_annotation(
                     name=step.name,
                     annotation_type=DataAnnotation.Type.RAW_TEXT,

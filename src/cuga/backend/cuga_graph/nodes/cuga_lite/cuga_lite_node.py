@@ -253,7 +253,7 @@ class CugaLiteNode(BaseNode):
             state: Current agent state
 
         Returns:
-            Command to route to FinalAnswerAgent, PlanControllerAgent, or CugaLiteSubgraph
+            Command to route to FinalAnswerAgent, SuggestHumanActions, or CugaLiteSubgraph
         """
         # Handle human-in-the-loop responses
 

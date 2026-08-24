@@ -2143,7 +2143,7 @@ class CugaAgent:
         - SDKCallback handles response -> back to CugaLiteSubgraph or FinalAnswerAgent
         - Otherwise -> FinalAnswerAgent -> END
 
-        Dummy nodes (APIPlannerAgent, ChatAgent, CugaLite) are added to support
+        Dummy nodes (ChatAgent, CugaLite, EntryRouter) are added to support
         internal routing from CugaLiteSubgraph that references these nodes.
         """
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
