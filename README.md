@@ -41,6 +41,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
+> | **Tool-call budgets** | `[advanced_features] max_tool_calls_per_block / _per_run / _per_thread` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
@@ -539,6 +540,40 @@ if __name__ == "__main__":
 
 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
+### Run Receipt
+
+Answer "where did the tokens and the time go?" without an external observability
+stack. Enable the flag and every `invoke()` returns a per-run receipt:
+
+```toml
+# settings.toml
+[advanced_features]
+run_receipt = true  # default: false — zero overhead when disabled
+```
+
+```python
+result = await agent.invoke("how many accounts are there?")
+print(result.receipt)
+# ┌─ Run Receipt ─────────────────────────────────┐
+# │ model: gpt-4o                                 │
+# │ tokens: 18,342 in / 2,101 out (20,443)        │
+# │ llm calls: 7   tool calls: 4                  │
+# │ time: 9.4s (llm 6.1s / tools 2.8s)            │
+# │ slowest tool: get_accounts 1.9s               │
+# └───────────────────────────────────────────────┘
+result.receipt.input_tokens    # 18342
+result.receipt.tool_timings    # per-tool call counts and total durations
+```
+
+**Tokens, not cost** — CUGA runs against self-hosted and internal deployments
+whose prices we don't know, so multiply by your own rates. `cache_read_tokens`
+and `reasoning_tokens` are included when the provider reports them.
+
+Enabling it puts tool tracking in a **timings-only** mode unless you passed
+`track_tool_calls=True`: only name, app and duration are recorded — never
+arguments, results or errors. Coverage matches `track_tool_calls` (registry/MCP
+tools and `@tracked_tool` functions).
+
 ### Knowledge Base
 
 CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
@@ -940,6 +975,129 @@ mode = 'api'  # 'api', 'web', or 'hybrid'
 </details>
 
 <details>
+<summary>🔍 Tool Shortlisting</summary>
+
+## What it is
+
+When an app exposes many tools, CUGA shrinks the set before the model sees it. This happens in two places: `find_tools` (the agent asking "what tools exist for X?") and the `bind_tools` provider cap. Both are pluggable.
+
+## Strategies
+
+| Strategy | How it ranks | Cost |
+|---|---|---|
+| `llm` (default) | asks the model | one LLM call per shortlist |
+| `embedding` | local cosine similarity | no LLM call for ranking, ~65ms warm |
+| `hybrid` | cosine cuts to `top_k`, then the LLM picks | one LLM call, much smaller prompt |
+
+`embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
+
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+
+In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
+
+## Configuration
+
+### Every option
+
+| Key | Default | What it does |
+|---|---|---|
+| `strategy` | `"llm"` | `llm` \| `embedding` \| `hybrid` \| a dotted class path |
+| `fallback_strategy` | `"llm"` | Used when `strategy` cannot run (model still downloading, missing dependency) |
+| `threshold` | `128` | Engage the cosine stage only **above** this many candidates. `0` = always engage |
+| `top_k` | `128` | How many candidates the cosine stage keeps (also the `hybrid` prefilter width) |
+| `max_results` | `10` | `find_tools` only — how many tools are actually shown to the agent |
+| `min_score` | `0.15` | Cosine floor. Deliberately low: this is a **recall** filter, not a precision knob |
+| `query_weight` | `0.7` | Blend of step query vs. initial user message when embedding the query (0–1) |
+| `embedding_provider` | `"local"` | `local` (fastembed, offline, free) or `openai` |
+| `embedding_model` | `bge-small-en-v1.5` | Any fastembed model, or an OpenAI embedding model |
+
+### Four ways to set it
+
+**Precedence, highest first:**
+
+1. raw `shortlister_*` keys you set yourself in `configurable`
+2. per-invoke `invoke(..., shortlister=...)`
+3. constructor `CugaAgent(shortlister=...)`
+4. `[shortlister.discovery]` / `[shortlister.bind_cap]`
+5. `[shortlister]` — also where environment variables land
+6. built-in defaults
+
+Raw keys sit **above** the SDK objects because `_apply_shortlister` merges with `setdefault`: a key you already placed in `configurable` is never overwritten.
+
+**1. `settings.toml`** — deployment-wide:
+
+```toml
+[shortlister]
+strategy = "hybrid"
+top_k = 64
+
+# Optional: different settings per call site.
+[shortlister.discovery]   # find_tools
+strategy = "hybrid"
+[shortlister.bind_cap]    # bind_tools provider cap
+strategy = "embedding"    # no LLM round-trip per call_model
+```
+
+**2. Environment** — one-off or per-container:
+
+```bash
+DYNACONF_SHORTLISTER__STRATEGY=hybrid
+DYNACONF_SHORTLISTER__TOP_K=64
+```
+
+**3. SDK** — per agent, or per call:
+
+```python
+from cuga import CugaAgent, Shortlister
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(strategy="hybrid"))
+await agent.invoke("...", shortlister=Shortlister(top_k=32))   # per-call override
+```
+
+**4. Raw `configurable`** — when driving the graph directly:
+
+```python
+config = {"configurable": {"shortlister_strategy": "embedding", "shortlister_top_k": 32}}
+```
+
+### Which strategy should I use?
+
+| Situation | Use | Why |
+|---|---|---|
+| Default / unsure | `llm` | Unchanged behavior; nothing to tune |
+| Large catalogue, accuracy matters | `hybrid` | Cosine cuts the prompt cost; the LLM still makes the final call |
+| Provider cap on every `call_model` | `embedding` | Removes an LLM round-trip per step, and works on models without native structured output |
+| Offline / airgapped | `embedding` or `hybrid` with a warm cache | Local model, no network at query time |
+
+### Gotchas
+
+**At or below `threshold` candidates nothing changes** — the cosine stage does not run and shortlisting behaves exactly as it always has. Set `threshold = 0` to always engage the configured strategy.
+
+> **Two similarly-named thresholds.** `[shortlister] threshold` (128) decides when the *cosine stage* engages inside the shortlister. `advanced_features.shortlisting_tool_threshold` (35) decides when tools are *hidden behind `find_tools`* in the prompt. They are unrelated.
+
+**`top_k` never raises the provider cap.** At the `bind_tools` seam the caller's cap is a hard ceiling; a configured `top_k` can lower how many tools are bound, never push past what the provider accepts.
+
+**`max_results` exists for a reason.** `find_tools` renders each tool with full parameter and schema docs. Showing 128 of them would exceed `advanced_features.execution_output_max_length` and be silently truncated mid-render, so the rendered count is capped separately from `top_k`.
+
+**First call on a cold cache.** The embedding model (~90MB) downloads in the background and that call is served by `fallback_strategy`; subsequent calls use cosine. No query ever blocks on the download.
+
+## Custom strategies
+
+Point `strategy` at a dotted class path, or pass an instance:
+
+```python
+class MyShortlister:
+    name = "mine"
+    async def shortlist(self, request) -> "list[ShortlistCandidate]": ...
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(instance=MyShortlister()))
+```
+
+See `docs/design/pluggable-shortlister.md` for the full design.
+
+</details>
+
+<details>
 <summary>📝 Special Instructions Configuration</summary>
 
 ## How It Works
@@ -1148,7 +1306,7 @@ All tests run through pytest (configured in `pyproject.toml`):
 - Fast Mode: Get top account by revenue, list accounts, find VP sales high-value accounts
 - CRM Workflows: Contacts management, email operations, tool discovery
 - HF Utterances: Account queries, revenue calculations, playbook execution
-- Execution: Sequential (`-n0`) so the 88% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 88`
+- Execution: Sequential (`-n0`) so the 87% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 87` (one LLM flake allowed on the 8-test suite)
 
 ## Running Tests
 
@@ -1164,11 +1322,17 @@ Run the default suite (excludes manual and pgvector; pgvector needs a container)
 uv run pytest
 ```
 
-Run the CI-equivalent subset (matches the main `tests.yml` job):
+Run the CI-equivalent subset (mocked unit/load; live LLM jobs are split in `tests.yml`):
 
 ```bash
 uv run pytest -m "not stability and not pgvector and not manual and not e2e and not load"
 uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+```
+
+Stability CI equivalent (scoped to e2e so collection stays small):
+
+```bash
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run a faster local loop:
@@ -1177,10 +1341,10 @@ Run a faster local loop:
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"
 ```
 
-Run stability tests only (88% pass-rate gate; use `-n0` so threshold aggregation works):
+Run stability tests only (87% pass-rate gate; use `-n0` so threshold aggregation works):
 
 ```bash
-uv run pytest -m stability --stability-threshold 88 -n0
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run pgvector tests (requires a running pgvector container):

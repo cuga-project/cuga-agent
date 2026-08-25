@@ -16,6 +16,7 @@ web_arena_eval = false
 use_vision = true
 use_paraphrase = false
 tracker_enabled = false
+run_receipt = false  # Attach a per-run token/cost/timing receipt to SDK InvokeResult (backend/cuga_graph/utils/run_receipt.py)
 use_location_resolver = false
 langfuse_tracing = false
 wxo_integration = false
@@ -62,9 +63,17 @@ cuga_lite_bind_tools_max_count = 128
 # Pad shortlister output to fill the cap. Off by default for code-execution mode.
 cuga_lite_bind_tools_pad_to_cap = false
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
+cuga_lite_blocked_claim_retry = true  # When an NL turn claims tools/data are unavailable but no code has executed and tools ARE bound, retry once with a corrective message instead of finalizing the false refusal (issue #610). Only active when cuga_lite_nl_auto_continue is on.
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
+max_tool_calls_per_run = 256  # Max tool/API calls per run — one user turn (prepare resets it), across every tool path (registry, MCP/SDK providers, plain python tools, skills, runtime fs/shell, agent delegation). 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_RUN
+max_tool_calls_per_block = 100  # Max tool/API calls in ONE generated code block. Fail-fast guard, not a ceiling: breaching it is recoverable, the model reflects and retries with a fresh block budget — max_tool_calls_per_run above is what actually bounds spend. 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_BLOCK
+max_tool_calls_per_thread = 2000  # Max tool/API calls per conversation, never reset. The absolute ceiling: bounds a long thread that max_tool_calls_per_run (per turn) cannot. 0 disables. Env: DYNACONF_ADVANCED_FEATURES__MAX_TOOL_CALLS_PER_THREAD
+# Strip harmony protocol control tokens (<|channel|>, <|return|>, …) from the final answer.
+# "auto" = only when the final-answer model is a gpt-oss/harmony model (other providers untouched);
+# true/false force it on/off. Env: DYNACONF_ADVANCED_FEATURES__STRIP_HARMONY_CONTROL_TOKENS
+strip_harmony_control_tokens = "auto"
 execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
 variables_summary_max_length = 12000  # Maximum characters for the "Available Variables" prompt addendum (prevents unbounded growth as sandbox variables accumulate)
 # OpenSandbox shell tools (run_command, write_file, …) and matching prompt guidance. Opt-in: set true when using OpenSandbox shell tools.
@@ -75,6 +84,33 @@ enable_shell_tool = false
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
 sandbox_mode = "native"
+
+[shortlister]
+# How CugaLite shrinks a large tool set before the model sees it.
+# Applies to both find_tools (runtime discovery) and the bind_tools provider cap.
+# See docs/design/pluggable-shortlister.md
+#
+# strategy: llm | embedding | hybrid | "my.pkg.MyShortlister" (dotted class path)
+#   llm       — ask the model (default; identical to pre-feature behavior)
+#   embedding — local cosine similarity, no LLM call
+#   hybrid    — cosine prefilter to top_k, then the LLM makes the final pick
+strategy = "llm"
+fallback_strategy = "llm"  # used when the chosen strategy can't run (e.g. model still downloading)
+# Engage the cosine stage only above this many candidates. At or below it, shortlisting
+# behaves exactly as it always has. NOTE: distinct from advanced_features.shortlisting_tool_threshold
+# (=35), which decides when tools are hidden behind find_tools in the prompt.
+threshold = 128
+top_k = 128        # how many candidates the cosine stage keeps (also the hybrid prefilter width)
+max_results = 10   # find_tools only: max tools rendered to the agent (128 would overflow output limits)
+min_score = 0.15   # cosine floor — deliberately LOW; this is a recall filter, not a precision knob
+query_weight = 0.7 # blend of step query vs initial user message when embedding the query
+# Embeddings are self-contained by default: always local, never a network call, never billed.
+# Deliberately does NOT inherit [storage.embedding], which may be set to "openai".
+embedding_provider = "local"
+embedding_model = "BAAI/bge-small-en-v1.5"  # same weights knowledge/policy load — one ONNX session
+# Per-seam overrides are supported and inherit the values above; add a
+# [shortlister.discovery] (find_tools) or [shortlister.bind_cap] (provider cap)
+# section only when the two seams need different settings.
 
 [agent_spawn]
 # When false, sub-agent spawning via spawn_agent / get_agent_result is fully disabled.

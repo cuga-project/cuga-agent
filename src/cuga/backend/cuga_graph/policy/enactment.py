@@ -14,9 +14,17 @@ from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.policy.models import (
     OutputFormatter,
     PolicyActionType,
+    PolicyDecisionOutcome,
+    PolicyDecisionStage,
     PolicyMatch,
     PolicyType,
     Playbook,
+)
+from cuga.backend.cuga_graph.policy.observability import (
+    append_policy_decisions,
+    carry_policy_decisions,
+    decision_from_match,
+    decision_from_metadata,
 )
 from cuga.config import settings
 
@@ -30,6 +38,7 @@ class PolicyEnactment:
         config: Optional[RunnableConfig] = None,
         policy_types: Optional[List[PolicyType]] = None,
         adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Optional[Command], Optional[Dict[str, Any]]]:
         """
         Check for applicable policies and return enactment command or metadata.
@@ -59,13 +68,16 @@ class PolicyEnactment:
             # Infer target from policy_types
             if policy_types and PolicyType.OUTPUT_FORMATTER in policy_types:
                 target = "agent_response"
+                decision_stage = PolicyDecisionStage.OUTPUT
             elif policy_types and (
                 PolicyType.INTENT_GUARD in policy_types or PolicyType.PLAYBOOK in policy_types
             ):
                 target = "intent"
+                decision_stage = PolicyDecisionStage.INPUT
             else:
                 # Default case: intent matching
                 target = "intent"
+                decision_stage = PolicyDecisionStage.INPUT
                 if policy_types is None:
                     policy_types = [PolicyType.INTENT_GUARD, PolicyType.PLAYBOOK]
 
@@ -99,13 +111,19 @@ class PolicyEnactment:
             # If a policy matched, enact it (may return a blocking command)
             command = None
             metadata = None
+            resolved_metadata_key = metadata_key or getattr(adapter, "metadata_key", "cuga_lite_metadata")
 
             if policy_match.matched:
                 logger.info(
                     f"Policy matched: {policy_match.policy.name} (action: {policy_match.action.action_type})"
                 )
                 command, metadata = await PolicyEnactment._enact_policy_action(
-                    state, policy_match, policy_system, context, adapter
+                    state,
+                    policy_match,
+                    policy_system,
+                    context,
+                    adapter,
+                    resolved_metadata_key,
                 )
 
             # ALWAYS apply Tool Guide policies (merge metadata from all matches)
@@ -139,6 +157,74 @@ class PolicyEnactment:
                 metadata["guides"] = []
                 metadata["guide_policies"] = []
 
+            existing_metadata = getattr(state, resolved_metadata_key, None) or {}
+            decision_metadata = metadata
+            if command is not None and isinstance(getattr(command, "update", None), dict):
+                decision_metadata = command.update.get(resolved_metadata_key)
+
+            if decision_metadata is not None:
+                # A blocking action stores its own metadata on the Command,
+                # while independently matched guides live in ``metadata``.
+                # Merge the guide facts before deriving decisions so the
+                # command remains the single checkpointed source of truth.
+                if metadata is not None and metadata is not decision_metadata:
+                    guides = metadata.get("guides") or []
+                    if guides:
+                        decision_metadata["guides"] = guides
+                        decision_metadata["guide_policies"] = metadata.get("guide_policies") or [
+                            {
+                                "policy_id": guide.get("policy_id"),
+                                "policy_name": guide.get("policy_name"),
+                            }
+                            for guide in guides
+                        ]
+                        decision_metadata["has_guides"] = True
+
+                carry_policy_decisions(existing_metadata, decision_metadata)
+
+                if policy_match.matched:
+                    if decision_metadata.get("policy_blocked"):
+                        outcome = PolicyDecisionOutcome.BLOCKED
+                    else:
+                        outcome = PolicyDecisionOutcome.APPLIED
+                    append_policy_decisions(
+                        decision_metadata,
+                        [
+                            decision_from_metadata(
+                                decision_metadata,
+                                stage=decision_stage,
+                                outcome=outcome,
+                            )
+                        ],
+                    )
+
+                append_policy_decisions(
+                    decision_metadata,
+                    [
+                        decision_from_metadata(
+                            guide_metadata,
+                            stage=PolicyDecisionStage.INPUT,
+                            outcome=PolicyDecisionOutcome.APPLIED,
+                        )
+                        for guide_metadata in decision_metadata.get("guides", [])
+                    ],
+                )
+            elif policy_match.matched:
+                # Unknown/custom actions may not produce metadata. Keep the
+                # live match only as a compatibility fallback.
+                fallback_metadata = dict(existing_metadata)
+                append_policy_decisions(
+                    fallback_metadata,
+                    [
+                        decision_from_match(
+                            policy_match,
+                            stage=decision_stage,
+                            outcome=PolicyDecisionOutcome.MATCHED,
+                        )
+                    ],
+                )
+                metadata = fallback_metadata
+
             # Return command (if any) and merged metadata
             return command, metadata
 
@@ -166,6 +252,9 @@ class PolicyEnactment:
             guide_info = {
                 "policy_id": match.policy.id,
                 "policy_name": match.policy.name,
+                "policy_type": PolicyType.TOOL_GUIDE.value,
+                "policy_confidence": match.confidence,
+                "policy_reasoning": match.reasoning,
                 "guide_content": match.action.content,
                 "target_tools": match.action.modifications.get("target_tools", []),
                 "target_apps": match.action.modifications.get("target_apps"),
@@ -190,6 +279,7 @@ class PolicyEnactment:
         policy_system: PolicyConfigurable,
         context: Any,
         adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Optional[Command], Optional[Dict[str, Any]]]:
         """
         Enact a specific policy action.
@@ -206,7 +296,12 @@ class PolicyEnactment:
         action_type = policy_match.action.action_type
 
         if action_type == PolicyActionType.BLOCK_INTENT:
-            return PolicyEnactment._enact_block_intent(state, policy_match, adapter)
+            return PolicyEnactment._enact_block_intent(
+                state,
+                policy_match,
+                adapter,
+                metadata_key,
+            )
 
         elif action_type == PolicyActionType.GUIDE_PROMPT:
             return await PolicyEnactment._enact_guide_prompt(state, policy_match, policy_system, context)
@@ -235,7 +330,10 @@ class PolicyEnactment:
 
     @staticmethod
     def _enact_block_intent(
-        state: Any, policy_match: PolicyMatch, adapter: Any = None
+        state: Any,
+        policy_match: PolicyMatch,
+        adapter: Any = None,
+        metadata_key: Optional[str] = None,
     ) -> tuple[Command, None]:
         """
         Block the intent and return immediately with guard response.
@@ -256,11 +354,11 @@ class PolicyEnactment:
         if adapter is not None:
             base_messages = adapter.get_messages(state)
             messages_key = adapter.messages_key
-            metadata_key = adapter.metadata_key
+            resolved_metadata_key = metadata_key or adapter.metadata_key
         else:
             base_messages = state.chat_messages
             messages_key = "chat_messages"
-            metadata_key = "cuga_lite_metadata"
+            resolved_metadata_key = metadata_key or "cuga_lite_metadata"
 
         return (
             Command(
@@ -269,7 +367,7 @@ class PolicyEnactment:
                     messages_key: base_messages + [blocked_message],
                     "final_answer": policy_match.action.content,
                     "execution_complete": True,
-                    metadata_key: {
+                    resolved_metadata_key: {
                         "policy_blocked": True,
                         "policy_id": policy_match.policy.id,
                         "policy_name": policy_match.policy.name,

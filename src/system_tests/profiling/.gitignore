@@ -30,3 +30,12 @@ __pycache__/
 startup/results/*.json
 !startup/results/.gitkeep
 startup/findings.md
+
+# memory profiling
+memory/results/*.json
+memory/results/*.bin
+memory/results/*.html
+!memory/results/.gitkeep
+memory/findings.md
+memory/*.bin
+memory/memray-*.html

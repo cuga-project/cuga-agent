@@ -20,6 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import CugaSupervisorState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
@@ -68,6 +69,7 @@ def _delegation_state_update(state: CugaSupervisorState) -> dict:
         "agent_results": dict(state.agent_results),
         "agent_variables": dict(state.agent_variables),
         "agent_chat_messages": dict(state.agent_chat_messages),
+        "supervisor_metadata": dict(state.supervisor_metadata or {}),
         "metrics": dict(state.metrics or {}),
     }
 
@@ -75,6 +77,20 @@ def _delegation_state_update(state: CugaSupervisorState) -> dict:
 def _resolve_thread_id(state: CugaSupervisorState, config: Optional[RunnableConfig]) -> Optional[str]:
     cfg = config.get("configurable", {}) if config else {}
     return cfg.get("thread_id") or state.thread_id
+
+
+def _budget_updates() -> dict:
+    """Tool-call budget fields every exit from the execute node must carry.
+
+    Each path runs *after* the delegation code, so each can be leaving spent
+    budget behind. Omitting them leaves the keys absent from the update and the
+    checkpoint keeps its pre-execution values, under-counting the ceiling.
+    """
+    return {
+        "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
+        "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
+        "tool_budget_exhausted": ToolCallTracker.budget_exhausted(),
+    }
 
 
 def create_execute_agent_tool_node(adapter: Any) -> Callable:
@@ -155,6 +171,14 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             SUPERVISOR_EXEC_KEY: exec_ctx,
         }
 
+        # Tool-call budgets: carry the turn count from earlier steps and the
+        # conversation count from earlier turns. Without this the supervisor's
+        # delegation tools escape the caps entirely.
+        ToolCallTracker.seed_call_budget(
+            getattr(state, "tool_calls_used_run", 0),
+            getattr(state, "tool_calls_used_thread", 0),
+        )
+
         try:
             exec_plan = ExecutionRouter.resolve(settings)
             if exec_plan.split_execution_active:
@@ -194,6 +218,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                     state.step_count,
                     additional_updates={
                         "supervisor_variables": state.supervisor_variables,
+                        **_budget_updates(),
                         **delegation_updates,
                     },
                 )
@@ -202,6 +227,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "supervisor_chat_messages": updated_messages,
                 "supervisor_variables": state.supervisor_variables,
                 "step_count": state.step_count + 1,
+                **_budget_updates(),
                 **delegation_updates,
             }
             if plan_approval_consumed:
@@ -222,13 +248,19 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             updated_messages, limit_error_message = append(state, [new_message])
 
             if limit_error_message:
-                return create_error(updated_messages, limit_error_message, state.step_count)
+                return create_error(
+                    updated_messages,
+                    limit_error_message,
+                    state.step_count,
+                    additional_updates=_budget_updates(),
+                )
 
             return {
                 "supervisor_chat_messages": updated_messages,
                 "error": error_msg,
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
+                **_budget_updates(),
                 **_delegation_state_update(state),
             }
 

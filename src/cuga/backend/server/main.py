@@ -192,6 +192,64 @@ def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> 
     return bool(getattr(config, "citations_enabled", True))
 
 
+async def _rollback_partial_knowledge_engine(app_state) -> None:
+    """Tear down a partially initialized knowledge engine before clearing it."""
+    engine = getattr(app_state, "knowledge_engine", None)
+    if engine is None:
+        return
+    try:
+        await engine.aclose()
+    except Exception as e:
+        logger.debug(f"Knowledge engine aclose during failed init: {e}")
+    try:
+        engine.shutdown()
+    except Exception as e:
+        logger.debug(f"Knowledge engine shutdown during failed init: {e}")
+    app_state.knowledge_engine = None
+
+
+async def warm_shortlister_catalogue(agent_id: Optional[str] = None) -> int:
+    """Embed the current tool catalogue for cosine shortlisting.
+
+    Called at startup and whenever the registry reloads. Returns the number of
+    documents embedded — 0 when the default LLM strategy is configured, which is
+    the common case, so this costs nothing unless cosine is switched on.
+
+    Deliberately swallows everything: neither boot nor a tools update should
+    fail because an embedding model is unavailable.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import ToolRegistryProvider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import warm_tool_vectors
+
+        provider = ToolRegistryProvider(agent_id=agent_id)
+        tools = await provider.get_all_tools()
+        return await warm_tool_vectors(tools)
+    except Exception as e:
+        logger.warning(f"Shortlister catalogue warm-up skipped: {e}")
+        return 0
+
+
+async def run_knowledge_startup(app_state, kb_config, *, init_fn) -> None:
+    """Lifespan knowledge boot: isolate init failures so the server still starts."""
+    if kb_config.enabled:
+        try:
+            await init_fn(app_state, kb_config)
+        except Exception as e:
+            logger.warning(f"Failed to initialize knowledge engine: {e}")
+            await _rollback_partial_knowledge_engine(app_state)
+            app_state.set_subsystem_status(
+                "knowledge",
+                "failed",
+                "Knowledge subsystem failed to initialize",
+                {"error": str(e)},
+            )
+    else:
+        app_state.knowledge_engine = None
+        logger.info("Knowledge features disabled (knowledge.enabled=false)")
+        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+
+
 def _format_sources_footer(sources: list[dict]) -> str:
     """Build a plain-text sources footer for WXO-mode answers."""
     lines = []
@@ -761,12 +819,11 @@ async def lifespan(app: FastAPI):
         kb_config = KnowledgeConfig()
 
     async def _init_knowledge() -> None:
-        if kb_config.enabled:
-            await initialize_knowledge_engine(app_state, kb_config)
-        else:
-            app_state.knowledge_engine = None
-            logger.info("Knowledge features disabled (knowledge.enabled=false)")
-            app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
+        await run_knowledge_startup(
+            app_state,
+            kb_config,
+            init_fn=initialize_knowledge_engine,
+        )
 
     await asyncio.gather(_init_policy(), _init_knowledge())
 
@@ -1082,6 +1139,12 @@ async def lifespan(app: FastAPI):
             logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
     except Exception:
         logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
+    # Embed the tool catalogue for cosine shortlisting. Lazy loading is right for
+    # the SDK, but in server mode it would make the first find_tools after boot
+    # silently fall back to the LLM. A no-op on the default LLM strategy, and it
+    # never blocks startup on failure.
+    await warm_shortlister_catalogue()
 
     yield
     logger.info("Application is shutting down...")
