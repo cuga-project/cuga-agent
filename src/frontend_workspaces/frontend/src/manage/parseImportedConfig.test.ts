@@ -30,4 +30,17 @@ describe("parseImportedSupervisorFields", () => {
       agentDescription: "Books flights",
     });
   });
+
+  it("drops malformed sub-agents and ignores non-boolean planApproval", () => {
+    expect(
+      parseImportedSupervisorFields({
+        supervisor: {
+          subAgents: [null, { kind: "internal" }, { kind: "internal", ref: "crm-agent" }, "x"],
+          planApproval: "false",
+        },
+      }),
+    ).toEqual({
+      subAgents: [{ kind: "internal", ref: "crm-agent" }],
+    });
+  });
 });

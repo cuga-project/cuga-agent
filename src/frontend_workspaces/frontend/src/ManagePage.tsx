@@ -75,6 +75,7 @@ import {
   storedRefMissingFromList,
 } from "./secretRefUtils";
 import { parseImportedSupervisorFields } from "./manage/parseImportedConfig";
+import { isAbortError } from "./manage/hooks/saveHelpers";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -1175,11 +1176,22 @@ export function ManagePage() {
     loadHistory,
   });
 
+  const supervisorAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      supervisorAbortRef.current?.abort();
+    };
+  }, []);
+
   const saveSupervisorDraft = useCallback(
     async (next: { subAgents: SubAgentRef[]; planApproval: boolean }) => {
       setDraftSaving(true);
+      supervisorAbortRef.current?.abort();
+      const ac = new AbortController();
+      supervisorAbortRef.current = ac;
       try {
-        const res = await api.patchManageConfigDraftSupervisor(next, effectiveAgentId);
+        const res = await api.patchManageConfigDraftSupervisor(next, effectiveAgentId, ac.signal);
+        if (ac.signal.aborted) return;
         setDraftSaving(false);
         if (res.ok) {
           setCurrentVersion("draft");
@@ -1187,6 +1199,7 @@ export function ManagePage() {
           addToast("error", "Draft Save Failed", `Failed to save sub-agents (${res.status} ${res.statusText})`);
         }
       } catch (error) {
+        if (isAbortError(error)) return;
         setDraftSaving(false);
         addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
       }
@@ -1424,9 +1437,9 @@ export function ManagePage() {
           const imported = parseImportedSupervisorFields(raw);
           if (imported.agentName) setAgentName(imported.agentName);
           if (imported.agentDescription !== undefined) setAgentDescription(imported.agentDescription);
-          if (imported.agentKind) setAgentKind(imported.agentKind);
-          if (imported.subAgents) setSubAgents(imported.subAgents as SubAgentRef[]);
-          if (imported.planApproval !== undefined) setPlanApproval(imported.planApproval);
+          setAgentKind(imported.agentKind ?? "single");
+          setSubAgents((imported.subAgents ?? []) as SubAgentRef[]);
+          setPlanApproval(imported.planApproval ?? false);
           replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
