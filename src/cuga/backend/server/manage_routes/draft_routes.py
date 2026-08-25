@@ -300,7 +300,31 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
         supervisor = data.get("supervisor", data)
         if not isinstance(supervisor, dict):
             raise HTTPException(status_code=400, detail="supervisor must be a dict")
-        await load_and_patch_draft(agent_id, "supervisor", supervisor)
+        save_seq = data.get("saveSeq")
+        to_store = {k: v for k, v in supervisor.items() if k != "_saveSeq"}
+        async with agent_draft_lock(agent_id):
+            from cuga.backend.server.config_store import load_draft
+
+            existing = await load_draft(agent_id) or {}
+            stored = existing.get("supervisor") if isinstance(existing.get("supervisor"), dict) else {}
+            try:
+                stored_seq = int(stored.get("_saveSeq") or 0)
+            except (TypeError, ValueError):
+                stored_seq = 0
+            if save_seq is not None:
+                try:
+                    incoming_seq = int(save_seq)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="saveSeq must be an integer")
+                if incoming_seq <= stored_seq:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"message": "Stale supervisor update", "saveSeq": stored_seq},
+                    )
+                to_store["_saveSeq"] = incoming_seq
+            else:
+                to_store["_saveSeq"] = stored_seq + 1
+            await save_draft_section_unlocked(agent_id, "supervisor", to_store)
         await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except HTTPException:

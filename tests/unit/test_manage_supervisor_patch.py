@@ -57,6 +57,51 @@ def test_patch_draft_supervisor_persists_sub_agents():
     ]
 
 
+def test_patch_draft_supervisor_rejects_stale_save_seq():
+    client = _client()
+    first = client.patch(
+        "/api/manage/config/draft/supervisor",
+        params={"agent_id": "trip-supervisor"},
+        json={
+            "supervisor": {"subAgents": [{"kind": "internal", "ref": "crm-agent"}], "planApproval": False},
+            "saveSeq": 1,
+        },
+    )
+    second = client.patch(
+        "/api/manage/config/draft/supervisor",
+        params={"agent_id": "trip-supervisor"},
+        json={"supervisor": {"subAgents": [], "planApproval": False}, "saveSeq": 2},
+    )
+    stale = client.patch(
+        "/api/manage/config/draft/supervisor",
+        params={"agent_id": "trip-supervisor"},
+        json={
+            "supervisor": {"subAgents": [{"kind": "internal", "ref": "crm-agent"}], "planApproval": False},
+            "saveSeq": 1,
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["saveSeq"] == 2
+    draft = asyncio.run(load_draft("trip-supervisor"))
+    assert draft["supervisor"]["subAgents"] == []
+    assert draft["supervisor"]["_saveSeq"] == 2
+
+
+def test_patch_draft_supervisor_rejects_non_integer_save_seq():
+    client = _client()
+
+    response = client.patch(
+        "/api/manage/config/draft/supervisor",
+        params={"agent_id": "trip-supervisor"},
+        json={"supervisor": {"subAgents": [], "planApproval": False}, "saveSeq": "nope"},
+    )
+
+    assert response.status_code == 400
+
+
 def test_patch_draft_supervisor_rejects_non_dict():
     client = _client()
 

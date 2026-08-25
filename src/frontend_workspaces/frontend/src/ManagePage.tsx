@@ -96,6 +96,12 @@ export type SubAgentRef =
       timeout?: number;
     };
 
+function supervisorSaveSeqFromConfig(supervisor: unknown): number {
+  if (!supervisor || typeof supervisor !== "object") return 0;
+  const seq = (supervisor as { _saveSeq?: unknown })._saveSeq;
+  return typeof seq === "number" && Number.isFinite(seq) ? seq : 0;
+}
+
 export type LlmJsonValue =
   | string
   | number
@@ -594,6 +600,10 @@ export function ManagePage() {
   const forceImmediateSaveRef = useRef<boolean>(false);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
+  const supervisorAbortRef = useRef<AbortController | null>(null);
+  const supervisorSaveSeqRef = useRef(0);
+  const effectiveAgentIdRef = useRef(effectiveAgentId);
+  effectiveAgentIdRef.current = effectiveAgentId;
 
   useEffect(() => {
     api.getAgentContext()
@@ -894,6 +904,7 @@ export function ManagePage() {
       setAgentKind(out.agent?.kind === "supervisor" ? "supervisor" : "single");
       setSubAgents(Array.isArray(out.supervisor?.subAgents) ? out.supervisor!.subAgents! : []);
       setPlanApproval(out.supervisor?.planApproval ?? false);
+      supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(out.supervisor);
       if (out.knowledge) {
         setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
         setKnowledgeSavedSnapshot(out.knowledge);
@@ -1176,22 +1187,37 @@ export function ManagePage() {
     loadHistory,
   });
 
-  const supervisorAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
+    supervisorAbortRef.current?.abort();
+    setDraftSaving(false);
     return () => {
       supervisorAbortRef.current?.abort();
     };
-  }, []);
+  }, [effectiveAgentId]);
 
   const saveSupervisorDraft = useCallback(
     async (next: { subAgents: SubAgentRef[]; planApproval: boolean }) => {
+      const agentId = effectiveAgentId;
       setDraftSaving(true);
       supervisorAbortRef.current?.abort();
       const ac = new AbortController();
       supervisorAbortRef.current = ac;
+      supervisorSaveSeqRef.current += 1;
+      const saveSeq = supervisorSaveSeqRef.current;
       try {
-        const res = await api.patchManageConfigDraftSupervisor(next, effectiveAgentId, ac.signal);
-        if (ac.signal.aborted) return;
+        let res = await api.patchManageConfigDraftSupervisor(next, agentId, ac.signal, saveSeq);
+        const stillCurrent = () =>
+          !ac.signal.aborted && ac === supervisorAbortRef.current && agentId === effectiveAgentIdRef.current;
+        if (!stillCurrent()) return;
+        if (res.status === 409) {
+          const body = await res.json().catch(() => ({} as { detail?: { saveSeq?: unknown } }));
+          const serverSeq = body?.detail?.saveSeq;
+          const base = typeof serverSeq === "number" && Number.isFinite(serverSeq) ? serverSeq : saveSeq;
+          const retrySeq = Math.max(supervisorSaveSeqRef.current, base) + 1;
+          supervisorSaveSeqRef.current = retrySeq;
+          res = await api.patchManageConfigDraftSupervisor(next, agentId, ac.signal, retrySeq);
+          if (!stillCurrent()) return;
+        }
         setDraftSaving(false);
         if (res.ok) {
           setCurrentVersion("draft");
@@ -1199,7 +1225,8 @@ export function ManagePage() {
           addToast("error", "Draft Save Failed", `Failed to save sub-agents (${res.status} ${res.statusText})`);
         }
       } catch (error) {
-        if (isAbortError(error)) return;
+        if (isAbortError(error) || agentId !== effectiveAgentIdRef.current) return;
+        if (ac !== supervisorAbortRef.current) return;
         setDraftSaving(false);
         addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
       }
@@ -1308,6 +1335,7 @@ export function ManagePage() {
         setAgentKind(ag?.kind === "supervisor" ? "supervisor" : "single");
         setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
         setPlanApproval(next.supervisor?.planApproval ?? false);
+        supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(next.supervisor);
         setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
         setKnowledgeSavedSnapshot(next.knowledge ?? null);
         setCurrentVersion(version);
@@ -2961,6 +2989,7 @@ export function ManagePage() {
                 setAgentKind(next.agent?.kind === "supervisor" ? "supervisor" : "single");
                 setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
                 setPlanApproval(next.supervisor?.planApproval ?? false);
+                supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(next.supervisor);
                 setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
                 setKnowledgeSavedSnapshot(next.knowledge ?? null);
                 setCurrentVersion(viewVersion.version);

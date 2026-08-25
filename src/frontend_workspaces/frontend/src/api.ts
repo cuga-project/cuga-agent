@@ -254,12 +254,13 @@ export async function patchManageConfigDraftSupervisor(
   supervisor: unknown,
   agentId?: string,
   signal?: AbortSignal,
+  saveSeq?: number,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/supervisor${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ supervisor }),
+    body: JSON.stringify({ supervisor, ...(saveSeq != null ? { saveSeq } : {}) }),
     signal,
   });
 }
