@@ -1290,6 +1290,10 @@ export function ManagePage() {
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
         setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
         setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+        setSpecialInstructions(next.special_instructions ?? "");
+        setAgentKind(ag?.kind === "supervisor" ? "supervisor" : "single");
+        setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
+        setPlanApproval(next.supervisor?.planApproval ?? false);
         setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
         setKnowledgeSavedSnapshot(next.knowledge ?? null);
         setCurrentVersion(version);
@@ -2938,6 +2942,10 @@ export function ManagePage() {
                 setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
                 setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
                 setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+                setSpecialInstructions(next.special_instructions ?? "");
+                setAgentKind(next.agent?.kind === "supervisor" ? "supervisor" : "single");
+                setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
+                setPlanApproval(next.supervisor?.planApproval ?? false);
                 setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
                 setKnowledgeSavedSnapshot(next.knowledge ?? null);
                 setCurrentVersion(viewVersion.version);

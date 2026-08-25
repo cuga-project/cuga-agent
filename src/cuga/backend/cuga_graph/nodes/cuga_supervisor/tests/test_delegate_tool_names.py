@@ -31,3 +31,11 @@ def test_extract_pending_delegations_keeps_hyphen_and_underscore_agents_apart():
     script = f"{names['sales-east']}(task=\"hyphen-task\")\n{names['sales_east']}(task=\"underscore-task\")"
     pending = _extract_pending_delegations(script, {"sales-east", "sales_east"})
     assert pending == {"sales-east": "hyphen-task", "sales_east": "underscore-task"}
+
+
+def test_extract_pending_delegations_uses_sequence_order_for_colliding_names():
+    ordered = ["a-b", "a_h_b"]
+    names = delegate_tool_names(ordered)
+    script = f"{names['a-b']}(task=\"first\")\n{names['a_h_b']}(task=\"second\")"
+    pending = _extract_pending_delegations(script, ordered)
+    assert pending == {"a-b": "first", "a_h_b": "second"}

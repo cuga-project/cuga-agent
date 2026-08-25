@@ -450,6 +450,8 @@ class AppState:
         # manage_routes on draft-save/publish for that agent_id. cuga-default is unaffected —
         # it keeps using self.agent / draft_app_state.agent directly, never this cache.
         self.agent_graphs_cache: Dict[Any, Any] = {}
+        self.agent_graph_build_locks: Dict[Any, Any] = {}
+        self.agent_graph_generations: Dict[str, int] = {}
         self.initialize_sdk()
 
     def set_subsystem_status(
@@ -2506,99 +2508,124 @@ async def _resolve_stream_agent(
     if cached is not None:
         return cached
 
-    try:
-        from cuga.backend.cuga_graph.graph import DynamicAgentGraph
-        from cuga.backend.server.config_store import load_config, load_draft
+    locks = getattr(app_state, "agent_graph_build_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        app_state.agent_graph_build_locks = locks
+    lock = locks.get(cache_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[cache_key] = lock
 
-        if use_draft:
-            config = await load_draft(agent_id)
-        else:
-            config, _ = await load_config(None, agent_id)
+    async with lock:
+        cached = app_state.agent_graphs_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        gens = getattr(app_state, "agent_graph_generations", None)
+        generation = gens.get(agent_id, 0) if isinstance(gens, dict) else 0
+        try:
+            from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+            from cuga.backend.server.config_store import load_config, load_draft
 
-        if not config:
+            if use_draft:
+                config = await load_draft(agent_id)
+            else:
+                config, _ = await load_config(None, agent_id)
+
+            if not config:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Agent '{agent_id}' has no {'draft' if use_draft else 'published'} configuration"
+                    ),
+                )
+
+            from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+            from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
+
+            agent_meta = config.get("agent") or {}
+            kind = agent_meta.get("kind") or "single"
+            policy_system = (
+                getattr(draft_state, "policy_system", None) if use_draft else None
+            ) or app_state.policy_system
+
+            if kind == "supervisor":
+                from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+
+                supervisor_cfg = config.get("supervisor") or {}
+                agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
+
+                # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
+                # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
+                # model/key) — passing it would override the environment's real model with a broken
+                # empty-OpenAI config. Only honor it when it actually names a model; else use env
+                # defaults (settings.agent.code.model), same as the global-supervisor path.
+                sup_llm = config.get("llm") or {}
+                sup_llm_config = (
+                    sup_llm if isinstance(sup_llm, dict) and (sup_llm.get("model") or "").strip() else None
+                )
+
+                graph = DynamicAgentGraph(
+                    None,
+                    policy_system=policy_system,
+                    tool_provider=CombinedToolProvider(agent_id=agent_id),
+                    llm_config=sup_llm_config,
+                    special_instructions=config.get("special_instructions")
+                    or agent_meta.get("description")
+                    or None,
+                    supervisor_agents=agents_dict,
+                    supervisor_enabled=True,
+                    supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                )
+            else:
+                # Single agent with its own tools/LLM/special_instructions — built the same way
+                # app_state.agent / draft_app_state.agent are at startup, just parameterized by
+                # this agent_id's stored config instead of cuga-default's.
+                overrides = _extract_agent_feature_overrides(config)
+                tools_list = config.get("tools") or []
+                tools_include_by_app = {
+                    t["name"]: t["include"]
+                    for t in tools_list
+                    if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+                } or None
+
+                graph = DynamicAgentGraph(
+                    None,
+                    policy_system=policy_system,
+                    tool_provider=CombinedToolProvider(
+                        get_include_by_app=lambda: (tools_include_by_app, 0),
+                        agent_id=agent_id,
+                    ),
+                    llm_config=config.get("llm") or None,
+                    special_instructions=config.get("special_instructions")
+                    or agent_meta.get("description")
+                    or None,
+                    enable_todos=overrides.get("enable_todos"),
+                    reflection_enabled=overrides.get("reflection_enabled"),
+                    shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
+                    cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
+                    enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+                )
+
+            await graph.build_graph()
+            # Another request may have finished first, or a draft-save/publish may have
+            # invalidated this key while we were building. Keep one live graph per key
+            # so both turns share the same MemorySaver; never cache a stale build.
+            if isinstance(gens, dict) and gens.get(agent_id, 0) != generation:
+                return graph
+            existing = app_state.agent_graphs_cache.get(cache_key)
+            if existing is not None:
+                return existing
+            app_state.agent_graphs_cache[cache_key] = graph
+            return graph
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to build graph for agent_id={agent_id}: {e}")
             raise HTTPException(
-                status_code=404,
-                detail=(f"Agent '{agent_id}' has no {'draft' if use_draft else 'published'} configuration"),
+                status_code=500,
+                detail=f"Failed to build graph for agent '{agent_id}'",
             )
-
-        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
-        from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
-
-        agent_meta = config.get("agent") or {}
-        kind = agent_meta.get("kind") or "single"
-        policy_system = (
-            getattr(draft_state, "policy_system", None) if use_draft else None
-        ) or app_state.policy_system
-
-        if kind == "supervisor":
-            from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
-
-            supervisor_cfg = config.get("supervisor") or {}
-            agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
-
-            # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
-            # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
-            # model/key) — passing it would override the environment's real model with a broken
-            # empty-OpenAI config. Only honor it when it actually names a model; else use env
-            # defaults (settings.agent.code.model), same as the global-supervisor path.
-            sup_llm = config.get("llm") or {}
-            sup_llm_config = (
-                sup_llm if isinstance(sup_llm, dict) and (sup_llm.get("model") or "").strip() else None
-            )
-
-            graph = DynamicAgentGraph(
-                None,
-                policy_system=policy_system,
-                tool_provider=CombinedToolProvider(agent_id=agent_id),
-                llm_config=sup_llm_config,
-                special_instructions=config.get("special_instructions")
-                or agent_meta.get("description")
-                or None,
-                supervisor_agents=agents_dict,
-                supervisor_enabled=True,
-                supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
-            )
-        else:
-            # Single agent with its own tools/LLM/special_instructions — built the same way
-            # app_state.agent / draft_app_state.agent are at startup, just parameterized by
-            # this agent_id's stored config instead of cuga-default's.
-            overrides = _extract_agent_feature_overrides(config)
-            tools_list = config.get("tools") or []
-            tools_include_by_app = {
-                t["name"]: t["include"]
-                for t in tools_list
-                if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
-            } or None
-
-            graph = DynamicAgentGraph(
-                None,
-                policy_system=policy_system,
-                tool_provider=CombinedToolProvider(
-                    get_include_by_app=lambda: (tools_include_by_app, 0),
-                    agent_id=agent_id,
-                ),
-                llm_config=config.get("llm") or None,
-                special_instructions=config.get("special_instructions")
-                or agent_meta.get("description")
-                or None,
-                enable_todos=overrides.get("enable_todos"),
-                reflection_enabled=overrides.get("reflection_enabled"),
-                shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
-                cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
-                enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
-            )
-
-        await graph.build_graph()
-        app_state.agent_graphs_cache[cache_key] = graph
-        return graph
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to build graph for agent_id={agent_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to build graph for agent '{agent_id}'",
-        )
 
 
 @app.post("/stream")

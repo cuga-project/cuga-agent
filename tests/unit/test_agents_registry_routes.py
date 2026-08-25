@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.server.agents_routes import router
-from cuga.backend.server.auth import require_manage_access
+from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.config_store import reset_config_db
 
 pytestmark = pytest.mark.unit
@@ -24,6 +24,7 @@ def _client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_manage_access] = lambda: None
+    app.dependency_overrides[require_chat_access] = lambda: None
     return TestClient(app)
 
 
@@ -119,3 +120,22 @@ def test_registry_disabled_hides_extra_agents_and_blocks_mutations(monkeypatch):
 
     assert client.post("/api/agents", json={"name": "Other Agent"}).status_code == 404
     assert client.delete("/api/agents/flight-booker").status_code == 404
+
+
+def test_list_agents_allows_chat_access_without_manage():
+    reset_config_db()
+    app = FastAPI()
+    app.include_router(router)
+
+    def deny_manage():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=403, detail="manage only")
+
+    app.dependency_overrides[require_manage_access] = deny_manage
+    app.dependency_overrides[require_chat_access] = lambda: None
+    client = TestClient(app)
+
+    assert client.get("/api/agents").status_code == 200
+    assert client.post("/api/agents", json={"name": "Flight Booker"}).status_code == 403
+    assert client.delete("/api/agents/cuga-default").status_code == 403

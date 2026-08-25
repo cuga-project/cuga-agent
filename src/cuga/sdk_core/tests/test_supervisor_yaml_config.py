@@ -312,6 +312,17 @@ class TestBuildAgentsFromStoredSubAgents:
         assert a2a_cfg["auth"] == {"type": "bearer", "token": "secret-token"}
 
     @pytest.mark.asyncio
+    async def test_a2a_entry_missing_name_or_endpoint_is_skipped(self):
+        agents = await build_agents_from_stored_subagents(
+            [
+                {"kind": "a2a", "endpoint": "http://localhost:9000"},
+                {"kind": "a2a", "name": "no-endpoint"},
+                {"kind": "a2a", "name": "ok", "endpoint": "http://localhost:9001"},
+            ]
+        )
+        assert list(agents.keys()) == ["ok"]
+
+    @pytest.mark.asyncio
     async def test_a2a_entry_without_token_env_var_has_no_auth(self):
         agents = await build_agents_from_stored_subagents(
             [{"kind": "a2a", "name": "public_agent", "endpoint": "http://localhost:9001"}]

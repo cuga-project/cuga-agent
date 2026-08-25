@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -36,7 +36,7 @@ _DELEGATE_CALL_RE = re.compile(r"delegate_to_(\w+)\s*\(([^)]*)\)")
 _TASK_KWARG_RE = re.compile(r"task\s*=\s*(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
 
 
-def _extract_pending_delegations(script: Optional[str], known_agents: Set[str]) -> Dict[str, str]:
+def _extract_pending_delegations(script: Optional[str], known_agents: Iterable[str]) -> Dict[str, str]:
     """Best-effort scan of generated delegation code for ``delegate_to_<agent>(task=...)`` calls.
 
     The supervisor is code-generating (like cuga_lite), so "the plan" is Python source, not a
@@ -113,7 +113,7 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
         metadata = adapter.get_metadata(state) or {}
         if metadata.get("plan_approved"):
             return None
-        pending = _extract_pending_delegations(state.script, set(adapter._agents.keys()))
+        pending = _extract_pending_delegations(state.script, adapter._agents.keys())
         if not pending:
             return None
 

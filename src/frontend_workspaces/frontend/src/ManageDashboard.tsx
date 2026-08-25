@@ -146,13 +146,17 @@ export function ManageDashboard() {
     e.preventDefault();
     e.stopPropagation();
     if (!window.confirm(`Delete agent "${agent.name?.trim() || agent.id}"? This cannot be undone.`)) return;
-    const res = await api.deleteAgent(agent.id);
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError(body.detail || "Failed to delete agent");
-      return;
+    try {
+      const res = await api.deleteAgent(agent.id);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.detail || "Failed to delete agent");
+        return;
+      }
+      reloadAgents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete agent");
     }
-    reloadAgents();
   };
 
   useEffect(() => {

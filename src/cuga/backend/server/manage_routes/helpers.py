@@ -75,6 +75,13 @@ async def _referrer_ids_for_agent(agent_id: str, *, draft: bool, published: bool
     return supervisor_ids_referencing(agent_id, configs)
 
 
+def bump_agent_graph_generation(state: Any, agent_id: str) -> None:
+    """Advance the per-agent graph generation so in-flight builds are not cached."""
+    gens = getattr(state, "agent_graph_generations", None) if state is not None else None
+    if isinstance(gens, dict):
+        gens[agent_id] = gens.get(agent_id, 0) + 1
+
+
 async def invalidate_agent_graph_cache(
     request: Request, agent_id: str, *, draft: bool, published: bool
 ) -> None:
@@ -82,15 +89,19 @@ async def invalidate_agent_graph_cache(
 
     Called on draft-save/publish so the next /stream request rebuilds from the new
     config instead of serving a stale cached graph. A no-op for cuga-default,
-    which never uses this cache.
+    which never uses this cache. Generation is bumped even when the cache is empty
+    so a concurrent first-stream build that finishes after this call is discarded.
     """
     if agent_id == DEFAULT_AGENT_ID:
         return
     state = app_state(request)
+    bump_agent_graph_generation(state, agent_id)
+    referrers = await _referrer_ids_for_agent(agent_id, draft=draft, published=published)
+    for referrer_id in referrers:
+        bump_agent_graph_generation(state, referrer_id)
     cache = getattr(state, "agent_graphs_cache", None) if state is not None else None
     if not cache:
         return
-    referrers = await _referrer_ids_for_agent(agent_id, draft=draft, published=published)
     drop_cached_graphs_for_agent(cache, agent_id, draft=draft, published=published, referrer_ids=referrers)
 
 

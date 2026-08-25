@@ -11,7 +11,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from cuga.backend.server import agent_registry
-from cuga.backend.server.auth import require_manage_access
+from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.config_store import (
     delete_all_configs,
     get_latest_version,
@@ -21,7 +21,7 @@ from cuga.backend.server.config_store import (
     save_draft,
 )
 
-router = APIRouter(prefix="/api/agents", tags=["agents"], dependencies=[Depends(require_manage_access)])
+router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 DEFAULT_AGENT_ID = "cuga-default"
 _DEFAULT_NAME = "CUGA Default Agent"
@@ -65,7 +65,7 @@ def _registry_disabled_response() -> HTTPException:
     return HTTPException(status_code=404, detail="Agent registry is disabled")
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_chat_access)])
 async def list_agents():
     """List all registered agents. cuga-default always appears, even before any config is saved."""
     try:
@@ -82,7 +82,7 @@ async def list_agents():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_manage_access)])
 async def create_agent(body: CreateAgentRequest):
     """Create a new agent (single or supervisor) with a seeded draft config."""
     if not agent_registry.is_agent_registry_enabled():
@@ -114,7 +114,7 @@ async def create_agent(body: CreateAgentRequest):
     return JSONResponse({"id": agent_id, "name": name, "kind": body.kind})
 
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_id}", dependencies=[Depends(require_manage_access)])
 async def delete_agent(agent_id: str, request: Request):
     """Delete an agent and all its stored config versions. cuga-default cannot be deleted."""
     if not agent_registry.is_agent_registry_enabled():

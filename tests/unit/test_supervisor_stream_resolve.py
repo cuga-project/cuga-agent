@@ -121,6 +121,90 @@ async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_first_stream_shares_one_graph():
+    builds: list[object] = []
+
+    class CountingGraph:
+        async def build_graph(self):
+            builds.append(self)
+            await asyncio.sleep(0.05)
+
+    request = _request()
+    state = SimpleNamespace(
+        agent=object(),
+        agent_graphs_cache={},
+        agent_graph_build_locks={},
+        agent_graph_generations={},
+        policy_system=None,
+    )
+    with patch.object(main_mod, "app_state", state):
+        with patch(
+            "cuga.backend.server.config_store.load_config",
+            new_callable=AsyncMock,
+            return_value=({"agent": {"kind": "single"}}, None),
+        ):
+            with patch(
+                "cuga.backend.cuga_graph.graph.DynamicAgentGraph",
+                side_effect=lambda *_args, **_kwargs: CountingGraph(),
+            ):
+                first, second = await asyncio.gather(
+                    main_mod._resolve_stream_agent(request, "sales-east", False),
+                    main_mod._resolve_stream_agent(request, "sales-east", False),
+                )
+
+    assert first is second
+    assert len(builds) == 1
+    assert state.agent_graphs_cache[("sales-east", False)] is first
+
+
+@pytest.mark.asyncio
+async def test_invalidate_during_build_does_not_cache_stale_graph():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowGraph:
+        async def build_graph(self):
+            started.set()
+            await release.wait()
+
+    request = _request()
+    state = SimpleNamespace(
+        agent=object(),
+        agent_graphs_cache={},
+        agent_graph_build_locks={},
+        agent_graph_generations={},
+        policy_system=None,
+    )
+    request.app.state.app_state = state
+
+    with patch.object(main_mod, "app_state", state):
+        with patch(
+            "cuga.backend.server.config_store.load_config",
+            new_callable=AsyncMock,
+            return_value=({"agent": {"kind": "single"}}, None),
+        ):
+            with patch(
+                "cuga.backend.cuga_graph.graph.DynamicAgentGraph",
+                side_effect=lambda *_args, **_kwargs: SlowGraph(),
+            ):
+                with patch(
+                    "cuga.backend.server.manage_routes.helpers._referrer_ids_for_agent",
+                    new_callable=AsyncMock,
+                    return_value=[],
+                ):
+                    task = asyncio.create_task(main_mod._resolve_stream_agent(request, "sales-east", False))
+                    await started.wait()
+                    from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
+
+                    await invalidate_agent_graph_cache(request, "sales-east", draft=False, published=True)
+                    release.set()
+                    graph = await task
+
+    assert graph is not None
+    assert ("sales-east", False) not in state.agent_graphs_cache
+
+
+@pytest.mark.asyncio
 async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
     saved: dict = {}
 

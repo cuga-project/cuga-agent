@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from cuga.backend.server.manage_routes.helpers import (
@@ -54,3 +56,14 @@ def test_drop_cached_graphs_for_agent_and_referrers():
     assert cache[("trip-supervisor", True)] is keep
     assert cache[("unrelated", False)] is keep
     assert ("crm-agent", True) in cache
+
+
+def test_bump_agent_graph_generation_is_a_no_op_without_dict():
+    from cuga.backend.server.manage_routes.helpers import bump_agent_graph_generation
+
+    bump_agent_graph_generation(None, "sales-east")
+    bump_agent_graph_generation(SimpleNamespace(), "sales-east")
+    state = SimpleNamespace(agent_graph_generations={})
+    bump_agent_graph_generation(state, "sales-east")
+    bump_agent_graph_generation(state, "sales-east")
+    assert state.agent_graph_generations["sales-east"] == 2

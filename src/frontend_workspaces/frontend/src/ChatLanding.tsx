@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
@@ -346,13 +346,15 @@ const RIGHT_W = "26rem";
 export function ChatLanding() {
   // Route-scoped agent (issue #101): /chat/:agentId chats against that agent (single or
   // supervisor); /chat with no param keeps the original cuga-default behavior. Set the
-  // module-level agent id synchronously (before any effect below fires) so postStream and
-  // every conversation-* call already carry the right X-Agent-ID / agent_id from the start.
+  // module-level agent id in a layout effect so postStream and conversation-* calls
+  // carry the right X-Agent-ID before paint, without mutating module state during render.
   const { agentId: routeAgentId } = useParams<{ agentId?: string }>();
   const navigate = useNavigate();
   const [agentRegistry, setAgentRegistry] = useState<boolean | null>(null);
   const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
-  api.setKnowledgeAgentId(effectiveChatAgentId);
+  useLayoutEffect(() => {
+    api.setKnowledgeAgentId(effectiveChatAgentId);
+  }, [effectiveChatAgentId]);
   const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
   const showAgentSwitcher = agentRegistry === true;
   const headerHeight = CARBON_HEADER_HEIGHT + (showAgentSwitcher ? AGENT_SWITCHER_HEIGHT : 0);

@@ -1247,6 +1247,8 @@ def start(
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
     )
+    if seed_supervisor_demo and service != "manager":
+        logger.warning("--seed-supervisor-demo is only applied for service=manager; ignoring")
     # The supervisor demo's sub-agents are CRM / email / filesystem specialists, so force those
     # services on and enable runtime filesystem tools — otherwise delegation lands on agents
     # whose tools were never provisioned (issue #101).
@@ -1273,11 +1275,12 @@ def start(
             os.environ["MCP_SERVERS_FILE"] = "none"
             _apply_local_demo_workspace_env()
             logger.info(f"Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE={managed_path}")
-            setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
-            if seed_supervisor_demo:
-                from cuga.backend.server.demo_manage_setup import seed_supervisor_demo_config
-
-                seed_supervisor_demo_config()
+            setup_demo_manage_config(
+                "manager",
+                tools=resolved_tools,
+                filesystem=app_filesystem,
+                seed_supervisor_demo=seed_supervisor_demo,
+            )
 
             app_mgr = _make_app_manager()
             workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")

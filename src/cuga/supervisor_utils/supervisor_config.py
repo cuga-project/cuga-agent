@@ -198,6 +198,11 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
                 }
             )
         elif kind == "a2a":
+            name = entry.get("name")
+            endpoint = entry.get("endpoint")
+            if not name or not endpoint:
+                logger.warning("Supervisor A2A sub-agent missing name or endpoint, skipping")
+                continue
             auth_cfg = entry.get("auth") or {}
             resolved_auth = None
             if auth_cfg.get("type") == "bearer":
@@ -205,12 +210,14 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
                 token = os.environ.get(token_env_var) if token_env_var else None
                 if token:
                     resolved_auth = {"type": "bearer", "token": token}
+                elif token_env_var:
+                    logger.warning(f"Supervisor A2A sub-agent '{name}': env var {token_env_var} is empty")
             agent_configs.append(
                 {
-                    "name": entry.get("name"),
+                    "name": name,
                     "a2a_protocol": {
                         "enabled": True,
-                        "endpoint": entry.get("endpoint"),
+                        "endpoint": endpoint,
                         "transport": "http",
                         "auth": resolved_auth,
                         "timeout": entry.get("timeout", 30),
