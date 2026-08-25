@@ -893,6 +893,7 @@ export function ManagePage() {
       if (isStale()) return;
       if (toolsListRes.ok) {
         const toolsData = await toolsListRes.json();
+        if (isStale()) return;
         setConnectedApps(toolsData.apps ?? []);
         setConnectedTools(
           (toolsData.tools ?? []).map((t: ConnectedTool & { id?: string }) => ({
