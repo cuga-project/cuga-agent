@@ -1900,6 +1900,11 @@ class CugaAgent:
                         f"FinalAnswerConfig.function got the class {final_answer.function.__name__} — "
                         "pass a (str) -> str function, not a class"
                     )
+                if final_answer.function is not None and not callable(final_answer.function):
+                    raise TypeError(
+                        "FinalAnswerConfig.function must be a (str) -> str callable, "
+                        f"got {type(final_answer.function).__name__}"
+                    )
                 self._answer_function = final_answer.function
                 fa_instructions = final_answer.instructions
             elif callable(final_answer):

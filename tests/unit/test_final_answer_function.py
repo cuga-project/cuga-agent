@@ -224,6 +224,8 @@ def test_sdk_rejects_class_passed_as_final_answer():
         cuga.CugaAgent(final_answer=123)
     with pytest.raises(TypeError, match="not a class"):
         cuga.CugaAgent(final_answer=FinalAnswerConfig(function=dict))
+    with pytest.raises(TypeError, match="must be a .*callable"):
+        cuga.CugaAgent(final_answer=FinalAnswerConfig(function=123))
 
 
 def test_final_answer_config_dataclass_and_lazy_export():
