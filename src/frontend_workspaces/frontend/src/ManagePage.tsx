@@ -74,6 +74,7 @@ import {
   secretIdFromRef,
   storedRefMissingFromList,
 } from "./secretRefUtils";
+import { parseImportedSupervisorFields } from "./manage/parseImportedConfig";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -1420,11 +1421,12 @@ export function ManagePage() {
           if (raw.knowledge && typeof raw.knowledge === "object") {
             out.knowledge = { ...DEFAULT_KNOWLEDGE_CONFIG, ...(raw.knowledge as Record<string, unknown>) };
           }
-          if (raw.agent && typeof raw.agent === "object") {
-            const a = raw.agent as { name?: string; description?: string };
-            if (a.name) setAgentName(a.name);
-            if (a.description !== undefined) setAgentDescription(a.description);
-          }
+          const imported = parseImportedSupervisorFields(raw);
+          if (imported.agentName) setAgentName(imported.agentName);
+          if (imported.agentDescription !== undefined) setAgentDescription(imported.agentDescription);
+          if (imported.agentKind) setAgentKind(imported.agentKind);
+          if (imported.subAgents) setSubAgents(imported.subAgents as SubAgentRef[]);
+          if (imported.planApproval !== undefined) setPlanApproval(imported.planApproval);
           replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);

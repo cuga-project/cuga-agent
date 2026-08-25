@@ -128,6 +128,7 @@ interface DraftThreadState {
   threadId: string;
   hasSentFirstMessage: boolean;
   updatedAt: string;
+  agentId: string;
 }
 
 interface KnowledgePreviewModalState {
@@ -230,6 +231,7 @@ const MOCK_AGENT_CONFIG: AgentConfig = {
 const BP_HIDE_RIGHT = 1100; // px — hide right panel below this
 const BP_HIDE_LEFT = 768; // px — hide left panel below this
 const DRAFT_THREAD_STORAGE_KEY = "cuga-demo-draft-thread";
+const draftStorageKey = (agentId: string) => `${DRAFT_THREAD_STORAGE_KEY}:${agentId}`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -262,42 +264,50 @@ const JSON_UPLOAD_SUFFIXES = [".json", ".jsonl", ".ndjson"];
 const filterJsonUploadFiles = (files: File[]): File[] =>
   files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
 
-const createDraftThreadState = (): DraftThreadState => ({
+const createDraftThreadState = (agentId: string): DraftThreadState => ({
   threadId: generateUUID(),
   hasSentFirstMessage: false,
   updatedAt: new Date().toISOString(),
+  agentId,
 });
 
-const loadDraftThreadState = (): DraftThreadState | null => {
+const loadDraftThreadState = (agentId: string): DraftThreadState | null => {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.sessionStorage.getItem(DRAFT_THREAD_STORAGE_KEY);
+    let raw = window.sessionStorage.getItem(draftStorageKey(agentId));
+    if (!raw && agentId === "cuga-default") {
+      raw = window.sessionStorage.getItem(DRAFT_THREAD_STORAGE_KEY);
+    }
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DraftThreadState>;
     if (typeof parsed.threadId !== "string" || !parsed.threadId || parsed.hasSentFirstMessage === true) {
-      window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+      window.sessionStorage.removeItem(draftStorageKey(agentId));
       return null;
     }
     return {
       threadId: parsed.threadId,
       hasSentFirstMessage: false,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+      agentId,
     };
   } catch (error) {
     console.error("Failed to restore draft thread state:", error);
-    window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+    window.sessionStorage.removeItem(draftStorageKey(agentId));
     return null;
   }
 };
 
 const persistDraftThreadState = (draftThread: DraftThreadState) => {
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(DRAFT_THREAD_STORAGE_KEY, JSON.stringify(draftThread));
+  window.sessionStorage.setItem(draftStorageKey(draftThread.agentId), JSON.stringify(draftThread));
 };
 
-const clearDraftThreadState = () => {
+const clearDraftThreadState = (agentId: string) => {
   if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+  window.sessionStorage.removeItem(draftStorageKey(agentId));
+  if (agentId === "cuga-default") {
+    window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+  }
 };
 
 // ─── Inline style constants ───────────────────────────────────────────────────
@@ -374,7 +384,15 @@ export function ChatLanding() {
         return api.getAgents()
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
-            if (!cancelled && data?.agents) setAvailableAgents(data.agents);
+            if (cancelled || !data?.agents) return;
+            setAvailableAgents(data.agents);
+            if (
+              routeAgentId &&
+              routeAgentId !== "cuga-default" &&
+              !data.agents.some((a: { id: string }) => a.id === routeAgentId)
+            ) {
+              navigate("/chat", { replace: true });
+            }
           });
       })
       .catch(() => {
@@ -385,7 +403,9 @@ export function ChatLanding() {
     };
   }, [routeAgentId, navigate]);
 
-  const [draftThread, setDraftThread] = useState<DraftThreadState>(() => loadDraftThreadState() ?? createDraftThreadState());
+  const [draftThread, setDraftThread] = useState<DraftThreadState>(
+    () => loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId),
+  );
   const [windowW, setWindowW] = useState(window.innerWidth);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -417,6 +437,27 @@ export function ChatLanding() {
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [workspaceDragOver, setWorkspaceDragOver] = useState(false);
   const workspaceFileInputRef = useRef<HTMLInputElement>(null);
+  const prevChatAgentIdRef = useRef(effectiveChatAgentId);
+  const chatAgentIdRef = useRef(effectiveChatAgentId);
+  chatAgentIdRef.current = effectiveChatAgentId;
+
+  useEffect(() => {
+    if (prevChatAgentIdRef.current === effectiveChatAgentId) return;
+    prevChatAgentIdRef.current = effectiveChatAgentId;
+    const nextDraft =
+      loadDraftThreadState(effectiveChatAgentId) ?? createDraftThreadState(effectiveChatAgentId);
+    setDraftThread(nextDraft);
+    setSelectedThreadId(null);
+    setActiveThreadId(nextDraft.threadId);
+    setThreads([]);
+    setLoading(true);
+    setSessionDocsVersion((version) => version + 1);
+    setKnowledgeDocCount(0);
+    setHomescreenConfig(undefined);
+    setWorkspaceTree([]);
+    setWorkspaceExpandedDirs(new Set());
+    setFileModal(null);
+  }, [effectiveChatAgentId]);
 
   useEffect(() => {
     return () => {
@@ -495,7 +536,7 @@ export function ChatLanding() {
       persistDraftThreadState(draftThread);
       return;
     }
-    clearDraftThreadState();
+    clearDraftThreadState(draftThread.agentId);
   }, [draftThread, selectedThreadId]);
 
   useEffect(() => {
@@ -513,13 +554,13 @@ export function ChatLanding() {
   }, []);
 
   const createAndActivateDraftThread = useCallback(() => {
-    const nextDraft = createDraftThreadState();
+    const nextDraft = createDraftThreadState(effectiveChatAgentId);
     setDraftThread(nextDraft);
     setSelectedThreadId(null);
     setActiveThreadId(nextDraft.threadId);
     setSessionDocsVersion((version) => version + 1);
     return nextDraft;
-  }, []);
+  }, [effectiveChatAgentId]);
 
   const clearDraftSessionFiles = useCallback(
     async (threadId: string) => {
@@ -539,13 +580,17 @@ export function ChatLanding() {
 
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
+    const agentId = effectiveChatAgentId;
     try {
-      const res = await api.getConversationThreads();
-      if (res.ok) setThreads((await res.json()).threads || []);
+      const res = await api.getConversationThreads(agentId);
+      if (res.ok) {
+        const data = await res.json();
+        if (agentId === chatAgentIdRef.current) setThreads(data.threads || []);
+      }
     } catch (err) {
       console.error("Error fetching threads:", err);
     }
-  }, []);
+  }, [effectiveChatAgentId]);
 
   const handleThreadChange = useCallback(
     async (threadId: string) => {
@@ -576,7 +621,7 @@ export function ChatLanding() {
         await clearDraftSessionFiles(draftThread.threadId);
       }
       await Promise.all(
-        threads.map((t) => api.deleteConversation(t.thread_id)),
+        threads.map((t) => api.deleteConversation(t.thread_id, effectiveChatAgentId)),
       );
       setThreads([]);
       createAndActivateDraftThread();
@@ -588,6 +633,7 @@ export function ChatLanding() {
 
   // Fetch agent configuration
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const agentId = effectiveChatAgentId;
@@ -598,6 +644,7 @@ export function ChatLanding() {
           api.getToolsList(isDraft),
           api.getManageConfig(false, agentId),
         ]);
+        if (cancelled) return;
 
         let agentName = "CUGA Default Agent";
         let agentDescription = "A general-purpose assistant with configured tools and workspace access.";
@@ -608,6 +655,7 @@ export function ChatLanding() {
 
         if (contextRes.ok) {
           const contextData = await contextRes.json();
+          if (cancelled) return;
           if (!routeAgentId) {
             agentIdFallback = contextData.agent_id ?? agentIdFallback;
           }
@@ -625,7 +673,7 @@ export function ChatLanding() {
           if (kEnabled && agentKEnabled) {
             try {
               const docsRes = await api.listKnowledgeDocuments();
-              if (docsRes.ok) {
+              if (!cancelled && docsRes.ok) {
                 const docsData = await docsRes.json();
                 setKnowledgeDocCount((docsData.documents ?? []).length);
               }
@@ -716,22 +764,30 @@ export function ChatLanding() {
           workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
         };
         
+        if (cancelled) return;
         setAgentConfig(config);
       } catch (err) {
+        if (cancelled) return;
         const errorMsg = err instanceof Error ? err.message : "Network error loading agent configuration";
         addToast("error", "Configuration Load Error", errorMsg);
         console.error("Error fetching agent config:", err);
         // Keep using MOCK_AGENT_CONFIG as fallback
       } finally {
-        setConfigLoading(false);
+        if (!cancelled) setConfigLoading(false);
       }
     })();
-  }, [addToast]);
+    return () => {
+      cancelled = true;
+    };
+  }, [addToast, effectiveChatAgentId, routeAgentId]);
 
   useEffect(() => {
+    let cancelled = false;
+    const agentId = effectiveChatAgentId;
     (async () => {
       try {
-        const res = await api.getConversationThreads();
+        const res = await api.getConversationThreads(agentId);
+        if (cancelled) return;
         if (!res.ok) {
           const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
           addToast("warning", "Threads Load Warning", errorMsg);
@@ -740,14 +796,18 @@ export function ChatLanding() {
           setThreads((await res.json()).threads || []);
         }
       } catch (err) {
+        if (cancelled) return;
         const errorMsg = err instanceof Error ? err.message : "Network error loading conversation threads";
         addToast("error", "Threads Load Error", errorMsg);
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, [addToast]);
+    return () => {
+      cancelled = true;
+    };
+  }, [addToast, effectiveChatAgentId]);
 
   useEffect(() => {
     (async () => {
