@@ -6,6 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_core.language_models import BaseChatModel
 from loguru import logger
+from opentelemetry import trace as otel_trace
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -117,6 +118,9 @@ class BrowserPlannerAgent(BaseAgent):
                 type(exc).__name__,
                 exc,
             )
+            span = otel_trace.get_current_span()
+            span.set_attribute("cuga.browser_planner.vision_retry", True)
+            span.set_attribute("cuga.browser_planner.vision_rejection_error_type", type(exc).__name__)
             self.use_vision_effective = False
             data["use_vision"] = False
             # The template still has the baked-in image slot, so keep a valid

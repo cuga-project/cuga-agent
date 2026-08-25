@@ -392,3 +392,45 @@ async def test_task_decomposition_appworld_type_rewrite_attribute(monkeypatch):
 
     assert all(k.type == "api" for k in result_state.task_decomposition.task_decomposition)
     assert _attrs(exporter)["cuga.task_decomposition.appworld_type_rewrites"] == 1
+
+
+# ---------------------------------------------------------------------------
+# browser_planner_agent.py - cuga.browser_planner.vision_retry (retry/fallback)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browser_planner_vision_rejection_sets_retry_attribute(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent import (
+        browser_planner_agent as bpa,
+    )
+    from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.browser_planner_agent import (
+        BrowserPlannerAgent,
+    )
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(bpa.tracker, "images", ["data:image/png;base64,REAL"])
+
+    class _RejectingChain:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, data):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("model does not support vision")
+            return AIMessage(content="ok", name="BrowserPlannerAgent")
+
+    agent = object.__new__(BrowserPlannerAgent)
+    agent.name = "BrowserPlannerAgent"
+    agent.chain = _RejectingChain()
+    agent.use_vision_effective = True
+    agent._template_requires_img = True
+
+    with tracer.start_as_current_span("test-node-span"):
+        await agent.run(AgentState(input="do a task", url=""))
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.browser_planner.vision_retry"] is True
+    assert attrs["cuga.browser_planner.vision_rejection_error_type"] == "ValueError"
