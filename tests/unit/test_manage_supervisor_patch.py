@@ -90,16 +90,65 @@ def test_patch_draft_supervisor_rejects_stale_save_seq():
     assert draft["supervisor"]["_saveSeq"] == 2
 
 
-def test_patch_draft_supervisor_rejects_non_integer_save_seq():
+@pytest.mark.parametrize("save_seq", ["nope", True, 1.5])
+def test_patch_draft_supervisor_rejects_non_integer_save_seq(save_seq):
     client = _client()
 
     response = client.patch(
         "/api/manage/config/draft/supervisor",
         params={"agent_id": "trip-supervisor"},
-        json={"supervisor": {"subAgents": [], "planApproval": False}, "saveSeq": "nope"},
+        json={"supervisor": {"subAgents": [], "planApproval": False}, "saveSeq": save_seq},
     )
 
     assert response.status_code == 400
+
+
+def test_full_draft_save_does_not_clobber_newer_supervisor():
+    client = _client()
+    patched = client.patch(
+        "/api/manage/config/draft/supervisor",
+        params={"agent_id": "trip-supervisor"},
+        json={
+            "supervisor": {"subAgents": [{"kind": "internal", "ref": "crm-agent"}], "planApproval": True},
+            "saveSeq": 2,
+        },
+    )
+    assert patched.status_code == 200
+
+    stale_full = client.post(
+        "/api/manage/config/draft",
+        params={"agent_id": "trip-supervisor"},
+        json={
+            "config": {
+                "agent": {"name": "Trip", "kind": "supervisor"},
+                "supervisor": {"subAgents": [], "planApproval": False, "_saveSeq": 1},
+            }
+        },
+    )
+    assert stale_full.status_code == 200
+    draft = asyncio.run(load_draft("trip-supervisor"))
+    assert draft["supervisor"]["subAgents"] == [{"kind": "internal", "ref": "crm-agent"}]
+    assert draft["supervisor"]["planApproval"] is True
+    assert draft["supervisor"]["_saveSeq"] == 2
+
+    newer_full = client.post(
+        "/api/manage/config/draft",
+        params={"agent_id": "trip-supervisor"},
+        json={
+            "config": {
+                "agent": {"name": "Trip", "kind": "supervisor"},
+                "supervisor": {
+                    "subAgents": [{"kind": "internal", "ref": "flight-booker"}],
+                    "planApproval": False,
+                    "_saveSeq": 3,
+                },
+            }
+        },
+    )
+    assert newer_full.status_code == 200
+    draft = asyncio.run(load_draft("trip-supervisor"))
+    assert draft["supervisor"]["subAgents"] == [{"kind": "internal", "ref": "flight-booker"}]
+    assert draft["supervisor"]["_saveSeq"] == 3
 
 
 def test_patch_draft_supervisor_rejects_non_dict():

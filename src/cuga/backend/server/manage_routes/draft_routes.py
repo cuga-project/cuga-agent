@@ -1,6 +1,6 @@
 """Draft save and section PATCH endpoints."""
 
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import HTTPException, Request
@@ -23,6 +23,33 @@ from cuga.backend.server.manage_routes.helpers import (
 )
 
 
+def _strict_save_seq(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise HTTPException(status_code=400, detail="saveSeq must be an integer")
+    return value
+
+
+def _supervisor_seq(supervisor: Any) -> int:
+    if not isinstance(supervisor, dict):
+        return 0
+    seq = supervisor.get("_saveSeq")
+    if seq is None or isinstance(seq, bool) or not isinstance(seq, int):
+        return 0
+    return seq
+
+
+def _preserved_supervisor(stored: Any, incoming: Any) -> Any:
+    if not isinstance(incoming, dict):
+        return incoming
+    stored_seq = _supervisor_seq(stored)
+    incoming_seq = _supervisor_seq(incoming)
+    if stored_seq > incoming_seq:
+        return stored
+    merged = {k: v for k, v in incoming.items() if k != "_saveSeq"}
+    merged["_saveSeq"] = incoming_seq if incoming_seq else stored_seq
+    return merged
+
+
 @router.post("/config/draft")
 async def save_manage_config_draft(request: Request, agent_id: Optional[str] = None):
     """Auto-save current form to draft (version stays 'draft'). Updates draft agent tools and triggers registry reload."""
@@ -35,9 +62,18 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
         data = await request.json()
         config = data.get("config", data)
+        incoming = dict(config) if isinstance(config, dict) else {}
 
         async with agent_draft_lock(agent_id):
-            await save_draft(config or {}, agent_id)
+            from cuga.backend.server.config_store import load_draft
+
+            existing = await load_draft(agent_id) or {}
+            if "supervisor" in incoming:
+                incoming["supervisor"] = _preserved_supervisor(
+                    existing.get("supervisor"), incoming.get("supervisor")
+                )
+            await save_draft(incoming, agent_id)
+        config = incoming
 
         state_to_update = getattr(request.app.state, "draft_app_state", None)
         policy_errors = {}
@@ -312,10 +348,7 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
             except (TypeError, ValueError):
                 stored_seq = 0
             if save_seq is not None:
-                try:
-                    incoming_seq = int(save_seq)
-                except (TypeError, ValueError):
-                    raise HTTPException(status_code=400, detail="saveSeq must be an integer")
+                incoming_seq = _strict_save_seq(save_seq)
                 if incoming_seq <= stored_seq:
                     raise HTTPException(
                         status_code=409,

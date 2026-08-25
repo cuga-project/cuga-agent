@@ -112,7 +112,7 @@ export type LlmJsonValue =
 
 export interface AgentConfig {
   agent?: { name?: string; description?: string; kind?: "single" | "supervisor" };
-  supervisor?: { subAgents?: SubAgentRef[]; planApproval?: boolean };
+  supervisor?: { subAgents?: SubAgentRef[]; planApproval?: boolean; _saveSeq?: number };
   llm?: {
     provider?: "groq" | "openai" | "litellm";
     api_key?: string;
@@ -602,6 +602,7 @@ export function ManagePage() {
   llmConfigRef.current = llmConfig;
   const supervisorAbortRef = useRef<AbortController | null>(null);
   const supervisorSaveSeqRef = useRef(0);
+  const loadLatestGenRef = useRef(0);
   const effectiveAgentIdRef = useRef(effectiveAgentId);
   effectiveAgentIdRef.current = effectiveAgentId;
 
@@ -768,13 +769,17 @@ export function ManagePage() {
   }, [addToast]);
 
   const loadLatest = useCallback(async () => {
+    const agentId = effectiveAgentId;
+    const gen = ++loadLatestGenRef.current;
+    const isStale = () => gen !== loadLatestGenRef.current || agentId !== effectiveAgentIdRef.current;
     try {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
-        api.getManageConfig(true, effectiveAgentId),
+        api.getManageConfig(true, agentId),
         api.getToolsList(true),
       ]);
-      
+      if (isStale()) return;
+
       // Check for HTTP errors
       if (!draftRes.ok && draftRes.status >= 400) {
         const errorMsg = `Failed to load draft config (${draftRes.status} ${draftRes.statusText})`;
@@ -789,6 +794,7 @@ export function ManagePage() {
       let version: number | "draft" | null = null;
       if (draftRes.ok) {
         const data = await draftRes.json();
+        if (isStale()) return;
         if (data.version === "draft" || (data.config && Object.keys(data.config).length > 0)) {
           if (data.config) {
             Object.assign(out, data.config);
@@ -826,9 +832,11 @@ export function ManagePage() {
         }
       }
       if (version === null) {
-        const publishedRes = await api.getManageConfig(false, effectiveAgentId);
+        const publishedRes = await api.getManageConfig(false, agentId);
+        if (isStale()) return;
         if (publishedRes.ok) {
           const data = await publishedRes.json();
+          if (isStale()) return;
           // Stamp the Live truth anchor from the PUBLISHED knowledge config.
           // Independent of whatever the draft is — this is the pill the
           // header always reads. Refreshed after every successful Publish
@@ -882,6 +890,7 @@ export function ManagePage() {
           addToast("error", "Load Error", errorMsg);
         }
       }
+      if (isStale()) return;
       if (toolsListRes.ok) {
         const toolsData = await toolsListRes.json();
         setConnectedApps(toolsData.apps ?? []);
@@ -895,6 +904,7 @@ export function ManagePage() {
         setConnectedApps([]);
         setConnectedTools([]);
       }
+      if (isStale()) return;
       replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
       setToolsState(Array.isArray(out.tools) ? out.tools : []);
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
@@ -913,19 +923,19 @@ export function ManagePage() {
         api.getKnowledgeSettings()
           .then((res) => (res.ok ? res.json() : null))
           .then((sData) => {
-            if (sData?.knowledge) {
-              setKnowledgeConfig((prev) => ({ ...prev, ...sData.knowledge }));
-              setKnowledgeSavedSnapshot(sData.knowledge);
-            }
+            if (isStale() || !sData?.knowledge) return;
+            setKnowledgeConfig((prev) => ({ ...prev, ...sData.knowledge }));
+            setKnowledgeSavedSnapshot(sData.knowledge);
           })
           .catch(() => {});
       }
       setCurrentVersion(version);
       setLoadError(null);
       setTimeout(() => {
-        skipDraftSaveRef.current = false;
+        if (!isStale()) skipDraftSaveRef.current = false;
       }, 0);
     } catch (e) {
+      if (isStale()) return;
       const errorMsg = e instanceof Error ? e.message : "Failed to load config";
       setLoadError(errorMsg);
       addToast("error", "Load Error", errorMsg);
@@ -1089,7 +1099,7 @@ export function ManagePage() {
     (overrides?: Partial<AgentConfig>): AgentConfig => {
       const c: AgentConfig = {
         agent: { name: agentName, description: agentDescription || undefined, kind: agentKind },
-        supervisor: agentKind === "supervisor" ? { subAgents, planApproval } : undefined,
+        supervisor: agentKind === "supervisor" ? { subAgents, planApproval, _saveSeq: supervisorSaveSeqRef.current } : undefined,
         // Supervisors have no LLM section in this UI (they use the environment's default
         // model) — omit it so a stale DEFAULT_CONFIG.llm placeholder never gets saved and
         // mistakenly overrides that default (see main.py's _resolve_stream_agent guard).
@@ -1468,6 +1478,7 @@ export function ManagePage() {
           setAgentKind(imported.agentKind ?? "single");
           setSubAgents((imported.subAgents ?? []) as SubAgentRef[]);
           setPlanApproval(imported.planApproval ?? false);
+          supervisorSaveSeqRef.current += 1;
           replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
