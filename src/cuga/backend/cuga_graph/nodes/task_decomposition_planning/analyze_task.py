@@ -3,6 +3,7 @@ from typing import Literal, List, Optional, Tuple
 from difflib import SequenceMatcher
 
 import httpx
+from opentelemetry import trace as otel_trace
 from pydantic import BaseModel
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
@@ -100,6 +101,10 @@ class TaskAnalyzer(BaseNode):
 
             logger.warning(f"Dropping unmatched app '{normalized}' - no known connected app match found")
 
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.app_match.requested_count", len(requested_apps))
+        span.set_attribute("cuga.app_match.resolved_count", len(resolved))
+        span.set_attribute("cuga.app_match.dropped_count", len(requested_apps) - len(resolved))
         return resolved
 
     @staticmethod
@@ -343,6 +348,9 @@ class TaskAnalyzer(BaseNode):
                 and (state.sites and len(state.sites) == 1)
             ):
                 logger.debug("Intent has implicit locations")
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.task_analyzer.routed_to", "LocationResolver"
+                )
                 return Command(update=state.model_dump(), goto="LocationResolver")
 
             return Command(update=state.model_dump(), goto="TaskDecompositionAgent")

@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_openai import ChatOpenAI
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -56,10 +57,12 @@ class TaskDecompositionAgent(BaseAgent):
         data["decomposition_strategy"] = settings.advanced_features.decomposition_strategy
 
         if input_variables.sites is not None and len(input_variables.sites) > 1:
+            otel_trace.get_current_span().set_attribute("cuga.decomposition_strategy", "multi")
             out = await self.chain_multi.ainvoke(data)
             result = AIMessage(content=json.dumps(out.model_dump()), name=self.name)
             return result
         else:
+            otel_trace.get_current_span().set_attribute("cuga.decomposition_strategy", "single")
             return await self.chain.ainvoke(data)
 
     @staticmethod

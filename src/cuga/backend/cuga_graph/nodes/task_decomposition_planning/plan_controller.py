@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 from loguru import logger
 from langchain_core.runnables.config import RunnableConfig
+from opentelemetry import trace as otel_trace
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps
 from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
@@ -65,6 +66,9 @@ class PlanControllerNode(BaseNode):
         ignore_controller = (
             len(state.task_decomposition.task_decomposition) == 1
             or len(state.task_decomposition.task_decomposition) == 0
+        )
+        otel_trace.get_current_span().set_attribute(
+            "cuga.plan_controller.llm_call_skipped", ignore_controller
         )
         # API Agent must return list of natural language progress, summarize the plan relative to the output of code
         # Examples for 3 modes
@@ -197,6 +201,9 @@ class PlanControllerNode(BaseNode):
                     ["reddit", "map", "wikipedia", "gitlab", "shopping", "shopping_admin"],
                     plan_controller_output.next_subtask.lower(),
                 )
+                span = otel_trace.get_current_span()
+                span.set_attribute("cuga.plan_controller.open_app_detected", True)
+                span.set_attribute("cuga.plan_controller.open_app_matched", app is not None)
                 state.tool_call = {"name": "open_app", "args": {"app_name": app}, "id": str(uuid.uuid4())}
                 state.stm_all_history.append(
                     SubTaskHistory(

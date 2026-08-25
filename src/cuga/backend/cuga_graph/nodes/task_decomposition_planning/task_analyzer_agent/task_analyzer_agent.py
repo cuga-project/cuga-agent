@@ -1,4 +1,5 @@
 from langchain_core.messages import AIMessage
+from opentelemetry import trace as otel_trace
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.prompts.load_prompt import (
@@ -61,11 +62,15 @@ class TaskAnalyzerAgent(BaseAgent):
         if settings.advanced_features.benchmark == "webarena":
             attrs: Attributes = await self.classify_task.ainvoke(inp)
         task_analyzer_output = AnalyzeTaskOutput(attrs=attrs)
-        if (
+        read_only_deep_analysis = bool(
             attrs
             and not attrs.performs_update
             and input_variables.current_app in ['gitlab', 'shopping_admin']
-        ):
+        )
+        otel_trace.get_current_span().set_attribute(
+            "cuga.task_analyzer.read_only_deep_analysis", read_only_deep_analysis
+        )
+        if read_only_deep_analysis:
             if settings.advanced_features.use_paraphrase:
                 task_analyzer_output.paraphrased_intent = (
                     await self.paraphrase_task.with_config(configurable={"llm_temperature": 0.1}).ainvoke(inp)

@@ -2,6 +2,7 @@ import json
 
 from langchain_core.messages import AIMessage
 from loguru import logger
+from opentelemetry import trace as otel_trace
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
@@ -59,9 +60,14 @@ class TaskDecompositionNode(BaseNode):
         state.messages.append(result)
         state.task_decomposition = TaskDecompositionPlan(**json.loads(result.content))
         if settings.advanced_features.benchmark == "appworld":
+            rewritten_count = 0
             for k in state.task_decomposition.task_decomposition:
                 if k.type == "web":
                     k.type = "api"
+                    rewritten_count += 1
+            otel_trace.get_current_span().set_attribute(
+                "cuga.task_decomposition.appworld_type_rewrites", rewritten_count
+            )
 
         state.sub_tasks_progress = ["not-started"] * len(state.task_decomposition.task_decomposition)
 
