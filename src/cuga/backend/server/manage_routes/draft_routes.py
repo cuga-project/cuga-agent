@@ -15,6 +15,7 @@ from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_confi
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
     invalidate_agent_graph_cache,
+    is_default_agent,
     is_secret_field_name,
     load_and_patch_draft,
     policies_list_from_config,
@@ -40,8 +41,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
         state_to_update = getattr(request.app.state, "draft_app_state", None)
         policy_errors = {}
+        apply_shared_draft = is_default_agent(agent_id)
 
-        if state_to_update and config:
+        if apply_shared_draft and state_to_update and config:
             tools_list = (config or {}).get("tools") or []
 
             state_to_update.tools_include_by_app = {
@@ -105,18 +107,19 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         except Exception as reload_err:
             logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
 
-        if state_to_update:
+        if apply_shared_draft and state_to_update:
             llm_cfg = (config or {}).get("llm") or {}
             apply_llm_to_draft_state(state_to_update, llm_cfg)
 
-        try:
-            draft_agent = getattr(state_to_update, "agent", None)
-            if draft_agent:
-                await rebuild_agent_from_config(draft_agent, config or {})
-            else:
-                logger.warning("No draft agent found in state, skipping rebuild")
-        except Exception as rebuild_err:
-            logger.error(f"Failed to rebuild draft agent graph: {rebuild_err}")
+        if apply_shared_draft:
+            try:
+                draft_agent = getattr(state_to_update, "agent", None)
+                if draft_agent:
+                    await rebuild_agent_from_config(draft_agent, config or {})
+                else:
+                    logger.warning("No draft agent found in state, skipping rebuild")
+            except Exception as rebuild_err:
+                logger.error(f"Failed to rebuild draft agent graph: {rebuild_err}")
 
         has_errors = bool(tool_errors or policy_errors)
         response_data = {
@@ -170,12 +173,15 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
                     llm.pop(k, None)
             merged_llm = {**existing_llm, **llm}
             full_draft = await save_draft_section_unlocked(agent_id, "llm", merged_llm)
-        state = getattr(request.app.state, "draft_app_state", None)
-        if state:
-            apply_llm_to_draft_state(state, full_draft.get("llm") or {})
-            draft_agent = getattr(state, "agent", None)
-            if draft_agent:
-                draft_agent.llm_config = full_draft.get("llm") or None
+        if is_default_agent(agent_id):
+            state = getattr(request.app.state, "draft_app_state", None)
+            if state:
+                apply_llm_to_draft_state(state, full_draft.get("llm") or {})
+                draft_agent = getattr(state, "agent", None)
+                if draft_agent:
+                    draft_agent.llm_config = full_draft.get("llm") or None
+        else:
+            await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except HTTPException:
         raise
@@ -198,21 +204,21 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         tools_list = tools if isinstance(tools, list) else []
         full_draft = await load_and_patch_draft(agent_id, "tools", tools_list)
         state = getattr(request.app.state, "draft_app_state", None)
-        if not state:
-            return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+        apply_shared_draft = is_default_agent(agent_id)
 
-        state.tools_include_by_app = {
-            t["name"]: t["include"]
-            for t in tools_list
-            if isinstance(t, dict)
-            and t.get("name")
-            and isinstance(t.get("include"), list)
-            and len(t["include"]) > 0
-        } or None
-        current_version = getattr(state, "tools_include_version", 0)
-        if isinstance(current_version, str):
-            current_version = int(current_version) if current_version.isdigit() else 0
-        state.tools_include_version = current_version + 1
+        if apply_shared_draft and state:
+            state.tools_include_by_app = {
+                t["name"]: t["include"]
+                for t in tools_list
+                if isinstance(t, dict)
+                and t.get("name")
+                and isinstance(t.get("include"), list)
+                and len(t["include"]) > 0
+            } or None
+            current_version = getattr(state, "tools_include_version", 0)
+            if isinstance(current_version, str):
+                current_version = int(current_version) if current_version.isdigit() else 0
+            state.tools_include_version = current_version + 1
 
         tool_errors = {}
         # Bound before the try so the shortlister re-warm below can reference it
@@ -231,18 +237,17 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         except Exception as reload_err:
             logger.warning(f"Failed to reload registry for PATCH tools: {reload_err}")
 
-        apply_llm_to_draft_state(state, full_draft.get("llm") or {})
-        try:
-            draft_agent = getattr(state, "agent", None)
-            if draft_agent:
-                await rebuild_agent_from_config(draft_agent, full_draft)
-        except Exception as rebuild_err:
-            logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
+        if apply_shared_draft and state:
+            apply_llm_to_draft_state(state, full_draft.get("llm") or {})
+            try:
+                draft_agent = getattr(state, "agent", None)
+                if draft_agent:
+                    await rebuild_agent_from_config(draft_agent, full_draft)
+            except Exception as rebuild_err:
+                logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
+        else:
+            await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
 
-        # The catalogue just changed, so embed anything new for cosine
-        # shortlisting. Vectors are keyed by content hash, so adding two tools
-        # embeds two documents rather than re-embedding everything, and the
-        # model stays loaded. No-op on the default LLM strategy.
         try:
             from cuga.backend.server.main import warm_shortlister_catalogue
 
@@ -314,33 +319,36 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         data = await request.json()
         policies = data.get("policies", data)
         full_draft = await load_and_patch_draft(agent_id, "policies", policies)
-        state = getattr(request.app.state, "draft_app_state", None)
-        if state and state.policy_system and state.policy_system.storage:
-            raw_policies = full_draft.get("policies")
-            policies_list = policies_list_from_config(raw_policies)
-            try:
-                from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
-                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
-                    invalidate_toolguard_provider,
-                )
+        if is_default_agent(agent_id):
+            state = getattr(request.app.state, "draft_app_state", None)
+            if state and state.policy_system and state.policy_system.storage:
+                raw_policies = full_draft.get("policies")
+                policies_list = policies_list_from_config(raw_policies)
+                try:
+                    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+                    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+                        invalidate_toolguard_provider,
+                    )
 
-                await apply_policies_data_to_storage(
-                    state.policy_system.storage,
-                    policies_list,
-                    clear_existing=True,
-                    filesystem_sync=state.policy_filesystem_sync,
-                )
-                await state.policy_system.initialize()
+                    await apply_policies_data_to_storage(
+                        state.policy_system.storage,
+                        policies_list,
+                        clear_existing=True,
+                        filesystem_sync=state.policy_filesystem_sync,
+                    )
+                    await state.policy_system.initialize()
 
-                # Invalidate the ToolGuard runtime cache so the next tool call
-                # re-initialises with the updated policy (e.g. guards_enabled toggle).
-                draft_agent = getattr(state, "agent", None)
-                if draft_agent:
-                    tp = getattr(draft_agent, "tool_provider", None)
-                    if tp is not None:
-                        invalidate_toolguard_provider(tp)
-            except Exception as policy_err:
-                logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
+                    # Invalidate the ToolGuard runtime cache so the next tool call
+                    # re-initialises with the updated policy (e.g. guards_enabled toggle).
+                    draft_agent = getattr(state, "agent", None)
+                    if draft_agent:
+                        tp = getattr(draft_agent, "tool_provider", None)
+                        if tp is not None:
+                            invalidate_toolguard_provider(tp)
+                except Exception as policy_err:
+                    logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
+        else:
+            await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft policies: {e}")
@@ -356,10 +364,13 @@ async def patch_draft_special_instructions(request: Request, agent_id: Optional[
         body = await request.json()
         value = body.get("special_instructions", "") or ""
         await load_and_patch_draft(agent_id, "special_instructions", value)
-        draft_state = getattr(request.app.state, "draft_app_state", None)
-        draft_agent = getattr(draft_state, "agent", None) if draft_state is not None else None
-        if draft_agent is not None:
-            draft_agent.special_instructions = value or None
+        if is_default_agent(agent_id):
+            draft_state = getattr(request.app.state, "draft_app_state", None)
+            draft_agent = getattr(draft_state, "agent", None) if draft_state is not None else None
+            if draft_agent is not None:
+                draft_agent.special_instructions = value or None
+        else:
+            await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft special_instructions: {e}")

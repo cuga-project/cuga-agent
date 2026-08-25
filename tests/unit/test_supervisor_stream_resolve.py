@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -75,3 +76,107 @@ def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
         mock_state.agent_graphs_cache = {}
         resolved = asyncio.run(main_mod._resolve_stream_agent(request, "trip-supervisor", False))
     assert resolved is default_agent
+
+
+@pytest.mark.asyncio
+async def test_stream_forwards_x_agent_id_as_execution_identity(monkeypatch):
+    captured: dict = {}
+
+    async def fake_event_stream(*_args, **kwargs):
+        captured.update(kwargs)
+        if False:
+            yield "data: {}\n\n"
+
+    monkeypatch.setattr(main_mod, "event_stream", fake_event_stream)
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: True,
+    )
+
+    isolated_graph = object()
+    request = MagicMock()
+    request.headers.get.side_effect = lambda key, default=None: {
+        "X-Agent-ID": "sales-east",
+        "X-Thread-ID": "thread-1",
+        "X-Use-Draft": "",
+        "X-Disable-History": "",
+    }.get(key, default)
+    request.app.state.draft_app_state = None
+
+    with patch.object(main_mod, "get_query", new_callable=AsyncMock, return_value="hello"):
+        with patch.object(main_mod, "get_attachment_snapshot", new_callable=AsyncMock, return_value=None):
+            with patch.object(
+                main_mod,
+                "_resolve_stream_agent",
+                new_callable=AsyncMock,
+                return_value=isolated_graph,
+            ):
+                response = await main_mod.stream(request, current_user=None)
+                async for _ in response.body_iterator:
+                    pass
+
+    assert captured["agent"] is isolated_graph
+    assert captured["agent_id"] == "sales-east"
+    assert captured["current_llm"] is None
+
+
+@pytest.mark.asyncio
+async def test_event_stream_persists_under_requested_agent_id(monkeypatch):
+    saved: dict = {}
+
+    async def fake_save(**kwargs):
+        saved.update(kwargs)
+
+    class _ImmediateLoop:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def get_langfuse_trace_id(self):
+            return None
+
+        async def run_stream(self, **_kwargs):
+            from cuga.backend.cuga_graph.utils.agent_loop import AgentLoopAnswer
+
+            yield AgentLoopAnswer(end=True, answer="done", tools=[])
+
+    graph = MagicMock()
+    graph.get_state.return_value = SimpleNamespace(values=None)
+    run_agent = SimpleNamespace(
+        graph=graph,
+        policy_system=None,
+        enable_todos=None,
+        reflection_enabled=None,
+        shortlisting_tool_threshold=None,
+        cuga_lite_max_steps=None,
+        enable_filesystem_tools=None,
+        special_instructions=None,
+        chat=None,
+    )
+
+    monkeypatch.setattr(
+        "cuga.backend.cuga_graph.utils.agent_loop.AgentLoop",
+        _ImmediateLoop,
+    )
+    monkeypatch.setattr(main_mod, "_save_conversation_and_events_async", fake_save)
+    monkeypatch.setattr(main_mod, "_knowledge_enabled_for_app_state", lambda _state: False)
+    monkeypatch.setattr(main_mod, "_rehydrate_citation_ledger", AsyncMock())
+    monkeypatch.setattr(main_mod, "_dispatch_slash_for_stream", AsyncMock(return_value=None))
+    monkeypatch.setattr(main_mod.app_state, "agent_id", "cuga-default")
+    monkeypatch.setattr(main_mod.app_state, "current_llm", "default-llm")
+    monkeypatch.setattr(main_mod.app_state, "stop_events", {})
+    monkeypatch.setattr(main_mod.app_state, "output_format", None)
+    monkeypatch.setattr(main_mod.app_state, "knowledge_provider", None)
+
+    chunks = []
+    async for chunk in main_mod.event_stream(
+        "hello",
+        api_mode=True,
+        thread_id="thread-1",
+        agent=run_agent,
+        agent_id="sales-east",
+        current_llm=None,
+    ):
+        chunks.append(chunk)
+
+    assert saved["agent_id"] == "sales-east"
+    assert any(chunks)

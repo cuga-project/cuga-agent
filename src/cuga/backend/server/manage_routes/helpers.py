@@ -12,6 +12,10 @@ def resolve_agent_id(agent_id: Optional[str]) -> str:
     return agent_id or DEFAULT_AGENT_ID
 
 
+def is_default_agent(agent_id: Optional[str]) -> bool:
+    return resolve_agent_id(agent_id) == DEFAULT_AGENT_ID
+
+
 def app_state(request: Request):
     return getattr(request.app.state, "app_state", None)
 

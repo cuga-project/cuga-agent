@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -51,10 +50,37 @@ def _delegate_tool_name(agent_name: str) -> str:
     supervisor invokes delegate tools as Python function calls in generated code —
     ``delegate_to_crm-agent(...)`` parses as subtraction and matches nothing in the execution
     context, so the code executor rejects it ("Code must use at least one variable or tool from
-    context"). Sanitize non-identifier chars to ``_`` for the callable name; the real
-    ``agent_name`` is still used for the delegation lookup.
+    context"). Encode hyphens as ``_h_`` so ``sales-east`` and ``sales_east`` stay distinct;
+    other non-identifier characters become ``_<hex>_``.
     """
-    return "delegate_to_" + re.sub(r"\W", "_", agent_name)
+    pieces: List[str] = []
+    for ch in agent_name:
+        if ch == "-":
+            pieces.append("_h_")
+        elif ch.isalnum() or ch == "_":
+            pieces.append(ch)
+        else:
+            pieces.append(f"_{ord(ch):x}_")
+    ident = "".join(pieces) or "agent"
+    if ident[0].isdigit():
+        ident = f"a_{ident}"
+    return "delegate_to_" + ident
+
+
+def delegate_tool_names(agent_names) -> Dict[str, str]:
+    """Map each agent id to a unique ``delegate_to_*`` callable name."""
+    assigned: Dict[str, str] = {}
+    used: set[str] = set()
+    for name in agent_names:
+        base = _delegate_tool_name(name)
+        tool = base
+        n = 2
+        while tool in used:
+            tool = f"{base}_{n}"
+            n += 1
+        used.add(tool)
+        assigned[name] = tool
+    return assigned
 
 
 def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
@@ -120,6 +146,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         agent_list = []
         agent_tools_for_prompt = []
         pass_variables_a2a = getattr(settings.supervisor, "pass_variables_a2a", False)
+        tool_names = delegate_tool_names(adapter._agents.keys())
 
         for agent_name, agent_or_config in adapter._agents.items():
             agent_card = None
@@ -155,7 +182,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 agent_entry["agent_card"] = format_agent_card_for_prompt(agent_card)
             agent_list.append(agent_entry)
 
-            tool_name = _delegate_tool_name(agent_name)
+            tool_name = tool_names[agent_name]
             tool_func = create_agent_delegation_func(
                 adapter, agent_name, agent_or_config, agent_card=agent_card
             )

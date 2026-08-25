@@ -88,6 +88,7 @@ from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
+_RUNTIME_LLM_UNSET = object()
 
 
 def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Optional[str]:
@@ -261,7 +262,11 @@ def _format_sources_footer(sources: list[dict]) -> str:
 
 
 async def _rehydrate_citation_ledger(
-    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+    app_state: "AppState",
+    thread_id: str,
+    user_id: str,
+    is_resume: bool = False,
+    agent_id: Optional[str] = None,
 ) -> None:
     """Prepare the citation ledger at the start of a NEW user turn.
 
@@ -302,7 +307,9 @@ async def _rehydrate_citation_ledger(
         _ledger = _get_ledger(thread_id, create=False)
         if _ledger is None:
             conversation_db = get_conversation_db()
-            stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
+            stream_history = await conversation_db.get_stream_events(
+                agent_id or app_state.agent_id, thread_id, user_id
+            )
             events_list = stream_history.events if stream_history else []
             # Create even when there is no history, so begin_turn() below always
             # has a ledger to scope — a fresh conversation's first turn included.
@@ -1553,6 +1560,8 @@ async def event_stream(
     disable_history: bool = False,
     user_id: str = DEFAULT_USER_ID,
     user_attachments: Optional[List[Dict[str, Any]]] = None,
+    agent_id: Optional[str] = None,
+    current_llm: Any = _RUNTIME_LLM_UNSET,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
     from cuga.backend.activity_tracker.tracker import ActivityTracker
@@ -1563,6 +1572,13 @@ async def event_stream(
     from langchain_core.messages import AIMessage
 
     run_agent = agent if agent is not None else app_state.agent
+    runtime_agent_id = agent_id or app_state.agent_id
+    if current_llm is _RUNTIME_LLM_UNSET:
+        runtime_llm = (
+            app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
+        )
+    else:
+        runtime_llm = current_llm
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
         return
@@ -1710,7 +1726,7 @@ async def event_stream(
     _knowledge_ctx = {}
     if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
         # Agent-level knowledge
-        _agent_id = app_state.agent_id
+        _agent_id = runtime_agent_id
         _config_ver = str(app_state.config_version or "draft")
         _agent_key = f"{_agent_id}:{_config_ver}"
         _agent_kb = app_state.knowledge_provider.get_agent(_agent_key)
@@ -1736,7 +1752,9 @@ async def event_stream(
             }
 
     if thread_id:
-        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
+        await _rehydrate_citation_ledger(
+            app_state, thread_id, user_id, is_resume=bool(resume), agent_id=runtime_agent_id
+        )
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1751,7 +1769,7 @@ async def event_stream(
         shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
-        current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
+        current_llm=runtime_llm,
         knowledge_context=_knowledge_ctx or None,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
@@ -1907,7 +1925,7 @@ async def event_stream(
                             # the sidebar is not polluted.
                             if not disable_history:
                                 await _save_conversation_and_events_async(
-                                    agent_id=app_state.agent_id,
+                                    agent_id=runtime_agent_id,
                                     thread_id=thread_id,
                                     user_id=user_id,
                                     state=local_state if local_state else AgentState(),
@@ -1917,7 +1935,7 @@ async def event_stream(
                             else:
                                 try:
                                     await _save_conversation_and_events_async(
-                                        agent_id=app_state.agent_id,
+                                        agent_id=runtime_agent_id,
                                         thread_id=thread_id,
                                         user_id=user_id,
                                         # state is unused when events_only=True; pass it
@@ -2620,12 +2638,15 @@ async def stream(
         agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
         run_agent = None
+        runtime_llm = app_state.current_llm
         if use_draft:
             draft_state = getattr(request.app.state, "draft_app_state", None)
             if draft_state and getattr(draft_state, "agent", None):
                 run_agent = draft_state.agent
+                runtime_llm = getattr(draft_state, "current_llm", None)
     else:
         run_agent = await _resolve_stream_agent(request, agent_id_header, use_draft)
+        runtime_llm = None
 
     return StreamingResponse(
         event_stream(
@@ -2637,6 +2658,8 @@ async def stream(
             disable_history=disable_history,
             user_id=user_id,
             user_attachments=user_attachments,
+            agent_id=agent_id_header,
+            current_llm=runtime_llm,
         ),
         media_type="text/event-stream",
     )

@@ -114,6 +114,8 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
             )
+            feature_overrides = agent_config.get("feature_overrides") or {}
+            agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
 
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
@@ -159,6 +161,7 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
     import os
 
     from cuga.backend.server.config_store import load_config
+    from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
 
     agent_configs: List[Dict[str, Any]] = []
 
@@ -182,10 +185,6 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
             # ref_config["tools"] holds registry-app entries (name + include filter), not
             # loadable langchain tool defs — pass app names through `apps` and skip the
             # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
-            # LLM config translation is intentionally skipped: ref_config["llm"] uses
-            # {provider, model, ...} while `_get_model_from_config` expects {provider,
-            # model_name, ...} from the YAML/SDK path — sub-agents fall back to the
-            # process default model rather than silently mistranslating a chosen model.
             agent_configs.append(
                 {
                     "name": ref,
@@ -194,6 +193,8 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
                     "include_by_app": include_by_app,
                     "special_instructions": ref_config.get("special_instructions")
                     or agent_meta.get("description"),
+                    "model": _model_config_from_stored_llm(ref_config.get("llm")),
+                    "feature_overrides": extract_agent_feature_overrides(ref_config),
                 }
             )
         elif kind == "a2a":
@@ -281,6 +282,19 @@ async def _create_tool_provider(
         return tool_provider
 
     return None
+
+
+def _model_config_from_stored_llm(llm_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Translate manage-UI ``llm`` ({provider, model, ...}) into YAML ``model`` shape."""
+    if not isinstance(llm_cfg, dict):
+        return None
+    model_name = str(llm_cfg.get("model") or llm_cfg.get("model_name") or "").strip()
+    if not model_name:
+        return None
+    translated = {k: v for k, v in llm_cfg.items() if k != "model" and v is not None}
+    translated["provider"] = llm_cfg.get("provider") or "openai"
+    translated["model_name"] = model_name
+    return translated
 
 
 def _get_model_from_config(model_config: Optional[Dict[str, Any]]):

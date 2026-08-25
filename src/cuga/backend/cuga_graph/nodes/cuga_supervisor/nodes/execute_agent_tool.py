@@ -27,7 +27,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SupervisorExecutionContext,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
-    _delegate_tool_name,
+    delegate_tool_names,
 )
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import create_agent_approval_action
 from cuga.config import settings
@@ -43,14 +43,14 @@ def _extract_pending_delegations(script: Optional[str], known_agents: Set[str]) 
     structured tool-call list — this mirrors the same regex-based extraction shape without
     needing a full AST walk for a two-line approval message.
 
-    Matches against ``_delegate_tool_name(agent)`` rather than raw agent ids: agent ids from the
+    Matches against ``delegate_tool_names`` rather than raw agent ids: agent ids from the
     manage UI are slugified with hyphens (e.g. ``crm-agent``), but the delegate tool is actually
-    named ``delegate_to_crm_agent`` — matching hyphenated ids directly would never recognize the
+    named ``delegate_to_crm_h_agent`` — matching hyphenated ids directly would never recognize the
     call, silently disabling the approval gate for any UI-created agent.
     """
     if not script:
         return {}
-    tool_name_to_agent = {_delegate_tool_name(name): name for name in known_agents}
+    tool_name_to_agent = {tool: name for name, tool in delegate_tool_names(known_agents).items()}
     tasks: Dict[str, str] = {}
     for match in _DELEGATE_CALL_RE.finditer(script):
         full_call_name = f"delegate_to_{match.group(1)}"

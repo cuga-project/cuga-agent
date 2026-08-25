@@ -14,6 +14,7 @@ from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
     app_state,
     invalidate_agent_graph_cache,
+    is_default_agent,
     merge_feature_flags_defaults,
     merge_mcp_yaml_into_config,
     redact_secrets_in_config,
@@ -387,12 +388,16 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # Phase C: Apply LLM/tools/policies + rebuild (existing, best-effort)
         # Strip knowledge_state before runtime apply — it's for export/import only.
         config.pop("knowledge_state", None)
-        await apply_published_config(state, config or {})
+        # Only cuga-default owns the process-wide singleton runtime. Publishing any
+        # other agent must leave app_state.agent / current_llm / tools / policies
+        # untouched; those agents run from the per-id graph cache instead.
+        if is_default_agent(agent_id):
+            await apply_published_config(state, config or {})
 
-        try:
-            await rebuild_production_agent(state, config or {})
-        except Exception as rebuild_err:
-            logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
+            try:
+                await rebuild_production_agent(state, config or {})
+            except Exception as rebuild_err:
+                logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
 
         response_data: dict[str, Any] = {"status": "success", "version": ver, "agent_id": agent_id}
 

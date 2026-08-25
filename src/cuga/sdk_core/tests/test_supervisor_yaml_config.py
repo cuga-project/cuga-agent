@@ -283,6 +283,7 @@ agents:
             os.unlink(temp_path)
 
 
+@pytest.mark.unit
 class TestBuildAgentsFromStoredSubAgents:
     """build_agents_from_stored_subagents — the manage-UI store-sourced loader (issue #101)."""
 
@@ -348,3 +349,52 @@ class TestBuildAgentsFromStoredSubAgents:
         agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "does-not-exist"}])
 
         assert agents == {}
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_forwards_llm_and_feature_settings(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        seen = {}
+        fake_model = object()
+
+        def _fake_get_model(model_config):
+            seen["model"] = model_config
+            return fake_model
+
+        monkeypatch.setattr(
+            "cuga.supervisor_utils.supervisor_config._get_model_from_config",
+            _fake_get_model,
+        )
+
+        from cuga.backend.server.config_store import reset_config_db, save_config
+        from cuga.sdk import CugaAgent
+
+        reset_config_db()
+        await save_config(
+            {
+                "agent": {"name": "Sales East"},
+                "llm": {"provider": "openai", "model": "gpt-4o-mini", "temperature": 0.2},
+                "feature_flags": {
+                    "enable_todos": True,
+                    "reflection": False,
+                    "max_steps": 12,
+                    "enable_filesystem_tools": True,
+                    "shortlisting_tool_threshold": 7,
+                },
+            },
+            agent_id="sales-east",
+        )
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "sales-east"}])
+
+        assert list(agents.keys()) == ["sales-east"]
+        agent = agents["sales-east"]
+        assert isinstance(agent, CugaAgent)
+        assert agent._model is fake_model
+        assert seen["model"]["model_name"] == "gpt-4o-mini"
+        assert seen["model"]["provider"] == "openai"
+        overrides = getattr(agent, "_feature_overrides", {})
+        assert overrides.get("enable_todos") is True
+        assert overrides.get("reflection_enabled") is False
+        assert overrides.get("cuga_lite_max_steps") == 12
+        assert overrides.get("enable_filesystem_tools") is True
+        assert overrides.get("shortlisting_tool_threshold") == 7
