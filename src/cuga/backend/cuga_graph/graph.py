@@ -135,6 +135,15 @@ class DynamicAgentGraph:
             else getattr(settings.supervisor, 'enabled', False)
         )
 
+    def _should_inject_demo_supervisor_agents(self, resolved_agents: dict) -> bool:
+        """Demo CRM/email/filesystem stubs are only for the global YAML supervisor path.
+
+        A per-agent override (manage-UI registry) must not fall back to those stubs when
+        the resolved map is empty — unpublished sub-agents would otherwise chat against
+        fake get_customers/send_email tools.
+        """
+        return not resolved_agents and self.supervisor_agents is None
+
     async def build_graph(self):
         graph = StateGraph(AgentState)
         await self.add_nodes(graph)
@@ -346,8 +355,9 @@ class DynamicAgentGraph:
                 else:
                     logger.warning(f"Supervisor config file not found: {config_path}")
 
-            # If no config or config failed, create default 3-agent setup
-            if not agents:
+            # YAML/global supervisor with no resolvable agents still gets the demo trio.
+            # A per-agent override (manage UI) must not — empty means no delegates.
+            if self._should_inject_demo_supervisor_agents(agents):
                 from cuga.sdk import CugaAgent
                 from langchain_core.tools import tool
 

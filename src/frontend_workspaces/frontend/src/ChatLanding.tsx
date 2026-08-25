@@ -340,7 +340,6 @@ const panelHeader: React.CSSProperties = {
 
 const CARBON_HEADER_HEIGHT = 48; // Carbon shell header default
 const AGENT_SWITCHER_HEIGHT = 40; // Agent-switcher bar rendered directly below it
-const HEADER_HEIGHT = CARBON_HEADER_HEIGHT + AGENT_SWITCHER_HEIGHT;
 const LEFT_W = "22rem";
 const RIGHT_W = "26rem";
 
@@ -350,19 +349,39 @@ export function ChatLanding() {
   // module-level agent id synchronously (before any effect below fires) so postStream and
   // every conversation-* call already carry the right X-Agent-ID / agent_id from the start.
   const { agentId: routeAgentId } = useParams<{ agentId?: string }>();
-  const effectiveChatAgentId = routeAgentId || "cuga-default";
-  api.setKnowledgeAgentId(effectiveChatAgentId);
   const navigate = useNavigate();
+  const [agentRegistry, setAgentRegistry] = useState<boolean | null>(null);
+  const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
+  api.setKnowledgeAgentId(effectiveChatAgentId);
   const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
+  const showAgentSwitcher = agentRegistry === true;
+  const headerHeight = CARBON_HEADER_HEIGHT + (showAgentSwitcher ? AGENT_SWITCHER_HEIGHT : 0);
 
   useEffect(() => {
-    api.getAgents()
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.agents) setAvailableAgents(data.agents);
+    let cancelled = false;
+    api.getUiConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setAgentRegistry(!!c.agent_registry);
+        if (!c.agent_registry) {
+          if (routeAgentId && routeAgentId !== "cuga-default") {
+            navigate("/chat", { replace: true });
+          }
+          return;
+        }
+        return api.getAgents()
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (!cancelled && data?.agents) setAvailableAgents(data.agents);
+          });
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {
+        if (!cancelled) setAgentRegistry(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeAgentId, navigate]);
 
   const [draftThread, setDraftThread] = useState<DraftThreadState>(() => loadDraftThreadState() ?? createDraftThreadState());
   const [windowW, setWindowW] = useState(window.innerWidth);
@@ -1058,6 +1077,7 @@ export function ChatLanding() {
           agentId={routeAgentId}
         />
 
+        {showAgentSwitcher && (
         <div
           style={{
             position: "fixed",
@@ -1099,9 +1119,10 @@ export function ChatLanding() {
             )}
           </Select>
         </div>
+        )}
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}
-      <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
+      <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${headerHeight}px)` }}>
         <CarbonChat
           contained={true}
           threadId={effectiveChatThreadId}
@@ -1122,7 +1143,7 @@ export function ChatLanding() {
           LEFT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
       {canShowLeft && (
-        <div style={panelStyle("left", HEADER_HEIGHT, LEFT_W, leftOpen)}>
+        <div style={panelStyle("left", headerHeight, LEFT_W, leftOpen)}>
           {/* Header */}
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1259,7 +1280,7 @@ export function ChatLanding() {
           RIGHT PANEL — fixed, transparent, slides over chat
           ══════════════════════════════════════════════════════════════════════ */}
       {canShowRight && (
-        <div style={panelStyle("right", HEADER_HEIGHT, RIGHT_W, rightOpen)}>
+        <div style={panelStyle("right", headerHeight, RIGHT_W, rightOpen)}>
           {/* Agent identity header */}
           <div style={panelHeader}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
@@ -1688,7 +1709,7 @@ export function ChatLanding() {
           title="Open conversations"
           style={{
             position: "fixed",
-            top: HEADER_HEIGHT + 12,
+            top: headerHeight + 12,
             left: 8,
             zIndex: 201,
             background: "rgba(var(--cds-background-rgb, 255,255,255), 0.7)",
@@ -1712,7 +1733,7 @@ export function ChatLanding() {
           title="Open agent panel"
           style={{
             position: "fixed",
-            top: HEADER_HEIGHT + 12,
+            top: headerHeight + 12,
             right: 8,
             zIndex: 201,
             background: "rgba(var(--cds-background-rgb, 255,255,255), 0.7)",

@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.server.auth import require_auth
 from cuga.backend.server.config_store import load_draft, reset_config_db
 from cuga.backend.server.manage_routes import router
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _registry_on(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: True,
+    )
 
 
 def _client() -> TestClient:
@@ -56,3 +67,19 @@ def test_patch_draft_supervisor_rejects_non_dict():
     )
 
     assert response.status_code == 400
+
+
+def test_patch_draft_supervisor_404_when_registry_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: False,
+    )
+    client = _client()
+
+    response = client.patch(
+        "/api/manage/config/draft/supervisor",
+        json={"supervisor": {"subAgents": [], "planApproval": False}},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Agent registry is disabled"

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from cuga.backend.server import agent_registry
 from cuga.backend.server.auth import require_manage_access
 from cuga.backend.server.config_store import (
     delete_all_configs,
@@ -60,10 +61,16 @@ async def _describe_agent(agent_id: str) -> dict[str, Any]:
     }
 
 
+def _registry_disabled_response() -> HTTPException:
+    return HTTPException(status_code=404, detail="Agent registry is disabled")
+
+
 @router.get("")
 async def list_agents():
     """List all registered agents. cuga-default always appears, even before any config is saved."""
     try:
+        if not agent_registry.is_agent_registry_enabled():
+            return JSONResponse({"agents": [await _describe_agent(DEFAULT_AGENT_ID)]})
         rows = await list_agents_with_configs()
         agent_ids = [r["agent_id"] for r in rows]
         if DEFAULT_AGENT_ID not in agent_ids:
@@ -78,6 +85,8 @@ async def list_agents():
 @router.post("")
 async def create_agent(body: CreateAgentRequest):
     """Create a new agent (single or supervisor) with a seeded draft config."""
+    if not agent_registry.is_agent_registry_enabled():
+        raise _registry_disabled_response()
     if body.kind not in ("single", "supervisor"):
         raise HTTPException(status_code=400, detail="kind must be 'single' or 'supervisor'")
     name = body.name.strip()
@@ -108,16 +117,16 @@ async def create_agent(body: CreateAgentRequest):
 @router.delete("/{agent_id}")
 async def delete_agent(agent_id: str, request: Request):
     """Delete an agent and all its stored config versions. cuga-default cannot be deleted."""
+    if not agent_registry.is_agent_registry_enabled():
+        raise _registry_disabled_response()
     if agent_id == DEFAULT_AGENT_ID:
         raise HTTPException(status_code=400, detail="Cannot delete the default agent")
     existing_ids = {r["agent_id"] for r in await list_agents_with_configs()}
     if agent_id not in existing_ids:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
     await delete_all_configs(agent_id)
-    app_state = getattr(request.app.state, "app_state", None)
-    cache = getattr(app_state, "agent_graphs_cache", None)
-    if cache:
-        cache.pop((agent_id, True), None)
-        cache.pop((agent_id, False), None)
+    from cuga.backend.server.manage_routes.helpers import invalidate_agent_graph_cache
+
+    await invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
     logger.info(f"Deleted agent '{agent_id}'")
     return JSONResponse({"status": "success"})

@@ -684,6 +684,7 @@ def _start_demo_crm_services(
         # Configure supervisor mode
         if enable_supervisor:
             os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+            os.environ["DYNACONF_SUPERVISOR__REGISTRY_ENABLED"] = "true"
             supervisor_config_path = os.path.join(
                 PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_demo_crm.yaml"
             )
@@ -1254,6 +1255,7 @@ def start(
         app_email = True
         app_filesystem = True
         os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_FILESYSTEM_TOOLS"] = "true"
+        os.environ["DYNACONF_SUPERVISOR__REGISTRY_ENABLED"] = "true"
     resolved_tools = build_tools_from_apps(
         crm=app_crm,
         email=app_email,

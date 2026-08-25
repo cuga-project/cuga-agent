@@ -24,9 +24,15 @@ export async function getAuthConfig(): Promise<{ enabled: boolean; authorization
   return authConfigCache;
 }
 
-let uiConfigCache: { hide_cuga_logo: boolean; brand_name: string } | null = null;
+export type UiConfig = {
+  hide_cuga_logo: boolean;
+  brand_name: string;
+  agent_registry: boolean;
+};
 
-export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_name: string }> {
+let uiConfigCache: UiConfig | null = null;
+
+export async function getUiConfig(): Promise<UiConfig> {
   if (uiConfigCache !== null) return uiConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/ui/config`, { credentials: "include" });
@@ -34,6 +40,7 @@ export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_na
   uiConfigCache = {
     hide_cuga_logo: !!data.hide_cuga_logo,
     brand_name: data.brand_name && String(data.brand_name).trim() ? String(data.brand_name).trim() : "CUGA Agent",
+    agent_registry: !!data.agent_registry,
   };
   return uiConfigCache;
 }

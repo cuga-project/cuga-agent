@@ -51,6 +51,7 @@ from cuga.config import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     assert_resolved_path_under,
 )
+from cuga.backend.server import agent_registry
 from cuga.backend.server import agents_routes
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
@@ -2149,7 +2150,13 @@ async def ui_config():
     """Return UI configuration flags from settings."""
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
-    return JSONResponse({"hide_cuga_logo": hide_logo, "brand_name": brand_name})
+    return JSONResponse(
+        {
+            "hide_cuga_logo": hide_logo,
+            "brand_name": brand_name,
+            "agent_registry": agent_registry.is_agent_registry_enabled(),
+        }
+    )
 
 
 @app.get("/auth/login")
@@ -2473,7 +2480,7 @@ async def _resolve_stream_agent(
     draft_state = getattr(request.app.state, "draft_app_state", None)
     default_graph = (getattr(draft_state, "agent", None) if use_draft else app_state.agent) or app_state.agent
 
-    if not agent_id or agent_id == "cuga-default":
+    if not agent_registry.is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
         return default_graph
 
     cache_key = (agent_id, use_draft)
@@ -2482,6 +2489,7 @@ async def _resolve_stream_agent(
         return cached
 
     try:
+        from cuga.backend.cuga_graph.graph import DynamicAgentGraph
         from cuga.backend.server.config_store import load_config, load_draft
 
         if use_draft:
@@ -2490,7 +2498,10 @@ async def _resolve_stream_agent(
             config, _ = await load_config(None, agent_id)
 
         if not config:
-            return default_graph
+            raise HTTPException(
+                status_code=404,
+                detail=(f"Agent '{agent_id}' has no {'draft' if use_draft else 'published'} configuration"),
+            )
 
         from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
         from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
@@ -2562,9 +2573,14 @@ async def _resolve_stream_agent(
         await graph.build_graph()
         app_state.agent_graphs_cache[cache_key] = graph
         return graph
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to build graph for agent_id={agent_id}: {e}")
-        return default_graph
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to build graph for agent '{agent_id}'",
+        )
 
 
 @app.post("/stream")
@@ -2600,6 +2616,8 @@ async def stream(
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
     agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
+    if not agent_registry.is_agent_registry_enabled():
+        agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
         run_agent = None
         if use_draft:
