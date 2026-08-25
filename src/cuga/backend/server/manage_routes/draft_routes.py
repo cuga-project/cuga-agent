@@ -7,7 +7,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from cuga.backend.server.agent_registry import is_agent_registry_enabled
+from cuga.backend.server import agent_registry
 from cuga.backend.server.manage_routes.router import router
 
 from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
@@ -286,7 +286,7 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/supervisor")
 async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = None):
     """Update only the supervisor (subAgents, planApproval) section of the draft."""
-    if not is_agent_registry_enabled():
+    if not agent_registry.is_agent_registry_enabled():
         raise HTTPException(status_code=404, detail="Agent registry is disabled")
     if agent_id is None:
         agent_id = "cuga-default"

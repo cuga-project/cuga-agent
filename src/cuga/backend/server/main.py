@@ -51,7 +51,7 @@ from cuga.config import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     assert_resolved_path_under,
 )
-from cuga.backend.server.agent_registry import is_agent_registry_enabled
+from cuga.backend.server import agent_registry
 from cuga.backend.server import agents_routes
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
@@ -2154,7 +2154,7 @@ async def ui_config():
         {
             "hide_cuga_logo": hide_logo,
             "brand_name": brand_name,
-            "agent_registry": is_agent_registry_enabled(),
+            "agent_registry": agent_registry.is_agent_registry_enabled(),
         }
     )
 
@@ -2480,7 +2480,7 @@ async def _resolve_stream_agent(
     draft_state = getattr(request.app.state, "draft_app_state", None)
     default_graph = (getattr(draft_state, "agent", None) if use_draft else app_state.agent) or app_state.agent
 
-    if not is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
+    if not agent_registry.is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
         return default_graph
 
     cache_key = (agent_id, use_draft)
@@ -2616,7 +2616,7 @@ async def stream(
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
     agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
-    if not is_agent_registry_enabled():
+    if not agent_registry.is_agent_registry_enabled():
         agent_id_header = "cuga-default"
     if agent_id_header == "cuga-default":
         run_agent = None

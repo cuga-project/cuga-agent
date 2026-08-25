@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cuga.backend.server.agents_routes import router
 from cuga.backend.server.auth import require_manage_access
 from cuga.backend.server.config_store import reset_config_db
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _registry_on(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: True,
+    )
 
 
 def _client() -> TestClient:
@@ -91,3 +102,20 @@ def test_delete_nonexistent_agent_returns_404():
     response = client.delete("/api/agents/does-not-exist")
 
     assert response.status_code == 404
+
+
+def test_registry_disabled_hides_extra_agents_and_blocks_mutations(monkeypatch):
+    client = _client()
+    assert client.post("/api/agents", json={"name": "Flight Booker"}).status_code == 200
+
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: False,
+    )
+
+    listed = client.get("/api/agents")
+    assert listed.status_code == 200
+    assert [a["id"] for a in listed.json()["agents"]] == ["cuga-default"]
+
+    assert client.post("/api/agents", json={"name": "Other Agent"}).status_code == 404
+    assert client.delete("/api/agents/flight-booker").status_code == 404

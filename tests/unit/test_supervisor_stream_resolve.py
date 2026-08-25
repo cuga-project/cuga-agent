@@ -13,6 +13,14 @@ from cuga.backend.server import main as main_mod
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _registry_on(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: True,
+    )
+
+
 def _request():
     request = MagicMock()
     request.app.state.draft_app_state = None
@@ -53,3 +61,17 @@ def test_graph_build_error_does_not_fall_back_to_default():
                     asyncio.run(main_mod._resolve_stream_agent(request, "trip-supervisor", False))
     assert exc.value.status_code == 500
     assert "trip-supervisor" in exc.value.detail
+
+
+def test_registry_disabled_ignores_non_default_agent_id(monkeypatch):
+    monkeypatch.setattr(
+        "cuga.backend.server.agent_registry.is_agent_registry_enabled",
+        lambda: False,
+    )
+    request = _request()
+    default_agent = object()
+    with patch.object(main_mod, "app_state") as mock_state:
+        mock_state.agent = default_agent
+        mock_state.agent_graphs_cache = {}
+        resolved = asyncio.run(main_mod._resolve_stream_agent(request, "trip-supervisor", False))
+    assert resolved is default_agent

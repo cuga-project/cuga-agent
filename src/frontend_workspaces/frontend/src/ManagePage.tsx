@@ -506,6 +506,7 @@ export function ManagePage() {
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [agentKind, setAgentKind] = useState<"single" | "supervisor">("single");
+  const [agentRegistry, setAgentRegistry] = useState(false);
   const [subAgents, setSubAgents] = useState<SubAgentRef[]>([]);
   const [planApproval, setPlanApproval] = useState(false);
   const [availableAgents, setAvailableAgents] = useState<AgentItem[]>([]);
@@ -1229,14 +1230,20 @@ export function ManagePage() {
   );
 
   useEffect(() => {
-    if (agentKind !== "supervisor") return;
+    api.getUiConfig()
+      .then((c) => setAgentRegistry(!!c.agent_registry))
+      .catch(() => setAgentRegistry(false));
+  }, []);
+
+  useEffect(() => {
+    if (!agentRegistry || agentKind !== "supervisor") return;
     api.getAgents()
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.agents) setAvailableAgents(data.agents);
       })
       .catch(() => {});
-  }, [agentKind]);
+  }, [agentKind, agentRegistry]);
 
 
   // Knowledge reindex detection — compare current config against the
@@ -1538,7 +1545,7 @@ export function ManagePage() {
                 </VStack>
               </AccordionItem>
 
-              {agentKind === "supervisor" && (
+              {agentRegistry && agentKind === "supervisor" && (
                 <AccordionItem title="Sub-agents" open>
                   <VStack gap={5}>
                     <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>

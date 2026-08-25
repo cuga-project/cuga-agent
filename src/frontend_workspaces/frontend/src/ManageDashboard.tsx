@@ -126,6 +126,7 @@ export function ManageDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [agentRegistry, setAgentRegistry] = useState(false);
   const navigate = useNavigate();
 
   const reloadAgents = () => {
@@ -166,6 +167,12 @@ export function ManageDashboard() {
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    api.getUiConfig()
+      .then((c) => setAgentRegistry(!!c.agent_registry))
+      .catch(() => setAgentRegistry(false));
+  }, []);
+
   useEffect(reloadAgents, []);
 
   useEffect(() => {
@@ -195,9 +202,11 @@ export function ManageDashboard() {
       <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", padding: "2rem 3rem", marginTop: "3rem", width: "100%" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.5rem" }}>
           <Heading>Agent dashboard</Heading>
-          <Button kind="primary" renderIcon={Add} onClick={() => setShowCreateModal(true)}>
-            Create agent
-          </Button>
+          {agentRegistry && (
+            <Button kind="primary" renderIcon={Add} onClick={() => setShowCreateModal(true)}>
+              Create agent
+            </Button>
+          )}
         </div>
         <p style={{ marginBottom: "2rem", color: "#525252" }}>
           Select an agent to configure it and try it out.
@@ -285,7 +294,7 @@ export function ManageDashboard() {
                   >
                     Chat
                   </Button>
-                  {agent.id !== "cuga-default" && (
+                  {agentRegistry && agent.id !== "cuga-default" && (
                     <IconButton
                       label="Delete agent"
                       kind="ghost"
@@ -306,18 +315,20 @@ export function ManageDashboard() {
             <InlineNotification
               kind="info"
               title="No agents configured"
-              subtitle="Create an agent to get started"
+              subtitle={agentRegistry ? "Create an agent to get started" : "No agents configured"}
               lowContrast
               hideCloseButton
             />
-            <Button kind="primary" renderIcon={Add} onClick={() => setShowCreateModal(true)} style={{ marginTop: "1rem" }}>
-              Create agent
-            </Button>
+            {agentRegistry && (
+              <Button kind="primary" renderIcon={Add} onClick={() => setShowCreateModal(true)} style={{ marginTop: "1rem" }}>
+                Create agent
+              </Button>
+            )}
           </div>
         )}
       </div>
 
-      {showCreateModal && (
+      {agentRegistry && showCreateModal && (
         <CreateAgentModal
           onClose={() => setShowCreateModal(false)}
           onCreated={(id) => {
