@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from cuga.backend.server.agent_registry import is_agent_registry_enabled
 from cuga.backend.server.manage_routes.router import router
 
 from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
@@ -137,7 +138,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         if error_messages:
             response_data["message"] = "; ".join(error_messages)
 
-        invalidate_agent_graph_cache(request, str(agent_id), draft=True, published=False)
+        await invalidate_agent_graph_cache(request, str(agent_id), draft=True, published=False)
 
         return JSONResponse(response_data)
     except Exception as e:
@@ -275,7 +276,7 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
             if not name or not str(name).strip():
                 raise HTTPException(status_code=400, detail="Agent name is required")
             await load_and_patch_draft(agent_id, "agent", agent_meta)
-            invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
+            await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft agent: {e}")
@@ -285,6 +286,8 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
 @router.patch("/config/draft/supervisor")
 async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = None):
     """Update only the supervisor (subAgents, planApproval) section of the draft."""
+    if not is_agent_registry_enabled():
+        raise HTTPException(status_code=404, detail="Agent registry is disabled")
     if agent_id is None:
         agent_id = "cuga-default"
     try:
@@ -293,7 +296,7 @@ async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = Non
         if not isinstance(supervisor, dict):
             raise HTTPException(status_code=400, detail="supervisor must be a dict")
         await load_and_patch_draft(agent_id, "supervisor", supervisor)
-        invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
+        await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except HTTPException:
         raise

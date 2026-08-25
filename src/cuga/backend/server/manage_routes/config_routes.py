@@ -544,7 +544,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         if reindex_info:
             response_data["reindex"] = reindex_info
 
-        invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
+        await invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
 
         return JSONResponse(response_data)
     except HTTPException:

@@ -33,6 +33,17 @@ from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 
 
+def next_node_after_prepare(adapter: Any, state: CugaSupervisorState) -> str:
+    """Skip call_model when the user already approved this turn's delegation script."""
+    if (
+        getattr(adapter, "_plan_approval", False)
+        and (adapter.get_metadata(state) or {}).get("plan_approved")
+        and (getattr(state, "script", None) or "").strip()
+    ):
+        return adapter.execute_node_name
+    return "call_model"
+
+
 def _delegate_tool_name(agent_name: str) -> str:
     """Build a VALID PYTHON IDENTIFIER delegate tool name for ``agent_name``.
 
@@ -295,8 +306,12 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             getattr(state, "tool_calls_used_thread", 0)
         )
 
+        next_node = next_node_after_prepare(adapter, state)
+        if next_node != "call_model" and state.script:
+            update_payload["script"] = state.script
+
         return Command(
-            goto="call_model",
+            goto=next_node,
             update=update_payload,
         )
 

@@ -100,6 +100,8 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
             tool_provider = await _create_tool_provider(
                 apps=apps_config,
                 mcp_servers=mcp_servers_config,
+                agent_id=agent_config.get("agent_id"),
+                include_by_app=agent_config.get("include_by_app"),
             )
 
             # Get model config if specified
@@ -171,6 +173,12 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
                 logger.warning(f"Supervisor sub-agent '{ref}': no published config found, skipping")
                 continue
             agent_meta = ref_config.get("agent") or {}
+            tools_list = ref_config.get("tools") or []
+            include_by_app = {
+                t["name"]: t["include"]
+                for t in tools_list
+                if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+            } or None
             # ref_config["tools"] holds registry-app entries (name + include filter), not
             # loadable langchain tool defs — pass app names through `apps` and skip the
             # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
@@ -181,7 +189,9 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
             agent_configs.append(
                 {
                     "name": ref,
-                    "apps": [t["name"] for t in (ref_config.get("tools") or []) if t.get("name")],
+                    "agent_id": ref,
+                    "apps": [t["name"] for t in tools_list if t.get("name")],
+                    "include_by_app": include_by_app,
                     "special_instructions": ref_config.get("special_instructions")
                     or agent_meta.get("description"),
                 }
@@ -242,22 +252,13 @@ async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[An
 async def _create_tool_provider(
     apps: List[Dict[str, Any]],
     mcp_servers: List[Dict[str, Any]],
+    agent_id: Optional[str] = None,
+    include_by_app: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[ToolProviderInterface]:
-    """
-    Create a tool provider from apps and MCP servers configuration.
-    Tools will be loaded from the registry based on app names.
-
-    Args:
-        apps: List of app configurations (can be dict with 'name' or just string name)
-        mcp_servers: List of MCP server configurations
-
-    Returns:
-        ToolProviderInterface instance or None
-    """
+    """Create a tool provider from apps and MCP servers configuration."""
     if not apps and not mcp_servers:
         return None
 
-    # Extract app names from config
     app_names = []
     for app_config in apps:
         if isinstance(app_config, dict):
@@ -267,22 +268,16 @@ async def _create_tool_provider(
         elif isinstance(app_config, str):
             app_names.append(app_config)
 
-    # Create CombinedToolProvider which loads tools from registry
-    # CombinedToolProvider can filter by app names if provided
     if app_names or mcp_servers:
         logger.info(
             f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
         )
-        tool_provider = CombinedToolProvider()
+        tool_provider = CombinedToolProvider(
+            app_names=app_names or None,
+            agent_id=agent_id,
+            get_include_by_app=(lambda: (include_by_app, 0)) if include_by_app else None,
+        )
         await tool_provider.initialize()
-
-        # If specific app names are provided, filter the apps
-        if app_names:
-            # CombinedToolProvider loads all apps by default, but we can filter
-            # The tools will be loaded from registry based on app names when get_tools() is called
-            # For now, we'll let it load all and filter at tool retrieval time
-            logger.info(f"Tools will be loaded from registry for apps: {app_names}")
-
         return tool_provider
 
     return None

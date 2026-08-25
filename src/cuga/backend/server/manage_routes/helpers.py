@@ -16,11 +16,68 @@ def app_state(request: Request):
     return getattr(request.app.state, "app_state", None)
 
 
-def invalidate_agent_graph_cache(request: Request, agent_id: str, *, draft: bool, published: bool) -> None:
-    """Drop cached built graphs for agent_id (see main.py's _resolve_stream_agent).
+def supervisor_ids_referencing(sub_agent_id: str, agents: list[tuple[str, dict]]) -> list[str]:
+    """Return supervisor agent ids whose stored subAgents list includes sub_agent_id."""
+    ids: list[str] = []
+    for agent_id, config in agents:
+        meta = (config or {}).get("agent") or {}
+        if (meta.get("kind") or "single") != "supervisor":
+            continue
+        sub_agents = ((config or {}).get("supervisor") or {}).get("subAgents") or []
+        for entry in sub_agents:
+            if (
+                isinstance(entry, dict)
+                and entry.get("kind") == "internal"
+                and entry.get("ref") == sub_agent_id
+            ):
+                ids.append(agent_id)
+                break
+    return ids
 
-    Called on draft-save/publish so the next /stream request for a supervisor agent rebuilds
-    from the new config instead of serving a stale cached graph. A no-op for cuga-default,
+
+def drop_cached_graphs_for_agent(
+    cache: dict,
+    agent_id: str,
+    *,
+    draft: bool,
+    published: bool,
+    referrer_ids: Optional[list[str]] = None,
+) -> None:
+    targets = [agent_id, *(referrer_ids or [])]
+    for target in targets:
+        if draft:
+            cache.pop((target, True), None)
+        if published:
+            cache.pop((target, False), None)
+
+
+async def _referrer_ids_for_agent(agent_id: str, *, draft: bool, published: bool) -> list[str]:
+    from cuga.backend.server.config_store import list_agents_with_configs, load_config, load_draft
+
+    rows = await list_agents_with_configs()
+    configs: list[tuple[str, dict]] = []
+    for row in rows:
+        other_id = row["agent_id"]
+        if other_id == agent_id:
+            continue
+        if published:
+            cfg, _ = await load_config(None, other_id)
+            if cfg:
+                configs.append((other_id, cfg))
+        if draft:
+            draft_cfg = await load_draft(other_id)
+            if draft_cfg:
+                configs.append((other_id, draft_cfg))
+    return supervisor_ids_referencing(agent_id, configs)
+
+
+async def invalidate_agent_graph_cache(
+    request: Request, agent_id: str, *, draft: bool, published: bool
+) -> None:
+    """Drop cached built graphs for agent_id and supervisors that delegate to it.
+
+    Called on draft-save/publish so the next /stream request rebuilds from the new
+    config instead of serving a stale cached graph. A no-op for cuga-default,
     which never uses this cache.
     """
     if agent_id == DEFAULT_AGENT_ID:
@@ -29,10 +86,8 @@ def invalidate_agent_graph_cache(request: Request, agent_id: str, *, draft: bool
     cache = getattr(state, "agent_graphs_cache", None) if state is not None else None
     if not cache:
         return
-    if draft:
-        cache.pop((agent_id, True), None)
-    if published:
-        cache.pop((agent_id, False), None)
+    referrers = await _referrer_ids_for_agent(agent_id, draft=draft, published=published)
+    drop_cached_graphs_for_agent(cache, agent_id, draft=draft, published=published, referrer_ids=referrers)
 
 
 def draft_state(request: Request):

@@ -1000,6 +1000,9 @@ class AgentState(BaseModel):
     # flags (e.g. plan_approved) on the outer AgentState across the HITL interrupt boundary — the
     # subgraph's own state does not survive a WaitForResponse pause/resume.
     supervisor_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Frozen supervisor delegation script. Same interrupt-boundary reason as supervisor_metadata:
+    # without this field the approved plan is dropped and resume re-calls the model.
+    script: Optional[str] = None
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None
