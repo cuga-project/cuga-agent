@@ -142,8 +142,11 @@ validators = [
     Validator("observability.litellm_local_model_cost_map", default=True),
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.appworld_final_answer_plain", default=False),
-    Validator("final_answer.instructions", default="", is_type_of=str),
-    Validator("final_answer.function", default="", is_type_of=str),
+    # No is_type_of here: strict validators raise at import time for malformed
+    # DYNACONF_FINAL_ANSWER__* env values (outside the ValidationError catch
+    # below). The consumers guard non-str values instead (answer_function.py).
+    Validator("final_answer.instructions", default=""),
+    Validator("final_answer.function", default=""),
     Validator("advanced_features.tracker_enabled", default=False),
     Validator("advanced_features.run_receipt", default=False),
     Validator("advanced_features.lite_mode", default=False),
