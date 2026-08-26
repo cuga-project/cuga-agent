@@ -28,7 +28,6 @@ from pydantic import ConfigDict
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.indexing import InMemoryRecordManager
-from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cuga.backend.knowledge.config import (
@@ -1813,6 +1812,10 @@ class KnowledgeEngine:
         # twice (duplicate ONNX session + download). HF file-locking protects the
         # blob, not a double load.
         self._embedder_init_lock = threading.Lock()
+        # Same race for DocumentConverter: warmup + parallel uploads can all
+        # miss the cache and each load layout/OCR weights (~1-4GB that ONNX/
+        # PyTorch will not return to the OS).
+        self._docling_converter_lock = threading.Lock()
 
         # Vector store LRU cache (bounded)
         self._vector_stores: collections.OrderedDict[str, VectorStoreAdapter] = collections.OrderedDict()
@@ -2104,61 +2107,20 @@ class KnowledgeEngine:
             )
 
     async def warmup(self) -> dict[str, Any]:
-        """Preload heavyweight resources so callers can gate on readiness.
+        """Preload embeddings (and an optional reranker). Docling stays lazy.
 
-        Three preloads, all in worker threads so we don't block the event loop:
-          1. metadata DB (sqlite/pg schema bootstrap)
-          2. embeddings (fastembed ONNX model load: ~100-300 MB)
-          3. Docling layout model (~22 s on first call; 770-weight load)
-
-        Doing these at startup means the user's FIRST ingest doesn't pay the
-        cold-start tax — important because the first ingest is also when the
-        user is most impatient.
+        Metadata + the configured embedder are needed for every ingest,
+        including markdown. The PDF layout/OCR/tableformer pipeline is not:
+        those weights are 1-4 GB and stay resident for the process lifetime
+        because ONNX/PyTorch do not return that RSS to the OS. Markdown and
+        other native-text uploads must not pay that tax. The first
+        PDF/office/image ingest builds the converter via
+        ``_get_docling_converter``.
         """
-        import time as _time
-
         await self._ensure_metadata_ready()
-        # Step 2: embeddings — same call existing code paths use.
         await asyncio.to_thread(self._ensure_embeddings)
+        logger.info("Knowledge prewarm complete: embeddings loaded (Docling PDF pipeline is lazy)")
 
-        # Step 3: Docling. Only build the converter for the *configured* mode
-        # — if the user later switches to a different mode it'll rebuild then.
-        # Loading the layout model is the single biggest cold-start cost on
-        # the parse stage, so this is where the user-visible win comes from.
-        docling_t0 = _time.monotonic()
-        docling_loaded = False
-        docling_error: str | None = None
-        try:
-            # Step A: build the converter (cheap — just registers options).
-            converter = await asyncio.to_thread(self._get_docling_converter)
-            # Step B: FORCE the pipeline + models to load right now. Without
-            # this, Docling lazy-loads the layout-model weights (~22s) on the
-            # first convert() call, defeating the whole point of prewarm.
-            try:
-                from docling.datamodel.base_models import InputFormat
-
-                await asyncio.to_thread(converter.initialize_pipeline, InputFormat.PDF)
-            except Exception as init_err:  # pragma: no cover - defensive
-                logger.warning(
-                    "Docling pipeline init during prewarm raised; weights will "
-                    "still lazy-load on first ingest: {}",
-                    init_err,
-                )
-            docling_loaded = True
-        except Exception as e:  # pragma: no cover - environmental
-            docling_error = str(e)
-            logger.warning("Docling prewarm failed (will lazy-load on first ingest): {}", e)
-        docling_dt = _time.monotonic() - docling_t0
-        if docling_loaded:
-            logger.info(
-                "Knowledge prewarm complete: embeddings + Docling (mode={!r}) loaded in {:.2f}s",
-                self._config.docling_pdf_mode,
-                docling_dt,
-            )
-
-        # Step 4: reranker — only when a profile has it enabled. Load the
-        # cross-encoder now so the first search doesn't pay the model load
-        # (~1-3s). Best-effort: on failure search degrades to fusion ranking.
         reranker_prewarmed = False
         if getattr(self._config, "rerank_enabled", False):
             try:
@@ -2175,9 +2137,9 @@ class KnowledgeEngine:
             "embedding_provider": self._config.embedding_provider,
             "embedding_model": self._config.embedding_model or "auto",
             "embeddings_initialized": self._default_embeddings is not None,
-            "docling_prewarmed": docling_loaded,
-            "docling_prewarm_seconds": round(docling_dt, 2),
-            "docling_prewarm_error": docling_error,
+            "docling_prewarmed": False,
+            "docling_prewarm_seconds": 0.0,
+            "docling_prewarm_error": None,
             "reranker_prewarmed": reranker_prewarmed,
         }
 
@@ -4689,6 +4651,34 @@ class KnowledgeEngine:
 
     # --- Document loading ---
 
+    # Native-text formats skip Docling entirely. Routing .md/.csv/etc. through
+    # DoclingLoader used to import torch + build a PDF DocumentConverter
+    # (layout/OCR/tableformer) on first upload — several GB of RSS that the
+    # process never returns to the OS, even for a few 100 KB markdown files.
+    _TEXT_FORMATS = {
+        ".txt",
+        ".text",
+        ".log",
+        ".json",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".md",
+        ".markdown",
+        ".rst",
+        ".csv",
+        ".tsv",
+        ".asciidoc",
+        ".adoc",
+        ".tex",
+        ".latex",
+    }
+
+    # Rich formats that actually need Docling (layout, tables, OCR, images).
     _DOCLING_FORMATS = {
         ".pdf",
         ".docx",
@@ -4696,12 +4686,6 @@ class KnowledgeEngine:
         ".xlsx",
         ".html",
         ".htm",
-        ".md",
-        ".csv",
-        ".asciidoc",
-        ".adoc",
-        ".tex",
-        ".latex",
         ".png",
         ".jpg",
         ".jpeg",
@@ -5066,14 +5050,6 @@ class KnowledgeEngine:
                     packs (cuga's Docker images bundle a curated set; macOS
                     devs: ``brew install tesseract tesseract-lang``).
         """
-        import os
-        from pathlib import Path
-
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.datamodel.accelerator_options import AcceleratorOptions, AcceleratorDevice
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-
         mode = (self._config.docling_pdf_mode or "accurate").lower()
         if mode not in ("fast", "balanced", "accurate"):
             logger.warning("Unknown docling_pdf_mode={!r}; falling back to 'accurate'", mode)
@@ -5088,9 +5064,31 @@ class KnowledgeEngine:
         # runtime invalidates the cache in commit_knowledge_update, so
         # auto re-resolves with the new device.
         cache_key = f"{mode}|{effective_layout_engine}"
-        cached = self._docling_converters.get(cache_key)
-        if cached is not None:
-            return cached
+        lock = getattr(self, "_docling_converter_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._docling_converter_lock = lock
+        with lock:
+            cached = self._docling_converters.get(cache_key)
+            if cached is not None:
+                return cached
+            converter = self._build_docling_converter(mode, effective_layout_engine, device_label)
+            self._docling_converters[cache_key] = converter
+            return converter
+
+    def _build_docling_converter(
+        self,
+        mode: str,
+        effective_layout_engine: str,
+        device_label: str,
+    ):
+        import os
+        from pathlib import Path
+
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.accelerator_options import AcceleratorOptions, AcceleratorDevice
+        from docling.document_converter import DocumentConverter, PdfFormatOption
 
         artifacts_path_str = os.environ.get("DOCLING_ARTIFACTS_PATH")
         artifacts_path = Path(artifacts_path_str) if artifacts_path_str else None
@@ -5285,7 +5283,6 @@ class KnowledgeEngine:
         converter = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
         )
-        self._docling_converters[cache_key] = converter
         # Layout actually runs on `device_label` only via the transformers
         # engine; the ONNX engine is CPU-only regardless of device_label.
         layout_device = device_label if effective_layout_engine == "transformers" else "cpu"
@@ -5308,8 +5305,29 @@ class KnowledgeEngine:
         )
         return converter
 
+    def _load_plain_text_chunks(self, file_path: Path, chunk_size: int, chunk_overlap: int) -> list[Document]:
+        """Token-aware split for native-text files. Never imports Docling."""
+        text = file_path.read_text(errors="replace")
+        splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+        chunks = splitter.split_text(text)
+        return [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
+
+    def _load_with_docling(self, file_path: Path, chunk_size: int) -> list[Document]:
+        from langchain_docling import DoclingLoader
+        from langchain_docling.loader import ExportType
+
+        chunker = self._build_docling_chunker(chunk_size)
+        loader_kwargs: dict = {
+            "file_path": str(file_path),
+            "export_type": ExportType.DOC_CHUNKS,
+            "converter": self._get_docling_converter(),
+        }
+        if chunker is not None:
+            loader_kwargs["chunker"] = chunker
+        return DoclingLoader(**loader_kwargs).load()
+
     def _load_document(self, file_path: Path) -> list[Document]:
-        """Load a document using Docling for supported formats, fallback for plain text."""
+        """Load a document: plain-text splitter for native text, Docling for rich formats."""
         suffix = file_path.suffix.lower()
         logger.info(
             f"Loading document: {file_path.name} (suffix={suffix}, size={file_path.stat().st_size} bytes)"
@@ -5317,61 +5335,20 @@ class KnowledgeEngine:
 
         chunk_size, chunk_overlap = self._get_effective_chunk_settings()
 
-        if suffix in self._DOCLING_FORMATS:
+        if suffix in self._TEXT_FORMATS:
+            docs = self._load_plain_text_chunks(file_path, chunk_size, chunk_overlap)
+        elif suffix in self._DOCLING_FORMATS:
             try:
-                from langchain_docling.loader import ExportType
-
-                chunker = self._build_docling_chunker(chunk_size)
-                loader_kwargs: dict = {
-                    "file_path": str(file_path),
-                    "export_type": ExportType.DOC_CHUNKS,
-                    "converter": self._get_docling_converter(),
-                }
-                if chunker is not None:
-                    loader_kwargs["chunker"] = chunker
-                loader = DoclingLoader(**loader_kwargs)
-                docs = loader.load()
+                docs = self._load_with_docling(file_path, chunk_size)
             except Exception as e:
                 translated = _translate_document_load_error(file_path, e)
                 logger.error(
                     f"Docling failed to parse {file_path.name}: {type(translated).__name__}: {translated}"
                 )
                 raise translated from e
-        elif suffix in (
-            ".txt",
-            ".text",
-            ".log",
-            ".json",
-            ".xml",
-            ".yaml",
-            ".yml",
-            ".toml",
-            ".ini",
-            ".cfg",
-            ".conf",
-        ):
-            text = file_path.read_text(errors="replace")
-            # Token-aware split when we have an HF tokenizer for the active
-            # embedder — guarantees no chunk exceeds the model's max_seq_length.
-            # Falls back to char-based for providers without an HF tokenizer
-            # (legacy fastembed default, cohere/voyage/gemini under cl100k).
-            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
-            chunks = splitter.split_text(text)
-            docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
         else:
             try:
-                from langchain_docling.loader import ExportType
-
-                chunker = self._build_docling_chunker(chunk_size)
-                loader_kwargs = {
-                    "file_path": str(file_path),
-                    "export_type": ExportType.DOC_CHUNKS,
-                    "converter": self._get_docling_converter(),
-                }
-                if chunker is not None:
-                    loader_kwargs["chunker"] = chunker
-                loader = DoclingLoader(**loader_kwargs)
-                docs = loader.load()
+                docs = self._load_with_docling(file_path, chunk_size)
             except Exception:
                 raise ValueError(f"Unsupported file format: {suffix}")
 

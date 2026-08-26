@@ -781,9 +781,7 @@ async def lifespan(app: FastAPI):
 
         async def _warm():
             try:
-                app_state.set_subsystem_status(
-                    "knowledge", "starting", "Loading knowledge embedding + parser models"
-                )
+                app_state.set_subsystem_status("knowledge", "starting", "Loading knowledge embedding models")
                 warmup_result = await app_state.knowledge_engine.warmup()
                 app_state.set_subsystem_status(
                     "knowledge", "ready", "Knowledge subsystem ready", warmup_result
