@@ -1,0 +1,8 @@
+# Alerts closed by the change that stops internal details being sent out.
+# GitHub alerts #2, #29, #53, #54, #55, #146, #166, #167, #168, #169, #175.
+py/stack-trace-exposure	src/cuga/backend/server/main.py
+py/stack-trace-exposure	src/cuga/backend/server/manage_routes/config_routes.py
+py/stack-trace-exposure	src/cuga/backend/server/a2a/router.py
+py/clear-text-logging-sensitive-data	src/cuga/backend/tools_env/registry/registry/authentication/appworld_auth_manager.py
+py/clear-text-logging-sensitive-data	src/cuga/backend/tools_env/registry/tests/test_auth/auth_server.py
+py/bind-socket-all-network-interfaces	src/system_tests/profiling/startup/measure_server_startup.py
