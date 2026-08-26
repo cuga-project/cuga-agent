@@ -152,6 +152,7 @@ def test_resolve_relevant_apps_sets_app_match_attributes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_task_analyzer_routes_to_location_resolver(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.task_decomposition_planning import analyze_task as analyze_task_module
     from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
     from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.task_analyzer_agent import (
         AnalyzeTaskOutput,
@@ -160,9 +161,14 @@ async def test_task_analyzer_routes_to_location_resolver(monkeypatch):
         Attributes,
     )
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
+    # Patch via the module's own `settings` reference, not a freshly re-imported
+    # one: some other test in the suite does importlib.reload(cuga.config),
+    # which rebuilds cuga.config.settings into a new object while analyze_task.py
+    # (already imported earlier) keeps its own, now-different reference. Patching
+    # a freshly-imported `settings` here would silently mutate the wrong object.
+    settings = analyze_task_module.settings
     monkeypatch.setattr(settings.advanced_features, "mode", "web")
     monkeypatch.setattr(settings.advanced_features, "use_location_resolver", True)
     monkeypatch.setattr(settings.advanced_features, "benchmark", "not-appworld")
@@ -207,14 +213,16 @@ async def test_task_analyzer_routes_to_location_resolver(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_task_analyzer_agent_skips_read_only_deep_analysis(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent import (
+        task_analyzer_agent as taa_module,
+    )
     from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.task_analyzer_agent import (
         TaskAnalyzerAgent,
     )
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "not-webarena")
+    monkeypatch.setattr(taa_module.settings.advanced_features, "benchmark", "not-webarena")
 
     agent = object.__new__(TaskAnalyzerAgent)
     agent.name = "TaskAnalyzerAgent"
@@ -234,12 +242,14 @@ async def test_task_analyzer_agent_takes_read_only_deep_analysis_branch(monkeypa
     from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.tasks.navigation_paths_task import (
         Approaches,
     )
+    from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent import (
+        task_analyzer_agent as taa_module,
+    )
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "not-webarena")
-    monkeypatch.setattr(settings.advanced_features, "use_paraphrase", False)
+    monkeypatch.setattr(taa_module.settings.advanced_features, "benchmark", "not-webarena")
+    monkeypatch.setattr(taa_module.settings.advanced_features, "use_paraphrase", False)
 
     class _FakeBoundRunnable:
         def __init__(self, result):
@@ -366,12 +376,14 @@ async def test_task_decomposition_appworld_type_rewrite_attribute(monkeypatch):
         TaskDecompositionPlan,
         DecomposedTask,
     )
+    from cuga.backend.cuga_graph.nodes.task_decomposition_planning import (
+        task_decomposition as td_module,
+    )
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.features, "task_decomposition", True)
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "appworld")
+    monkeypatch.setattr(td_module.settings.features, "task_decomposition", True)
+    monkeypatch.setattr(td_module.settings.advanced_features, "benchmark", "appworld")
 
     task_decomposition_plan = TaskDecompositionPlan(
         thoughts="t",
@@ -460,14 +472,14 @@ def _api_planner_conclude_output():
 
 @pytest.mark.asyncio
 async def test_api_planner_parse_fallback_used_on_malformed_json(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api import api_planner as api_planner_module
     from cuga.backend.cuga_graph.nodes.api.api_planner import ApiPlanner
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "lite_mode", False)
-    monkeypatch.setattr(settings.advanced_features, "api_planner_hitl", False)
-    monkeypatch.setattr(settings.features, "code_output_reflection", False)
+    monkeypatch.setattr(api_planner_module.settings.advanced_features, "lite_mode", False)
+    monkeypatch.setattr(api_planner_module.settings.advanced_features, "api_planner_hitl", False)
+    monkeypatch.setattr(api_planner_module.settings.features, "code_output_reflection", False)
 
     output = _api_planner_conclude_output()
 
@@ -489,14 +501,14 @@ async def test_api_planner_parse_fallback_used_on_malformed_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_api_planner_no_parse_fallback_needed_for_clean_json(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api import api_planner as api_planner_module
     from cuga.backend.cuga_graph.nodes.api.api_planner import ApiPlanner
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "lite_mode", False)
-    monkeypatch.setattr(settings.advanced_features, "api_planner_hitl", False)
-    monkeypatch.setattr(settings.features, "code_output_reflection", False)
+    monkeypatch.setattr(api_planner_module.settings.advanced_features, "lite_mode", False)
+    monkeypatch.setattr(api_planner_module.settings.advanced_features, "api_planner_hitl", False)
+    monkeypatch.setattr(api_planner_module.settings.features, "code_output_reflection", False)
 
     output = _api_planner_conclude_output()
 
@@ -622,10 +634,9 @@ def _make_code_agent(chain):
 async def test_code_agent_execution_error_and_output_fallback_attributes(monkeypatch):
     from cuga.backend.cuga_graph.nodes.api.code_agent import code_agent as ca_module
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.features, "code_output_summary", False)
+    monkeypatch.setattr(ca_module.settings.features, "code_output_summary", False)
 
     class _FakeChain:
         async def ainvoke(self, input):
@@ -654,10 +665,9 @@ async def test_code_agent_execution_error_and_output_fallback_attributes(monkeyp
 async def test_code_agent_no_code_blocks_and_clean_json_output(monkeypatch):
     from cuga.backend.cuga_graph.nodes.api.code_agent import code_agent as ca_module
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.features, "code_output_summary", False)
+    monkeypatch.setattr(ca_module.settings.features, "code_output_summary", False)
 
     class _FakeChain:
         async def ainvoke(self, input):
@@ -719,12 +729,12 @@ async def test_cuga_lite_node_detects_error_in_answer(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import cuga_lite_node as cuga_lite_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "sub_task_keep_last_n", 100)
+    monkeypatch.setattr(cuga_lite_node_module.settings.advanced_features, "sub_task_keep_last_n", 100)
 
     node = object.__new__(CugaLiteNode)
     node.name = "CugaLite"
@@ -754,12 +764,12 @@ async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cuga_lite_node_empty_answer_uses_fallback(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import cuga_lite_node as cuga_lite_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
     from cuga.backend.cuga_graph.state.agent_state import AgentState
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "sub_task_keep_last_n", 100)
+    monkeypatch.setattr(cuga_lite_node_module.settings.advanced_features, "sub_task_keep_last_n", 100)
 
     node = object.__new__(CugaLiteNode)
     node.name = "CugaLite"
@@ -794,13 +804,16 @@ async def test_cuga_lite_node_empty_answer_uses_fallback(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nl_auto_continue_fast_path(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as nlac_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
         classify_nl_auto_continue_decision,
     )
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+    # Patch via the module's own `settings` reference - see the comment in
+    # test_task_analyzer_routes_to_location_resolver for why a freshly
+    # re-imported `settings` can silently be the wrong object.
+    monkeypatch.setattr(nlac_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     with tracer.start_as_current_span("test-node-span"):
         decision = await classify_nl_auto_continue_decision(
@@ -815,13 +828,16 @@ async def test_nl_auto_continue_fast_path(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nl_auto_continue_llm_classifies_true(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as nlac_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
         classify_nl_auto_continue_decision,
     )
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+    # Patch via the module's own `settings` reference - see the comment in
+    # test_task_analyzer_routes_to_location_resolver for why a freshly
+    # re-imported `settings` can silently be the wrong object.
+    monkeypatch.setattr(nlac_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     class _FakeLLM:
         async def ainvoke(self, messages, config=None):
@@ -841,13 +857,16 @@ async def test_nl_auto_continue_llm_classifies_true(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nl_auto_continue_llm_classifies_false(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as nlac_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
         classify_nl_auto_continue_decision,
     )
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+    # Patch via the module's own `settings` reference - see the comment in
+    # test_task_analyzer_routes_to_location_resolver for why a freshly
+    # re-imported `settings` can silently be the wrong object.
+    monkeypatch.setattr(nlac_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     class _FakeLLM:
         async def ainvoke(self, messages, config=None):
@@ -869,13 +888,16 @@ async def test_nl_auto_continue_llm_classifies_false(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nl_auto_continue_llm_unparsable_output(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as nlac_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
         classify_nl_auto_continue_decision,
     )
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+    # Patch via the module's own `settings` reference - see the comment in
+    # test_task_analyzer_routes_to_location_resolver for why a freshly
+    # re-imported `settings` can silently be the wrong object.
+    monkeypatch.setattr(nlac_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     class _FakeLLM:
         async def ainvoke(self, messages, config=None):
@@ -894,14 +916,14 @@ async def test_nl_auto_continue_llm_unparsable_output(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nl_auto_continue_blocked_claim_override(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as nlac_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
         classify_nl_auto_continue_decision,
         BlockedClaimEvidence,
     )
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+    monkeypatch.setattr(nlac_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     class _FakeLLM:
         async def ainvoke(self, messages, config=None):
@@ -1333,11 +1355,11 @@ def test_normalize_response_recovers_empty_content_from_tool_calls(monkeypatch):
 async def test_sandbox_node_execution_error_attribute(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
 
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import sandbox_node as sandbox_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(settings.policy, "enabled", False)
+    monkeypatch.setattr(sandbox_node_module.settings.policy, "enabled", False)
 
     adapter = _make_graph_adapter()
 
@@ -1370,10 +1392,14 @@ async def test_sandbox_node_execution_error_attribute(monkeypatch):
 async def test_sandbox_node_reflection_failure_attribute(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
 
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import sandbox_node as sandbox_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
-    from cuga.config import settings
 
     tracer, exporter = _start_recording_span(monkeypatch)
+    # Patch via the module's own `settings` reference - see the comment in
+    # test_task_analyzer_routes_to_location_resolver for why a freshly
+    # re-imported `settings` can silently be the wrong object.
+    settings = sandbox_node_module.settings
     monkeypatch.setattr(settings.policy, "enabled", False)
     monkeypatch.setattr(settings.advanced_features, "reflection_enabled", True)
 
