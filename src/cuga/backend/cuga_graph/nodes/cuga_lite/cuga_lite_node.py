@@ -7,6 +7,7 @@ from typing import Literal, Dict, Any, List, Optional, Callable
 from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
+from opentelemetry import trace as otel_trace
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
@@ -484,6 +485,7 @@ class CugaLiteNode(BaseNode):
         )
         # Check for errors
         has_error = self._has_error(answer)
+        otel_trace.get_current_span().set_attribute("cuga.cuga_lite.answer_has_error", has_error)
         if has_error:
             logger.warning(f"Detected error in answer content: {answer[:200]}...")
 
@@ -537,7 +539,11 @@ class CugaLiteNode(BaseNode):
         )
 
         # Check if answer is empty and provide a fallback
-        if not answer or not answer.strip():
+        fallback_answer_used = not answer or not answer.strip()
+        otel_trace.get_current_span().set_attribute(
+            "cuga.cuga_lite.fallback_answer_used", fallback_answer_used
+        )
+        if fallback_answer_used:
             logger.warning("Empty final answer detected, using fallback")
             answer = self._generate_fallback_answer(state, new_var_names)
 

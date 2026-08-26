@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.config import settings
 
@@ -277,15 +278,23 @@ async def classify_nl_auto_continue_decision(
     ``evidence`` is what the harness knows about the turn; without it the
     unverified-blocker override never fires and behavior is unchanged.
     """
+
+    def _record_decision(path: str, auto_continue: bool) -> None:
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.nl_auto_continue.decision_path", path)
+        span.set_attribute("cuga.nl_auto_continue.auto_continue", auto_continue)
+
     if not getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True):
         return AutoContinueDecision(auto_continue=False)
     visible = normalize_assistant_text(assistant_visible)
     reasoning = normalize_assistant_text(reasoning_excerpt)
     if looks_like_planning_text(visible):
         logger.info("NL auto-continue: planning-text fast-path matched; auto-continuing")
+        _record_decision("fast_path", True)
         return AutoContinueDecision(auto_continue=True)
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
+        _record_decision("empty_combined", False)
         return AutoContinueDecision(auto_continue=False)
     user_block = (
         "Classify this assistant output (content + reasoning below).\n\n"
@@ -306,11 +315,14 @@ async def classify_nl_auto_continue_decision(
         parsed = parse_auto_continue_json(getattr(resp, "content", "") or "")
         if parsed is None:
             logger.warning("NL auto-continue classifier returned unparsable output; treating as finalize")
+            _record_decision("llm_unparsable", False)
             return finalize
         if parsed:
+            _record_decision("llm_classify_true", True)
             return AutoContinueDecision(auto_continue=True)
     except Exception as e:
         logger.warning(f"NL auto-continue classifier failed: {e}")
+        _record_decision("llm_error", False)
         return finalize
 
     # The classifier explicitly chose finalize (parsed False). Only that verdict
@@ -325,7 +337,9 @@ async def classify_nl_auto_continue_decision(
             "NL auto-continue: turn-1 inability claim with tools bound and zero executed "
             "calls — overriding finalize with one corrective retry (issue #610)"
         )
+        _record_decision("blocked_override", True)
         return AutoContinueDecision(auto_continue=True, blocked_override=True)
+    _record_decision("llm_classify_false", False)
     return finalize
 
 

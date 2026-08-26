@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Tuple
 
 from langchain_core.tools import BaseTool, StructuredTool
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
@@ -272,6 +273,9 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                     duration_ms=0.0,
                     error=error_msg,
                 )
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.toolguard.blocked_reason", "unexpected_arguments"
+                )
                 return {"error": error_msg}
 
             runtime = await self._get_or_create_toolguard_runtime()
@@ -282,6 +286,9 @@ class ToolGuardingToolProvider(ToolProviderInterface):
                     arguments=all_kwargs,
                 )
                 if error:
+                    otel_trace.get_current_span().set_attribute(
+                        "cuga.toolguard.blocked_reason", "policy_violation"
+                    )
                     return {
                         "error": f"Tool call blocked by policy: {error}",
                         "blocked_by_policy": True,

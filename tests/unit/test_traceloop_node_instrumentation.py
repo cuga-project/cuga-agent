@@ -679,3 +679,303 @@ async def test_code_agent_no_code_blocks_and_clean_json_output(monkeypatch):
     assert attrs["cuga.code_agent.code_blocks_found"] is False
     assert attrs["cuga.code_agent.execution_error"] is False
     assert attrs["cuga.code_agent.output_parse_fallback_used"] is False
+
+
+# ---------------------------------------------------------------------------
+# cuga_lite_node.py - cuga.cuga_lite.answer_has_error / fallback_answer_used
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cuga_lite_node_detects_error_in_answer(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    node = object.__new__(CugaLiteNode)
+    node.name = "CugaLite"
+    node._background_tasks = set()
+
+    state = AgentState(
+        input="do something",
+        url="",
+        elements="",
+        sub_task="do it",
+        sub_task_app="myapp",
+        sub_task_type="api",
+        final_answer="Error during execution: sandbox exploded",
+        api_planner_history=[],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await node._process_results(
+            state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
+        )
+
+    assert command.goto == "PlanControllerAgent"
+    assert _attrs(exporter)["cuga.cuga_lite.answer_has_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "sub_task_keep_last_n", 100)
+
+    node = object.__new__(CugaLiteNode)
+    node.name = "CugaLite"
+    node._background_tasks = set()
+
+    state = AgentState(
+        input="do something",
+        url="",
+        elements="",
+        sub_task="do it",
+        sub_task_app="myapp",
+        sub_task_type="api",
+        final_answer="All done, here is the result.",
+        api_planner_history=[],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await node._process_results(
+            state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
+        )
+
+    assert command.goto == "PlanControllerAgent"
+    attrs = _attrs(exporter)
+    assert attrs["cuga.cuga_lite.answer_has_error"] is False
+    assert attrs["cuga.cuga_lite.fallback_answer_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_cuga_lite_node_empty_answer_uses_fallback(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "sub_task_keep_last_n", 100)
+
+    node = object.__new__(CugaLiteNode)
+    node.name = "CugaLite"
+    node._background_tasks = set()
+
+    state = AgentState(
+        input="do something",
+        url="",
+        elements="",
+        sub_task="do it",
+        sub_task_app="myapp",
+        sub_task_type="api",
+        final_answer="   ",
+        api_planner_history=[],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await node._process_results(
+            state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
+        )
+
+    assert command.goto == "PlanControllerAgent"
+    attrs = _attrs(exporter)
+    assert attrs["cuga.cuga_lite.answer_has_error"] is False
+    assert attrs["cuga.cuga_lite.fallback_answer_used"] is True
+
+
+# ---------------------------------------------------------------------------
+# nl_auto_continue_classifier.py - cuga.nl_auto_continue.decision_path / auto_continue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_nl_auto_continue_fast_path(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        classify_nl_auto_continue_decision,
+    )
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+
+    with tracer.start_as_current_span("test-node-span"):
+        decision = await classify_nl_auto_continue_decision(
+            llm=None, assistant_visible="We need to search the student_loan app.", reasoning_excerpt=None
+        )
+
+    assert decision.auto_continue is True
+    attrs = _attrs(exporter)
+    assert attrs["cuga.nl_auto_continue.decision_path"] == "fast_path"
+    assert attrs["cuga.nl_auto_continue.auto_continue"] is True
+
+
+@pytest.mark.asyncio
+async def test_nl_auto_continue_llm_classifies_true(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        classify_nl_auto_continue_decision,
+    )
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+
+    class _FakeLLM:
+        async def ainvoke(self, messages, config=None):
+            return AIMessage(content='{"auto_continue": true}')
+
+    with tracer.start_as_current_span("test-node-span"):
+        decision = await classify_nl_auto_continue_decision(
+            llm=_FakeLLM(),
+            assistant_visible="Something ambiguous that isn't a clean plan sentence and isn't empty either.",
+            reasoning_excerpt=None,
+        )
+
+    assert decision.auto_continue is True
+    attrs = _attrs(exporter)
+    assert attrs["cuga.nl_auto_continue.decision_path"] == "llm_classify_true"
+
+
+@pytest.mark.asyncio
+async def test_nl_auto_continue_llm_classifies_false(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        classify_nl_auto_continue_decision,
+    )
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+
+    class _FakeLLM:
+        async def ainvoke(self, messages, config=None):
+            return AIMessage(content='{"auto_continue": false}')
+
+    with tracer.start_as_current_span("test-node-span"):
+        decision = await classify_nl_auto_continue_decision(
+            llm=_FakeLLM(),
+            assistant_visible="Done. All 15 artists are followed on Spotify.",
+            reasoning_excerpt=None,
+        )
+
+    assert decision.auto_continue is False
+    assert decision.blocked_override is False
+    attrs = _attrs(exporter)
+    assert attrs["cuga.nl_auto_continue.decision_path"] == "llm_classify_false"
+    assert attrs["cuga.nl_auto_continue.auto_continue"] is False
+
+
+@pytest.mark.asyncio
+async def test_nl_auto_continue_llm_unparsable_output(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        classify_nl_auto_continue_decision,
+    )
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+
+    class _FakeLLM:
+        async def ainvoke(self, messages, config=None):
+            return AIMessage(content="not json at all")
+
+    with tracer.start_as_current_span("test-node-span"):
+        decision = await classify_nl_auto_continue_decision(
+            llm=_FakeLLM(),
+            assistant_visible="Something ambiguous that isn't a clean plan sentence and isn't empty either.",
+            reasoning_excerpt=None,
+        )
+
+    assert decision.auto_continue is False
+    assert _attrs(exporter)["cuga.nl_auto_continue.decision_path"] == "llm_unparsable"
+
+
+@pytest.mark.asyncio
+async def test_nl_auto_continue_blocked_claim_override(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+        classify_nl_auto_continue_decision,
+        BlockedClaimEvidence,
+    )
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True)
+
+    class _FakeLLM:
+        async def ainvoke(self, messages, config=None):
+            return AIMessage(content='{"auto_continue": false}')
+
+    evidence = BlockedClaimEvidence(tools_available=True, code_executed=False, retry_used=False)
+
+    with tracer.start_as_current_span("test-node-span"):
+        decision = await classify_nl_auto_continue_decision(
+            llm=_FakeLLM(),
+            assistant_visible="I'm unable to access the required tools to complete this task.",
+            reasoning_excerpt=None,
+            evidence=evidence,
+        )
+
+    assert decision.auto_continue is True
+    assert decision.blocked_override is True
+    attrs = _attrs(exporter)
+    assert attrs["cuga.nl_auto_continue.decision_path"] == "blocked_override"
+    assert attrs["cuga.nl_auto_continue.auto_continue"] is True
+
+
+# ---------------------------------------------------------------------------
+# providers/toolguard.py - cuga.toolguard.blocked_reason
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_toolguard_unexpected_arguments_blocked_reason(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+    from tests.unit.test_toolguard_provider import DummyProvider, _make_recording_tool
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    calls = []
+    raw_tool = _make_recording_tool(calls)
+    provider = ToolGuardingToolProvider(DummyProvider([raw_tool]), policy_storage=None)
+    guarded_tool = (await provider.get_tools("runtime_tools"))[0]
+
+    # The sandbox/CodeAct caller invokes the raw coroutine directly (bypassing
+    # StructuredTool.ainvoke()'s own schema validation, which would otherwise
+    # silently strip an unknown field before guarded_tool_func ever saw it).
+    with tracer.start_as_current_span("test-node-span"):
+        result = await guarded_tool.coroutine(
+            user_id="uid_1", flight_id="AB12", passengers=2, extra_bad_field="x"
+        )
+
+    assert "error" in result
+    assert calls == []
+    assert _attrs(exporter)["cuga.toolguard.blocked_reason"] == "unexpected_arguments"
+
+
+@pytest.mark.asyncio
+async def test_toolguard_policy_violation_blocked_reason(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ToolGuardingToolProvider
+    from tests.unit.test_toolguard_provider import DummyProvider, FakeRuntime, _make_recording_tool
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    calls = []
+    raw_tool = _make_recording_tool(calls)
+    provider = ToolGuardingToolProvider(DummyProvider([raw_tool]), policy_storage=object())
+    runtime = FakeRuntime(error="regular members cannot book more than 3 passengers")
+
+    async def fake_get_runtime():
+        return runtime
+
+    provider._get_or_create_toolguard_runtime = fake_get_runtime
+
+    guarded_tool = (await provider.get_tools("runtime_tools"))[0]
+
+    with tracer.start_as_current_span("test-node-span"):
+        result = await guarded_tool.ainvoke({"user_id": "uid_1", "flight_id": "AB12", "passengers": 4})
+
+    assert result["blocked_by_policy"] is True
+    assert calls == []
+    assert _attrs(exporter)["cuga.toolguard.blocked_reason"] == "policy_violation"
