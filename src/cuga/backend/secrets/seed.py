@@ -15,6 +15,7 @@ _STATIC_ENV_SEED_MAP: dict[str, str] = {
     "MINIMAX_API_KEY": "minimax-api-key",
     "RITS_API_KEY_RESTRICT": "rits-api-key",
     "WATSONX_APIKEY": "watsonx-api-key",
+    "WXO_API_KEY": "wxo-api-key",
     "AZURE_OPENAI_API_KEY": "azure-openai-api-key",
     "LITELLM_API_KEY": "litellm-api-key",
 }
@@ -140,6 +141,7 @@ def resolve_llm_api_key_ref() -> str:
         "minimax": "minimax-api-key",
         "rits": "rits-api-key",
         "watsonx": "watsonx-api-key",
+        "wxo": "wxo-api-key",
         "azure": "azure-openai-api-key",
         "litellm": "litellm-api-key",
     }
