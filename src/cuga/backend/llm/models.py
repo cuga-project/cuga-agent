@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
+from cuga.backend.utils.consts import LOCAL_ORCHESTRATE_URL
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 # weakref.ref(loop) on watsonx APIClient for the loop the async httpx client is for.
@@ -117,6 +118,30 @@ def _get_reasoning_chat_litellm():
 
 _get_reasoning_chat_litellm._loaded = False  # type: ignore[attr-defined]
 _get_reasoning_chat_litellm._cls = None  # type: ignore[attr-defined]
+
+
+def _get_chat_wxo():
+    """Lazy-load and return the ChatWxO class, or None if ibm_watsonx_orchestrate_sdk is missing.
+
+    No lock is needed: same reasoning as ``_get_reasoning_chat_openai`` — all callers
+    are on the asyncio event loop with no OS-thread exposure to this path.
+    """
+    if _get_chat_wxo._loaded:
+        return _get_chat_wxo._cls
+
+    try:
+        from ibm_watsonx_orchestrate_sdk.langchain import ChatWxO
+
+        _get_chat_wxo._cls = ChatWxO
+    except ImportError:
+        _get_chat_wxo._cls = None
+
+    _get_chat_wxo._loaded = True
+    return _get_chat_wxo._cls
+
+
+_get_chat_wxo._loaded = False  # type: ignore[attr-defined]
+_get_chat_wxo._cls = None  # type: ignore[attr-defined]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
@@ -647,6 +672,20 @@ class LLMManager:
                 default_model = "openai/gpt-oss-20b"
                 logger.info(f"No model_name specified, using default: {default_model}")
                 return default_model
+        elif platform == "wxo":
+            # For watsonx Orchestrate, check environment variables
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for wxO: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                # Default fallback
+                default_model = "watsonx/openai/gpt-oss-120b"
+                logger.info(f"No model_name specified, using default: {default_model}")
+                return default_model
         elif platform == "watsonx":
             # For WatsonX, check environment variables
             env_model_name = os.environ.get('MODEL_NAME')
@@ -840,6 +879,25 @@ class LLMManager:
         # Groq SDK manages its own endpoint; any URL in config is ignored
         if platform == "groq":
             return None
+
+        # wxO: let WXO_INSTANCE_URL env override the TOML so the tenant instance can be
+        # swapped from .env without editing every per-role TOML block. Falls back to the
+        # local ADK dev server (same port CUGA already knows as LOCAL_ORCHESTRATE_URL).
+        if platform == "wxo":
+            env_instance_url = os.environ.get('WXO_INSTANCE_URL')
+            if env_instance_url and env_instance_url.strip():
+                logger.info(f"Using WXO_INSTANCE_URL from environment: {env_instance_url.strip()}")
+                return env_instance_url.strip()
+            toml_url = (
+                model_settings.get("instance_url")
+                or model_settings.get("base_url")
+                or model_settings.get("url")
+            )
+            if toml_url and str(toml_url).strip():
+                logger.debug(f"Using instance_url from TOML for wxO: {toml_url}")
+                return str(toml_url).strip()
+            logger.info(f"No instance_url specified for wxO, defaulting to local: {LOCAL_ORCHESTRATE_URL}")
+            return LOCAL_ORCHESTRATE_URL
 
         # RITS: let RITS_BASE_URL env override the TOML so model/endpoint can be
         # swapped from .env without editing every per-role TOML block.
@@ -1145,6 +1203,68 @@ class LLMManager:
                 include_extra=True,
             )
             llm = ChatGroq(**groq_params)
+        elif platform == "wxo":
+            ChatWxO = _get_chat_wxo()
+            if ChatWxO is None:
+                raise ImportError(
+                    "platform 'wxo' requires the watsonx Orchestrate SDK: "
+                    "pip install 'cuga[wxo]' (needs Python >= 3.11)"
+                )
+
+            api_key = None
+            apikey_ref = model_settings.get("api_key")
+            if apikey_ref:
+                api_key = _normalize_secret(resolve_secret(apikey_ref)) or os.environ.get(apikey_ref)
+            if not api_key:
+                api_key = _normalize_secret(resolve_secret("WXO_API_KEY")) or os.environ.get("WXO_API_KEY")
+
+            is_local = bool(base_url) and (
+                base_url.startswith("http://localhost")
+                or base_url.startswith("http://127.0.0.1")
+                or base_url.startswith("http://[::1]")
+                or base_url.startswith("http://0.0.0.0")
+            )
+            if not api_key and not is_local:
+                raise ValueError(
+                    "wxO requires an API key for a remote instance. Set WXO_API_KEY "
+                    "(Settings -> API details -> Generate API key in watsonx Orchestrate), "
+                    "or point WXO_INSTANCE_URL at a local ADK dev server."
+                )
+
+            logger.debug(f"Creating wxO model: {model_name} (instance_url={base_url})")
+            is_reasoning = self._is_reasoning_model(model_name)
+            wxo_params: Dict[str, Any] = {
+                "model": model_name,
+                "instance_url": base_url,
+                "api_key": api_key,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+            }
+            if not is_reasoning:
+                wxo_params["temperature"] = temperature
+                _merge_optional_sampling(
+                    wxo_params,
+                    model_settings,
+                    keys=("top_p", "frequency_penalty", "presence_penalty", "stop"),
+                )
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                _merge_optional_sampling(
+                    wxo_params,
+                    model_settings,
+                    keys=("stop",),
+                )
+
+            ssl_verify = self._get_ssl_verify(model_settings)
+            if ssl_verify is not True:
+                wxo_params["verify"] = ssl_verify
+                # ChatWxO only builds a *sync* httpx.Client for `verify`; without an
+                # explicit async client CUGA's async invoke/stream path would silently
+                # ignore a disabled/custom CA.
+                wxo_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
+
+            llm = ChatWxO(**wxo_params)
+            ensure_model_context_profile(llm, model_name)
         elif platform == "watsonx":
             from langchain_ibm import ChatWatsonx
 
