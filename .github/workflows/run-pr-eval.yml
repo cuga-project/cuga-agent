@@ -126,7 +126,7 @@ jobs:
           cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
           cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
 
-          exit 0
+          exit "${status}"
 
       - name: Upload full evaluation output
         if: always()
