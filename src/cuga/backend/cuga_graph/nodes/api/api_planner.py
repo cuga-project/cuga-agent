@@ -2,6 +2,7 @@ import json
 import re
 from typing import Literal
 
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.api_planner_agent import APIPlannerAgent
@@ -218,8 +219,10 @@ class ApiPlanner(BaseNode):
         state.messages.append(res)
         try:
             res = APIPlannerOutput(**json.loads(res.content))
+            otel_trace.get_current_span().set_attribute("cuga.api_planner.parse_fallback_used", False)
         except Exception as e1:
             logger.warning(f"Strict parse failed: {e1}; trying tolerant parse...")
+            otel_trace.get_current_span().set_attribute("cuga.api_planner.parse_fallback_used", True)
             res = _parse_planner_output_or_raise(res.content)
 
         tracker.collect_step(step=Step(name=name, data=res.model_dump_json()))

@@ -1,4 +1,4 @@
-"""Phase 7 (DP7 per-node audit) tests: task_decomposition_planning subsystem.
+"""Phase 7 (DP7 per-node audit) tests: task_decomposition_planning, browser, and api subsystems.
 
 Each test wraps the exact qualifying code path in a real, recording OTel span
 (no Traceloop.init() needed - a bare TracerProvider + InMemorySpanExporter is
@@ -434,3 +434,248 @@ async def test_browser_planner_vision_rejection_sets_retry_attribute(monkeypatch
     attrs = _attrs(exporter)
     assert attrs["cuga.browser_planner.vision_retry"] is True
     assert attrs["cuga.browser_planner.vision_rejection_error_type"] == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# api_planner.py - cuga.api_planner.parse_fallback_used
+# ---------------------------------------------------------------------------
+
+
+def _api_planner_conclude_output():
+    from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import (
+        APIPlannerOutput,
+        ActionName,
+        ConcludeTaskInput,
+        ConcludeTaskStatus,
+    )
+
+    return APIPlannerOutput(
+        thoughts=[],
+        action=ActionName.CONCLUDE_TASK,
+        action_input_conclude_task=ConcludeTaskInput(
+            status=ConcludeTaskStatus.SUCCESS, final_response="done"
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_planner_parse_fallback_used_on_malformed_json(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.api_planner import ApiPlanner
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "lite_mode", False)
+    monkeypatch.setattr(settings.advanced_features, "api_planner_hitl", False)
+    monkeypatch.setattr(settings.features, "code_output_reflection", False)
+
+    output = _api_planner_conclude_output()
+
+    class _FakeAgent:
+        async def run(self, state):
+            # Code-fenced JSON fails a strict json.loads() and needs the tolerant fallback parser.
+            return AIMessage(content="```json\n" + output.model_dump_json() + "\n```")
+
+    state = AgentState(input="do something", url="", elements="", sub_task_app="myapp", sub_task_type="api")
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await ApiPlanner.node_handler(
+            state, _FakeAgent(), strategic_agent=None, name="APIPlannerAgent"
+        )
+
+    assert command.goto == "PlanControllerAgent"
+    assert _attrs(exporter)["cuga.api_planner.parse_fallback_used"] is True
+
+
+@pytest.mark.asyncio
+async def test_api_planner_no_parse_fallback_needed_for_clean_json(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.api_planner import ApiPlanner
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.advanced_features, "lite_mode", False)
+    monkeypatch.setattr(settings.advanced_features, "api_planner_hitl", False)
+    monkeypatch.setattr(settings.features, "code_output_reflection", False)
+
+    output = _api_planner_conclude_output()
+
+    class _FakeAgent:
+        async def run(self, state):
+            return AIMessage(content=output.model_dump_json())
+
+    state = AgentState(input="do something", url="", elements="", sub_task_app="myapp", sub_task_type="api")
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await ApiPlanner.node_handler(
+            state, _FakeAgent(), strategic_agent=None, name="APIPlannerAgent"
+        )
+
+    assert command.goto == "PlanControllerAgent"
+    assert _attrs(exporter)["cuga.api_planner.parse_fallback_used"] is False
+
+
+# ---------------------------------------------------------------------------
+# api_shortlister.py - cuga.api_shortlister.suggested_count / resolved_count (post-filtering)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_api_shortlister_post_filter_counts(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.api_shortlister import ApiShortlister
+    from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+        ShortListerOutput,
+        APIDetails,
+    )
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.state.api_planner_history import HistoricalAction
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    shortlisted = ShortListerOutput(
+        thoughts=[],
+        result=[
+            APIDetails(name="get_user", relevance_score=0.9, reasoning="matches intent"),
+            APIDetails(name="nonexistent_api", relevance_score=0.5, reasoning="hallucinated"),
+        ],
+    )
+
+    class _FakeAgent:
+        async def run(self, state):
+            return AIMessage(content=shortlisted.model_dump_json())
+
+    state = AgentState(
+        input="do something",
+        url="",
+        elements="",
+        sub_task_app="myapp",
+        api_shortlister_all_filtered_apis={
+            "myapp": {
+                "api1": {"app_name": "myapp", "api_name": "get_user", "description": "desc"},
+                "api2": {"app_name": "myapp", "api_name": "unused_api", "description": "desc2"},
+            }
+        },
+        api_planner_history=[HistoricalAction(action_taken="ApiShortlistingAgent")],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await ApiShortlister.node_handler(state, _FakeAgent(), "ShortlisterAgent")
+
+    assert command.goto == "APIPlannerAgent"
+    attrs = _attrs(exporter)
+    assert attrs["cuga.api_shortlister.suggested_count"] == 2
+    assert attrs["cuga.api_shortlister.resolved_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# api_code_planner.py - cuga.api_code_planner.missing_api_reported
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_api_code_planner_missing_api_reported_attribute(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.api_code_planner import ApiCodePlanner
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.backend.cuga_graph.state.api_planner_history import HistoricalAction
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    class _FakeAgent:
+        async def run(self, state):
+            msg = AIMessage(content="")
+            msg.tool_calls = [
+                {"name": "report_missing_api", "args": {"message": "no API for this"}, "id": "call-1"}
+            ]
+            return msg
+
+    state = AgentState(
+        input="do something",
+        url="",
+        elements="",
+        api_planner_history=[HistoricalAction(action_taken="CoderAgent")],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        command = await ApiCodePlanner.node_handler(state, _FakeAgent(), "APICodePlannerAgent")
+
+    assert command.goto == "APIPlannerAgent"
+    assert _attrs(exporter)["cuga.api_code_planner.missing_api_reported"] is True
+
+
+# ---------------------------------------------------------------------------
+# code_agent.py - code_blocks_found / execution_error / output_parse_fallback_used
+# ---------------------------------------------------------------------------
+
+
+def _make_code_agent(chain):
+    from cuga.backend.cuga_graph.nodes.api.code_agent.code_agent import CodeAgent
+
+    agent = object.__new__(CodeAgent)
+    agent.name = "CodeAgent"
+    agent.chain = chain
+    agent.instructions = ""
+    agent.summary_task = None
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_code_agent_execution_error_and_output_fallback_attributes(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.code_agent import code_agent as ca_module
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.features, "code_output_summary", False)
+
+    class _FakeChain:
+        async def ainvoke(self, input):
+            return AIMessage(content="```python\nprint('hello')\n```")
+
+    async def _boom(cls_or_code=None, **kwargs):
+        raise RuntimeError("sandbox crashed")
+
+    monkeypatch.setattr(ca_module.CodeExecutor, "eval_for_code_agent", classmethod(_boom))
+
+    agent = _make_code_agent(_FakeChain())
+    state = AgentState(input="do something", url="", elements="", api_planner_codeagent_plan="the plan")
+
+    with tracer.start_as_current_span("test-node-span"):
+        await agent.run(state)
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.code_agent.code_blocks_found"] is True
+    assert attrs["cuga.code_agent.execution_error"] is True
+    assert attrs["cuga.code_agent.execution_error_type"] == "RuntimeError"
+    # Execution raised, so execution_output became str(e) - never valid trailing JSON.
+    assert attrs["cuga.code_agent.output_parse_fallback_used"] is True
+
+
+@pytest.mark.asyncio
+async def test_code_agent_no_code_blocks_and_clean_json_output(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.api.code_agent import code_agent as ca_module
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.features, "code_output_summary", False)
+
+    class _FakeChain:
+        async def ainvoke(self, input):
+            # No triple-backtick code block at all.
+            return AIMessage(content="just plain text, no code fences")
+
+    async def _clean_run(cls_or_code=None, **kwargs):
+        return '{"variable_name": "result", "description": "d", "value": 42}', {}
+
+    monkeypatch.setattr(ca_module.CodeExecutor, "eval_for_code_agent", classmethod(_clean_run))
+
+    agent = _make_code_agent(_FakeChain())
+    state = AgentState(input="do something", url="", elements="", api_planner_codeagent_plan="the plan")
+
+    with tracer.start_as_current_span("test-node-span"):
+        await agent.run(state)
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.code_agent.code_blocks_found"] is False
+    assert attrs["cuga.code_agent.execution_error"] is False
+    assert attrs["cuga.code_agent.output_parse_fallback_used"] is False

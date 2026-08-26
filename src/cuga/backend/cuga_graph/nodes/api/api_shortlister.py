@@ -1,6 +1,8 @@
 import json
 from typing import Literal
 
+from opentelemetry import trace as otel_trace
+
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import ShortListerOutput
 from cuga.backend.cuga_graph.nodes.api.shortlister_agent.shortlister_agent import ShortlisterAgent
@@ -80,6 +82,9 @@ class ApiShortlister(BaseNode):
                         ),
                     )
                 )
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.api_shortlister.suggested_count", len(current_shortlisted.result))
+        span.set_attribute("cuga.api_shortlister.resolved_count", len(filtered_output_summary))
         state.api_planner_history[-1].agent_output = ApiFilteringAgentHistoricalOutput(
             filtered_apis=filtered_output_summary
         )

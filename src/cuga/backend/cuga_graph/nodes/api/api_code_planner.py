@@ -1,6 +1,8 @@
 import json
 from typing import Literal
 
+from opentelemetry import trace as otel_trace
+
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.api.api_code_planner_agent.api_code_planner_agent import (
     APICodePlannerAgent,
@@ -34,11 +36,15 @@ class ApiCodePlanner(BaseNode):
     ) -> Command[Literal['CodeAgent', 'APIPlannerAgent']]:
         # First time visit
         res = await agent.run(state)
-        if (
+        missing_api_reported = bool(
             res.tool_calls
             and len(res.tool_calls) > 0
             and res.tool_calls[0].get("name") == "report_missing_api"
-        ):
+        )
+        otel_trace.get_current_span().set_attribute(
+            "cuga.api_code_planner.missing_api_reported", missing_api_reported
+        )
+        if missing_api_reported:
             logger.debug("** Tool call ** missing apis")
             missing_apis_msg = res.tool_calls[0].get("args").get("message")
             logger.debug(f"missing_apis_msg: {missing_apis_msg}")

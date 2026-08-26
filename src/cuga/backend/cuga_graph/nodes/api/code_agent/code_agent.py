@@ -3,6 +3,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
@@ -126,6 +127,7 @@ class CodeAgent(BaseAgent):
         # Find all code blocks in the text using regex
         # Pattern matches anything between triple backticks, with or without a language identifier
         code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
+        otel_trace.get_current_span().set_attribute("cuga.code_agent.code_blocks_found", bool(code_blocks))
         if not code_blocks:
             logger.debug("Generated code has no code blocks")
             return text
@@ -174,14 +176,18 @@ class CodeAgent(BaseAgent):
         logger.debug(f"Generated code: {code}")
 
         # Run code using CodeExecutor (mode determined by settings)
+        span = otel_trace.get_current_span()
         try:
             execution_output, _ = await CodeExecutor.eval_for_code_agent(
                 code=code,
                 state=input_variables,
             )
+            span.set_attribute("cuga.code_agent.execution_error", False)
         except Exception as e:
             logger.error(f"Error running code: {e}")
             execution_output = str(e)
+            span.set_attribute("cuga.code_agent.execution_error", True)
+            span.set_attribute("cuga.code_agent.execution_error_type", type(e).__name__)
 
         # Process the output - extract JSON from last line
         out, remaining_text = self.get_last_nonempty_line(execution_output, limit=5)
@@ -189,6 +195,7 @@ class CodeAgent(BaseAgent):
         if out:
             steps_summary = [remaining_text]
 
+        span.set_attribute("cuga.code_agent.output_parse_fallback_used", not out)
         if not out:
             out = {
                 "variable_name": "output_status",
