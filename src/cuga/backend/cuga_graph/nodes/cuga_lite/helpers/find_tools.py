@@ -10,6 +10,7 @@ from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.config import settings
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
@@ -106,7 +107,7 @@ async def create_find_tools_tool(
             # Query and task context travel separately so a non-LLM strategy can
             # weight them; the LLM strategy re-joins them into the same string
             # `_compose_find_tools_shortlister_query` produces above.
-            return await PromptUtils.find_tools(
+            result = await PromptUtils.find_tools(
                 query=query,
                 all_tools=filtered_tools,
                 all_apps=filtered_apps,
@@ -114,7 +115,12 @@ async def create_find_tools_tool(
                 run_config=nested_langgraph_invoke_config(),
                 task_context=initial_user_message,
             )
+            otel_trace.get_current_span().set_attribute("cuga.find_tools.shortlist_failed", False)
+            return result
         except OutputParserException as e:
+            span = otel_trace.get_current_span()
+            span.set_attribute("cuga.find_tools.shortlist_failed", True)
+            span.set_attribute("cuga.find_tools.failure_type", "parser_error")
             logger.bind(
                 query_len=len(shortlister_query),
                 error_type=type(e).__name__,
@@ -126,6 +132,9 @@ async def create_find_tools_tool(
                 "Please retry with a different query."
             )
         except Exception as e:
+            span = otel_trace.get_current_span()
+            span.set_attribute("cuga.find_tools.shortlist_failed", True)
+            span.set_attribute("cuga.find_tools.failure_type", "internal_error")
             logger.bind(
                 query_len=len(shortlister_query),
                 error_type=type(e).__name__,

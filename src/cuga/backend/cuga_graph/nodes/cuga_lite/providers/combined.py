@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
@@ -119,6 +120,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
             all_kwargs, unexpected = resolve_tool_call_args(args, kwargs, param_names)
             if unexpected:
                 error_msg = f"Unexpected argument(s) for {tool_name}: {', '.join(unexpected)}"
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.tool_call.blocked_reason", "unexpected_arguments"
+                )
                 logger.error(error_msg)
                 return {"error": error_msg}
 
@@ -126,6 +130,9 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 all_kwargs = InputModel.model_validate(all_kwargs).model_dump(exclude_unset=True)
             except ValidationError as e:
                 error_msg = f"Tool input validation error for {tool_name}: {e}"
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.tool_call.blocked_reason", "validation_error"
+                )
                 logger.error(error_msg)
                 return {"error": error_msg}
 
@@ -138,6 +145,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 return result
             except asyncio.TimeoutError:
                 error_msg = f"Tool call '{tool_name}' timed out after {timeout_seconds} seconds"
+                otel_trace.get_current_span().set_attribute("cuga.tool_call.blocked_reason", "timeout")
                 logger.error(error_msg)
                 raise TimeoutError(error_msg)
         except TimeoutError:

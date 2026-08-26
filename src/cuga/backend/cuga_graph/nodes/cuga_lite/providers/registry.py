@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from opentelemetry import trace as otel_trace
 from pydantic import Field, ValidationError, create_model
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import resolve_tool_call_args
@@ -226,6 +227,9 @@ def create_tool_from_api_dict(
                     duration_ms=0.0,
                     error=error_msg,
                 )
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.tool_call.blocked_reason", "unexpected_arguments"
+                )
                 logger.error(error_msg)
                 return {"error": error_msg}
 
@@ -241,6 +245,9 @@ def create_tool_from_api_dict(
                     operation_id=_operation_id,
                     duration_ms=0.0,
                     error=error_msg,
+                )
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.tool_call.blocked_reason", "validation_error"
                 )
                 logger.error(error_msg)
                 return {"error": error_msg}

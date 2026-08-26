@@ -1532,3 +1532,184 @@ async def test_prepare_node_find_tools_enabled_over_threshold(monkeypatch):
     attrs = _attrs(exporter)
     assert attrs["cuga.prepare_node.find_tools_enabled"] is True
     assert attrs["cuga.prepare_node.total_tool_count"] == 50
+
+
+# ---------------------------------------------------------------------------
+# helpers/find_tools.py - cuga.find_tools.shortlist_failed / failure_type
+# ---------------------------------------------------------------------------
+
+
+async def _get_find_tools_func():
+    from unittest.mock import MagicMock
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import create_find_tools_tool
+
+    tool = MagicMock()
+    tool.name = "test_tool"
+    tool.description = "A test tool"
+    app = MagicMock()
+    app.name = "test_app"
+
+    created = await create_find_tools_tool(
+        all_tools=[tool],
+        all_apps=[app],
+        app_to_tools_map={"test_app": [tool]},
+    )
+    return created.coroutine or created.func
+
+
+@pytest.mark.asyncio
+async def test_find_tools_parser_exception_sets_failure_attrs(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    from langchain_core.exceptions import OutputParserException
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    func = await _get_find_tools_func()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
+        new_callable=AsyncMock,
+        side_effect=OutputParserException("Invalid json output: "),
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            await func(query="find contacts", app_name="test_app")
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.find_tools.shortlist_failed"] is True
+    assert attrs["cuga.find_tools.failure_type"] == "parser_error"
+
+
+@pytest.mark.asyncio
+async def test_find_tools_success_sets_failed_false(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    func = await _get_find_tools_func()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
+        new_callable=AsyncMock,
+        return_value="## tools",
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            await func(query="find contacts", app_name="test_app")
+
+    assert _attrs(exporter)["cuga.find_tools.shortlist_failed"] is False
+
+
+# ---------------------------------------------------------------------------
+# providers/registry.py - cuga.tool_call.blocked_reason
+# ---------------------------------------------------------------------------
+
+
+def _place_order_tool():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
+
+    return create_tool_from_api_dict(
+        tool_name="place_order",
+        tool_def={
+            "description": "place an order",
+            "parameters": {
+                "properties": {
+                    "product_id": {"type": "integer"},
+                    "quantity": {"type": "integer"},
+                },
+                "required": ["product_id", "quantity"],
+            },
+        },
+        app_name="shop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_registry_tool_unexpected_argument_blocked_reason(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    tool = _place_order_tool()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.call_api", new_callable=AsyncMock
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            result = await tool.coroutine({"product_id": 1, "quantity": 2, "currency": "USD"})
+
+    assert "error" in result
+    assert _attrs(exporter)["cuga.tool_call.blocked_reason"] == "unexpected_arguments"
+
+
+@pytest.mark.asyncio
+async def test_registry_tool_validation_error_blocked_reason(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    tool = _place_order_tool()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.call_api", new_callable=AsyncMock
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            result = await tool.coroutine({"product_id": 1, "quantity": "two"})
+
+    assert "error" in result
+    assert _attrs(exporter)["cuga.tool_call.blocked_reason"] == "validation_error"
+
+
+# ---------------------------------------------------------------------------
+# providers/combined.py - cuga.tool_call.blocked_reason (incl. timeout)
+# ---------------------------------------------------------------------------
+
+
+def _tracker_tool():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import create_tool_from_tracker
+
+    return create_tool_from_tracker(
+        tool_name="place_order",
+        tool_def={
+            "description": "place an order",
+            "parameters": {
+                "properties": {
+                    "product_id": {"type": "integer"},
+                    "quantity": {"type": "integer"},
+                },
+                "required": ["product_id", "quantity"],
+            },
+        },
+        app_name="shop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_combined_tool_unexpected_argument_blocked_reason(monkeypatch):
+    tracer, exporter = _start_recording_span(monkeypatch)
+    tool = _tracker_tool()
+
+    with tracer.start_as_current_span("test-node-span"):
+        result = await tool.coroutine({"product_id": 1, "quantity": 2, "currency": "USD"})
+
+    assert "error" in result
+    assert _attrs(exporter)["cuga.tool_call.blocked_reason"] == "unexpected_arguments"
+
+
+@pytest.mark.asyncio
+async def test_combined_tool_timeout_blocked_reason(monkeypatch):
+    import asyncio as _asyncio
+    from unittest.mock import patch as mock_patch
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    tool = _tracker_tool()
+
+    async def _fake_wait_for(awaitable, timeout):
+        awaitable.close()  # avoid a "coroutine was never awaited" leak warning
+        raise _asyncio.TimeoutError()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined.asyncio.wait_for",
+        side_effect=_fake_wait_for,
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            with pytest.raises(TimeoutError):
+                await tool.coroutine({"product_id": 1, "quantity": 2})
+
+    assert _attrs(exporter)["cuga.tool_call.blocked_reason"] == "timeout"
