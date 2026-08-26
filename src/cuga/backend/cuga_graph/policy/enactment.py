@@ -1,5 +1,7 @@
 """Policy enactment helpers for applying policy actions in graph nodes."""
 
+import os
+import time
 from typing import Any, Dict, List, Optional
 from copy import deepcopy
 
@@ -8,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import Command
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
@@ -27,6 +30,12 @@ from cuga.backend.cuga_graph.policy.observability import (
     decision_from_metadata,
 )
 from cuga.config import settings
+
+
+def _should_capture_policy_reasoning() -> bool:
+    """Matcher reasoning can be LLM-generated free text (IntentGuard/Playbook);
+    gate it the same way tool content is gated."""
+    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true"
 
 
 class PolicyEnactment:
@@ -65,6 +74,9 @@ class PolicyEnactment:
             - metadata: Metadata to merge into state.cuga_lite_metadata, or None
         """
         try:
+            start_time = time.monotonic()
+            evaluation_outcome: Optional[PolicyDecisionOutcome] = None
+
             # Infer target from policy_types
             if policy_types and PolicyType.OUTPUT_FORMATTER in policy_types:
                 target = "agent_response"
@@ -187,6 +199,7 @@ class PolicyEnactment:
                         outcome = PolicyDecisionOutcome.BLOCKED
                     else:
                         outcome = PolicyDecisionOutcome.APPLIED
+                    evaluation_outcome = outcome
                     append_policy_decisions(
                         decision_metadata,
                         [
@@ -212,6 +225,7 @@ class PolicyEnactment:
             elif policy_match.matched:
                 # Unknown/custom actions may not produce metadata. Keep the
                 # live match only as a compatibility fallback.
+                evaluation_outcome = PolicyDecisionOutcome.MATCHED
                 fallback_metadata = dict(existing_metadata)
                 append_policy_decisions(
                     fallback_metadata,
@@ -224,6 +238,19 @@ class PolicyEnactment:
                     ],
                 )
                 metadata = fallback_metadata
+
+            span = otel_trace.get_current_span()
+            span.set_attribute("cuga.policy.stage", decision_stage.value)
+            span.set_attribute("cuga.policy.matched", policy_match.matched)
+            span.set_attribute("cuga.policy.latency_ms", (time.monotonic() - start_time) * 1000)
+            span.set_attribute("cuga.policy.guide_count", len(guide_matches))
+            if evaluation_outcome is not None and policy_match.policy is not None:
+                span.set_attribute("cuga.policy.policy_id", policy_match.policy.id)
+                span.set_attribute("cuga.policy.policy_name", policy_match.policy.name)
+                span.set_attribute("cuga.policy.policy_type", policy_match.policy.type.value)
+                span.set_attribute("cuga.policy.outcome", evaluation_outcome.value)
+                if policy_match.reasoning and _should_capture_policy_reasoning():
+                    span.set_attribute("cuga.policy.reasoning", policy_match.reasoning)
 
             # Return command (if any) and merged metadata
             return command, metadata
