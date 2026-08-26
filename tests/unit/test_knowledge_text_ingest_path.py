@@ -158,6 +158,26 @@ def test_config_update_during_converter_build_does_not_repopulate_stale_cache():
     getter_thread.start()
     assert started.wait(timeout=2.0)
 
+    commit_attempted_lock = threading.Event()
+    inner_lock = eng._docling_converter_lock
+
+    class _AcquireSignalLock:
+        def acquire(self, blocking: bool = True, timeout: float = -1):
+            commit_attempted_lock.set()
+            return inner_lock.acquire(blocking, timeout)
+
+        def release(self):
+            return inner_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc):
+            self.release()
+
+    eng._docling_converter_lock = _AcquireSignalLock()
+
     commit_done = threading.Event()
 
     def commit() -> None:
@@ -167,7 +187,7 @@ def test_config_update_during_converter_build_does_not_repopulate_stale_cache():
 
     commit_thread = threading.Thread(target=commit)
     commit_thread.start()
-    time.sleep(0.05)
+    assert commit_attempted_lock.wait(timeout=2.0)
     release.set()
     getter_thread.join(timeout=3.0)
     commit_thread.join(timeout=3.0)

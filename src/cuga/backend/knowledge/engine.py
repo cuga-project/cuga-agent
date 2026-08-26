@@ -5055,25 +5055,23 @@ class KnowledgeEngine:
                     packs (cuga's Docker images bundle a curated set; macOS
                     devs: ``brew install tesseract tesseract-lang``).
         """
-        mode = (self._config.docling_pdf_mode or "accurate").lower()
-        if mode not in ("fast", "balanced", "accurate"):
-            logger.warning("Unknown docling_pdf_mode={!r}; falling back to 'accurate'", mode)
-            mode = "accurate"
-
-        layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
-        device_label, _ = _detect_accelerator(self._config.use_gpu)
-        effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
-
-        # Cache by EFFECTIVE engine so explicit "transformers" and "auto"
-        # on a GPU host share one cached converter. Toggling use_gpu at
-        # runtime invalidates the cache in commit_knowledge_update, so
-        # auto re-resolves with the new device.
-        cache_key = f"{mode}|{effective_layout_engine}"
         lock = getattr(self, "_docling_converter_lock", None)
         if lock is None:
             lock = threading.Lock()
             self._docling_converter_lock = lock
         with lock:
+            # Read settings under the lock so a concurrent commit_knowledge_update
+            # cannot change use_gpu / pdf_mode, clear the cache, then have this
+            # thread store a converter built from the old device under the new key.
+            mode = (self._config.docling_pdf_mode or "accurate").lower()
+            if mode not in ("fast", "balanced", "accurate"):
+                logger.warning("Unknown docling_pdf_mode={!r}; falling back to 'accurate'", mode)
+                mode = "accurate"
+
+            layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
+            device_label, _ = _detect_accelerator(self._config.use_gpu)
+            effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
+            cache_key = f"{mode}|{effective_layout_engine}"
             cached = self._docling_converters.get(cache_key)
             if cached is not None:
                 return cached
