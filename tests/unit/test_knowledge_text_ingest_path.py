@@ -131,7 +131,60 @@ def test_docling_converter_construction_is_serialized():
 
 
 @pytest.mark.unit
+def test_config_update_during_converter_build_does_not_repopulate_stale_cache():
+    """commit_knowledge_update must clear the converter cache under the same
+    lock as construction. Otherwise an in-flight build stores the old
+    converter after the clear (same cache key when only use_gpu flipped).
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="cuga-docling-invalidate-"))
+    eng = _engine(tmp)
+    started = threading.Event()
+    release = threading.Event()
+    stale = object()
+
+    def slow_build(*_a, **_k):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return stale
+
+    eng._build_docling_converter = slow_build
+
+    getter_result: list[object] = []
+
+    def getter() -> None:
+        getter_result.append(eng._get_docling_converter())
+
+    getter_thread = threading.Thread(target=getter)
+    getter_thread.start()
+    assert started.wait(timeout=2.0)
+
+    commit_done = threading.Event()
+
+    def commit() -> None:
+        result = eng.apply_knowledge_config({"use_gpu": False})
+        assert result["docling_changed"] is True
+        commit_done.set()
+
+    commit_thread = threading.Thread(target=commit)
+    commit_thread.start()
+    time.sleep(0.05)
+    release.set()
+    getter_thread.join(timeout=3.0)
+    commit_thread.join(timeout=3.0)
+
+    assert getter_result == [stale]
+    assert commit_done.is_set()
+    assert eng._docling_converters == {}
+    rebuilt = object()
+    eng._build_docling_converter = lambda *_a, **_k: rebuilt
+    assert eng._get_docling_converter() is rebuilt
+    assert list(eng._docling_converters.values()) == [rebuilt]
+
+
+@pytest.mark.unit
 def test_get_docling_converter_uses_lock():
     src = inspect.getsource(KnowledgeEngine._get_docling_converter)
     assert "_docling_converter_lock" in src
     assert "_build_docling_converter" in src
+    commit_src = inspect.getsource(KnowledgeEngine.commit_knowledge_update)
+    assert "_docling_converter_lock" in commit_src

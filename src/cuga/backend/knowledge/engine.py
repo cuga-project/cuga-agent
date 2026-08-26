@@ -4118,7 +4118,12 @@ class KnowledgeEngine:
             or old_use_gpu != self._config.use_gpu
         )
         if docling_changed:
-            self._docling_converters.clear()
+            lock = getattr(self, "_docling_converter_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._docling_converter_lock = lock
+            with lock:
+                self._docling_converters.clear()
             logger.info(
                 "Docling converter cache cleared (pdf_mode {!r}->{!r}, "
                 "layout_engine {!r}->{!r}, use_gpu {}->{})",
