@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loguru import logger
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
@@ -326,6 +327,7 @@ async def apply_bind_tools_cap_and_merge(
     cap_disabled = max_count <= 0
     effective_count = len(ranking_pool) + (1 if keep_find_tools else 0)
     if cap_disabled or effective_count <= max_count:
+        otel_trace.get_current_span().set_attribute("cuga.bind_tools_cap.triggered", False)
         return _append_find_tools(ranking_pool)
 
     query_text = (query or "").strip()
@@ -369,6 +371,11 @@ async def apply_bind_tools_cap_and_merge(
         target_k=target_k,
     )
     shortlisted = _append_find_tools(shortlisted)
+    span = otel_trace.get_current_span()
+    span.set_attribute("cuga.bind_tools_cap.triggered", True)
+    span.set_attribute("cuga.bind_tools_cap.bound_count", bound_in_len)
+    span.set_attribute("cuga.bind_tools_cap.shortlisted_count", len(shortlisted))
+    span.set_attribute("cuga.bind_tools_cap.padded_count", padded_count)
     logger.info(
         "bind_tools cap: shortlisted to {} tools (mode={}, cap={}, ranked={}, padded={}, "
         "include_find_tools={}, top_ranked={})",

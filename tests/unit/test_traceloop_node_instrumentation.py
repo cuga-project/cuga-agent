@@ -1143,3 +1143,120 @@ async def test_hybrid_shortlister_embedding_available_no_fallback(monkeypatch):
             await hybrid.shortlist(request)
 
     assert _attrs(exporter)["cuga.hybrid_shortlister.embedding_unavailable"] is False
+
+
+# ---------------------------------------------------------------------------
+# bind_tools/cap.py - cuga.bind_tools_cap.triggered / *_count
+# ---------------------------------------------------------------------------
+
+
+def _bt_stub_tool(name: str):
+    from langchain_core.tools import StructuredTool
+
+    return StructuredTool.from_function(func=lambda: None, name=name, description="d")
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_triggered_records_counts(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    tools = [_bt_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
+        return [t.name for t in all_tools[: min(top_k, 3)]]
+
+    with (
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
+            return_value=3,
+        ),
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            await resolve_model_with_bind_tools(
+                model,
+                configurable={"cuga_lite_bind_tools_mode": "all"},
+                tools_context_ref={},
+                tool_provider=provider,
+                query="find me a hockey scorer",
+            )
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.bind_tools_cap.triggered"] is True
+    assert attrs["cuga.bind_tools_cap.bound_count"] == 10
+    assert attrs["cuga.bind_tools_cap.shortlisted_count"] == 3
+    assert attrs["cuga.bind_tools_cap.padded_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_not_triggered_under_threshold(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    tools = [_bt_stub_tool(f"tool_{i}") for i in range(3)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
+        return_value=128,
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            await resolve_model_with_bind_tools(
+                model,
+                configurable={"cuga_lite_bind_tools_mode": "all"},
+                tools_context_ref={},
+                tool_provider=provider,
+                query="anything",
+            )
+
+    assert _attrs(exporter)["cuga.bind_tools_cap.triggered"] is False
+
+
+# ---------------------------------------------------------------------------
+# helpers/bind_tools.py - cuga.bind_tools.degraded / degraded_reason
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_degraded_attribute_on_unsupported_model(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import _safe_bind
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    class _NoBindModel(BaseChatModel):
+        @property
+        def _llm_type(self) -> str:
+            return "no-bind"
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    with tracer.start_as_current_span("test-node-span"):
+        result = _safe_bind(_NoBindModel(), ["tool_a"])
+
+    assert isinstance(result, BaseChatModel)
+    attrs = _attrs(exporter)
+    assert attrs["cuga.bind_tools.degraded"] is True
+    assert "does not support bind_tools" in attrs["cuga.bind_tools.degraded_reason"]

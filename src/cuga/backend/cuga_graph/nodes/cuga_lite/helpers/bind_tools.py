@@ -8,6 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.config import settings
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
@@ -31,6 +32,9 @@ def _record_bind_tools_degraded(reason: str) -> None:
     to relabel or exclude the run instead of silently reporting text-mode numbers
     under a native-FC label. Never raises — a trace failure must not kill the run.
     """
+    span = otel_trace.get_current_span()
+    span.set_attribute("cuga.bind_tools.degraded", True)
+    span.set_attribute("cuga.bind_tools.degraded_reason", reason)
     try:
         from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 
