@@ -1725,6 +1725,17 @@ class PoliciesManager:
         return guard_code
 
 
+def _finalization_ran(result: dict) -> bool:
+    """Whether FinalAnswerNode finalized this run's answer.
+
+    Every terminal branch appends an AIMessage named FinalAnswerAgent to
+    state.messages. Used to gate invoke()'s empty-answer fallback: an empty
+    string from a completed finalize is a valid answer-function result and
+    must not be replaced (or the function re-applied — once-only contract).
+    """
+    return any(getattr(m, "name", None) == "FinalAnswerAgent" for m in result.get("messages", []) or [])
+
+
 class CugaAgent:
     """
     Simple SDK interface for CUGA Agent.
@@ -2889,8 +2900,12 @@ class CugaAgent:
         # Fallback: if final_answer is still empty, look at the last non-empty AI message.
         # Reasoning models sometimes return content='' with the answer only in
         # additional_kwargs['reasoning_content'], so check both fields.
+        # Gated on finalization NOT having run (every FinalAnswerNode terminal
+        # branch appends an AIMessage named FinalAnswerAgent): an empty string
+        # from a completed finalize is a valid answer-function result, and the
+        # fallback re-applying the function would break the once-only contract.
         fallback_sources = None
-        if not final_answer:
+        if not final_answer and not _finalization_ran(result):
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
                     continue
