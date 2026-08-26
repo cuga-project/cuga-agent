@@ -1415,3 +1415,120 @@ async def test_sandbox_node_reflection_failure_attribute(monkeypatch):
     attrs = _attrs(exporter)
     assert attrs["cuga.sandbox_node.execution_error"] is False
     assert attrs["cuga.sandbox_node.reflection_failed"] is True
+
+
+# ---------------------------------------------------------------------------
+# adapter/prepare_node.py - cuga.prepare_node.find_tools_enabled / total_tool_count
+# ---------------------------------------------------------------------------
+
+
+def _prepare_node_build_mock_adapter(tool_count: int):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    adapter = MagicMock()
+    adapter._task_todos_ref = []
+    adapter._tools_context = {}
+    adapter._instructions = ""
+    adapter._special_instructions = None
+    adapter._static_prompt = None
+    adapter._thread_id = "test-thread"
+    adapter._model = MagicMock()
+    adapter.set_metadata = MagicMock()
+
+    tools = []
+    for i in range(tool_count):
+        t = SimpleNamespace(name=f"tool_{i}", coroutine=None, func=None, args_schema=None)
+        tools.append(t)
+
+    adapter._base_tool_provider = MagicMock()
+    adapter._base_tool_provider.get_all_tools = AsyncMock(return_value=tools)
+    adapter._base_tool_provider.get_apps = AsyncMock(return_value=[])
+    adapter._base_tool_provider.get_tools = AsyncMock(return_value=[])
+
+    rendered = MagicMock()
+    rendered.to_string = MagicMock(return_value="")
+    adapter._prompt_template = MagicMock()
+    adapter._prompt_template.invoke = MagicMock(return_value=rendered)
+    return adapter
+
+
+def _prepare_node_make_state(*, chat_messages):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        chat_messages=chat_messages,
+        task_todos=None,
+        sub_task=None,
+        sub_task_app=None,
+        api_intent_relevant_apps=None,
+        cuga_lite_metadata=None,
+        thread_id="test-thread",
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_node_find_tools_not_enabled_under_threshold(monkeypatch):
+    from unittest.mock import patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+    from langchain_core.messages import HumanMessage
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    adapter = _prepare_node_build_mock_adapter(tool_count=3)
+    state = _prepare_node_make_state(chat_messages=[HumanMessage(content="hi")])
+    configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+        new=False,
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        with tracer.start_as_current_span("test-node-span"):
+            await node(state, config={"configurable": configurable})
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.prepare_node.find_tools_enabled"] is False
+    assert attrs["cuga.prepare_node.total_tool_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_prepare_node_find_tools_enabled_over_threshold(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node import (
+        create_prepare_tools_and_apps_node,
+    )
+    from langchain_core.messages import HumanMessage
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    adapter = _prepare_node_build_mock_adapter(tool_count=50)
+    state = _prepare_node_make_state(chat_messages=[HumanMessage(content="hi")])
+    configurable = {"enable_todos": False, "shortlisting_tool_threshold": 35}
+
+    stub_find_tool = MagicMock()
+    stub_find_tool.name = "find_tools"
+    stub_find_tool.coroutine = AsyncMock(return_value="ok")
+    stub_find_tool.func = None
+
+    with (
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.settings.policy.enabled",
+            new=False,
+        ),
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.prepare_node.create_find_tools_tool",
+            new=AsyncMock(return_value=stub_find_tool),
+        ),
+    ):
+        node = create_prepare_tools_and_apps_node(adapter, lc_bind_tools_meta={})
+        with tracer.start_as_current_span("test-node-span"):
+            await node(state, config={"configurable": configurable})
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.prepare_node.find_tools_enabled"] is True
+    assert attrs["cuga.prepare_node.total_tool_count"] == 50

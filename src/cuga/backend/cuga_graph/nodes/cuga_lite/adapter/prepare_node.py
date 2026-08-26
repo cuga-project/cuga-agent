@@ -9,6 +9,7 @@ from typing import Any, Callable, List, Optional
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_warning import make_arg_warning_callable
@@ -226,6 +227,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 app_to_tools_map[app.name] = app_tools
 
         enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.prepare_node.find_tools_enabled", enable_find_tools)
+        span.set_attribute("cuga.prepare_node.total_tool_count", total_tool_count)
 
         if enable_find_tools:
             logger.info(
