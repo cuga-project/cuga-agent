@@ -5,6 +5,7 @@ import threading
 import weakref
 from datetime import date
 from typing import Dict, Any, Optional, Mapping, TYPE_CHECKING
+from urllib.parse import urlsplit
 import hashlib
 import json
 import os
@@ -249,6 +250,32 @@ def _merge_optional_sampling(
             target[key] = model_settings[key]
     if include_extra and model_settings.get("extra_params") is not None:
         target.update(_safe_extra_params(model_settings.get("extra_params")))
+
+
+_WXO_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _is_local_wxo_url(url: Optional[str]) -> bool:
+    """True only for an exact loopback host on the canonical local ADK port.
+
+    Uses urllib.parse rather than string prefixes: "http://localhost.example.com"
+    starts with "http://localhost" but is a different, real, remote host that a
+    naive prefix check would misclassify as local — letting a keyless call
+    reach it. Requires an exact hostname match, http scheme, and the same port
+    as LOCAL_ORCHESTRATE_URL, not just "some port on a local-looking host".
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlsplit(url)
+        canonical_port = urlsplit(LOCAL_ORCHESTRATE_URL).port
+        return (
+            parsed.scheme == "http"
+            and parsed.hostname in _WXO_LOCAL_HOSTNAMES
+            and parsed.port == canonical_port
+        )
+    except ValueError:
+        return False
 
 
 def _coerce_settings_dict(model_settings: Any) -> Dict[str, Any]:
@@ -1218,12 +1245,7 @@ class LLMManager:
             if not api_key:
                 api_key = _normalize_secret(resolve_secret("WXO_API_KEY")) or os.environ.get("WXO_API_KEY")
 
-            is_local = bool(base_url) and (
-                base_url.startswith("http://localhost")
-                or base_url.startswith("http://127.0.0.1")
-                or base_url.startswith("http://[::1]")
-                or base_url.startswith("http://0.0.0.0")
-            )
+            is_local = _is_local_wxo_url(base_url)
             if not api_key and not is_local:
                 raise ValueError(
                     "wxO requires an API key for a remote instance. Set WXO_API_KEY "
