@@ -22,7 +22,9 @@ import pytest
 a2a_types = pytest.importorskip("a2a.compat.v0_3.types")
 
 
-pytestmark = pytest.mark.anyio
+# `unit` because these drive the router in-process over an ASGI transport with
+# a scripted runner: no port is bound and no external service is needed.
+pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
 
 async def test_well_known_agent_card_returns_valid_card(asgi_client):
@@ -275,3 +277,71 @@ async def test_context_id_propagates_to_graph_runner(asgi_client, scripted_runne
     await asgi_client.post("/a2a", json=payload)
     contexts = [ctx for (_msg, ctx) in scripted_runner.received]
     assert "ctx-existing-thread" in contexts
+
+
+async def test_parse_error_carries_no_decoder_detail(asgi_client):
+    """The JSON parser's message quotes the text it failed on back to the caller.
+    The JSON-RPC specification allows the extra detail field to be left out, so
+    it is."""
+    resp = await asgi_client.post(
+        "/a2a",
+        content=b'{"jsonrpc": "2.0", "secret-marker-in-payload": ',
+        headers={"content-type": "application/json"},
+    )
+    body = resp.json()
+    assert body["error"]["code"] == -32700
+    assert "secret-marker-in-payload" not in json.dumps(body)
+    # No echo of "Expecting value: line 1 column ..." either.
+    assert "Expecting" not in json.dumps(body)
+
+
+async def test_invalid_params_reports_fields_not_exception_text(asgi_client):
+    """A client still needs to know which parameter was wrong, so the field name
+    and the kind of error are kept. The written description, the value that was
+    sent, and the documentation link are not."""
+    resp = await asgi_client.post(
+        "/a2a",
+        json={
+            "jsonrpc": "2.0",
+            "id": "bad-params",
+            "method": "message/send",
+            "params": {"message": {"role": "user", "smuggled": "secret-marker-value"}},
+        },
+    )
+    body = resp.json()
+    assert body["error"]["code"] == -32602
+    assert body["error"]["message"] == "Invalid params"
+
+    blob = json.dumps(body)
+    assert "secret-marker-value" not in blob, "values sent by the caller must not be returned"
+    assert "Field required" not in blob, "the written description must not be returned"
+    assert "pydantic.dev" not in blob, "documentation links must not be returned"
+
+    data = body["error"].get("data")
+    if data is not None:
+        assert isinstance(data, list)
+        for entry in data:
+            assert set(entry) == {"loc", "type"}
+
+
+async def test_smuggled_key_name_is_not_echoed_for_extra_forbidden(asgi_client):
+    """The field name normally comes from our own schema. When the error is that
+    an unexpected field was supplied, its last part is the name the caller
+    invented, and returning that undoes the point of dropping the value."""
+    resp = await asgi_client.post(
+        "/a2a",
+        json={
+            "jsonrpc": "2.0",
+            "id": "smuggle",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "go"}],
+                    "messageId": "m-1",
+                    "x-smuggled-key-name": 1,
+                }
+            },
+        },
+    )
+    assert "x-smuggled-key-name" not in json.dumps(resp.json())
