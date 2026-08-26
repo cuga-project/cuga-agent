@@ -1323,6 +1323,9 @@ opensandbox = [
 profiling = [
     { name = "memray", marker = "python_full_version < '3.14' and sys_platform != 'win32'" },
 ]
+wxo = [
+    { name = "ibm-watsonx-orchestrate-sdk", marker = "python_full_version >= '3.11'" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1372,6 +1375,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "hvac", specifier = ">=2.0.0" },
     { name = "ibm-watsonx-ai", marker = "python_full_version >= '3.14'", specifier = ">=1.5.13" },
+    { name = "ibm-watsonx-orchestrate-sdk", marker = "python_full_version >= '3.11' and extra == 'wxo'", specifier = ">=2.15.0" },
     { name = "langchain", specifier = ">=1.3.9,<1.3.15" },
     { name = "langchain-core", specifier = ">=1.3.3" },
     { name = "langchain-docling", specifier = ">=2.0,<3.0" },
@@ -1410,7 +1414,7 @@ requires-dist = [
     { name = "typer-slim", specifier = ">=0.15.3" },
     { name = "uvicorn" },
 ]
-provides-extras = ["evaluation", "e2b", "knowledge", "health", "opensandbox", "evolve", "observability", "profiling"]
+provides-extras = ["evaluation", "e2b", "knowledge", "health", "opensandbox", "evolve", "wxo", "observability", "profiling"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3003,6 +3007,21 @@ wheels = [
 ]
 
 [[package]]
+name = "ibm-cloud-sdk-core"
+version = "3.26.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyjwt", marker = "python_full_version >= '3.11'" },
+    { name = "python-dateutil", marker = "python_full_version >= '3.11'" },
+    { name = "requests", marker = "python_full_version >= '3.11'" },
+    { name = "urllib3", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/25/d3/92cdfedfeb2154478fbd72db414ad41402f361da2c0107c29f7f326bc5df/ibm_cloud_sdk_core-3.26.0.tar.gz", hash = "sha256:80f427f2413c9eef536169bddbba60301692831b6bcdfccc5b790dba26862d06", size = 83808, upload-time = "2026-07-16T10:04:29.78Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/da/ce/8efbda90d7d253aea0f1ff6b830aa0b9d0869b1311c007efc6dfe73b7e83/ibm_cloud_sdk_core-3.26.0-py3-none-any.whl", hash = "sha256:e96098cbd7abce67ad856bccf3696443b5ae497dde644cd532d7fc6040db4240", size = 76595, upload-time = "2026-07-16T10:04:28.49Z" },
+]
+
+[[package]]
 name = "ibm-cos-sdk"
 version = "2.14.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3111,6 +3130,50 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0e/93/b31b517a83f47fd4b3e4958f86201fb0a6d5a771fb54d4136ee0d0c16ff6/ibm_watsonx_ai-1.6.3.tar.gz", hash = "sha256:7ad6daa509a971a7ebbb073cca56e6cf471cce611f8a4dfc89de28ed80ce992d", size = 739812, upload-time = "2026-08-11T19:16:11.038Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/c9/4823fc4d6e6d91f9a127faff5293987a4b8a4267ab5ca3f4ce870a837e37/ibm_watsonx_ai-1.6.3-py3-none-any.whl", hash = "sha256:1cb16ac61b92bd76468c145fd04543008078487bf23aac0d1b8655cd6876ad6f", size = 1126955, upload-time = "2026-08-11T19:16:09.395Z" },
+]
+
+[[package]]
+name = "ibm-watsonx-orchestrate-clients"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ibm-cloud-sdk-core", marker = "python_full_version >= '3.11'" },
+    { name = "ibm-watsonx-orchestrate-core", marker = "python_full_version >= '3.11'" },
+    { name = "websocket-client", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/74/8f/b62484c466238690224368111efa8735f6205994ae2045f12b91fb7f623e/ibm_watsonx_orchestrate_clients-2.15.0.tar.gz", hash = "sha256:3a4d7e5ed117ccbeb9bb33561460c3a3822e495a2137fe41906433a438e05944", size = 1891, upload-time = "2026-08-17T22:09:12.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/09/ad5f4645d2b8971cbaabb0034a8f26f175666516322f5a697480c2a828b0/ibm_watsonx_orchestrate_clients-2.15.0-py3-none-any.whl", hash = "sha256:02ab68d35b59a378f9ea33f8370f95fa3ce381548d35cb3d1f1bb9f6aa9d8eec", size = 59135, upload-time = "2026-08-17T22:09:06.853Z" },
+]
+
+[[package]]
+name = "ibm-watsonx-orchestrate-core"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic", marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bd/38/cb428f9a69c17a5ebb2be6c58717c596ba40658484d6d08857f35454620b/ibm_watsonx_orchestrate_core-2.15.0.tar.gz", hash = "sha256:73b1b7a036ba71f2a1e081c758575c5d6daa24a1bcf4d35de10e0af47c40fb99", size = 1226, upload-time = "2026-08-17T22:09:13.032Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/cd/d8ec5c7dc9f8a061e1755b0a5e4c9b04ac1fea4036c5bde81afc3a2bc43d/ibm_watsonx_orchestrate_core-2.15.0-py3-none-any.whl", hash = "sha256:e4a6c67b5f3a4d2fa937d6460b48958e8e7fcf3ce5ae7fc181b823a1c82f514d", size = 46816, upload-time = "2026-08-17T22:09:07.693Z" },
+]
+
+[[package]]
+name = "ibm-watsonx-orchestrate-sdk"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ibm-watsonx-orchestrate-clients", marker = "python_full_version >= '3.11'" },
+    { name = "ibm-watsonx-orchestrate-core", marker = "python_full_version >= '3.11'" },
+    { name = "langchain-openai", marker = "python_full_version >= '3.11'" },
+    { name = "opentelemetry-api", marker = "python_full_version >= '3.11'" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "python_full_version >= '3.11'" },
+    { name = "opentelemetry-sdk", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/d9/8da95350a0a61df8876bdeab55a533a12e9a67c2af3dd28498e8a524a0fc/ibm_watsonx_orchestrate_sdk-2.15.0.tar.gz", hash = "sha256:378b285c5091ec95fbe895c35c6c3e55f0988f2ddfd6684a47febb639d109d42", size = 2048, upload-time = "2026-08-17T22:09:14.256Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/a5/aa5dc5d9970ed102f7c797027fcdcb545a03ef5ef588c23d900f05e6019b/ibm_watsonx_orchestrate_sdk-2.15.0-py3-none-any.whl", hash = "sha256:9971b0926a5479a937ee577e019513abd5e380ea9cf0bbd5e53e1a4eb14c7f61", size = 46740, upload-time = "2026-08-17T22:09:10.383Z" },
 ]
 
 [[package]]
@@ -9590,6 +9653,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/35/a2/8e3becb46433538a38726c948d3399905a4c7cabd0df578ede5dc51f0ec2/wcwidth-0.6.0.tar.gz", hash = "sha256:cdc4e4262d6ef9a1a57e018384cbeb1208d8abbc64176027e2c2455c81313159", size = 159684, upload-time = "2026-02-06T19:19:40.919Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/68/5a/199c59e0a824a3db2b89c5d2dade7ab5f9624dbf6448dc291b46d5ec94d3/wcwidth-0.6.0-py3-none-any.whl", hash = "sha256:1a3a1e510b553315f8e146c54764f4fb6264ffad731b3d78088cdb1478ffbdad", size = 94189, upload-time = "2026-02-06T19:19:39.646Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
 ]
 
 [[package]]
