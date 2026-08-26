@@ -1160,10 +1160,10 @@ class LLMManager:
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
                 api_key = os.environ.get(apikey_name)
-            # RITS authenticates via the custom RITS_API_KEY header, not
-            # Authorization: Bearer. Pass a dummy api_key so ChatOpenAI does not
-            # also send the real key on the Authorization header — matches the
-            # `openai` branch's pattern when auth_headers are in play.
+            # RITS authenticates with the custom RITS_API_KEY header below, not
+            # Authorization: Bearer. ChatOpenAI still requires a non-empty
+            # openai_api_key value, so "/" is an intentional placeholder and not
+            # a credential.
             rits_params: Dict[str, Any] = {
                 "openai_api_key": "/",
                 "openai_api_base": base_url,
