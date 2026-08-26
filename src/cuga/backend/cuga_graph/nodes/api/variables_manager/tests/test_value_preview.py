@@ -2,7 +2,11 @@ import os
 import json
 import re
 
+import pytest
+
 from cuga.backend.cuga_graph.state.agent_state import VariablesManager
+
+pytestmark = pytest.mark.unit
 
 
 def extract_preview_for(vm: VariablesManager, name: str, max_length: int = 5000) -> str:
