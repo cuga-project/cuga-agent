@@ -210,6 +210,60 @@ def test_instructions_empty_when_unset():
     assert resolve_final_answer_instructions() == ""
 
 
+# --- single-application guarantees (review findings) --------------------------
+
+
+def test_hitl_default_continuation_does_not_reapply_function():
+    # The HITL default fallback resumes an already-finalized answer; the
+    # function must not run a second time there (only citation resolution).
+    from cuga.backend.cuga_graph.nodes.answer.final_answer import HumanInTheLoopHandler
+
+    settings.set("final_answer.function", "json.dumps")
+
+    class _HitlState(SimpleNamespace):
+        def model_dump(self):
+            return {}
+
+    state = _HitlState(
+        final_answer="already finalized",
+        thread_id="t-hitl",
+        sources=[],
+        hitl_response=SimpleNamespace(action_id="unknown_action"),
+    )
+    HumanInTheLoopHandler().handle_human_response(state, "FinalAnswerAgent")
+    assert state.final_answer == "already finalized"  # not '"already finalized"'
+
+
+def test_finalization_marker_detects_final_answer_agent_message():
+    from cuga.sdk import _finalization_ran
+
+    finalized_msg = SimpleNamespace(name="FinalAnswerAgent")
+    other_msg = SimpleNamespace(name="ChatAgent")
+    assert _finalization_ran({"messages": [other_msg, finalized_msg]}) is True
+    assert _finalization_ran({"messages": [other_msg]}) is False
+    assert _finalization_ran({}) is False
+
+
+def test_malformed_env_does_not_break_import():
+    # Strict validators would raise at import for bad DYNACONF values;
+    # config must import and the consumers must treat non-str as unset.
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["DYNACONF_FINAL_ANSWER__FUNCTION"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import cuga.config; print('OK')"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert "OK" in proc.stdout
+
+
 # --- SDK surface --------------------------------------------------------------
 
 
