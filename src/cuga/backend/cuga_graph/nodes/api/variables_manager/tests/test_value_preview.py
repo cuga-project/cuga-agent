@@ -98,4 +98,6 @@ def test_playground_scenario_data_json_integration():
     assert "total_count" in preview
     assert "101" in preview
     assert len(preview) <= 2000
-    assert len(preview) >= 1000
+    # Lower bound is a rough "summary is substantial" check; 950 (was 1000) since
+    # the per-variable "- Created:" metadata line is no longer rendered (#705).
+    assert len(preview) >= 950
