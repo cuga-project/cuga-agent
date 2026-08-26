@@ -13,13 +13,15 @@ local-dev vs remote API-key requirement, and the ``resolve_llm_api_key_ref``
 secret hint.
 """
 
-import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from cuga.backend.llm.models import LLMManager, set_current_llm_override
 from cuga.backend.utils.consts import LOCAL_ORCHESTRATE_URL
+
+pytestmark = pytest.mark.unit
 
 BASE_MODEL_SETTINGS = {
     "platform": "wxo",
@@ -77,21 +79,19 @@ class FakeChatWxO:
 
 
 @pytest.fixture(autouse=True)
-def reset_llm_state():
+def reset_llm_state(monkeypatch):
     mgr = LLMManager()
     mgr._models.clear()
     mgr._pre_instantiated_model = None
     set_current_llm_override(None)
     FakeChatWxO.instances.clear()
     for key in ("WXO_API_KEY", "WXO_INSTANCE_URL", "MODEL_NAME"):
-        os.environ.pop(key, None)
+        monkeypatch.delenv(key, raising=False)
     yield
     mgr._models.clear()
     mgr._pre_instantiated_model = None
     set_current_llm_override(None)
     FakeChatWxO.instances.clear()
-    for key in ("WXO_API_KEY", "WXO_INSTANCE_URL", "MODEL_NAME"):
-        os.environ.pop(key, None)
 
 
 class TestWxoModelName:
@@ -150,6 +150,42 @@ class TestWxoBaseUrl:
     def test_toml_url_strips_whitespace(self):
         mgr = LLMManager()
         assert mgr._get_base_url({"instance_url": f" {REMOTE_INSTANCE_URL} "}, "wxo") == (REMOTE_INSTANCE_URL)
+
+
+class TestIsLocalWxoUrl:
+    """Direct coverage of the exact-match parser, isolated from client construction."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:4321",
+            "http://127.0.0.1:4321",
+            "http://[::1]:4321",
+            "http://0.0.0.0:4321",
+        ],
+    )
+    def test_exact_local_urls_are_local(self, url):
+        from cuga.backend.llm.models import _is_local_wxo_url
+
+        assert _is_local_wxo_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            REMOTE_INSTANCE_URL,
+            "http://localhost.example.com:4321",
+            "http://evil.com/localhost:4321",
+            "http://localhost:9999",
+            "https://localhost:4321",
+            "http://localhost:abc",
+        ],
+    )
+    def test_non_local_or_malformed_urls_are_not_local(self, url):
+        from cuga.backend.llm.models import _is_local_wxo_url
+
+        assert _is_local_wxo_url(url) is False
 
 
 class TestWxoCreateInstance:
@@ -271,6 +307,25 @@ class TestWxoCreateInstance:
                 mgr._create_llm_instance({**BASE_MODEL_SETTINGS, "instance_url": local_url})
 
         assert FakeChatWxO.instances[0].kwargs["api_key"] is None
+
+    @pytest.mark.parametrize(
+        "spoofed_url",
+        [
+            "http://localhost.example.com:4321",  # hostname suffix, not the loopback host
+            "http://localhost:9999",  # loopback host, but not the ADK dev port
+            "https://localhost:4321",  # loopback host, but not http
+        ],
+    )
+    def test_missing_api_key_on_local_looking_but_not_local_url_raises(self, monkeypatch, spoofed_url):
+        """A naive string-prefix check would misclassify these as local and skip
+        requiring a key, letting a keyless call reach a host that only looks
+        local. is_local must require an exact hostname/scheme/port match."""
+        monkeypatch.delenv("WXO_API_KEY", raising=False)
+        with patch("cuga.backend.llm.models.resolve_secret", return_value=None):
+            with patch("cuga.backend.llm.models._get_chat_wxo", return_value=FakeChatWxO):
+                mgr = LLMManager()
+                with pytest.raises(ValueError, match="WXO_API_KEY"):
+                    mgr._create_llm_instance({**BASE_MODEL_SETTINGS, "instance_url": spoofed_url})
 
     def test_ssl_verify_default_true_no_async_client_override(self, monkeypatch):
         monkeypatch.setenv("WXO_API_KEY", "test-key")
@@ -395,30 +450,85 @@ class TestWxoContextProfile:
         assert llm.profile["max_input_tokens"] == DEFAULT_CONTEXT_SIZE
 
 
+def _stub_active_platform(platform):
+    """Settings stub exposing only what _active_platform reads: agent.code.model.platform."""
+    return SimpleNamespace(agent=SimpleNamespace(code=SimpleNamespace(model={"platform": platform})))
+
+
 class TestWxoSecretHint:
-    def test_env_var_present_resolves_to_wxo_key(self, monkeypatch):
+    """resolve_llm_api_key_ref must key off the *actively configured platform*
+    (settings.agent.code.model.platform), not guess from MODEL_NAME — a model
+    id string can embed another provider's name as a substring (the wxO
+    default id contains "watsonx/"; the documented groq-hosted override
+    contains "openai"), and an ambient sibling key (e.g. GROQ_API_KEY, present
+    in CI for other jobs) can otherwise win by dict-iteration order before
+    WXO_API_KEY is ever reached — this is the exact bug that broke CI.
+    """
+
+    def test_active_wxo_platform_wins_over_ambient_sibling_key(self, monkeypatch):
         from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
         monkeypatch.delenv("MODEL_NAME", raising=False)
+        monkeypatch.setenv("GROQ_API_KEY", "ambient-groq-key")
         monkeypatch.setenv("WXO_API_KEY", "test-key")
-        assert resolve_llm_api_key_ref() == "db://wxo-api-key"
+        with patch("cuga.config.settings", _stub_active_platform("wxo")):
+            assert resolve_llm_api_key_ref() == "db://wxo-api-key"
 
-    def test_default_wxo_model_name_hint_collides_with_watsonx(self, monkeypatch):
-        """Pins existing behavior: the default wxO model id embeds "watsonx/" as
-        a provider prefix, and the hint matcher's longest-substring-wins rule
-        picks "watsonx" over "wxo" for that string. This is a pre-existing
-        property of the substring-hint heuristic (shared by other providers
-        whose model ids embed another provider's name, e.g. groq's default
-        "openai/gpt-oss-20b"), not something introduced by the wxo platform.
-        Real wxO setups still resolve correctly because WXO_API_KEY, once set,
-        is found directly by resolve_llm_api_key_ref's second pass over actual
-        env vars — this hint pass only runs when MODEL_NAME is also exported.
-        """
+    def test_active_wxo_platform_ignores_default_model_id_hint(self, monkeypatch):
         from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
         monkeypatch.delenv("WXO_API_KEY", raising=False)
-        monkeypatch.setenv("MODEL_NAME", WXO_DEFAULT_MODEL_NAME)
-        assert resolve_llm_api_key_ref() == "db://watsonx-api-key"
+        monkeypatch.setenv("MODEL_NAME", WXO_DEFAULT_MODEL_NAME)  # contains "watsonx/"
+        with patch("cuga.config.settings", _stub_active_platform("wxo")):
+            assert resolve_llm_api_key_ref() == "db://wxo-api-key"
+
+    def test_active_wxo_platform_ignores_groq_override_hint(self, monkeypatch):
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        monkeypatch.delenv("WXO_API_KEY", raising=False)
+        monkeypatch.setenv("MODEL_NAME", "groq/openai/gpt-oss-120b")  # contains "openai"
+        with patch("cuga.config.settings", _stub_active_platform("wxo")):
+            assert resolve_llm_api_key_ref() == "db://wxo-api-key"
+
+    def test_active_platform_other_than_wxo_still_resolves_correctly(self, monkeypatch):
+        """The fix is general: a stale MODEL_NAME hint never overrides the
+        actually-configured platform, for any provider — not just wxo."""
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("MODEL_NAME", "openai/gpt-oss-120b")  # groq's own default id
+        with patch("cuga.config.settings", _stub_active_platform("groq")):
+            assert resolve_llm_api_key_ref() == "db://groq-api-key"
+
+    def test_unknown_active_platform_falls_back_to_model_name_hint(self, monkeypatch):
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        monkeypatch.delenv("WXO_API_KEY", raising=False)
+        monkeypatch.setenv("MODEL_NAME", "claude-opus-4-6")
+        with patch("cuga.backend.secrets.seed._active_platform", return_value=None):
+            assert resolve_llm_api_key_ref() == "db://anthropic-api-key"
+
+    def test_unknown_active_platform_falls_back_to_ambient_env_scan(self, monkeypatch):
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        monkeypatch.delenv("MODEL_NAME", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("WXO_API_KEY", "test-key")
+        with patch("cuga.backend.secrets.seed._active_platform", return_value=None):
+            assert resolve_llm_api_key_ref() == "db://wxo-api-key"
+
+    def test_active_platform_lookup_failure_does_not_raise(self, monkeypatch):
+        """settings access is best-effort: any exception (e.g. cuga.config not
+        importable in some embedding) must fall back, not propagate."""
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        monkeypatch.delenv("MODEL_NAME", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.setenv("WXO_API_KEY", "test-key")
+        # An object with no `.agent` attribute makes `settings.agent...` raise
+        # AttributeError, exercising the except-Exception fallback in _active_platform.
+        with patch("cuga.config.settings", object()):
+            assert resolve_llm_api_key_ref() == "db://wxo-api-key"
 
 
 class TestWxoUnsupportedPlatform:
