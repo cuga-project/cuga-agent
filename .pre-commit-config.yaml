@@ -41,3 +41,13 @@ repos:
         name: detect secrets
         args: ['--baseline', '.secrets.baseline']
         exclude: package.lock.json
+
+  # Keep exception detail out of caller-facing responses (see #681 / #721)
+  - repo: local
+    hooks:
+      - id: no-exc-in-responses
+        name: no exception detail in responses
+        entry: uv run python scripts/checks/no_exc_in_responses.py
+        language: system
+        pass_filenames: true
+        files: ^src/cuga/backend/server/.*\.py$

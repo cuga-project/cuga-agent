@@ -42,6 +42,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-cuga
       - run: uv run ruff check && uv run ruff format --check
+      - name: No exception detail in caller-facing responses (#681 / #721)
+        run: uv run python scripts/checks/no_exc_in_responses.py
 
   unit-a:
     name: Unit (graph)
