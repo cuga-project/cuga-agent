@@ -350,13 +350,18 @@ class VariablesManager(object):
         else:
             summary_lines = ["# Variables Summary", ""]
 
+        # created_at is deliberately NOT rendered: it is stamped from the HOST wall
+        # clock, and in frozen-world-clock benchmark runs that gave the model two
+        # conflicting "today"s — world time in tool data, real time in prompt
+        # metadata — which it sometimes trusted (issue #705). The model never needs
+        # it (ordering is conveyed by position); the field itself is kept for
+        # persistence and run forensics (to_dict, state dumps).
         for name, metadata in sorted_vars:
             lines = [
                 f"## {name}",
                 f"- Type: {metadata.type}",
                 f"- Items: {metadata.count_items}",
                 f"- Description: {metadata.description or 'No description'}",
-                f"- Created: {metadata.created_at.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"- Value Preview: {self._get_value_preview(metadata.value, max_length=max_length)}",
                 "",
             ]

@@ -1,0 +1,254 @@
+"""Deleting a document must make it not be there, even mid-upload.
+
+Delete used to ignore in-flight ingests entirely (#691), so the button did
+nothing in two different ways:
+
+* during a FIRST upload the documents row does not exist yet — it is written
+  near the end of ingest — so ``mark_deleting`` matched nothing, the request
+  404'd, and the ingest carried on and indexed the file anyway;
+* during a RE-UPLOAD the delete succeeded and the row vanished, then the
+  in-flight ingest reached ``add_document`` and wrote it straight back.
+
+Both are "I clicked delete and the file is still there".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import threading
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+from langchain_core.documents import Document
+
+from cuga.backend.knowledge.auth import KnowledgeIdentity, require_internal_or_auth
+from cuga.backend.knowledge.routes import knowledge_router
+
+from cuga.backend.knowledge.config import KnowledgeConfig
+from cuga.backend.knowledge import engine as engine_mod
+from cuga.backend.knowledge.engine import (
+    DocumentNotFoundError,
+    IngestStillFinishingError,
+    KnowledgeEngine,
+)
+
+COLL = "c"
+FNAME = "f.txt"
+MISSING = Path("/tmp/f.txt-does-not-exist")
+
+
+def _cfg(**over):
+    d = dict(
+        enabled=True,
+        persist_dir=Path(tempfile.mkdtemp(prefix="cuga-del-")),
+        embedding_provider="fastembed",
+    )
+    d.update(over)
+    return KnowledgeConfig(**d)
+
+
+def _engine() -> KnowledgeEngine:
+    eng = KnowledgeEngine(_cfg())
+
+    async def _noop(*a, **k):
+        return None
+
+    async def _fake_insert(*a, **k):
+        return {"num_added": 1, "num_skipped": 0}
+
+    eng._ensure_collection_config = _noop
+    eng._ensure_vector_store_cached = _noop
+    eng._insert_documents_async = _fake_insert
+    # The vector/file removal is real I/O against a store we never built.
+    eng._delete_vector_and_file = lambda collection, filename: None
+    return eng
+
+
+async def _new_task(eng: KnowledgeEngine, task_id: str = "t1") -> None:
+    await eng._ensure_metadata_ready()
+    await eng._metadata.create_task(task_id, COLL, 1, {FNAME: {"filename": FNAME, "status": "pending"}})
+
+
+def _blocking_parse(started: threading.Event, release: threading.Event):
+    def fake_load(path):
+        started.set()
+        assert release.wait(5), "test deadlock: parse never released"
+        return [Document(page_content="hi", metadata={"source": FNAME})]
+
+    return fake_load
+
+
+@pytest.mark.unit
+async def test_delete_during_first_upload_stops_the_ingest(eng=None):
+    """Variant A: nothing indexed yet, so delete must cancel rather than 404."""
+    eng = _engine()
+    await _new_task(eng)
+    started, release = threading.Event(), threading.Event()
+    eng._load_document = _blocking_parse(started, release)
+
+    cancel_event = asyncio.Event()
+    eng._active_tasks["t1"] = cancel_event
+    worker = asyncio.create_task(
+        eng._ingest_inner(COLL, MISSING, FNAME, "t1", True, cancel_event, skip_file_copy=True)
+    )
+    await asyncio.to_thread(started.wait, 5)
+
+    # Must NOT raise DocumentNotFoundError: there is no row yet, but there is
+    # an ingest to stop, and stopping it is real work.
+    await eng.delete_document(COLL, FNAME)
+
+    release.set()
+    await worker
+
+    assert (await eng._metadata.get_task("t1"))["status"] == "cancelled"
+    assert not await eng._metadata.document_exists(COLL, FNAME), (
+        "the ingest indexed the document after it was deleted"
+    )
+
+
+@pytest.mark.unit
+async def test_delete_during_reupload_is_not_resurrected():
+    """Variant B: the ingest must not write the document back after the delete."""
+    eng = _engine()
+    await eng._ensure_metadata_ready()
+    # Seed an already-indexed document.
+    await eng._metadata.add_document(COLL, FNAME, 3, preview="hi")
+    assert await eng._metadata.document_exists(COLL, FNAME)
+
+    # A re-upload of the same name is now in flight.
+    await _new_task(eng, "t2")
+    started, release = threading.Event(), threading.Event()
+    eng._load_document = _blocking_parse(started, release)
+    cancel_event = asyncio.Event()
+    eng._active_tasks["t2"] = cancel_event
+    worker = asyncio.create_task(
+        eng._ingest_inner(COLL, MISSING, FNAME, "t2", True, cancel_event, skip_file_copy=True)
+    )
+    await asyncio.to_thread(started.wait, 5)
+
+    await eng.delete_document(COLL, FNAME)
+
+    release.set()
+    await worker
+
+    assert not await eng._metadata.document_exists(COLL, FNAME), (
+        "deleted document was resurrected by the in-flight ingest"
+    )
+
+
+@pytest.mark.unit
+async def test_delete_with_no_document_and_no_ingest_still_404s():
+    """The stop-the-ingest path must not turn a genuine miss into a success."""
+    eng = _engine()
+    await eng._ensure_metadata_ready()
+    with pytest.raises(DocumentNotFoundError):
+        await eng.delete_document(COLL, "never-existed.txt")
+
+
+@pytest.mark.unit
+async def test_delete_of_an_indexed_document_still_works():
+    """The ordinary path is unchanged when nothing is in flight."""
+    eng = _engine()
+    await eng._ensure_metadata_ready()
+    await eng._metadata.add_document(COLL, FNAME, 3, preview="hi")
+
+    await eng.delete_document(COLL, FNAME)
+
+    assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+async def test_delete_refuses_rather_than_lying_when_the_ingest_outlives_the_deadline(monkeypatch):
+    """An uncancellable ingest that finishes AFTER the wait must not be reported as deleted.
+
+    Past the point of no return the worker still has ``add_document`` ahead of
+    it. Deleting anyway would return success and then be silently undone by
+    that write — the exact resurrection this whole path exists to prevent,
+    just inside the timeout window. So the delete fails retryably instead.
+    """
+    # Collapse the deadline so the test does not actually wait 30s.
+    monkeypatch.setattr(engine_mod, "_DELETE_INGEST_WAIT_S", 0.3)
+
+    eng = _engine()
+    await eng._ensure_metadata_ready()
+    await eng._metadata.add_document(COLL, FNAME, 3, preview="hi")
+    await _new_task(eng, "t3")
+
+    # Park the worker inside the insert, i.e. past the point of no return, so
+    # the cancel is refused and it outlives the deadline.
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def fake_insert(*a, **k):
+        entered.set()
+        await gate.wait()
+        return {"num_added": 1, "num_skipped": 0}
+
+    eng._insert_documents_async = fake_insert
+    eng._load_document = lambda p: [Document(page_content="hi", metadata={"source": FNAME})]
+
+    cancel_event = asyncio.Event()
+    eng._active_tasks["t3"] = cancel_event
+    worker = asyncio.create_task(
+        eng._ingest_inner(COLL, MISSING, FNAME, "t3", True, cancel_event, skip_file_copy=True)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    assert "t3" in eng._uncancellable_tasks, "worker should be past the point of no return"
+
+    with pytest.raises(IngestStillFinishingError):
+        await eng.delete_document(COLL, FNAME)
+
+    # And the document is still there — we did not half-delete it.
+    assert await eng._metadata.document_exists(COLL, FNAME)
+
+    gate.set()
+    await worker
+
+    # Once the ingest is done, the delete succeeds and sticks.
+    await eng.delete_document(COLL, FNAME)
+    assert not await eng._metadata.document_exists(COLL, FNAME)
+
+
+@pytest.mark.unit
+def test_delete_route_maps_ingest_still_finishing_to_409():
+    """The engine's retryable error must reach the client as 409, not 500.
+
+    The handler has to live on the route that actually calls
+    ``delete_document``. Attached to any other route it is dead code, and a
+    timed-out delete surfaces as an unhandled 500 — which tells the caller
+    "the server is broken" instead of "retry shortly".
+    """
+    from types import SimpleNamespace
+
+    class _Engine:
+        def __init__(self):
+            self._config = SimpleNamespace(enabled=True)
+
+        async def delete_document(self, collection, filename):
+            raise IngestStillFinishingError(filename, "task_abc123")
+
+    async def _identity(request: Request) -> KnowledgeIdentity:
+        return KnowledgeIdentity(
+            user_id=None,
+            tenant_id=None,
+            agent_id="cuga-default",
+            thread_id=None,
+            auth_mode="external",
+        )
+
+    app = FastAPI()
+    app.include_router(knowledge_router)
+    app.dependency_overrides[require_internal_or_auth] = _identity
+    app.state.app_state = SimpleNamespace(knowledge_engine=_Engine(), knowledge_provider=None)
+
+    resp = TestClient(app).request(
+        "DELETE",
+        "/api/knowledge/documents",
+        json={"scope": "agent", "filename": FNAME},
+    )
+
+    assert resp.status_code == 409, f"expected 409, got {resp.status_code}: {resp.text[:200]}"
+    detail = resp.json()["detail"]
+    assert "task_abc123" in detail and "retry" in detail.lower()
