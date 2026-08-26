@@ -979,3 +979,167 @@ async def test_toolguard_policy_violation_blocked_reason(monkeypatch):
     assert result["blocked_by_policy"] is True
     assert calls == []
     assert _attrs(exporter)["cuga.toolguard.blocked_reason"] == "policy_violation"
+
+
+# ---------------------------------------------------------------------------
+# prompt_utils.py - cuga.shortlister_name_validation.attempts_used / dropped_invalid_count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_shortlister_name_validation_succeeds_first_attempt(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    class _Detail:
+        def __init__(self, name):
+            self.name = name
+
+    class _Response:
+        def __init__(self, names):
+            self.result = [_Detail(n) for n in names]
+
+    class _FakeChain:
+        async def ainvoke(self, payload, config=None):
+            return _Response(["real_tool"])
+
+    with tracer.start_as_current_span("test-node-span"):
+        details, invalid = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=_FakeChain(),
+            query="q",
+            apps_as_dict={},
+            tools_as_dict={},
+            base_instructions="",
+            valid_names={"real_tool"},
+        )
+
+    assert [d.name for d in details] == ["real_tool"]
+    assert invalid == []
+    attrs = _attrs(exporter)
+    assert attrs["cuga.shortlister_name_validation.attempts_used"] == 1
+    assert attrs["cuga.shortlister_name_validation.dropped_invalid_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_shortlister_name_validation_drops_after_retries_exhausted(monkeypatch):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    class _Detail:
+        def __init__(self, name):
+            self.name = name
+
+    class _Response:
+        def __init__(self, names):
+            self.result = [_Detail(n) for n in names]
+
+    class _AlwaysHallucinatingChain:
+        async def ainvoke(self, payload, config=None):
+            # Every attempt invents a name that is never in valid_names.
+            return _Response(["hallucinated_tool"])
+
+    with tracer.start_as_current_span("test-node-span"):
+        details, invalid = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=_AlwaysHallucinatingChain(),
+            query="q",
+            apps_as_dict={},
+            tools_as_dict={},
+            base_instructions="",
+            valid_names={"real_tool"},
+            max_retries=2,
+        )
+
+    assert details == []
+    assert invalid == ["hallucinated_tool"]
+    attrs = _attrs(exporter)
+    assert attrs["cuga.shortlister_name_validation.attempts_used"] == 3
+    assert attrs["cuga.shortlister_name_validation.dropped_invalid_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# shortlister/hybrid.py - cuga.hybrid_shortlister.embedding_unavailable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hybrid_shortlister_embedding_unavailable_fallback(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+        ShortlistCandidate,
+        ShortlistRequest,
+        ShortlistResult,
+        ShortlisterUnavailableError,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
+    from langchain_core.tools import StructuredTool
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    def _tool(name):
+        def fn(**kwargs):
+            return name
+
+        fn.__name__ = name
+        return StructuredTool.from_function(func=fn, name=name, description=name)
+
+    tools = [_tool(f"tool_{i}") for i in range(50)]
+
+    class _RecordingLLM(LLMShortlister):
+        async def shortlist(self, request):
+            return ShortlistResult(candidates=[ShortlistCandidate(name=request.tools[0].name)])
+
+    hybrid = HybridShortlister(embedding=EmbeddingShortlister("model"), llm=_RecordingLLM())
+    request = ShortlistRequest(query="find contacts", tools=tools, apps=[], top_k=10)
+
+    unavailable = AsyncMock(side_effect=ShortlisterUnavailableError("still downloading"))
+    with mock_patch.object(EmbeddingShortlister, "shortlist", unavailable):
+        with tracer.start_as_current_span("test-node-span"):
+            result = await hybrid.shortlist(request)
+
+    assert result.candidates
+    assert _attrs(exporter)["cuga.hybrid_shortlister.embedding_unavailable"] is True
+
+
+@pytest.mark.asyncio
+async def test_hybrid_shortlister_embedding_available_no_fallback(monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+        ShortlistCandidate,
+        ShortlistRequest,
+        ShortlistResult,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.embedding import EmbeddingShortlister
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.hybrid import HybridShortlister
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.llm import LLMShortlister
+    from langchain_core.tools import StructuredTool
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+
+    def _tool(name):
+        def fn(**kwargs):
+            return name
+
+        fn.__name__ = name
+        return StructuredTool.from_function(func=fn, name=name, description=name)
+
+    tools = [_tool(f"tool_{i}") for i in range(50)]
+
+    class _RecordingLLM(LLMShortlister):
+        async def shortlist(self, request):
+            return ShortlistResult(candidates=[ShortlistCandidate(name=request.tools[0].name)])
+
+    hybrid = HybridShortlister(embedding=EmbeddingShortlister("model"), llm=_RecordingLLM())
+    request = ShortlistRequest(query="find contacts", tools=tools, apps=[], top_k=10)
+
+    prefiltered = ShortlistResult(candidates=[ShortlistCandidate(name=f"tool_{i}") for i in range(10)])
+    with mock_patch.object(EmbeddingShortlister, "shortlist", AsyncMock(return_value=prefiltered)):
+        with tracer.start_as_current_span("test-node-span"):
+            await hybrid.shortlist(request)
+
+    assert _attrs(exporter)["cuga.hybrid_shortlister.embedding_unavailable"] is False

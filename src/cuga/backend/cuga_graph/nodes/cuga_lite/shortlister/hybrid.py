@@ -15,6 +15,7 @@ import dataclasses
 from typing import Any, ClassVar, List
 
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister.base import (
     ShortlistRequest,
@@ -47,6 +48,8 @@ class HybridShortlister:
         # Prefilter only when there is something to cut. At or below the cut
         # width the LLM would see the same set either way.
         width = request.top_k or 0
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.hybrid_shortlister.embedding_unavailable", False)
         if width and len(pool) > width:
             try:
                 prefiltered = await self._embedding.shortlist(
@@ -62,6 +65,7 @@ class HybridShortlister:
                     logger.debug("Hybrid shortlister: cosine cut {} tools to {}", len(pool), len(narrowed))
                     pool = narrowed
             except ShortlisterUnavailableError as e:
+                span.set_attribute("cuga.hybrid_shortlister.embedding_unavailable", True)
                 logger.warning(
                     "Hybrid shortlister: embedding leg unavailable ({}); ranking all {} tools "
                     "with the LLM for this call",

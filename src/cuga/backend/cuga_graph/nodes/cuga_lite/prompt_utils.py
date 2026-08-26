@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from cuga.config import settings
 from loguru import logger
+from opentelemetry import trace as otel_trace
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
@@ -372,6 +373,9 @@ class PromptUtils:
                     seen_invalid_set.add(name)
                     seen_invalid.append(name)
             if not invalid:
+                span = otel_trace.get_current_span()
+                span.set_attribute("cuga.shortlister_name_validation.attempts_used", attempt + 1)
+                span.set_attribute("cuga.shortlister_name_validation.dropped_invalid_count", 0)
                 return list(accumulated.values()), []
             logger.warning(
                 "Shortlister returned unrecognized tool names (attempt {}/{}): {}",
@@ -387,6 +391,9 @@ class PromptUtils:
                 base_instructions or "",
                 seen_invalid,
             )
+        span = otel_trace.get_current_span()
+        span.set_attribute("cuga.shortlister_name_validation.attempts_used", attempt + 1)
+        span.set_attribute("cuga.shortlister_name_validation.dropped_invalid_count", len(seen_invalid))
         return list(accumulated.values()), seen_invalid
 
     @staticmethod
