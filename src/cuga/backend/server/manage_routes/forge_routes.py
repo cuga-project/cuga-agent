@@ -19,21 +19,56 @@ def _forge_settings():
     return getattr(settings, "context_forge", None)
 
 
-def _resolve_forge_token(cf: Any) -> Optional[str]:
+def _resolve_forge_token(cf: Any, request: Optional[Request] = None) -> Optional[str]:
     """Resolve the bearer credential CUGA presents to Forge. Never returned to the browser.
 
+    token_source:
+        user   - forward the caller's own validated token (per-user identity).
+        env    - a shared workspace credential from token_env_var.
+        broker - not implemented; see below.
+
     Raises:
-        NotImplementedError: token_source is "broker" — not implemented yet.
-            The CUGA login flow's own IAM-proxy exchange
-            (OIDCClient.exchange_service_token) is scoped to this service's
-            own instance_id, not a caller-supplied audience, and there's no
-            per-request access to the session's raw token to feed it anyway
-            (see auth/dependencies.py — get_current_user reads the raw token
-            locally and never attaches it to request.state). Whether the real
-            broker can even issue a Forge-scoped (mcp-gw.<tenant>) token at
-            all is still an open question — see the mapping doc.
+        LookupError: token_source="user" but no caller token is on
+            request.state (auth disabled, or the request never went through
+            get_current_user).
+        NotImplementedError: token_source="broker". A dedicated broker turned
+            out to be unnecessary for per-user identity — account-iam already
+            issues tokens Forge can consume directly (roles in the token, aud
+            bound to the instance, reachable JWKS). Kept only for the case
+            where a Forge-scoped audience is genuinely needed.
     """
     token_source = (getattr(cf, "token_source", "env") or "env").lower()
+    if token_source == "user":
+        # Per-user identity: forward the caller's OWN validated token so Forge
+        # attributes tools and calls to them, not to a shared service account.
+        #
+        # Viable because account-iam already carries everything Option A needs,
+        # but NOT in the shapes it looks like at a glance. Read off a real token:
+        #
+        #   roles: {"SERVICE": ["ServiceOwner"]}  -- a dict keyed by scope, not
+        #       the flat list every layer downstream renders it as (CUGA's own
+        #       jwt_validator._extract_roles flattens it before you ever see it).
+        #       Stock Forge reads list/str only, drops the dict silently, and the
+        #       caller provisions with zero teams: an empty catalog, not a 401.
+        #   aud: ["SERVICE/<instance-id>", "crn:v1:...<instance-id>::"]  -- a
+        #       list of two forms. Forge matches with PyJWT (EXACT), while
+        #       auth/jwt_validator._assert_iam_token_bound_to_instance matches by
+        #       SUBSTRING, so the bare instance id passes here and fails there.
+        #       Forge's api_audience must be one of these entries verbatim.
+        #
+        # Forge must have that issuer registered as a trusted_for_api_auth SSO
+        # provider with groups_claim="roles", and must trust the issuer's TLS CA
+        # (SSL_CERT_FILE REPLACES the trust store -- see deployment/mcpcf).
+        tok = getattr(getattr(request, "state", None), "access_token", None)
+        if not tok:
+            # Unauthenticated (auth disabled) or the raw token was not stashed.
+            # Do NOT silently fall back to the shared credential: that would
+            # quietly re-introduce the shared-principal model this mode exists
+            # to avoid, and nothing downstream would show it had happened.
+            raise LookupError(
+                "context_forge.token_source=user but no caller token is available (is auth.enabled=false?)"
+            )
+        return tok
     if token_source == "env":
         env_var = getattr(cf, "token_env_var", "CONTEXT_FORGE_TOKEN") or "CONTEXT_FORGE_TOKEN"
         return os.environ.get(env_var)
@@ -72,8 +107,8 @@ async def get_forge_catalog(request: Request, agent_id: Optional[str] = None):
         return JSONResponse({"enabled": False, "gateways": []})
 
     try:
-        token = _resolve_forge_token(cf)
-    except (NotImplementedError, ValueError) as e:
+        token = _resolve_forge_token(cf, request)
+    except (NotImplementedError, ValueError, LookupError) as e:
         logger.warning(f"Context Forge catalog unavailable: {e}")
         return JSONResponse({"enabled": False, "gateways": [], "error": str(e)})
     if not token:
@@ -141,8 +176,8 @@ async def attach_forge_tools(request: Request, agent_id: Optional[str] = None):
         raise HTTPException(status_code=422, detail="gateway_slug and a non-empty tool_ids[] are required")
 
     try:
-        token = _resolve_forge_token(cf)
-    except (NotImplementedError, ValueError) as e:
+        token = _resolve_forge_token(cf, request)
+    except (NotImplementedError, ValueError, LookupError) as e:
         raise HTTPException(status_code=501, detail=str(e))
     if not token:
         raise HTTPException(status_code=400, detail="No Context Forge credential configured")
@@ -163,11 +198,18 @@ async def attach_forge_tools(request: Request, agent_id: Optional[str] = None):
     #   2. the token would sit in persisted config rather than only in pod env;
     #   3. refreshing an expired token would mean rewriting config instead of
     #      just restarting with a new env value.
-    auth_value = (
-        f"env://{getattr(cf, 'token_env_var', 'CONTEXT_FORGE_TOKEN') or 'CONTEXT_FORGE_TOKEN'}"
-        if (getattr(cf, "token_source", "env") or "env").lower() == "env"
-        else token
-    )
+    _ts = (getattr(cf, "token_source", "env") or "env").lower()
+    if _ts == "env":
+        auth_value = f"env://{getattr(cf, 'token_env_var', 'CONTEXT_FORGE_TOKEN') or 'CONTEXT_FORGE_TOKEN'}"
+    else:
+        # user/broker mode: the credential is per-caller, so there is no stable
+        # env var to reference. NOTE the consequence — the token is persisted in
+        # the draft and expires with the user's session, so a saved entry stops
+        # working when they log out. Per-user identity really wants the token
+        # resolved per request at call time rather than stored; that needs a
+        # change in the registry, which holds process-global transports built at
+        # load time. Flagged rather than papered over.
+        auth_value = token
     entry = {
         "name": entry_name,
         "type": "mcp",

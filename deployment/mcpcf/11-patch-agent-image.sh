@@ -129,12 +129,17 @@ if [[ -z "$FORGE_TOKEN" ]]; then
   exit 1
 fi
 
+# user = forward the caller's own token (per-user identity, needs auth enabled)
+# env  = one shared workspace credential
+TOKEN_SOURCE="${FORGE_TOKEN_SOURCE:-env}"
+echo "==> context_forge.token_source = $TOKEN_SOURCE"
+
 PATCH_FILE=$(mktemp)
 trap 'rm -f "$PATCH_FILE"' EXIT
 python3 - "${ROLLBACK_DIR}/${AGENT}.json" "$BASE" "$CLONE_IMAGE" "$FORGE_TOKEN" \
-         "$NAMESPACE" "$MCP_AUDIENCE" "$WORKSPACE_ID" > "$PATCH_FILE" <<'PY'
+         "$NAMESPACE" "$MCP_AUDIENCE" "$WORKSPACE_ID" "$TOKEN_SOURCE" > "$PATCH_FILE" <<'PY'
 import json, sys
-snap, base, img, tok, ns, aud, ws = sys.argv[1:8]
+snap, base, img, tok, ns, aud, ws, ts = sys.argv[1:9]
 cur = json.load(open(snap))["spec"]["patches"][0]["spec"]["template"]["spec"]["containers"][0]
 
 # Carry every existing env entry forward, then add/overwrite the Forge ones.
@@ -147,7 +152,7 @@ for name, value in [
     ("DYNACONF_CONTEXT_FORGE__URL", f"http://forge.{ns}.svc.cluster.local"),
     ("DYNACONF_CONTEXT_FORGE__AUDIENCE", aud),
     ("DYNACONF_CONTEXT_FORGE__WORKSPACE_GROUP", f"ws-{ws}"),
-    ("DYNACONF_CONTEXT_FORGE__TOKEN_SOURCE", "env"),
+    ("DYNACONF_CONTEXT_FORGE__TOKEN_SOURCE", ts),
     ("DYNACONF_CONTEXT_FORGE__VERIFY_SSL", "false"),
     ("CONTEXT_FORGE_TOKEN", tok),
 ]:

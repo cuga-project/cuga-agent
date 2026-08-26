@@ -237,6 +237,15 @@ async def get_current_user(request: Request) -> Optional[UserInfo]:
     try:
         payload = validator.validate_and_decode(token)
         user = validator.to_user_info(payload)
+        # Stash the validated bearer on request.state so a route handler can
+        # forward the *caller's own* identity to a downstream service that
+        # trusts the same issuer, instead of falling back to a shared
+        # service credential. Only ever set after validate_and_decode has
+        # succeeded, so nothing unverified is exposed.
+        try:
+            request.state.access_token = token
+        except Exception:  # pragma: no cover - non-Request objects in tests
+            pass
         logger.debug(
             "Authenticated user sub={} roles={} issuer={} all_claims={}",
             user.sub,
