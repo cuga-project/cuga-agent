@@ -455,6 +455,23 @@ def _stub_active_platform(platform):
     return SimpleNamespace(agent=SimpleNamespace(code=SimpleNamespace(model={"platform": platform})))
 
 
+def _clear_sibling_provider_keys(monkeypatch):
+    """Clear every static provider env var except WXO_API_KEY.
+
+    Tests that exercise the ambient-env-scan fallback in resolve_llm_api_key_ref
+    must not assume which sibling keys happen to be unset — CI runners carry
+    real keys (e.g. WATSONX_APIKEY, GROQ_API_KEY) for other jobs' sake, and any
+    of them sits earlier than WXO_API_KEY in _STATIC_ENV_SEED_MAP's iteration
+    order. This is the exact bug class #c1 fixed for the active-platform path;
+    it applies here too for the fallback path.
+    """
+    from cuga.backend.secrets.seed import _STATIC_ENV_SEED_MAP
+
+    for env_var in _STATIC_ENV_SEED_MAP:
+        if env_var != "WXO_API_KEY":
+            monkeypatch.delenv(env_var, raising=False)
+
+
 class TestWxoSecretHint:
     """resolve_llm_api_key_ref must key off the *actively configured platform*
     (settings.agent.code.model.platform), not guess from MODEL_NAME — a model
@@ -512,7 +529,7 @@ class TestWxoSecretHint:
         from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
         monkeypatch.delenv("MODEL_NAME", raising=False)
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        _clear_sibling_provider_keys(monkeypatch)
         monkeypatch.setenv("WXO_API_KEY", "test-key")
         with patch("cuga.backend.secrets.seed._active_platform", return_value=None):
             assert resolve_llm_api_key_ref() == "db://wxo-api-key"
@@ -523,7 +540,7 @@ class TestWxoSecretHint:
         from cuga.backend.secrets.seed import resolve_llm_api_key_ref
 
         monkeypatch.delenv("MODEL_NAME", raising=False)
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        _clear_sibling_provider_keys(monkeypatch)
         monkeypatch.setenv("WXO_API_KEY", "test-key")
         # An object with no `.agent` attribute makes `settings.agent...` raise
         # AttributeError, exercising the except-Exception fallback in _active_platform.
