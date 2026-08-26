@@ -1260,3 +1260,158 @@ async def test_bind_tools_degraded_attribute_on_unsupported_model(monkeypatch):
     attrs = _attrs(exporter)
     assert attrs["cuga.bind_tools.degraded"] is True
     assert "does not support bind_tools" in attrs["cuga.bind_tools.degraded_reason"]
+
+
+# ---------------------------------------------------------------------------
+# adapter/graph_adapter.py - tool_use_failed and empty-content-tool_calls recovery
+# ---------------------------------------------------------------------------
+
+
+def _make_graph_adapter():
+    from unittest.mock import MagicMock
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import AgentGraphAdapter
+
+    tracker = MagicMock()
+    tracker.collect_step = MagicMock()
+    return AgentGraphAdapter(
+        tracker=tracker,
+        base_callbacks=[],
+        task_todos_ref=[],
+        tools_context_ref={},
+        base_tool_provider=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_model_recovers_tool_use_failed(monkeypatch):
+    tracer, exporter = _start_recording_span(monkeypatch)
+    adapter = _make_graph_adapter()
+
+    err = (
+        "Error code: 400 - {'error': {'message': 'Failed to call a function. "
+        "tool_use_failed', 'type': 'invalid_request_error', "
+        "'failed_generation': '{\"name\": \"python\", \"arguments\": \"print(42)\"}'}}"
+    )
+
+    class _RaisingBound:
+        async def ainvoke(self, messages, config=None):
+            raise Exception(err)
+
+    with tracer.start_as_current_span("test-node-span"):
+        result = await adapter.ainvoke_model(_RaisingBound(), [], {})
+
+    assert "print(42)" in result.content
+    assert _attrs(exporter)["cuga.graph_adapter.tool_use_failed_recovered"] is True
+
+
+def test_normalize_response_recovers_empty_content_from_tool_calls(monkeypatch):
+    from types import SimpleNamespace
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    adapter = _make_graph_adapter()
+
+    response = SimpleNamespace(
+        content="",
+        additional_kwargs={},
+        tool_calls=[{"name": "python", "args": {"code": "print(1)"}, "id": "call-1"}],
+    )
+
+    with tracer.start_as_current_span("test-node-span"):
+        content, _reasoning = adapter.normalize_response(response)
+
+    assert content
+    assert _attrs(exporter)["cuga.graph_adapter.empty_content_tool_calls_recovered"] is True
+
+
+# ---------------------------------------------------------------------------
+# adapter/sandbox_node.py - execution_error / reflection_failed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sandbox_node_execution_error_attribute(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.policy, "enabled", False)
+
+    adapter = _make_graph_adapter()
+
+    state = MagicMock()
+    state.variables_manager.get_variable_names.return_value = []
+    state.tool_calls = []
+    state.thread_id = None
+    state.script = "raise ValueError('boom')"
+    state.step_count = 0
+    state.cuga_lite_max_steps = None
+    state.tool_calls_used_run = 0
+    state.tool_calls_used_thread = 0
+
+    sandbox = create_sandbox_node(adapter, base_thread_id="t1", base_apps_list=[])
+
+    with mock_patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+        new=AsyncMock(side_effect=RuntimeError("sandbox exploded")),
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            result = await sandbox(state, config=None)
+
+    assert result["error"]
+    attrs = _attrs(exporter)
+    assert attrs["cuga.sandbox_node.execution_error"] is True
+    assert attrs["cuga.sandbox_node.execution_error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_node_reflection_failure_attribute(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+    from cuga.config import settings
+
+    tracer, exporter = _start_recording_span(monkeypatch)
+    monkeypatch.setattr(settings.policy, "enabled", False)
+    monkeypatch.setattr(settings.advanced_features, "reflection_enabled", True)
+
+    adapter = _make_graph_adapter()
+
+    state = MagicMock()
+    state.variables_manager.get_variable_names.return_value = []
+    state.tool_calls = []
+    state.thread_id = None
+    state.script = "print('hi')"
+    state.chat_messages = []
+    state.step_count = 0
+    state.cuga_lite_max_steps = None
+    state.tool_calls_used_run = 0
+    state.tool_calls_used_thread = 0
+
+    sandbox = create_sandbox_node(adapter, base_thread_id="t1", base_apps_list=[])
+
+    async def _fake_reflection_agent_ainvoke(*args, **kwargs):
+        raise RuntimeError("reflection LLM call failed")
+
+    with (
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            new=AsyncMock(return_value=("output text", {})),
+        ),
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=MagicMock(ainvoke=AsyncMock(side_effect=RuntimeError("reflection LLM call failed"))),
+        ),
+        mock_patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.core_append_with_step_limit",
+            return_value=([], None),
+        ),
+    ):
+        with tracer.start_as_current_span("test-node-span"):
+            await sandbox(state, config=None)
+
+    attrs = _attrs(exporter)
+    assert attrs["cuga.sandbox_node.execution_error"] is False
+    assert attrs["cuga.sandbox_node.reflection_failed"] is True

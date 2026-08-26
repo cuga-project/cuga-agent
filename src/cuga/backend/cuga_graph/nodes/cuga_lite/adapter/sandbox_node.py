@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
@@ -172,6 +173,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 plan=_exec_plan,
             )
 
+            otel_trace.get_current_span().set_attribute("cuga.sandbox_node.execution_error", False)
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(
                 step=Step(
@@ -247,9 +249,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     )
                     reflection_output = reflection_result.content
                     logger.debug(f"Reflection output:\n{reflection_output}")
+                    otel_trace.get_current_span().set_attribute("cuga.sandbox_node.reflection_failed", False)
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
                     reflection_output = ""
+                    otel_trace.get_current_span().set_attribute("cuga.sandbox_node.reflection_failed", True)
 
             # Output is already formatted by code_executor
             execution_message_content = execution_output_text(output)
@@ -313,6 +317,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 base_update["task_todos"] = todo_state_update
             return base_update
         except Exception as e:
+            span = otel_trace.get_current_span()
+            span.set_attribute("cuga.sandbox_node.execution_error", True)
+            span.set_attribute("cuga.sandbox_node.execution_error_type", type(e).__name__)
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
             _record_weak_schema_shapes(adapter, execution_tool_calls)

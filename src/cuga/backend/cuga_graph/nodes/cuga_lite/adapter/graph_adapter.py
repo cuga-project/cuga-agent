@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from loguru import logger
+from opentelemetry import trace as otel_trace
 
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
@@ -134,6 +135,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         except Exception as exc:
             code = extract_code_from_tool_use_failed(exc)
             if code:
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.graph_adapter.tool_use_failed_recovered", True
+                )
                 logger.warning(
                     "Model attempted tool call without tools bound (tool_use_failed). "
                     "Using generated code in sandbox"
@@ -176,6 +180,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
         if not content:
             tool_code = extract_code_from_response_tool_calls(response)
             if tool_code:
+                otel_trace.get_current_span().set_attribute(
+                    "cuga.graph_adapter.empty_content_tool_calls_recovered", True
+                )
                 logger.warning("Empty content with tool_calls detected; recovering tool call as Python code")
                 content = tool_code
         reasoning = normalize_assistant_text(
