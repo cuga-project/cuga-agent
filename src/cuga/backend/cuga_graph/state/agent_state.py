@@ -350,41 +350,24 @@ class VariablesManager(object):
         else:
             summary_lines = ["# Variables Summary", ""]
 
-        hide_created = self._frozen_world_clock_active()
+        # created_at is deliberately NOT rendered: it is stamped from the HOST wall
+        # clock, and in frozen-world-clock benchmark runs that gave the model two
+        # conflicting "today"s — world time in tool data, real time in prompt
+        # metadata — which it sometimes trusted (issue #705). The model never needs
+        # it (ordering is conveyed by position); the field itself is kept for
+        # persistence and run forensics (to_dict, state dumps).
         for name, metadata in sorted_vars:
             lines = [
                 f"## {name}",
                 f"- Type: {metadata.type}",
                 f"- Items: {metadata.count_items}",
                 f"- Description: {metadata.description or 'No description'}",
+                f"- Value Preview: {self._get_value_preview(metadata.value, max_length=max_length)}",
+                "",
             ]
-            if not hide_created:
-                lines.append(f"- Created: {metadata.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-            lines.append(f"- Value Preview: {self._get_value_preview(metadata.value, max_length=max_length)}")
-            lines.append("")
             summary_lines.extend(lines)
 
         return '\n'.join(summary_lines)
-
-    @staticmethod
-    def _frozen_world_clock_active() -> bool:
-        """True when a benchmark's frozen world clock is in effect (same condition the
-        sandbox clock freeze keys on: benchmark mode + tracker.current_date set).
-
-        `created_at` is stamped from the HOST wall clock, so rendering it into prompts
-        while the sandbox reports the world's frozen "today" gives the model two
-        conflicting dates — and it sometimes trusts the wrong one (e.g. judging
-        in-world-valid card expiries against the real date; issue #705). Only the
-        prompt rendering is gated: persistence, restore, and ordering keep host time.
-        """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.benchmark_mode import (
-            is_benchmark_mode,
-        )
-
-        if not is_benchmark_mode():
-            return False
-        tracker = ActivityTracker()
-        return bool(getattr(tracker, "current_date", None))
 
     def _get_value_preview(self, value: Any, max_length: int = 5000) -> str:
         """Get a structured preview of the value, truncating nested content when large."""

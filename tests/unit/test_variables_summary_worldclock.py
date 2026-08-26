@@ -1,11 +1,10 @@
-"""Variables-summary `Created:` timestamps must not leak the host wall clock into
-frozen-world-clock benchmark runs (issue #705).
+"""Variables-summary `Created:` timestamps must never reach the model (issue #705).
 
-The gate mirrors the sandbox clock freeze: benchmark mode AND tracker.current_date set.
-Three states matter:
-  - production (benchmark == "default")        -> Created line rendered (host time)
-  - benchmark without a world clock (bpo/m3)   -> Created line rendered (host time)
-  - benchmark with a world clock (appworld)    -> Created line suppressed
+created_at is stamped from the HOST wall clock; in frozen-world-clock benchmark runs
+(AppWorld, #544) rendering it into prompts gave the model two conflicting "today"s and
+it sometimes trusted the wrong one. Per review of PR #708 the line is removed from the
+prompt UNCONDITIONALLY (the model never needs it — ordering is conveyed by position),
+while the created_at FIELD is kept for persistence and run forensics.
 """
 
 import pytest
@@ -35,30 +34,27 @@ def tracker_date():
 
 
 @pytest.mark.unit
-def test_created_rendered_by_default(manager, tracker_date, monkeypatch):
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "default", raising=False)
-    tracker_date.current_date = WORLD_DATE  # even with a stray date, default mode keeps host time
-    summary = manager.get_variables_summary()
-    assert "probe_var" in summary
-    assert "- Created: " in summary
-
-
-@pytest.mark.unit
-def test_created_rendered_in_benchmark_without_world_clock(manager, tracker_date, monkeypatch):
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "bpo", raising=False)
-    tracker_date.current_date = None
-    summary = manager.get_variables_summary()
-    assert "probe_var" in summary
-    assert "- Created: " in summary
-
-
-@pytest.mark.unit
-def test_created_suppressed_under_frozen_world_clock(manager, tracker_date, monkeypatch):
-    monkeypatch.setattr(settings.advanced_features, "benchmark", "appworld", raising=False)
-    tracker_date.current_date = WORLD_DATE
+@pytest.mark.parametrize(
+    ("benchmark", "current_date"),
+    [
+        ("default", None),  # production
+        ("bpo", None),  # benchmark without a world clock
+        ("appworld", WORLD_DATE),  # frozen world clock
+    ],
+)
+def test_created_never_rendered(manager, tracker_date, monkeypatch, benchmark, current_date):
+    monkeypatch.setattr(settings.advanced_features, "benchmark", benchmark, raising=False)
+    tracker_date.current_date = current_date
     summary = manager.get_variables_summary()
     assert "probe_var" in summary
     assert "- Created: " not in summary
     # the rest of the block is intact
     assert "- Value Preview: " in summary
     assert "- Description: probe" in summary
+
+
+@pytest.mark.unit
+def test_created_at_field_kept_for_persistence(manager):
+    meta = manager.variables["probe_var"]
+    assert meta.created_at is not None
+    assert "created_at" in meta.to_dict(include_value=False)
