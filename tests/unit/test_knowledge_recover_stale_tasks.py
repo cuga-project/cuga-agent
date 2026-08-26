@@ -56,7 +56,8 @@ class _RecoveryFakePostgres(PostgresKnowledgeMetadata):
         return list(self._rows)
 
     async def execute(self, sql: str, params: tuple = ()) -> None:  # type: ignore[override]
-        status, file_tasks_json, _updated_at, task_id = params
+        status, file_tasks_json, _updated_at = params[:3]
+        task_id = params[-1]
         self.written[task_id] = {"status": status, "file_tasks_json": file_tasks_json}
 
     async def commit(self) -> None:  # type: ignore[override]

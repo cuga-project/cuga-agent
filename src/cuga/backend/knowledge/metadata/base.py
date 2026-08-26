@@ -6,6 +6,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from cuga.config import get_service_instance_id, get_tenant_id
+
+
+def current_scope() -> tuple[str, str]:
+    """Return ``(tenant_id, instance_id)`` for row-level metadata isolation."""
+    return get_tenant_id(), get_service_instance_id()
+
+
 #: Error recorded on file-task entries that a restart interrupted mid-ingest.
 INTERRUPTED_ERROR = "interrupted by server restart"
 

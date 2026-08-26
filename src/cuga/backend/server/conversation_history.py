@@ -454,10 +454,13 @@ class ConversationHistoryDB:
             await self._ensure_schema()
             store = self._get_store()
             cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+            tenant_id = _tenant_id()
+            inst_id = _instance_id()
             await store.execute(
                 """
                 DELETE FROM stream_events
-                WHERE updated_at < ?
+                WHERE tenant_id = ? AND instance_id = ?
+                  AND updated_at < ?
                   AND NOT EXISTS (
                     SELECT 1 FROM conversation_history ch
                     WHERE ch.tenant_id = stream_events.tenant_id
@@ -467,7 +470,7 @@ class ConversationHistoryDB:
                       AND ch.user_id = stream_events.user_id
                   )
                 """,
-                (cutoff,),
+                (tenant_id, inst_id, cutoff),
             )
             # Both LocalRelationalStore and ProdRelationalStore set _last_rowcount
             # on execute(); use it to avoid SELECT changes() (SQLite-only) or

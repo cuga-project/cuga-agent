@@ -168,7 +168,7 @@ class LocalEmbeddingStore:
             scope_vals.append(tenant_id)
         if "instance_id" in scope:
             scope_vals.append(instance_id)
-        if scope and any(scope_vals):
+        if scope:
             where_parts = [f"{c} = ?" for c in scope]
             where_parts.append(f"{id_col} = ?")
             row = conn.execute(
@@ -196,7 +196,7 @@ class LocalEmbeddingStore:
             scope_vals.append(tenant_id)
         if "instance_id" in scope:
             scope_vals.append(instance_id)
-        if scope and any(scope_vals):
+        if scope:
             where_parts = [f"{c} = ?" for c in scope]
             where_parts.append(f"{id_col} = ?")
             conn.execute(

@@ -182,7 +182,7 @@ class ProdEmbeddingStore:
             scope_vals.append(tenant_id)
         if "instance_id" in scope:
             scope_vals.append(instance_id)
-        if scope and any(scope_vals):
+        if scope:
             where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
             where_parts.append(f"{id_col} = ${len(scope) + 1}")
             async with pool.acquire() as conn:
@@ -210,7 +210,7 @@ class ProdEmbeddingStore:
             scope_vals.append(tenant_id)
         if "instance_id" in scope:
             scope_vals.append(instance_id)
-        if scope and any(scope_vals):
+        if scope:
             where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
             where_parts.append(f"{id_col} = ${len(scope) + 1}")
             async with pool.acquire() as conn:

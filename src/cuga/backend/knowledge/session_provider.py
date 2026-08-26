@@ -5,7 +5,9 @@ knowledge state (uploaded documents, filters, overrides).
 
 Routes MUST always go through the provider's save() method — never write
 to the JSON file directly.  SessionProvider.save() is in-memory only;
-PersistentSessionProvider.save() writes through to disk automatically.
+StorageBackedSessionProvider (used by the server) writes through to the
+relational store selected by ``storage.mode``; PersistentSessionProvider
+writes through to a JSON file (tests / legacy import).
 """
 
 from __future__ import annotations
@@ -214,6 +216,196 @@ class SessionProvider:
 
     def list_agents(self) -> dict[str, AgentKnowledgeState]:
         return dict(self._agents)
+
+
+def _run_sync(coro):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+_SESSION_TABLE = "knowledge_session_state"
+
+
+async def _ensure_session_schema(store) -> None:
+    await store.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_SESSION_TABLE} (
+            tenant_id TEXT NOT NULL DEFAULT '',
+            instance_id TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            record_key TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, instance_id, kind, record_key)
+        )
+        """
+    )
+    await store.commit()
+
+
+class StorageBackedSessionProvider(SessionProvider):
+    """Session knowledge persisted through ``storage.mode`` (SQLite local / Postgres prod).
+
+    Every row is scoped by ``tenant_id`` + ``instance_id``, matching policies and
+    other relational stores. The in-memory maps remain the API; mutations write
+    through one row at a time.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._load()
+
+    def _store(self):
+        from cuga.backend.storage import get_storage
+
+        return get_storage().get_relational_store("config")
+
+    def _scope(self) -> tuple[str, str]:
+        from cuga.config import get_service_instance_id, get_tenant_id
+
+        return get_tenant_id(), get_service_instance_id()
+
+    def _load(self) -> None:
+        self._sessions, self._agents = _run_sync(self._load_async())
+
+    async def _load_async(self) -> tuple[dict[str, SessionKnowledgeState], dict[str, AgentKnowledgeState]]:
+        store = self._store()
+        await _ensure_session_schema(store)
+        tenant_id, inst_id = self._scope()
+        rows = await store.fetchall(
+            f"SELECT kind, record_key, payload FROM {_SESSION_TABLE} WHERE tenant_id = ? AND instance_id = ?",
+            (tenant_id, inst_id),
+        )
+        sessions: dict[str, SessionKnowledgeState] = {}
+        agents: dict[str, AgentKnowledgeState] = {}
+        for row in rows:
+            kind = row["kind"]
+            try:
+                data = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if kind == "session":
+                sessions[row["record_key"]] = SessionKnowledgeState.from_dict(data)
+            elif kind == "agent":
+                agents[row["record_key"]] = AgentKnowledgeState.from_dict(data)
+        logger.info(
+            "Loaded knowledge session state from storage: %d sessions, %d agents",
+            len(sessions),
+            len(agents),
+        )
+        return sessions, agents
+
+    def _upsert(self, kind: str, record_key: str, payload: dict[str, Any]) -> None:
+        _run_sync(self._upsert_async(kind, record_key, payload))
+
+    async def _upsert_async(self, kind: str, record_key: str, payload: dict[str, Any]) -> None:
+        store = self._store()
+        await _ensure_session_schema(store)
+        tenant_id, inst_id = self._scope()
+        now = datetime.now(timezone.utc).isoformat()
+        body = json.dumps(payload)
+        is_prod = type(store).__name__ == "ProdRelationalStore"
+        if is_prod:
+            await store.execute(
+                f"""
+                INSERT INTO {_SESSION_TABLE} (tenant_id, instance_id, kind, record_key, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, instance_id, kind, record_key)
+                DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+                """,
+                (tenant_id, inst_id, kind, record_key, body, now),
+            )
+        else:
+            await store.execute(
+                f"""
+                INSERT OR REPLACE INTO {_SESSION_TABLE}
+                (tenant_id, instance_id, kind, record_key, payload, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (tenant_id, inst_id, kind, record_key, body, now),
+            )
+        await store.commit()
+
+    def _delete_row(self, kind: str, record_key: str) -> None:
+        _run_sync(self._delete_row_async(kind, record_key))
+
+    async def _delete_row_async(self, kind: str, record_key: str) -> None:
+        store = self._store()
+        await _ensure_session_schema(store)
+        tenant_id, inst_id = self._scope()
+        await store.execute(
+            f"DELETE FROM {_SESSION_TABLE} WHERE tenant_id = ? AND instance_id = ? "
+            f"AND kind = ? AND record_key = ?",
+            (tenant_id, inst_id, kind, record_key),
+        )
+        await store.commit()
+
+    def save_session(self, thread_id: str, state: SessionKnowledgeState) -> None:
+        super().save_session(thread_id, state)
+        self._upsert("session", thread_id, state.to_dict())
+
+    def delete_session(self, thread_id: str) -> None:
+        super().delete_session(thread_id)
+        self._delete_row("session", thread_id)
+
+    def patch_session_overrides(
+        self,
+        thread_id: str,
+        patch: dict[str, Any],
+        user_id: str = "",
+        tenant_id: str = "",
+    ) -> SessionKnowledgeState:
+        state = super().patch_session_overrides(thread_id, patch, user_id=user_id, tenant_id=tenant_id)
+        self._upsert("session", thread_id, state.to_dict())
+        return state
+
+    def save_agent(self, state: AgentKnowledgeState) -> None:
+        super().save_agent(state)
+        self._upsert("agent", state.key, state.to_dict())
+
+
+def create_session_provider(*, json_legacy_path: Path | None = None) -> SessionProvider:
+    """Build the session provider that follows ``storage.mode``.
+
+    If a legacy ``session_knowledge.json`` exists and this tenant+instance has
+    no rows yet, import it once so a switch to prod (or the new table) keeps
+    existing session state.
+    """
+    provider = StorageBackedSessionProvider()
+    if (
+        json_legacy_path is not None
+        and json_legacy_path.exists()
+        and not provider.list_sessions()
+        and not provider.list_agents()
+    ):
+        legacy = PersistentSessionProvider(json_legacy_path)
+        for session in legacy.list_sessions().values():
+            provider.save_session(session.thread_id, session)
+        for agent in legacy.list_agents().values():
+            provider.save_agent(agent)
+        logger.info("Imported legacy session_knowledge.json into storage-backed session state")
+    return provider
+
+
+async def delete_scoped_session_knowledge() -> None:
+    """Drop session/agent knowledge rows for the current tenant+instance (demo reset)."""
+    from cuga.backend.storage import get_storage
+    from cuga.config import get_service_instance_id, get_tenant_id
+
+    store = get_storage().get_relational_store("config")
+    await _ensure_session_schema(store)
+    await store.execute(
+        f"DELETE FROM {_SESSION_TABLE} WHERE tenant_id = ? AND instance_id = ?",
+        (get_tenant_id(), get_service_instance_id()),
+    )
+    await store.commit()
 
 
 class PersistentSessionProvider(SessionProvider):

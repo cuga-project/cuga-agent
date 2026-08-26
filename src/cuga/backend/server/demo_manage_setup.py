@@ -593,6 +593,11 @@ def setup_demo_manage_config(
                 if session_state.exists():
                     session_state.unlink()
                     logger.info("Knowledge reset: removed session_knowledge.json")
+                from cuga.backend.knowledge.session_provider import delete_scoped_session_knowledge
+                from cuga.backend.server.config_store import run_sync
+
+                run_sync(delete_scoped_session_knowledge())
+                logger.info("Knowledge reset: cleared scoped session knowledge rows")
             finally:
                 _lock_release(_lock_fd)
                 _lock_fd.close()

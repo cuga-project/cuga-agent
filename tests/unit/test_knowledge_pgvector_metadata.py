@@ -28,6 +28,8 @@ from cuga.backend.knowledge.metadata.postgres_store import (
 )
 from cuga.backend.knowledge.routes import _enrich_task
 
+pytestmark = pytest.mark.unit
+
 
 class _FakePostgresMetadata(PostgresKnowledgeMetadata):
     """Override the asyncpg I/O with an in-memory recorder.
@@ -49,6 +51,8 @@ class _FakePostgresMetadata(PostgresKnowledgeMetadata):
         # call patterns and update our in-memory row store.
         if "INSERT INTO" in sql and "_tasks" in sql:
             (
+                _tenant_id,
+                _instance_id,
                 task_id,
                 collection,
                 total_files,
@@ -69,18 +73,18 @@ class _FakePostgresMetadata(PostgresKnowledgeMetadata):
                 "updated_at": updated_at,
             }
         elif "UPDATE" in sql and "_tasks" in sql:
-            # SET <col> = ?, ... WHERE task_id = ?
+            # SET <col> = ?, ... WHERE tenant_id = ? AND instance_id = ? AND task_id = ?
             set_section = sql.split("SET", 1)[1].split("WHERE", 1)[0]
             cols = [seg.split("=")[0].strip() for seg in set_section.strip().rstrip(",").split(",")]
             task_id = params[-1]
             if task_id in self._rows_by_task_id:
-                for col, val in zip(cols, params[:-1]):
+                for col, val in zip(cols, params[: len(cols)]):
                     self._rows_by_task_id[task_id][col] = val
 
     async def fetchone(self, sql: str, params: tuple = ()):  # type: ignore[override]
         self.fetched_one.append((sql, tuple(params)))
-        if "_tasks" in sql and "WHERE task_id" in sql:
-            return self._rows_by_task_id.get(params[0])
+        if "_tasks" in sql and "task_id" in sql:
+            return self._rows_by_task_id.get(params[-1])
         return None
 
     async def fetchall(self, sql: str, params: tuple = ()):  # type: ignore[override]
@@ -187,6 +191,13 @@ async def test_failure_path_writes_well_formed_sql_against_postgres_store():
         assert "?" in sql, f"UPDATE missing ``?`` placeholders: {sql}"
         assert "$1" not in sql, "Postgres-specific placeholders leaked: " + sql
         assert "%s" not in sql, "Mysql/psycopg-style placeholders leaked: " + sql
+        assert "tenant_id" in sql
+        assert "instance_id" in sql
+    insert_sqls = [s for s, _ in store.executed if "INSERT INTO" in s]
+    assert insert_sqls
+    for sql in insert_sqls:
+        assert "tenant_id" in sql
+        assert "instance_id" in sql
 
 
 @pytest.mark.asyncio

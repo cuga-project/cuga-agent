@@ -14,6 +14,36 @@ from cuga.backend.llm.models import LLMManager
 from cuga.config import settings, DBS_DIR
 
 
+def resolve_local_policy_db_path(
+    explicit_path: Optional[str],
+    settings_path: Optional[str],
+    storage_mode: str,
+) -> Optional[str]:
+    """Return a local sqlite path for policies, or None to use the storage facade.
+
+    An explicit ``initialize(policy_db_path=...)`` argument always wins (tests).
+    ``[policy].policy_db_path`` applies only when ``storage.mode`` is not ``prod``.
+    """
+    explicit = (explicit_path or "").strip()
+    from_settings = (settings_path or "").strip()
+    mode = (storage_mode or "local").lower()
+    if explicit:
+        configured = explicit
+    elif from_settings and mode != "prod":
+        configured = from_settings
+    else:
+        if from_settings and mode == "prod":
+            logger.warning(
+                "Ignoring [policy].policy_db_path because storage.mode=prod; "
+                "policies are stored on storage.postgres_url"
+            )
+        return None
+    if not os.path.isabs(configured):
+        os.makedirs(DBS_DIR, exist_ok=True)
+        return os.path.join(DBS_DIR, configured)
+    return configured
+
+
 class PolicyConfigurable:
     """
     Configurable policy system for LangGraph integration.
@@ -119,15 +149,12 @@ class PolicyConfigurable:
                 policy_config.collection_name if policy_config else "cuga_policies"
             )
 
-            configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()
-            if configured_path:
-                if not os.path.isabs(configured_path):
-                    os.makedirs(DBS_DIR, exist_ok=True)
-                    final_policy_db_path = os.path.join(DBS_DIR, configured_path)
-                else:
-                    final_policy_db_path = configured_path
-            else:
-                final_policy_db_path = None
+            explicit_path = (policy_db_path or "").strip()
+            settings_path = (getattr(policy_config, "policy_db_path", None) or "").strip()
+            from cuga.backend.storage.facade import get_storage_connection_params
+
+            storage_mode = get_storage_connection_params()[0]
+            final_policy_db_path = resolve_local_policy_db_path(explicit_path, settings_path, storage_mode)
             from cuga.backend.storage.embedding import get_embedding_config
 
             emb_cfg = get_embedding_config()

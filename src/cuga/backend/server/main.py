@@ -694,11 +694,11 @@ async def lifespan(app: FastAPI):
         app_state.knowledge_engine = KnowledgeEngine(kb_config, chat_generator=CugaChatGenerator())
 
         # Initialize session provider for ownership enforcement
-        from cuga.backend.knowledge.session_provider import PersistentSessionProvider
+        from cuga.backend.knowledge.session_provider import create_session_provider
 
         if not getattr(app_state, "knowledge_provider", None):
             _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
-            app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+            app_state.knowledge_provider = create_session_provider(json_legacy_path=_kb_state_path)
 
         # Wire per-session citation overrides into the knowledge sources module
         # so citations_enabled_for() can honor session-level toggles.

@@ -157,9 +157,15 @@ pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and
 #
 # | Data | local | prod |
 # |------|-------|------|
-# | Policy vectors | sqlite-vec in `[policy].policy_db_path` or `storage.local_db_path` (default `DBS_DIR/cuga.db`); table `[policy].collection_name` | `storage.postgres_url` (pgvector) |
+# | Policy vectors | sqlite-vec in `[policy].policy_db_path` or `storage.local_db_path` (default `DBS_DIR/cuga.db`); table `[policy].collection_name` | `storage.postgres_url` (pgvector). `[policy].policy_db_path` is ignored in prod. |
 # | Knowledge vectors | `{knowledge.persist_dir}/knowledge_vectors.db` (vec0 tables per collection) | `storage.postgres_url` (same stack as policy) |
 # | Knowledge metadata (tasks, documents, collection_config, settings) | `{knowledge.persist_dir}/metadata.db` (default `<cwd>/.cuga/knowledge/`) | Postgres tables `cuga_knowledge_meta_*` on `storage.postgres_url` (uploaded **files** stay under `persist_dir/files/`) |
+# | Agent configs / secrets | `storage.local_db_path` tables `agent_configs`, `secrets` | same tables on `storage.postgres_url` |
+# | Conversation history / stream events | `storage.local_db_path` tables `conversation_history`, `stream_events` | same tables on `storage.postgres_url` |
+# | Session knowledge state | `storage.local_db_path` table `knowledge_session_state` | same table on `storage.postgres_url` |
+#
+# All of the above rows are scoped by `service.tenant_id` + `service.instance_id`
+# (env: DYNACONF_SERVICE__TENANT_ID / DYNACONF_SERVICE__INSTANCE_ID).
 #
 # Defaults: `DBS_DIR` = package `dbs/` or `CUGA_DBS_DIR`. Override `knowledge.persist_dir` in knowledge_settings.toml.
 mode = "local"  # "local" | "prod"
