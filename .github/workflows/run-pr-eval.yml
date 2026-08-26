@@ -21,7 +21,8 @@ jobs:
       contains(github.event.comment.body, '/run-pr-eval') &&
       (
         github.event.comment.author_association == 'OWNER' ||
-        github.event.comment.user.login == 'AnkitaNaik'
+        github.event.comment.user.login == 'AnkitaNaik' ||
+        github.event.comment.user.login == 'Sergey-Zeltyn'
       )
     runs-on: [self-hosted, linux, run-pr-eval]
     timeout-minutes: 120
