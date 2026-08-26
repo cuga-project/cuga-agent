@@ -28,8 +28,7 @@ ENABLE_SAVE_REUSE = settings.features.save_reuse
 class HumanInTheLoopHandler:
     """Simple handler for human-in-the-loop interactions"""
 
-    def __init__(self, answer_function: Optional[Callable[[str], str]] = None):
-        self.answer_function = answer_function
+    def __init__(self):
         self._action_handlers: Dict[str, Callable] = {
             ActionIds.SAVE_REUSE: self._handle_save_reuse,
             ActionIds.SAVE_REUSE_INTENT: self._handle_save_reuse_intent,
@@ -42,11 +41,13 @@ class HumanInTheLoopHandler:
         if action_id in self._action_handlers:
             return self._action_handlers[action_id](state, node_name)
 
-        # Default fallback — this is a terminal path to END, so finalize here
-        # too (every other terminal path does): apply the answer function,
-        # resolve any [sN] markers, and drop stale prior-turn sources before
-        # the state is dumped.
-        FinalAnswerNode.finalize_answer(state, self.answer_function)
+        # Default fallback — terminal path to END. Citation resolution only:
+        # this continuation resumes an answer that _generate_final_answer
+        # already finalized before routing to SUGGEST_HUMAN_ACTIONS, so
+        # re-running the answer function here would apply it twice
+        # (single-application contract; same reasoning as the supervisor
+        # forward branch). Citation resolution is idempotent by design.
+        FinalAnswerNode.apply_citation_resolution(state)
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     def add_action_handler(self, action_id: str, handler: Callable):
@@ -73,7 +74,7 @@ class FinalAnswerNode(BaseNode):
     ):
         super().__init__()
         self.final_answer_agent = final_answer_agent
-        self.hitl_handler = HumanInTheLoopHandler(answer_function=answer_function)
+        self.hitl_handler = HumanInTheLoopHandler()
         agent = self.final_answer_agent
         name = self.final_answer_agent.name
         hitl_handler = self.hitl_handler
