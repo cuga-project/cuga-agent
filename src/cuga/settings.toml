@@ -286,6 +286,16 @@ save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
 timeout = 30.0               # Timeout in seconds for Evolve MCP calls
 
+[context_forge]
+enabled = false               # Master switch — everything below is inert when false, manage UI hides the browse-catalog entry point
+url = ""                      # https://mcpgateway-<ns>.apps.<cluster> — Forge base URL, no trailing slash
+audience = ""                 # mcp-gw.<tenant>, must match the Forge SSO provider's api_audience
+workspace_group = ""          # ws-<workspace_id> — the group claim value this instance authenticates as
+token_source = "env"          # broker | env  (env = read a token from token_env_var below, PoC only — broker mode is not yet implemented, see docs/issues/mcpcf-option-a-group-mapping.md)
+token_env_var = "CONTEXT_FORGE_TOKEN"
+verify_ssl = true
+ca_bundle = ""                 # PEM path, mirrors auth.oidc_ca_bundle
+
 [a2a]
 enabled = false                                              # Master toggle. When false, the A2A router is not mounted and the package is never imported.
 agent_name = "cuga"                                          # The name advertised in the AgentCard.

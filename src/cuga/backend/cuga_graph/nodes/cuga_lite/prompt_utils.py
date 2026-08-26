@@ -751,7 +751,13 @@ def format_apps_for_prompt(apps) -> list:
     if not apps:
         return processed_apps
     for app in apps:
-        description = getattr(app, 'description', 'No description available')
+        # `or`, not getattr's default: the default only fires when the attribute
+        # is MISSING, but providers/combined.py constructs apps with an explicit
+        # description=None. Those arrive as present-but-None, and len(None) then
+        # raises "object of type 'NoneType' has no len()" — failing the entire
+        # turn rather than just that one app, since this runs while composing
+        # the prompt. Any MCP server that advertises no description hits this.
+        description = getattr(app, 'description', None) or 'No description available'
         max_length = 1000
         if len(description) > max_length:
             description = description[:max_length] + '...'

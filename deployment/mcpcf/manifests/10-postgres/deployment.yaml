@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge-postgres
+  namespace: ${NAMESPACE}
+  labels:
+    app: forge-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # single PVC, RWO — a rolling update would double-mount it
+  selector:
+    matchLabels:
+      app: forge-postgres
+  template:
+    metadata:
+      labels:
+        app: forge-postgres
+    spec:
+      # No runAsUser/fsGroup here — the restricted-v2 SCC assigns them from
+      # this namespace's range at admission. The sclorg image is built to
+      # run under whatever arbitrary UID it's given (see secret.yaml).
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: forge-postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: [pg_isready, -h, localhost]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [pg_isready, -h, localhost]
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: forge-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge-postgres
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: forge-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

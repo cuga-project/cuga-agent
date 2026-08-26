@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forge-config
+  namespace: ${NAMESPACE}
+data:
+  HOST: "0.0.0.0"
+  PORT: "4444"
+  ENVIRONMENT: development
+  APP_DOMAIN: https://forge-${NAMESPACE}.apps.${CLUSTER_DOMAIN}
+  CACHE_TYPE: redis
+  # Forge auto-sizes gunicorn workers from the *node's* visible CPU count,
+  # not any container CPU limit (confirmed live on gori: 16 workers spawned
+  # on a 16-core node with no resource limits set, each preloading and
+  # opening a 200-connection DB pool — startup blew past the readiness/
+  # liveness windows and the pod crash-looped). Pin it down for a PoC pod.
+  GUNICORN_WORKERS: "2"
+  PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL}
+  PLATFORM_ADMIN_FULL_NAME: "PoC Platform Administrator"
+  BASIC_AUTH_USER: admin
+  # Off by default even with ENVIRONMENT=development — verified live, the
+  # first deploy logged "Admin UI enabled: False" / "Admin API enabled: False"
+  # with neither of these set. On for this PoC so it can be checked in a
+  # browser; the automated Track B flow (03-configure-forge.sh) uses the API
+  # directly and doesn't need this.
+  MCPGATEWAY_UI_ENABLED: "true"
+  MCPGATEWAY_ADMIN_API_ENABLED: "true"
+  # PoC only — real validation-error detail instead of a generic masked
+  # 422 message. Without this, every 4xx from the API is indistinguishable
+  # ("An error occurred, please try again.") regardless of cause.
+  EXPOSE_ERROR_DETAILS: "true"
+  LOG_LEVEL: "DEBUG"
+  # Both the demo MCP gateway and the mock broker are in-cluster Services —
+  # private RFC1918-style addresses. SSRF protection blocks those by default
+  # (confirmed live: gateway registration 422'd with "contains private
+  # network address which is blocked by SSRF protection"). Scoping this to
+  # just the cluster's own service CIDR would be tighter than a blanket
+  # allow, but that CIDR isn't a given across clusters/topologies — fine to
+  # broaden for a PoC namespace, revisit before this pattern goes anywhere
+  # real.
+  SSRF_ALLOW_PRIVATE_NETWORKS: "true"
+  SSRF_DNS_FAIL_CLOSED: "false"
+  # This cluster's Route/Ingress certs are signed by an internal Vault CA
+  # (see .claude/skills/cuga-sovereign/clusters/cluster-gori.md) — every
+  # other tool in this PoC reaches them with -k/--insecure-skip-tls-verify.
+  # Forge's own outbound OIDC-discovery client does real verification and
+  # has no CA bundle for it, so external-IdP token validation against the
+  # mock broker's own https Route failed with CERTIFICATE_VERIFY_FAILED
+  # until this was set. PoC only — a real deployment should supply the
+  # actual CA bundle instead.
+  SKIP_SSL_VERIFY: "true"
+  # Freshly-bootstrapped platform admin accounts are flagged
+  # password_change_required regardless of password strength — fine for a
+  # real deployment, just friction for this PoC's scripted Track B login.
+  PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"
+  # Option A wiring — mapping doc §1 (poc-plan.md Track A "Forge settings").
+  # SSO_ENABLED isn't in that list but turned out to be required anyway —
+  # without it the whole SSO router (including the admin provider endpoints
+  # Track B needs) isn't mounted at all ("SSO router not included - SSO
+  # authentication disabled" at boot, and no /auth/sso/* paths in the
+  # OpenAPI spec). Confirmed live on 2026-08-26.
+  SSO_ENABLED: "true"
+  MCP_CLIENT_AUTH_ENABLED: "true"
+  MCP_REQUIRE_AUTH: "true"
+  SSO_API_TOKEN_AUTH_ENABLED: "true"
+  EXTERNAL_IDENTITY_CACHE_TTL: "0"
+  AUTO_CREATE_PERSONAL_TEAMS: "false"

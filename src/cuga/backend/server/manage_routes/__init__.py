@@ -27,6 +27,7 @@ from cuga.backend.server.manage_routes.router import router
 from cuga.backend.server.manage_routes import (  # noqa: F401
     config_routes,
     draft_routes,
+    forge_routes,
     knowledge_routes,
     llm_routes,
 )

@@ -335,6 +335,44 @@ export async function getToolsList(draft?: boolean): Promise<Response> {
   return apiFetch(`/api/tools/list${q}`);
 }
 
+export interface ForgeCatalogTool {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface ForgeCatalogGateway {
+  slug: string;
+  name: string;
+  tools: ForgeCatalogTool[];
+}
+
+export interface ForgeCatalog {
+  enabled: boolean;
+  gateways: ForgeCatalogGateway[];
+  error?: string;
+}
+
+export async function getForgeCatalog(agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/forge/catalog${q}`);
+}
+
+export async function attachForgeTools(
+  gatewaySlug: string,
+  toolIds: string[],
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/forge/attach${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gateway_slug: gatewaySlug, tool_ids: toolIds }),
+    signal,
+  });
+}
+
 export async function getSkills(): Promise<Response> {
   return apiFetch("/api/skills");
 }

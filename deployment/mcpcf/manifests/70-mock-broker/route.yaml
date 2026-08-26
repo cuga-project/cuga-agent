@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mock-broker
+  namespace: ${NAMESPACE}
+spec:
+  host: mock-broker-${NAMESPACE}.apps.${CLUSTER_DOMAIN}
+  to:
+    kind: Service
+    name: mock-broker
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

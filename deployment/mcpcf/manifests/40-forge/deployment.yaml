@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge
+  namespace: ${NAMESPACE}
+  labels:
+    app: forge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forge
+  template:
+    metadata:
+      labels:
+        app: forge
+    spec:
+      # No runAsUser/fsGroup — restricted-v2 assigns them from this
+      # namespace's range. See ../../README.md "SCC" section — this differs
+      # from the upstream guide's `runAsUser: 10001` example, which does not
+      # hold for an arbitrary namespace's actual assigned range.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: ${FORGE_IMAGE}
+          ports:
+            - name: http
+              containerPort: 4444
+          envFrom:
+            - configMapRef:
+                name: forge-config
+            - secretRef:
+                name: forge-secrets
+          env:
+            # Points Python's default SSL trust store at this cluster's
+            # router CA (extracted by 01-deploy-forge.sh into the
+            # router-ca-bundle ConfigMap below) — SKIP_SSL_VERIFY alone
+            # does NOT cover this: the JWKS-fetch client PyJWT uses
+            # internally builds its own httpx.Client() with no verify=
+            # override, so it always does real cert verification regardless
+            # of that setting. Confirmed live: external-IdP token validation
+            # failed with CERTIFICATE_VERIFY_FAILED against the mock
+            # broker's own (edge-TLS, internal-CA-signed) route until this
+            # was added. See scratchpad.md Track B.
+            - name: SSL_CERT_FILE
+              value: /etc/mcpcf-ca/ca.pem
+          volumeMounts:
+            - name: router-ca
+              mountPath: /etc/mcpcf-ca
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4444
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5 # default 1s is too tight for this app's middleware chain — measured live
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4444
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: router-ca
+          configMap:
+            name: router-ca-bundle
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: forge
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

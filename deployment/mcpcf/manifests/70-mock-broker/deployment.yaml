@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-broker
+  namespace: ${NAMESPACE}
+  labels:
+    app: mock-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-broker
+  template:
+    metadata:
+      labels:
+        app: mock-broker
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-broker
+          image: ${CUGA_IMAGE}
+          workingDir: /app
+          command: [uv, run, python, /mnt/mock-broker/broker.py]
+          env:
+            - name: BROKER_ISSUER
+              value: ${BROKER_ISSUER}
+          ports:
+            - name: http
+              containerPort: 8090
+          volumeMounts:
+            - name: broker-script
+              mountPath: /mnt/mock-broker
+            - name: broker-key
+              mountPath: /etc/mock-broker
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: broker-script
+          configMap:
+            name: mock-broker
+        - name: broker-key
+          secret:
+            secretName: mock-broker-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-broker
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: mock-broker
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forge-redis
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge-redis
+  namespace: ${NAMESPACE}
+  labels:
+    app: forge-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forge-redis
+  template:
+    metadata:
+      labels:
+        app: forge-redis
+    spec:
+      # No runAsUser/fsGroup — SCC-assigned, same as postgres/deployment.yaml.
+      # Bitnami's image is built to run under an arbitrary UID, unlike the
+      # vanilla docker.io/redis image.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          # Bitnami retired versioned tags on the free Docker Hub tier —
+          # `latest` is what's actually pullable now. Confirmed live against
+          # this cluster (see scratchpad.md); pin to a digest if this needs
+          # to be reproducible later.
+          image: docker.io/bitnami/redis:latest
+          ports:
+            - containerPort: 6379
+          envFrom:
+            - secretRef:
+                name: forge-redis
+          env:
+            - name: ALLOW_EMPTY_PASSWORD
+              value: "no"
+          readinessProbe:
+            exec:
+              command: [redis-cli, -a, "$(REDIS_PASSWORD)", --no-auth-warning, ping]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [redis-cli, -a, "$(REDIS_PASSWORD)", --no-auth-warning, ping]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forge-redis
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: forge-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

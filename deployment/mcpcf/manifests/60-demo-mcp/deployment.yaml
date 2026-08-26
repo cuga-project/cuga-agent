@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-mcp-server
+  namespace: ${NAMESPACE}
+  labels:
+    app: demo-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-mcp-server
+  template:
+    metadata:
+      labels:
+        app: demo-mcp-server
+    spec:
+      # imagePullSecrets intentionally omitted — the tenant's own CUGA agent
+      # pods pull this same image with no per-pod pull secret (see
+      # scratchpad.md "Image pull path"). Add one here (from $PULL_SECRET in
+      # forge.env) if this namespace turns out to need it.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: demo-mcp
+          image: ${CUGA_IMAGE}
+          workingDir: /app
+          command: [uv, run, python, /mnt/demo-mcp/server.py]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: server-script
+              mountPath: /mnt/demo-mcp
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: server-script
+          configMap:
+            name: demo-mcp-server
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-mcp-server
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: demo-mcp-server
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from "react";
-import { Add, Edit, TrashCan, Filter, Key } from "@carbon/icons-react";
+import React, { useState, useMemo, useEffect } from "react";
+import { Add, Edit, TrashCan, Filter, Key, Search } from "@carbon/icons-react";
 import {
   ComposedModal,
   ModalHeader,
@@ -11,10 +11,12 @@ import {
   HStack,
   Tag,
   Tile,
+  InlineNotification,
 } from "@carbon/react";
 import type { ToolEntry } from "./types/tools";
 import { AddToolModal } from "./AddToolModal";
 import { SecretsManager } from "./SecretsManager";
+import { getForgeCatalog, attachForgeTools, type ForgeCatalog, type ForgeCatalogGateway } from "./api";
 import "./ToolsConfig.css";
 
 export interface ConnectedTool {
@@ -53,6 +55,23 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);
   const [toolsModalAppName, setToolsModalAppName] = useState<string | null>(null);
   const [showAllTools, setShowAllTools] = useState(false);
+  const [forgeCatalog, setForgeCatalog] = useState<ForgeCatalog | null>(null);
+  const [forgeModalOpen, setForgeModalOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getForgeCatalog(agentId)
+      .then((res) => res.json())
+      .then((data: ForgeCatalog) => {
+        if (!cancelled) setForgeCatalog(data);
+      })
+      .catch(() => {
+        if (!cancelled) setForgeCatalog({ enabled: false, gateways: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   const handleAdd = (tool: ToolEntry) => {
     const updatedTools = [...tools, tool];
@@ -117,6 +136,33 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
     }
     
     onChange(updatedTools);
+  };
+
+  const handleForgeAttach = async (selections: { slug: string; toolIds: string[] }[]) => {
+    let updatedTools = tools;
+    for (const { slug, toolIds } of selections) {
+      const res = await attachForgeTools(slug, toolIds, agentId);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        onError?.("Failed to attach workspace tools", body.detail || `${slug}: HTTP ${res.status}`);
+        continue;
+      }
+      // Mirror the entry the server actually persisted rather than
+      // reconstructing one. A locally-built stub with url:"" tripped the
+      // "url is required" validation AND — worse — the parent's autosave then
+      // PATCHed that stub back over the real entry, wiping the URL and
+      // credential the attach had just written. auth.value here is a secret
+      // reference (env://NAME), not the token.
+      const body = await res.json().catch(() => ({}));
+      const entry: ToolEntry | undefined = body.entry;
+      if (!entry?.name) {
+        onError?.("Attach incomplete", `${slug}: server did not return the saved tool entry`);
+        continue;
+      }
+      updatedTools = [...updatedTools.filter((t) => t.name !== entry.name), entry];
+    }
+    onChange(updatedTools);
+    setForgeModalOpen(false);
   };
 
   const editingTool = editingIndex !== null ? tools[editingIndex] ?? null : null;
@@ -253,6 +299,11 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
         <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
           Add tool
         </Button>
+        {forgeCatalog?.enabled && (
+          <Button kind="secondary" size="sm" renderIcon={Search} onClick={() => setForgeModalOpen(true)}>
+            Browse workspace catalog
+          </Button>
+        )}
         {tools.length > TOOLS_PREVIEW_COUNT && !showAllTools && (
           <Button kind="ghost" size="sm" onClick={() => setShowAllTools(true)}>
             Show {tools.length - TOOLS_PREVIEW_COUNT} more
@@ -298,6 +349,13 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
             }
             closeToolsModal();
           }}
+        />
+      )}
+      {forgeModalOpen && forgeCatalog?.gateways && (
+        <ForgeCatalogModal
+          gateways={forgeCatalog.gateways}
+          onClose={() => setForgeModalOpen(false)}
+          onAttach={handleForgeAttach}
         />
       )}
       <SecretsManager open={secretsOpen} onClose={() => setSecretsOpen(false)} agentId={agentId} />
@@ -405,6 +463,116 @@ function ServerToolsModal({
         </Button>
         <Button kind="primary" onClick={handleSave}>
           Save
+        </Button>
+      </ModalFooter>
+    </ComposedModal>
+  );
+}
+
+interface ForgeCatalogModalProps {
+  gateways: ForgeCatalogGateway[];
+  onClose: () => void;
+  onAttach: (selections: { slug: string; toolIds: string[] }[]) => Promise<void>;
+}
+
+function ForgeCatalogModal({ gateways, onClose, onAttach }: ForgeCatalogModalProps) {
+  const [selected, setSelected] = useState<Map<string, Set<string>>>(new Map());
+  const [attaching, setAttaching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (slug: string, toolId: string) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      const set = new Set(next.get(slug) ?? []);
+      if (set.has(toolId)) set.delete(toolId);
+      else set.add(toolId);
+      next.set(slug, set);
+      return next;
+    });
+  };
+
+  const toggleGateway = (gw: ForgeCatalogGateway, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      next.set(gw.slug, checked ? new Set(gw.tools.map((t) => t.id)) : new Set());
+      return next;
+    });
+  };
+
+  const totalSelected = Array.from(selected.values()).reduce((sum, set) => sum + set.size, 0);
+
+  const handleAttach = async () => {
+    const selections = gateways
+      .map((gw) => ({ slug: gw.slug, toolIds: Array.from(selected.get(gw.slug) ?? []) }))
+      .filter((s) => s.toolIds.length > 0);
+    if (selections.length === 0) return;
+    setAttaching(true);
+    setError(null);
+    try {
+      await onAttach(selections);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to attach workspace tools");
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  return (
+    <ComposedModal open onClose={onClose} size="lg" isFullWidth>
+      <ModalHeader title="Browse workspace catalog" buttonOnClick={onClose} />
+      <ModalBody hasScrollingContent className="server-tools-modal-body">
+        {error && (
+          <InlineNotification kind="error" title="Attach failed" subtitle={error} hideCloseButton lowContrast />
+        )}
+        {gateways.length === 0 ? (
+          <p className="tools-config-empty">No gateways available in the workspace catalog.</p>
+        ) : (
+          gateways.map((gw) => {
+            const gwSelected = selected.get(gw.slug) ?? new Set<string>();
+            const allChecked = gw.tools.length > 0 && gwSelected.size === gw.tools.length;
+            return (
+              <div key={gw.slug} className="tools-config-tools-checkbox-row" style={{ marginBottom: "1rem" }}>
+                <Checkbox
+                  id={`forge-gateway-${gw.slug}`}
+                  labelText={<strong>{gw.name}</strong>}
+                  checked={allChecked}
+                  indeterminate={gwSelected.size > 0 && !allChecked}
+                  onChange={(_e, { checked }) => toggleGateway(gw, !!checked)}
+                />
+                <ul className="tools-config-tools-list">
+                  {gw.tools.map((t) => (
+                    <li key={t.id} className="tools-config-tools-list-item">
+                      <Checkbox
+                        id={`forge-tool-${gw.slug}-${t.id}`}
+                        labelText={
+                          <>
+                            <span className="tools-config-tool-id">{t.name}</span>
+                            {t.description && (
+                              <span className="tools-config-tool-desc">
+                                {t.description.slice(0, 80)}
+                                {t.description.length > 80 ? "…" : ""}
+                              </span>
+                            )}
+                          </>
+                        }
+                        checked={gwSelected.has(t.id)}
+                        onChange={() => toggle(gw.slug, t.id)}
+                        title={t.description || t.name}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })
+        )}
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="secondary" onClick={onClose} disabled={attaching}>
+          Cancel
+        </Button>
+        <Button kind="primary" onClick={handleAttach} disabled={attaching || totalSelected === 0}>
+          {attaching ? "Attaching…" : `Attach ${totalSelected} tool${totalSelected === 1 ? "" : "s"}`}
         </Button>
       </ModalFooter>
     </ComposedModal>

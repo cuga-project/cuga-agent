@@ -101,6 +101,14 @@ registry.env
 deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
+
+# MCPCF PoC env file with real secrets (keep only forge.env.example), and
+# the idempotency state file from 03-configure-forge.sh (cluster-specific IDs)
+deployment/mcpcf/*.env
+!deployment/mcpcf/forge.env.example
+deployment/mcpcf/.mcpcf-state.json
+deployment/mcpcf/.scratch-kube/
+deployment/mcpcf/*kubeconfig*
 KNOWLEDGE_PIPELINE.md
 docs/examples/demo_apps/file_system/build/
 
@@ -119,3 +127,5 @@ demo_knowledge_docs/
 
 # Roo AI assistant
 .roo/
+deployment/mcpcf/.rollback/
+deployment/mcpcf/.mcpcf-token

@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: forge
+  namespace: ${NAMESPACE}
+spec:
+  host: forge-${NAMESPACE}.apps.${CLUSTER_DOMAIN}
+  to:
+    kind: Service
+    name: forge
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
