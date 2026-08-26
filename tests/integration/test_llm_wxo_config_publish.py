@@ -23,6 +23,11 @@ import pytest
 
 from cuga.backend.llm.models import LLMManager, set_current_llm_override
 
+# "integration" is not a registered marker in pyproject.toml (--strict-markers would
+# reject it); the provider and settings here are fully mocked, so "unit" is the
+# applicable registered marker despite this file's directory.
+pytestmark = pytest.mark.unit
+
 REMOTE_INSTANCE_URL = "https://api.dl.watson-orchestrate.ibm.com/instances/abc-123"
 
 
@@ -71,12 +76,17 @@ def vault_mode_settings():
 
 
 @pytest.fixture(autouse=True)
-def reset_llm_state():
+def reset_llm_state(monkeypatch):
     mgr = LLMManager()
     mgr._models.clear()
     mgr._pre_instantiated_model = None
     set_current_llm_override(None)
     FakeChatWxO.instances.clear()
+    # _get_base_url gives WXO_INSTANCE_URL env precedence over the configured
+    # base_url; clear it (and its siblings) so tests are deterministic
+    # regardless of what's ambient on a given machine or CI runner.
+    for key in ("WXO_API_KEY", "WXO_INSTANCE_URL", "MODEL_NAME"):
+        monkeypatch.delenv(key, raising=False)
     yield
     mgr._models.clear()
     mgr._pre_instantiated_model = None
