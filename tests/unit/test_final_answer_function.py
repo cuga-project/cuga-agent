@@ -244,6 +244,34 @@ def test_finalization_marker_detects_final_answer_agent_message():
     assert _finalization_ran({}) is False
 
 
+def test_empty_answer_gate_requires_formatter_and_finalization():
+    # The invoke()-shaped gate (review: haroldship). Empty-answer recovery must
+    # behave exactly as pre-feature when no formatter is configured — even
+    # after a completed turn left a FinalAnswerAgent message.
+    from cuga.sdk import _empty_answer_is_final
+
+    finalized = {"messages": [SimpleNamespace(name="FinalAnswerAgent")], "final_answer": ""}
+    unfinalized = {"messages": [SimpleNamespace(name="ChatAgent")], "final_answer": ""}
+
+    # no formatter: recovery always allowed (defaults are a no-op)
+    assert _empty_answer_is_final(finalized, formatter_configured=False) is False
+    # formatter + finalized: "" is a deliberate result — keep it
+    assert _empty_answer_is_final(finalized, formatter_configured=True) is True
+    # formatter but never finalized (e.g. interrupted): recovery allowed
+    assert _empty_answer_is_final(unfinalized, formatter_configured=True) is False
+
+
+def test_formatter_in_play_reflects_sdk_and_settings():
+    import cuga
+
+    agent = cuga.CugaAgent(final_answer=_strip_brackets)
+    assert agent._formatter_in_play() is True
+    plain = cuga.CugaAgent()
+    assert plain._formatter_in_play() is False
+    settings.set("final_answer.function", "json.dumps")
+    assert plain._formatter_in_play() is True
+
+
 def test_malformed_env_does_not_break_import():
     # Strict validators would raise at import for bad DYNACONF values;
     # config must import and the consumers must treat non-str as unset.
@@ -280,6 +308,29 @@ def test_sdk_rejects_class_passed_as_final_answer():
         cuga.CugaAgent(final_answer=FinalAnswerConfig(function=dict))
     with pytest.raises(TypeError, match="must be a .*callable"):
         cuga.CugaAgent(final_answer=FinalAnswerConfig(function=123))
+
+
+def test_sdk_happy_paths_wire_each_form():
+    # The three accepted forms and where each lands (review: haroldship).
+    import cuga
+
+    a1 = cuga.CugaAgent(final_answer="Answer with the bare value only.")
+    assert "## Final answer instructions" in a1._special_instructions
+    assert "bare value only" in a1._special_instructions
+    assert a1._answer_function is None
+
+    a2 = cuga.CugaAgent(final_answer=_strip_brackets)
+    assert a2._answer_function is _strip_brackets
+    assert a2._special_instructions is None
+
+    a3 = cuga.CugaAgent(final_answer=FinalAnswerConfig(instructions="be terse", function=_strip_brackets))
+    assert a3._answer_function is _strip_brackets
+    assert "be terse" in a3._special_instructions
+
+    # str form composes with existing special_instructions, not replaces
+    a4 = cuga.CugaAgent(special_instructions="prior", final_answer="guidance")
+    assert a4._special_instructions.startswith("prior")
+    assert "guidance" in a4._special_instructions
 
 
 def test_final_answer_config_dataclass_and_lazy_export():
