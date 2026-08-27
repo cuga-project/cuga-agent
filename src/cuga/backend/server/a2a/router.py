@@ -38,6 +38,34 @@ from cuga.backend.server.a2a.task_adapter import stream_events_to_a2a
 logger = logging.getLogger(__name__)
 
 
+def _validation_detail(exc: Exception) -> list[dict[str, str]] | None:
+    """Return the field names and error kinds from a validation failure.
+
+    A client needs to know which parameter was wrong so it can correct the
+    request, so this keeps the field name and the kind of error. It drops the
+    written description, the submitted value, and the documentation link, since
+    those can send the caller's own input and internal details back to them.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return None
+    try:
+        detail = []
+        for err in errors():
+            err_type = str(err.get("type", ""))
+            loc_parts = [str(part) for part in err.get("loc", ())]
+            # When the error is that an unexpected field was supplied, the last
+            # part of the field name is the name the caller invented, not one
+            # from our schema. Sending it back would repeat the problem that
+            # dropping the submitted value was meant to prevent.
+            if err_type == "extra_forbidden" and loc_parts:
+                loc_parts = loc_parts[:-1]
+            detail.append({"loc": ".".join(loc_parts), "type": err_type})
+        return detail or None
+    except Exception:  # non-pydantic validation error
+        return None
+
+
 class GraphRunner(Protocol):
     """Minimal contract a graph runner must satisfy.
 
@@ -224,8 +252,13 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         raw = await request.body()
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error", str(exc)))
+        except json.JSONDecodeError:
+            # The message from the JSON parser quotes the text it failed on, so
+            # it is not sent back. The JSON-RPC specification allows the extra
+            # detail field to be left out. It is written to the log instead, so
+            # a report of repeated rejections can still be investigated.
+            logger.warning("A2A request body was not valid JSON", exc_info=True)
+            return JSONResponse(_rpc_error(None, _PARSE_ERROR, "Parse error"))
 
         if not isinstance(payload, dict):
             return JSONResponse(_rpc_error(None, _INVALID_REQUEST, "Invalid Request"))
@@ -241,7 +274,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
-                return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
+                logger.warning("A2A %s params failed validation", method, exc_info=exc)
+                return JSONResponse(
+                    _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
+                )
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
             approval = _extract_approval(params)
@@ -264,7 +300,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 params = MessageSendParams.model_validate(params_dict)
             except Exception as exc:
-                return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
+                logger.warning("A2A %s params failed validation", method, exc_info=exc)
+                return JSONResponse(
+                    _rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", _validation_detail(exc))
+                )
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
             approval = _extract_approval(params)
