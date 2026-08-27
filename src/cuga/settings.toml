@@ -179,7 +179,7 @@ api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_A
 [final_answer]
 # How the final answer is produced. Composer model: [agent.final_answer.model]; composer on/off: features.final_answer.
 instructions = ""  # Guidance for the LLM composer (fills the {{ instructions }} slot; lite mode uses special_instructions instead). Env: DYNACONF_FINAL_ANSWER__INSTRUCTIONS
-function = ""      # Dotted path to a pure, idempotent (str) -> str applied to the delivered answer. Env: DYNACONF_FINAL_ANSWER__FUNCTION
+function = ""      # Dotted path to a pure (str) -> str applied to the delivered answer (idempotent recommended). SECURITY: the target is imported AND CALLED with the answer — point only at trusted code. Env: DYNACONF_FINAL_ANSWER__FUNCTION
 
 [policy]
 enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
