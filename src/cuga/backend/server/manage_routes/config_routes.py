@@ -7,6 +7,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from cuga.backend.server.error_responses import log_error_ref, safe_http_exception
+
 import asyncio as _asyncio
 
 from cuga.backend.server.manage_routes.apply import apply_published_config, rebuild_production_agent
@@ -438,8 +440,17 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
                         except Exception as mig_err:
-                            logger.warning(f"Document migration failed: {mig_err}")
-                            reindex_info = {"status": "failed", "error": str(mig_err)}
+                            # This is sent to the caller further down, as the
+                            # "reindex" part of the response. It carries a fixed
+                            # code and a log reference code, not the text of the
+                            # error.
+                            reindex_info = {
+                                "status": "failed",
+                                "error": "migration_failed",
+                                "ref": log_error_ref(
+                                    mig_err, log=logger, context="Document migration failed"
+                                ),
+                            }
             except Exception as e:
                 logger.warning(f"Failed to check docs for migration: {e}")
 
@@ -561,8 +572,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     "the model name and your provider key / connectivity."
                 ),
             )
-        logger.error(f"Failed to save manage config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise safe_http_exception(e, log=logger, message="Failed to save manage config")
     finally:
         if engine is not None and not _flip_spawned and _old_collection is not None:
             # Safety: release the OLD-collection busy flag on any path that
