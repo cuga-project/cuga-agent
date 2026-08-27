@@ -582,8 +582,8 @@ Everything about the final answer lives behind four knobs — this table is the 
 |---|---|---|
 | Which LLM composes it | `[agent.final_answer.model]` (model TOMLs) | existing |
 | Whether the composer runs | `features.final_answer` (mode TOMLs) | `fast` mode disables it |
-| Guidance for the composer | `[final_answer].instructions` | fills the composer prompt's instructions slot |
-| Deterministic shaping | `[final_answer].function` | dotted path to a pure `(str) -> str` |
+| Guidance for the composer | `[final_answer].instructions` | fills the composer prompt's instructions slot — **ignored in default Lite mode**; use `special_instructions` / SDK `final_answer="..."` there |
+| Deterministic shaping | `[final_answer].function` | dotted path to a pure `(str) -> str` — imported **and called** with the answer, so point only at trusted code |
 
 ```toml
 [final_answer]
@@ -610,10 +610,12 @@ you). Deterministic contracts (e.g. benchmark answer shapes) belong in
 `function`, not `instructions` — prompts cannot guarantee an exact string.
 
 Scope notes: answers synthesized by a `CugaSupervisor` itself (as opposed to
-forwarded sub-agent answers) are not shaped in this version, and the AppWorld
-benchmark path keeps its own answer pipeline. The chat transcript deliberately
-carries the pre-finalize text — the function shapes `result.answer`, and is
-not a redaction mechanism.
+forwarded sub-agent answers) are not shaped in this version. The AppWorld
+benchmark path keeps its own answer pipeline — its SDK post-processing
+re-extracts the answer and overwrites `InvokeResult.answer`, so in-graph
+shaping does not survive there. The chat transcript deliberately carries the
+pre-finalize text — the function shapes `result.answer`, and is not a
+redaction mechanism.
 
 ### Knowledge Base
 
