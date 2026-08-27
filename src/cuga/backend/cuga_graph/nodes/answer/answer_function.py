@@ -27,6 +27,12 @@ class FinalAnswerConfig:
     function: Optional[Callable[[str], str]] = None
 
 
+def answer_function_configured() -> bool:
+    """Whether ``[final_answer].function`` names a function (non-empty str)."""
+    value = settings.final_answer.function
+    return isinstance(value, str) and bool(value.strip())
+
+
 def resolve_final_answer_instructions() -> str:
     """``[final_answer].instructions`` from settings/env, stripped ('' when unset).
 
