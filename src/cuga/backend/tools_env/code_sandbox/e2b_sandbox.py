@@ -202,6 +202,7 @@ class E2BSandboxCache:
         )
 
         with (
+            otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
             langfuse.start_as_current_observation(
                 as_type="span",
                 name="create-e2b-sandbox",
@@ -212,7 +213,6 @@ class E2BSandboxCache:
                     "actual_timeout": actual_timeout,
                 },
             ),
-            otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
         ):
             otel_span.set_attribute("cuga.sandbox.mode", self._mode)
             otel_span.set_attribute("cuga.sandbox.idle_ttl_s", self._idle_ttl)
@@ -808,12 +808,12 @@ async def execute_code_in_e2b(
             )
             logger.debug(f"Creating ephemeral E2B sandbox (per-call mode, timeout: {ttl}s)")
             with (
+                otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
                 langfuse.start_as_current_observation(
                     as_type="span",
                     name="create-e2b-sandbox",
                     input={"e2b_sandbox_mode": settings.advanced_features.e2b_sandbox_mode},
                 ),
-                otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
             ):
                 otel_span.set_attribute("cuga.sandbox.mode", settings.advanced_features.e2b_sandbox_mode)
                 otel_span.set_attribute("cuga.sandbox.timeout_s", ttl)
