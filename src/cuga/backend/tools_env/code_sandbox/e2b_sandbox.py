@@ -10,6 +10,7 @@ import asyncio
 import time
 from typing import Any, Dict
 from langfuse import observe, get_client
+from opentelemetry import trace as otel_trace
 
 from loguru import logger
 
@@ -200,16 +201,23 @@ class E2BSandboxCache:
             f"(idle_ttl: {self._idle_ttl}s, buffer: {self._ttl_buffer}s, actual_timeout: {actual_timeout}s)"
         )
 
-        with langfuse.start_as_current_observation(
-            as_type="span",
-            name="create-e2b-sandbox",
-            input={
-                "e2b_sandbox_mode": self._mode,
-                "idle_ttl": self._idle_ttl,
-                "ttl_buffer": self._ttl_buffer,
-                "actual_timeout": actual_timeout,
-            },
+        with (
+            langfuse.start_as_current_observation(
+                as_type="span",
+                name="create-e2b-sandbox",
+                input={
+                    "e2b_sandbox_mode": self._mode,
+                    "idle_ttl": self._idle_ttl,
+                    "ttl_buffer": self._ttl_buffer,
+                    "actual_timeout": actual_timeout,
+                },
+            ),
+            otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
         ):
+            otel_span.set_attribute("cuga.sandbox.mode", self._mode)
+            otel_span.set_attribute("cuga.sandbox.idle_ttl_s", self._idle_ttl)
+            otel_span.set_attribute("cuga.sandbox.ttl_buffer_s", self._ttl_buffer)
+            otel_span.set_attribute("cuga.sandbox.timeout_s", actual_timeout)
             try:
                 # Try to create sandbox with retry
                 max_retries = 2
@@ -220,6 +228,7 @@ class E2BSandboxCache:
                         start = time.time()
                         sandbox = Sandbox.create(timeout=actual_timeout)
                         langfuse.update_current_span(metadata={"create": time.time() - start})
+                        otel_span.set_attribute("cuga.sandbox.id", sandbox.sandbox_id)
 
                         entry = SandboxCacheEntry(sandbox, thread_id)
                         entry.mark_used()
@@ -798,13 +807,19 @@ async def execute_code_in_e2b(
                 + settings.advanced_features.e2b_sandbox_ttl_buffer
             )
             logger.debug(f"Creating ephemeral E2B sandbox (per-call mode, timeout: {ttl}s)")
-            with langfuse.start_as_current_observation(
-                as_type="span",
-                name="create-e2b-sandbox",
-                input={"e2b_sandbox_mode": settings.advanced_features.e2b_sandbox_mode},
+            with (
+                langfuse.start_as_current_observation(
+                    as_type="span",
+                    name="create-e2b-sandbox",
+                    input={"e2b_sandbox_mode": settings.advanced_features.e2b_sandbox_mode},
+                ),
+                otel_trace.get_tracer(__name__).start_as_current_span("create-e2b-sandbox") as otel_span,
             ):
+                otel_span.set_attribute("cuga.sandbox.mode", settings.advanced_features.e2b_sandbox_mode)
+                otel_span.set_attribute("cuga.sandbox.timeout_s", ttl)
                 start = time.time()
                 sandbox = Sandbox.create(timeout=ttl)
+                otel_span.set_attribute("cuga.sandbox.id", sandbox.sandbox_id)
                 metadata = {"create": time.time() - start}
                 start = time.time()
                 execution = await loop.run_in_executor(None, sandbox.run_code, code_content)
