@@ -1726,14 +1726,26 @@ class PoliciesManager:
 
 
 def _finalization_ran(result: dict) -> bool:
-    """Whether FinalAnswerNode finalized this run's answer.
+    """Whether FinalAnswerNode finalized an answer on this thread.
 
     Every terminal branch appends an AIMessage named FinalAnswerAgent to
-    state.messages. Used to gate invoke()'s empty-answer fallback: an empty
-    string from a completed finalize is a valid answer-function result and
-    must not be replaced (or the function re-applied — once-only contract).
+    state.messages. Coarse on its own (messages accumulate across turns and
+    the node runs on every completed turn), so it is only ever combined with
+    "a formatter is configured" — see _empty_answer_is_final.
     """
     return any(getattr(m, "name", None) == "FinalAnswerAgent" for m in result.get("messages", []) or [])
+
+
+def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
+    """Whether an empty final_answer is a deliberate answer-function result.
+
+    True only when a formatter is in play AND finalization ran — then ""
+    must be delivered as-is (no transcript recovery, no error substitution,
+    no re-application; once-only contract). With no formatter configured
+    this is always False, so the pre-existing empty-answer recovery behaves
+    exactly as before this feature (review: haroldship on #707).
+    """
+    return formatter_configured and _finalization_ran(result)
 
 
 class CugaAgent:
@@ -1848,11 +1860,12 @@ class CugaAgent:
                 `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
                 (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
             final_answer: How the final answer is shaped. A `str` adds guidance for the
-                answer-composing LLM; a callable `(str) -> str` is applied deterministically
-                to the delivered answer instead (must be pure; applied once per delivered
-                answer); `FinalAnswerConfig(instructions=..., function=...)` combines both.
-                None = unchanged behavior. Non-SDK deployments use the `[final_answer]`
-                settings section. Not applied to supervisor-composed synthesis (#621).
+                answer-composing LLM; a callable `(str) -> str` deterministically
+                post-processes the composed answer before delivery (must be pure;
+                applied once per delivered answer); `FinalAnswerConfig(instructions=...,
+                function=...)` combines both. None = unchanged behavior. Non-SDK
+                deployments use the `[final_answer]` settings section. Not applied to
+                supervisor-composed synthesis (#621).
 
         Example with tool approval policy:
             ```python
@@ -2024,6 +2037,12 @@ class CugaAgent:
         if self._auto_load_policies or self._reset_policy_storage:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
+
+    def _formatter_in_play(self) -> bool:
+        """An answer function is configured: SDK-injected or settings path."""
+        from cuga.backend.cuga_graph.nodes.answer.answer_function import answer_function_configured
+
+        return self._answer_function is not None or answer_function_configured()
 
     def _build_callbacks(self) -> List[BaseCallbackHandler]:
         """
@@ -2714,16 +2733,19 @@ class CugaAgent:
             else:
                 result = await self.graph.ainvoke(None, config=run_config)
 
-            # Extract final answer
+            # Extract final answer. A "" from a completed finalize with a
+            # formatter configured is a deliberate result — skip the empty-
+            # answer substitutions below (same gate as the fresh-turn path).
             final_answer = result.get("final_answer", "")
+            empty_is_final = not final_answer and _empty_answer_is_final(result, self._formatter_in_play())
 
             error_msg = None
-            if not final_answer and result.get("error"):
+            if not final_answer and not empty_is_final and result.get("error"):
                 error_msg = result['error']
                 final_answer = f"Error: {error_msg}"
 
             # Check if graph interrupted again
-            if not final_answer:
+            if not final_answer and not empty_is_final:
                 try:
                     state = self.graph.get_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
@@ -2905,7 +2927,7 @@ class CugaAgent:
         # from a completed finalize is a valid answer-function result, and the
         # fallback re-applying the function would break the once-only contract.
         fallback_sources = None
-        if not final_answer and not _finalization_ran(result):
+        if not final_answer and not _empty_answer_is_final(result, self._formatter_in_play()):
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
                     continue
