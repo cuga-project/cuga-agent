@@ -373,7 +373,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    # direct RITS setups, since each model has a model-specific URL path.
    # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
    MODEL_NAME=google/gemma-4-31B-it
-   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
 To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
