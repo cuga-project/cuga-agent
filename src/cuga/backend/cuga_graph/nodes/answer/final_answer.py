@@ -48,6 +48,7 @@ class HumanInTheLoopHandler:
         # (single-application contract; same reasoning as the supervisor
         # forward branch). Citation resolution is idempotent by design.
         FinalAnswerNode.apply_citation_resolution(state)
+        state.final_answer_finalized = True
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     def add_action_handler(self, action_id: str, handler: Callable):
@@ -111,6 +112,7 @@ class FinalAnswerNode(BaseNode):
             state.final_answer = strip_harmony_tokens(text)
         apply_answer_function(state, answer_function)
         FinalAnswerNode.apply_citation_resolution(state)
+        state.final_answer_finalized = True
 
     @staticmethod
     def apply_citation_resolution(state) -> None:
@@ -231,6 +233,7 @@ class FinalAnswerNode(BaseNode):
                 # re-applying the function here would feed it resolved [n]
                 # chips. Citation resolution alone is idempotent by design.
                 FinalAnswerNode.apply_citation_resolution(state)
+                state.final_answer_finalized = True
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer=state.final_answer,
@@ -245,6 +248,7 @@ class FinalAnswerNode(BaseNode):
                 )
                 state.final_answer = ""
                 FinalAnswerNode.apply_citation_resolution(state)
+                state.final_answer_finalized = True
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer="",
