@@ -1016,6 +1016,11 @@ class AgentState(BaseModel):
     last_planner_answer: Optional[str] = None
     last_question: Optional[str] = None
     final_answer: Optional[str] = ""
+    # Per-invocation: True once a FinalAnswerNode terminal branch delivered
+    # this turn's answer. Reset by the fresh input state each turn; read by
+    # the SDK's empty-answer recovery gate (a formatter's "" is deliberate
+    # only when this turn actually finalized).
+    final_answer_finalized: bool = False
     task_decomposition: Optional[TaskDecompositionPlan] = None
     sub_tasks_progress: Optional[List[str]] = Field(default_factory=list)
     feedback: Optional[List[Dict]] = Field(default_factory=list)
