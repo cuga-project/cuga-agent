@@ -96,6 +96,7 @@ class TestTokenCounter:
     def test_lookup_model_context_size_with_provider_prefix(self):
         assert lookup_model_context_size("openai/gpt-oss-120b") == 131072
 
+    @pytest.mark.unit
     def test_lookup_mistral_medium_35_not_shadowed_by_generic_entry(self):
         """A longer, more specific key must win over the generic ``mistral-medium``.
 
@@ -110,6 +111,7 @@ class TestTokenCounter:
         # The generic entry must keep working for models that legitimately want it.
         assert lookup_model_context_size("mistralai/mistral-medium") == 32000
 
+    @pytest.mark.unit
     def test_lookup_gemma_4_matches_rits_deployment_window(self):
         """Gemma 4 on RITS serves the full 262144 native window (issue #719).
 
