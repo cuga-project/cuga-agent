@@ -1726,14 +1726,14 @@ class PoliciesManager:
 
 
 def _finalization_ran(result: dict) -> bool:
-    """Whether FinalAnswerNode finalized an answer on this thread.
+    """Whether a FinalAnswerNode terminal branch delivered THIS turn's answer.
 
-    Every terminal branch appends an AIMessage named FinalAnswerAgent to
-    state.messages. Coarse on its own (messages accumulate across turns and
-    the node runs on every completed turn), so it is only ever combined with
-    "a formatter is configured" — see _empty_answer_is_final.
+    Reads AgentState.final_answer_finalized — a per-invocation flag set by
+    every FinalAnswerNode terminal branch and reset by each turn's fresh
+    input state, so historical turns can never false-positive (review:
+    haroldship + coderabbitai on #707).
     """
-    return any(getattr(m, "name", None) == "FinalAnswerAgent" for m in result.get("messages", []) or [])
+    return bool(result.get("final_answer_finalized", False))
 
 
 def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
