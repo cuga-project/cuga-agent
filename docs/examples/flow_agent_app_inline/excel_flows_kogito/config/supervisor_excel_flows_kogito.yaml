@@ -1,0 +1,20 @@
+supervisor:
+  model: null
+  description: Excel Flows Kogito workflow orchestrator
+  special_instructions: 'You are a Excel Flows Kogito Supervisor Agent that orchestrates
+    a BPMN-based workflow using FlowAgent.
+
+
+    You have access to a FlowAgent (excel_flows_kogito_flow_agent) that manages the
+    complete BPMN workflow.
+
+
+    When a user provides input, delegate to the flow agent and present results professionally.
+
+
+    Always maintain a professional and helpful tone.'
+agents:
+- name: excel_flows_kogito_flow_agent
+  type: flow_agent
+  flow_config: excel_flows_kogito_config.yaml
+  description: FlowAgent orchestrating the Excel Flows Kogito workflow

@@ -10,7 +10,11 @@ WorkflowEngineType = Literal["langgraph", "flowable", "kogito"]
 TaskMode = Literal["task_agent", "native"]
 GatewayMode = Literal["decision_agent", "native"]
 HookType = Literal["edge"]
-AgentType = Literal["cuga_agent", "wxo", "claude_agent", "langgraph", "crewAI"]
+# Built-in agent kinds. Gateways and the flow block accept only these: their agent is the
+# one that *decides*, and routing/hook authority stays local by design. TaskAgentConfig
+# widens to a plain str so a task may also name a `remote_agents:` key — a task's work is
+# the delegation, so handing it out changes nothing about who owns the process.
+AgentType = Literal["cuga_agent", "claude_agent", "langgraph", "crewAI"]
 HookAction = Literal[
     "continue",
     "skip_node",
@@ -38,6 +42,19 @@ class WorkflowEngineConfig(BaseModel):
     callback_host: str = "host.docker.internal"
 
 
+class RemoteAgentConfig(BaseModel):
+    """A single entry in the `remote_agents:` map, keyed by the name that
+    `agent_type:` and `human_consultation:` refer to."""
+
+    url: str
+    protocol: Literal["a2a"] = "a2a"
+    # Overrides the a2a-sdk default of 30s, which sits below the 120s a Kogito script task
+    # allows for an entire control point — leaving it unset silently truncates slow work.
+    timeout: Optional[float] = None
+    # e.g. {"type": "bearer", "token": "..."}; passed through to the A2A client.
+    auth: Optional[dict[str, str]] = None
+
+
 class FlowBlock(BaseModel):
     """The `flow:` block — process identity and BPMN source."""
 
@@ -45,6 +62,8 @@ class FlowBlock(BaseModel):
     id: str
     version: Optional[str] = None
     bpmn_file: Optional[str] = None
+    # The FlowAgent's own reasoning agent — genuinely process-wide. Consultation is not
+    # declared here: it belongs per hook, on HookConfig.
     agent_type: AgentType = "cuga_agent"
 
 
@@ -63,7 +82,10 @@ class TaskAgentConfig(BaseModel):
     system_instruction: str
     tools: list[str] = Field(default_factory=list)
     policy: Optional[str] = None
-    agent_type: AgentType = "cuga_agent"
+    # An AgentType built-in, or a key of `remote_agents:` to delegate the whole task over
+    # A2A instead of building a local CugaAgent. Plain str because a Literal cannot
+    # enumerate names the application defines.
+    agent_type: str = "cuga_agent"
 
 
 class TaskConfig(BaseModel):
@@ -98,6 +120,11 @@ class GatewayConfig(BaseModel):
     policy: Optional[str] = None
     flows: Optional[dict[str, GatewayFlowConfig]] = None
     agent_type: AgentType = "cuga_agent"
+    # Names a `remote_agents:` key bound as a *tool* on this gateway's DecisionAgent, so it
+    # can consult a human before routing. Per-gateway because DecisionAgent is constructed
+    # per gateway. The routing decision itself stays local — the remote agent reports, the
+    # DecisionAgent still chooses from `flows:`.
+    human_consultation: Optional[str] = None
 
 
 class ActionPermissionsConfig(BaseModel):
@@ -113,6 +140,16 @@ class HookConfig(BaseModel):
     id: str
     type: HookType
     location: str
+    # The hook's prose instruction, plus any `user escalation:` block naming what a human
+    # must be asked. Parallels TaskAgentConfig.system_instruction and GatewayConfig.condition
+    # — the other two fields a wrapper agent reasons from. Distinct from `message` below,
+    # which is the static-fallback HookResult text, and from `condition`, a guard expression.
+    instruction: Optional[str] = None
+    # Names a `remote_agents:` key bound as a *tool* on this hook's reasoning agent, so the
+    # hook can consult a human before deciding. Per hook — a hook needing no human binds
+    # nothing. The hook decision itself stays local: the remote agent reports, FlowAgent
+    # still produces the HookResult.
+    human_consultation: Optional[str] = None
     # LLM-driven: flow_config.py reads policy path and loads markdown for _llm_hook_decision.
     # Required when the hook should reason against a policy; omit for static-action hooks.
     policy: Optional[str] = None
@@ -133,6 +170,9 @@ class AppYaml(BaseModel):
 
     flow: FlowBlock
     workflow_engine: WorkflowEngineConfig = Field(default_factory=WorkflowEngineConfig)
+    # Remote agents reachable over A2A, referenced by name from TaskAgentConfig.agent_type
+    # (delegation) and from human_consultation on FlowBlock / GatewayConfig (tool binding).
+    remote_agents: dict[str, RemoteAgentConfig] = Field(default_factory=dict)
     llm: Optional[LLMConfig] = None
     variables: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskConfig] = Field(default_factory=list)

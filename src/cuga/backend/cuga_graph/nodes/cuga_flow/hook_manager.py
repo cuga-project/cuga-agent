@@ -136,6 +136,12 @@ class Hook:
     # the handler entirely with policy-driven reasoning.
     policy: Optional[str] = None
     policy_path: Optional[str] = None
+    # The hook's prose instruction plus any `user escalation:` block — the counterpart
+    # of a task's system_instruction and a gateway's condition. Quoted into the prompt.
+    instruction: Optional[str] = None
+    # LangChain tool bound on the hook's reasoning agent when the YAML declares
+    # human_consultation:, letting the policy decide whether a human needs asking.
+    consultation_tool: Optional[Any] = None
 
 
 class HookManager:
@@ -190,7 +196,6 @@ class HookManager:
     def get_hook_at_location(self, location: str) -> Optional[Hook]:
         """Return the hook on the given edge, or None if no hook is registered there."""
         return self.hooks_by_location.get(location)
-
 
 
 # Made with Bob

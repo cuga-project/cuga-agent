@@ -96,7 +96,9 @@ class FlowAgent:
         self._permitted_actions: List[str] = _perms_dict.get("permitted_actions", [])
         self._prohibited_actions: List[str] = _perms_dict.get("prohibited_actions", [])
 
-        self._hook_agent = None  # CugaAgent for hook policy reasoning — created lazily
+        # One CugaAgent per hook, keyed by hook id: each hook may bind its own
+        # consult_user tool, and a shared agent would carry the union of them all.
+        self._hook_agents: Dict[str, Any] = {}
         self._pending_completions: Dict[str, Any] = {}  # process_key → asyncio.Future
         self._gateway_decisions: Dict[str, tuple] = {}  # gateway_id → (flow_id, reason)
 
@@ -126,7 +128,11 @@ class FlowAgent:
             }
 
         task_input = self._build_task_input(task_id, ctx)
-        visible = {k: v for k, v in ctx.current_state.process_variables.items() if not k.startswith("_") and k != "cugaProcessKey"}
+        visible = {
+            k: v
+            for k, v in ctx.current_state.process_variables.items()
+            if not k.startswith("_") and k != "cugaProcessKey"
+        }
         tracker.collect_step(
             Step(
                 name=f"Task: {ctx.element_name or task_id} — delegating",
@@ -166,10 +172,12 @@ class FlowAgent:
         """Evaluate a hook — check condition, then apply policy or handler."""
         if hook.condition and not hook.condition(ctx.current_state):
             result = HookResult(action=HookAction.CONTINUE)
-            tracker.collect_step(Step(
-                name=f"Hook: {hook.id}",
-                data=f"{result.action.value} — condition not met, skipping policy",
-            ))
+            tracker.collect_step(
+                Step(
+                    name=f"Hook: {hook.id}",
+                    data=f"{result.action.value} — condition not met, skipping policy",
+                )
+            )
             return result
         if hook.policy:
             result = await self._llm_hook_decision(hook, ctx)
@@ -212,25 +220,35 @@ class FlowAgent:
     # Hook policy reasoning
     # ──────────────────────────────────────────────────────────────
 
-    def _get_hook_agent(self):
-        """Return (or create lazily) the CugaAgent used for hook policy reasoning."""
-        if self._hook_agent is None:
+    def _get_hook_agent(self, hook: Optional[Hook] = None):
+        """Return (or create lazily) the CugaAgent for this hook's policy reasoning."""
+        key = hook.id if hook is not None else "__default__"
+        if key not in self._hook_agents:
             from cuga.backend.llm.models import LLMManager
             from cuga.config import settings
             from cuga.sdk import CugaAgent
 
+            consultation_tool = getattr(hook, "consultation_tool", None) if hook else None
+            consult_note = (
+                " If the policy calls for human input, call the consult_user tool to ask a "
+                "person; it reports what they said and you still choose the action."
+                if consultation_tool
+                else ""
+            )
             llm = LLMManager().get_model(settings.agent.planner.model)
-            self._hook_agent = CugaAgent(
+            self._hook_agents[key] = CugaAgent(
                 special_instructions=(
                     "You are the FlowAgent — a meta-agent overseeing a BPMN process execution. "
                     "When asked to evaluate a hook, respond ONLY with a valid JSON object "
-                    "as specified in the prompt."
+                    "as specified in the prompt." + consult_note
                 ),
                 model=llm,
                 enable_knowledge=False,
                 auto_load_policies=False,
+                tools=[consultation_tool] if consultation_tool else None,
             )
-        return self._hook_agent
+            logger.debug(f"FlowAgent: hook agent created for {key}")
+        return self._hook_agents[key]
 
     async def _llm_hook_decision(self, hook: Hook, ctx: ControlPointFlowKnowledge) -> HookResult:
         """
@@ -244,7 +262,9 @@ class FlowAgent:
             try:
                 policy_text = Path(hook.policy_path).read_text()
             except Exception as e:
-                logger.warning(f"  Could not re-read policy file for hook {hook.id}: {e} — using cached policy")
+                logger.warning(
+                    f"  Could not re-read policy file for hook {hook.id}: {e} — using cached policy"
+                )
 
         remaining_tasks = {
             eid: info.get("name", eid)
@@ -253,11 +273,15 @@ class FlowAgent:
         }
 
         state = ctx.current_state
+        # The hook's authored instruction, quoted verbatim so a `user escalation:` block
+        # reaches the agent exactly as written.
+        instruction_block = f"\n## Hook Instruction\n{hook.instruction}\n" if hook.instruction else ""
+
         prompt = f"""You are the FlowAgent — a meta-agent overseeing a BPMN process execution.
 You have intercepted the flow at edge '{ctx.edge_id}' via hook '{hook.id}'.
 Your task is to assess the current process state against the hook policy and decide
 what structural action (if any) the FlowAgent should apply.
-
+{instruction_block}
 ## Hook Policy
 {policy_text}
 
@@ -297,7 +321,7 @@ Respond ONLY with a JSON object:
 }}
 """
         try:
-            agent_result = await self._get_hook_agent().invoke(message=prompt)
+            agent_result = await self._get_hook_agent(hook).invoke(message=prompt)
             raw = agent_result.answer.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
@@ -534,7 +558,8 @@ Respond with {{}} if the message states none of them.
                 gw_name = element.name if element else gw_id
                 parts.append(f"\nGateway '{gw_name}' decision: {reason}")
         visible = {
-            k: v for k, v in state.process_variables.items()
+            k: v
+            for k, v in state.process_variables.items()
             if not k.startswith("_") and k != "cugaProcessKey" and k != "gatewayDecision"
         }
         if visible:

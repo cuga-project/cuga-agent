@@ -1,25 +1,36 @@
 """
-DecisionAgent - Per-gateway LLM-powered routing for BPMN processes.
+DecisionAgent — per-gateway routing for BPMN processes.
 
-Each DecisionAgent is bound to one gateway and wraps a CugaAgent instance.
-The CugaAgent is equipped with an `evaluate_condition` tool that analytically
-evaluates BPMN condition expressions using safe string parsing (no eval()).
+One DecisionAgent per gateway, implemented as a LangGraph whose **shape depends on
+where the deciding input comes from**.
 
-Routing flow:
-  1. `evaluate_condition` tool — called by the LLM to assess the gateway condition
-                                 expression against current process_variables.
-  2. LLM decision — reads the gateway's decision policy (markdown), the tool result,
-                    and the full process state to select the flow ID to follow.
+Default — the gateway carries a ``condition:`` expression:
 
-Implementation note: route() uses async direct LangChain tool-calling (llm.bind_tools)
-rather than CugaAgent.invoke(). CugaAgent uses CugaLite's code-act model whose
-verbose final-answer extraction is unreliable for returning a specific token (flow ID).
-Direct tool-calling is deterministic: LLM calls the tool, gets TRUE/FALSE, replies
-with only the chosen flow ID. The CugaAgent is still created (lazy) so the agent is
-conceptually a CugaAgent with a registered tool; it is exposed via _get_agent().
+    eval_condition ──▶ decide ──▶ (flow_id, reason)
+       no LLM           LLM
 
-If a gateway is configured in "native" mode the FlowAgent routes it inline using
-condition eval alone — no DecisionAgent instance is created for it.
+Node 1 evaluates ``condition`` against process variables by safe string parsing (no
+eval(), no LLM), yielding TRUE / FALSE / UNKNOWN. Node 2 reads that result, the process
+state and the gateway's markdown policy, and returns one flow ID.
+
+With ``human_consultation: <remote agent>`` — **node 1 is omitted**:
+
+    decide ──▶ (flow_id, reason)
+      LLM, holding a consult_user tool
+
+There is no expression to evaluate, so the decide agent obtains what it needs by asking
+a person through the remote agent over A2A. Whether and how to ask is part of its
+reasoning, which is why consultation is a bound tool rather than a fixed step.
+
+Either way node 2 returns a flow ID validated against the available flows, so it cannot
+invent a branch — which is what keeps routing authority local even when the input came
+from outside.
+
+Note there is no ``evaluate_condition`` tool: condition evaluation is node 1 itself,
+deterministic and always run when present.
+
+A gateway in "native" mode is routed inline by the FlowAgent using condition eval alone
+— no DecisionAgent is created for it.
 
 Note: CugaAgent is imported lazily inside methods to avoid a circular import:
 sdk.py imports DecisionAgent, so decision_agent.py cannot import CugaAgent at module level.
@@ -134,11 +145,14 @@ class DecisionAgent:
     """
     Per-gateway routing agent implemented as a two-node LangGraph.
 
-    Node 1 — ``eval_condition``: deterministic condition evaluation using safe
-    string parsing (no eval(), no LLM). Stores "TRUE" / "FALSE" / "UNKNOWN".
+    Node 1 — ``eval_condition``: deterministic condition evaluation using safe string
+    parsing (no eval(), no LLM). Stores "TRUE" / "FALSE" / "UNKNOWN". **Omitted from the
+    graph entirely when the gateway declares ``human_consultation:``** — there is no
+    expression to evaluate in that case.
 
-    Node 2 — ``decide``: CugaAgent reads the evaluation result, process state,
-    and the gateway's decision policy, then returns exactly one flow ID.
+    Node 2 — ``decide``: CugaAgent reads the condition result (or, when consulting, asks
+    the user via its consult_user tool), the process state, and the gateway's decision
+    policy, then returns exactly one flow ID.
 
     route() compiles and runs this internal graph, returning the chosen flow ID.
     """
@@ -151,6 +165,7 @@ class DecisionAgent:
         flow_decisions: Optional[Dict[str, str]] = None,
         model_name: Optional[str] = None,
         temperature: float = 0.0,
+        consultation_tool: Optional[Any] = None,
     ):
         self.gateway_id = gateway_id
         self.policy = policy
@@ -158,6 +173,9 @@ class DecisionAgent:
         self.flow_decisions: Dict[str, str] = flow_decisions or {}
         self._model_name = model_name
         self._temperature = temperature
+        # Set when the gateway declares human_consultation:. Bound as a tool on the
+        # decide agent, and its presence removes node 1 from the graph — see _build_graph.
+        self._consultation_tool = consultation_tool
 
         # CugaAgent for the decide node — created lazily.
         self._agent: Optional[Any] = None
@@ -168,12 +186,21 @@ class DecisionAgent:
     # ── Graph construction ────────────────────────────────────────────────────
 
     def _build_graph(self):
-        """Compile the eval_condition → decide StateGraph."""
+        """
+        Compile the routing graph. Its shape depends on where the input comes from.
+
+        With ``human_consultation:`` the condition-evaluation node is **omitted**: there
+        is no expression to evaluate, and the decide agent obtains what it needs by
+        calling the consultation tool. Without it, the original two-node path applies.
+        """
         graph: StateGraph = StateGraph(_DecisionState)
-        graph.add_node("eval_condition", self._eval_condition_node)
         graph.add_node("decide", self._decide_node)
-        graph.add_edge(START, "eval_condition")
-        graph.add_edge("eval_condition", "decide")
+        if self._consultation_tool is None:
+            graph.add_node("eval_condition", self._eval_condition_node)
+            graph.add_edge(START, "eval_condition")
+            graph.add_edge("eval_condition", "decide")
+        else:
+            graph.add_edge(START, "decide")
         graph.add_edge("decide", END)
         return graph.compile()
 
@@ -210,15 +237,29 @@ class DecisionAgent:
             or "  (none)"
         )
 
+        # With consultation configured, node 1 was skipped — there is no condition
+        # result to report, and the agent gets its input by calling consult_user.
+        if self._consultation_tool is not None:
+            input_section = (
+                "## Deciding Input\n"
+                "This gateway routes on what the user wants. Call the consult_user tool to "
+                "ask them, then choose the flow their answer points to.\n"
+                f"What to ask about:\n{self.condition or '(see the policy above)'}"
+            )
+            basis = "the policy and the user's reply"
+        else:
+            input_section = f"## Condition Evaluation Result\n{state['condition_result']}"
+            basis = "the policy and condition result"
+
         prompt = (
             f"Gateway '{self.gateway_id}' routing decision.\n\n"
             f"## Decision Policy\n{self.policy}\n\n"
-            f"## Condition Evaluation Result\n{state['condition_result']}\n\n"
+            f"{input_section}\n\n"
             f"## Current Process State\n"
             f"Process variables: {state['process_variables']}\n"
             f"Task results:\n{task_results_text}\n\n"
             f"## Available Flows\n{flow_lines}\n\n"
-            f"Based on the policy and condition result, respond with ONLY:\n"
+            f"Based on {basis}, respond with ONLY:\n"
             f"<chosen_flow_id>|<one-sentence reason>\n"
             f"Example: Flow_0ybszcv|Credit score 0.75 meets the approval threshold of 0.60."
         )
@@ -278,11 +319,19 @@ class DecisionAgent:
             )
             llm = LLMManager().get_model(model_config)
 
+            consult_note = (
+                "You have a consult_user tool. This gateway routes on the user's wishes, so "
+                "call it to ask them, then pick the flow their answer points to. It reports "
+                "what they said — the choice remains yours.\n"
+                if self._consultation_tool
+                else ""
+            )
             self._agent = CugaAgent(
                 special_instructions=(
                     f"You are a BPMN gateway routing agent for gateway '{self.gateway_id}'.\n"
                     "You will receive a condition evaluation result, current process state, "
                     "and a list of available flows with their decision labels.\n"
+                    f"{consult_note}"
                     "Select exactly ONE flow ID from the list. Respond with ONLY:\n"
                     "<chosen_flow_id>|<one-sentence reason>\n"
                     "Example: Flow_0ybszcv|Credit score 0.75 meets the approval threshold of 0.60."
@@ -290,6 +339,7 @@ class DecisionAgent:
                 model=llm,
                 enable_knowledge=False,
                 auto_load_policies=False,
+                tools=[self._consultation_tool] if self._consultation_tool else None,
             )
             logger.debug(f"DecisionAgent {self.gateway_id}: CugaAgent created")
         return self._agent

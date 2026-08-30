@@ -17,6 +17,10 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.task_agent import TaskAgent
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 from cuga.sdk import CugaAgent
 
+# Locally-built agent kinds. Anything else in agent_type: must name a remote_agents: key.
+# Mirrors AgentType in docs/examples/flow_agent_app_inline/schemas/app_yaml_schema.py.
+_BUILTIN_AGENT_TYPES = {"cuga_agent", "claude_agent", "langgraph", "crewAI", "wxo"}
+
 
 class FlowConfig:
     """
@@ -46,6 +50,64 @@ class FlowConfig:
         self.gateways_config: Dict[str, Any] = config_dict.get("gateways", {})
         # action_permissions: permitted_actions / prohibited_actions lists for hook enforcement
         self.action_permissions: Dict[str, Any] = config_dict.get("action_permissions", {})
+        # remote_agents: name -> {url, protocol, timeout, auth}. Referenced by name from
+        # tasks[].agent.agent_type (delegation) and from human_consultation: on gateways
+        # and hooks (tool binding).
+        from cuga.backend.cuga_graph.nodes.cuga_flow.remote_agent import RemoteAgentRegistry
+
+        self.remote_agents = RemoteAgentRegistry(config_dict.get("remote_agents", {}))
+        self._validate_remote_agent_names()
+
+    def _validate_remote_agent_names(self) -> None:
+        """
+        Fail at load on any reference to an undeclared remote agent.
+
+        Reachability is a separate matter, checked on first use — this only catches
+        typos, which is the common error and the one worth failing fast on.
+        """
+        for task in self.tasks_config:
+            agent_cfg = (task.get("agent") or {}) if isinstance(task, dict) else {}
+            name = agent_cfg.get("agent_type")
+            if name and name not in _BUILTIN_AGENT_TYPES:
+                self.remote_agents.require(name, f"task '{task.get('id')}' agent_type")
+
+        for gateway_id, gw_cfg in (self.gateways_config or {}).items():
+            if isinstance(gw_cfg, dict) and gw_cfg.get("human_consultation"):
+                self.remote_agents.require(
+                    gw_cfg["human_consultation"], f"gateway '{gateway_id}' human_consultation"
+                )
+
+        for hook_cfg in self.hooks_config or []:
+            if isinstance(hook_cfg, dict) and hook_cfg.get("human_consultation"):
+                self.remote_agents.require(
+                    hook_cfg["human_consultation"], f"hook '{hook_cfg.get('id')}' human_consultation"
+                )
+
+    def _resolve_tools(self, names: Optional[List[str]], where: str) -> Optional[List[Any]]:
+        """
+        Turn a YAML ``tools:`` name list into LangChain tools.
+
+        ``CugaAgent`` expects ``List[BaseTool]``, and passing the raw strings through
+        makes ``DirectLangChainToolsProvider._validate_tools`` raise. Only remote-agent
+        names resolve today; anything else is warned about and dropped rather than
+        crashing a process over an unknown tool name.
+        """
+        resolved: List[Any] = []
+        for name in names or []:
+            if name in self.remote_agents:
+                logger.warning(
+                    f"{where}: '{name}' is a remote agent — declare it as agent_type: "
+                    f"(delegation) or human_consultation: (consultation), not in tools:"
+                )
+            else:
+                logger.warning(f"{where}: tool '{name}' is not a known remote agent — ignoring")
+        return resolved or None
+
+    def consultation_tool(self, name: str, owner: str) -> Any:
+        """Build the consult_user tool that binds a remote agent to a reasoning agent."""
+        from cuga.backend.cuga_graph.nodes.cuga_flow.remote_agent import make_consultation_tool
+
+        return make_consultation_tool(name, self.remote_agents, owner)
 
     def _resolve_path(self, path: str) -> Path:
         """Resolve a config-relative path to an absolute Path."""
@@ -107,7 +169,8 @@ class FlowConfig:
                 tool_tasks[task_id] = task.get("tool") or None
 
         decision_gateway_ids = [
-            gw_id for gw_id, gw_cfg in self.gateways_config.items()
+            gw_id
+            for gw_id, gw_cfg in self.gateways_config.items()
             if isinstance(gw_cfg, dict) and gw_cfg.get("mode", "native") == "decision_agent"
         ]
 
@@ -198,11 +261,28 @@ class FlowConfig:
             if not agent_config:
                 continue
 
+            # Delegation: agent_type names a remote agent, so the whole task goes over
+            # A2A instead of building a local CugaAgent. Deliberately outside the
+            # try/except below — a task that cannot execute is a broken app, and the
+            # per-task handler would otherwise swallow it into a silently agent-less task.
+            agent_type = agent_config.get("agent_type") or "cuga_agent"
+            if agent_type not in _BUILTIN_AGENT_TYPES:
+                from cuga.backend.cuga_graph.nodes.cuga_flow.remote_agent import RemoteTaskExecutor
+
+                task_agents[task_id] = TaskAgent(
+                    task_id=task_id,
+                    task_name=agent_config.get("name", task_id),
+                    agent=RemoteTaskExecutor(agent_type, self.remote_agents),
+                    input_mapping=task_config.get("input_mapping"),
+                    output_mapping=task_config.get("output_mapping"),
+                )
+                logger.info(f"Created TaskAgent for {task_id}: delegated to '{agent_type}'")
+                continue
+
             try:
-                tools_config = agent_config.get("tools") or []
                 cuga_agent = CugaAgent(
                     special_instructions=agent_config.get("system_instruction") or None,
-                    tools=tools_config if tools_config else None,
+                    tools=self._resolve_tools(agent_config.get("tools"), f"task '{task_id}'"),
                 )
                 task_agent = TaskAgent(
                     task_id=task_id,
@@ -353,6 +433,7 @@ class FlowConfig:
                     except Exception as e:
                         logger.warning(f"Could not load hook policy '{resolved}' for {hook_id}: {e}")
 
+                consult = hook_config.get("human_consultation")
                 hook = Hook(
                     id=hook_id,
                     hook_type=hook_type,
@@ -361,6 +442,12 @@ class FlowConfig:
                     condition=condition_func,
                     policy=policy_text,
                     policy_path=str(self._resolve_path(policy_path)) if policy_path else None,
+                    instruction=hook_config.get("instruction"),
+                    # Bound as a tool on THIS hook's reasoning agent — a hook needing no
+                    # human binds nothing. The HookResult is still produced locally.
+                    consultation_tool=(
+                        self.consultation_tool(consult, f"hook '{hook_id}'") if consult else None
+                    ),
                 )
 
                 hooks.append(hook)
@@ -406,12 +493,19 @@ class FlowConfig:
                 if isinstance(flow_cfg, dict) and "decision" in flow_cfg
             }
             model_name = self.get_model_name()
+            # human_consultation: bind the named remote agent as a consult_user tool on
+            # this gateway's decide agent — and skip condition evaluation, since the
+            # input comes from the user rather than an expression. Routing stays local.
+            consult = gw_cfg.get("human_consultation")
             agents[gateway_id] = DecisionAgent(
                 gateway_id=gateway_id,
                 policy=policy_text,
                 condition=gateway_condition,
                 flow_decisions=flow_decisions or None,
                 model_name=model_name,
+                consultation_tool=(
+                    self.consultation_tool(consult, f"gateway '{gateway_id}'") if consult else None
+                ),
             )
             logger.info(
                 f"Created DecisionAgent for gateway: {gateway_id}"
@@ -500,6 +594,7 @@ class FlowConfig:
 
         if engine_type == "flowable":
             from cuga.backend.server.flowable.flowable_proxy import FlowableProxy
+
             proxy = FlowableProxy(
                 base_url=engine_cfg.get("url"),
                 username=engine_cfg.get("username"),
@@ -513,6 +608,7 @@ class FlowConfig:
             )
         elif engine_type == "kogito":
             from cuga.backend.server.kogito.kogito_proxy import KogitoProxy
+
             proxy = KogitoProxy(base_url=engine_cfg.get("url"))
             bridge.register_kogito_engine(
                 proxy,
@@ -522,6 +618,7 @@ class FlowConfig:
             )
         elif engine_type == "langgraph":
             from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
+
             LangGraphWorkflowEngine(bridge=bridge)
         else:
             raise ValueError(

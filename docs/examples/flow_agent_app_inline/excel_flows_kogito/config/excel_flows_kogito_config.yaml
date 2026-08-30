@@ -1,0 +1,100 @@
+flow:
+  name: Excel Flows Kogito
+  id: excel_flows_kogito_v1
+  version: '1.0'
+  bpmn_file: excel_flows_kogito.bpmn
+  agent_type: cuga_agent
+workflow_engine:
+  type: kogito
+  url: http://localhost:8081
+  # The bpmn2:process id inside excel_flows_kogito-kogito.bpmn — NOT the app or flow name.
+  process_id: n_playout
+  # mvn quarkus:dev runs on the host, so Kogito reaches CUGA FLO on localhost.
+  # Use host.docker.internal (the default) when Kogito runs in a container.
+  callback_host: localhost
+
+remote_agents:
+  agent0:
+    url: http://a.b.c
+    protocol: a2a
+variables: {}
+tasks:
+- id: n_idbe5fccc8-c252-4c04-88c1-78e855bdbd51
+  mode: task_agent
+  agent:
+    name: run_function
+    system_instruction: 'run function validate and submit the budget interlock bot
+
+
+      user escalation: Nothing to ask — no parameter is set to vary.'
+    tools: []
+    policy: ../policies/task-run_function.md
+    agent_type: agent0
+- id: n_id51042dc4-0ba4-480a-ac1b-ff6cefdc35b5
+  mode: task_agent
+  agent:
+    name: retrieve
+    system_instruction: 'Produce the table for line item $line_item on sheet ALL ACCOUNTS
+      1H. It should return the four columns Modeled $ USD, Current Validated $ USD,
+      Adjustment $ USD, Final Validated $ USD and the corresponding rows from the
+      row label column Coverage Name.
+
+
+      user escalation: Which line item ($line_item)?
+
+      where:
+
+      $line_item : The identifier of the table (line item) to retrieve from the sheet.'
+    tools: []
+    policy: ../policies/task-retrieve.md
+    agent_type: agent0
+- id: n_id1c601cfb-278b-4e7d-9435-50d952bacbc1
+  mode: task_agent
+  agent:
+    name: update
+    system_instruction: 'for row $row_key change the column Adjustment to value $new_value,
+      responding to dialog messages $messages with dialog responses $dialog_chosen
+
+
+      user escalation: Which row ($row_key), value ($new_value), dialog responses
+      ($dialog_chosen) and dialog messages ($messages)?
+
+      where:
+
+      $row_key : The row label identifying which entity''s value is being updated.
+
+      $new_value : The new numeric value to set in the specified column for the specified
+      row.
+
+      $dialog_chosen : The sequence of responses chosen for any confirmation or validation
+      dialogs that appear during the update operation.
+
+      $messages : The sequence of dialog messages presented to the user during the
+      update operation, including confirmation prompts and validation results.'
+    tools: []
+    policy: ../policies/task-update.md
+    agent_type: agent0
+gateways:
+  n_idef1d8509-fe5d-49b5-b0b6-03d2711a6371:
+    mode: decision_agent
+    policy: ../policies/decision-consult_user.md
+    agent_type: cuga_agent
+    condition: 'Choose the outgoing flow based on the user’s input.
+
+
+      user escalation: Ask user to choose any one of the possible outgoing flows:
+      update again, run function'
+    human_consultation: agent0
+    flows:
+      n_e1cfaab3-087a-4e81-bfb6-2c01f69ef554:
+        decision: update again
+      n_c55888b8-8a2c-4c56-b7b7-9b85c617bbf0:
+        decision: run function
+action_permissions:
+  permitted_actions:
+  - continue
+  - skip_to
+  - terminate
+  prohibited_actions:
+  - swap_nodes
+  - skip_node

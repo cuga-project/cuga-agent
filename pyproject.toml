@@ -38,7 +38,12 @@ dependencies = [
     "litellm>=1.83.14",
     "tavily-python",
     "fastembed>=0.4.0",
-    "a2a-sdk[http-server]>=0.3.22",
+    # <1.0: the 1.0 release moved a2a.types to protobuf, dropping MessageSendParams,
+    # TextPart and JSONRPCErrorResponse and renaming Role.user -> ROLE_USER. Both
+    # consumers here (cuga_supervisor/a2a_protocol.py and the supervisor tests) target
+    # the 0.x pydantic API, and both swallow the ImportError into a boolean — so 1.0
+    # silently disables A2A rather than failing. Remove the cap only alongside a port.
+    "a2a-sdk[http-server]>=0.3.22,<1.0",
     "sqlite-vec>=0.1.6", # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
     "asyncpg>=0.30",

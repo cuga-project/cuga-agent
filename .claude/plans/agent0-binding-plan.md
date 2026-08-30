@@ -1,6 +1,8 @@
 # Binding CUGA FLO's agents to a remote "agent 0" over A2A — plan
 
-**Status: proposal, nothing implemented.**
+**Status: superseded by [remote-agent-binding-plan.md](remote-agent-binding-plan.md), which
+generalises this to any number of named remote agents.** Kept for the reasoning behind the
+single-agent design. Nothing here was implemented.
 
 ## What this enables
 

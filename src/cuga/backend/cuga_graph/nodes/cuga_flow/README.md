@@ -291,6 +291,81 @@ Used by `DecisionAgent` and by `FlowAgent` directly for native-mode gateways.
 
 ---
 
+## Remote agents over A2A
+
+Any wrapper agent can reach an external agent instead of, or alongside, its local
+`CugaAgent`. Declare the agents once, then reference them by name:
+
+```yaml
+remote_agents:
+  agent0:
+    url: "http://localhost:9000"
+    timeout: 90                      # optional; keep under the 120s control-point ceiling
+    auth: {type: bearer, token: "…"} # optional
+```
+
+**Two bindings, and the difference is where authority sits.**
+
+| Binding | Declared on | Effect |
+|---|---|---|
+| **Delegation** | `tasks[].agent.agent_type: agent0` | Replaces the local `CugaAgent`. The remote agent performs the work and is the authority for that fulfilment |
+| **Consultation** | `gateways.<id>.human_consultation: agent0`<br>`hooks[].human_consultation: agent0` | Adds a `consult_user` tool to the local agent. It may ask a person, then **still decides itself** |
+
+```yaml
+tasks:
+  - id: "Activity_update"
+    mode: task_agent
+    agent:
+      name: update
+      system_instruction: |
+        For row $row_key set Adjustment to $new_value.
+        user escalation: Which row ($row_key) and value ($new_value)?
+      agent_type: agent0             # delegated wholesale
+
+gateways:
+  Gateway_next:
+    mode: decision_agent
+    condition: |
+      Choose the outgoing flow based on the user's input.
+      user escalation: Ask which of the outgoing flows to take.
+    agent_type: cuga_agent           # the decider stays local…
+    human_consultation: agent0       # …but may ask a person via agent0
+
+hooks:
+  - id: "Flow_check"
+    type: edge
+    location: "Flow_check"
+    instruction: |
+      Confirm the adjustment is within tolerance.
+      user escalation: Ask whether to proceed given the variance.
+    human_consultation: agent0       # per hook — one that needs no human binds nothing
+```
+
+Consultation is declared on **the element that reasons**, never above it: per gateway
+(`DecisionAgent` is built per gateway) and per hook (`FlowAgent` keeps one hook agent per
+hook). `flow.agent_type` remains the FlowAgent's own reasoning agent and is process-wide.
+
+**Three things worth knowing before using it:**
+
+- **A `user escalation:` block is a contract.** It names parameters the remote agent must
+  obtain from the user. On a delegated task the instruction goes over **verbatim**, so the
+  remote agent owns that conversation. On a gateway or hook the local LLM reasons from the
+  field and composes the question it passes to the tool.
+- **Everything happens inside a blocking control point.** On Kogito that is a 120s ceiling
+  (`CugaFlo.java`); exceeding it fails the process instance with no retry. Fast lookups fit;
+  a long human conversation does not, and needs a modelled BPMN user task instead.
+- **Failure is split deliberately.** An unreachable delegate target fails loudly — a task
+  that cannot execute is a broken app. An unreachable consultation tool is dropped with a
+  warning and the gateway still routes. An *undeclared* name fails at config load either way.
+
+Implementation is `remote_agent.py` (registry, `RemoteTaskExecutor`, `make_consultation_tool`)
+over the A2A client in `cuga_supervisor/a2a_protocol.py`. Every exchange is recorded on the
+`ActivityTracker`, so a consultation that shaped a routing decision appears in the trace
+rather than only in the remote agent's logs. See `.claude/plans/agent0-team-brief.md` for what
+a remote agent must expose.
+
+---
+
 ## Demo Apps
 
 Three inline demo processes are included under `docs/examples/flow_agent_app_inline/`, each illustrating a different combination of CUGA FLO capabilities:
