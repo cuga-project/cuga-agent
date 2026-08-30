@@ -446,6 +446,15 @@ def test_prompt_renders_without_jinja_errors_enabled():
     )
 
 
+def test_prompt_requires_observed_state_before_writes():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt
+
+    prompt = create_mcp_prompt([], agents_enabled=False, prompt_template=_get_prompt_template())
+
+    assert "GROUND EVERY WRITE IN OBSERVED STATE, NOT ASSUMPTIONS" in prompt
+    assert "preserving untouched fields, items, and attributes" in prompt
+
+
 # ── Phase 9: Stream Events ─────────────────────────────────────────────────
 
 
