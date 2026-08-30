@@ -446,6 +446,7 @@ def test_prompt_renders_without_jinja_errors_enabled():
     )
 
 
+@pytest.mark.unit
 def test_prompt_requires_observed_state_before_writes():
     from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt
 
