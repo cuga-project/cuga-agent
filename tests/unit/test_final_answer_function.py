@@ -234,30 +234,40 @@ def test_hitl_default_continuation_does_not_reapply_function():
     assert state.final_answer == "already finalized"  # not '"already finalized"'
 
 
-def test_finalization_marker_detects_final_answer_agent_message():
+def test_finalization_flag_is_per_turn_not_historical():
+    # The gate reads the per-invocation flag, never historical messages: a
+    # FinalAnswerAgent message from an earlier turn must not mark the current
+    # unfinalized turn as finalized (review: haroldship + coderabbitai).
     from cuga.sdk import _finalization_ran
 
-    finalized_msg = SimpleNamespace(name="FinalAnswerAgent")
-    other_msg = SimpleNamespace(name="ChatAgent")
-    assert _finalization_ran({"messages": [other_msg, finalized_msg]}) is True
-    assert _finalization_ran({"messages": [other_msg]}) is False
+    historical_msg = SimpleNamespace(name="FinalAnswerAgent")
+    assert _finalization_ran({"final_answer_finalized": True}) is True
+    assert _finalization_ran({"final_answer_finalized": False, "messages": [historical_msg]}) is False
+    assert _finalization_ran({"messages": [historical_msg]}) is False
     assert _finalization_ran({}) is False
+
+
+def test_terminal_branches_set_the_finalized_flag():
+    state = _state("[[42]]")
+    state.final_answer_finalized = False
+    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    assert state.final_answer_finalized is True
 
 
 def test_empty_answer_gate_requires_formatter_and_finalization():
     # The invoke()-shaped gate (review: haroldship). Empty-answer recovery must
-    # behave exactly as pre-feature when no formatter is configured — even
-    # after a completed turn left a FinalAnswerAgent message.
+    # behave exactly as pre-feature when no formatter is configured — even on
+    # a turn that finalized.
     from cuga.sdk import _empty_answer_is_final
 
-    finalized = {"messages": [SimpleNamespace(name="FinalAnswerAgent")], "final_answer": ""}
-    unfinalized = {"messages": [SimpleNamespace(name="ChatAgent")], "final_answer": ""}
+    finalized = {"final_answer_finalized": True, "final_answer": ""}
+    unfinalized = {"final_answer_finalized": False, "final_answer": ""}
 
     # no formatter: recovery always allowed (defaults are a no-op)
     assert _empty_answer_is_final(finalized, formatter_configured=False) is False
-    # formatter + finalized: "" is a deliberate result — keep it
+    # formatter + finalized this turn: "" is a deliberate result — keep it
     assert _empty_answer_is_final(finalized, formatter_configured=True) is True
-    # formatter but never finalized (e.g. interrupted): recovery allowed
+    # formatter but this turn never finalized (e.g. interrupted): recover
     assert _empty_answer_is_final(unfinalized, formatter_configured=True) is False
 
 
