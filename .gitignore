@@ -129,3 +129,7 @@ demo_knowledge_docs/
 .roo/
 deployment/mcpcf/.rollback/
 deployment/mcpcf/.mcpcf-token
+deployment/mcpcf/.mcpcf-state.json
+# Holds an OAuth client_secret plus the registration_access_token that can
+# delete the client — written by 08-configure-ui-sso.sh.
+deployment/mcpcf/.ivia-client.json
