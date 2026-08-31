@@ -53,6 +53,12 @@ class _Rejection:
     count: int
     status_code: int
     message: str
+    # How the rejection was served to the client: True = HTTP 4xx JSONResponse
+    # (registry-raised errors), False = HTTP 200 with an exception-shaped dict
+    # body (AppWorld adapter errors, which arrive wrapped in TextContent). A
+    # short-circuit must mirror the recorded flavor so generated code sees the
+    # refusal exactly the way it saw the original rejection.
+    served_as_http_error: bool = True
 
 
 class RejectedCallGuard:
@@ -126,6 +132,7 @@ class RejectedCallGuard:
         )
         return {
             "status": "exception",
+            "served_as_http_error": entry.served_as_http_error,
             "status_code": entry.status_code,
             "message": (
                 f"Not executed: this exact call (same endpoint, same arguments) was already "
@@ -147,12 +154,15 @@ class RejectedCallGuard:
         status_code: Optional[int],
         message: str,
         agent_id: Optional[str] = None,
+        served_as_http_error: bool = True,
     ) -> Optional[str]:
         """Record a rejected call; return an escalated message when due.
 
         Only guarded 4xx statuses count. Returns ``None`` when the original
         message should be served unchanged (first rejection, non-guarded status,
-        or escalation disabled).
+        or escalation disabled). ``served_as_http_error=False`` marks rejections
+        that reach the client as HTTP 200 with an exception-shaped body (the
+        AppWorld adapter path); a later short-circuit mirrors that flavor.
         """
         if status_code not in GUARDED_STATUS_CODES:
             return None
@@ -164,6 +174,7 @@ class RejectedCallGuard:
             entry.count += 1
             entry.status_code = status_code
             entry.message = message
+            entry.served_as_http_error = served_as_http_error
             count = entry.count
         escalate_after = self._escalate_after()
         if not escalate_after or count <= escalate_after:

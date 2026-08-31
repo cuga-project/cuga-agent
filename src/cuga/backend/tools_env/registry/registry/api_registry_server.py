@@ -340,10 +340,17 @@ async def call_mcp_function(
             request.app_name, request.function_name, request.args, agent_id=agent_id
         )
         if short_circuit is not None:
+            # Mirror how the recorded rejection reached the client: registry-raised
+            # errors were HTTP 4xx; adapter errors (TextContent path) were HTTP 200
+            # with an exception-shaped body. Generated code must see the refusal
+            # the same way it saw the original rejection.
+            served_as_http_error = short_circuit.pop("served_as_http_error", True)
             tracker.collect_step_external(
                 Step(name="api_response", data=json.dumps(short_circuit)), full_path=trajectory_path
             )
-            return JSONResponse(status_code=short_circuit.get("status_code", 422), content=short_circuit)
+            if served_as_http_error:
+                return JSONResponse(status_code=short_circuit.get("status_code", 422), content=short_circuit)
+            return JSONResponse(status_code=200, content=short_circuit)
         result: TextContent = await reg.call_function(
             app_name=request.app_name,
             function_name=request.function_name,
@@ -441,10 +448,6 @@ async def call_mcp_function(
             )
             return JSONResponse(status_code=result.get("status_code", 500), content=result)
         else:
-            # Rejected-call guard (#599): a successful mutating call changes
-            # server-side state, so previously-rejected signatures may now be
-            # valid (e.g. a payment retried after a balance top-up) — clear them.
-            rejected_call_guard.record_success(request.app_name, api_info.get("method"))
             result_json = None
             logger.debug(result)
             if result and result[0]:
@@ -455,6 +458,29 @@ async def call_mcp_function(
                     pass
             if result[0].text == "[]":
                 result_json = []
+            # Rejected-call guard (#599), TextContent path: the AppWorld adapter
+            # reports HTTP errors by RETURNING an exception-shaped dict, which the
+            # MCP layer wraps in TextContent — so rejections arrive here, in the
+            # "success" branch, as parsed text. Without this check the guard is
+            # blind to every AppWorld rejection (and worse, would treat each one
+            # as a mutating success and clear its own counters).
+            if isinstance(result_json, dict) and result_json.get("status") == "exception":
+                escalated_message = rejected_call_guard.record_rejection(
+                    request.app_name,
+                    request.function_name,
+                    request.args,
+                    status_code=result_json.get("status_code"),
+                    message=result_json.get("message", "Unknown error"),
+                    agent_id=agent_id,
+                    served_as_http_error=False,
+                )
+                if escalated_message:
+                    result_json["message"] = escalated_message
+            else:
+                # A genuinely successful mutating call changes server-side state,
+                # so previously-rejected signatures may now be valid (e.g. a
+                # payment retried after a balance top-up) — clear them.
+                rejected_call_guard.record_success(request.app_name, api_info.get("method"))
             final_response = result_json
         logger.debug(f"Final response: {final_response}")
         tracker.collect_step_external(
