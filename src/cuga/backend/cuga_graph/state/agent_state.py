@@ -1013,7 +1013,12 @@ class AgentState(BaseModel):
     api_planner_history: Optional[List[HistoricalAction]] = Field(default_factory=list)
     api_planner_human_consultations: Optional[List[Dict]] = Field(default_factory=list)
     sub_task_app: Optional[str] = None
-    sub_task_type: Optional[Literal['web', 'api']] = None
+    sub_task_type: Optional[Literal['web', 'api', 'hybrid']] = None
+    hybrid_original_task: Optional[str] = None
+    hybrid_api_task: Optional[str] = None
+    hybrid_web_task: Optional[str] = None
+    hybrid_api_answer: Optional[str] = None
+    hybrid_phase: Optional[Literal['api', 'web']] = None
     input: str = ""  # User request (empty on HITL/save-reuse resume, which carries no new input)
     last_planner_answer: Optional[str] = None
     last_question: Optional[str] = None

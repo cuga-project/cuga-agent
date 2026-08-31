@@ -8,9 +8,15 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.entry_router import EntryRouter
 from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import FinalAnswerAgent
+from cuga.backend.cuga_graph.nodes.browser.action import ActionNode
 from cuga.backend.cuga_graph.nodes.chat.chat import ChatNode
 from cuga.backend.cuga_graph.nodes.browser.action_agent.action_agent import ActionAgent
-from cuga.backend.cuga_graph.nodes.cuga_browser.cuga_browser_graph import create_cuga_browser_graph
+from cuga.backend.cuga_graph.nodes.browser.browser_planner import PlannerNode
+from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.browser_planner_agent import (
+    BrowserPlannerAgent,
+)
+from cuga.backend.cuga_graph.nodes.browser.qa_agent.qa_agent import QaAgent
+from cuga.backend.cuga_graph.nodes.browser.qa_agent_node import QaNode
 from cuga.backend.cuga_graph.nodes.cuga_browser.cuga_browser_node import CugaBrowserNode
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_cuga_lite_graph
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
@@ -57,6 +63,11 @@ class CugaEntryGraph:
         self.cuga_lite = CugaLiteNode(langfuse_handler=langfuse_handler)
         self.cuga_supervisor = CugaSupervisorNode(langfuse_handler=langfuse_handler)
         self.cuga_browser = CugaBrowserNode()
+        self.browser_planner = PlannerNode(
+            BrowserPlannerAgent.create(), conclude_target="CugaBrowserCallback"
+        )
+        self.browser_action = ActionNode(ActionAgent.create())
+        self.browser_qa = QaNode(QaAgent.create())
         self.langfuse_handler = langfuse_handler
         self.policy_system = policy_system or PolicyConfigurable.get_instance()
         self.tool_provider = tool_provider
@@ -81,6 +92,7 @@ class CugaEntryGraph:
         self.graph = graph.compile(
             checkpointer=MemorySaver(),
             interrupt_after=[
+                self.browser_action.action_agent.name,
                 self.interrupt_tool_node.name,
             ],
         )
@@ -188,11 +200,10 @@ class CugaEntryGraph:
         graph.add_node("CugaLiteSubgraph", compiled_cuga_lite_subgraph)
         graph.add_node("CugaLiteCallback", self.cuga_lite.callback_node)
 
-        browser_subgraph = create_cuga_browser_graph()
-        action_agent_name = ActionAgent.create().name
-        compiled_browser_subgraph = browser_subgraph.compile(interrupt_after=[action_agent_name])
-        graph.add_node("CugaBrowserSubgraph", compiled_browser_subgraph)
         graph.add_node(self.cuga_browser.name, self.cuga_browser.node)
+        graph.add_node(self.browser_planner.browser_planner_agent.name, self.browser_planner.node)
+        graph.add_node(self.browser_action.action_agent.name, self.browser_action.node)
+        graph.add_node(self.browser_qa.qa_agent.name, self.browser_qa.node)
         graph.add_node("CugaBrowserCallback", self.cuga_browser.callback_node)
 
         if getattr(settings.supervisor, "enabled", False):
@@ -270,7 +281,14 @@ class CugaEntryGraph:
         graph.add_edge(START, self.chat.chat_agent.name)
         graph.add_edge(self.final_answer_agent.final_answer_agent.name, END)
         graph.add_edge("CugaLiteSubgraph", "CugaLiteCallback")
-        graph.add_edge("CugaBrowserSubgraph", "CugaBrowserCallback")
+        graph.add_edge(
+            self.browser_action.action_agent.name,
+            self.browser_planner.browser_planner_agent.name,
+        )
+        graph.add_edge(
+            self.browser_qa.qa_agent.name,
+            self.browser_planner.browser_planner_agent.name,
+        )
         if getattr(settings.supervisor, "enabled", False):
             graph.add_edge("CugaSupervisorSubgraph", "CugaSupervisorCallback")
 

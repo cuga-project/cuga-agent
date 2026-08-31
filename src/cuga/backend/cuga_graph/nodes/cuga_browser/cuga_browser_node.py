@@ -22,12 +22,13 @@ class CugaBrowserNode(BaseNode):
         state.sub_task = state.input
         state.sub_task_type = "web"
         state.sub_task_app = state.current_app or ""
-        logger.info("Routing to CugaBrowserSubgraph")
-        return Command(update=state.model_dump(), goto="CugaBrowserSubgraph")
+        logger.info("Routing to BrowserPlannerAgent")
+        return Command(update=state.model_dump(), goto="BrowserPlannerAgent")
 
     async def callback_node(self, state: AgentState, config: Optional[RunnableConfig] = None) -> Command:
         if not state.final_answer and state.last_planner_answer:
             state.final_answer = state.last_planner_answer
+        state.hybrid_phase = None
         state.sender = self.name
         logger.info("CugaBrowser execution complete, routing to FinalAnswerAgent")
         return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)

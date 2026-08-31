@@ -19,19 +19,23 @@ tracker = ActivityTracker()
 
 
 class PlannerNode(BaseNode):
-    def __init__(self, planner_agent: BrowserPlannerAgent):
+    def __init__(self, planner_agent: BrowserPlannerAgent, conclude_target: str = END):
         super().__init__()
         self.browser_planner_agent = planner_agent
         self.node = create_partial(
             PlannerNode.node_handler,
             agent=self.browser_planner_agent,
             name=self.browser_planner_agent.name,
+            conclude_target=conclude_target,
         )
 
     @staticmethod
     async def node_handler(
-        state: AgentState, agent: BrowserPlannerAgent, name: str
-    ) -> Command[Literal["ActionAgent", "QaAgent", END, "BrowserPlannerAgent"]]:
+        state: AgentState,
+        agent: BrowserPlannerAgent,
+        name: str,
+        conclude_target: str = END,
+    ) -> Command[Literal["ActionAgent", "QaAgent", END, "BrowserPlannerAgent", "CugaBrowserCallback"]]:
         if tracker.actions_count >= 4 and state.task_analyzer_output is not None:
             logger.debug("Resetting navigation paths")
             state.task_analyzer_output.navigation_paths = None
@@ -69,7 +73,7 @@ class PlannerNode(BaseNode):
             state.last_planner_answer = next_instruction
             state.final_answer = next_instruction
             state.stm_steps_history.append(next_instruction)
-            return Command(update=state.model_dump(), goto=END)
+            return Command(update=state.model_dump(), goto=conclude_target)
         elif next_step_plan.next_agent == "QaAgent":
             state.last_question = next_instruction
             state.stm_steps_history.append("(QaAgent): " + next_instruction)

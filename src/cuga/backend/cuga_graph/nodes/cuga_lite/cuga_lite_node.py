@@ -396,7 +396,7 @@ class CugaLiteNode(BaseNode):
         # Save trajectory to Evolve if enabled
         from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 
-        if EvolveIntegration.is_enabled() and state.chat_messages:
+        if EvolveIntegration.is_enabled() and state.chat_messages and state.hybrid_phase != "api":
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"
@@ -459,7 +459,7 @@ class CugaLiteNode(BaseNode):
         initial_var_names: List[str],
         is_autonomous_subtask: bool,
         config: Optional[RunnableConfig] = None,
-    ) -> Command[Literal["FinalAnswerAgent"]]:
+    ) -> Command[Literal["FinalAnswerAgent", "CugaBrowser"]]:
         """Process results from CugaLite graph execution."""
         logger.info("Processing CugaLite execution results")
         logger.info(f"Answer: {answer[:200] if answer else 'None'}...")
@@ -477,5 +477,18 @@ class CugaLiteNode(BaseNode):
 
         state.final_answer = answer
         state.sender = NodeNames.CUGA_LITE
+        if state.hybrid_phase == "api":
+            state.hybrid_api_answer = answer
+            state.hybrid_phase = "web"
+            state.sub_task_type = "hybrid"
+            browser_task = state.hybrid_web_task or state.hybrid_original_task or state.input
+            api_context = answer.strip()
+            state.input = browser_task
+            if api_context:
+                state.input = f"{browser_task}\n\nResult from the API phase:\n{api_context}"
+            state.final_answer = ""
+            state.last_planner_answer = None
+            logger.info("Hybrid API phase complete - routing to CugaBrowser")
+            return Command(update=state.model_dump(), goto=NodeNames.CUGA_BROWSER)
         await self._apply_output_formatter(state, config)
         return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)

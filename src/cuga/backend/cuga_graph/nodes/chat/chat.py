@@ -56,6 +56,40 @@ class ChatHumanInTheLoopHandler:
 
 
 class ChatNode(BaseNode):
+    @staticmethod
+    def _prepare_execution_task(state: AgentState, tool_args: dict) -> None:
+        task = tool_args.get("task") or state.input
+        relevant_variables = tool_args.get("relevant_variables") or []
+        mode = getattr(settings.advanced_features, "mode", "api")
+
+        state.hybrid_original_task = None
+        state.hybrid_api_task = None
+        state.hybrid_web_task = None
+        state.hybrid_api_answer = None
+        state.hybrid_phase = None
+        state.sub_task = None
+        state.sub_task_app = None
+
+        if mode == "hybrid":
+            task_type = tool_args.get("task_type") or "api"
+            if task_type == "hybrid":
+                state.sub_task_type = "hybrid"
+                state.hybrid_original_task = task
+                state.hybrid_api_task = tool_args.get("api_task") or task
+                state.hybrid_web_task = tool_args.get("web_task") or task
+                state.hybrid_phase = "api"
+                task = state.hybrid_api_task
+            else:
+                state.sub_task_type = "web" if task_type == "web" else "api"
+        elif mode == "web":
+            state.sub_task_type = "web"
+        else:
+            state.sub_task_type = "api"
+
+        if relevant_variables:
+            task = f"task: {task}\n relevant variables from history: {relevant_variables}"
+        state.input = task
+
     def __init__(self):
         super().__init__()
         self.chat_agent: Optional[ChatAgent] = None
@@ -186,14 +220,7 @@ class ChatNode(BaseNode):
 
         if res.tool_calls and len(res.tool_calls) > 0 and res.tool_calls[0].get("name") == "execute_task":
             logger.debug(f"tool call in chat node {res.tool_calls[0]}")
-            variables_rel = res.tool_calls[0].get("args").get("relevant_variables")
-            if variables_rel and len(variables_rel) > 0:
-                state.input = (
-                    f"task: {res.tool_calls[0].get('args').get('task')}"
-                    + f"\n relevant variables from history: {res.tool_calls[0].get('args').get('relevant_variables')}"
-                )
-            else:
-                state.input = res.tool_calls[0].get("args").get("task")
+            ChatNode._prepare_execution_task(state, res.tool_calls[0].get("args") or {})
             return Command(update=state.model_dump(), goto=NodeNames.ENTRY_ROUTER)
         # Regular chat response - add to messages and continue+
         res.content = state.variables_manager.replace_variables_placeholders(res.content)
