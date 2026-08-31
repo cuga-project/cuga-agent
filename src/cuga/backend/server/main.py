@@ -40,6 +40,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
 
 from loguru import logger
+
+from cuga.backend.server.error_responses import (
+    log_error_ref,
+    safe_error_payload,
+    safe_error_response,
+)
 from cuga.config import (
     get_app_name_from_url,
     get_user_data_path,
@@ -2082,7 +2088,11 @@ async def event_stream(
         except Exception as tracker_error:
             logger.warning(f"Failed to finish task in tracker on error: {tracker_error}")
 
-        yield StreamEvent(name="Error", data=str(e)).format()
+        # Not str(e): this event's data is forwarded verbatim to the extension
+        # client by the /extension/agent_query handler, so the text of the
+        # exception would reach the caller the same way a response body would.
+        _ref = log_error_ref(e, context="Agent event stream failed")
+        yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2480,7 +2490,16 @@ if getattr(settings.advanced_features, "use_extension", False):
                 # Completion message
                 yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
             except Exception as e:
-                yield json.dumps({"type": "agent_error", "message": str(e), "request_id": request_id}) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            **safe_error_payload(e, message="Agent request failed"),
+                            "type": "agent_error",
+                            "request_id": request_id,
+                        }
+                    )
+                    + "\n"
+                )
 
         return StreamingResponse(event_gen(), media_type="application/jsonlines")
 
@@ -3326,18 +3345,7 @@ async def save_policies_config(
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
     except Exception as e:
-        logger.error(f"Failed to save policies config: {e}")
-        logger.exception(e)
-        import traceback
-
-        return JSONResponse(
-            {
-                "status": "error",
-                "message": f"Failed to save policies: {str(e)}",
-                "traceback": traceback.format_exc(),
-            },
-            status_code=500,
-        )
+        return safe_error_response(e, message="Failed to save policies")
 
 
 @app.post("/api/config/policies/{policy_id}/tool-guards/generate")
@@ -3459,7 +3467,18 @@ async def generate_tool_guard_for_policy(
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+        # The handlers just below already reply with fixed text. The details of
+        # what failed validation go to the log, under the reference code that is
+        # returned to the caller.
+        ref = log_error_ref(exc, context="Tool guard generation rejected the policy")
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": "Invalid policy for tool guard generation",
+                "ref": ref,
+            },
+            status_code=400,
+        )
     except LookupError:
         return JSONResponse({"status": "error", "message": "Policy not found"}, status_code=404)
     except TypeError:
