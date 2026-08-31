@@ -145,15 +145,12 @@ async def _seed_db(path, monkeypatch):
 
     conn = sqlite3.connect(path)
     try:
-        conn.execute(
-            """
-        CREATE TABLE account_only_records (
-            account_id TEXT NOT NULL,
-            payload TEXT NOT NULL
-        )
-            """
-        )
+        conn.execute("CREATE TABLE account_only_records (account_id TEXT NOT NULL, payload TEXT NOT NULL)")
         conn.execute("INSERT INTO account_only_records VALUES (?, ?)", ("account-a", "keep"))
+        conn.execute("CREATE TABLE documents (instance_id TEXT NOT NULL, collection TEXT NOT NULL)")
+        conn.execute("INSERT INTO documents VALUES (?, ?)", ("instance-1", "kb_agent_test"))
+        conn.execute("CREATE TABLE kb_agent_test__fts (instance_id TEXT NOT NULL, chunk_text TEXT NOT NULL)")
+        conn.execute("INSERT INTO kb_agent_test__fts VALUES (?, ?)", ("instance-1", "derived"))
         conn.commit()
     finally:
         conn.close()
@@ -212,6 +209,8 @@ def test_delete_service_instance_records_removes_all_matching_sqlite_rows(monkey
     assert _instance_ids(db_path, "stream_events") == ["instance-2"]
     assert asyncio.run(_vector_instance_ids(db_path, "kb_agent_test")) == ["instance-2"]
     assert _count(db_path, "account_only_records") == 1
+    assert _count(db_path, "documents") == 1
+    assert _count(db_path, "kb_agent_test__fts") == 1
 
 
 def test_delete_service_instance_records_dry_run_counts_without_deleting(monkeypatch, tmp_path):
@@ -243,6 +242,46 @@ def test_delete_service_instance_records_dry_run_counts_without_deleting(monkeyp
     assert _instance_ids(db_path, "secrets") == ["instance-1", "instance-2"]
     assert _instance_ids(db_path, "stream_events") == ["instance-1", "instance-2"]
     assert asyncio.run(_vector_instance_ids(db_path, "kb_agent_test")) == ["instance-1", "instance-2"]
+    assert _count(db_path, "documents") == 1
+    assert _count(db_path, "kb_agent_test__fts") == 1
+
+
+def test_sqlite_discovery_excludes_knowledge_metadata_and_fts_tables(tmp_path):
+    db_path = tmp_path / "cuga.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("CREATE TABLE agent_configs (instance_id TEXT NOT NULL)")
+        conn.execute("CREATE TABLE cuga_knowledge_meta_documents (instance_id TEXT NOT NULL)")
+        conn.execute("CREATE TABLE kb_agent_test__fts (instance_id TEXT NOT NULL)")
+
+        assert service_instance_cleanup._sqlite_tables_with_instance_id(conn) == ["agent_configs"]
+    finally:
+        conn.close()
+
+
+def test_postgres_discovery_excludes_knowledge_metadata_and_fts_tables():
+    class FakeConnection:
+        async def fetch(self, sql):
+            assert "cuga_knowledge_meta_documents" in sql
+            assert "\\_\\_fts" in sql
+            return [
+                {"table_schema": "public", "table_name": "agent_configs"},
+            ]
+
+    class FakeAcquire:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return FakeAcquire()
+
+    assert asyncio.run(service_instance_cleanup._postgres_tables_with_instance_id(FakePool())) == [
+        ("public", "agent_configs")
+    ]
 
 
 def test_delete_service_instance_records_rejects_blank_service_instance_id():

@@ -8,6 +8,17 @@ from typing import Any
 
 from cuga.backend.storage.facade import get_storage_connection_params
 
+_KNOWLEDGE_METADATA_TABLES = {
+    "documents",
+    "tasks",
+    "collection_config",
+    "settings",
+    "cuga_knowledge_meta_documents",
+    "cuga_knowledge_meta_tasks",
+    "cuga_knowledge_meta_collection_config",
+    "cuga_knowledge_meta_settings",
+}
+
 
 @dataclass(frozen=True)
 class ServiceInstanceCleanupResult:
@@ -23,6 +34,10 @@ def _quote_sqlite_identifier(name: str) -> str:
 
 def _quote_pg_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def _is_excluded_table(table_name: str) -> bool:
+    return table_name in _KNOWLEDGE_METADATA_TABLES or table_name.endswith("__fts") or "__fts_" in table_name
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -50,6 +65,8 @@ def _sqlite_tables_with_instance_id(conn: sqlite3.Connection) -> list[str]:
     ).fetchall()
     tables: list[str] = []
     for (table_name,) in rows:
+        if _is_excluded_table(table_name):
+            continue
         columns = conn.execute(f"PRAGMA table_info({_quote_sqlite_identifier(table_name)})").fetchall()
         if any(col[1] == "instance_id" for col in columns):
             tables.append(table_name)
@@ -111,6 +128,18 @@ async def _postgres_tables_with_instance_id(pool: Any) -> list[tuple[str, str]]:
             WHERE c.column_name = 'instance_id'
               AND t.table_type = 'BASE TABLE'
               AND c.table_schema NOT IN ('information_schema', 'pg_catalog')
+              AND c.table_name NOT IN (
+                  'documents',
+                  'tasks',
+                  'collection_config',
+                  'settings',
+                  'cuga_knowledge_meta_documents',
+                  'cuga_knowledge_meta_tasks',
+                  'cuga_knowledge_meta_collection_config',
+                  'cuga_knowledge_meta_settings'
+              )
+              AND c.table_name NOT LIKE '%\\_\\_fts' ESCAPE '\\'
+              AND c.table_name NOT LIKE '%\\_\\_fts\\_%' ESCAPE '\\'
             ORDER BY c.table_schema, c.table_name
             """
         )
