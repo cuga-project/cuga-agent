@@ -13,6 +13,8 @@ import pytest
 
 from cuga.backend.llm.models import LLMManager, set_current_llm_override
 
+pytestmark = pytest.mark.unit
+
 BASE_MODEL_SETTINGS = {
     "platform": "minimax",
     "max_tokens": 100,
@@ -23,17 +25,17 @@ MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/v1"
 
 
 @pytest.fixture(autouse=True)
-def reset_llm_state():
+def reset_llm_state(monkeypatch):
     mgr = LLMManager()
     mgr._models.clear()
     mgr._pre_instantiated_model = None
     set_current_llm_override(None)
-    os.environ.pop("MINIMAX_BASE_URL", None)
+    for key in ("MINIMAX_BASE_URL", "MINIMAX_REGION", "MODEL_NAME"):
+        monkeypatch.delenv(key, raising=False)
     yield
     mgr._models.clear()
     mgr._pre_instantiated_model = None
     set_current_llm_override(None)
-    os.environ.pop("MINIMAX_BASE_URL", None)
 
 
 class TestMinimaxModelName:
