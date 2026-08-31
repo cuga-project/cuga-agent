@@ -6,7 +6,6 @@ branch. These tests lock the model-name/base-url resolution and the client
 wiring in ``_create_llm_instance``.
 """
 
-import os
 from unittest.mock import patch
 
 import pytest
