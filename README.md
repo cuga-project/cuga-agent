@@ -238,6 +238,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 - **Groq** - High-performance inference platform with fast LLM models
 - **RITS** - Internal IBM research platform
 - **OpenRouter** - LLM API gateway provider
+- **watsonx Orchestrate (wxO)** - Routes LLM calls through an Orchestrate tenant for tracing, guardrails, and entitlement-based billing
 
 ## Configuration Priority
 
@@ -372,7 +373,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    # direct RITS setups, since each model has a model-specific URL path.
    # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
    MODEL_NAME=google/gemma-4-31B-it
-   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
 To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
@@ -382,6 +383,35 @@ To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="set
 - Model: `google/gemma-4-31B-it` (direct preset)
 - Base URL: gemma-4-31B-it `/v1` endpoint on the RITS 3scale apicast host (direct preset)
 - Local proxy URL: `http://localhost:4000` (proxy preset)
+
+### Option 8: watsonx Orchestrate (wxO) Support
+
+Routes every agent role's LLM calls through your watsonx Orchestrate tenant instead of a
+provider directly — calls become traced/observable in the tenant, pass through its
+guardrails, and are billed against its entitlement.
+
+**Setup Instructions:**
+
+1. Install the optional SDK (requires Python >= 3.11): `pip install "cuga[wxo]"` or `uv sync --extra wxo`.
+2. In watsonx Orchestrate, go to **Settings -> API details** and click **Generate API key**; copy the **Service instance URL** shown on the same page.
+3. Add to your `.env` file:
+   ```env
+   # watsonx Orchestrate Configuration
+   WXO_API_KEY=your-wxo-api-key
+   WXO_INSTANCE_URL=https://api.dl.watson-orchestrate.ibm.com/instances/your-instance-id
+   AGENT_SETTING_CONFIG="settings.wxo.toml"
+
+   # Optional override — model ids are provider-prefixed per your tenant's Settings -> Models list
+   MODEL_NAME=groq/openai/gpt-oss-120b  # e.g. the Groq-hosted variant, ~25% faster than the Bedrock one
+   ```
+
+To target a local ADK dev server instead of a hosted tenant, set `WXO_INSTANCE_URL=http://localhost:4321`
+and omit `WXO_API_KEY` — local instances are auto-detected and don't require a key.
+
+**Default Values:**
+
+- Model: `watsonx/openai/gpt-oss-120b`
+- Instance URL: `http://localhost:4321` (local ADK dev server)
 
 
 ## Configuration Files
@@ -395,6 +425,7 @@ CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 - `settings.openrouter.toml` - OpenRouter configuration
 - `settings.rits.toml` - RITS configuration (direct endpoint)
 - `settings.rits.proxy.toml` - RITS configuration (local LiteLLM proxy fronting RITS)
+- `settings.wxo.toml` - watsonx Orchestrate configuration
 
 Each file contains agent-specific model settings that can be overridden by environment variables.
 
