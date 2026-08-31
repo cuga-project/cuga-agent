@@ -19,8 +19,10 @@ an exception-derived value flows into one of the places a response is built:
 
 A value counts as exception-derived when it is ``str(exc)`` / ``repr(exc)``, an f-string
 that interpolates the exception, ``exc.args`` / ``exc.errors()`` / ``exc.json()``, or
-``traceback.format_exc()``. The class name alone — ``type(exc).__name__`` — says nothing
-about the cause and is allowed.
+``traceback.format_exc()``. Identifiers that hold that value — ``err = e``,
+``msg = str(e)``, ``msg = f"...{e}..."`` — are followed the same way, so storing the
+text in a local first does not hide it. The class name alone — ``type(exc).__name__`` —
+says nothing about the cause and is allowed.
 
 Introducing the check
 ---------------------
@@ -30,7 +32,7 @@ present when it was introduced: only a *new* offender fails the check. Regenerat
 baseline with ``--update`` after an intentional change.
 
 Intentional cases (for example a 400 that echoes a validation message the caller sent) can
-be marked with a trailing ``# noqa: exc-in-response`` comment on the offending line.
+be marked with ``# noqa: exc-in-response`` on any line of the call.
 
 Usage
 -----
@@ -86,34 +88,59 @@ def _parent_map(root: ast.AST) -> dict[ast.AST, ast.AST]:
     return parents
 
 
+def _assigned_simple_names(stmt: ast.AST) -> tuple[ast.expr, list[str]] | None:
+    """If ``stmt`` assigns to plain names, return ``(value, target names)``.
+
+    Covers ``x = ...``, ``x: str = ...``, and ``x += ...``. Tuple unpacking is ignored.
+    """
+    if isinstance(stmt, ast.Assign):
+        names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        if names:
+            return stmt.value, names
+    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+        return stmt.value, [stmt.target.id]
+    elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+        return stmt.value, [stmt.target.id]
+    return None
+
+
 def _except_handler_aliases(handler: ast.ExceptHandler) -> frozenset[str]:
-    """The exception binding plus any name that is a direct alias of it (``err = e``),
-    resolved to a fixed point so a chain of aliases (``err = e``, ``msg = err``) is caught."""
-    if not handler.name:
-        return frozenset()
-    names = {handler.name}
+    """Names in this handler that hold the caught exception or text taken from it.
+
+    Starts with the ``except ... as x`` binding (if any) and closes over assignments
+    whose value is that exception or text derived from it: ``err = e``, ``msg = str(e)``,
+    ``msg = f"...{e}..."``, ``msg = traceback.format_exc()``. Chains (``err = e`` then
+    ``msg = str(err)``) are resolved to a fixed point. A handler with no binding is still
+    scanned, so ``except Exception: msg = traceback.format_exc()`` is not missed.
+    """
+    names: set[str] = {handler.name} if handler.name else set()
     changed = True
     while changed:
         changed = False
         for stmt in ast.walk(handler):
-            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Name):
+            bound = _assigned_simple_names(stmt)
+            if bound is None:
                 continue
-            if stmt.value.id not in names:
+            value, targets = bound
+            if not _contains_exception_value(value, frozenset(names)):
                 continue
-            for target in stmt.targets:
-                if isinstance(target, ast.Name) and target.id not in names:
-                    names.add(target.id)
+            for name in targets:
+                if name not in names:
+                    names.add(name)
                     changed = True
     return frozenset(names)
 
 
 def _except_alias_scopes(tree: ast.AST) -> dict[ast.AST, frozenset[str]]:
     """Map each ``ExceptHandler`` node to the exception-alias names bound within it."""
-    return {
-        node: _except_handler_aliases(node)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ExceptHandler) and node.name
-    }
+    scopes: dict[ast.AST, frozenset[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        aliases = _except_handler_aliases(node)
+        if aliases:
+            scopes[node] = aliases
+    return scopes
 
 
 def _enclosing_exception_names(
@@ -161,6 +188,10 @@ def _name_use_is_banned(name: ast.Name, parents: dict[ast.AST, ast.AST]) -> bool
         return True
     # detail=exc — the exception passed straight through as the content.
     if isinstance(parent, ast.keyword) and parent.value is name:
+        return True
+    # JSONResponse({"traceback": msg}) / JSONResponse([msg]) — a local holding
+    # exception text filed under any key or in a list is still sent to the caller.
+    if isinstance(parent, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
         return True
     return False
 

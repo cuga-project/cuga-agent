@@ -10,9 +10,9 @@ interpolates the exception, ``exc.args`` / ``exc.errors()`` / ``exc.json()``, or
 
 The class name alone (``type(exc).__name__``) is safe and must not be flagged. Which
 identifiers count as "the exception" is resolved from real ``except ... as x:`` bindings
-(and direct aliases of them), not from a guessed list of common names — so an arbitrary
-alias like ``failure`` is caught, and an unrelated variable that just happens to be named
-``error`` is not.
+and from names that hold text taken from them (``err = e``, ``msg = str(e)``), not from
+a guessed list of common names — so an arbitrary alias like ``failure`` is caught, and
+an unrelated variable that just happens to be named ``error`` is not.
 """
 
 from __future__ import annotations
@@ -135,6 +135,57 @@ def test_flags_aliased_exception_variable():
     assert _codes(src) == [5]
 
 
+def test_flags_str_assigned_then_used_in_sink():
+    # `msg = str(e)` then `detail=msg` is the same leak, just via a local.
+    src = _in_except(
+        "msg = str(e)",
+        "raise HTTPException(status_code=400, detail=msg)",
+    )
+    assert _codes(src) == [5]
+
+
+def test_flags_str_assigned_then_used_in_either_branch():
+    # The live server shape: stringify once, then pick a status code.
+    src = (
+        "try:\n"
+        "    pass\n"
+        "except ValueError as e:\n"
+        "    msg = str(e)\n"
+        '    if "too large" in msg.lower():\n'
+        "        raise HTTPException(status_code=413, detail=msg)\n"
+        "    raise HTTPException(status_code=400, detail=msg)\n"
+    )
+    assert _codes(src) == [6, 7]
+
+
+def test_flags_fstring_assigned_then_used_in_sink():
+    src = _in_except(
+        'msg = f"failed: {e}"',
+        "raise HTTPException(status_code=500, detail=msg)",
+    )
+    assert _codes(src) == [5]
+
+
+def test_flags_annotated_str_assignment_then_used_in_sink():
+    src = _in_except(
+        "msg: str = str(e)",
+        "raise HTTPException(status_code=500, detail=msg)",
+    )
+    assert _codes(src) == [5]
+
+
+def test_flags_traceback_assigned_without_except_binding():
+    # `except Exception:` (no `as`) still leaks if the trace is saved and returned.
+    src = (
+        "try:\n"
+        "    pass\n"
+        "except Exception:\n"
+        "    msg = traceback.format_exc()\n"
+        '    return JSONResponse({"traceback": msg}, status_code=500)\n'
+    )
+    assert _codes(src) == [5]
+
+
 # --- SHOULD NOT flag -------------------------------------------------------------
 
 
@@ -168,6 +219,22 @@ def test_ok_str_exc_outside_sink_is_ignored():
 
 def test_ok_type_name_alongside_other_text():
     src = _in_except('raise HTTPException(status_code=500, detail=f"Failed ({type(e).__name__})")')
+    assert _codes(src) == []
+
+
+def test_ok_type_name_assigned_then_used():
+    src = _in_except(
+        "kind = type(e).__name__",
+        'raise HTTPException(status_code=500, detail=f"Failed ({kind})")',
+    )
+    assert _codes(src) == []
+
+
+def test_ok_fixed_string_assigned_inside_handler():
+    src = _in_except(
+        'msg = "Internal server error"',
+        "raise HTTPException(status_code=500, detail=msg)",
+    )
     assert _codes(src) == []
 
 

@@ -1,8 +1,10 @@
 {
   "src/cuga/backend/server/main.py": {
     "HTTPException( status_code=503, detail=str(e) or \"IAM proxy token exchange failed (connection error)\", )": 1,
+    "HTTPException(status_code=400, detail=msg)": 1,
     "HTTPException(status_code=400, detail=str(e))": 3,
     "HTTPException(status_code=401, detail=f\"IAM token validation failed: {e}\")": 1,
+    "HTTPException(status_code=413, detail=msg)": 1,
     "HTTPException(status_code=422, detail=f\"Invalid ActionResponse JSON: {e.errors()}\")": 1,
     "HTTPException(status_code=422, detail=f\"Invalid ChatRequest JSON: {e.errors()}\")": 1,
     "HTTPException(status_code=422, detail=f\"Invalid attachment metadata: {e.errors()}\")": 1,

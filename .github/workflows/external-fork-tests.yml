@@ -54,6 +54,8 @@ jobs:
           enable-cache: true
       - run: uv sync --all-extras --dev --frozen
       - run: uv run ruff check && uv run ruff format --check
+      - name: No exception detail in caller-facing responses (#681 / #721)
+        run: uv run python scripts/checks/no_exc_in_responses.py
       - name: Run unit tests
         run: |
           uv run pytest ./src/cuga/backend/tools_env/registry/tests/
