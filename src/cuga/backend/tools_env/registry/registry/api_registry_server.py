@@ -16,6 +16,7 @@ from cuga.backend.tools_env.registry.config.config_loader import (
 )
 from cuga.backend.tools_env.registry.mcp_manager.mcp_manager import MCPManager
 from cuga.backend.tools_env.registry.registry.api_registry import ApiRegistry
+from cuga.backend.tools_env.registry.registry.rejected_call_guard import rejected_call_guard
 from loguru import logger
 from cuga.config import settings
 
@@ -332,6 +333,17 @@ async def call_mcp_function(
             tracker.collect_step_external(
                 Step(name="api_call", data=request.model_dump_json()), full_path=trajectory_path
             )
+        # Rejected-call guard (#599): an identical call already rejected
+        # rejected_call_block_after times is refused without reaching the API.
+        # Placed after the api_call trace step so the attempt stays visible.
+        short_circuit = rejected_call_guard.check(
+            request.app_name, request.function_name, request.args, agent_id=agent_id
+        )
+        if short_circuit is not None:
+            tracker.collect_step_external(
+                Step(name="api_response", data=json.dumps(short_circuit)), full_path=trajectory_path
+            )
+            return JSONResponse(status_code=short_circuit.get("status_code", 422), content=short_circuit)
         result: TextContent = await reg.call_function(
             app_name=request.app_name,
             function_name=request.function_name,
@@ -409,11 +421,30 @@ async def call_mcp_function(
                     if error_message and error_message != "Unknown error":
                         logger.error(f"  Error message: {error_message}")
 
+                # Rejected-call guard (#599): count this rejection; from the
+                # second identical one on, make the repetition explicit in the
+                # message the agent sees. Recorded after the refinement above so
+                # the stored message is the detailed one.
+                escalated_message = rejected_call_guard.record_rejection(
+                    request.app_name,
+                    request.function_name,
+                    request.args,
+                    status_code=result.get("status_code"),
+                    message=result.get("message", "Unknown error"),
+                    agent_id=agent_id,
+                )
+                if escalated_message:
+                    result["message"] = escalated_message
+
             tracker.collect_step_external(
                 Step(name="api_response", data=json.dumps(result)), full_path=trajectory_path
             )
             return JSONResponse(status_code=result.get("status_code", 500), content=result)
         else:
+            # Rejected-call guard (#599): a successful mutating call changes
+            # server-side state, so previously-rejected signatures may now be
+            # valid (e.g. a payment retried after a balance top-up) — clear them.
+            rejected_call_guard.record_success(request.app_name, api_info.get("method"))
             result_json = None
             logger.debug(result)
             if result and result[0]:
@@ -580,6 +611,8 @@ async def reset():
         registry.auth_manager.clear_tokens()
         logger.info("Cleared all stored authentication tokens")
     registry.auth_manager = None
+    # Task boundary: rejection counters must never leak across tasks (#599).
+    rejected_call_guard.reset()
     logger.info("Registry reset completed")
 
 
