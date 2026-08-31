@@ -900,7 +900,7 @@ class TestManagerAPIWorkflow:
 
         publish_response = http_client.post(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-policy"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": v1_config_with_policy},
         )
         assert publish_response.status_code == 200, f"Failed to publish v1: {publish_response.text}"
