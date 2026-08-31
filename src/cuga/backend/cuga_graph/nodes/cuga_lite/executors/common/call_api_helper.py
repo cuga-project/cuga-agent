@@ -1,7 +1,9 @@
 from typing import Callable
 import asyncio
+import json
 import time
 from loguru import logger
+from opentelemetry import propagate
 from cuga.config import settings
 
 
@@ -172,6 +174,15 @@ class CallApiHelper:
 
         timeout_seconds = getattr(settings.advanced_features, 'tool_call_timeout', 30)
 
+        # The generated code runs in a remote sandbox with no OTel SDK and no
+        # shared contextvars, so the only way its registry calls can join the
+        # agent's trace is a traceparent baked in here, in the main process,
+        # where the span context actually exists. Empty when no span is
+        # recording, which just leaves the headers as they were.
+        trace_context: dict = {}
+        propagate.inject(trace_context)
+        trace_headers = "".join(f", {json.dumps(k)}: {json.dumps(v)}" for k, v in trace_context.items())
+
         return f"""
 import asyncio
 import json
@@ -193,7 +204,7 @@ async def call_api(app_name, api_name, args=None):
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={{"Content-Type": "application/json", "accept": "application/json"}},
+        headers={{"Content-Type": "application/json", "accept": "application/json"{trace_headers}}},
         method="POST",
     )
     try:

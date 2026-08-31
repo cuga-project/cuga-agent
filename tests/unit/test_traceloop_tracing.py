@@ -7,6 +7,7 @@ See docs/traceloop-instrumentation-plan.md — this file grows in later phases.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from unittest.mock import patch
 
@@ -214,6 +215,124 @@ def _all_spans(trace_file) -> list[dict]:
             for scope_span in resource_span.get("scopeSpans", []):
                 spans.extend(scope_span.get("spans", []))
     return spans
+
+
+def _reset_langchain_instrumentation(monkeypatch):
+    """Make a second real Traceloop.init() in the same process actually rebind
+    LangChain/LangGraph instrumentation to the new TracerProvider.
+
+    LangchainInstrumentor is a process-wide singleton that captures its tracer
+    (and provider) once, at instrument() time, and refuses to re-instrument
+    while its flag is set. Its own uninstrument() clears the flag but leaves
+    the patched functions in place: OTel's unwrap() helper can't resolve a
+    dotted attribute name like "BaseCallbackManager.__init__", so it silently
+    does nothing. The next instrument() then stacks a second wrapper on the
+    first, and the stale inner handler wins the "is a Traceloop handler already
+    registered?" check inside _BaseCallbackManagerInitWrapper — so every span
+    keeps going to the previous test's already-closed exporter.
+    """
+    from langchain_core.callbacks import BaseCallbackManager
+    from langgraph.pregel import Pregel
+    from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+
+    instrumentor = LangchainInstrumentor()
+    if instrumentor.is_instrumented_by_opentelemetry:
+        instrumentor.uninstrument()
+
+    for owner, attr in ((BaseCallbackManager, "__init__"), (Pregel, "stream"), (Pregel, "astream")):
+        original = getattr(owner, attr)
+        while hasattr(original, "__wrapped__"):
+            original = original.__wrapped__
+        monkeypatch.setattr(owner, attr, original)
+
+
+def _init_traceloop_to_file(monkeypatch, tmp_path, app_name: str):
+    """Real (non-mocked) Traceloop.init() writing to a per-test trace file.
+
+    Returns the trace file path. Callers get the same setup the Phase 2
+    nested-graph test does inline: provider/singleton reset first, settings
+    pointed at a file exporter, then a real init with all auto-instrumentation
+    enabled (instruments=None) so LangChain/LangGraph spans are actually
+    produced.
+    """
+    from cuga.backend.observability import traceloop_init
+    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
+    from cuga.config import settings as real_settings
+
+    _reset_tracer_provider(monkeypatch)
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
+
+    trace_file = tmp_path / "spans.jsonl"
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
+
+    _reset_langchain_instrumentation(monkeypatch)
+
+    from traceloop.sdk import Traceloop
+
+    Traceloop.init(
+        app_name=app_name,
+        exporter=LocalOtlpFileSpanExporter(str(trace_file)),
+        disable_batch=True,
+        instruments=None,
+        block_instruments=None,
+    )
+    return trace_file
+
+
+def _run_single_node_graph(node_fn, graph_name: str):
+    """Compile and fully drive a one-node LangGraph graph around ``node_fn``.
+
+    Same shape as the Phase 2 nested-graph test's outer graph, and the same
+    astream(stream_mode="updates") call shape CugaAgent.stream() uses — the
+    node runs under a real LangGraph-instrumented parent span, which is the
+    whole point of the DP14 checks below.
+    """
+    from typing import TypedDict
+
+    from langgraph.graph import END, StateGraph
+
+    class _State(TypedDict):
+        result: str
+
+    builder = StateGraph(_State)
+    builder.add_node("call_nested_site", node_fn)
+    builder.set_entry_point("call_nested_site")
+    builder.add_edge("call_nested_site", END)
+    graph = builder.compile()
+    graph.name = graph_name
+
+    async def _run():
+        async for _ in graph.astream({"result": ""}, stream_mode="updates"):
+            pass
+
+    asyncio.run(_run())
+
+
+def _assert_one_trace_covering_nested_llm_call(spans: list[dict], site: str) -> None:
+    """The DP14 assertion: the nested LLM call produced a real span, and every
+    span in the run shares one trace_id with the outer graph/node.
+
+    The LLM-span check is load-bearing, not decoration: without a chat span
+    there is nothing whose propagation could have failed, so a single trace_id
+    would prove nothing about the nested call site.
+    """
+    span_names = [span.get("name", "") for span in spans]
+    assert any(name.endswith(".chat") for name in span_names), (
+        f"{site}: expected a real LLM span from the nested ainvoke() "
+        f"(without one this test proves nothing), got names: {span_names}"
+    )
+    assert any(name.endswith("call_nested_site") for name in span_names), (
+        f"{site}: expected the outer graph node's own span, got names: {span_names}"
+    )
+
+    trace_ids = {span["traceId"] for span in spans}
+    assert len(trace_ids) == 1, (
+        f"{site}: nested ainvoke() must stay in the outer graph's trace; "
+        f"found {len(trace_ids)} trace_ids: {trace_ids} across names {span_names}"
+    )
 
 
 @pytest.mark.unit
@@ -649,3 +768,368 @@ def test_invoke_tool_respects_trace_content_opt_out(monkeypatch, tmp_path):
         f"expected tool.output to be absent with TRACELOOP_TRACE_CONTENT=false, "
         f"got {attrs.get('tool.output')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 / DP14 — the five call sites that needed a hand-built config shim
+# under Langfuse's callback-list tracing (docs/issues/langfuse-nested-callback-
+# propagation.md). Langfuse loses the trace there because LangGraph threads its
+# CallbackHandler through config["callbacks"] and these sites call a nested
+# ainvoke() without forwarding that config. OTel propagates through contextvars
+# instead, which is an entirely separate mechanism — these tests settle
+# empirically, per site, whether it actually holds.
+#
+# Each test drives the site's REAL function from inside a real one-node
+# LangGraph graph, with a real LangChain fake chat model (not a MagicMock) so
+# opentelemetry-instrumentation-langchain produces an actual LLM span to check
+# propagation on.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_dp14_sandbox_node_reflection_ainvoke_stays_in_outer_trace(monkeypatch, tmp_path):
+    """Site 1: sandbox_node's `reflection_agent.ainvoke(...)` (sandbox_node.py,
+    inside create_sandbox_node's `sandbox` node, under `if reflection_enabled`)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter import sandbox_node as sandbox_node_module
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter import AgentGraphAdapter
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-sandbox-reflection")
+
+    settings = sandbox_node_module.settings
+    monkeypatch.setattr(settings.policy, "enabled", False)
+    monkeypatch.setattr(
+        sandbox_node_module.CodeExecutor,
+        "eval_with_tools_async",
+        AsyncMock(return_value=("execution output", {})),
+    )
+    monkeypatch.setattr(
+        sandbox_node_module, "core_append_with_step_limit", lambda *_args, **_kwargs: ([], None)
+    )
+
+    adapter = AgentGraphAdapter(
+        tracker=MagicMock(),
+        base_callbacks=[],
+        task_todos_ref=[],
+        tools_context_ref={},
+        base_tool_provider=None,
+    )
+
+    state = MagicMock()
+    state.variables_manager.get_variable_names.return_value = []
+    state.chat_messages = []
+    state.tool_calls = []
+    state.thread_id = None
+    state.script = "print('hi')"
+    state.step_count = 0
+    state.cuga_lite_max_steps = None
+    state.tool_calls_used_run = 0
+    state.tool_calls_used_thread = 0
+    state.sub_task = "summarize the accounts"
+    state.reflection_apps = []
+    state.reflection_skills_prompt_section = ""
+    state.reflection_enable_find_tools = False
+    state.reflection_skills_enabled = False
+
+    sandbox = sandbox_node_module.create_sandbox_node(adapter, base_thread_id="t1", base_apps_list=[])
+    reflection_llm = GenericFakeChatModel(messages=iter([AIMessage(content="reflection summary")]))
+
+    async def node(_state):
+        await sandbox(
+            state,
+            config={
+                "configurable": {
+                    "llm": reflection_llm,
+                    "reflection_enabled": True,
+                    "thread_id": "t1",
+                }
+            },
+        )
+        return {"result": "done"}
+
+    _run_single_node_graph(node, "Dp14SandboxReflectionGraph")
+
+    spans = _all_spans(trace_file)
+    _assert_one_trace_covering_nested_llm_call(spans, "sandbox_node reflection ainvoke")
+
+
+@pytest.mark.unit
+def test_dp14_shortlister_chain_ainvoke_stays_in_outer_trace(monkeypatch, tmp_path):
+    """Site 2: `chain.ainvoke(...)` inside
+    PromptUtils._ainvoke_shortlister_with_name_validation (prompt_utils.py)."""
+    from types import SimpleNamespace
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.runnables import RunnableLambda
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-shortlister")
+
+    llm = GenericFakeChatModel(messages=iter([AIMessage(content="tool_a")]))
+    prompt = ChatPromptTemplate.from_messages(
+        [("human", "{instructions}\n{input}\napps={all_apps}\ntools={all_tools}")]
+    )
+    # The shortlister's real chain returns a structured object with `.result`;
+    # this tail mirrors that contract without needing a provider that can do
+    # structured output.
+    chain = prompt | llm | RunnableLambda(
+        lambda message: SimpleNamespace(
+            result=[SimpleNamespace(name=message.content, reasoning="because")]
+        )
+    )
+
+    async def node(_state):
+        details, invalid = await PromptUtils._ainvoke_shortlister_with_name_validation(
+            chain=chain,
+            query="list users",
+            apps_as_dict={},
+            tools_as_dict={},
+            base_instructions="pick tools",
+            valid_names={"tool_a"},
+        )
+        assert [d.name for d in details] == ["tool_a"]
+        assert invalid == []
+        return {"result": "done"}
+
+    _run_single_node_graph(node, "Dp14ShortlisterGraph")
+
+    spans = _all_spans(trace_file)
+    _assert_one_trace_covering_nested_llm_call(spans, "shortlister chain ainvoke")
+
+
+@pytest.mark.unit
+def test_dp14_nl_auto_continue_ainvoke_stays_in_outer_trace(monkeypatch, tmp_path):
+    """Site 3: `llm.ainvoke(...)` inside classify_nl_auto_continue_decision
+    (nl_auto_continue_classifier.py)."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as classifier_module
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-nl-auto-continue")
+
+    # Off by default in settings.toml; the LLM branch is unreachable without it.
+    monkeypatch.setattr(
+        classifier_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True
+    )
+
+    llm = GenericFakeChatModel(messages=iter([AIMessage(content='{"auto_continue": true}')]))
+
+    async def node(_state):
+        decision = await classifier_module.classify_nl_auto_continue_decision(
+            llm,
+            "The account balance table is shown above with all rows.",
+            "checked every row before answering",
+        )
+        assert decision.auto_continue is True
+        return {"result": "done"}
+
+    _run_single_node_graph(node, "Dp14NlAutoContinueGraph")
+
+    spans = _all_spans(trace_file)
+    _assert_one_trace_covering_nested_llm_call(spans, "nl_auto_continue classifier ainvoke")
+
+
+@pytest.mark.unit
+def test_dp14_output_formatter_ainvoke_stays_in_outer_trace(monkeypatch, tmp_path):
+    """Site 4: `llm.ainvoke(...)` inside PolicyEnactment._enact_format_output
+    (enactment.py). format_type="markdown" is the branch that calls the LLM."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+
+    from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
+    from cuga.backend.cuga_graph.policy.models import OutputFormatter
+    import cuga.backend.llm.models as llm_models_module
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-output-formatter")
+
+    llm = GenericFakeChatModel(messages=iter([AIMessage(content="- answer is 42")]))
+    monkeypatch.setattr(
+        llm_models_module,
+        "LLMManager",
+        lambda *_args, **_kwargs: SimpleNamespace(get_model=lambda *_a, **_k: llm),
+    )
+
+    policy_match = MagicMock()
+    policy_match.policy = OutputFormatter(
+        id="test_fmt",
+        name="Test Formatter",
+        description="test",
+        format_type="markdown",
+        format_config="Use bullet points.",
+        triggers=[],
+    )
+    policy_match.reasoning = "test"
+    policy_match.confidence = 1.0
+
+    state = MagicMock()
+    state.chat_messages = [AIMessage(content="answer is 42")]
+    state.final_answer = "answer is 42"
+
+    context = MagicMock()
+    context.agent_response = "answer is 42"
+    context.chat_messages = []
+    context.user_input = "what is the answer"
+
+    async def node(_state):
+        _cmd, metadata = await PolicyEnactment._enact_format_output(
+            state, policy_match, MagicMock(), context
+        )
+        assert metadata is not None
+        return {"result": "done"}
+
+    _run_single_node_graph(node, "Dp14OutputFormatterGraph")
+
+    spans = _all_spans(trace_file)
+    _assert_one_trace_covering_nested_llm_call(spans, "output formatter ainvoke")
+
+
+@pytest.mark.unit
+def test_dp14_context_summarization_ainvoke_stays_in_outer_trace(monkeypatch, tmp_path):
+    """Site 5: the summarizer's internal LLM call reached via
+    apply_context_summarization (context_management_utils.py).
+
+    The LLM call is gated behind ContextSummarizer's real trigger check, so the
+    thresholds are lowered rather than bypassed: keep_last_n_messages=1 leaves
+    older messages to summarize and a near-zero trigger_fraction puts any
+    non-empty message list over the usage threshold. The trigger logic itself
+    is untouched.
+    """
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from cuga.backend.cuga_graph.state import agent_state as agent_state_module
+    from cuga.backend.cuga_graph.utils import context_management_utils
+    from cuga.backend.cuga_graph.utils import context_summarizer as context_summarizer_module
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-context-summarization")
+
+    # Patch via each target module's own `settings` reference: another test in
+    # the suite does importlib.reload(cuga.config), so a freshly imported
+    # `settings` here can be a different object than these modules hold.
+    for config in {
+        id(cfg): cfg
+        for cfg in (
+            agent_state_module.settings.context_summarization,
+            context_summarizer_module.settings.context_summarization,
+        )
+    }.values():
+        monkeypatch.setattr(config, "enabled", True)
+        monkeypatch.setattr(config, "keep_last_n_messages", 1)
+        monkeypatch.setattr(config, "trigger_fraction", 1e-9)
+
+    llm = GenericFakeChatModel(messages=iter([AIMessage(content="a summary of earlier turns")] * 8))
+    messages = [
+        HumanMessage(content="first user turn"),
+        AIMessage(content="first assistant turn"),
+        HumanMessage(content="second user turn"),
+        AIMessage(content="second assistant turn"),
+    ]
+
+    async def node(_state):
+        summarized = await context_management_utils.apply_context_summarization(
+            messages, llm, message_list_name="chat_messages"
+        )
+        assert summarized
+        return {"result": "done"}
+
+    _run_single_node_graph(node, "Dp14ContextSummarizationGraph")
+
+    spans = _all_spans(trace_file)
+    _assert_one_trace_covering_nested_llm_call(spans, "context summarization ainvoke")
+
+
+@pytest.mark.unit
+def test_dp14_remote_call_api_code_sends_traceparent(monkeypatch, tmp_path):
+    """The remote-sandbox `call_api` HTTP boundary (call_api_helper.py).
+
+    Architecturally unlike sites 1-5: the generated code runs inside an
+    E2B/Docker sandbox with no OTel SDK and no shared contextvars, so the only
+    way the registry call can join the agent's trace is an explicit
+    `traceparent` header baked in at code-generation time (which happens in the
+    main process, where the real span context lives).
+    """
+    import json as json_module
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from opentelemetry import trace as otel_trace
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common import call_api_helper
+
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-remote-call-api")
+
+    captured_headers: list[dict] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            # urllib title-cases outgoing header names; HTTP headers are
+            # case-insensitive, so compare on a lowercased view.
+            captured_headers.append({k.lower(): v for k, v in self.headers.items()})
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            body = json_module.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        tracer = otel_trace.get_tracer(__name__)
+
+        observed = {}
+
+        async def _drive():
+            with tracer.start_as_current_span("remote-sandbox-block"):
+                code = call_api_helper.CallApiHelper.create_remote_call_api_code(
+                    function_call_url=f"http://127.0.0.1:{port}"
+                )
+                namespace: dict = {}
+                exec(code, namespace)
+                observed["trace_id"] = format(
+                    otel_trace.get_current_span().get_span_context().trace_id, "032x"
+                )
+                return await namespace["call_api"]("app", "op", {})
+
+        result = asyncio.run(_drive())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result == {"ok": True}
+    assert captured_headers, "the generated call_api must have reached the local server"
+
+    traceparent = captured_headers[0].get("traceparent")
+    assert traceparent, (
+        f"generated remote call_api must send a traceparent header, got: "
+        f"{sorted(captured_headers[0])}"
+    )
+    # Format: 00-<32 hex trace_id>-<16 hex span_id>-<flags>
+    parts = traceparent.split("-")
+    assert len(parts) == 4, f"malformed traceparent: {traceparent!r}"
+    assert parts[1] == observed["trace_id"], (
+        f"traceparent trace_id {parts[1]} must match the span the code was "
+        f"generated under ({observed['trace_id']})"
+    )
+
+    spans = _all_spans(trace_file)
+    assert observed["trace_id"] in {
+        format(int.from_bytes(base64.b64decode(span["traceId"]), "big"), "032x") for span in spans
+    }, "the driving span must have been exported under that same trace_id"
