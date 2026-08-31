@@ -13,8 +13,7 @@ That rule lived only in docstrings, so a future edit could reintroduce a leak by
 an exception-derived value flows into one of the places a response is built:
 
 * ``HTTPException(detail=...)``
-* ``JSONResponse(...)`` (the body, and the ``message``/``error``/``detail``/``traceback``
-  fields of a body dict)
+* ``JSONResponse(...)`` (the body, including every value in a body dict)
 * the A2A ``_rpc_error(id, code, message, data)`` helper
 * a streaming ``StreamEvent(data=...)`` frame
 
@@ -52,17 +51,15 @@ from pathlib import Path
 CODE = "exc-in-response"
 NOQA = f"# noqa: {CODE}"
 
-# Identifiers that, in a response-building call, are overwhelmingly the caught exception.
-EXC_NAMES = frozenset({"e", "ex", "exc", "err", "error", "exception", "cause"})
-
 # Attributes of an exception whose value carries the original text/detail.
 EXC_ATTRS = frozenset({"args", "errors", "json", "message", "detail", "msg"})
 
 # traceback helpers that render a stack trace or exception text.
 TRACEBACK_FUNCS = frozenset({"format_exc", "print_exc", "format_exception", "format_tb"})
 
-# Body-dict keys whose value is sent to the caller as prose.
-RESPONSE_KEYS = frozenset({"message", "detail", "error", "traceback", "text", "reason", "msg", "description"})
+# Node types that stop the walk-up when resolving which exception aliases are in scope
+# for a given expression — an `except ... as x` binding does not cross a function boundary.
+_SCOPE_BOUNDARIES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
 
 # Default source tree to scan.
 DEFAULT_TARGET = "src/cuga/backend/server"
@@ -87,6 +84,55 @@ def _parent_map(root: ast.AST) -> dict[ast.AST, ast.AST]:
         for child in ast.iter_child_nodes(node):
             parents[child] = node
     return parents
+
+
+def _except_handler_aliases(handler: ast.ExceptHandler) -> frozenset[str]:
+    """The exception binding plus any name that is a direct alias of it (``err = e``),
+    resolved to a fixed point so a chain of aliases (``err = e``, ``msg = err``) is caught."""
+    if not handler.name:
+        return frozenset()
+    names = {handler.name}
+    changed = True
+    while changed:
+        changed = False
+        for stmt in ast.walk(handler):
+            if not isinstance(stmt, ast.Assign) or not isinstance(stmt.value, ast.Name):
+                continue
+            if stmt.value.id not in names:
+                continue
+            for target in stmt.targets:
+                if isinstance(target, ast.Name) and target.id not in names:
+                    names.add(target.id)
+                    changed = True
+    return frozenset(names)
+
+
+def _except_alias_scopes(tree: ast.AST) -> dict[ast.AST, frozenset[str]]:
+    """Map each ``ExceptHandler`` node to the exception-alias names bound within it."""
+    return {
+        node: _except_handler_aliases(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ExceptHandler) and node.name
+    }
+
+
+def _enclosing_exception_names(
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    alias_scopes: dict[ast.AST, frozenset[str]],
+) -> frozenset[str]:
+    """The exception aliases bound by an ``except ... as x`` block enclosing ``node``,
+    without crossing into an outer function — a caught exception does not leak that far."""
+    names: set[str] = set()
+    current = node
+    while current in parents:
+        parent = parents[current]
+        if isinstance(parent, ast.ExceptHandler):
+            names |= alias_scopes.get(parent, frozenset())
+        if isinstance(parent, _SCOPE_BOUNDARIES):
+            break
+        current = parent
+    return frozenset(names)
 
 
 def _name_use_is_banned(name: ast.Name, parents: dict[ast.AST, ast.AST]) -> bool:
@@ -119,9 +165,11 @@ def _name_use_is_banned(name: ast.Name, parents: dict[ast.AST, ast.AST]) -> bool
     return False
 
 
-def _contains_exception_value(expr: ast.AST) -> bool:
-    """True when ``expr`` reads text or a trace from an exception."""
-    # traceback.format_exc() and friends (traceback is a module, not an EXC_NAME).
+def _contains_exception_value(expr: ast.AST, exc_names: frozenset[str]) -> bool:
+    """True when ``expr`` reads text or a trace from one of the caught exceptions bound
+    by ``exc_names`` (the aliases actually in scope at this call site — see
+    ``_enclosing_exception_names``)."""
+    # traceback.format_exc() and friends (traceback is a module, not a bound alias).
     for node in ast.walk(expr):
         if (
             isinstance(node, ast.Attribute)
@@ -130,12 +178,14 @@ def _contains_exception_value(expr: ast.AST) -> bool:
             and node.attr in TRACEBACK_FUNCS
         ):
             return True
+    if not exc_names:
+        return False
     # The expression itself being a bare exception name (detail=e).
-    if isinstance(expr, ast.Name) and expr.id in EXC_NAMES:
+    if isinstance(expr, ast.Name) and expr.id in exc_names:
         return True
     parents = _parent_map(expr)
     for node in ast.walk(expr):
-        if isinstance(node, ast.Name) and node.id in EXC_NAMES:
+        if isinstance(node, ast.Name) and node.id in exc_names:
             if _name_use_is_banned(node, parents):
                 return True
     return False
@@ -174,11 +224,9 @@ def _content_exprs(call: ast.Call) -> list[ast.expr]:
         body = _keyword(call, "content")
         if body is None and call.args:
             body = call.args[0]
-        if isinstance(body, ast.Dict):
-            for key, value in zip(body.keys, body.values):
-                if isinstance(key, ast.Constant) and key.value in RESPONSE_KEYS:
-                    exprs.append(value)
-        elif body is not None:
+        if body is not None:
+            # Inspect the whole body, not just values under a fixed set of known keys —
+            # `JSONResponse({"debug": str(exc)})` leaks just as much as `{"message": ...}`.
             exprs.append(body)
 
     elif name == "_rpc_error":
@@ -207,6 +255,19 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _call_source_segment(source: str, node: ast.Call, lines: list[str]) -> str:
+    """The full (possibly multi-line) source text of ``node``, normalized to one line.
+
+    Falls back to just the start line if the source segment can't be recovered (should not
+    happen for a node parsed from ``source`` itself, but ``ast.get_source_segment`` is
+    documented as best-effort).
+    """
+    segment = ast.get_source_segment(source, node)
+    if segment is None:
+        segment = lines[node.lineno - 1] if 0 <= node.lineno - 1 < len(lines) else ""
+    return _normalize(segment)
+
+
 def find_violations(source: str, filename: str) -> list[Violation]:
     """Return the response-building calls in ``source`` fed an exception-derived value."""
     try:
@@ -214,21 +275,26 @@ def find_violations(source: str, filename: str) -> list[Violation]:
     except SyntaxError:
         return []
     lines = source.splitlines()
+    parents = _parent_map(tree)
+    alias_scopes = _except_alias_scopes(tree)
     seen: set[tuple[int, int]] = set()
     violations: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+        exc_names = _enclosing_exception_names(node, parents, alias_scopes)
         content = _content_exprs(node)
-        if not content or not any(_contains_exception_value(expr) for expr in content):
+        if not content or not any(_contains_exception_value(expr, exc_names) for expr in content):
             continue
         line = node.lineno
         col = node.col_offset
         if (line, col) in seen:
             continue
         seen.add((line, col))
-        raw = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
-        if NOQA in raw:
+        # A noqa pragma can sit on any line the call spans, not just the first.
+        end_line = getattr(node, "end_lineno", line) or line
+        span = lines[line - 1 : end_line]
+        if any(NOQA in raw for raw in span):
             continue
         violations.append(
             Violation(
@@ -240,24 +306,43 @@ def find_violations(source: str, filename: str) -> list[Violation]:
                     "send fixed text and log the detail behind a reference code "
                     "(see server/error_responses.py)"
                 ),
-                snippet=_normalize(raw),
+                snippet=_call_source_segment(source, node, lines),
             )
         )
     return violations
 
 
-def build_baseline(by_file: dict[str, list[Violation]]) -> dict[str, list[str]]:
-    """A baseline maps each file to the normalized snippets allowed to remain."""
-    return {
-        path: sorted({v.snippet for v in violations}) for path, violations in by_file.items() if violations
-    }
+def build_baseline(by_file: dict[str, list[Violation]]) -> dict[str, dict[str, int]]:
+    """A baseline maps each file to how many times each normalized call is allowed to
+    remain. Counting occurrences (rather than deduplicating into a set) means a baselined
+    call can't be copy-pasted to a new site, or a new violation smuggled in behind an
+    existing one that happens to normalize to the same text, without tripping the check.
+    """
+    baseline: dict[str, dict[str, int]] = {}
+    for path, violations in by_file.items():
+        if not violations:
+            continue
+        counts: dict[str, int] = {}
+        for v in violations:
+            counts[v.snippet] = counts.get(v.snippet, 0) + 1
+        baseline[path] = dict(sorted(counts.items()))
+    return baseline
 
 
 def new_violations(
-    violations: list[Violation], relpath: str, baseline: dict[str, list[str]]
+    violations: list[Violation], relpath: str, baseline: dict[str, dict[str, int]]
 ) -> list[Violation]:
-    allowed = set(baseline.get(relpath, ()))
-    return [v for v in violations if v.snippet not in allowed]
+    """Violations in ``violations`` not covered by ``baseline``, consuming each baselined
+    occurrence at most once so a repeated or duplicated violation still counts as new."""
+    remaining = dict(baseline.get(relpath, {}))
+    new: list[Violation] = []
+    for v in violations:
+        available = remaining.get(v.snippet, 0)
+        if available > 0:
+            remaining[v.snippet] = available - 1
+        else:
+            new.append(v)
+    return new
 
 
 # --- CLI -------------------------------------------------------------------------
@@ -305,11 +390,11 @@ def main(argv: list[str] | None = None) -> int:
         baseline = build_baseline(by_file)
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        total = sum(len(v) for v in baseline.values())
+        total = sum(sum(counts.values()) for counts in baseline.values())
         print(f"wrote baseline with {total} allowed entries across {len(baseline)} files -> {baseline_path}")
         return 0
 
-    baseline: dict[str, list[str]] = {}
+    baseline: dict[str, dict[str, int]] = {}
     if baseline_path.exists():
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
 
