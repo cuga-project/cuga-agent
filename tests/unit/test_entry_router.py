@@ -42,6 +42,18 @@ async def test_entry_router_resets_empty_variables_when_chat_disabled(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_entry_router_honors_per_agent_supervisor_override(monkeypatch):
+    monkeypatch.setattr(settings.features, "chat", True)
+    monkeypatch.setattr(settings.supervisor, "enabled", False)
+
+    state = AgentState(input="coordinate the specialists", supervisor_mode=True)
+    command = await EntryRouter.node_handler(state, NodeNames.ENTRY_ROUTER)
+
+    assert command.goto == NodeNames.CUGA_SUPERVISOR
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_entry_router_routes_to_browser_in_web_mode(monkeypatch):
     monkeypatch.setattr(settings.features, "chat", False)
     monkeypatch.setattr(settings.supervisor, "enabled", False)

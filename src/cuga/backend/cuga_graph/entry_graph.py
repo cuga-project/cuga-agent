@@ -53,6 +53,9 @@ class CugaEntryGraph:
         enable_filesystem_tools: Optional[bool] = None,
         llm_config: Optional[dict] = None,
         special_instructions: Optional[str] = None,
+        supervisor_agents: Optional[dict] = None,
+        supervisor_enabled: Optional[bool] = None,
+        supervisor_plan_approval: bool = False,
     ):
         self.final_answer_agent = FinalAnswerNode(FinalAnswerAgent.create())
         self.followup = SuggestHumanActions()
@@ -82,7 +85,19 @@ class CugaEntryGraph:
         self.enable_filesystem_tools = enable_filesystem_tools
         self.llm_config: Optional[dict] = llm_config
         self.special_instructions: Optional[str] = special_instructions
+        self.supervisor_agents: Optional[dict] = supervisor_agents
+        self.supervisor_enabled: Optional[bool] = supervisor_enabled
+        self.supervisor_plan_approval = supervisor_plan_approval
         self.graph = None
+
+    def _supervisor_is_enabled(self) -> bool:
+        supervisor_enabled = getattr(self, "supervisor_enabled", None)
+        if supervisor_enabled is not None:
+            return supervisor_enabled
+        return getattr(settings.supervisor, "enabled", False)
+
+    def _should_inject_demo_supervisor_agents(self, resolved_agents: dict) -> bool:
+        return not resolved_agents and getattr(self, "supervisor_agents", None) is None
 
     async def build_graph(self):
         graph = StateGraph(AgentState)
@@ -206,16 +221,21 @@ class CugaEntryGraph:
         graph.add_node(self.browser_qa.qa_agent.name, self.browser_qa.node)
         graph.add_node("CugaBrowserCallback", self.cuga_browser.callback_node)
 
-        if getattr(settings.supervisor, "enabled", False):
+        if self._supervisor_is_enabled():
             graph.add_node(self.cuga_supervisor.name, self.cuga_supervisor.node)
-            agents, supervisor_special_instructions = await self._load_supervisor_agents(
-                llm_manager, model_config
-            )
+            if self.supervisor_agents is not None:
+                agents = self.supervisor_agents
+                supervisor_special_instructions = self.special_instructions
+            else:
+                agents, supervisor_special_instructions = await self._load_supervisor_agents(
+                    llm_manager, model_config
+                )
             supervisor_model = llm_manager.get_model(model_config.copy())
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
                 special_instructions=supervisor_special_instructions,
+                plan_approval=self.supervisor_plan_approval,
             )
             compiled_supervisor_subgraph = supervisor_subgraph.compile()
             graph.add_node("CugaSupervisorSubgraph", compiled_supervisor_subgraph)
@@ -252,7 +272,7 @@ class CugaEntryGraph:
                 except Exception as e:
                     logger.error(f"Failed to load supervisor config: {e}", exc_info=True)
 
-        if not agents:
+        if self._should_inject_demo_supervisor_agents(agents):
 
             @tool
             def get_customers() -> str:
@@ -289,7 +309,7 @@ class CugaEntryGraph:
             self.browser_qa.qa_agent.name,
             self.browser_planner.browser_planner_agent.name,
         )
-        if getattr(settings.supervisor, "enabled", False):
+        if self._supervisor_is_enabled():
             graph.add_edge("CugaSupervisorSubgraph", "CugaSupervisorCallback")
 
 

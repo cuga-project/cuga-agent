@@ -53,7 +53,12 @@ class EntryRouter(BaseNode):
             state.sub_task = None
             state.sub_task_app = None
 
-        if getattr(settings.supervisor, "enabled", False):
+        supervisor_enabled = (
+            state.supervisor_mode
+            if state.supervisor_mode is not None
+            else getattr(settings.supervisor, "enabled", False)
+        )
+        if supervisor_enabled:
             return EntryRouter._route(
                 state,
                 name,

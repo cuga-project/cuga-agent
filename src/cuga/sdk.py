@@ -1930,6 +1930,7 @@ class CugaAgent:
 
         # Initialize knowledge manager (cached instance)
         self._knowledge_client = None
+        self._feature_overrides: Dict[str, Any] = {}
 
     async def initialize(self):
         """
@@ -1995,6 +1996,9 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
+            if value is not None:
+                run_config["configurable"].setdefault(key, value)
         return run_config
 
     def _apply_shortlister(self, run_config: dict, shortlister: Optional["Shortlister"] = None) -> None:

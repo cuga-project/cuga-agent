@@ -22,23 +22,19 @@ class SupervisorConfig(BaseModel):
     a2a: Dict[str, Any] = {}
 
 
-async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Load and parse supervisor YAML configuration.
-    Creates internal CugaAgent instances from YAML config.
+    Build a ``{agent_name: CugaAgent | external-config-dict}`` map from a list of
+    agent config dicts (the ``agents:`` section of a supervisor YAML file).
 
-    Args:
-        yaml_path: Path to YAML configuration file
-
-    Returns:
-        SupervisorConfig with loaded configuration
+    Shared by the YAML loader (:func:`load_supervisor_config`) and the manage-UI
+    store-sourced loader (:func:`build_agents_from_stored_subagents`), so both paths
+    feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
+    the exact same agent shapes.
     """
-    with open(yaml_path, "r") as f:
-        config = yaml.safe_load(f)
-
     agents = {}
 
-    for agent_config in config.get("agents", []):
+    for agent_config in agents_list:
         agent_name = agent_config["name"]
 
         # Check if this is an external agent (has a2a_protocol)
@@ -104,6 +100,8 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             tool_provider = await _create_tool_provider(
                 apps=apps_config,
                 mcp_servers=mcp_servers_config,
+                agent_id=agent_config.get("agent_id"),
+                include_by_app=agent_config.get("include_by_app"),
             )
 
             # Get model config if specified
@@ -116,15 +114,120 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
             )
+            feature_overrides = agent_config.get("feature_overrides") or {}
+            agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
 
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
+
+    return agents
+
+
+async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+    """
+    Load and parse supervisor YAML configuration.
+    Creates internal CugaAgent instances from YAML config.
+
+    Args:
+        yaml_path: Path to YAML configuration file
+
+    Returns:
+        SupervisorConfig with loaded configuration
+    """
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    agents = await build_agents_from_list(config.get("agents", []))
 
     return SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
         a2a=config.get("a2a", {}),
     )
+
+
+async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
+    stored ``supervisor.subAgents`` list (see ``agents_routes.py`` / ``ManagePage.tsx``).
+
+    Each entry is either:
+      - ``{"kind": "internal", "ref": "<agent_id>"}`` — resolved to a CugaAgent built
+        from that agent's own *published* config (tools/apps/model/special_instructions).
+      - ``{"kind": "a2a", "name", "endpoint", "auth": {"type": "bearer", "tokenEnvVar"}, "timeout"}``
+        — resolved to the same external-agent dict shape :func:`build_agents_from_list`
+        produces from a YAML ``a2a_protocol`` block, so delegation.py drives both identically.
+    """
+    import os
+
+    from cuga.backend.server.config_store import load_config
+    from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
+
+    agent_configs: List[Dict[str, Any]] = []
+
+    for entry in sub_agents:
+        kind = entry.get("kind")
+        if kind == "internal":
+            ref = entry.get("ref")
+            if not ref:
+                continue
+            ref_config, _ = await load_config(None, ref)
+            if not ref_config:
+                logger.warning(f"Supervisor sub-agent '{ref}': no published config found, skipping")
+                continue
+            agent_meta = ref_config.get("agent") or {}
+            tools_list = ref_config.get("tools") or []
+            include_by_app = {
+                t["name"]: t["include"]
+                for t in tools_list
+                if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+            } or None
+            # ref_config["tools"] holds registry-app entries (name + include filter), not
+            # loadable langchain tool defs — pass app names through `apps` and skip the
+            # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
+            agent_configs.append(
+                {
+                    "name": ref,
+                    "agent_id": ref,
+                    "apps": [t["name"] for t in tools_list if t.get("name")],
+                    "include_by_app": include_by_app,
+                    "special_instructions": ref_config.get("special_instructions")
+                    or agent_meta.get("description"),
+                    "model": _model_config_from_stored_llm(ref_config.get("llm")),
+                    "feature_overrides": extract_agent_feature_overrides(ref_config),
+                }
+            )
+        elif kind == "a2a":
+            name = entry.get("name")
+            endpoint = entry.get("endpoint")
+            if not name or not endpoint:
+                logger.warning("Supervisor A2A sub-agent missing name or endpoint, skipping")
+                continue
+            auth_cfg = entry.get("auth") or {}
+            resolved_auth = None
+            if auth_cfg.get("type") == "bearer":
+                token_env_var = auth_cfg.get("tokenEnvVar")
+                token = os.environ.get(token_env_var) if token_env_var else None
+                if token:
+                    resolved_auth = {"type": "bearer", "token": token}
+                elif token_env_var:
+                    logger.warning(f"Supervisor A2A sub-agent '{name}': env var {token_env_var} is empty")
+            agent_configs.append(
+                {
+                    "name": name,
+                    "a2a_protocol": {
+                        "enabled": True,
+                        "endpoint": endpoint,
+                        "transport": "http",
+                        "auth": resolved_auth,
+                        "timeout": entry.get("timeout", 30),
+                    },
+                }
+            )
+        else:
+            logger.warning(f"Unknown supervisor sub-agent kind: {kind!r}")
+
+    return await build_agents_from_list(agent_configs)
 
 
 async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[Any]:
@@ -157,22 +260,13 @@ async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[An
 async def _create_tool_provider(
     apps: List[Dict[str, Any]],
     mcp_servers: List[Dict[str, Any]],
+    agent_id: Optional[str] = None,
+    include_by_app: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[ToolProviderInterface]:
-    """
-    Create a tool provider from apps and MCP servers configuration.
-    Tools will be loaded from the registry based on app names.
-
-    Args:
-        apps: List of app configurations (can be dict with 'name' or just string name)
-        mcp_servers: List of MCP server configurations
-
-    Returns:
-        ToolProviderInterface instance or None
-    """
+    """Create a tool provider from apps and MCP servers configuration."""
     if not apps and not mcp_servers:
         return None
 
-    # Extract app names from config
     app_names = []
     for app_config in apps:
         if isinstance(app_config, dict):
@@ -182,25 +276,32 @@ async def _create_tool_provider(
         elif isinstance(app_config, str):
             app_names.append(app_config)
 
-    # Create CombinedToolProvider which loads tools from registry
-    # CombinedToolProvider can filter by app names if provided
     if app_names or mcp_servers:
         logger.info(
             f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
         )
-        tool_provider = CombinedToolProvider()
+        tool_provider = CombinedToolProvider(
+            app_names=app_names or None,
+            agent_id=agent_id,
+            get_include_by_app=(lambda: (include_by_app, 0)) if include_by_app else None,
+        )
         await tool_provider.initialize()
-
-        # If specific app names are provided, filter the apps
-        if app_names:
-            # CombinedToolProvider loads all apps by default, but we can filter
-            # The tools will be loaded from registry based on app names when get_tools() is called
-            # For now, we'll let it load all and filter at tool retrieval time
-            logger.info(f"Tools will be loaded from registry for apps: {app_names}")
-
         return tool_provider
 
     return None
+
+
+def _model_config_from_stored_llm(llm_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Translate manage-UI ``llm`` ({provider, model, ...}) into YAML ``model`` shape."""
+    if not isinstance(llm_cfg, dict):
+        return None
+    model_name = str(llm_cfg.get("model") or llm_cfg.get("model_name") or "").strip()
+    if not model_name:
+        return None
+    translated = {k: v for k, v in llm_cfg.items() if k != "model" and v is not None}
+    translated["provider"] = llm_cfg.get("provider") or "openai"
+    translated["model_name"] = model_name
+    return translated
 
 
 def _get_model_from_config(model_config: Optional[Dict[str, Any]]):
