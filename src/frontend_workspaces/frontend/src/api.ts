@@ -28,6 +28,7 @@ export type UiConfig = {
   hide_cuga_logo: boolean;
   brand_name: string;
   agent_registry: boolean;
+  evolve_memory_enabled: boolean;
 };
 
 let uiConfigCache: UiConfig | null = null;
@@ -41,6 +42,7 @@ export async function getUiConfig(): Promise<UiConfig> {
     hide_cuga_logo: !!data.hide_cuga_logo,
     brand_name: data.brand_name && String(data.brand_name).trim() ? String(data.brand_name).trim() : "CUGA Agent",
     agent_registry: !!data.agent_registry,
+    evolve_memory_enabled: !!data.evolve_memory_enabled,
   };
   return uiConfigCache;
 }
