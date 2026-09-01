@@ -1,9 +1,3 @@
-[agent.task_decomposition.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 1000
-apikey_name = "GOOGLE_API_kEY"
-
 [agent.planner.model]
 platform = "google-genai"
 temperature = 0.1
@@ -16,18 +10,6 @@ temperature = 0.1
 max_tokens = 5000
 apikey_name = "GOOGLE_API_kEY"
 
-[agent.shortlister.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 7000
-apikey_name = "GOOGLE_API_kEY"
-
-[agent.plan_controller.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 6000
-apikey_name = "GOOGLE_API_kEY"
-
 [agent.final_answer.model]
 platform = "google-genai"
 temperature = 0.1
@@ -35,12 +17,6 @@ max_tokens = 15000
 apikey_name = "GOOGLE_API_kEY"
 
 [agent.code.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 3000
-apikey_name = "GOOGLE_API_kEY"
-
-[agent.code_planner.model]
 platform = "google-genai"
 temperature = 0.1
 max_tokens = 3000

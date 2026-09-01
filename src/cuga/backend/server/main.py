@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
     from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
-    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
@@ -388,9 +388,6 @@ TRACE_LOG_PATH = os.path.join(TRACES_DIR, "trace.log")
 FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "frontend", "dist")
 EXTENSION_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "extension", "releases", "chrome-mv3")
 STATIC_DIR_FLOWS_PATH = os.path.join(PACKAGE_ROOT, "backend", "server", "flows")
-SAVE_REUSE_PY_PATH = os.path.join(
-    PACKAGE_ROOT, "backend", "tools_env", "registry", "mcp_servers", "saved_flows.py"
-)
 
 # Create logging directory
 if settings.advanced_features.tracker_enabled:
@@ -441,7 +438,6 @@ class AppState:
             )
             self.EXTENSION_PATH: Optional[str] = EXTENSION_DIR
         self.STATIC_DIR_FLOWS: str = STATIC_DIR_FLOWS_PATH
-        self.save_reuse_process: Optional[asyncio.subprocess.Process] = None
         self.agent_id: str = "cuga-default"
         self.config_version: Optional[int] = None
         # Session/agent knowledge state provider (initialized lazily)
@@ -544,43 +540,6 @@ def format_time_custom():
     """Formats the current time as HH-MM-SS."""
     now = datetime.datetime.now()
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
-
-
-async def manage_save_reuse_server():
-    """Checks for, starts, or restarts the save_reuse server as a subprocess."""
-    if not settings.features.save_reuse:
-        return
-
-    # Define the path to the save_reuse.py file
-    save_reuse_py_path = SAVE_REUSE_PY_PATH
-
-    if not os.path.exists(save_reuse_py_path):
-        logger.warning(f"save_reuse.py not found at {save_reuse_py_path}. Server will not be started.")
-        return
-
-    # If the process exists and is running, terminate it for a restart.
-    if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
-        logger.info("Restarting save_reuse server...")
-        app_state.save_reuse_process.terminate()
-        await app_state.save_reuse_process.wait()
-
-    logger.info("Starting save_reuse server...")
-    # Assumes the file save_reuse.py contains a FastAPI instance named 'app'
-    # and it is intended to be run with uvicorn.
-    try:
-        app_state.save_reuse_process = await asyncio.create_subprocess_exec(
-            "uv",
-            "run",
-            SAVE_REUSE_PY_PATH,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.sleep(6)
-        logger.info(f"save_reuse server started successfully with PID: {app_state.save_reuse_process.pid}")
-    except FileNotFoundError:
-        logger.error("Could not find 'uvicorn'. Please ensure it's installed in your environment.")
-    except Exception as e:
-        logger.error(f"Failed to start save_reuse server: {e}")
 
 
 @asynccontextmanager
@@ -887,10 +846,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Manager mode startup: {e}")
 
-    # Start the save_reuse server if configured
-
-    await manage_save_reuse_server()
-
     # Deferred imports — kept here intentionally to avoid loading the browser stack
     # and graph modules before lifespan starts.  Moving these to module-top would
     # re-introduce the startup latency that was removed by this optimisation.
@@ -901,7 +856,7 @@ async def lifespan(app: FastAPI):
     )
     from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
     from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
-    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.cli import start_extension_browser_if_configured
 
     app_state.tracker = ActivityTracker()
@@ -1165,13 +1120,6 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application is shutting down...")
 
-    # Terminate the save_reuse server process if it's running
-    if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
-        logger.info("Terminating save_reuse server...")
-        app_state.save_reuse_process.terminate()
-        await app_state.save_reuse_process.wait()
-        logger.info("save_reuse server terminated.")
-
     for task in app_state.background_tasks:
         task.cancel()
     if app_state.background_tasks:
@@ -1208,7 +1156,7 @@ async def lifespan(app: FastAPI):
 
 def get_element_names(tool_calls, elements):
     """Extracts element names from tool calls."""
-    from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+    from cuga.backend.cuga_graph.nodes.cuga_browser.action_agent_event_processor import (
         ActionAgentEventProcessor,
     )
 
@@ -1814,11 +1762,6 @@ async def event_stream(
                     return
 
                 if isinstance(event, AgentLoopAnswer):
-                    if event.flow_generalized:
-                        await manage_save_reuse_server()
-                        await run_agent.chat.chat_agent.cleanup()
-                        await run_agent.chat.chat_agent.setup()
-
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
@@ -3691,20 +3634,16 @@ async def save_mode_config(
     request: Request,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
-    """Endpoint to save execution mode (fast/balanced) and update agent state lite_mode.
-    Note: Mode switching is disabled in hosted environments."""
+    """Legacy endpoint retained for API compatibility. Mode switching is no longer supported."""
     try:
         data = await request.json()
         mode = data.get("mode", "balanced")
-
-        # Mode switching disabled - return success without making changes
         logger.info(f"Mode change request received but disabled: {mode}")
         return JSONResponse(
             {
                 "status": "success",
-                "mode": "balanced",
-                "lite_mode": False,
-                "message": "Mode switching is disabled. Clone the repo locally to use this feature.",
+                "mode": mode,
+                "message": "Reasoning mode switching was removed with the entry graph refactor.",
             }
         )
     except Exception as e:
@@ -3765,7 +3704,6 @@ async def get_agent_state(
                         "chat_messages_count": len(local_state.chat_messages)
                         if local_state.chat_messages
                         else 0,
-                        "lite_mode": local_state.lite_mode,
                     },
                     "variables": variables_metadata,
                     "variables_count": len(variables_metadata),

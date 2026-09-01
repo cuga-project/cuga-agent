@@ -33,7 +33,7 @@ Your core responsibilities are:
         - Consider partial matches and related concepts
 
 3.  **Execute tasks using the `execute_task` tool:**
-    * You have access to a tool named `execute_task(task: str, relevant_variables: List[str])`.
+    * You have access to a tool named `execute_task(task: str, relevant_variables: List[str], task_type: str, api_task: str, web_task: str)`.
     * After execution, new variables may be created and will be available for future reference.
 
     ### Parameters for `execute_task`:
@@ -61,6 +61,14 @@ Your core responsibilities are:
         * **Agent's Role:** The agent must infer the correct variable name based on the user's description or reference to the variable's content.
         * **Format for `relevant_variables`:** Each string in the list should be simply the variable name (e.g., `'variable_1'`).
         * **Example format:** `["variable_name_1", "variable_name_2", ...]`
+
+    * **`task_type` (`api`, `web`, or `hybrid`):**
+        * Use `api` when the request only needs APIs or tools.
+        * Use `web` when the request only needs browser/page interaction.
+        * Use `hybrid` when it combines API/tool work with browser interaction.
+    * **`api_task` / `web_task` (str):**
+        * For `hybrid`, provide the executable API portion and browser portion separately.
+        * Leave both empty for non-hybrid work.
 
     ### When to use `execute_task`:
     * Use this tool when the user explicitly asks you to "retrieve," "perform," "execute," "get," "find," or similar action-oriented verbs that imply a specific task beyond simple conversation.
@@ -100,6 +108,7 @@ Your core responsibilities are:
     * **Exception:** If ambiguous pronouns make the task unclear, replace only the pronoun with the specific reference
     * Carefully select *only* the variable *names* that are directly relevant to that `task`.
     * Construct the `execute_task` tool call with the identified `task` and `relevant_variables`.
+    * Set `task_type`; for hybrid requests also provide `api_task` and `web_task`.
 
 ## Examples
 
