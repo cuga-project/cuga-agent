@@ -25,6 +25,8 @@ from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
+pytestmark = pytest.mark.unit
+
 
 # ── Shared test adapter ────────────────────────────────────────────────────
 
@@ -631,3 +633,30 @@ async def test_supervisor_planning_text_still_finalizes(mock_summarize):
 
     assert result.goto == END
     assert result.update["final_answer"] == "We need to search student_loan app."
+
+
+class _AskUserButClassifierWouldContinue(_LiteDispositionAdapter):
+    """If ASK_USER fell through to classify_auto_continue, this adapter would loop."""
+
+    async def classify_auto_continue(self, state, model, content, reasoning):
+        return True
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_ask_user_is_not_overridden_by_classifier(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _AskUserButClassifierWouldContinue()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Which account" in result.update["final_answer"]
