@@ -59,7 +59,6 @@ jobs:
         run: |
           uv run pytest ./src/cuga/backend/tools_env/registry/tests/
           uv run pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
-          uv run pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Wrench, Zap, CheckCircle2, AlertCircle, Users, User, MoreHorizontal, Lightbulb } from "lucide-react";
+import { Wrench, CheckCircle2, AlertCircle, Users, User, MoreHorizontal, Lightbulb } from "lucide-react";
 import { apiFetch } from "../../frontend/src/api";
 import { exampleUtterances } from "./exampleUtterances";
 import "./StatusBar.css";
@@ -23,7 +23,6 @@ interface StatusBarProps {
 export function StatusBar({ threadId }: StatusBarProps) {
   const [tools, setTools] = useState<Tool[]>([]);
   const [internalToolsCount, setInternalToolsCount] = useState<Record<string, number>>({});
-  const [mode, setMode] = useState<"fast" | "balanced">("fast");
   const [agentMode, setAgentMode] = useState<"supervisor" | "single">("supervisor");
   const [subAgents, setSubAgents] = useState<SubAgent[]>([]);
   const [showToolsPopup, setShowToolsPopup] = useState(false);
@@ -32,13 +31,10 @@ export function StatusBar({ threadId }: StatusBarProps) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showExamplesPopup, setShowExamplesPopup] = useState(false);
-  const [showModePopup, setShowModePopup] = useState(false);
-  const [isInputEmpty, setIsInputEmpty] = useState(true);
-  const [visibleItems, setVisibleItems] = useState<Set<string>>(new Set(['tools', 'mode', 'agents', 'connection']));
+  const [visibleItems, setVisibleItems] = useState<Set<string>>(new Set(['tools', 'agents', 'connection']));
   const statusBarRef = useRef<HTMLDivElement>(null);
   const agentsPopupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const examplesPopupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modePopupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Log threadId changes for debugging
   useEffect(() => {
@@ -58,9 +54,6 @@ export function StatusBar({ threadId }: StatusBarProps) {
       }
       if (examplesPopupTimeoutRef.current) {
         clearTimeout(examplesPopupTimeoutRef.current);
-      }
-      if (modePopupTimeoutRef.current) {
-        clearTimeout(modePopupTimeoutRef.current);
       }
     };
   }, []);
@@ -106,14 +99,10 @@ export function StatusBar({ threadId }: StatusBarProps) {
       const containerWidth = statusBarRef.current.offsetWidth;
       const newVisibleItems = new Set<string>();
 
-      // Priority order: connection (always visible), tools, mode, agents
-      if (containerWidth > 800) {
+      // Priority order: connection (always visible), tools, agents
+      if (containerWidth > 700) {
         newVisibleItems.add('tools');
-        newVisibleItems.add('mode');
         newVisibleItems.add('agents');
-      } else if (containerWidth > 600) {
-        newVisibleItems.add('tools');
-        newVisibleItems.add('mode');
       } else if (containerWidth > 400) {
         newVisibleItems.add('tools');
       }
@@ -159,11 +148,6 @@ export function StatusBar({ threadId }: StatusBarProps) {
     } catch (error) {
       console.error("Error loading sub-agents:", error);
     }
-  };
-
-  const toggleMode = () => {
-    // Mode switching disabled - requires local setup
-    return;
   };
 
   const toggleAgentMode = () => {
@@ -278,43 +262,6 @@ export function StatusBar({ threadId }: StatusBarProps) {
     setShowExamplesPopup(false);
   };
 
-  const handleModeMouseEnter = () => {
-    console.log('[StatusBar] Mode hover entered');
-    // Clear any pending hide timeout
-    if (modePopupTimeoutRef.current) {
-      clearTimeout(modePopupTimeoutRef.current);
-      modePopupTimeoutRef.current = null;
-    }
-    setShowModePopup(true);
-    console.log('[StatusBar] showModePopup set to true');
-  };
-
-  const handleModeMouseLeave = () => {
-    console.log('[StatusBar] Mode hover left');
-    // Delay hiding the popup with longer delay
-    modePopupTimeoutRef.current = setTimeout(() => {
-      setShowModePopup(false);
-      console.log('[StatusBar] showModePopup set to false');
-    }, 500);
-  };
-
-  const handleModePopupMouseEnter = () => {
-    console.log('[StatusBar] Mode popup hover entered');
-    // Clear the hide timeout when mouse enters the popup
-    if (modePopupTimeoutRef.current) {
-      clearTimeout(modePopupTimeoutRef.current);
-      modePopupTimeoutRef.current = null;
-    }
-  };
-
-  const handleModePopupMouseLeave = () => {
-    console.log('[StatusBar] Mode popup hover left');
-    // Delay hiding with longer timeout for stability
-    modePopupTimeoutRef.current = setTimeout(() => {
-      setShowModePopup(false);
-    }, 500);
-  };
-
   const connectedTools = tools.filter(t => t.status === "connected");
   const errorTools = tools.filter(t => t.status === "error");
   const activeAgents = subAgents.filter(a => a.enabled);
@@ -340,14 +287,6 @@ export function StatusBar({ threadId }: StatusBarProps) {
   // Get overflow items for the More menu
   const getOverflowItems = () => {
     const overflowItems = [];
-    if (!visibleItems.has('mode')) {
-      overflowItems.push({
-        id: 'mode',
-        label: `Mode: ${mode === 'fast' ? 'Lite' : 'Balanced'}`,
-        icon: <Zap size={14} />,
-        action: toggleMode
-      });
-    }
     if (!visibleItems.has('agents')) {
       overflowItems.push({
         id: 'agents',
@@ -542,77 +481,6 @@ export function StatusBar({ threadId }: StatusBarProps) {
                       ))}
                     </>
                   )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Mode Toggle */}
-        {visibleItems.has('mode') && (
-          <div 
-            className="status-item status-mode"
-            style={{ position: 'relative', cursor: 'pointer' }}
-            onMouseEnter={handleModeMouseEnter}
-            onMouseLeave={handleModeMouseLeave}
-          >
-            <Zap size={14} />
-            <div className="mode-toggle">
-              <div 
-                className={`mode-option ${mode === "fast" ? "active" : ""} disabled`}
-                style={{ cursor: 'not-allowed', opacity: 0.6 }}
-              >
-                Lite
-              </div>
-              <div 
-                className={`mode-option ${mode === "balanced" ? "active" : ""}`}
-                style={{ cursor: 'pointer' }}
-              >
-                Balanced
-              </div>
-            </div>
-
-            {showModePopup && (
-              <div 
-                className="tools-popup"
-                onMouseEnter={handleModePopupMouseEnter}
-                onMouseLeave={handleModePopupMouseLeave}
-              >
-                <div className="tools-popup-header">
-                  <span>This feature works locally</span>
-                </div>
-                <div className="tools-list" style={{ padding: '12px 14px' }}>
-                  <div style={{ marginBottom: '12px', color: '#64748b', fontSize: '13px', lineHeight: '1.5' }}>
-                    Clone the repo to experience full features of CUGA:
-                  </div>
-                  <a 
-                    href="https://github.com/cuga-project/cuga-agent" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    style={{
-                      color: '#667eea',
-                      textDecoration: 'none',
-                      fontWeight: 500,
-                      fontSize: '13px',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '4px 0',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.textDecoration = 'underline';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.textDecoration = 'none';
-                    }}
-                  >
-                    <span>github.com/cuga-project/cuga-agent</span>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                      <polyline points="15 3 21 3 21 9"></polyline>
-                      <line x1="10" y1="14" x2="21" y2="3"></line>
-                    </svg>
-                  </a>
                 </div>
               </div>
             )}
