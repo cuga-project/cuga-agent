@@ -1527,6 +1527,7 @@ async def event_stream(
     from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
     from langchain_core.messages import AIMessage
 
+    memory_turn_id = str(uuid.uuid4())
     run_agent = agent if agent is not None else app_state.agent
     runtime_agent_id = agent_id or app_state.agent_id
     if current_llm is _RUNTIME_LLM_UNSET:
@@ -1602,6 +1603,7 @@ async def event_stream(
 
     if local_state:
         apply_request_user_context(local_state, user_id)
+        local_state.service_scope.update({"agent_id": runtime_agent_id, "memory_turn_id": memory_turn_id})
         # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
         # graph (issue #101). Only override when True so non-supervisor agents keep falling
         # back to the global settings.supervisor.enabled default.
@@ -1848,6 +1850,19 @@ async def event_stream(
                             }
                             if event.sources:
                                 answer_payload["sources"] = event.sources
+                            if settings.evolve.enabled:
+                                from cuga.backend.evolve.memory_store import get_turn_memory_usage
+
+                                try:
+                                    memory_usage = await get_turn_memory_usage(
+                                        turn_id=memory_turn_id,
+                                        agent_id=runtime_agent_id,
+                                        user_id=user_id,
+                                    )
+                                    if memory_usage["count"]:
+                                        answer_payload["memory_usage"] = memory_usage
+                                except Exception as exc:
+                                    logger.warning(f"Memory usage disclosure unavailable (non-fatal): {exc}")
                             final_answer_text = json.dumps(answer_payload)
                         else:
                             final_answer_text = "Done."
@@ -2045,8 +2060,10 @@ app.state.draft_app_state = draft_app_state
 # Register knowledge routes at module level (engine initialized in lifespan).
 # _get_engine() in routes.py returns 503 if engine isn't initialized yet.
 from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
+from cuga.backend.server.memory_routes import router as memory_router  # noqa: E402
 
 app.include_router(knowledge_router)
+app.include_router(memory_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
     if (getattr(settings, "auth", None) and getattr(settings.auth, "enabled", False))
@@ -2128,6 +2145,7 @@ async def ui_config():
             "hide_cuga_logo": hide_logo,
             "brand_name": brand_name,
             "agent_registry": agent_registry.is_agent_registry_enabled(),
+            "evolve_memory_enabled": bool(settings.evolve.enabled),
         }
     )
 
