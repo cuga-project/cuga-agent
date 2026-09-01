@@ -73,18 +73,44 @@ class RejectedCallGuard:
         self._lock = threading.Lock()
 
     # ── Configuration ──────────────────────────────────────────────────────
+    #
+    # Thresholds are normalized, not rejected: advanced_features has no schema
+    # validation layer, and a bad value must degrade safely, never block the
+    # first rejection. Negative values count as disabled (0). An ordering
+    # misconfiguration (escalate >= block while both enabled) silently skips
+    # escalation — a call would be refused without ever carrying the escalated
+    # warning — so it is flagged once per process.
+
+    _warned_threshold_order = False
 
     @staticmethod
-    def _escalate_after() -> int:
+    def _threshold(name: str, default: int) -> int:
         from cuga.config import settings
 
-        return getattr(settings.advanced_features, "rejected_call_escalate_after", 1)
+        try:
+            value = int(getattr(settings.advanced_features, name, default))
+        except (TypeError, ValueError):
+            logger.warning(f"advanced_features.{name} is not an integer; using default {default}")
+            return default
+        return max(0, value)
 
-    @staticmethod
-    def _block_after() -> int:
-        from cuga.config import settings
+    @classmethod
+    def _escalate_after(cls) -> int:
+        return cls._threshold("rejected_call_escalate_after", 1)
 
-        return getattr(settings.advanced_features, "rejected_call_block_after", 2)
+    @classmethod
+    def _block_after(cls) -> int:
+        block_after = cls._threshold("rejected_call_block_after", 2)
+        escalate_after = cls._threshold("rejected_call_escalate_after", 1)
+        if block_after and escalate_after and escalate_after >= block_after:
+            if not RejectedCallGuard._warned_threshold_order:
+                RejectedCallGuard._warned_threshold_order = True
+                logger.warning(
+                    f"rejected_call_escalate_after ({escalate_after}) >= rejected_call_block_after "
+                    f"({block_after}): identical calls will be refused without ever receiving the "
+                    f"escalated warning. Set escalate_after < block_after."
+                )
+        return block_after
 
     # ── Signature ──────────────────────────────────────────────────────────
 

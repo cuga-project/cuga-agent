@@ -181,6 +181,40 @@ def test_zero_disables_escalation(monkeypatch):
 
 
 @pytest.mark.unit
+def test_negative_thresholds_treated_as_disabled(monkeypatch):
+    """A negative threshold must degrade to disabled — never block or escalate
+    the very first rejection (count < negative is False for any count >= 1)."""
+    _set_thresholds(monkeypatch, escalate_after=-1, block_after=-1)
+    guard = RejectedCallGuard()
+    for _ in range(5):
+        assert _reject(guard) is None
+    assert guard.check("amazon", "post_orders", ARGS) is None
+
+
+@pytest.mark.unit
+def test_non_integer_thresholds_fall_back_to_defaults(monkeypatch):
+    _set_thresholds(monkeypatch, escalate_after="nonsense", block_after=None)
+    guard = RejectedCallGuard()
+    assert _reject(guard) is None
+    assert _reject(guard) is not None  # default escalate_after=1
+    assert guard.check("amazon", "post_orders", ARGS) is not None  # default block_after=2
+
+
+@pytest.mark.unit
+def test_escalate_at_or_above_block_still_blocks_and_warns_once(monkeypatch):
+    """escalate_after >= block_after skips escalation by construction; blocking
+    must still work, and the misconfiguration is flagged once per process."""
+    _set_thresholds(monkeypatch, escalate_after=2, block_after=2)
+    monkeypatch.setattr(RejectedCallGuard, "_warned_threshold_order", False)
+    guard = RejectedCallGuard()
+    assert _reject(guard) is None
+    assert _reject(guard) is None  # count=2 <= escalate_after=2: no escalation
+    short = guard.check("amazon", "post_orders", ARGS)
+    assert short is not None and "Not executed" in short["message"]
+    assert RejectedCallGuard._warned_threshold_order is True
+
+
+@pytest.mark.unit
 def test_agent_ids_are_isolated(monkeypatch):
     """Database mode serves multiple agents from one process — one agent's
     rejections must not block another's."""
