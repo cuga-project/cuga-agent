@@ -556,6 +556,18 @@ async def lifespan(app: FastAPI):
     except Exception as _seed_err:
         logger.debug("secrets seed skipped: {}", _seed_err)
 
+    # Import the roster YAML into the agent config store, when one is configured. This is what makes
+    # CUGA_SUPERVISOR_ROSTER work without a second runtime path: /run reads the store like the
+    # Manage UI does, and the YAML is only ever an import format. Idempotent, so a restart that
+    # changes nothing writes nothing; a missing or malformed file degrades to "no supervisor"
+    # rather than blocking startup.
+    try:
+        from cuga.supervisor_utils.roster_seed import seed_roster
+
+        await seed_roster()
+    except Exception as _roster_err:  # noqa: BLE001 — seeding must never stop the server booting
+        logger.warning("roster seed skipped: {}", _roster_err)
+
     # Load hardcoded policies if configured via environment variable
     if os.getenv("CUGA_LOAD_POLICIES", "false").lower() in ("true", "1", "yes", "on"):
         try:

@@ -168,10 +168,16 @@ async def load_supervisor_config(
     )
 
 
-async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def build_agents_from_stored_subagents(
+    sub_agents: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
     stored ``supervisor.subAgents`` list (see ``agents_routes.py`` / ``ManagePage.tsx``).
+
+    ``auto_load_policies`` is forwarded to :func:`build_agents_from_list` and defaults to ``None``,
+    which is the existing behaviour for every caller. ``/run`` passes ``False`` because its runs are
+    headless — see the note at that call site.
 
     Each entry is either:
       - ``{"kind": "internal", "ref": "<agent_id>"}`` — resolved to a CugaAgent built
@@ -249,7 +255,7 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
         else:
             logger.warning(f"Unknown supervisor sub-agent kind: {kind!r}")
 
-    return await build_agents_from_list(agent_configs)
+    return await build_agents_from_list(agent_configs, auto_load_policies=auto_load_policies)
 
 
 async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[Any]:
