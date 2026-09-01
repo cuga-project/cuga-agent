@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { ChatLanding } from "./ChatLanding";
@@ -37,6 +37,13 @@ function EventsGate({ children }: { children: React.ReactNode }) {
   if (state === "checking") return null;                 // don't flash Studio before the check resolves
   if (state === "off") return <Navigate to="/" replace />;
   return <>{children}</>;
+}
+
+// Keying by agentId forces a full remount when switching agents from within the chat page
+// (same Route pattern, different param — React Router does not remount on its own).
+function ChatLandingRoute() {
+  const { agentId } = useParams<{ agentId?: string }>();
+  return <ChatLanding key={agentId ?? "cuga-default"} />;
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -135,7 +142,8 @@ function renderApp(): void {
                 </RequireRole>
               }
             />
-            <Route path="/chat" element={<RouteRoot><ChatLanding /></RouteRoot>} />
+            <Route path="/chat" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
+            <Route path="/chat/:agentId" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
             <Route
               path="/studio"
               element={

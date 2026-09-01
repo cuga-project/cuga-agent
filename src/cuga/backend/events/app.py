@@ -262,6 +262,9 @@ def register_events_routes(
     # All three converge on concierge.run; the difference is the caller, the envelope, and the auth model.
     @app.post("/invoke")
     async def invoke(request: Request):
+        """Execute ONE agent run. The single entry point every trigger funnels into — the native
+        scheduler, a webhook, an inbound channel message, or Activepieces. Gated by
+        X-Gateway-Token; `deliver` decides whether the answer is also pushed to a channel."""
         body = await request.json()
         tr = Trace(body.get("trace_id") or new_trace_id())
         if token and request.headers.get("X-Gateway-Token") != token:
@@ -767,6 +770,9 @@ def register_events_routes(
 
     @app.post("/api/concierge")
     async def api_concierge(request: Request):  # NOT 'concierge' — that name is the instance arg
+        """Natural language in, a decision out: answer now, or propose a standing flow to arm.
+        `?dry_run=1` builds the plan with no side effects. Arming requires the `/automate` verb —
+        plain chat can never create a flow."""
         body = await request.json()
         text = (body or {}).get("text", "")
         dry = request.query_params.get("dry_run") in ("1", "true", "yes")
@@ -994,6 +1000,7 @@ def register_events_routes(
 
     @app.post("/api/events/subscriptions/{sub_id}/pause")
     async def pause_subscription(sub_id: str, request: Request):
+        """Stop a flow firing without deleting it. Keeps its history and can be resumed."""
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
@@ -1005,6 +1012,7 @@ def register_events_routes(
 
     @app.post("/api/events/subscriptions/{sub_id}/resume")
     async def resume_subscription(sub_id: str, request: Request):
+        """Re-arm a paused flow. Next fire follows its normal schedule."""
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
@@ -1016,6 +1024,7 @@ def register_events_routes(
 
     @app.delete("/api/events/subscriptions/{sub_id}")
     async def delete_subscription(sub_id: str, request: Request):
+        """Permanently disarm a flow and remove its trigger from the backend that owned it."""
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
             return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
@@ -1537,6 +1546,8 @@ def register_events_routes(
 
     @app.get("/api/events/channels")
     async def events_channels(request: Request):
+        """The four conversational channels (web, Slack, Discord, Telegram) with live connection state
+        and which backend carries each — direct, or Activepieces."""
         from .connectors import channels_status
 
         rows = channels_status()
@@ -1553,6 +1564,8 @@ def register_events_routes(
 
     @app.get("/api/events/integrations")
     async def events_integrations(request: Request):
+        """Watchable third-party apps (Box, GitHub, Gmail, Calendar, RSS, …) with per-user connection
+        state, so the Studio can show CONNECT where credentials are missing."""
         from .connectors import integrations_status
         from .principal import resolve as _resolve
 
@@ -1755,6 +1768,8 @@ def register_events_routes(
 
     @app.get("/api/events/examples")
     async def events_examples():
+        """The example catalog straight from catalog.py — the utterances the Studio Examples tab lists
+        and the source of truth for what this platform can be asked to do."""
         from .catalog import as_list
 
         return {"examples": as_list()}
@@ -1788,33 +1803,6 @@ def register_events_routes(
                 )
             out.append({"app": app_name, "triggers": rows})
         return {"apps": out, "total": len(_tr.rows()), "kinds": list(_tr.event_kinds())}
-
-    @app.get("/api/events/docs/{page}")
-    async def events_docs_page(page: str):
-        """Serve the two API reference pages the Studio's API tab embeds: ``api`` (the
-        human-readable guide) and ``examples`` (the examples board). Guarded to those files; path
-        resolved from the repo, override with EVENTS_DOCS_DIR.
-
-        Three pages were removed rather than left to 404:
-          * ``spec`` — 204 KB of generated HTML restating an endpoint table, kept in git only so a
-            --check test could diff against it. FastAPI serves the real contract at /docs.
-          * ``slides`` — events/scripts/gen_slides.py can write events/docs/slides.html, but the file is
-            not committed, so the route 404'd on a clean checkout. Open the generated deck directly.
-          * ``nlflow`` — the file is events/docs/runbook/nl-to-flow.html, a different directory AND
-            a different spelling, so this never resolved either."""
-        import pathlib
-
-        fname = {"api": "api.html", "examples": "examples.html"}.get(page)
-        if not fname:
-            return JSONResponse({"ok": False, "error": "unknown page"}, 404)
-        base = pathlib.Path(
-            os.environ.get("EVENTS_DOCS_DIR")
-            or str(pathlib.Path(__file__).resolve().parents[4] / "events/docs" / "api")
-        )
-        fp = base / fname
-        if not fp.is_file():
-            return JSONResponse({"ok": False, "error": f"{fname} not found (set EVENTS_DOCS_DIR)"}, 404)
-        return HTMLResponse(fp.read_text(encoding="utf-8"))
 
     @app.get("/api/events/setup-guides")
     async def events_setup_guides(request: Request):
@@ -2934,6 +2922,8 @@ def register_events_routes(
 
     @app.get("/api/events/admin/users")
     async def admin_list_users(request: Request):
+        """Identities known to this tenant. Admin-only; returns an empty list when no user store is
+        configured."""
         if users is None:
             return {"users": []}
         p = _principal_from(request.query_params.get("scope"), request.headers)
@@ -2947,6 +2937,8 @@ def register_events_routes(
 
     @app.post("/api/events/admin/users")
     async def admin_add_user(request: Request):
+        """Register an identity in this tenant so channel messages can resolve to a real user rather
+        than the fallback. Admin-only; 501 when no user store is configured."""
         if users is None:
             return JSONResponse({"ok": False, "error": "user store not configured"}, 501)
         body = await _safe_json(request)

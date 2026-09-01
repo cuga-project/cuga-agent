@@ -1,8 +1,10 @@
-"""The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab AND the
-filterable ``events/docs/api/examples.html`` board. This file is the SOLE source of truth: the board's
-data array is generated from it by ``events/scripts/gen_examples.py`` and locked by a consistency test
-(``test_examples_board_matches_the_catalog``), so add examples HERE and regenerate — never hand-edit
-the HTML array.
+"""The Examples catalog — the click-to-load utterances behind the Studio **Examples** tab.
+
+This file is the SOLE source of truth, and now the ONLY one: the Studio reads it live over
+``GET /api/events/examples``, so adding an example here is all there is to do. There used to be a
+second copy — a generated ``const EX = [...]`` array inside a committed ``examples.html`` — kept in
+sync by a generator and a staleness test. Page, generator and test are gone; nothing to regenerate,
+nothing that can drift.
 
 Agents are PRE-BUILT (see ``seed.py``); the runtime concierge ROUTES an utterance to one outcome.
 Each example is tagged so it can be filtered by **trigger · channel · integration · phase · live**:
@@ -1546,7 +1548,7 @@ def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
             "setup",
             "arms today as a CUGA-owned direct watcher (no AP flow). The Slack app "
             "must be SUBSCRIBED to this event type in its Event Subscriptions — see "
-            "events/docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
+            "events_docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
         )
     if integration == "discord":
         need = (

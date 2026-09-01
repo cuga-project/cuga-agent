@@ -12,8 +12,97 @@ def resolve_agent_id(agent_id: Optional[str]) -> str:
     return agent_id or DEFAULT_AGENT_ID
 
 
+def is_default_agent(agent_id: Optional[str]) -> bool:
+    return resolve_agent_id(agent_id) == DEFAULT_AGENT_ID
+
+
 def app_state(request: Request):
     return getattr(request.app.state, "app_state", None)
+
+
+def supervisor_ids_referencing(sub_agent_id: str, agents: list[tuple[str, dict]]) -> list[str]:
+    """Return supervisor agent ids whose stored subAgents list includes sub_agent_id."""
+    ids: list[str] = []
+    for agent_id, config in agents:
+        meta = (config or {}).get("agent") or {}
+        if (meta.get("kind") or "single") != "supervisor":
+            continue
+        sub_agents = ((config or {}).get("supervisor") or {}).get("subAgents") or []
+        for entry in sub_agents:
+            if (
+                isinstance(entry, dict)
+                and entry.get("kind") == "internal"
+                and entry.get("ref") == sub_agent_id
+            ):
+                ids.append(agent_id)
+                break
+    return ids
+
+
+def drop_cached_graphs_for_agent(
+    cache: dict,
+    agent_id: str,
+    *,
+    draft: bool,
+    published: bool,
+    referrer_ids: Optional[list[str]] = None,
+) -> None:
+    targets = [agent_id, *(referrer_ids or [])]
+    for target in targets:
+        if draft:
+            cache.pop((target, True), None)
+        if published:
+            cache.pop((target, False), None)
+
+
+async def _referrer_ids_for_agent(agent_id: str, *, draft: bool, published: bool) -> list[str]:
+    from cuga.backend.server.config_store import list_agents_with_configs, load_config, load_draft
+
+    rows = await list_agents_with_configs()
+    configs: list[tuple[str, dict]] = []
+    for row in rows:
+        other_id = row["agent_id"]
+        if other_id == agent_id:
+            continue
+        if published:
+            cfg, _ = await load_config(None, other_id)
+            if cfg:
+                configs.append((other_id, cfg))
+        if draft:
+            draft_cfg = await load_draft(other_id)
+            if draft_cfg:
+                configs.append((other_id, draft_cfg))
+    return supervisor_ids_referencing(agent_id, configs)
+
+
+def bump_agent_graph_generation(state: Any, agent_id: str) -> None:
+    """Advance the per-agent graph generation so in-flight builds are not cached."""
+    gens = getattr(state, "agent_graph_generations", None) if state is not None else None
+    if isinstance(gens, dict):
+        gens[agent_id] = gens.get(agent_id, 0) + 1
+
+
+async def invalidate_agent_graph_cache(
+    request: Request, agent_id: str, *, draft: bool, published: bool
+) -> None:
+    """Drop cached built graphs for agent_id and supervisors that delegate to it.
+
+    Called on draft-save/publish so the next /stream request rebuilds from the new
+    config instead of serving a stale cached graph. A no-op for cuga-default,
+    which never uses this cache. Generation is bumped even when the cache is empty
+    so a concurrent first-stream build that finishes after this call is discarded.
+    """
+    if agent_id == DEFAULT_AGENT_ID:
+        return
+    state = app_state(request)
+    bump_agent_graph_generation(state, agent_id)
+    referrers = await _referrer_ids_for_agent(agent_id, draft=draft, published=published)
+    for referrer_id in referrers:
+        bump_agent_graph_generation(state, referrer_id)
+    cache = getattr(state, "agent_graphs_cache", None) if state is not None else None
+    if not cache:
+        return
+    drop_cached_graphs_for_agent(cache, agent_id, draft=draft, published=published, referrer_ids=referrers)
 
 
 def draft_state(request: Request):
@@ -82,15 +171,28 @@ def is_secret_field_name(name: str) -> bool:
     return any(s in (name or "").upper() for s in _SECRET_FIELD_SUBSTRINGS)
 
 
+def is_secret_ref(value: Any) -> bool:
+    """True when value is a vault/db/aws/env pointer, not a plaintext secret."""
+    if not isinstance(value, str) or not value:
+        return False
+    return (
+        value.startswith("vault://")
+        or value.startswith("db://")
+        or value.startswith("aws://")
+        or value.startswith("env://")
+    )
+
+
 def redact_secrets_in_config(config: dict[str, Any]) -> None:
     """In-place: replace secret-named non-empty string fields with ''.
-    Walks nested dicts. PATCH preserves stored values on empty incoming
-    (see patch_draft_knowledge)."""
+    Walks nested dicts. Secret refs (vault://, db://, aws://, env://) are kept
+    so Manage can hydrate "Use saved secret". PATCH preserves stored values on
+    empty incoming (see patch_draft_knowledge / patch_draft_llm)."""
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for k, v in list(node.items()):
-                if is_secret_field_name(k) and isinstance(v, str) and v:
+                if is_secret_field_name(k) and isinstance(v, str) and v and not is_secret_ref(v):
                     node[k] = ""
                 elif isinstance(v, (dict, list)):
                     _walk(v)

@@ -790,7 +790,7 @@ wrong flow.</b> Two fuzzy hops, everything else deterministic:</p>
             f"""
 <ul class="tight examples">{ex_lis}</ul>
 <p class="dim">All {len(catalog.EXAMPLES)} examples (with feasibility notes) live on the examples
-   board — <code>events/docs/api/examples.html</code>, also in the Studio's Examples tab. This deck
+   board — the Studio's Examples tab, served live from <code>catalog.py</code>. This deck
    and that board are both generated from the code, so neither can drift.</p>""",
         )
     )

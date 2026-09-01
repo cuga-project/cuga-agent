@@ -16,7 +16,8 @@ src/cuga/backend/cuga_graph/nodes/
 │   ├── graph/             # Node builders and adapter interfaces (e.g., CoreGraphAdapter)
 │   ├── execution/         # Code extraction, variable bridges, and todo tracking
 │   ├── tools/             # Runtime shell/filesystem tool injection orchestrators
-│   └── policy/            # Routing environments (local vs sandboxed sandbox)
+│   ├── policy/            # Routing environments (local vs sandboxed sandbox)
+│   └── schemas/           # Shared agent I/O models (planner, browser, API, task)
 │
 ├── cuga_lite/             # Optimized single-agent graph (LangGraph) with code-execution loops
 │   ├── helpers/           # Helper tools (knowledge checks, bind_tools, find_tools)
@@ -27,12 +28,11 @@ src/cuga/backend/cuga_graph/nodes/
 ├── cuga_supervisor/       # Orchestrator subgraph that delegates tasks to downstream agents
 │   └── a2a_protocol.py    # Actor-to-Agent protocol & sub-task dispatching
 │
-├── api/                   # Specialized API-interaction code and planning agents
-├── browser/               # Specialized UI/browser automation and planning agents
+├── entry_router/          # Top-level Lite | Supervisor | Browser router
+├── cuga_browser/          # Standalone browser runtime graph factory
+├── browser/               # Browser planner, action, and QA agents
 ├── chat/                  # Conversational agents
-├── task_decomposition_planning/  # Pre-flight request analyzer and breakdown planning
 ├── answer/                # Synthesis agents producing clean user-visible answers
-├── save_reuse/            # Skill recording and reuse agents
 └── shared/                # Base agent abstractions
 ```
 
@@ -68,7 +68,7 @@ When extending logic, do not append code to existing root-level files. Instead:
 2. **Expose Interfaces via Packaged Packages**:
    Use `__init__.py` file exports to keep imports elsewhere in the application clean (e.g., importing from `cuga_lite.providers` rather than raw file paths).
 3. **Minimize Cross-Module Coupling**:
-   Ensure downstream layers (like `cuga_supervisor`) never depend on the internal helper files of upstream layers (like `cuga_lite`). Shared schemas (like `todos.py`) must live in `cuga_agent_core`.
+   Ensure downstream layers (like `cuga_supervisor`) never depend on the internal helper files of upstream layers (like `cuga_lite`). Shared I/O models live in `cuga_agent_core/schemas/`; other shared utilities (like `todos.py`) stay in `cuga_agent_core`.
 
 ---
 

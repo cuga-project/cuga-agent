@@ -33,7 +33,6 @@ PY_ROOTS = [
     ("events/docs/setup/scripts/_common.py", 4),
     ("events/scripts/run_all_tests.py", 2),
     ("events/scripts/gen_supervisor_roster.py", 2),
-    ("events/scripts/gen_examples.py", 2),
     ("events/scripts/gen_ledger.py", 2),
     ("events/scripts/gen_slides.py", 2),
 ]

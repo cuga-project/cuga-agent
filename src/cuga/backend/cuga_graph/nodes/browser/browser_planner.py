@@ -10,36 +10,33 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
 from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.browser_planner_agent import (
     BrowserPlannerAgent,
 )
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from loguru import logger
+from langgraph.constants import END
 from langgraph.types import Command
 
 tracker = ActivityTracker()
 
 
-PLANNER_ROUTER_MAP = {
-    "ConcludeTaskAgent": "PlanControllerAgent",
-    "QaAgent": "QaAgent",
-    "MemorizeAgent": "BrowserPlannerAgent",
-    "ActionAgent": "ActionAgent",
-}
-
-
 class PlannerNode(BaseNode):
-    def __init__(self, planner_agent: BrowserPlannerAgent):
+    def __init__(self, planner_agent: BrowserPlannerAgent, conclude_target: str = END):
         super().__init__()
         self.browser_planner_agent = planner_agent
         self.node = create_partial(
             PlannerNode.node_handler,
             agent=self.browser_planner_agent,
             name=self.browser_planner_agent.name,
+            conclude_target=conclude_target,
         )
 
     @staticmethod
     async def node_handler(
-        state: AgentState, agent: BrowserPlannerAgent, name: str
-    ) -> Command[Literal["ActionAgent", "QaAgent", "PlanControllerAgent", "BrowserPlannerAgent"]]:
-        if tracker.actions_count >= 4:
+        state: AgentState,
+        agent: BrowserPlannerAgent,
+        name: str,
+        conclude_target: str = END,
+    ) -> Command[Literal["ActionAgent", "QaAgent", END, "BrowserPlannerAgent", "CugaBrowserCallback"]]:
+        if tracker.actions_count >= 4 and state.task_analyzer_output is not None:
             logger.debug("Resetting navigation paths")
             state.task_analyzer_output.navigation_paths = None
         result: AIMessage = await agent.run(state)
@@ -74,8 +71,9 @@ class PlannerNode(BaseNode):
                 )
             )
             state.last_planner_answer = next_instruction
+            state.final_answer = next_instruction
             state.stm_steps_history.append(next_instruction)
-            return Command(update=state.model_dump(), goto="PlanControllerAgent")
+            return Command(update=state.model_dump(), goto=conclude_target)
         elif next_step_plan.next_agent == "QaAgent":
             state.last_question = next_instruction
             state.stm_steps_history.append("(QaAgent): " + next_instruction)

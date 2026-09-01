@@ -109,62 +109,89 @@ def _supervisor_roster_path() -> str:
     return (os.environ.get("CUGA_SUPERVISOR_ROSTER", "") or "").split(" #", 1)[0].strip()
 
 
-def _roster_details(path: str) -> Dict[str, Dict[str, Any]]:
-    """name → {description, mcp_servers}, read from the roster YAML itself.
+async def _roster_details(sub_refs: List[str]) -> Dict[str, Dict[str, Any]]:
+    """name → {description, mcp_servers}, read from each sub-agent's STORED config.
 
-    load_supervisor_config builds CugaAgent instances and does NOT carry the YAML's descriptive
-    fields onto them, so the objects can't be asked. Those fields matter: they are how the events
-    layer's concierge decides which specialist a message belongs to, and a blank one makes a
-    sub-agent effectively unroutable. Same fields the in-process SupervisorRuntime reads, so the
-    split and combined topologies describe the roster identically.
+    build_agents_from_stored_subagents builds CugaAgent instances and does NOT carry the
+    descriptive fields onto them, so the objects can't be asked. Those fields matter: they are how
+    the events layer's concierge decides which specialist a message belongs to, and a blank one
+    makes a sub-agent effectively unroutable.
+
+    Reading the store rather than the roster YAML is what lets a sub-agent added through the
+    Manage UI appear here alongside the seeded ones — /run/agents describes what is actually
+    loaded, not what some file said at build time.
     """
-    try:
-        import yaml as _yaml
+    from cuga.backend.server.config_store import load_config
 
-        with open(path, "r") as f:
-            cfg = _yaml.safe_load(f) or {}
-        out: Dict[str, Dict[str, Any]] = {}
-        for a in cfg.get("agents") or []:
-            if not isinstance(a, dict) or not a.get("name"):
-                continue
-            out[str(a["name"])] = {
-                "description": str(a.get("description") or a.get("special_instructions") or "").strip(),
-                "mcp_servers": [
-                    m.get("name") if isinstance(m, dict) else str(m) for m in (a.get("mcp_servers") or [])
-                ],
-            }
-        return out
-    except Exception as e:  # noqa: BLE001 — a nicety; never fail the load for it
-        logger.warning(f"could not read agent details from roster {path!r}: {e}")
-        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for ref in sub_refs:
+        try:
+            cfg, _ = await load_config(None, ref)
+        except Exception as e:  # noqa: BLE001 — a nicety; never fail the load for it
+            logger.warning(f"could not read stored config for sub-agent {ref!r}: {e}")
+            continue
+        if not cfg:
+            continue
+        meta = cfg.get("agent") or {}
+        out[str(meta.get("name") or ref)] = {
+            "description": str(cfg.get("special_instructions") or meta.get("description") or "").strip(),
+            "mcp_servers": [
+                t["name"] for t in (cfg.get("tools") or []) if isinstance(t, dict) and t.get("name")
+            ],
+        }
+    return out
 
 
 async def _get_supervisor():
-    """The preloaded supervisor, or None when this server isn't running as one."""
-    path = _supervisor_roster_path()
-    if not path:
-        return None
-    if path in _supervisor_cache:
-        return _supervisor_cache[path]
-    from cuga.sdk import CugaSupervisor
-    from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+    """The supervisor this server runs as, built from the STORE, or None when there isn't one.
 
+    ONE SOURCE AT RUNTIME. This used to parse the roster YAML directly, which meant `/run` and the
+    Manage UI could disagree about what the roster is, and the roster's agents were invisible in a
+    UI that lists every other agent. Now `roster_seed` imports the YAML into the config store at
+    startup and this reads the store — the same records, through the same builder, that #433's
+    `/stream` path uses. A YAML is an import format; it is not consulted to answer a request.
+
+    So the deployment contract is unchanged (`CUGA_SUPERVISOR_ROSTER` still selects the roster),
+    while a sub-agent added through the UI is picked up here with no file involved.
+    """
+    from cuga.backend.server.config_store import load_config
+    from cuga.supervisor_utils.roster_seed import SUPERVISOR_AGENT_ID
+
+    sup_cfg, version = await load_config(None, SUPERVISOR_AGENT_ID)
+    if not sup_cfg or (sup_cfg.get("agent") or {}).get("kind") != "supervisor":
+        return None
+
+    # Keyed on the stored version, not on a file path: editing the supervisor in the UI publishes a
+    # new version, which invalidates this by construction. A path key never changed, so a UI edit
+    # would have been served a stale supervisor forever.
+    cache_key = f"{SUPERVISOR_AGENT_ID}@{version}"
+    if cache_key in _supervisor_cache:
+        return _supervisor_cache[cache_key]
+
+    from cuga.sdk import CugaSupervisor
+    from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+
+    sub_specs = (sup_cfg.get("supervisor") or {}).get("subAgents") or []
     # auto_load_policies=False: everything this supervisor runs is HEADLESS — a scheduled tick, a
     # webhook, a channel message. Nobody is present to answer an approval interrupt, and one would
-    # hang the run until the caller times out. Asked for HERE rather than defaulted inside
-    # load_supervisor_config, so CugaSupervisor.from_yaml and every other caller keep the upstream
-    # behaviour of honouring settings.policy.auto_load_policies. A roster entry can opt back in.
-    cfg = await load_supervisor_config(path, auto_load_policies=False)
+    # hang the run until the caller times out. Asked for HERE rather than defaulted inside the
+    # builder, so /stream and every other caller keep the upstream behaviour of honouring
+    # settings.policy.auto_load_policies. A stored agent can opt back in.
+    agents = await build_agents_from_stored_subagents(sub_specs, auto_load_policies=False)
+
     sup = CugaSupervisor(
-        agents=cfg.agents,
-        special_instructions=(cfg.supervisor or {}).get("special_instructions"),
+        agents=agents,
+        special_instructions=(sup_cfg.get("supervisor") or {}).get("special_instructions"),
     )
-    _supervisor_cache[path] = sup
-    _details = _roster_details(path)
-    _supervisor_roster[path] = [
-        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (cfg.agents or {})
+    _supervisor_cache[cache_key] = sup
+    _details = await _roster_details([s.get("ref") for s in sub_specs if s.get("ref")])
+    _supervisor_roster[cache_key] = [
+        {"name": n, **_details.get(n, {"description": "", "mcp_servers": []})} for n in (agents or {})
     ]
-    logger.info(f"CUGA is running AS a supervisor: {len(cfg.agents)} sub-agent(s) from {path}")
+    _supervisor_roster["__current__"] = _supervisor_roster[cache_key]
+    logger.info(
+        f"CUGA is running AS a supervisor: {len(agents)} sub-agent(s) from the config store (v{version})"
+    )
     return sup
 
 
@@ -376,7 +403,7 @@ async def run_sync(request: Request):
         # by a different one. Doing this properly needs a routing API on the supervisor; until then
         # do not treat ?agent= as routing. A name absent from the roster is ignored, not an error.
         pinned = str(body.get("agent") or "").split("::")[-1].strip()
-        roster_names = {a["name"] for a in (_supervisor_roster.get(_supervisor_roster_path()) or [])}
+        roster_names = {a["name"] for a in (_supervisor_roster.get("__current__") or [])}
         if pinned and pinned != "cuga" and pinned in roster_names:
             query = (
                 f"Delegate this to the `{pinned}` agent — it is the right specialist. "
@@ -479,8 +506,20 @@ async def run_agents(request: Request):
     denied = _run_auth_failure(request)
     if denied is not None:
         return denied
-    path = _supervisor_roster_path()
-    if not path:
+    # "Is this a supervisor?" is answered by the STORE, not by the env var: a roster composed in the
+    # Manage UI is just as real as a seeded one, and asking the file first would report `supervisor:
+    # false` for it. The YAML path is still reported below, because a deployment wants to know which
+    # file seeded this.
+    try:
+        sup = await _get_supervisor()
+    except Exception:  # noqa: BLE001
+        # Same rule as /run: the roster path is the deployment's filesystem layout and str(e) can
+        # carry a stack trace. Both belong in the log, neither in the response (CodeQL
+        # py/stack-trace-exposure).
+        logger.exception("roster %r failed to load", _supervisor_roster_path())
+        return JSONResponse({"ok": False, "error": "the roster failed to load — see the server log"}, 500)
+
+    if sup is None:
         # Not running as a supervisor: one plain agent, still addressable as "cuga".
         return {
             "ok": True,
@@ -488,15 +527,8 @@ async def run_agents(request: Request):
             "roster": "",
             "agents": [{"name": "cuga", "description": "the CUGA agent", "mcp_servers": []}],
         }
-    try:
-        await _get_supervisor()  # builds + populates _supervisor_roster on first call
-    except Exception:  # noqa: BLE001
-        # Same rule as /run: the roster path is the deployment's filesystem layout and str(e) can
-        # carry a stack trace. Both belong in the log, neither in the response (CodeQL
-        # py/stack-trace-exposure).
-        logger.exception("roster %r failed to load", path)
-        return JSONResponse({"ok": False, "error": "the roster failed to load — see the server log"}, 500)
-    subs = list(_supervisor_roster.get(path) or [])
+    path = _supervisor_roster_path()
+    subs = list(_supervisor_roster.get("__current__") or [])
     # "cuga" is the supervisor itself and is always addressable — callers that know nothing about
     # the roster target it and let it route.
     agents = [{"name": "cuga", "description": "the CUGA supervisor", "mcp_servers": []}] + [

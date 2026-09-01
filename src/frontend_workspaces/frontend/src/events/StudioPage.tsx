@@ -1166,14 +1166,18 @@ function AdminTab({ refresh }: { refresh: number }) {
   );
 }
 
-// The API reference, embedded — served by the backend (/api/events/docs/{api,examples})
-// so it renders inside the Studio.
+// The API reference — FastAPI's own Swagger UI, embedded live from the events service.
+//
+// This used to iframe two hand-maintained pages (events/docs/api/{api,examples}.html, ~110 KB kept
+// in git). Both are gone: Swagger is generated from the running routes so it can never drift, and
+// the examples board was always redundant — the Examples tab reads GET /api/events/examples, the
+// same catalog.py the deleted page was generated from.
 function ApiTab() {
-  // The pages are served by the EVENTS service, not by whoever served this SPA. `getApiBaseUrl()`
-  // returns window.location.origin — CUGA's — so in a split deployment the iframe asked CUGA for
-  // /api/events/docs/api, hit the SPA catch-all, and rendered a 490-byte copy of CUGA itself
-  // inside the tab. Resolved asynchronously and held in state rather than read through the sync
-  // helper, because on first mount that cache is cold and would fall back to the same wrong origin.
+  // Served by the EVENTS service, not by whoever served this SPA. `getApiBaseUrl()` returns
+  // window.location.origin — CUGA's — so in a split deployment the iframe asked CUGA and hit the
+  // SPA catch-all, rendering a copy of CUGA inside the tab. Resolved asynchronously and held in
+  // state rather than through the sync helper, because on first mount that cache is cold and would
+  // fall back to the same wrong origin.
   const [base, setBase] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -1184,29 +1188,18 @@ function ApiTab() {
       live = false;
     };
   }, []);
-  const pages: { key: string; label: string }[] = [
-    { key: "api", label: "API guide" },
-    // No "OpenAPI spec" tab: it embedded events/docs/api/api_spec.html, 204 KB of generated markup
-    // carried in git so a --check test could diff against it. Both the page and its generator are
-    // gone; FastAPI publishes the real contract at /docs and /openapi.json.
-    { key: "examples", label: "Examples board" },
-    // No "NL→Flow" or "Slides" tabs: events/docs/slides.html exists on no branch, and the NL→Flow
-    // page is events/docs/runbook/nl-to-flow.html — a different directory and spelling than the
-    // route looked for, so both 404'd.
-  ];
-  const [page, setPage] = useState("api");
-  const url = base ? `${base}/api/events/docs/${page}` : "";
+  const url = base ? `${base}/docs` : "";
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <p className="studio-muted" style={{ margin: 0, fontSize: 13, flex: "1 1 240px" }}>
-          The events API reference, embedded. The machine-readable contract is at /docs and
-          /openapi.json on the events service.
+          The live API contract, generated from the running service — every route, its parameters and
+          its responses. Machine-readable at <code>/openapi.json</code>.
         </p>
-        {pages.map((p) => (
-          <Button key={p.key} size="sm" kind={page === p.key ? "primary" : "tertiary"}
-            onClick={() => setPage(p.key)} disabled={!base}>{p.label}</Button>
-        ))}
+        <Button size="sm" kind="ghost" renderIcon={Launch} href={base ? `${base}/openapi.json` : ""}
+          target="_blank" disabled={!base}>
+          openapi.json
+        </Button>
         <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank" disabled={!base}>
           Open full page
         </Button>

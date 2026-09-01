@@ -67,6 +67,5 @@ to keep the repo lean and drift-free. None of it is required to build, run, or t
 
 ## Conventions
 
-- **Generated, don't hand-edit:** the examples board's data block (`events/scripts/gen_examples.py`).
   An offline test fails the build if it drifts from the code. `api.html` is hand-written, and is
   likewise test-coupled — every route must appear in it.

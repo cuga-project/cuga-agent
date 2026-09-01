@@ -7,12 +7,16 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from cuga.backend.server.error_responses import log_error_ref, safe_http_exception
+
 import asyncio as _asyncio
 
 from cuga.backend.server.manage_routes.apply import apply_published_config, rebuild_production_agent
 from cuga.backend.server.manage_routes.helpers import (
     agent_draft_lock,
     app_state,
+    invalidate_agent_graph_cache,
+    is_default_agent,
     merge_feature_flags_defaults,
     merge_mcp_yaml_into_config,
     redact_secrets_in_config,
@@ -386,12 +390,16 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # Phase C: Apply LLM/tools/policies + rebuild (existing, best-effort)
         # Strip knowledge_state before runtime apply — it's for export/import only.
         config.pop("knowledge_state", None)
-        await apply_published_config(state, config or {})
+        # Only cuga-default owns the process-wide singleton runtime. Publishing any
+        # other agent must leave app_state.agent / current_llm / tools / policies
+        # untouched; those agents run from the per-id graph cache instead.
+        if is_default_agent(agent_id):
+            await apply_published_config(state, config or {})
 
-        try:
-            await rebuild_production_agent(state, config or {})
-        except Exception as rebuild_err:
-            logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
+            try:
+                await rebuild_production_agent(state, config or {})
+            except Exception as rebuild_err:
+                logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
 
         response_data: dict[str, Any] = {"status": "success", "version": ver, "agent_id": agent_id}
 
@@ -438,8 +446,17 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
                         except Exception as mig_err:
-                            logger.warning(f"Document migration failed: {mig_err}")
-                            reindex_info = {"status": "failed", "error": str(mig_err)}
+                            # This is sent to the caller further down, as the
+                            # "reindex" part of the response. It carries a fixed
+                            # code and a log reference code, not the text of the
+                            # error.
+                            reindex_info = {
+                                "status": "failed",
+                                "error": "migration_failed",
+                                "ref": log_error_ref(
+                                    mig_err, log=logger, context="Document migration failed"
+                                ),
+                            }
             except Exception as e:
                 logger.warning(f"Failed to check docs for migration: {e}")
 
@@ -543,6 +560,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         if reindex_info:
             response_data["reindex"] = reindex_info
 
+        await invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
+
         return JSONResponse(response_data)
     except HTTPException:
         raise
@@ -561,8 +580,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     "the model name and your provider key / connectivity."
                 ),
             )
-        logger.error(f"Failed to save manage config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise safe_http_exception(e, log=logger, message="Failed to save manage config")
     finally:
         if engine is not None and not _flip_spawned and _old_collection is not None:
             # Safety: release the OLD-collection busy flag on any path that

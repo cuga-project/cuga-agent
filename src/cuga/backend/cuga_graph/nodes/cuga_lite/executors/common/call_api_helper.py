@@ -67,6 +67,8 @@ class CallApiHelper:
             if args is None:
                 args = {}
 
+            ToolCallTracker.enforce_call_budget()
+
             timeout_seconds = getattr(settings.advanced_features, 'tool_call_timeout', 30)
             start_time = time.time()
             result = None

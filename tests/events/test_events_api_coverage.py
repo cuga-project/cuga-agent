@@ -82,10 +82,9 @@ def test_dashboard_serves_nonempty_html():
     assert r.headers["content-type"].startswith("text/html") and len(r.text) > 500
 
 
-# ── /api/events/docs/{page} ──────────────────────────────────────────────────────────────────────
-def test_docs_unknown_page_is_404():
-    c, _ = _client()
-    assert c.get("/api/events/docs/definitely-not-a-page").status_code == 404
+# NOTE: `/api/events/docs/{page}` and its 404 test are gone with the two HTML pages they served
+# (api.html, examples.html). The API reference is now FastAPI's own /docs + /openapi.json, and the
+# examples board reads GET /api/events/examples — which is what the Studio always used.
 
 
 # ── /api/events/slack/events — the public seam, tested with a FAKE signature ─────────────────────

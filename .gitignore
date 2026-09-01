@@ -137,3 +137,6 @@ events/deploy/.ce_urls_split.env
 
 # Roo AI assistant
 .roo/
+events/deploy/.env.ce
+events/deploy/.ce_urls_split.env
+events/deploy/.ce_urls.env

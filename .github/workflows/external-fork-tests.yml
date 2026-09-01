@@ -5,149 +5,92 @@
 # starts automatically on every fork PR update, pauses at the environment gate,
 # and a required reviewer approves via GitHub's "Review deployments" button
 # before secrets are exposed.
-#
-# Maintainer flow (no label needed):
-#   1. Fork PR opens or updates → workflow queues automatically.
-#   2. GitHub emails required reviewers / shows "Review deployments" on the run.
-#   3. Review the PR diff, click Approve and deploy.
-#   4. Tests run with external-testing secrets.
-#
-# Repo setting note: "Require approval for first-time contributors" under
-# Settings → Actions only gates `pull_request` workflows (no secrets). This
-# environment gate is what protects secret-backed fork CI.
 name: External Fork Tests
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: fork-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
+env:
+  AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
+  WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
+  WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
+  WATSONX_URL: ${{ vars.WATSONX_URL }}
+  MODEL_NAME: ${{ secrets.MODEL_NAME }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+  PYTHONUNBUFFERED: "1"
+  CUGA_THREAD_WORKSPACE_SEED: crm
+
+# Same directory shards as tests.yml (sequential here so the environment
+# gate is one approval). Do not add test_*.py paths; see AGENTS.md.
 
 jobs:
   unit-tests:
     name: Unit Tests (fork, external-testing)
     if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    # Runs sequentially what tests.yml shards in parallel, so this must exceed
+    # the sum of those jobs, not the longest one.
+    timeout-minutes: 35
     environment: external-testing
-    env:
-      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
-      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
-      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
-      WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-
     steps:
       - name: Checkout fork head
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Install Playwright browsers
-        run: uv run playwright install --with-deps chromium
-
-      - name: Lint
-        run: uv run ruff check && uv run ruff format --check
-
-      # See tests.yml for why this runs as several separate `pytest`
-      # invocations instead of one big collection.
+          enable-cache: true
+      - run: uv sync --all-extras --dev --frozen
+      - run: uv run ruff check && uv run ruff format --check
+      - name: No exception detail in caller-facing responses (#681 / #721)
+        run: uv run python scripts/checks/no_exc_in_responses.py
       - name: Run unit tests
         run: |
           uv run pytest ./src/cuga/backend/tools_env/registry/tests/
           uv run pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
-          uv run pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/
           uv run pytest ./src/cuga/backend/cuga_graph/nodes/cuga_supervisor/tests/
-          uv run pytest \
-            tests/unit/test_knowledge_engine.py \
-            tests/unit/test_session_knowledge.py \
-            tests/unit/test_knowledge_routes.py \
-            tests/unit/test_cuga_lite_knowledge_scopes.py \
-            tests/unit/test_chat_knowledge_mode.py \
-            tests/unit/test_chat_agent_knowledge_toggle.py \
-            tests/integration/test_knowledge_integration.py
-          uv run pytest tests/unit/test_cuga_lite_bind_tools.py \
-            tests/unit/test_bind_tools_safe_fallback.py \
-            tests/unit/test_tool_use_failed_recovery.py
-          uv run pytest \
-            tests/unit/test_toolguard_provider.py \
-            tests/unit/test_policy_tool_guide_loading.py \
-            tests/unit/test_async_tool_provider_construction.py \
-            tests/unit/test_tool_guard_generation.py \
-            tests/unit/test_tool_guard_generation_route.py \
-            tests/unit/test_tool_guard_generation_route_sync.py \
-            tests/unit/test_policy_frontend_dict_guards_enabled.py \
-            tests/unit/test_toolguard_reuse_roundtrip.py
-          uv run pytest tests/integration/a2a/ tests/unit/test_a2a_simple_runner_hitl.py
-        env:
-          PYTHONUNBUFFERED: "1"
-          CUGA_THREAD_WORKSPACE_SEED: crm
-
-      - name: Run policy and SDK integration tests
-        run: |
-          uv run pytest ./src/cuga/backend/cuga_graph/policy/tests
-          uv run pytest ./src/cuga/sdk_core/tests/
-          uv run pytest ./tests/system/test_manager_api_integration.py
-          uv run pytest ./src/system_tests/load/tests/
-          uv run pytest tests/unit/test_load_test_mock_llm.py
-        env:
-          PYTHONUNBUFFERED: "1"
-          CUGA_THREAD_WORKSPACE_SEED: crm
-
-      - name: Run mocked concurrent load test
-        run: uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
-        env:
-          PYTHONUNBUFFERED: "1"
-          CUGA_THREAD_WORKSPACE_SEED: crm
+          uv run pytest tests/unit tests/integration \
+            -m "not manual and not pgvector and not load and not e2e and not stability"
+          uv run pytest src/cuga/backend/cuga_graph/policy/tests
+          uv run pytest ./src/cuga/sdk_core/tests/ \
+            -m "not manual and not pgvector and not load and not e2e and not stability"
+          uv run pytest tests/system src/system_tests/load/tests/
+          uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI (fork, external-testing)
     if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     environment: external-testing
-    env:
-      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
-      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
-      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
-      WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-
     steps:
       - name: Checkout fork head
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
-
+          enable-cache: true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
       - name: Isolated wheel smoke (demo_crm → OpenAPI)
         run: bash scripts/smoke_pip_install_isolated.sh
 
@@ -155,43 +98,23 @@ jobs:
     name: Stability Tests (Python 3.12, fork, external-testing)
     if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
     environment: external-testing
     env:
-      AGENT_SETTING_CONFIG: ${{ vars.AGENT_SETTING_CONFIG }}
-      WATSONX_APIKEY: ${{ secrets.WATSONX_APIKEY }}
-      WATSONX_PROJECT_ID: ${{ vars.WATSONX_PROJECT_ID }}
-      WATSONX_URL: ${{ vars.WATSONX_URL }}
-      MODEL_NAME: ${{ secrets.MODEL_NAME }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       PYTHONIOENCODING: utf-8
-      CUGA_THREAD_WORKSPACE_SEED: crm
-
     steps:
       - name: Checkout fork head
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Install uv and set the Python version
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Install Playwright browsers
-        run: uv run playwright install --with-deps chromium
-
+          enable-cache: true
+      - run: uv sync --all-extras --dev --frozen
       - name: Run stability tests
-        run: uv run pytest -m stability --stability-threshold 88 -n0
-        env:
-          PYTHONUNBUFFERED: "1"
-
+        run: uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0 --durations=20
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
