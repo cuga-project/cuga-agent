@@ -337,6 +337,47 @@ class EvolveIntegration:
         return await cls._call_structured_tool("record_access", args)
 
     @classmethod
+    async def validate_retention_policy(cls, policy: dict[str, Any]) -> Optional[dict]:
+        """Validate and normalize an Evolve retention policy."""
+        return await cls._call_structured_tool(
+            "validate_retention_policy",
+            {"policy": json.dumps(policy)},
+        )
+
+    @classmethod
+    async def run_retention(
+        cls,
+        policy: dict[str, Any],
+        *,
+        dry_run: bool = True,
+        as_of: Optional[str] = None,
+        scan_limit: Optional[int] = None,
+        run_id: Optional[str] = None,
+        namespace_id: Optional[str] = None,
+        metadata_filters: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict]:
+        """Run Evolve retention and return its entity-linked report."""
+        args: dict[str, Any] = {"policy": json.dumps(policy), "dry_run": dry_run}
+        optional = {
+            "as_of": as_of,
+            "scan_limit": scan_limit,
+            "run_id": run_id,
+            "namespace_id": normalize_evolve_identifier(namespace_id),
+            "metadata_filters": json.dumps(metadata_filters) if metadata_filters else None,
+        }
+        args.update({key: value for key, value in optional.items() if value is not None})
+        return await cls._call_structured_tool("run_retention", args)
+
+    @classmethod
+    async def get_compliance_status(cls, namespace_id: Optional[str] = None) -> Optional[dict]:
+        """Return Evolve backend, retention, and protection-hook health."""
+        args: dict[str, Any] = {}
+        namespace_id = normalize_evolve_identifier(namespace_id)
+        if namespace_id:
+            args["namespace_id"] = namespace_id
+        return await cls._call_structured_tool("get_compliance_status", args)
+
+    @classmethod
     async def _call_structured_tool(
         cls,
         tool_name: str,
