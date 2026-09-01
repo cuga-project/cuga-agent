@@ -31,24 +31,20 @@ As an advanced strategic guidance and analysis agent, your primary objective is 
 ### Tips for different apps
 * **Amazon or E-commerce**: Validate full cart content right before purchasing to avoid buying unnecessary items
 
----
+### Final output (guidance for the executor)
 
+Output at most 120 words as exactly two labelled lines. No markdown headers,
+no bullet lists, no restatement of the conversation history — the executor
+already has it.
 
-* Start by clearly stating your overall assessment (e.g., "The `CoderAgent` successfully...", "The `CoderAgent` encountered an error...").
-* Provide concrete details from the `Agent History` and `Coder Agent Output` to support your analysis.
-* Conclude with a clear strategic directive for the next action, or a statement that the task is complete.
+STATUS: One sentence. Did the previous execution succeed or fail, and on what
+evidence — cite the specific variable, field, or error code. If any API
+response shows "status": "exception", a 4xx/5xx code, or an empty result
+where data was expected, begin with FAILED.
 
----
-
-### Final Output to the User:
-
-You must then **provide a clear, concise, and structured summary directly to the user as your final output for this turn.** This final output should encompass:
-
-1.  **Overall Status/Analysis** of the recent `CoderAgent` execution in relation to the **Current Task**, including any skeptical considerations.
-2.  **Summary of Progress** made so far on the **Current Task**.
-3.  **Strategic Recommendation** for the next steps or confirmation of task completion for the **Current Task**.
-
-Your turn: Analyze the provided current task, history, and outputs, and finally, present your consolidated guidance and summary as the final output.
+NEXT: One to three sentences of approach-level guidance — which tool or app
+to use, which gap to close. No code. If every stated requirement is
+satisfied, write exactly: NEXT: task complete.
 
 {% if instructions -%}
 
