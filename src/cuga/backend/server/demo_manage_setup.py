@@ -462,6 +462,7 @@ def setup_demo_manage_config(
     tools: list[dict[str, Any]] | None = None,
     reset_knowledge: bool = False,
     filesystem: bool = True,
+    seed_supervisor_demo: bool = False,
 ) -> None:
     """
     Setup agent config (draft + v1) for demo or demo_crm. Resets the config db and
@@ -746,11 +747,15 @@ def setup_demo_manage_config(
         config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
     if preserve_existing:
+        if seed_supervisor_demo:
+            seed_supervisor_demo_config()
         return
 
     async def _setup():
         await save_draft(config, agent_id)
         await save_config(config, agent_id)
+        if seed_supervisor_demo:
+            await _seed_supervisor_demo_config_async()
 
     logger.info(
         "Seeding agent configs from defaults (agent=%r, preserve_gate=%s, mode=%s)",
@@ -759,6 +764,105 @@ def setup_demo_manage_config(
         getattr(settings.storage, "mode", "local"),
     )
     run_sync(_setup())
+
+
+# Multi-agent registry demo (issue #101): three specialized single sub-agents (CRM, email,
+# filesystem) + one supervisor that composes them. Seeded as draft AND published (v1) so the
+# manage dashboard shows them and the supervisor is immediately chat-testable at /chat/<id>.
+# The CLI's --seed-supervisor-demo flag also starts the CRM + email services and enables the
+# runtime filesystem tools so these sub-agents have real, working tools (not "I have no tools").
+# ``tool_builder`` is None for the filesystem agent — it has no MCP/openapi app; its capability
+# comes from the globally-enabled runtime filesystem tools that every cuga_lite run picks up.
+_SUPERVISOR_DEMO_SUBAGENTS: list[dict[str, Any]] = [
+    {
+        "id": "crm-agent",
+        "name": "CRM Agent",
+        "description": "Looks up accounts, contacts, and territory data in the CRM",
+        "special_instructions": "You are a CRM specialist. Use the CRM tools to look up "
+        "accounts, contacts, client info, and territory data.",
+        "tool_builder": _get_crm_tool,
+    },
+    {
+        "id": "email-agent",
+        "name": "Email Agent",
+        "description": "Drafts and sends email on the user's behalf",
+        "special_instructions": "You are an email specialist. Use the email tools to draft and "
+        "send messages. Keep drafts concise and professional.",
+        "tool_builder": _get_email_tool,
+    },
+    {
+        "id": "filesystem-agent",
+        "name": "Filesystem Agent",
+        "description": "Reads and writes files in the workspace",
+        "special_instructions": "You are a filesystem specialist. Use the runtime filesystem "
+        "tools to read, write, and organize files in the workspace.",
+        "tool_builder": None,
+    },
+]
+
+
+async def _seed_supervisor_demo_config_async() -> None:
+    from cuga.backend.server.config_store import save_config, save_draft
+
+    homescreen = {
+        "isOn": True,
+        "greeting": "I coordinate a CRM, an email, and a filesystem agent. Give me a task and I'll delegate it.",
+        "starters": [
+            "Look up the account for a contact in the CRM, then draft an email summarizing it.",
+            "Read contacts.txt from the workspace and tell me which are in the CRM.",
+            "Which of your sub-agents would send an email?",
+        ],
+    }
+
+    for sub in _SUPERVISOR_DEMO_SUBAGENTS:
+        builder = sub["tool_builder"]
+        sub_config: dict[str, Any] = {
+            "agent": {
+                "name": sub["name"],
+                "description": sub["description"],
+                "kind": "single",
+            },
+            "tools": [builder()] if builder is not None else [],
+            "special_instructions": sub["special_instructions"],
+        }
+        # The filesystem agent relies on runtime filesystem tools; surface the intent on its
+        # own config too so a manual publish from the UI keeps them on.
+        if builder is None:
+            sub_config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
+        await save_draft(sub_config, sub["id"])
+        await save_config(sub_config, sub["id"])
+
+    supervisor_config: dict[str, Any] = {
+        "agent": {
+            "name": "Team Supervisor",
+            "description": "Delegates tasks to CRM, email, and filesystem sub-agents",
+            "kind": "supervisor",
+        },
+        "supervisor": {
+            "subAgents": [{"kind": "internal", "ref": sub["id"]} for sub in _SUPERVISOR_DEMO_SUBAGENTS],
+            "planApproval": False,
+        },
+        "homescreen": homescreen,
+    }
+    await save_draft(supervisor_config, "team-supervisor")
+    await save_config(supervisor_config, "team-supervisor")
+    loguru_logger.info(
+        "Seeded supervisor demo: sub-agents {} + supervisor 'team-supervisor' (draft + published)",
+        [s["id"] for s in _SUPERVISOR_DEMO_SUBAGENTS],
+    )
+
+
+def seed_supervisor_demo_config() -> None:
+    """Seed a 3-sub-agent (CRM, email, filesystem) + 1-supervisor set (draft + published).
+
+    Additive: does NOT reset the config db, so it runs after setup_demo_manage_config's
+    cuga-default seed and leaves cuga-default intact. The caller (CLI --seed-supervisor-demo)
+    is responsible for starting the CRM + email services and enabling filesystem tools so the
+    seeded sub-agents actually have the tools referenced here.
+    """
+    from cuga.backend.server.config_store import run_sync
+
+    run_sync(_seed_supervisor_demo_config_async())
 
 
 # Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.

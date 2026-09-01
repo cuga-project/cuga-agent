@@ -5,12 +5,21 @@ import { isAbortError, type AddToast } from "./saveHelpers";
 export function useAgentDraftSave(opts: {
   agentName: string;
   agentDescription: string;
+  agentKind?: "single" | "supervisor";
   effectiveAgentId: string | undefined;
   addToast: AddToast;
   setDraftSaving: (v: boolean) => void;
   setCurrentVersion: (v: number | "draft" | null) => void;
 }) {
-  const { agentName, agentDescription, effectiveAgentId, addToast, setDraftSaving, setCurrentVersion } = opts;
+  const {
+    agentName,
+    agentDescription,
+    agentKind,
+    effectiveAgentId,
+    addToast,
+    setDraftSaving,
+    setCurrentVersion,
+  } = opts;
   const agentAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -26,7 +35,11 @@ export function useAgentDraftSave(opts: {
     agentAbortRef.current = ac;
     try {
       const res = await api.patchManageConfigDraftAgent(
-        { name: agentName.trim(), description: agentDescription.trim() || undefined },
+        {
+          name: agentName.trim(),
+          description: agentDescription.trim() || undefined,
+          ...(agentKind ? { kind: agentKind } : {}),
+        },
         effectiveAgentId,
         ac.signal,
       );
@@ -43,7 +56,15 @@ export function useAgentDraftSave(opts: {
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
-  }, [agentName, agentDescription, addToast, effectiveAgentId, setCurrentVersion, setDraftSaving]);
+  }, [
+    agentName,
+    agentDescription,
+    agentKind,
+    addToast,
+    effectiveAgentId,
+    setCurrentVersion,
+    setDraftSaving,
+  ]);
 
   return { saveAgentDraft };
 }
