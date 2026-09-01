@@ -28,6 +28,7 @@ export interface CugaHeaderAction {
   href?: string;
   onClick?: () => void;
   disabled?: boolean;
+  className?: string;
 }
 
 export interface CugaHeaderProps {
@@ -152,7 +153,7 @@ export function CugaHeader({
                     <a
                       key={action.label}
                       href={action.href}
-                      className="cds--header__global-action"
+                      className={`cds--header__global-action ${action.className ?? ""}`.trim()}
                       aria-label={action.label}
                       title={action.label}
                       style={{ display: "flex", alignItems: "center", padding: "0 1rem", color: "inherit", textDecoration: "none" }}
@@ -168,6 +169,7 @@ export function CugaHeader({
                     title={action.label}
                     onClick={action.onClick}
                     disabled={action.disabled}
+                    className={action.className}
                   >
                     {action.icon}
                   </HeaderGlobalAction>
