@@ -155,11 +155,12 @@ async def _get_supervisor():
     # load_supervisor_config, so CugaSupervisor.from_yaml and every other caller keep the upstream
     # behaviour of honouring settings.policy.auto_load_policies. A roster entry can opt back in.
     #
-    # scope_tools=True: same principle, same reason it is asked for HERE. A roster sub-agent is a
-    # specialist — pricebot should hold cuga-finance, not the whole registry — which keeps the
-    # concierge's delegation sharp and the sub-agent's prompt small. Defaulting it on would strip
-    # tools from every supervisor built through the SDK, so only this roster opts in.
-    cfg = await load_supervisor_config(path, auto_load_policies=False, scope_tools=True)
+    # Tool scoping is no longer asked for here: #433 made CombinedToolProvider scope to the named
+    # apps for every supervisor, so a roster sub-agent is a specialist by default (pricebot holds
+    # cuga-finance, not the whole registry). The events-specific part that remains lives in
+    # _create_tool_provider — an `mcp_servers:` entry counts as a named app, which is what this
+    # roster actually declares.
+    cfg = await load_supervisor_config(path, auto_load_policies=False)
     sup = CugaSupervisor(
         agents=cfg.agents,
         special_instructions=(cfg.supervisor or {}).get("special_instructions"),

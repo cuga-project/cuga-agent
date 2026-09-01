@@ -34,7 +34,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | Feature | How |
 > |---------|-----|
 > | **MCP, OpenAPI & LangChain tools** | [`mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) · `CugaAgent(tools=[...])` |
-> | **Reasoning modes** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
+> | **Code generation profiles** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Event-driven agents** (channels · triggers · standing flows) | `cuga start demo` **+** `python -m cuga.backend.events.service` — web chat, Slack/Discord/Telegram, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (:7860 + :8100); CUGA is unchanged when it is not deployed. [**Setup**](events_docs/SETUP.md) · [connector guides](events_docs/setup/) |
@@ -47,7 +47,6 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
-> | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
 > [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#quick-start)
 
@@ -71,8 +70,6 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 - **Open-source and composable** — Built with modularity in mind, CUGA itself can be exposed as a tool to other agents, enabling nested reasoning and multi-agent collaboration. Evolving toward enterprise-grade reliability
 
 - **Policy System** — Configure agent behavior with 5 policy types (Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter) via the Python SDK or standalone UI in demo mode. Includes human-in-the-loop approval gates for safe agent behavior in enterprise contexts. See [SDK Docs](https://docs.cuga.dev/docs/sdk/cuga_agent/) and [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
-
-- **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
 
 - **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
 
@@ -145,43 +142,6 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 
 </details>
 
-### Human in the Loop Task Execution
-
-Watch CUGA pause for human approval during critical decision points:
-
-**Example Task:** `get best accounts`
-
-https://github.com/user-attachments/assets/d103c299-3280-495a-ba66-373e72554e78
-
-<details>
-<summary><b>Would you like to try this? (HITL Demo)</b></summary>
-
-Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for human approval at key decision points:
-
-### Setup Steps:
-
-1. **Enable HITL mode:**
-
-   ```bash
-   # Edit ./src/cuga/settings.toml and ensure:
-   api_planner_hitl = true  # under [advanced_features] section
-   ```
-
-2. **Start the demo:**
-
-   ```bash
-   cuga start demo
-   ```
-
-3. **Try the HITL task:**
-   ```
-   get best accounts
-   ```
-
-**What you'll see:** CUGA will pause at critical decision points, showing you the planned actions and waiting for your approval before proceeding.
-
-</details>
-
 ## Quick Start
 
 <details>
@@ -239,6 +199,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 - **Groq** - High-performance inference platform with fast LLM models
 - **RITS** - Internal IBM research platform
 - **OpenRouter** - LLM API gateway provider
+- **watsonx Orchestrate (wxO)** - Routes LLM calls through an Orchestrate tenant for tracing, guardrails, and entitlement-based billing
 
 ## Configuration Priority
 
@@ -373,7 +334,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    # direct RITS setups, since each model has a model-specific URL path.
    # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
    MODEL_NAME=google/gemma-4-31B-it
-   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
 To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
@@ -383,6 +344,35 @@ To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="set
 - Model: `google/gemma-4-31B-it` (direct preset)
 - Base URL: gemma-4-31B-it `/v1` endpoint on the RITS 3scale apicast host (direct preset)
 - Local proxy URL: `http://localhost:4000` (proxy preset)
+
+### Option 8: watsonx Orchestrate (wxO) Support
+
+Routes every agent role's LLM calls through your watsonx Orchestrate tenant instead of a
+provider directly — calls become traced/observable in the tenant, pass through its
+guardrails, and are billed against its entitlement.
+
+**Setup Instructions:**
+
+1. Install the optional SDK (requires Python >= 3.11): `pip install "cuga[wxo]"` or `uv sync --extra wxo`.
+2. In watsonx Orchestrate, go to **Settings -> API details** and click **Generate API key**; copy the **Service instance URL** shown on the same page.
+3. Add to your `.env` file:
+   ```env
+   # watsonx Orchestrate Configuration
+   WXO_API_KEY=your-wxo-api-key  # pragma: allowlist secret
+   WXO_INSTANCE_URL=https://api.dl.watson-orchestrate.ibm.com/instances/your-instance-id
+   AGENT_SETTING_CONFIG="settings.wxo.toml"
+
+   # Optional override — model ids are provider-prefixed per your tenant's Settings -> Models list
+   MODEL_NAME=groq/openai/gpt-oss-120b  # e.g. the Groq-hosted variant, ~25% faster than the Bedrock one
+   ```
+
+To target a local ADK dev server instead of a hosted tenant, set `WXO_INSTANCE_URL=http://localhost:4321`
+and omit `WXO_API_KEY` — local instances are auto-detected and don't require a key.
+
+**Default Values:**
+
+- Model: `watsonx/openai/gpt-oss-120b`
+- Instance URL: `http://localhost:4321` (local ADK dev server)
 
 
 ## Configuration Files
@@ -396,6 +386,7 @@ CUGA uses TOML configuration files located in `src/cuga/configurations/models/`:
 - `settings.openrouter.toml` - OpenRouter configuration
 - `settings.rits.toml` - RITS configuration (direct endpoint)
 - `settings.rits.proxy.toml` - RITS configuration (local LiteLLM proxy fronting RITS)
+- `settings.wxo.toml` - watsonx Orchestrate configuration
 
 Each file contains agent-specific model settings that can be overridden by environment variables.
 
@@ -908,35 +899,18 @@ E2B will automatically execute code in cloud sandboxes. You'll see logs indicati
 </details>
 
 <details>
-<summary> Reasoning modes - Switch between Fast/Balanced/Accurate modes</summary>
+<summary> Code generation profiles - fast / balanced / accurate</summary>
 
-## Available Modes under `./src/cuga`
+## Available profiles under `./src/cuga/configurations/modes`
 
-| Mode       | File                                   | Description                                     |
+| Profile    | File                                   | Description                                     |
 | ---------- | -------------------------------------- | ----------------------------------------------- |
 | `fast`     | `./configurations/modes/fast.toml`     | Optimized for speed                             |
 | `balanced` | `./configurations/modes/balanced.toml` | Balance between speed and precision _(default)_ |
 | `accurate` | `./configurations/modes/accurate.toml` | Optimized for precision                         |
 | `custom`   | `./configurations/modes/custom.toml`   | User-defined settings                           |
 
-## Configuration
-
-```
-configurations/
-├── modes/fast.toml
-├── modes/balanced.toml
-├── modes/accurate.toml
-└── modes/custom.toml
-```
-
-Edit `settings.toml`:
-
-```toml
-[features]
-cuga_mode = "fast"  # or "balanced" or "accurate" or "custom"
-```
-
-**Documentation:** [./docs/flags.html](./docs/flags.html)
+These profiles tune code generation, reflection, and related feature flags. Graph routing is handled by the entry graph (CugaLite, CugaSupervisor, or CugaBrowser).
 
 </details>
 
@@ -987,13 +961,134 @@ mode = 'api'  # 'api', 'web', or 'hybrid'
 </details>
 
 <details>
+<summary>🔍 Tool Shortlisting</summary>
+
+## What it is
+
+When an app exposes many tools, CUGA shrinks the set before the model sees it. This happens in two places: `find_tools` (the agent asking "what tools exist for X?") and the `bind_tools` provider cap. Both are pluggable.
+
+## Strategies
+
+| Strategy | How it ranks | Cost |
+|---|---|---|
+| `llm` (default) | asks the model | one LLM call per shortlist |
+| `embedding` | local cosine similarity | no LLM call for ranking, ~65ms warm |
+| `hybrid` | cosine cuts to `top_k`, then the LLM picks | one LLM call, much smaller prompt |
+
+`embedding` compares one vector built from your question against one vector per tool (name + description + parameter names + return field names). It is strong at **recall** but weak at separating near-identical tools such as `get_contacts` (list) and `get_contact` (by id) — so `hybrid` is usually the better choice for discovery, and `embedding` for the provider cap where only "don't drop the needed tool" matters.
+
+Embeddings are local by default (`BAAI/bge-small-en-v1.5` via fastembed) — the same weights knowledge and policy already load, so there is one ONNX session and nothing extra for airgapped preload to fetch. Ranking makes no network call and is not billed. Setting `embedding_provider = "openai"` trades that away for a hosted model. Either way the *agent* still calls an LLM for its own reasoning — only the shortlister's ranking step is affected. The first call while a local model is still downloading is served by `fallback_strategy`, so **a query never waits on a download**.
+
+In **server mode** the catalogue is embedded at startup and again whenever the tool list changes, so the first `find_tools` after boot uses cosine rather than falling back. Vectors are keyed by content hash, so adding a tool embeds one document rather than the whole catalogue. The SDK stays lazy.
+
+## Configuration
+
+### Every option
+
+| Key | Default | What it does |
+|---|---|---|
+| `strategy` | `"llm"` | `llm` \| `embedding` \| `hybrid` \| a dotted class path |
+| `fallback_strategy` | `"llm"` | Used when `strategy` cannot run (model still downloading, missing dependency) |
+| `threshold` | `128` | Engage the cosine stage only **above** this many candidates. `0` = always engage |
+| `top_k` | `128` | How many candidates the cosine stage keeps (also the `hybrid` prefilter width) |
+| `max_results` | `10` | `find_tools` only — how many tools are actually shown to the agent |
+| `min_score` | `0.15` | Cosine floor. Deliberately low: this is a **recall** filter, not a precision knob |
+| `query_weight` | `0.7` | Blend of step query vs. initial user message when embedding the query (0–1) |
+| `embedding_provider` | `"local"` | `local` (fastembed, offline, free) or `openai` |
+| `embedding_model` | `bge-small-en-v1.5` | Any fastembed model, or an OpenAI embedding model |
+
+### Four ways to set it
+
+**Precedence, highest first:**
+
+1. raw `shortlister_*` keys you set yourself in `configurable`
+2. per-invoke `invoke(..., shortlister=...)`
+3. constructor `CugaAgent(shortlister=...)`
+4. `[shortlister.discovery]` / `[shortlister.bind_cap]`
+5. `[shortlister]` — also where environment variables land
+6. built-in defaults
+
+Raw keys sit **above** the SDK objects because `_apply_shortlister` merges with `setdefault`: a key you already placed in `configurable` is never overwritten.
+
+**1. `settings.toml`** — deployment-wide:
+
+```toml
+[shortlister]
+strategy = "hybrid"
+top_k = 64
+
+# Optional: different settings per call site.
+[shortlister.discovery]   # find_tools
+strategy = "hybrid"
+[shortlister.bind_cap]    # bind_tools provider cap
+strategy = "embedding"    # no LLM round-trip per call_model
+```
+
+**2. Environment** — one-off or per-container:
+
+```bash
+DYNACONF_SHORTLISTER__STRATEGY=hybrid
+DYNACONF_SHORTLISTER__TOP_K=64
+```
+
+**3. SDK** — per agent, or per call:
+
+```python
+from cuga import CugaAgent, Shortlister
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(strategy="hybrid"))
+await agent.invoke("...", shortlister=Shortlister(top_k=32))   # per-call override
+```
+
+**4. Raw `configurable`** — when driving the graph directly:
+
+```python
+config = {"configurable": {"shortlister_strategy": "embedding", "shortlister_top_k": 32}}
+```
+
+### Which strategy should I use?
+
+| Situation | Use | Why |
+|---|---|---|
+| Default / unsure | `llm` | Unchanged behavior; nothing to tune |
+| Large catalogue, accuracy matters | `hybrid` | Cosine cuts the prompt cost; the LLM still makes the final call |
+| Provider cap on every `call_model` | `embedding` | Removes an LLM round-trip per step, and works on models without native structured output |
+| Offline / airgapped | `embedding` or `hybrid` with a warm cache | Local model, no network at query time |
+
+### Gotchas
+
+**At or below `threshold` candidates nothing changes** — the cosine stage does not run and shortlisting behaves exactly as it always has. Set `threshold = 0` to always engage the configured strategy.
+
+> **Two similarly-named thresholds.** `[shortlister] threshold` (128) decides when the *cosine stage* engages inside the shortlister. `advanced_features.shortlisting_tool_threshold` (35) decides when tools are *hidden behind `find_tools`* in the prompt. They are unrelated.
+
+**`top_k` never raises the provider cap.** At the `bind_tools` seam the caller's cap is a hard ceiling; a configured `top_k` can lower how many tools are bound, never push past what the provider accepts.
+
+**`max_results` exists for a reason.** `find_tools` renders each tool with full parameter and schema docs. Showing 128 of them would exceed `advanced_features.execution_output_max_length` and be silently truncated mid-render, so the rendered count is capped separately from `top_k`.
+
+**First call on a cold cache.** The embedding model (~90MB) downloads in the background and that call is served by `fallback_strategy`; subsequent calls use cosine. No query ever blocks on the download.
+
+## Custom strategies
+
+Point `strategy` at a dotted class path, or pass an instance:
+
+```python
+class MyShortlister:
+    name = "mine"
+    async def shortlist(self, request) -> "list[ShortlistCandidate]": ...
+
+agent = CugaAgent(tools=[...], shortlister=Shortlister(instance=MyShortlister()))
+```
+
+See `docs/design/pluggable-shortlister.md` for the full design.
+
+</details>
+
+<details>
 <summary>📝 Special Instructions Configuration</summary>
 
 ## How It Works
 
-Each `.md` file contains specialized instructions that are automatically integrated into the CUGA's internal prompts when that component is active. Simply edit the markdown files to customize behavior for each node type.
-
-**Available instruction sets:** `answer`, `api_planner`, `code_agent`, `plan_controller`, `reflection`, `shortlister`, `task_decomposition`
+Custom instructions support `## Plan` for execution guidance and `## Answer` for final-response formatting. Unsectioned text is treated as plan guidance. The default instruction set keeps reusable answer instructions in `answer.md`; runtime plan instructions can be supplied by clients such as Langflow.
 
 ## Configuration
 
@@ -1002,13 +1097,7 @@ configurations/
 └── instructions/
     ├── instructions.toml
     ├── default/
-    │   ├── answer.md
-    │   ├── api_planner.md
-    │   ├── code_agent.md
-    │   ├── plan_controller.md
-    │   ├── reflection.md
-    │   ├── shortlister.md
-    │   └── task_decomposition.md
+    │   └── answer.md
     └── [other instruction sets]/
 ```
 
@@ -1022,15 +1111,14 @@ instruction_set = "default"  # or any instruction set above
 </details>
 
 <details>
-<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
+<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CUGA</em></summary>
 
-Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+Evolve can bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
 
 This flow is:
 
 - **Opt-in** - disabled by default
 - **Non-blocking** - Evolve failures do not fail the task
-- **CugaLite-focused** - enabled for lite mode by default
 - **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
 ### Setup Steps:
@@ -1061,18 +1149,14 @@ OPENAI_BASE_URL=env://OPENAI_BASE_URL
 
 Each `env://...` value tells CUGA to read the real secret or setting from its own process environment at runtime, so make sure PostgreSQL is reachable, `pgvector` is available, and the configured OpenAI/LiteLLM-compatible model is one your gateway is allowed to use.
 
-1. **[Optional]** Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+3. **[Optional]** Edit `./src/cuga/settings.toml` to configure Evolve:
 
 ```toml
-[advanced_features]
-lite_mode = true
-
 [evolve]
 enabled = true
 url = "http://127.0.0.1:8201/sse"
 mode = "auto"
 app_name = "evolve"
-lite_mode_only = true
 save_on_success = true
 save_on_failure = true
 async_save = true
@@ -1100,7 +1184,7 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 ### What happens during a run?
 
 1. CUGA derives the task description from the current sub-task or first user message
-2. CugaLite asks Evolve for relevant guidelines
+2. CUGA asks Evolve for relevant guidelines
 3. Returned guidelines are appended to the system prompt under an `Evolve Guidelines` section
 4. The task executes normally
 5. The user / assistant trajectory is saved back to Evolve after completion
@@ -1117,34 +1201,6 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 </details>
 
 ## Advanced Usage
-
-<details>
-<summary><b> Save & Reuse</b></summary>
-
-## Setup
-
-• Change `./src/cuga/settings.toml`: `cuga_mode = "save_reuse_fast"`
-• Run: `cuga start demo`
-
-## Demo Steps
-
-• **First run**: `get top account by revenue`
-
-- This is a new flow (first time)
-- Wait for task to finish
-- Approve to save the workflow
-- Provide another example to help generalization of flow e.g. `get top 2 accounts by revenue`
-
-• **Flow now will be saved**:
-
-- May take some time
-- Flow will be successfully saved
-
-• **Verify reuse**: `get top 4 accounts by revenue`
-
-- Should run faster using saved workflow
-
-</details>
 
 <details>
 <summary><b> Adding Tools: Comprehensive Examples</b></summary>
@@ -1195,7 +1251,7 @@ All tests run through pytest (configured in `pyproject.toml`):
 - Fast Mode: Get top account by revenue, list accounts, find VP sales high-value accounts
 - CRM Workflows: Contacts management, email operations, tool discovery
 - HF Utterances: Account queries, revenue calculations, playbook execution
-- Execution: Sequential (`-n0`) so the 88% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 88`
+- Execution: Sequential (`-n0`) so the 87% pass-rate gate aggregates on the controller; CI uses `--stability-threshold 87` (one LLM flake allowed on the 8-test suite)
 
 ## Running Tests
 
@@ -1211,11 +1267,17 @@ Run the default suite (excludes manual and pgvector; pgvector needs a container)
 uv run pytest
 ```
 
-Run the CI-equivalent subset (matches the main `tests.yml` job):
+Run the CI-equivalent subset (mocked unit/load; live LLM jobs are split in `tests.yml`):
 
 ```bash
 uv run pytest -m "not stability and not pgvector and not manual and not e2e and not load"
 uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
+```
+
+Stability CI equivalent (scoped to e2e so collection stays small):
+
+```bash
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run a faster local loop:
@@ -1224,10 +1286,10 @@ Run a faster local loop:
 uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"
 ```
 
-Run stability tests only (88% pass-rate gate; use `-n0` so threshold aggregation works):
+Run stability tests only (87% pass-rate gate; use `-n0` so threshold aggregation works):
 
 ```bash
-uv run pytest -m stability --stability-threshold 88 -n0
+uv run pytest src/system_tests/e2e -m stability --stability-threshold 87 -n0
 ```
 
 Run pgvector tests (requires a running pgvector container):

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from cuga.backend.activity_tracker.tracker import ActivityTracker
     from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
     from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
-    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.backend.cuga_graph.state.agent_state import AgentState
     from cuga.backend.cuga_graph.utils.agent_loop import OutputFormat
     from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
@@ -40,6 +40,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
 
 from loguru import logger
+
+from cuga.backend.server.error_responses import (
+    log_error_ref,
+    safe_error_payload,
+    safe_error_response,
+)
 from cuga.config import (
     get_app_name_from_url,
     get_user_data_path,
@@ -51,6 +57,8 @@ from cuga.config import (
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     assert_resolved_path_under,
 )
+from cuga.backend.server import agent_registry
+from cuga.backend.server import agents_routes
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.workspace_upload import (
@@ -75,7 +83,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_native_backed,
     workspace_tree_is_sandbox_backed,
 )
-from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
+from cuga.backend.server.auth import require_auth, require_chat_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
@@ -86,6 +94,7 @@ from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
+_RUNTIME_LLM_UNSET = object()
 
 
 def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Optional[str]:
@@ -207,6 +216,28 @@ async def _rollback_partial_knowledge_engine(app_state) -> None:
     app_state.knowledge_engine = None
 
 
+async def warm_shortlister_catalogue(agent_id: Optional[str] = None) -> int:
+    """Embed the current tool catalogue for cosine shortlisting.
+
+    Called at startup and whenever the registry reloads. Returns the number of
+    documents embedded — 0 when the default LLM strategy is configured, which is
+    the common case, so this costs nothing unless cosine is switched on.
+
+    Deliberately swallows everything: neither boot nor a tools update should
+    fail because an embedding model is unavailable.
+    """
+    try:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import ToolRegistryProvider
+        from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import warm_tool_vectors
+
+        provider = ToolRegistryProvider(agent_id=agent_id)
+        tools = await provider.get_all_tools()
+        return await warm_tool_vectors(tools)
+    except Exception as e:
+        logger.warning(f"Shortlister catalogue warm-up skipped: {e}")
+        return 0
+
+
 async def run_knowledge_startup(app_state, kb_config, *, init_fn) -> None:
     """Lifespan knowledge boot: isolate init failures so the server still starts."""
     if kb_config.enabled:
@@ -237,7 +268,11 @@ def _format_sources_footer(sources: list[dict]) -> str:
 
 
 async def _rehydrate_citation_ledger(
-    app_state: "AppState", thread_id: str, user_id: str, is_resume: bool = False
+    app_state: "AppState",
+    thread_id: str,
+    user_id: str,
+    is_resume: bool = False,
+    agent_id: Optional[str] = None,
 ) -> None:
     """Prepare the citation ledger at the start of a NEW user turn.
 
@@ -278,7 +313,9 @@ async def _rehydrate_citation_ledger(
         _ledger = _get_ledger(thread_id, create=False)
         if _ledger is None:
             conversation_db = get_conversation_db()
-            stream_history = await conversation_db.get_stream_events(app_state.agent_id, thread_id, user_id)
+            stream_history = await conversation_db.get_stream_events(
+                agent_id or app_state.agent_id, thread_id, user_id
+            )
             events_list = stream_history.events if stream_history else []
             # Create even when there is no history, so begin_turn() below always
             # has a ledger to scope — a fresh conversation's first turn included.
@@ -351,9 +388,6 @@ TRACE_LOG_PATH = os.path.join(TRACES_DIR, "trace.log")
 FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "frontend", "dist")
 EXTENSION_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "extension", "releases", "chrome-mv3")
 STATIC_DIR_FLOWS_PATH = os.path.join(PACKAGE_ROOT, "backend", "server", "flows")
-SAVE_REUSE_PY_PATH = os.path.join(
-    PACKAGE_ROOT, "backend", "tools_env", "registry", "mcp_servers", "saved_flows.py"
-)
 
 # Create logging directory
 if settings.advanced_features.tracker_enabled:
@@ -404,7 +438,6 @@ class AppState:
             )
             self.EXTENSION_PATH: Optional[str] = EXTENSION_DIR
         self.STATIC_DIR_FLOWS: str = STATIC_DIR_FLOWS_PATH
-        self.save_reuse_process: Optional[asyncio.subprocess.Process] = None
         self.agent_id: str = "cuga-default"
         self.config_version: Optional[int] = None
         # Session/agent knowledge state provider (initialized lazily)
@@ -414,6 +447,13 @@ class AppState:
         self.current_llm: Optional[Any] = None
         self.background_tasks: List[asyncio.Task] = []
         self.subsystem_statuses: Dict[str, Dict[str, Any]] = {}
+        # Per-(agent_id, draft|published) built graph cache for non-default agents
+        # (issue #101 supervisor registry). Keyed by (agent_id, use_draft); invalidated by
+        # manage_routes on draft-save/publish for that agent_id. cuga-default is unaffected —
+        # it keeps using self.agent / draft_app_state.agent directly, never this cache.
+        self.agent_graphs_cache: Dict[Any, Any] = {}
+        self.agent_graph_build_locks: Dict[Any, Any] = {}
+        self.agent_graph_generations: Dict[str, int] = {}
         self.initialize_sdk()
 
     def set_subsystem_status(
@@ -500,43 +540,6 @@ def format_time_custom():
     """Formats the current time as HH-MM-SS."""
     now = datetime.datetime.now()
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
-
-
-async def manage_save_reuse_server():
-    """Checks for, starts, or restarts the save_reuse server as a subprocess."""
-    if not settings.features.save_reuse:
-        return
-
-    # Define the path to the save_reuse.py file
-    save_reuse_py_path = SAVE_REUSE_PY_PATH
-
-    if not os.path.exists(save_reuse_py_path):
-        logger.warning(f"save_reuse.py not found at {save_reuse_py_path}. Server will not be started.")
-        return
-
-    # If the process exists and is running, terminate it for a restart.
-    if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
-        logger.info("Restarting save_reuse server...")
-        app_state.save_reuse_process.terminate()
-        await app_state.save_reuse_process.wait()
-
-    logger.info("Starting save_reuse server...")
-    # Assumes the file save_reuse.py contains a FastAPI instance named 'app'
-    # and it is intended to be run with uvicorn.
-    try:
-        app_state.save_reuse_process = await asyncio.create_subprocess_exec(
-            "uv",
-            "run",
-            SAVE_REUSE_PY_PATH,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.sleep(6)
-        logger.info(f"save_reuse server started successfully with PID: {app_state.save_reuse_process.pid}")
-    except FileNotFoundError:
-        logger.error("Could not find 'uvicorn'. Please ensure it's installed in your environment.")
-    except Exception as e:
-        logger.error(f"Failed to start save_reuse server: {e}")
 
 
 @asynccontextmanager
@@ -843,10 +846,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Manager mode startup: {e}")
 
-    # Start the save_reuse server if configured
-
-    await manage_save_reuse_server()
-
     # Deferred imports — kept here intentionally to avoid loading the browser stack
     # and graph modules before lifespan starts.  Moving these to module-top would
     # re-introduce the startup latency that was removed by this optimisation.
@@ -857,7 +856,7 @@ async def lifespan(app: FastAPI):
     )
     from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
     from cuga.backend.browser_env.browser.open_ended_async import OpenEndedTaskAsync
-    from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+    from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
     from cuga.cli import start_extension_browser_if_configured
 
     app_state.tracker = ActivityTracker()
@@ -1119,15 +1118,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("ephemeral stream-events GC failed (non-fatal)")
 
+    # Embed the tool catalogue for cosine shortlisting. Lazy loading is right for
+    # the SDK, but in server mode it would make the first find_tools after boot
+    # silently fall back to the LLM. A no-op on the default LLM strategy, and it
+    # never blocks startup on failure.
+    await warm_shortlister_catalogue()
+
     yield
     logger.info("Application is shutting down...")
-
-    # Terminate the save_reuse server process if it's running
-    if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
-        logger.info("Terminating save_reuse server...")
-        app_state.save_reuse_process.terminate()
-        await app_state.save_reuse_process.wait()
-        logger.info("save_reuse server terminated.")
 
     for task in app_state.background_tasks:
         task.cancel()
@@ -1165,7 +1163,7 @@ async def lifespan(app: FastAPI):
 
 def get_element_names(tool_calls, elements):
     """Extracts element names from tool calls."""
-    from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+    from cuga.backend.cuga_graph.nodes.cuga_browser.action_agent_event_processor import (
         ActionAgentEventProcessor,
     )
 
@@ -1525,6 +1523,8 @@ async def event_stream(
     disable_history: bool = False,
     user_id: str = DEFAULT_USER_ID,
     user_attachments: Optional[List[Dict[str, Any]]] = None,
+    agent_id: Optional[str] = None,
+    current_llm: Any = _RUNTIME_LLM_UNSET,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
     from cuga.backend.activity_tracker.tracker import ActivityTracker
@@ -1535,6 +1535,13 @@ async def event_stream(
     from langchain_core.messages import AIMessage
 
     run_agent = agent if agent is not None else app_state.agent
+    runtime_agent_id = agent_id or app_state.agent_id
+    if current_llm is _RUNTIME_LLM_UNSET:
+        runtime_llm = (
+            app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None)
+        )
+    else:
+        runtime_llm = current_llm
     if not run_agent or not run_agent.graph:
         yield StreamEvent(name="Error", data="Agent not available.").format()
         return
@@ -1602,6 +1609,11 @@ async def event_stream(
 
     if local_state:
         apply_request_user_context(local_state, user_id)
+        # Route this run to the CugaSupervisor node when the resolved agent is a supervisor
+        # graph (issue #101). Only override when True so non-supervisor agents keep falling
+        # back to the global settings.supervisor.enabled default.
+        if getattr(run_agent, "supervisor_enabled", None):
+            local_state.supervisor_mode = True
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -1677,7 +1689,7 @@ async def event_stream(
     _knowledge_ctx = {}
     if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
         # Agent-level knowledge
-        _agent_id = app_state.agent_id
+        _agent_id = runtime_agent_id
         _config_ver = str(app_state.config_version or "draft")
         _agent_key = f"{_agent_id}:{_config_ver}"
         _agent_kb = app_state.knowledge_provider.get_agent(_agent_key)
@@ -1703,7 +1715,9 @@ async def event_stream(
             }
 
     if thread_id:
-        await _rehydrate_citation_ledger(app_state, thread_id, user_id, is_resume=bool(resume))
+        await _rehydrate_citation_ledger(
+            app_state, thread_id, user_id, is_resume=bool(resume), agent_id=runtime_agent_id
+        )
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1718,7 +1732,7 @@ async def event_stream(
         shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
-        current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
+        current_llm=runtime_llm,
         knowledge_context=_knowledge_ctx or None,
         upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
@@ -1755,11 +1769,6 @@ async def event_stream(
                     return
 
                 if isinstance(event, AgentLoopAnswer):
-                    if event.flow_generalized:
-                        await manage_save_reuse_server()
-                        await run_agent.chat.chat_agent.cleanup()
-                        await run_agent.chat.chat_agent.setup()
-
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
@@ -1874,7 +1883,7 @@ async def event_stream(
                             # the sidebar is not polluted.
                             if not disable_history:
                                 await _save_conversation_and_events_async(
-                                    agent_id=app_state.agent_id,
+                                    agent_id=runtime_agent_id,
                                     thread_id=thread_id,
                                     user_id=user_id,
                                     state=local_state if local_state else AgentState(),
@@ -1884,7 +1893,7 @@ async def event_stream(
                             else:
                                 try:
                                     await _save_conversation_and_events_async(
-                                        agent_id=app_state.agent_id,
+                                        agent_id=runtime_agent_id,
                                         thread_id=thread_id,
                                         user_id=user_id,
                                         # state is unused when events_only=True; pass it
@@ -2029,7 +2038,11 @@ async def event_stream(
         except Exception as tracker_error:
             logger.warning(f"Failed to finish task in tracker on error: {tracker_error}")
 
-        yield StreamEvent(name="Error", data=str(e)).format()
+        # Not str(e): this event's data is forwarded verbatim to the extension
+        # client by the /extension/agent_query handler, so the text of the
+        # exception would reach the caller the same way a response body would.
+        _ref = log_error_ref(e, context="Agent event stream failed")
+        yield StreamEvent(name="Error", data=f"Agent request failed (ref {_ref})").format()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2056,6 +2069,7 @@ app.add_middleware(
 
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
+app.include_router(agents_routes.router)
 
 # ---- the eventing layer is a SEPARATE SERVICE ----------------------------------------------
 # It used to mount onto this app ("combined mode"). That is gone: the eventing layer now runs as
@@ -2141,6 +2155,7 @@ async def ui_config():
             "hide_cuga_logo": hide_logo,
             "brand_name": brand_name,
             "events_api_url": (os.environ.get("EVENTS_API_URL", "") or "").strip().rstrip("/"),
+            "agent_registry": agent_registry.is_agent_registry_enabled(),
         }
     )
 
@@ -2446,9 +2461,161 @@ if getattr(settings.advanced_features, "use_extension", False):
                 # Completion message
                 yield json.dumps({"type": "agent_complete", "request_id": request_id}) + "\n"
             except Exception as e:
-                yield json.dumps({"type": "agent_error", "message": str(e), "request_id": request_id}) + "\n"
+                yield (
+                    json.dumps(
+                        {
+                            **safe_error_payload(e, message="Agent request failed"),
+                            "type": "agent_error",
+                            "request_id": request_id,
+                        }
+                    )
+                    + "\n"
+                )
 
         return StreamingResponse(event_gen(), media_type="application/jsonlines")
+
+
+async def _resolve_stream_agent(
+    request: Request, agent_id: str, use_draft: bool
+) -> Optional[DynamicAgentGraph]:
+    """Resolve the DynamicAgentGraph to run /stream against for a given X-Agent-ID.
+
+    cuga-default (or no X-Agent-ID header) always resolves to the existing app_state.agent /
+    draft_app_state.agent — that single-agent chat path is completely unchanged. Any other
+    agent_id gets its own dedicated graph built from that agent's stored config: a supervisor
+    subgraph for agent.kind == "supervisor", or a full single-agent graph (own tools/LLM/
+    special_instructions) otherwise. Built graphs are cached on app_state.agent_graphs_cache,
+    keyed by (agent_id, use_draft); manage_routes invalidates the entry on draft-save/publish.
+    """
+    draft_state = getattr(request.app.state, "draft_app_state", None)
+    default_graph = (getattr(draft_state, "agent", None) if use_draft else app_state.agent) or app_state.agent
+
+    if not agent_registry.is_agent_registry_enabled() or not agent_id or agent_id == "cuga-default":
+        return default_graph
+
+    cache_key = (agent_id, use_draft)
+    cached = app_state.agent_graphs_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    locks = getattr(app_state, "agent_graph_build_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        app_state.agent_graph_build_locks = locks
+    lock = locks.get(cache_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[cache_key] = lock
+
+    async with lock:
+        cached = app_state.agent_graphs_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        gens = getattr(app_state, "agent_graph_generations", None)
+        generation = gens.get(agent_id, 0) if isinstance(gens, dict) else 0
+        try:
+            from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+            from cuga.backend.server.config_store import load_config, load_draft
+
+            if use_draft:
+                config = await load_draft(agent_id)
+            else:
+                config, _ = await load_config(None, agent_id)
+
+            if not config:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Agent '{agent_id}' has no {'draft' if use_draft else 'published'} configuration"
+                    ),
+                )
+
+            from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+            from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
+
+            agent_meta = config.get("agent") or {}
+            kind = agent_meta.get("kind") or "single"
+            policy_system = (
+                getattr(draft_state, "policy_system", None) if use_draft else None
+            ) or app_state.policy_system
+
+            if kind == "supervisor":
+                from cuga.supervisor_utils.supervisor_config import build_agents_from_stored_subagents
+
+                supervisor_cfg = config.get("supervisor") or {}
+                agents_dict = await build_agents_from_stored_subagents(supervisor_cfg.get("subAgents") or [])
+
+                # Supervisors have no LLM UI section (that panel is hidden for kind=supervisor), so a
+                # stored ``llm`` block is only ever the create-agent default (provider=openai, empty
+                # model/key) — passing it would override the environment's real model with a broken
+                # empty-OpenAI config. Only honor it when it actually names a model; else use env
+                # defaults (settings.agent.code.model), same as the global-supervisor path.
+                sup_llm = config.get("llm") or {}
+                sup_llm_config = (
+                    sup_llm if isinstance(sup_llm, dict) and (sup_llm.get("model") or "").strip() else None
+                )
+
+                graph = DynamicAgentGraph(
+                    None,
+                    policy_system=policy_system,
+                    tool_provider=CombinedToolProvider(agent_id=agent_id),
+                    llm_config=sup_llm_config,
+                    special_instructions=config.get("special_instructions")
+                    or agent_meta.get("description")
+                    or None,
+                    supervisor_agents=agents_dict,
+                    supervisor_enabled=True,
+                    supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                )
+            else:
+                # Single agent with its own tools/LLM/special_instructions — built the same way
+                # app_state.agent / draft_app_state.agent are at startup, just parameterized by
+                # this agent_id's stored config instead of cuga-default's.
+                overrides = _extract_agent_feature_overrides(config)
+                tools_list = config.get("tools") or []
+                tools_include_by_app = {
+                    t["name"]: t["include"]
+                    for t in tools_list
+                    if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+                } or None
+
+                graph = DynamicAgentGraph(
+                    None,
+                    policy_system=policy_system,
+                    tool_provider=CombinedToolProvider(
+                        get_include_by_app=lambda: (tools_include_by_app, 0),
+                        agent_id=agent_id,
+                    ),
+                    llm_config=config.get("llm") or None,
+                    special_instructions=config.get("special_instructions")
+                    or agent_meta.get("description")
+                    or None,
+                    enable_todos=overrides.get("enable_todos"),
+                    reflection_enabled=overrides.get("reflection_enabled"),
+                    shortlisting_tool_threshold=overrides.get("shortlisting_tool_threshold"),
+                    cuga_lite_max_steps=overrides.get("cuga_lite_max_steps"),
+                    enable_filesystem_tools=overrides.get("enable_filesystem_tools"),
+                )
+
+            await graph.build_graph()
+            # Another request may have finished first, or a draft-save/publish may have
+            # invalidated this key while we were building. Keep one live graph per key
+            # so both turns share the same MemorySaver; never cache a stale build.
+            if isinstance(gens, dict) and gens.get(agent_id, 0) != generation:
+                return graph
+            existing = app_state.agent_graphs_cache.get(cache_key)
+            if existing is not None:
+                return existing
+            app_state.agent_graphs_cache[cache_key] = graph
+            return graph
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to build graph for agent_id={agent_id}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to build graph for agent '{agent_id}'",
+            )
 
 
 @app.post("/stream")
@@ -2509,11 +2676,20 @@ async def stream(
     if disable_history:
         logger.info(f"History saving disabled for thread_id: {thread_id}")
 
-    run_agent = None
-    if use_draft:
-        draft_state = getattr(request.app.state, "draft_app_state", None)
-        if draft_state and getattr(draft_state, "agent", None):
-            run_agent = draft_state.agent
+    agent_id_header = request.headers.get("X-Agent-ID") or "cuga-default"
+    if not agent_registry.is_agent_registry_enabled():
+        agent_id_header = "cuga-default"
+    if agent_id_header == "cuga-default":
+        run_agent = None
+        runtime_llm = app_state.current_llm
+        if use_draft:
+            draft_state = getattr(request.app.state, "draft_app_state", None)
+            if draft_state and getattr(draft_state, "agent", None):
+                run_agent = draft_state.agent
+                runtime_llm = getattr(draft_state, "current_llm", None)
+    else:
+        run_agent = await _resolve_stream_agent(request, agent_id_header, use_draft)
+        runtime_llm = None
 
     return StreamingResponse(
         event_stream(
@@ -2525,6 +2701,8 @@ async def stream(
             disable_history=disable_history,
             user_id=user_id,
             user_attachments=user_attachments,
+            agent_id=agent_id_header,
+            current_llm=runtime_llm,
         ),
         media_type="text/event-stream",
     )
@@ -3180,18 +3358,7 @@ async def save_policies_config(
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
     except Exception as e:
-        logger.error(f"Failed to save policies config: {e}")
-        logger.exception(e)
-        import traceback
-
-        return JSONResponse(
-            {
-                "status": "error",
-                "message": f"Failed to save policies: {str(e)}",
-                "traceback": traceback.format_exc(),
-            },
-            status_code=500,
-        )
+        return safe_error_response(e, message="Failed to save policies")
 
 
 @app.post("/api/config/policies/{policy_id}/tool-guards/generate")
@@ -3313,7 +3480,18 @@ async def generate_tool_guard_for_policy(
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+        # The handlers just below already reply with fixed text. The details of
+        # what failed validation go to the log, under the reference code that is
+        # returned to the caller.
+        ref = log_error_ref(exc, context="Tool guard generation rejected the policy")
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": "Invalid policy for tool guard generation",
+                "ref": ref,
+            },
+            status_code=400,
+        )
     except LookupError:
         return JSONResponse({"status": "error", "message": "Policy not found"}, status_code=404)
     except TypeError:
@@ -3526,20 +3704,16 @@ async def save_mode_config(
     request: Request,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ):
-    """Endpoint to save execution mode (fast/balanced) and update agent state lite_mode.
-    Note: Mode switching is disabled in hosted environments."""
+    """Legacy endpoint retained for API compatibility. Mode switching is no longer supported."""
     try:
         data = await request.json()
         mode = data.get("mode", "balanced")
-
-        # Mode switching disabled - return success without making changes
         logger.info(f"Mode change request received but disabled: {mode}")
         return JSONResponse(
             {
                 "status": "success",
-                "mode": "balanced",
-                "lite_mode": False,
-                "message": "Mode switching is disabled. Clone the repo locally to use this feature.",
+                "mode": mode,
+                "message": "Reasoning mode switching was removed with the entry graph refactor.",
             }
         )
     except Exception as e:
@@ -3600,7 +3774,6 @@ async def get_agent_state(
                         "chat_messages_count": len(local_state.chat_messages)
                         if local_state.chat_messages
                         else 0,
-                        "lite_mode": local_state.lite_mode,
                     },
                     "variables": variables_metadata,
                     "variables_count": len(variables_metadata),
@@ -3816,66 +3989,6 @@ async def save_agent_mode_config(
     except Exception as e:
         logger.error(f"Failed to save agent mode: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save agent mode: {str(e)}")
-
-
-@app.get("/api/agents")
-async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_manage_access)):
-    """List configured agents (dashboard)."""
-    try:
-        from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
-
-        tools_count = 0
-        try:
-            apps = await get_apps()
-            for app in apps:
-                apis = await get_apis(app.name)
-                tools_count += len(apis)
-        except Exception:
-            pass
-        logs_url = (
-            os.environ.get("CUGA_LOKI_LOGS_URL")
-            or os.environ.get("LOKI_URL")
-            or "https://grafana.com/docs/loki/latest/"
-        )
-        latest_version = None
-        latest_version_created_at = None
-        try:
-            from cuga.backend.server.config_store import get_latest_version
-
-            latest_version, latest_version_created_at = await get_latest_version()
-        except Exception:
-            pass
-
-        name = "CUGA Default Agent"
-        description = "Default CUGA agent with policy engine, tools, and chat."
-        try:
-            from cuga.backend.server.config_store import load_config
-
-            config, _ = await load_config(None, "cuga-default")
-            if config and isinstance(config.get("agent"), dict):
-                ag = config["agent"]
-                if isinstance(ag.get("name"), str) and ag["name"].strip():
-                    name = ag["name"].strip()
-                if isinstance(ag.get("description"), str) and ag["description"].strip():
-                    description = ag["description"].strip()
-        except Exception:
-            pass
-
-        agents = [
-            {
-                "id": "cuga-default",
-                "name": name,
-                "description": description,
-                "tools_count": tools_count,
-                "logs_url": logs_url,
-                "latest_version": latest_version,
-                "latest_version_created_at": latest_version_created_at,
-            }
-        ]
-        return JSONResponse({"agents": agents})
-    except Exception as e:
-        logger.error(f"Failed to list agents: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/agent/context")

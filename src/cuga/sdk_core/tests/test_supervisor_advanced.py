@@ -1,9 +1,19 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from langchain_core.tools import tool
 
-from cuga import CugaAgent, CugaSupervisor
+from cuga import CugaSupervisor
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
+    SUPERVISOR_EXEC_KEY,
+    SupervisorExecutionContext,
+)
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import SupervisorGraphAdapter
 from cuga.backend.cuga_graph.policy.tests.helpers import setup_langfuse_tracing
+from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 
 try:
     from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -82,52 +92,91 @@ def process_special_bonus(user_id: str, amount: int) -> str:
     return f"Processed bonus of {bonus} for {user_id}"
 
 
+class _FakeCugaAgent:
+    pass
+
+
+def _empty_delegation_state():
+    return SimpleNamespace(
+        selected_agents=[],
+        agent_results={},
+        agent_variables={},
+        agent_chat_messages={},
+        supervisor_metadata={},
+        metrics={},
+    )
+
+
+def _tool_agent(handler):
+    agent = _FakeCugaAgent()
+    agent.invoke = AsyncMock(side_effect=handler)
+    return agent
+
+
 class TestSupervisorAdvanced:
     """Advanced tests for CugaSupervisor coordination and A2A."""
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_supervisor_coordination_with_variable_passing(self):
-        """
-        Test T1: Supervisor with 3 sub-agents, tools, and variable passing.
-        1. Agent A gets user_id.
-        2. Agent B gets account value using user_id.
-        3. Agent C processes bonus using user_id and account value.
-        """
-        handler = setup_langfuse_tracing()
-        callbacks = [] if handler else []
+        """Alice lookup → account value → bonus, via the delegation payload not LLM text."""
 
-        agent_a = CugaAgent(tools=[get_user_id], callbacks=callbacks)
-        agent_a.description = "Agent that finds user IDs"
+        async def find_user(task, **kwargs):
+            user_id = get_user_id.invoke({"name": "Alice"})
+            return SimpleNamespace(answer=f"Found {user_id}", variables={"user_id": user_id})
 
-        agent_b = CugaAgent(tools=[get_user_account_value], callbacks=callbacks)
-        agent_b.description = "Agent that finds account values"
+        async def get_account(task, **kwargs):
+            user_id = (kwargs.get("variables") or {}).get("user_id", "")
+            value = get_user_account_value.invoke({"user_id": user_id})
+            return SimpleNamespace(answer=str(value), variables={"account_value": value})
 
-        agent_c = CugaAgent(tools=[process_special_bonus], callbacks=callbacks)
-        agent_c.description = "Agent that processes bonuses"
-        callbacks_supervisor = [handler] if handler else []
-        supervisor = CugaSupervisor(
-            agents={"user_finder": agent_a, "account_manager": agent_b, "bonus_processor": agent_c},
-            callbacks=callbacks_supervisor,
-            cuga_lite_max_steps=120,
-        )
+        async def process_bonus(task, **kwargs):
+            passed = kwargs.get("variables") or {}
+            result = process_special_bonus.invoke(
+                {"user_id": passed.get("user_id", ""), "amount": passed.get("account_value") or 0}
+            )
+            return SimpleNamespace(answer=result, variables={})
 
-        # The task requires sequential logic and variable passing
-        task = "Find the user ID for Alice, then get her account value, and finally process a special bonus for her."
+        user_finder = _tool_agent(find_user)
+        account_manager = _tool_agent(get_account)
+        bonus_processor = _tool_agent(process_bonus)
 
-        result = await supervisor.invoke(task)
+        adapter = SupervisorGraphAdapter(agents={})
+        state = _empty_delegation_state()
+        with patch("cuga.sdk.CugaAgent", _FakeCugaAgent):
+            namespace = {
+                SUPERVISOR_EXEC_KEY: SupervisorExecutionContext(
+                    state=state, variable_manager=VariablesManager()
+                ),
+                "delegate_user_finder": create_agent_delegation_func(adapter, "user_finder", user_finder),
+                "delegate_account_manager": create_agent_delegation_func(
+                    adapter, "account_manager", account_manager
+                ),
+                "delegate_bonus_processor": create_agent_delegation_func(
+                    adapter, "bonus_processor", bonus_processor
+                ),
+            }
+            exec(
+                "async def _run():\n"
+                "    await delegate_user_finder('Find the user ID for Alice')\n"
+                "    await delegate_account_manager('Get her account value', variables=['user_id'])\n"
+                "    return await delegate_bonus_processor("
+                "'Process a special bonus', variables=['user_id', 'account_value'])\n",
+                namespace,
+                namespace,
+            )
+            answer = await namespace["_run"]()
 
-        if handler and hasattr(handler, 'get_trace_url'):
-            print(f"\n  📊 Langfuse trace: {handler.get_trace_url()}")
+        assert account_manager.invoke.await_args.kwargs["variables"] == {"user_id": "user_alice_99"}
+        assert bonus_processor.invoke.await_args.kwargs["variables"] == {
+            "user_id": "user_alice_99",
+            "account_value": 1500,
+        }
+        assert answer == "Processed bonus of 150.0 for user_alice_99"
+        assert state.selected_agents == ["user_finder", "account_manager", "bonus_processor"]
+        assert state.agent_variables["user_finder"]["user_id"] == "user_alice_99"
 
-        assert result is not None
-        assert result.error is None
-        # Verify the supervisor coordinated all agents and passed variables.
-        # The exact bonus formatting varies (150, 150.0, $150, etc.),
-        # so we check for the user ID and that a bonus was mentioned.
-        assert "user_alice_99" in result.answer
-        answer_lower = result.answer.lower()
-        assert "bonus" in answer_lower
-
+    @pytest.mark.e2e
     @pytest.mark.asyncio
     @pytest.mark.skipif(not HAS_A2A_SDK, reason="a2a-sdk not installed")
     @pytest.mark.skipif(not HAS_A2A_HTTP_SERVER, reason="a2a-sdk[http-server] not installed")

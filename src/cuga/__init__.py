@@ -38,6 +38,9 @@ __all__ = [
     "KnowledgeClient",
     "KnowledgeEngine",
     "KnowledgeConfig",
+    # Tool shortlisting: how a large tool set is shrunk before the model sees it.
+    "Shortlister",
+    "ShortlisterStrategy",
     # Client-adaptation SDK surface — operators can build / validate / hash
     # adaptation text without going through the HTTP layer.
     "CLIENT_ADAPTATION_MAX_CHARS",
@@ -52,6 +55,10 @@ __all__ = [
 if TYPE_CHECKING:
     from cuga.sdk import CugaAgent, CugaSupervisor, run_agent, InvokeResult
     from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
+    from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import (
+        Shortlister,
+        ShortlisterStrategy,
+    )
     from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
     from cuga.backend.knowledge.config import (
         CLIENT_ADAPTATION_MAX_CHARS,
@@ -82,6 +89,14 @@ _import_map: dict = {
     "KnowledgeClient": ("cuga.backend.knowledge", "KnowledgeClient"),
     "KnowledgeEngine": ("cuga.backend.knowledge", "KnowledgeEngine"),
     "KnowledgeConfig": ("cuga.backend.knowledge.config", "KnowledgeConfig"),
+    "Shortlister": (
+        "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister",
+        "Shortlister",
+    ),
+    "ShortlisterStrategy": (
+        "cuga.backend.cuga_graph.nodes.cuga_lite.shortlister",
+        "ShortlisterStrategy",
+    ),
     "CLIENT_ADAPTATION_MAX_CHARS": (
         "cuga.backend.knowledge.config",
         "CLIENT_ADAPTATION_MAX_CHARS",

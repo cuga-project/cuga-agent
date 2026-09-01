@@ -31,6 +31,8 @@ import {
   RadioButtonGroup,
   RadioButton,
   TextArea,
+  Toggle,
+  IconButton,
   Tooltip,
 } from "@carbon/react";
 import { CugaHeader } from "./CugaHeader";
@@ -46,6 +48,8 @@ import {
   Tools,
   SkillLevel as SkillIcon,
   Package as PackageIcon,
+  Add,
+  TrashCan,
 } from "@carbon/icons-react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -55,6 +59,7 @@ import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
 import type { ToolEntry } from "./types/tools";
+import type { AgentItem } from "./ManageDashboard";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
 import { useLlmDraftSave } from "./manage/hooks/useLlmDraftSave";
 import { useAgentDraftSave } from "./manage/hooks/useAgentDraftSave";
@@ -63,6 +68,14 @@ import { useToolsDraftSave } from "./manage/hooks/useToolsDraftSave";
 import { useKnowledgeDraftSave, type AdaptationServerErrorShape } from "./manage/hooks/useKnowledgeDraftSave";
 import { useFullDraftSave } from "./manage/hooks/useFullDraftSave";
 import { usePublishConfig } from "./manage/hooks/usePublishConfig";
+import {
+  isSecretRef,
+  matchSecretRef,
+  secretIdFromRef,
+  storedRefMissingFromList,
+} from "./secretRefUtils";
+import { parseImportedSupervisorFields } from "./manage/parseImportedConfig";
+import { isAbortError } from "./manage/hooks/saveHelpers";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -71,6 +84,22 @@ export interface HomescreenConfig {
   isOn?: boolean;
   greeting?: string;
   starters?: string[];
+}
+
+export type SubAgentRef =
+  | { kind: "internal"; ref: string }
+  | {
+      kind: "a2a";
+      name: string;
+      endpoint: string;
+      auth?: { type: "bearer"; tokenEnvVar?: string };
+      timeout?: number;
+    };
+
+function supervisorSaveSeqFromConfig(supervisor: unknown): number {
+  if (!supervisor || typeof supervisor !== "object") return 0;
+  const seq = (supervisor as { _saveSeq?: unknown })._saveSeq;
+  return typeof seq === "number" && Number.isFinite(seq) ? seq : 0;
 }
 
 export type LlmJsonValue =
@@ -82,7 +111,8 @@ export type LlmJsonValue =
   | { [key: string]: LlmJsonValue };
 
 export interface AgentConfig {
-  agent?: { name?: string; description?: string };
+  agent?: { name?: string; description?: string; kind?: "single" | "supervisor" };
+  supervisor?: { subAgents?: SubAgentRef[]; planApproval?: boolean; _saveSeq?: number };
   llm?: {
     provider?: "groq" | "openai" | "litellm";
     api_key?: string;
@@ -328,11 +358,6 @@ function policiesSummary(policies: unknown[]): { total: number; byType: Record<s
   return { total: policies.length, byType };
 }
 
-function isSecretRef(v: unknown): boolean {
-  if (typeof v !== "string") return false;
-  return v.startsWith("db://") || v.startsWith("vault://") || v.startsWith("aws://") || v.startsWith("env://");
-}
-
 function maskSecrets(obj: unknown): unknown {
   if (obj === null || obj === undefined) return obj;
   if (Array.isArray(obj)) return obj.map(maskSecrets);
@@ -351,6 +376,81 @@ function maskSecrets(obj: unknown): unknown {
     return out;
   }
   return obj;
+}
+
+function AddA2AAgentModal({
+  onClose,
+  onAdd,
+}: {
+  onClose: () => void;
+  onAdd: (entry: Extract<SubAgentRef, { kind: "a2a" }>) => void;
+}) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [tokenEnvVar, setTokenEnvVar] = useState("");
+  const [timeout, setTimeoutVal] = useState(30);
+
+  const canAdd = name.trim() !== "" && endpoint.trim() !== "";
+
+  return (
+    <ComposedModal open onClose={onClose} size="sm">
+      <ModalHeader title="Add A2A agent" />
+      <ModalBody hasForm>
+        <VStack gap={5}>
+          <TextInput
+            id="a2a-name"
+            labelText="Name"
+            helperText="Identifier for the A2A agent"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. research-agent"
+          />
+          <TextInput
+            id="a2a-endpoint"
+            labelText="Endpoint URL"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder="e.g. http://localhost:8080"
+          />
+          <TextInput
+            id="a2a-token-env-var"
+            labelText="Auth token env var (optional)"
+            helperText="Name of an environment variable holding a bearer token — not the token itself"
+            value={tokenEnvVar}
+            onChange={(e) => setTokenEnvVar(e.target.value)}
+            placeholder="e.g. RESEARCH_AGENT_TOKEN"
+          />
+          <NumberInput
+            id="a2a-timeout"
+            label="Timeout (seconds)"
+            value={timeout}
+            min={1}
+            onChange={(_e: unknown, { value }: { value: number | string }) => setTimeoutVal(Number(value) || 30)}
+          />
+        </VStack>
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          kind="primary"
+          disabled={!canAdd}
+          onClick={() =>
+            onAdd({
+              kind: "a2a",
+              name: name.trim(),
+              endpoint: endpoint.trim(),
+              auth: tokenEnvVar.trim() ? { type: "bearer", tokenEnvVar: tokenEnvVar.trim() } : undefined,
+              timeout,
+            })
+          }
+        >
+          Add
+        </Button>
+      </ModalFooter>
+    </ComposedModal>
+  );
 }
 
 export function ManagePage() {
@@ -416,6 +516,12 @@ export function ManagePage() {
   } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
+  const [agentKind, setAgentKind] = useState<"single" | "supervisor">("single");
+  const [agentRegistry, setAgentRegistry] = useState(false);
+  const [subAgents, setSubAgents] = useState<SubAgentRef[]>([]);
+  const [planApproval, setPlanApproval] = useState(false);
+  const [availableAgents, setAvailableAgents] = useState<AgentItem[]>([]);
+  const [showAddA2AModal, setShowAddA2AModal] = useState(false);
   const [specialInstructions, setSpecialInstructions] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
   const [skills, setSkills] = useState<Array<{ name: string; description: string; requirements: string[]; source: string }>>([]);
@@ -497,6 +603,11 @@ export function ManagePage() {
   const forceImmediateSaveRef = useRef<boolean>(false);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
+  const supervisorAbortRef = useRef<AbortController | null>(null);
+  const supervisorSaveSeqRef = useRef(0);
+  const loadLatestGenRef = useRef(0);
+  const effectiveAgentIdRef = useRef(effectiveAgentId);
+  effectiveAgentIdRef.current = effectiveAgentId;
 
   useEffect(() => {
     api.getAgentContext()
@@ -661,13 +772,17 @@ export function ManagePage() {
   }, [addToast]);
 
   const loadLatest = useCallback(async () => {
+    const agentId = effectiveAgentId;
+    const gen = ++loadLatestGenRef.current;
+    const isStale = () => gen !== loadLatestGenRef.current || agentId !== effectiveAgentIdRef.current;
     try {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
-        api.getManageConfig(true, effectiveAgentId),
+        api.getManageConfig(true, agentId),
         api.getToolsList(true),
       ]);
-      
+      if (isStale()) return;
+
       // Check for HTTP errors
       if (!draftRes.ok && draftRes.status >= 400) {
         const errorMsg = `Failed to load draft config (${draftRes.status} ${draftRes.statusText})`;
@@ -682,6 +797,7 @@ export function ManagePage() {
       let version: number | "draft" | null = null;
       if (draftRes.ok) {
         const data = await draftRes.json();
+        if (isStale()) return;
         if (data.version === "draft" || (data.config && Object.keys(data.config).length > 0)) {
           if (data.config) {
             Object.assign(out, data.config);
@@ -719,9 +835,11 @@ export function ManagePage() {
         }
       }
       if (version === null) {
-        const publishedRes = await api.getManageConfig(false, effectiveAgentId);
+        const publishedRes = await api.getManageConfig(false, agentId);
+        if (isStale()) return;
         if (publishedRes.ok) {
           const data = await publishedRes.json();
+          if (isStale()) return;
           // Stamp the Live truth anchor from the PUBLISHED knowledge config.
           // Independent of whatever the draft is — this is the pill the
           // header always reads. Refreshed after every successful Publish
@@ -775,8 +893,10 @@ export function ManagePage() {
           addToast("error", "Load Error", errorMsg);
         }
       }
+      if (isStale()) return;
       if (toolsListRes.ok) {
         const toolsData = await toolsListRes.json();
+        if (isStale()) return;
         setConnectedApps(toolsData.apps ?? []);
         setConnectedTools(
           (toolsData.tools ?? []).map((t: ConnectedTool & { id?: string }) => ({
@@ -788,12 +908,17 @@ export function ManagePage() {
         setConnectedApps([]);
         setConnectedTools([]);
       }
+      if (isStale()) return;
       replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
       setToolsState(Array.isArray(out.tools) ? out.tools : []);
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
       setSpecialInstructions(out.special_instructions ?? "");
       setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
+      setAgentKind(out.agent?.kind === "supervisor" ? "supervisor" : "single");
+      setSubAgents(Array.isArray(out.supervisor?.subAgents) ? out.supervisor!.subAgents! : []);
+      setPlanApproval(out.supervisor?.planApproval ?? false);
+      supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(out.supervisor);
       if (out.knowledge) {
         setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
         setKnowledgeSavedSnapshot(out.knowledge);
@@ -802,19 +927,19 @@ export function ManagePage() {
         api.getKnowledgeSettings()
           .then((res) => (res.ok ? res.json() : null))
           .then((sData) => {
-            if (sData?.knowledge) {
-              setKnowledgeConfig((prev) => ({ ...prev, ...sData.knowledge }));
-              setKnowledgeSavedSnapshot(sData.knowledge);
-            }
+            if (isStale() || !sData?.knowledge) return;
+            setKnowledgeConfig((prev) => ({ ...prev, ...sData.knowledge }));
+            setKnowledgeSavedSnapshot(sData.knowledge);
           })
           .catch(() => {});
       }
       setCurrentVersion(version);
       setLoadError(null);
       setTimeout(() => {
-        skipDraftSaveRef.current = false;
+        if (!isStale()) skipDraftSaveRef.current = false;
       }, 0);
     } catch (e) {
+      if (isStale()) return;
       const errorMsg = e instanceof Error ? e.message : "Failed to load config";
       setLoadError(errorMsg);
       addToast("error", "Load Error", errorMsg);
@@ -856,7 +981,7 @@ export function ManagePage() {
           ref: s.source === "vault" || mode === "vault"
             ? `vault://secret/${s.id}#value`
             : s.source === "env"
-              ? s.id
+              ? `env://${s.id}`
               : s.source === "aws"
                 ? `aws://${s.id}`
                 : `db://${s.id}`,
@@ -870,10 +995,7 @@ export function ManagePage() {
   }, [refreshSecrets]);
 
   useEffect(() => {
-    const key = llmConfig?.api_key ?? "";
-    setLlmUseSavedSecret(
-      typeof key === "string" && (key.startsWith("db://") || key.startsWith("vault://") || key.startsWith("aws://"))
-    );
+    setLlmUseSavedSecret(isSecretRef(llmConfig?.api_key ?? ""));
   }, [llmConfig?.api_key]);
 
   useEffect(() => {
@@ -980,8 +1102,12 @@ export function ManagePage() {
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
       const c: AgentConfig = {
-        agent: { name: agentName, description: agentDescription || undefined },
-        llm: llmConfig,
+        agent: { name: agentName, description: agentDescription || undefined, kind: agentKind },
+        supervisor: agentKind === "supervisor" ? { subAgents, planApproval, _saveSeq: supervisorSaveSeqRef.current } : undefined,
+        // Supervisors have no LLM section in this UI (they use the environment's default
+        // model) — omit it so a stale DEFAULT_CONFIG.llm placeholder never gets saved and
+        // mistakenly overrides that default (see main.py's _resolve_stream_agent guard).
+        llm: agentKind === "supervisor" ? undefined : llmConfig,
         tools: tools,
         feature_flags: featureFlags,
         homescreen,
@@ -991,7 +1117,7 @@ export function ManagePage() {
       };
       return overrides ? { ...c, ...overrides } : c;
     },
-    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
+    [agentName, agentDescription, agentKind, subAgents, planApproval, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
   );
 
 
@@ -1006,6 +1132,7 @@ export function ManagePage() {
   const { saveAgentDraft } = useAgentDraftSave({
     agentName,
     agentDescription,
+    agentKind,
     effectiveAgentId,
     addToast,
     setDraftSaving,
@@ -1074,6 +1201,105 @@ export function ManagePage() {
     loadHistory,
   });
 
+  useEffect(() => {
+    supervisorAbortRef.current?.abort();
+    setDraftSaving(false);
+    return () => {
+      supervisorAbortRef.current?.abort();
+    };
+  }, [effectiveAgentId]);
+
+  const saveSupervisorDraft = useCallback(
+    async (next: { subAgents: SubAgentRef[]; planApproval: boolean }) => {
+      const agentId = effectiveAgentId;
+      setDraftSaving(true);
+      supervisorAbortRef.current?.abort();
+      const ac = new AbortController();
+      supervisorAbortRef.current = ac;
+      supervisorSaveSeqRef.current += 1;
+      const saveSeq = supervisorSaveSeqRef.current;
+      try {
+        let res = await api.patchManageConfigDraftSupervisor(next, agentId, ac.signal, saveSeq);
+        const stillCurrent = () =>
+          !ac.signal.aborted && ac === supervisorAbortRef.current && agentId === effectiveAgentIdRef.current;
+        if (!stillCurrent()) return;
+        if (res.status === 409) {
+          const body = await res.json().catch(() => ({} as { detail?: { saveSeq?: unknown } }));
+          const serverSeq = body?.detail?.saveSeq;
+          const base = typeof serverSeq === "number" && Number.isFinite(serverSeq) ? serverSeq : saveSeq;
+          const retrySeq = Math.max(supervisorSaveSeqRef.current, base) + 1;
+          supervisorSaveSeqRef.current = retrySeq;
+          res = await api.patchManageConfigDraftSupervisor(next, agentId, ac.signal, retrySeq);
+          if (!stillCurrent()) return;
+        }
+        setDraftSaving(false);
+        if (res.ok) {
+          setCurrentVersion("draft");
+        } else {
+          addToast("error", "Draft Save Failed", `Failed to save sub-agents (${res.status} ${res.statusText})`);
+        }
+      } catch (error) {
+        if (isAbortError(error) || agentId !== effectiveAgentIdRef.current) return;
+        if (ac !== supervisorAbortRef.current) return;
+        setDraftSaving(false);
+        addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
+      }
+    },
+    [addToast, effectiveAgentId]
+  );
+
+  const addInternalSubAgent = useCallback(
+    (ref: string) => {
+      if (!ref || subAgents.some((s) => s.kind === "internal" && s.ref === ref)) return;
+      const next = [...subAgents, { kind: "internal" as const, ref }];
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const addA2ASubAgent = useCallback(
+    (entry: Extract<SubAgentRef, { kind: "a2a" }>) => {
+      const next = [...subAgents, entry];
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const removeSubAgent = useCallback(
+    (index: number) => {
+      const next = subAgents.filter((_, i) => i !== index);
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const updatePlanApproval = useCallback(
+    (checked: boolean) => {
+      setPlanApproval(checked);
+      saveSupervisorDraft({ subAgents, planApproval: checked });
+    },
+    [subAgents, saveSupervisorDraft]
+  );
+
+  useEffect(() => {
+    api.getUiConfig()
+      .then((c) => setAgentRegistry(!!c.agent_registry))
+      .catch(() => setAgentRegistry(false));
+  }, []);
+
+  useEffect(() => {
+    if (!agentRegistry || agentKind !== "supervisor") return;
+    api.getAgents()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.agents) setAvailableAgents(data.agents);
+      })
+      .catch(() => {});
+  }, [agentKind, agentRegistry]);
+
 
   // Knowledge reindex detection — compare current config against the
   // last saved/published state. The principle: only flag "needs
@@ -1119,6 +1345,11 @@ export function ManagePage() {
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
         setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
         setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+        setSpecialInstructions(next.special_instructions ?? "");
+        setAgentKind(ag?.kind === "supervisor" ? "supervisor" : "single");
+        setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
+        setPlanApproval(next.supervisor?.planApproval ?? false);
+        supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(next.supervisor);
         setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
         setKnowledgeSavedSnapshot(next.knowledge ?? null);
         setCurrentVersion(version);
@@ -1154,6 +1385,7 @@ export function ManagePage() {
       } else {
         (next as Record<string, unknown>)[field] = value;
       }
+      llmConfigRef.current = next;
       return next;
     });
   };
@@ -1244,11 +1476,13 @@ export function ManagePage() {
           if (raw.knowledge && typeof raw.knowledge === "object") {
             out.knowledge = { ...DEFAULT_KNOWLEDGE_CONFIG, ...(raw.knowledge as Record<string, unknown>) };
           }
-          if (raw.agent && typeof raw.agent === "object") {
-            const a = raw.agent as { name?: string; description?: string };
-            if (a.name) setAgentName(a.name);
-            if (a.description !== undefined) setAgentDescription(a.description);
-          }
+          const imported = parseImportedSupervisorFields(raw);
+          if (imported.agentName) setAgentName(imported.agentName);
+          if (imported.agentDescription !== undefined) setAgentDescription(imported.agentDescription);
+          setAgentKind(imported.agentKind ?? "single");
+          setSubAgents((imported.subAgents ?? []) as SubAgentRef[]);
+          setPlanApproval(imported.planApproval ?? false);
+          supervisorSaveSeqRef.current += 1;
           replaceLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
@@ -1285,6 +1519,13 @@ export function ManagePage() {
   );
 
   const llm = llmConfig ?? {};
+  const llmSecretStoredRef = typeof llm.api_key === "string" ? llm.api_key : "";
+  const llmSecretSelectValue = matchSecretRef(llmSecretStoredRef, llmSecretsList);
+  const llmSecretOrphanInList = storedRefMissingFromList(
+    llmSecretStoredRef,
+    llmSecretsList,
+    llmSecretSelectValue
+  );
   const flags = featureFlags ?? {};
   const policiesList = policies?.policies ?? [];
   const summary = policiesSummary(policiesList);
@@ -1297,7 +1538,7 @@ export function ManagePage() {
         agentContext={agentContext ?? undefined}
         navItems={[
           { label: "Agents", to: `/manage${search}` },
-          { label: "Chat", to: search ? `/${search}` : "/chat" },
+          { label: "Chat", to: `/chat/${encodeURIComponent(effectiveAgentId)}` },
           ...(studioOn ? [{ label: "Events Studio ⚗", to: "/studio" }] : []),
         ]}
         linkComponent={Link}
@@ -1366,6 +1607,92 @@ export function ManagePage() {
                   </div>
                 </VStack>
               </AccordionItem>
+
+              {agentRegistry && agentKind === "supervisor" && (
+                <AccordionItem title="Sub-agents" open>
+                  <VStack gap={5}>
+                    <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>
+                      A supervisor doesn&apos;t use its own tools or LLM section — it delegates to the
+                      agents listed below, each an existing agent or an external A2A endpoint.
+                    </p>
+
+                    <FormGroup legendText="Add an existing agent">
+                      <Select
+                        id="add-internal-subagent"
+                        labelText=""
+                        hideLabel
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) addInternalSubAgent(e.target.value);
+                        }}
+                      >
+                        <SelectItem value="" text="Select an agent to add…" />
+                        {availableAgents
+                          .filter(
+                            (a) =>
+                              a.id !== effectiveAgentId &&
+                              a.kind !== "supervisor" &&
+                              !subAgents.some((s) => s.kind === "internal" && s.ref === a.id)
+                          )
+                          .map((a) => (
+                            <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
+                          ))}
+                      </Select>
+                    </FormGroup>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <Button kind="tertiary" size="sm" renderIcon={Add} onClick={() => setShowAddA2AModal(true)}>
+                        Add A2A agent
+                      </Button>
+                    </div>
+
+                    {subAgents.length === 0 ? (
+                      <p style={{ fontSize: "0.8125rem", color: "var(--cds-text-secondary)" }}>
+                        No sub-agents yet. Add an existing agent or an A2A agent above.
+                      </p>
+                    ) : (
+                      <VStack gap={3}>
+                        {subAgents.map((s, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "0.75rem 1rem",
+                              border: "1px solid var(--cds-border-subtle-00)",
+                            }}
+                          >
+                            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                              <Tag type={s.kind === "internal" ? "blue" : "purple"} size="sm">
+                                {s.kind === "internal" ? "Agent" : "A2A"}
+                              </Tag>
+                              <span>{s.kind === "internal" ? s.ref : `${s.name} (${s.endpoint})`}</span>
+                            </div>
+                            <IconButton label="Remove sub-agent" kind="ghost" size="sm" onClick={() => removeSubAgent(i)}>
+                              <TrashCan />
+                            </IconButton>
+                          </div>
+                        ))}
+                      </VStack>
+                    )}
+
+                    <Toggle
+                      id="plan-approval-toggle"
+                      labelText="Plan approval"
+                      labelA="Off"
+                      labelB="On"
+                      toggled={planApproval}
+                      onToggle={updatePlanApproval}
+                    />
+                    <p style={{ fontSize: "0.8125rem", color: "var(--cds-text-secondary)" }}>
+                      When on, the supervisor pauses for approval before delegating to sub-agents.
+                    </p>
+                  </VStack>
+                </AccordionItem>
+              )}
+
+              {agentKind !== "supervisor" && (
               <AccordionItem title="LLM Configuration" open>
                   {llmSecretsMode === "local" && llmForceEnv ? (
                     <InlineNotification
@@ -1442,10 +1769,16 @@ export function ManagePage() {
                           <Select
                             id="llm-api-key-secret"
                             labelText={llm.auth_type === "auth_header" ? "Header value (saved secret)" : "API Key (saved secret)"}
-                            value={llm.api_key ?? ""}
+                            value={llmSecretSelectValue}
                             onChange={(e) => { updateLlm("api_key", e.target.value); setTimeout(saveLlmDraft, 0); }}
                           >
                             <SelectItem value="" text="Select a secret" />
+                            {llmSecretOrphanInList && (
+                              <SelectItem
+                                value={llmSecretStoredRef}
+                                text={`${secretIdFromRef(llmSecretStoredRef)} (configured)`}
+                              />
+                            )}
                             {llmSecretsList.map((s) => (
                               <SelectItem
                                 key={s.id}
@@ -1808,7 +2141,9 @@ export function ManagePage() {
                   </VStack>
                   )}
               </AccordionItem>
+              )}
 
+              {agentKind !== "supervisor" && (
               <AccordionItem title="Tools" open>
                   <ToolsConfig
                     tools={tools}
@@ -1821,6 +2156,7 @@ export function ManagePage() {
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
               </AccordionItem>
+              )}
 
               {agentContext?.skills_enabled ? (
               <AccordionItem title="Skills">
@@ -2348,6 +2684,16 @@ export function ManagePage() {
 
       <SecretsManager open={secretsModalOpen} onClose={() => { setSecretsModalOpen(false); refreshSecrets(); }} agentId={effectiveAgentId} />
 
+      {showAddA2AModal && (
+        <AddA2AAgentModal
+          onClose={() => setShowAddA2AModal(false)}
+          onAdd={(entry) => {
+            addA2ASubAgent(entry);
+            setShowAddA2AModal(false);
+          }}
+        />
+      )}
+
       {showPoliciesModal && (
         <PoliciesConfig
           draftMode={true}
@@ -2655,6 +3001,11 @@ export function ManagePage() {
                 setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
                 setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
                 setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+                setSpecialInstructions(next.special_instructions ?? "");
+                setAgentKind(next.agent?.kind === "supervisor" ? "supervisor" : "single");
+                setSubAgents(Array.isArray(next.supervisor?.subAgents) ? next.supervisor.subAgents : []);
+                setPlanApproval(next.supervisor?.planApproval ?? false);
+                supervisorSaveSeqRef.current = supervisorSaveSeqFromConfig(next.supervisor);
                 setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
                 setKnowledgeSavedSnapshot(next.knowledge ?? null);
                 setCurrentVersion(viewVersion.version);

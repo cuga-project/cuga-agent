@@ -1,0 +1,59 @@
+[agent.task_decomposition.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.shortlister.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.planner.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.plan_controller.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 32000
+
+[agent.code.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code_planner.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.action.model]
+platform = "wxo"
+model_name = "watsonx/openai/gpt-oss-120b"
+temperature = 0.1
+max_tokens = 2000

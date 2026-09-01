@@ -135,7 +135,6 @@ validators = [
     Validator("features.thoughts", default=True),
     Validator("features.code_generation", default="accurate"),
     Validator("advanced_features.registry", default=True),
-    Validator("features.task_decomposition", default=False),
     Validator("advanced_features.langfuse_tracing", default=False),
     Validator("observability.openlit", default=False),
     Validator("observability.pricing_json", default=""),
@@ -144,9 +143,6 @@ validators = [
     Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),
     Validator("advanced_features.run_receipt", default=False),
-    Validator("advanced_features.lite_mode", default=False),
-    Validator("advanced_features.lite_mode_tool_threshold", default=15),
-    Validator("advanced_features.decomposition_strategy", default="flexible"),
     Validator("advanced_features.local_sandbox", default=True),
     Validator("advanced_features.message_window_limit", default=20),
     Validator("advanced_features.max_input_length", default=50000),
@@ -218,12 +214,25 @@ validators = [
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
+    # Read at prepare_node without a getattr guard; without this a settings.toml
+    # missing the key raises AttributeError mid-run instead of using the default.
+    Validator("advanced_features.shortlisting_tool_threshold", default=35),
+    # Pluggable shortlister — see docs/design/pluggable-shortlister.md.
+    # Defaults mirror shortlister/plan.py so a missing [shortlister] section is safe.
+    Validator("shortlister.strategy", default="llm"),
+    Validator("shortlister.fallback_strategy", default="llm"),
+    Validator("shortlister.threshold", default=128, is_type_of=int),
+    Validator("shortlister.top_k", default=128, is_type_of=int),
+    Validator("shortlister.max_results", default=10, is_type_of=int),
+    Validator("shortlister.min_score", default=0.15),
+    Validator("shortlister.query_weight", default=0.7),
+    Validator("shortlister.embedding_provider", default="local"),
+    Validator("shortlister.embedding_model", default="BAAI/bge-small-en-v1.5"),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
     Validator("evolve.mode", default="auto"),
     Validator("evolve.app_name", default="evolve"),
-    Validator("evolve.lite_mode_only", default=True),
     Validator("evolve.save_on_success", default=True),
     Validator("evolve.save_on_failure", default=True),
     Validator("evolve.async_save", default=True),
@@ -239,6 +248,8 @@ validators = [
         is_type_of=int,
         gt=0,
     ),
+    Validator("supervisor.enabled", default=False),
+    Validator("supervisor.registry_enabled", default=False),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
@@ -420,4 +431,4 @@ def resolved_benchmark() -> str:
 
 
 if __name__ == "__main__":
-    model = settings.agent.task_decomposition.model
+    print(settings.features.cuga_mode)

@@ -28,9 +28,15 @@ export async function getAuthConfig(): Promise<{ enabled: boolean; authorization
   return authConfigCache;
 }
 
-let uiConfigCache: { hide_cuga_logo: boolean; brand_name: string } | null = null;
+export type UiConfig = {
+  hide_cuga_logo: boolean;
+  brand_name: string;
+  agent_registry: boolean;
+};
 
-export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_name: string }> {
+let uiConfigCache: UiConfig | null = null;
+
+export async function getUiConfig(): Promise<UiConfig> {
   if (uiConfigCache !== null) return uiConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/ui/config`, { credentials: "include" });
@@ -38,6 +44,7 @@ export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_na
   uiConfigCache = {
     hide_cuga_logo: !!data.hide_cuga_logo,
     brand_name: data.brand_name && String(data.brand_name).trim() ? String(data.brand_name).trim() : "CUGA Agent",
+    agent_registry: !!data.agent_registry,
   };
   return uiConfigCache;
 }
@@ -158,12 +165,13 @@ export async function postStream(
     useDraft?: boolean;
     disableHistory?: boolean;
     signal?: AbortSignal;
+    agentId?: string;
   }
 ): Promise<Response> {
-  const base = getApiBaseUrl();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Thread-ID": options.threadId,
+    "X-Agent-ID": options.agentId || getKnowledgeAgentId(),
   };
   if (options.useDraft) headers["X-Use-Draft"] = "true";
   if (options.disableHistory) headers["X-Disable-History"] = "true";
@@ -175,15 +183,15 @@ export async function postStream(
   });
 }
 
-export async function getConversationStreamEvents(threadId: string): Promise<Response> {
+export async function getConversationStreamEvents(threadId: string, agentId?: string): Promise<Response> {
   return apiFetch(
-    `/api/conversation-stream-events/${threadId}?agent_id=cuga-default&user_id=default_user`
+    `/api/conversation-stream-events/${threadId}?agent_id=${encodeURIComponent(agentId || getKnowledgeAgentId())}&user_id=default_user`
   );
 }
 
-export async function getConversationMessages(threadId: string): Promise<Response> {
+export async function getConversationMessages(threadId: string, agentId?: string): Promise<Response> {
   return apiFetch(
-    `/api/conversation-messages/${threadId}?agent_id=cuga-default&user_id=default_user`
+    `/api/conversation-messages/${threadId}?agent_id=${encodeURIComponent(agentId || getKnowledgeAgentId())}&user_id=default_user`
   );
 }
 
@@ -240,7 +248,7 @@ export async function postManageConfigDraft(
 // ``fetch``'s second arg, so passing ``signal`` here propagates
 // natively. See CLIENT_CANCELLATION_CONTRACT.md for the contract.
 export async function patchManageConfigDraftAgent(
-  agent: { name?: string; description?: string },
+  agent: { name?: string; description?: string; kind?: "single" | "supervisor" },
   agentId?: string,
   signal?: AbortSignal,
 ): Promise<Response> {
@@ -291,6 +299,21 @@ export async function patchManageConfigDraftPolicies(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policies }),
+    signal,
+  });
+}
+
+export async function patchManageConfigDraftSupervisor(
+  supervisor: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+  saveSeq?: number,
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/supervisor${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ supervisor, ...(saveSeq != null ? { saveSeq } : {}) }),
     signal,
   });
 }
@@ -369,16 +392,16 @@ export async function getSkills(): Promise<Response> {
   return apiFetch("/api/skills");
 }
 
-export async function getConversationThreads(): Promise<Response> {
-  return apiFetch("/api/conversation-threads?agent_id=cuga-default");
+export async function getConversationThreads(agentId?: string): Promise<Response> {
+  return apiFetch(`/api/conversation-threads?agent_id=${encodeURIComponent(agentId || getKnowledgeAgentId())}`);
 }
 
 export async function getConversations(): Promise<Response> {
   return apiFetch("/api/conversations");
 }
 
-export async function deleteConversation(threadId: string): Promise<Response> {
-  return apiFetch(`/api/conversations/${threadId}?agent_id=cuga-default`, {
+export async function deleteConversation(threadId: string, agentId?: string): Promise<Response> {
+  return apiFetch(`/api/conversations/${threadId}?agent_id=${encodeURIComponent(agentId || getKnowledgeAgentId())}`, {
     method: "DELETE",
   });
 }
@@ -438,6 +461,22 @@ export async function uploadWorkspaceFile(file: File, threadId: string): Promise
 
 export async function getAgents(): Promise<Response> {
   return apiFetch("/api/agents");
+}
+
+export async function createAgent(
+  name: string,
+  description: string,
+  kind: "single" | "supervisor"
+): Promise<Response> {
+  return apiFetch("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description, kind }),
+  });
+}
+
+export async function deleteAgent(agentId: string): Promise<Response> {
+  return apiFetch(`/api/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
 }
 
 export async function getSecrets(agentId?: string): Promise<Response> {
@@ -733,8 +772,10 @@ export async function postConcierge(
 // Knowledge API (unified — LangChain + Milvus Lite engine)
 // ---------------------------------------------------------------------------
 
-// Current agent context — set by the app when agent is selected
-let _knowledgeAgentId = "default";
+// Current agent context — set by the app when agent is selected. Also used by postStream /
+// conversation endpoints as the X-Agent-ID / agent_id fallback (issue #101) so calls made
+// before the async agent-context fetch resolves still target the real default agent.
+let _knowledgeAgentId = "cuga-default";
 export function setKnowledgeAgentId(agentId: string) {
   _knowledgeAgentId = agentId;
 }

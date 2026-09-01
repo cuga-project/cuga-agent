@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.shortlister import (
     APIDetails,
     ShortListerOutputLite,
 )
