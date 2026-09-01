@@ -1,4 +1,7 @@
 {
+  "src/cuga/backend/server/agents_routes.py": {
+    "HTTPException(status_code=500, detail=str(e))": 1
+  },
   "src/cuga/backend/server/main.py": {
     "HTTPException( status_code=503, detail=str(e) or \"IAM proxy token exchange failed (connection error)\", )": 1,
     "HTTPException(status_code=400, detail=msg)": 1,
@@ -34,7 +37,6 @@
     "HTTPException(status_code=500, detail=f\"Failed to save sub-agents config: {str(e)}\")": 1,
     "HTTPException(status_code=500, detail=f\"Failed to save tools config: {str(e)}\")": 1,
     "HTTPException(status_code=500, detail=f\"Failed to upload file: {str(e)}\")": 1,
-    "HTTPException(status_code=500, detail=str(e))": 1,
     "HTTPException(status_code=503, detail=f\"Registry service unavailable: {str(e)}\")": 1,
     "HTTPException(status_code=503, detail=str(e))": 1,
     "JSONResponse({\"type\": \"agent_error\", \"message\": e.detail}, status_code=e.status_code)": 1
@@ -44,7 +46,7 @@
     "HTTPException(status_code=500, detail=str(e))": 3
   },
   "src/cuga/backend/server/manage_routes/draft_routes.py": {
-    "HTTPException(status_code=500, detail=str(e))": 6
+    "HTTPException(status_code=500, detail=str(e))": 7
   },
   "src/cuga/backend/server/manage_routes/knowledge_routes.py": {
     "HTTPException( status_code=409, detail={ \"error\": \"reindex_in_progress\", \"collections\": sorted(live_engine._reindex_in_progress), \"message\": str(rip_err) or \"Re-index is running. Wait for it to finish before changing knowledge settings.\", }, )": 1,
