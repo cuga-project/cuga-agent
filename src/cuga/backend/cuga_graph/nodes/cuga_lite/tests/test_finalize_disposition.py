@@ -15,6 +15,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
     resolve_finalize_disposition,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ── Detectors ──────────────────────────────────────────────────────────────
 

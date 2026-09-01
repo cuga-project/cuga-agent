@@ -295,30 +295,26 @@ def create_call_model_node(
             )
 
         # ── Mode-aware finalize disposition (#445: deferral + ask_user) ────
+        # Routed through an adapter hook (default no-op) rather than calling
+        # Lite's resolve_finalize_disposition directly — this node is shared
+        # with Supervisor, which must keep finalizing NL turns unconditionally.
         should_continue: bool | str = False
         if not budget_exhausted:
-            from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
-                FinalizeDisposition,
-                resolve_finalize_disposition,
-            )
-
             nl_auto_continue = bool(getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True))
             autonomous = bool(getattr(settings.advanced_features, "force_autonomous_mode", False))
 
-            disposition = resolve_finalize_disposition(
-                content,
-                autonomous=autonomous,
-                nl_auto_continue=nl_auto_continue,
-                classifier_says_continue=None,
+            disposition = adapter.resolve_finalize_disposition(
+                content, autonomous=autonomous, nl_auto_continue=nl_auto_continue
             )
-            if disposition == FinalizeDisposition.FINALIZE and nl_auto_continue:
-                # Ambiguous leftover: consult the existing LLM classifier, which also
-                # carries the unverified-blocker corrective retry (issue #610).
+            if disposition == "continue":
+                should_continue = True
+            elif disposition != "ask_user":
+                # None (adapter default — e.g. Supervisor) or "finalize": consult
+                # the existing LLM classifier, which also carries the
+                # unverified-blocker corrective retry (issue #610).
                 should_continue = await adapter.classify_auto_continue(
                     state, active_model, content, reasoning
                 )
-            elif disposition == FinalizeDisposition.CONTINUE:
-                should_continue = True
 
         if should_continue:
             # A str result is a corrective directive (e.g. Lite's unverified-blocker
