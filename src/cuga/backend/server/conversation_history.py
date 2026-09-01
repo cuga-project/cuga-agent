@@ -367,6 +367,19 @@ class ConversationHistoryDB:
             logger.error(f"Error getting threads for agent: {e}")
             return []
 
+    async def get_thread_owners_for_agent(self, agent_id: str) -> set[tuple[str, str]]:
+        """Return scoped conversation keys used to validate memory provenance."""
+        await self._ensure_schema()
+        rows = await self._get_store().fetchall(
+            """
+            SELECT DISTINCT thread_id, user_id
+            FROM conversation_history
+            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ?
+            """,
+            (_tenant_id(), _instance_id(), agent_id),
+        )
+        return {(str(row["thread_id"]), str(row["user_id"])) for row in rows}
+
     async def save_stream_events(
         self, agent_id: str, thread_id: str, user_id: str, events: List[Dict[str, Any]]
     ) -> bool:
