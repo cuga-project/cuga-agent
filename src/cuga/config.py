@@ -253,6 +253,8 @@ validators = [
         is_type_of=int,
         gt=0,
     ),
+    Validator("supervisor.enabled", default=False),
+    Validator("supervisor.registry_enabled", default=False),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

@@ -985,6 +985,10 @@ class AgentState(BaseModel):
     )
     current_datetime: Optional[str] = ""
     lite_mode: Optional[bool] = None  # If set, overrides settings.advanced_features.lite_mode
+    # If set, overrides settings.supervisor.enabled for the *routing* decision in TaskAnalyzer.
+    # The per-agent supervisor graph (issue #101) sets this True so the run routes to the
+    # CugaSupervisor node; None ⇒ fall back to the global setting (unchanged default behavior).
+    supervisor_mode: Optional[bool] = None
     variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     variable_counter_state: int = 0
     variable_creation_order: List[str] = Field(default_factory=list)
@@ -997,6 +1001,13 @@ class AgentState(BaseModel):
     supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
         default_factory=list
     )  # Supervisor's conversation history
+    # Mirrors CugaSupervisorState.supervisor_metadata so CugaSupervisorNode can read/set approval
+    # flags (e.g. plan_approved) on the outer AgentState across the HITL interrupt boundary — the
+    # subgraph's own state does not survive a WaitForResponse pause/resume.
+    supervisor_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Frozen supervisor delegation script. Same interrupt-boundary reason as supervisor_metadata:
+    # without this field the approved plan is dropped and resume re-calls the model.
+    script: Optional[str] = None
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None

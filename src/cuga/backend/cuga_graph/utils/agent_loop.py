@@ -380,7 +380,14 @@ class AgentLoop:
             if namespace:
                 logger.info(f"Processing subgraph node: {node_name} from namespace: {namespace}")
 
-                # Handle call_model node from CugaLite subgraph
+                # Messages live under different state keys per subgraph: CugaLite uses
+                # ``chat_messages``; the CugaSupervisor subgraph uses ``supervisor_chat_messages``.
+                # Read whichever is populated so supervisor steps stream to the UI too (#101).
+                subgraph_messages = (
+                    state_data.get("chat_messages") or state_data.get("supervisor_chat_messages") or []
+                )
+
+                # Handle call_model node (shared by CugaLite and CugaSupervisor subgraphs)
                 if node_name == "call_model":
                     logger.debug("Detected call_model node")
                     # Check if it generated code or text
@@ -398,7 +405,7 @@ class AgentLoop:
                     else:
                         # Text/reasoning output - only when last chat turn is a non-empty assistant message
                         logger.info("call_model generated text response (no code)")
-                        messages = state_data.get("chat_messages", [])
+                        messages = subgraph_messages
                         if messages:
                             last_msg = messages[-1]
                             if hasattr(last_msg, 'content'):
@@ -414,15 +421,16 @@ class AgentLoop:
                         logger.debug("Skipping empty call_model event")
                         return StreamEvent(name="", data="")
 
-                # Handle sandbox node from CugaLite subgraph
-                elif node_name == "sandbox":
-                    logger.info("Detected sandbox node - formatting execution output")
+                # Handle the execute node: ``sandbox`` for CugaLite, ``execute_agent_tool`` for
+                # the CugaSupervisor subgraph. Both append an "Execution output:\n..." message.
+                elif node_name in ("sandbox", "execute_agent_tool"):
+                    logger.info(f"Detected execute node '{node_name}' - formatting execution output")
 
-                    # Extract execution output from chat_messages
+                    # Extract execution output from the subgraph's messages
                     execution_output = ""
-                    messages = state_data.get("chat_messages", [])
+                    messages = subgraph_messages
                     if messages:
-                        logger.debug(f"Found {len(messages)} messages in sandbox state")
+                        logger.debug(f"Found {len(messages)} messages in execute state")
                         for msg in reversed(messages):
                             # Handle both BaseMessage objects and dicts
                             if hasattr(msg, 'content'):
