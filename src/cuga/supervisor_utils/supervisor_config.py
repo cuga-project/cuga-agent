@@ -23,7 +23,7 @@ class SupervisorConfig(BaseModel):
 
 
 async def load_supervisor_config(
-    yaml_path: str, *, auto_load_policies: Optional[bool] = None
+    yaml_path: str, *, auto_load_policies: Optional[bool] = None, scope_tools: bool = False
 ) -> SupervisorConfig:
     """
     Load and parse supervisor YAML configuration.
@@ -37,6 +37,15 @@ async def load_supervisor_config(
             flows, webhooks, channel events): nobody is present to answer an approval interrupt, so
             one would hang the run until the caller times out. A per-agent ``auto_load_policies:``
             key in the YAML always wins over this.
+        scope_tools: Restrict each sub-agent to the tools of the apps/mcp_servers it NAMES.
+            ``False`` (the default) preserves existing behaviour — every sub-agent is handed the
+            whole registry, so a YAML that names some apps but calls a tool it did not name keeps
+            working. Pass ``True`` for the events roster, where a sub-agent is a specialist and
+            handing it the full registry both blurs delegation and inflates its prompt.
+
+            Opt-IN for the same reason ``auto_load_policies`` is asked for at the call site:
+            ``CugaSupervisor.from_yaml`` and every other existing caller must not silently lose
+            tools. Scoping by default was a breaking change for any roster in the wild.
 
     Returns:
         SupervisorConfig with loaded configuration
@@ -112,6 +121,7 @@ async def load_supervisor_config(
             tool_provider = await _create_tool_provider(
                 apps=apps_config,
                 mcp_servers=mcp_servers_config,
+                scope_tools=scope_tools,
             )
 
             # Get model config if specified
@@ -174,6 +184,8 @@ async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[An
 async def _create_tool_provider(
     apps: List[Dict[str, Any]],
     mcp_servers: List[Dict[str, Any]],
+    *,
+    scope_tools: bool = False,
 ) -> Optional[ToolProviderInterface]:
     """
     Create a tool provider from apps and MCP servers configuration.
@@ -182,6 +194,8 @@ async def _create_tool_provider(
     Args:
         apps: List of app configurations (can be dict with 'name' or just string name)
         mcp_servers: List of MCP server configurations
+        scope_tools: See ``load_supervisor_config``. ``False`` hands over the whole registry, which
+            is what every caller got before scoping existed; ``True`` restricts to the named apps.
 
     Returns:
         ToolProviderInterface instance or None
@@ -205,12 +219,17 @@ async def _create_tool_provider(
         if n:
             app_names.append(n)
 
-    # Create CombinedToolProvider SCOPED to the named apps/servers. Registry keys are
-    # underscore names ('cuga_finance'); hyphenated names would compose invalid Python
-    # identifiers downstream ('cuga-finance_get_price' parses as subtraction), so map them.
-    # An agent that names NOTHING gets all tools (unchanged behavior).
+    # Scoping is OPT-IN. `app_names=None` is the pre-existing behaviour: CombinedToolProvider
+    # loads the whole registry and the YAML's app list is descriptive only. Turning that into a
+    # filter by default silently removed tools from any roster that called something it had not
+    # named, on a public API (`CugaSupervisor.from_yaml`) — so the events roster asks for it and
+    # nobody else changes.
+    #
+    # When scoping IS on: registry keys are underscore names ('cuga_finance'); hyphenated names
+    # would compose invalid Python identifiers downstream ('cuga-finance_get_price' parses as
+    # subtraction), so map them. An agent that names NOTHING still gets all tools.
     if app_names or mcp_servers:
-        scoped = [n.replace("-", "_") for n in app_names] or None
+        scoped = ([n.replace("-", "_") for n in app_names] or None) if scope_tools else None
         logger.info(f"Creating CombinedToolProvider scoped to: {scoped or 'ALL apps'}")
         tool_provider = CombinedToolProvider(app_names=scoped)
         await tool_provider.initialize()

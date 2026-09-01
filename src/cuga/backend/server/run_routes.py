@@ -154,7 +154,12 @@ async def _get_supervisor():
     # hang the run until the caller times out. Asked for HERE rather than defaulted inside
     # load_supervisor_config, so CugaSupervisor.from_yaml and every other caller keep the upstream
     # behaviour of honouring settings.policy.auto_load_policies. A roster entry can opt back in.
-    cfg = await load_supervisor_config(path, auto_load_policies=False)
+    #
+    # scope_tools=True: same principle, same reason it is asked for HERE. A roster sub-agent is a
+    # specialist — pricebot should hold cuga-finance, not the whole registry — which keeps the
+    # concierge's delegation sharp and the sub-agent's prompt small. Defaulting it on would strip
+    # tools from every supervisor built through the SDK, so only this roster opts in.
+    cfg = await load_supervisor_config(path, auto_load_policies=False, scope_tools=True)
     sup = CugaSupervisor(
         agents=cfg.agents,
         special_instructions=(cfg.supervisor or {}).get("special_instructions"),
