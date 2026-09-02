@@ -319,6 +319,120 @@ _BIN_OPS = {
 _UNARY_OPS = {ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Not: operator.not_}
 _MAX_POW_EXPONENT = 64
 _MAX_FOLDED_STR = 4096
+_MAX_FOLDED_INT_BITS = 4096
+_MAX_FOLD_NODES = 128
+_MAX_FOLDED_AGGREGATE_SIZE = 16_384
+
+
+def _validate_folded_value(value: Any) -> Any:
+    """Reject intermediates that could make host-side folding expensive."""
+    remaining = _MAX_FOLDED_AGGREGATE_SIZE
+
+    def charge(amount: int) -> None:
+        nonlocal remaining
+        remaining -= amount
+        if remaining < 0:
+            raise ValueError("folded aggregate too large")
+
+    def visit(item: Any) -> None:
+        if isinstance(item, bool) or item is None:
+            charge(1)
+            return
+        if isinstance(item, int):
+            if item.bit_length() > _MAX_FOLDED_INT_BITS:
+                raise ValueError("folded integer too large")
+            charge(max(1, (item.bit_length() + 7) // 8))
+            return
+        if isinstance(item, float):
+            charge(8)
+            return
+        if isinstance(item, str):
+            if len(item) > _MAX_FOLDED_STR:
+                raise ValueError("folded string too large")
+            charge(max(1, len(item)))
+            return
+        if isinstance(item, (list, tuple)):
+            if len(item) > _MAX_FOLDED_STR:
+                raise ValueError("folded sequence too large")
+            charge(max(1, len(item)))
+            for child in item:
+                visit(child)
+            return
+        raise ValueError(f"unsupported folded value {type(item).__name__}")
+
+    visit(value)
+    return value
+
+
+def _validate_percent_format(format_string: str) -> None:
+    """Allow small scalar percent-formatting without unbounded widths."""
+    if len(format_string) > 256:
+        raise ValueError("format string too large")
+    index = 0
+    projected_width = 0
+    conversions = 0
+    while index < len(format_string):
+        if format_string[index] != "%":
+            index += 1
+            continue
+        index += 1
+        if index < len(format_string) and format_string[index] == "%":
+            index += 1
+            continue
+        if index < len(format_string) and format_string[index] == "(":
+            raise ValueError("mapping percent-formatting is not folded")
+        while index < len(format_string) and format_string[index] in "#0- +":
+            index += 1
+        if index < len(format_string) and format_string[index] == "*":
+            raise ValueError("dynamic format width is not folded")
+        width_start = index
+        while index < len(format_string) and format_string[index].isdigit():
+            index += 1
+        width = int(format_string[width_start:index] or "0")
+        precision = 0
+        if index < len(format_string) and format_string[index] == ".":
+            index += 1
+            if index < len(format_string) and format_string[index] == "*":
+                raise ValueError("dynamic format precision is not folded")
+            precision_start = index
+            while index < len(format_string) and format_string[index].isdigit():
+                index += 1
+            precision = int(format_string[precision_start:index] or "0")
+        while index < len(format_string) and format_string[index] in "hlL":
+            index += 1
+        if index >= len(format_string) or format_string[index] not in "diouxXeEfFgGcrsa":
+            raise ValueError("unsupported percent-format specifier")
+        index += 1
+        conversions += 1
+        projected_width += max(1, width, precision)
+        if conversions > 32 or projected_width > _MAX_FOLDED_STR:
+            raise ValueError("formatted value too large")
+
+
+def _validate_binop_before_eval(op: ast.operator, left: Any, right: Any) -> None:
+    """Reject operations whose result would exceed the folding limits."""
+    if isinstance(op, ast.Mod) and isinstance(left, str):
+        _validate_percent_format(left)
+    if isinstance(op, ast.Mult):
+        sequence: Optional[Any] = None
+        multiplier: Optional[int] = None
+        if isinstance(left, (str, list, tuple)) and isinstance(right, int):
+            sequence, multiplier = left, right
+        elif isinstance(right, (str, list, tuple)) and isinstance(left, int):
+            sequence, multiplier = right, left
+        if sequence is not None and multiplier is not None:
+            result_length = len(sequence) * max(multiplier, 0)
+            if result_length > _MAX_FOLDED_STR:
+                raise ValueError("folded sequence too large")
+    if (
+        isinstance(op, ast.Pow)
+        and isinstance(left, int)
+        and isinstance(right, int)
+        and right > 0
+        and left not in (-1, 0, 1)
+        and left.bit_length() * right > _MAX_FOLDED_INT_BITS
+    ):
+        raise ValueError("folded integer too large")
 
 
 def _safe_eval(node: ast.AST) -> Any:
@@ -330,38 +444,51 @@ def _safe_eval(node: ast.AST) -> Any:
     """
     if isinstance(node, ast.Constant):
         if isinstance(node.value, (int, float, str, bool)) or node.value is None:
-            return node.value
+            return _validate_folded_value(node.value)
         raise ValueError("unsupported constant")
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
-        return _UNARY_OPS[type(node.op)](_safe_eval(node.operand))
+        return _validate_folded_value(_UNARY_OPS[type(node.op)](_safe_eval(node.operand)))
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
         left, right = _safe_eval(node.left), _safe_eval(node.right)
         if isinstance(node.op, ast.Pow) and (
             not isinstance(right, (int, float)) or abs(right) > _MAX_POW_EXPONENT
         ):
             raise ValueError("exponent too large")
+        _validate_binop_before_eval(node.op, left, right)
         value = _BIN_OPS[type(node.op)](left, right)
-        if isinstance(value, (str, list, tuple)) and len(value) > _MAX_FOLDED_STR:
-            raise ValueError("folded value too large")
-        return value
+        return _validate_folded_value(value)
     if isinstance(node, (ast.Tuple, ast.List)):
         items = [_safe_eval(elt) for elt in node.elts]
-        return tuple(items) if isinstance(node, ast.Tuple) else items
+        return _validate_folded_value(tuple(items) if isinstance(node, ast.Tuple) else items)
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FOLD_NAMESPACE:
         if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
             kw.arg is None for kw in node.keywords
         ):
             raise ValueError("star arguments are not folded")
-        return _FOLD_NAMESPACE[node.func.id](
-            *[_safe_eval(arg) for arg in node.args],
-            **{kw.arg: _safe_eval(kw.value) for kw in node.keywords if kw.arg},
-        )
+        args = [_safe_eval(arg) for arg in node.args]
+        kwargs = {kw.arg: _safe_eval(kw.value) for kw in node.keywords if kw.arg}
+        if node.func.id == "sum":
+            values = args[0] if args else kwargs.get("iterable")
+            start = args[1] if len(args) > 1 else kwargs.get("start", 0)
+            if not isinstance(values, (list, tuple)) or not all(
+                isinstance(item, (int, float, bool)) for item in values
+            ):
+                raise ValueError("only numeric sequences are summed")
+            if not isinstance(start, (int, float, bool)):
+                raise ValueError("sum start must be numeric")
+        if node.func.id == "round":
+            ndigits = args[1] if len(args) > 1 else kwargs.get("ndigits")
+            if ndigits is not None and (not isinstance(ndigits, int) or abs(ndigits) > 1000):
+                raise ValueError("round precision too large")
+        return _validate_folded_value(_FOLD_NAMESPACE[node.func.id](*args, **kwargs))
     raise ValueError(f"unsupported node {type(node).__name__}")
 
 
 def _fold(node: ast.expr) -> Optional[str]:
     """Evaluate the expression when it depends on nothing outside the block."""
     try:
+        if sum(1 for _ in ast.walk(node)) > _MAX_FOLD_NODES:
+            return None
         value = _safe_eval(node)
     except Exception:
         return None
