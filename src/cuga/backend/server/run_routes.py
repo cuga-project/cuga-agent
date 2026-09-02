@@ -55,11 +55,17 @@ def run_api_enabled() -> bool:
     secret, so with nothing configured every call 401s — mounting them then only advertises an
     endpoint nobody can use. Vanilla CUGA therefore gets a 404 and no extra surface.
 
-    Enabled by any of:
+    Requires ``CUGA_EVENTS_ENABLED`` — the master switch — AND one of:
       * ``CUGA_RUN_TOKEN`` / ``GATEWAY_TOKEN`` — a deployment that means to use the machine seam
       * ``CUGA_SUPERVISOR_ROSTER``            — this server is a preloaded supervisor
       * ``CUGA_RUN_ALLOW_UNAUTHENTICATED``    — the explicit development opt-out
+
+    The switch is checked FIRST and on purpose. These used to be sufficient on their own, so a
+    GATEWAY_TOKEN set for any other reason silently mounted an endpoint that executes an agent.
+    Opting into eventing is now a decision someone made, not a side effect.
     """
+    if not events_bridge.events_enabled():
+        return False
     return bool(_run_token() or _supervisor_roster_path() or _run_dev_unauthenticated())
 
 

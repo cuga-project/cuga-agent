@@ -49,6 +49,17 @@ _principal: contextvars.ContextVar = contextvars.ContextVar("principal", default
 # from their `prompt` argument, which the LLM routinely rewrites (and drops qualifiers from)
 _utterance: contextvars.ContextVar[str] = contextvars.ContextVar("utterance", default="")
 
+# ARMING IS SLASH-ONLY. `/automate …` (and its explicit siblings /cron /poll /watch /push) is the
+# ONLY way to reach the arming machinery — from every surface, web chat and channels alike. Plain
+# English answers once, now, and never creates a standing flow.
+#
+# A ContextVar rather than an argument because the two paths that used to arm without a verb do not
+# share a call signature: the deterministic pre-router calls the tool directly, and the react-agent
+# calls it as an LLM tool call several frames away. `run()` clears it on every turn and only the
+# post-approval armer sets it, so "did a human type the verb and then say yes?" is the one question
+# the tool has to answer.
+_arm_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar("arm_allowed", default=False)
+
 CHAT_STYLE = (
     "\n\nReply for a chat app: short plain-text lines or simple '- ' bullets. No markdown tables/headings."
 )
@@ -444,6 +455,21 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             The agent's answer is delivered to deliver_to (or the origin channel). The events layer
             never runs connector actions — the agent's own tools do that.
             Reuses a matching flow (agent+source+event+cadence+sink+owner) instead of duplicating."""
+            # THE GATE. Reached only when a human typed `/automate …`, saw the confirmation card and
+            # replied yes — `run()` clears the flag every turn and only the post-approval armer sets
+            # it. Reached any other way (the deterministic pre-router, or the react-agent deciding a
+            # sentence sounded like a schedule) this refuses and says how to ask properly.
+            #
+            # The refusal is a plain sentence, not an error, because the LLM reads it: given a tool
+            # result that names the correct phrasing it relays that to the human rather than
+            # inventing a different tool call.
+            if not _arm_allowed.get():
+                return (
+                    "I can't arm that from plain chat — standing flows are created with a verb so "
+                    "nothing schedules itself by accident. Type `/automate "
+                    + (prompt or "…").strip()
+                    + "` and I'll show you exactly what will run, then arm it when you reply yes."
+                )
             try:
                 from . import triggers as _tr
             except ImportError:
@@ -1160,6 +1186,7 @@ class Concierge:
 
         p = principal or DEFAULT_PRINCIPAL
         arming.reset()
+        _arm_allowed.set(False)  # slash-only; re-granted below, per approved arming
         _utterance.set(text)  # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # HITL ARMING GATE. An in-flight arming dialogue on this thread owns the next message —
         # it is answering a question or standing at the CONFIRM gate. Checked FIRST so a bare
@@ -1303,6 +1330,7 @@ class Concierge:
                 # Clear FIRST: arming re-enters run() for cron/poll, and a stale parked row would
                 # make the gate swallow that internal turn.
                 self._clear_arm(tkey)
+                _arm_allowed.set(True)  # the human typed the verb, saw the card, and said yes
                 reply = await self._arm_slash(thread_id, p, parsed, approved_prompt=prompt)
                 sub_id = ""
                 try:

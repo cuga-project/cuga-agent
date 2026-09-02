@@ -234,6 +234,9 @@ def _tools(engine):
     concierge._principal.set(_principal_mod.DEFAULT)
     concierge._origin.set("web:local")
     concierge._utterance.set("")
+    # Arming is slash-only: run() grants this after a human types /automate and replies yes.
+    # These tests drive the tool directly, so they stand in for that approval.
+    concierge._arm_allowed.set(True)
     return focf, store
 
 
