@@ -323,14 +323,16 @@ def test_resolve_finalize_disposition_autonomous_deferral_continues():
     assert result == "continue"
 
 
-def test_resolve_finalize_disposition_interactive_clarifying_question_asks_user():
+def test_resolve_finalize_disposition_interactive_clarifying_question_falls_through():
+    """#732 review: ask_user-only text (no deferral) no longer short-circuits —
+    it returns "finalize" so shared_nodes.py consults classify_auto_continue."""
     adapter = _make_adapter()
     result = adapter.resolve_finalize_disposition(
         "Which account should I use?",
         autonomous=False,
         nl_auto_continue=True,
     )
-    assert result == "ask_user"
+    assert result == "finalize"
 
 
 @pytest.mark.asyncio

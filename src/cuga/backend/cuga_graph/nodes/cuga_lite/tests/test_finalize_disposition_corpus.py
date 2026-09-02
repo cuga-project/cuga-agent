@@ -77,7 +77,6 @@ def _disp(text: str, **kwargs) -> FinalizeDisposition:
     defaults = dict(
         autonomous=False,
         nl_auto_continue=True,
-        classifier_says_continue=None,
     )
     defaults.update(kwargs)
     return resolve_finalize_disposition(text, **defaults)

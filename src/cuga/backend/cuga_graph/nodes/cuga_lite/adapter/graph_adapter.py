@@ -239,7 +239,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
             content,
             autonomous=autonomous,
             nl_auto_continue=nl_auto_continue,
-            classifier_says_continue=None,
         )
 
     def _any_execution_ran(self, state: Any) -> bool:

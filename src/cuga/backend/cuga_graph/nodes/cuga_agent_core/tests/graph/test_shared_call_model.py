@@ -63,7 +63,6 @@ class _LiteDispositionAdapter(_TestAdapter):
             content,
             autonomous=autonomous,
             nl_auto_continue=nl_auto_continue,
-            classifier_says_continue=None,
         )
 
 
@@ -635,9 +634,7 @@ async def test_supervisor_planning_text_still_finalizes(mock_summarize):
     assert result.update["final_answer"] == "We need to search student_loan app."
 
 
-class _AskUserButClassifierWouldContinue(_LiteDispositionAdapter):
-    """If ASK_USER fell through to classify_auto_continue, this adapter would loop."""
-
+class _ClassifierSaysContinue(_LiteDispositionAdapter):
     async def classify_auto_continue(self, state, model, content, reasoning):
         return True
 
@@ -647,10 +644,13 @@ class _AskUserButClassifierWouldContinue(_LiteDispositionAdapter):
     "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
     new_callable=AsyncMock,
 )
-async def test_ask_user_is_not_overridden_by_classifier(mock_summarize):
+async def test_ask_user_text_falls_through_to_classifier(mock_summarize):
+    """#732 review: ask_user-only text (no deferral) is no longer a deterministic
+    short-circuit — it falls through to classify_auto_continue like any other
+    ambiguous finalize, so a classifier that says continue is honored."""
     mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
 
-    adapter = _AskUserButClassifierWouldContinue()
+    adapter = _ClassifierSaysContinue()
     state = _make_state()
     model = _mock_model("Which account should I use?")
     settings = _mock_settings_disposition(force_autonomous_mode=False)
@@ -658,5 +658,54 @@ async def test_ask_user_is_not_overridden_by_classifier(mock_summarize):
     node = _get_factory()(adapter, model, settings)
     result = await node(state, config=None)
 
-    assert result.goto == END
-    assert "Which account" in result.update["final_answer"]
+    assert result.goto == "call_model"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_deferral_with_blocked_claim_falls_through_to_classifier(mock_summarize):
+    """Issue #610: deferral text that also reads as an unverified-blocker claim
+    must not ship a bare "continue" — it needs classify_auto_continue's
+    corrective-retry path (#732 review)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model(
+        "I'm unable to access the Spotify tools. Would you like me to try a different approach?"
+    )
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
+    """A sub-task turn gets the "DO NOT ASK" prompt regardless of
+    force_autonomous_mode (see cuga_lite_node.py's is_autonomous_subtask) — the
+    finalize disposition must treat it as autonomous too, or deferral text
+    routes to ASK_USER with no interactive user present to answer (#732 review)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    state.sub_task = "book a flight"
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"

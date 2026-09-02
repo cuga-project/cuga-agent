@@ -301,7 +301,16 @@ def create_call_model_node(
         should_continue: bool | str = False
         if not budget_exhausted:
             nl_auto_continue = bool(getattr(settings.advanced_features, "cuga_lite_nl_auto_continue", True))
-            autonomous = bool(getattr(settings.advanced_features, "force_autonomous_mode", False))
+            # Mirrors is_autonomous_subtask in cuga_lite_node.py / prepare_node.py: a
+            # sub-task turn gets the "DO NOT ASK" system prompt regardless of the
+            # global force_autonomous_mode flag, so it must be treated as autonomous
+            # here too — otherwise a sub-task the prompt told not to ask about still
+            # routes deferral text to ASK_USER, which no interactive user is present
+            # to answer (#732 review). sub_task is Lite-only; absent on Supervisor state.
+            sub_task = (getattr(state, "sub_task", None) or "").strip()
+            autonomous = bool(getattr(settings.advanced_features, "force_autonomous_mode", False)) or bool(
+                sub_task
+            )
 
             disposition = adapter.resolve_finalize_disposition(
                 content, autonomous=autonomous, nl_auto_continue=nl_auto_continue
