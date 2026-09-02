@@ -99,9 +99,7 @@ class FinalAnswerAgent(BaseAgent):
             return AIMessage(
                 content=json.dumps(
                     FinalAnswerOutput(
-                        final_answer=input_variables.final_answer
-                        if input_variables.sender == "ReuseAgent"
-                        else input_variables.last_planner_answer
+                        final_answer=(input_variables.last_planner_answer or "")
                         + (
                             f"\n\n{last_variable.description}\n\n---\n\n{input_variables.variables_manager.present_variable(last_variable_name)}"
                             if last_variable_name

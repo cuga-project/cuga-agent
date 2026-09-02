@@ -34,7 +34,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | Feature | How |
 > |---------|-----|
 > | **MCP, OpenAPI & LangChain tools** | [`mcp_servers.yaml`](src/cuga/backend/tools_env/registry/config/mcp_servers.yaml) · `CugaAgent(tools=[...])` |
-> | **Reasoning modes** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
+> | **Code generation profiles** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
@@ -46,7 +46,6 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
-> | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
 > [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#quick-start)
 
@@ -70,8 +69,6 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 - **Open-source and composable** — Built with modularity in mind, CUGA itself can be exposed as a tool to other agents, enabling nested reasoning and multi-agent collaboration. Evolving toward enterprise-grade reliability
 
 - **Policy System** — Configure agent behavior with 5 policy types (Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter) via the Python SDK or standalone UI in demo mode. Includes human-in-the-loop approval gates for safe agent behavior in enterprise contexts. See [SDK Docs](https://docs.cuga.dev/docs/sdk/cuga_agent/) and [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
-
-- **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
 
 - **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
 
@@ -141,43 +138,6 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
    ```
 
 **What you'll see:** CUGA will fetch data from the Digital Sales API and then interact with the web page to add the account information directly to the current page - demonstrating seamless API-to-web workflow integration!
-
-</details>
-
-### Human in the Loop Task Execution
-
-Watch CUGA pause for human approval during critical decision points:
-
-**Example Task:** `get best accounts`
-
-https://github.com/user-attachments/assets/d103c299-3280-495a-ba66-373e72554e78
-
-<details>
-<summary><b>Would you like to try this? (HITL Demo)</b></summary>
-
-Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for human approval at key decision points:
-
-### Setup Steps:
-
-1. **Enable HITL mode:**
-
-   ```bash
-   # Edit ./src/cuga/settings.toml and ensure:
-   api_planner_hitl = true  # under [advanced_features] section
-   ```
-
-2. **Start the demo:**
-
-   ```bash
-   cuga start demo
-   ```
-
-3. **Try the HITL task:**
-   ```
-   get best accounts
-   ```
-
-**What you'll see:** CUGA will pause at critical decision points, showing you the planned actions and waiting for your approval before proceeding.
 
 </details>
 
@@ -373,7 +333,7 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    # direct RITS setups, since each model has a model-specific URL path.
    # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
    MODEL_NAME=google/gemma-4-31B-it
-   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
+   RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
    ```
 
 To front RITS with a local LiteLLM proxy instead, use `AGENT_SETTING_CONFIG="settings.rits.proxy.toml"`.
@@ -397,7 +357,7 @@ guardrails, and are billed against its entitlement.
 3. Add to your `.env` file:
    ```env
    # watsonx Orchestrate Configuration
-   WXO_API_KEY=your-wxo-api-key
+   WXO_API_KEY=your-wxo-api-key  # pragma: allowlist secret
    WXO_INSTANCE_URL=https://api.dl.watson-orchestrate.ibm.com/instances/your-instance-id
    AGENT_SETTING_CONFIG="settings.wxo.toml"
 
@@ -927,35 +887,18 @@ E2B will automatically execute code in cloud sandboxes. You'll see logs indicati
 </details>
 
 <details>
-<summary> Reasoning modes - Switch between Fast/Balanced/Accurate modes</summary>
+<summary> Code generation profiles - fast / balanced / accurate</summary>
 
-## Available Modes under `./src/cuga`
+## Available profiles under `./src/cuga/configurations/modes`
 
-| Mode       | File                                   | Description                                     |
+| Profile    | File                                   | Description                                     |
 | ---------- | -------------------------------------- | ----------------------------------------------- |
 | `fast`     | `./configurations/modes/fast.toml`     | Optimized for speed                             |
 | `balanced` | `./configurations/modes/balanced.toml` | Balance between speed and precision _(default)_ |
 | `accurate` | `./configurations/modes/accurate.toml` | Optimized for precision                         |
 | `custom`   | `./configurations/modes/custom.toml`   | User-defined settings                           |
 
-## Configuration
-
-```
-configurations/
-├── modes/fast.toml
-├── modes/balanced.toml
-├── modes/accurate.toml
-└── modes/custom.toml
-```
-
-Edit `settings.toml`:
-
-```toml
-[features]
-cuga_mode = "fast"  # or "balanced" or "accurate" or "custom"
-```
-
-**Documentation:** [./docs/flags.html](./docs/flags.html)
+These profiles tune code generation, reflection, and related feature flags. Graph routing is handled by the entry graph (CugaLite, CugaSupervisor, or CugaBrowser).
 
 </details>
 
@@ -1133,9 +1076,7 @@ See `docs/design/pluggable-shortlister.md` for the full design.
 
 ## How It Works
 
-Each `.md` file contains specialized instructions that are automatically integrated into the CUGA's internal prompts when that component is active. Simply edit the markdown files to customize behavior for each node type.
-
-**Available instruction sets:** `answer`, `api_planner`, `code_agent`, `plan_controller`, `reflection`, `shortlister`, `task_decomposition`
+Custom instructions support `## Plan` for execution guidance and `## Answer` for final-response formatting. Unsectioned text is treated as plan guidance. The default instruction set keeps reusable answer instructions in `answer.md`; runtime plan instructions can be supplied by clients such as Langflow.
 
 ## Configuration
 
@@ -1144,13 +1085,7 @@ configurations/
 └── instructions/
     ├── instructions.toml
     ├── default/
-    │   ├── answer.md
-    │   ├── api_planner.md
-    │   ├── code_agent.md
-    │   ├── plan_controller.md
-    │   ├── reflection.md
-    │   ├── shortlister.md
-    │   └── task_decomposition.md
+    │   └── answer.md
     └── [other instruction sets]/
 ```
 
@@ -1164,15 +1099,14 @@ instruction_set = "default"  # or any instruction set above
 </details>
 
 <details>
-<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
+<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CUGA</em></summary>
 
-Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+Evolve can bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
 
 This flow is:
 
 - **Opt-in** - disabled by default
 - **Non-blocking** - Evolve failures do not fail the task
-- **CugaLite-focused** - enabled for lite mode by default
 - **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
 ### Setup Steps:
@@ -1203,18 +1137,14 @@ OPENAI_BASE_URL=env://OPENAI_BASE_URL
 
 Each `env://...` value tells CUGA to read the real secret or setting from its own process environment at runtime, so make sure PostgreSQL is reachable, `pgvector` is available, and the configured OpenAI/LiteLLM-compatible model is one your gateway is allowed to use.
 
-1. **[Optional]** Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+3. **[Optional]** Edit `./src/cuga/settings.toml` to configure Evolve:
 
 ```toml
-[advanced_features]
-lite_mode = true
-
 [evolve]
 enabled = true
 url = "http://127.0.0.1:8201/sse"
 mode = "auto"
 app_name = "evolve"
-lite_mode_only = true
 save_on_success = true
 save_on_failure = true
 async_save = true
@@ -1242,7 +1172,7 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 ### What happens during a run?
 
 1. CUGA derives the task description from the current sub-task or first user message
-2. CugaLite asks Evolve for relevant guidelines
+2. CUGA asks Evolve for relevant guidelines
 3. Returned guidelines are appended to the system prompt under an `Evolve Guidelines` section
 4. The task executes normally
 5. The user / assistant trajectory is saved back to Evolve after completion
@@ -1259,34 +1189,6 @@ Identify the common cities between my cuga_workspace/cities.txt and cuga_workspa
 </details>
 
 ## Advanced Usage
-
-<details>
-<summary><b> Save & Reuse</b></summary>
-
-## Setup
-
-• Change `./src/cuga/settings.toml`: `cuga_mode = "save_reuse_fast"`
-• Run: `cuga start demo`
-
-## Demo Steps
-
-• **First run**: `get top account by revenue`
-
-- This is a new flow (first time)
-- Wait for task to finish
-- Approve to save the workflow
-- Provide another example to help generalization of flow e.g. `get top 2 accounts by revenue`
-
-• **Flow now will be saved**:
-
-- May take some time
-- Flow will be successfully saved
-
-• **Verify reuse**: `get top 4 accounts by revenue`
-
-- Should run faster using saved workflow
-
-</details>
 
 <details>
 <summary><b> Adding Tools: Comprehensive Examples</b></summary>
