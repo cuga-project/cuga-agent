@@ -139,8 +139,9 @@ def supervisor_instance_id(name: Optional[str] = None) -> str:
     per-instance ID so two unnamed SDK supervisors that share a CugaAgent
     cannot collide on the same child checkpoint.
     """
-    if name:
-        return str(name)
+    stripped = str(name).strip() if name is not None else ""
+    if stripped:
+        return stripped
     return f"cuga-supervisor-{uuid.uuid4().hex}"
 
 

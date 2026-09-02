@@ -254,16 +254,21 @@ async def test_concurrent_delegations_to_same_checkpoint_are_serialized():
 
 def test_supervisor_instance_id_keeps_explicit_name():
     assert supervisor_instance_id("crm-supervisor") == "crm-supervisor"
+    assert supervisor_instance_id("  crm-supervisor  ") == "crm-supervisor"
 
 
 def test_supervisor_instance_id_is_unique_when_omitted():
     first = supervisor_instance_id()
     second = supervisor_instance_id(None)
     third = supervisor_instance_id("")
+    fourth = supervisor_instance_id("   ")
     assert first != second
     assert first != third
+    assert first != fourth
+    assert third != fourth
     assert first.startswith("cuga-supervisor-")
     assert second.startswith("cuga-supervisor-")
+    assert fourth.startswith("cuga-supervisor-")
 
 
 @pytest.mark.asyncio
