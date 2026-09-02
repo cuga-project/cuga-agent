@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -24,21 +24,26 @@ from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion
 VERIFY_REVISE_STREAK_CAP = 2
 
 
-def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> None:
+def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
     if tracker is None:
-        return
-    tracker.collect_step(
-        step=Step(
-            name="PreExecuteVerify",
-            data=json.dumps(
-                {
-                    "gate": decision.gate,
-                    "alert": decision.alert,
-                    "output": decision.raw,
-                }
-            ),
+        return True
+    try:
+        tracker.collect_step(
+            step=Step(
+                name="PreExecuteVerify",
+                data=json.dumps(
+                    {
+                        "gate": decision.gate,
+                        "alert": decision.alert,
+                        "output": decision.raw,
+                    }
+                ),
+            )
         )
-    )
+        return True
+    except Exception as e:
+        logger.warning("Failed to record pre-execute VERIFY decision: {}", e)
+        return False
 
 
 async def decide_pre_execute_verify(
@@ -49,7 +54,8 @@ async def decide_pre_execute_verify(
     chat_messages: list,
     variables_snapshot: str,
     current_task: str,
-    model: Any,
+    model: Any = None,
+    model_factory: Optional[Callable[[], Any]] = None,
     config: Any,
     max_chars: int,
 ) -> VerifyDecision:
@@ -63,10 +69,15 @@ async def decide_pre_execute_verify(
     if streak >= VERIFY_REVISE_STREAK_CAP:
         logger.info("Pre-execute VERIFY skipped: revise streak {}", streak)
         return VerifyDecision(gate="ok")
-    if not has_write_call(script):
-        logger.debug("Pre-execute VERIFY skipped: read-only block")
-        return VerifyDecision(gate="ok")
     try:
+        if not has_write_call(script):
+            logger.debug("Pre-execute VERIFY skipped: read-only block")
+            return VerifyDecision(gate="ok")
+        active_model = model
+        if active_model is None:
+            if model_factory is None:
+                raise ValueError("No model or model factory configured for pre-execute VERIFY")
+            active_model = model_factory()
         history, variables, proposed = prepare_verify_context(
             list(chat_messages or []),
             variables_snapshot,
@@ -75,7 +86,7 @@ async def decide_pre_execute_verify(
         )
         write_arguments = describe_write_arguments(script)
         clamp_watsonx_completion_for_messages(
-            model,
+            active_model,
             [
                 {
                     "role": "user",
@@ -83,7 +94,7 @@ async def decide_pre_execute_verify(
                 }
             ],
         )
-        result = await verify_task(llm=model).ainvoke(
+        result = await verify_task(llm=active_model).ainvoke(
             {
                 "current_task": current_task or "(no task text)",
                 "agent_history": history,
