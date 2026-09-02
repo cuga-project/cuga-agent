@@ -21,6 +21,8 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
+pytestmark = pytest.mark.unit
+
 
 # ── Minimal concrete adapter (only satisfies abstract methods) ─────────────
 
@@ -58,6 +60,21 @@ async def test_default_classify_auto_continue_returns_false():
     assert (
         await adapter.classify_auto_continue(state, model=None, content="some content", reasoning=None)
         is False
+    )
+
+
+def test_default_resolve_finalize_disposition_returns_none():
+    adapter = _MinimalAdapter()
+    # Planning text that Lite would CONTINUE must not be interpreted here —
+    # Supervisor (and any adapter that leaves the default) skips straight to
+    # classify_auto_continue, which itself defaults to False / finalize.
+    assert (
+        adapter.resolve_finalize_disposition(
+            "We need to search student_loan app.",
+            autonomous=False,
+            nl_auto_continue=True,
+        )
+        is None
     )
 
 
@@ -234,6 +251,7 @@ async def test_all_hooks_callable_with_keyword_args():
     adapter.get_few_shot_messages(state)
     adapter.get_pi(state)
     await adapter.classify_auto_continue(state, model=None, content="hello", reasoning=None)
+    adapter.resolve_finalize_disposition("hello", autonomous=False, nl_auto_continue=True)
     await adapter.resolve_bind_tools(state, active_model=None, configurable={})
     adapter.prepare_system_content(state, {}, "prompt")
     adapter.normalize_response(response)

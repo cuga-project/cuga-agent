@@ -228,6 +228,19 @@ class AgentGraphAdapter(CoreGraphAdapter):
             return BLOCKED_CLAIM_CORRECTION
         return decision.auto_continue
 
+    def resolve_finalize_disposition(
+        self, content: str, *, autonomous: bool, nl_auto_continue: bool
+    ) -> Optional[str]:
+        from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
+            resolve_finalize_disposition as _resolve_disposition,
+        )
+
+        return _resolve_disposition(
+            content,
+            autonomous=autonomous,
+            nl_auto_continue=nl_auto_continue,
+        )
+
     def _any_execution_ran(self, state: Any) -> bool:
         """Has any sandbox execution produced feedback this task? Detected via the
         shared ``EXECUTION_OUTPUT_PREFIX`` emitted by ``execution_output_text``."""

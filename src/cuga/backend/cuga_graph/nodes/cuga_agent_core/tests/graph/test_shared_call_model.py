@@ -25,6 +25,8 @@ from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 
+pytestmark = pytest.mark.unit
+
 
 # ── Shared test adapter ────────────────────────────────────────────────────
 
@@ -44,6 +46,24 @@ class _TestAdapter(CoreGraphAdapter):
 class _ProbingAdapter(_TestAdapter):
     def get_tools_needing_probing(self) -> frozenset:
         return frozenset({"file_readfile"})
+
+
+class _LiteDispositionAdapter(_TestAdapter):
+    """Exercises Lite's mode-aware finalize disposition (#445) through the
+    ``CoreGraphAdapter.resolve_finalize_disposition`` hook — the same seam
+    ``AgentGraphAdapter`` overrides in production, kept separate from
+    ``_TestAdapter`` so Supervisor-equivalent tests stay on the base no-op."""
+
+    def resolve_finalize_disposition(self, content, *, autonomous, nl_auto_continue):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.finalize_disposition import (
+            resolve_finalize_disposition,
+        )
+
+        return resolve_finalize_disposition(
+            content,
+            autonomous=autonomous,
+            nl_auto_continue=nl_auto_continue,
+        )
 
 
 # ── Test state factory ─────────────────────────────────────────────────────
@@ -467,3 +487,225 @@ async def test_reasoning_mentioning_other_special_tokens_is_still_surfaced(mock_
 
     assert result.goto == END
     assert result.update["final_answer"] == reasoning
+
+
+# ── 9. Mode-aware finalize disposition (#445: deferral + ask_user) ────────
+
+
+def _mock_settings_disposition(
+    *,
+    force_autonomous_mode=False,
+    cuga_lite_nl_auto_continue=True,
+    policy_enabled=False,
+):
+    adv = SimpleNamespace(
+        cuga_lite_max_steps=50,
+        force_autonomous_mode=force_autonomous_mode,
+        cuga_lite_nl_auto_continue=cuga_lite_nl_auto_continue,
+    )
+    policy = SimpleNamespace(enabled=policy_enabled)
+    return SimpleNamespace(advanced_features=adv, policy=policy)
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_autonomous_deferral_continues(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_clarifying_question_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Which account" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_interactive_deferral_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert "Would you like" in result.update["final_answer"]
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_give_up_finalizes_without_bounce(mock_summarize):
+    """Pattern B deferred — ungrounded give-ups end the turn (no soft bounce)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model(
+        "We have exhausted all discovered tools and none provide game-level event data. "
+        "The number cannot be determined from this API."
+    )
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_greeting_finalizes(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    model = _mock_model("Hello!")
+    settings = _mock_settings_disposition()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "Hello!"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_supervisor_planning_text_still_finalizes(mock_summarize):
+    """Regression: the disposition resolver is Lite-only. A plain CoreGraphAdapter
+    (Supervisor-equivalent, no override) must keep finalizing NL turns even when the
+    text matches Lite's planning-text pattern — it must not be routed through
+    Lite's resolve_finalize_disposition via the shared node."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("We need to search student_loan app.")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "We need to search student_loan app."
+
+
+class _ClassifierSaysContinue(_LiteDispositionAdapter):
+    async def classify_auto_continue(self, state, model, content, reasoning):
+        return True
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_ask_user_text_falls_through_to_classifier(mock_summarize):
+    """#732 review: ask_user-only text (no deferral) is no longer a deterministic
+    short-circuit — it falls through to classify_auto_continue like any other
+    ambiguous finalize, so a classifier that says continue is honored."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model("Which account should I use?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_deferral_with_blocked_claim_falls_through_to_classifier(mock_summarize):
+    """Issue #610: deferral text that also reads as an unverified-blocker claim
+    must not ship a bare "continue" — it needs classify_auto_continue's
+    corrective-retry path (#732 review)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _ClassifierSaysContinue()
+    state = _make_state()
+    model = _mock_model(
+        "I'm unable to access the Spotify tools. Would you like me to try a different approach?"
+    )
+    settings = _mock_settings_disposition(force_autonomous_mode=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_sub_task_treated_as_autonomous_for_deferral(mock_summarize):
+    """A sub-task turn gets the "DO NOT ASK" prompt regardless of
+    force_autonomous_mode (see cuga_lite_node.py's is_autonomous_subtask) — the
+    finalize disposition must treat it as autonomous too, or deferral text
+    routes to ASK_USER with no interactive user present to answer (#732 review)."""
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _LiteDispositionAdapter()
+    state = _make_state()
+    state.sub_task = "book a flight"
+    model = _mock_model("Would you like me to continue processing the remaining actions?")
+    settings = _mock_settings_disposition(force_autonomous_mode=False)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "call_model"
+    assert result.update["chat_messages"][-1].content == "continue"
