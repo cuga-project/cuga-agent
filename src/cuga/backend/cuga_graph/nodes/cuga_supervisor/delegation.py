@@ -120,8 +120,7 @@ def create_agent_delegation_func(
                 agent_name=agent_name,
                 agent_or_config=agent_or_config,
             )
-            lock = child_checkpoint_lock(agent_or_config, child_thread_id)
-            async with lock:
+            async with child_checkpoint_lock(agent_or_config, child_thread_id):
                 result = await agent_or_config.invoke(
                     task,
                     thread_id=child_thread_id,

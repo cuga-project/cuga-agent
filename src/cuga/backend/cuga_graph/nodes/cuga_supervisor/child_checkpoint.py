@@ -12,7 +12,9 @@ import asyncio
 import hashlib
 import json
 import uuid
-from typing import Any, Optional
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Optional
 
 from cuga.config import settings
 
@@ -21,7 +23,15 @@ MEMORY_SCOPE_CALL = "call"
 CHILD_CHECKPOINT_PREFIX = "sup_child_"
 
 _VALID_SCOPES = frozenset({MEMORY_SCOPE_CONVERSATION, MEMORY_SCOPE_CALL})
-_checkpoint_locks: dict[tuple[int, str], asyncio.Lock] = {}
+
+
+@dataclass
+class _LockLease:
+    lock: asyncio.Lock
+    waiters: int = 0
+
+
+_checkpoint_locks: dict[tuple[int, str], _LockLease] = {}
 
 
 def _as_str(value: Any) -> str:
@@ -122,11 +132,35 @@ def resolve_child_checkpoint_id(
     )
 
 
-def child_checkpoint_lock(agent: Any, checkpoint_id: str) -> asyncio.Lock:
-    """Serialize concurrent invokes that share one agent checkpointer + thread."""
+def supervisor_instance_id(name: Optional[str] = None) -> str:
+    """Return a stable supervisor identity for child checkpoint keys.
+
+    An explicit name is preserved. An omitted or blank name gets a unique
+    per-instance ID so two unnamed SDK supervisors that share a CugaAgent
+    cannot collide on the same child checkpoint.
+    """
+    if name:
+        return str(name)
+    return f"cuga-supervisor-{uuid.uuid4().hex}"
+
+
+@asynccontextmanager
+async def child_checkpoint_lock(agent: Any, checkpoint_id: str) -> AsyncIterator[None]:
+    """Serialize concurrent invokes that share one agent checkpointer + thread.
+
+    The lease is reference-counted so call-scoped unique IDs do not accumulate
+    unused lock entries after the last waiter exits.
+    """
     key = (id(agent), checkpoint_id)
-    lock = _checkpoint_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _checkpoint_locks[key] = lock
-    return lock
+    lease = _checkpoint_locks.get(key)
+    if lease is None:
+        lease = _LockLease(lock=asyncio.Lock())
+        _checkpoint_locks[key] = lease
+    lease.waiters += 1
+    try:
+        async with lease.lock:
+            yield
+    finally:
+        lease.waiters -= 1
+        if lease.waiters == 0 and _checkpoint_locks.get(key) is lease:
+            del _checkpoint_locks[key]

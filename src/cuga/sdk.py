@@ -3302,7 +3302,9 @@ class CugaSupervisor:
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
         self._reset_policy_storage = reset_policy_storage
-        self._name = name or "cuga-supervisor"
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import supervisor_instance_id
+
+        self._name = supervisor_instance_id(name)
 
         if tool_provider is not None:
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider

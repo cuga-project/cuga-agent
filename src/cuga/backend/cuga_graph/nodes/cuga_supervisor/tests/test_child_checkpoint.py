@@ -12,11 +12,13 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
     CHILD_CHECKPOINT_PREFIX,
     MEMORY_SCOPE_CALL,
     MEMORY_SCOPE_CONVERSATION,
+    _checkpoint_locks,
     child_checkpoint_id,
     child_checkpoint_lock,
     normalize_memory_scope,
     resolve_child_checkpoint_id,
     resolve_memory_scope,
+    supervisor_instance_id,
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
@@ -250,8 +252,44 @@ async def test_concurrent_delegations_to_same_checkpoint_are_serialized():
     assert max_in_flight == 1
 
 
-def test_child_checkpoint_lock_is_shared_for_same_agent_and_id():
+def test_supervisor_instance_id_keeps_explicit_name():
+    assert supervisor_instance_id("crm-supervisor") == "crm-supervisor"
+
+
+def test_supervisor_instance_id_is_unique_when_omitted():
+    first = supervisor_instance_id()
+    second = supervisor_instance_id(None)
+    third = supervisor_instance_id("")
+    assert first != second
+    assert first != third
+    assert first.startswith("cuga-supervisor-")
+    assert second.startswith("cuga-supervisor-")
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_lock_is_removed_after_last_waiter():
     agent = object()
-    assert child_checkpoint_lock(agent, "id-1") is child_checkpoint_lock(agent, "id-1")
-    assert child_checkpoint_lock(agent, "id-1") is not child_checkpoint_lock(agent, "id-2")
-    assert child_checkpoint_lock(agent, "id-1") is not child_checkpoint_lock(object(), "id-1")
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold():
+        async with child_checkpoint_lock(agent, "id-1"):
+            started.set()
+            await release.wait()
+
+    task = asyncio.create_task(hold())
+    await started.wait()
+    assert len(_checkpoint_locks) == 1
+    release.set()
+    await task
+    assert len(_checkpoint_locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_call_scoped_locks_do_not_accumulate():
+    agent = object()
+    before = len(_checkpoint_locks)
+    for i in range(5):
+        async with child_checkpoint_lock(agent, f"call-{i}"):
+            pass
+    assert len(_checkpoint_locks) == before
