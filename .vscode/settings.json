@@ -12,5 +12,6 @@
         "--profile",
         "black"
     ],
-    "ruff.enable": false
+    "ruff.enable": false,
+    "java.compile.nullAnalysis.mode": "automatic"
 }
