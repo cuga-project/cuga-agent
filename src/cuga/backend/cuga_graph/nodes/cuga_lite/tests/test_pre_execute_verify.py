@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,22 @@ def test_parse_verify_output_ok_revise_unknown():
     assert revise.gate == "revise"
     assert "46.67" in revise.alert
     assert parse_verify_output("ship it").gate == "unknown"
+
+
+@pytest.mark.unit
+def test_verify_telemetry_failure_is_non_blocking():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        log_pre_execute_verify,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+
+    tracker = MagicMock()
+    tracker.collect_step.side_effect = RuntimeError("tracker unavailable")
+
+    recorded = log_pre_execute_verify(tracker, VerifyDecision(gate="unknown"))
+
+    assert recorded is False
+    tracker.collect_step.assert_called_once()
 
 
 def _adapter():
@@ -191,6 +208,7 @@ async def test_read_only_block_skips_the_verify_call():
 
     chain = MagicMock()
     chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    model_factory = MagicMock(side_effect=RuntimeError("model should not be resolved"))
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
         return_value=chain,
@@ -202,12 +220,122 @@ async def test_read_only_block_skips_the_verify_call():
             chat_messages=[],
             variables_snapshot="",
             current_task="t",
-            model=MagicMock(),
+            model=None,
+            model_factory=model_factory,
             config={},
             max_chars=1000,
         )
     assert decision.gate == "ok"
     chain.ainvoke.assert_not_called()
+    model_factory.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_model_resolution_failure_fails_open_to_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node._llm_manager.get_model",
+            side_effect=RuntimeError("verify model unavailable"),
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={"configurable": {"reflection_enabled": True}},
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result.get("execution_complete", False) is False
+    assert "executed" in result["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_setup_failure_fails_open_to_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_current_task",
+            side_effect=RuntimeError("task context unavailable"),
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result.get("execution_complete", False) is False
+    assert "executed" in result["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_telemetry_failure_downgrades_revise_and_runs_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    revise_chain = MagicMock()
+    revise_chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    noop_plan = MagicMock()
+    noop_plan.ainvoke = AsyncMock(return_value=SimpleNamespace(content=""))
+    adapter = _adapter()
+    adapter._tracker.collect_step.side_effect = [RuntimeError("tracker unavailable"), None, None, None]
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=noop_plan,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=revise_chain,
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result["verify_revise_streak"] == 0
+    assert "executed" in result["chat_messages"][-1].content
 
 
 @pytest.mark.unit
@@ -227,6 +355,77 @@ def test_fold_never_evaluates_attribute_chains_or_subscripts():
     assert "-> 35.0" in describe_write_arguments("await pay(amount=round(140.0 / 4, 2))")
     assert "-> 2" in describe_write_arguments("await pay(n=len([1, 2]))")
     assert "-> " + repr(10**64) not in describe_write_arguments("await pay(n=10 ** 64 ** 2)")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("expression", ['"x" * 1_000_000_000', "[0] * 1_000_000_000"])
+def test_fold_rejects_oversized_sequences_before_multiplication(expression):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    multiply = MagicMock(side_effect=AssertionError("oversized multiplication was evaluated"))
+    with patch.dict(_BIN_OPS, {ast.Mult: multiply}):
+        with pytest.raises(ValueError, match="folded sequence too large"):
+            _safe_eval(ast.parse(expression, mode="eval").body)
+    multiply.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_rejects_unbounded_string_formatting_before_modulo():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    modulo = MagicMock(side_effect=AssertionError("string formatting was evaluated"))
+    with patch.dict(_BIN_OPS, {ast.Mod: modulo}):
+        with pytest.raises(ValueError, match="formatted value too large"):
+            _safe_eval(ast.parse('"%1000000000s" % "x"', mode="eval").body)
+    modulo.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_preserves_small_percent_formatting():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _safe_eval
+
+    assert _safe_eval(ast.parse('"hello %s" % "world"', mode="eval").body) == "hello world"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("expression", "function_name"),
+    [
+        ('str([["x" * 4096] * 4096] * 4096)', "str"),
+        ("sum([[0] * 4096] * 4096, [])", "sum"),
+    ],
+)
+def test_fold_rejects_nested_aggregate_amplification_before_builtin(expression, function_name):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _FOLD_NAMESPACE,
+        _safe_eval,
+    )
+
+    function = MagicMock(side_effect=AssertionError(f"{function_name} was evaluated"))
+    with patch.dict(_FOLD_NAMESPACE, {function_name: function}):
+        with pytest.raises(ValueError, match="folded aggregate too large"):
+            _safe_eval(ast.parse(expression, mode="eval").body)
+    function.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_rejects_oversized_integer_before_final_power():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    power = MagicMock(side_effect=_BIN_OPS[ast.Pow])
+    with patch.dict(_BIN_OPS, {ast.Pow: power}):
+        with pytest.raises(ValueError, match="folded integer too large"):
+            _safe_eval(ast.parse("(10 ** 64) ** 64", mode="eval").body)
+    assert power.call_count == 1
 
 
 @pytest.mark.unit
