@@ -522,8 +522,10 @@ name collision is an easy trap; say so explicitly.
   *"user prefers to run the function"*, not *"run the function next"*. This applies to
   consultation specifically. Under `agent_type:` delegation the remote agent **is** the
   authority for the work itself; it is only routing and hook decisions that stay local.
-- **Return `input-required` rather than hold the connection** when a human may take longer
-  than the in-line budget. See below.
+- **Reply with a plain `Message`, never a `Task`.** The client flattens a Task by joining
+  every message in its `history`, so an interview would arrive as a whole transcript rather
+  than a conclusion. Message-only also means there is no `input-required` to signal: the
+  120s ceiling is the entire budget, with no park-and-resume.
 
 ## Timeouts — pass explicitly
 
@@ -543,9 +545,10 @@ under the 120s ceiling.
 **Consequence worth stating plainly:** only fast, non-interactive consultation fits in-line.
 A genuine human conversation cannot run inside a blocking control point at any timeout value —
 it needs a modelled BPMN user task where the engine owns the wait
-(`KogitoProxy.complete_task` exists; nothing demonstrates it yet). Remote agents should return
-A2A `input-required` rather than hold the connection. **That user-task path is out of scope
-here** and is the larger follow-on piece.
+(`KogitoProxy.complete_task` exists; nothing demonstrates it yet). **That user-task path is
+out of scope here** and is the larger follow-on piece. Until it exists there is no
+park-and-resume at all: remote agents reply with a plain `Message`, which carries no task
+state to park, so the 120s ceiling is the whole budget.
 
 ## Demonstration app — `excel_flows_kogito`
 
@@ -737,7 +740,21 @@ is the completion bar for the code work; stage 2 is the later demonstration.
   *request* metadata but hardcodes `"variables": {}` on every return path — there is no return
   channel. Free text only until a use case forces extending that shared function.
 - **The BPMN user task for long human waits** — the real HITL path, noted above.
+- **`Task` replies.** `delegate_task_via_a2a_sdk` handles them poorly: it flattens a Task by
+  joining **every** message in `history` — handing the deciding agent a transcript rather
+  than a conclusion — and a Task with empty history falls through to `str(result_obj)`. It
+  also never inspects `Task.status`, so `input-required` would read as a finished answer.
+  The brief therefore specifies plain `Message` replies only, which sidesteps all three.
+  Reading task status becomes a prerequisite for the BPMN user-task path above, since that
+  is where a parked conversation would resume from.
 - **A repair loop** for malformed responses. Treat a bad response as a failed consultation.
+- **Sending a correlation identifier.** `delegate_task_via_a2a_sdk` builds each `Message`
+  with a fresh `message_id` and sets neither `context_id` nor `task_id`, so a remote agent
+  cannot tell that two requests belong to the same process run. That rules out any
+  server-side memory keyed on the run — the team brief §5.6 leaves stateless-vs-stateful to
+  the remote team but tells them to key on their own user session instead. `cugaProcessKey`
+  already identifies a run internally and would be the obvious thing to pass; add it when a
+  remote agent actually needs it.
 - **`action_permissions` enforcement** — currently applied only in `langgraph_engine.py:621`;
   `FlowAgent` stores `_permitted_actions`/`_prohibited_actions` and never reads them, so
   Flowable and Kogito apply hook results unchecked. Independent of this work, but it is the
