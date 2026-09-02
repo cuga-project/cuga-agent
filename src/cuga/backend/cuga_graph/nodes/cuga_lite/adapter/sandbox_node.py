@@ -29,6 +29,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
     verify_blocked_message,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     prepare_reflection_context,
     truncate_text_for_context,
@@ -159,30 +160,43 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
         try:
             if reflection_enabled and state.script:
-                active_model = configurable.get("llm") or _llm_manager.get_model(settings.agent.planner.model)
-                verify_text_limit = min(
-                    30_000,
-                    settings.advanced_features.execution_output_max_length // 2,
-                )
-                var_snapshot = ""
-                get_summary = getattr(state.variables_manager, "get_variables_summary", None)
-                if callable(get_summary):
-                    try:
-                        var_snapshot = get_summary() or ""
-                    except Exception:
-                        var_snapshot = ""
-                decision = await decide_pre_execute_verify(
-                    enabled=True,
-                    streak=int(getattr(state, "verify_revise_streak", 0) or 0),
-                    script=state.script,
-                    chat_messages=list(state.chat_messages or []),
-                    variables_snapshot=var_snapshot,
-                    current_task=reflection_current_task(state) or "(no task text)",
-                    model=active_model,
-                    config=config or {},
-                    max_chars=verify_text_limit,
-                )
-                log_pre_execute_verify(adapter._tracker, decision)
+                try:
+                    configured_model = configurable.get("llm") or None
+                    verify_text_limit = min(
+                        30_000,
+                        settings.advanced_features.execution_output_max_length // 2,
+                    )
+                    var_snapshot = ""
+                    get_summary = getattr(state.variables_manager, "get_variables_summary", None)
+                    if callable(get_summary):
+                        try:
+                            var_snapshot = get_summary() or ""
+                        except Exception:
+                            var_snapshot = ""
+                    decision = await decide_pre_execute_verify(
+                        enabled=True,
+                        streak=int(getattr(state, "verify_revise_streak", 0) or 0),
+                        script=state.script,
+                        chat_messages=list(state.chat_messages or []),
+                        variables_snapshot=var_snapshot,
+                        current_task=reflection_current_task(state) or "(no task text)",
+                        model=configured_model,
+                        model_factory=(
+                            None
+                            if configured_model is not None
+                            else lambda: _llm_manager.get_model(settings.agent.planner.model)
+                        ),
+                        config=config or {},
+                        max_chars=verify_text_limit,
+                    )
+                except Exception as e:
+                    logger.warning("Pre-execute VERIFY setup failed: {}", e)
+                    decision = VerifyDecision(gate="unknown", alert=str(e))
+                if not log_pre_execute_verify(adapter._tracker, decision):
+                    decision = VerifyDecision(
+                        gate="unknown",
+                        alert="Pre-execute VERIFY telemetry failed",
+                    )
                 if decision.gate == "revise":
                     ToolCallTracker.stop_tracking()
                     msg = verify_blocked_message(decision.alert)
