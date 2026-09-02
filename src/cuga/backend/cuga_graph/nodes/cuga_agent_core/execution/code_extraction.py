@@ -110,11 +110,27 @@ def extract_code_from_model_response(
     Tries fenced/raw code in ``content`` first; only if that yields nothing
     does it look at ``reasoning_content``. Mirrors the (previously
     duplicated) logic in the Lite and Supervisor loop nodes.
+
+    Multiple fences in reasoning are a plan drafted with no tool output, not
+    one program (#626): only the *first* fenced block is kept. Later blocks are
+    written blind against results that do not exist yet — in AppWorld
+    trajectories the first fence is the ``find_tools`` discovery and the rest
+    call tools it has not bound, so joining them printed the discovery and then
+    crashed. Executing only the first lets a fresh turn write the real program
+    with the tool output visible (same principle as probing isolation).
     """
     code = extract_and_combine_codeblocks(content, tools_needing_probing) if content else ""
     if not code and reasoning_content:
-        code = extract_and_combine_codeblocks(reasoning_content, tools_needing_probing)
+        code = extract_and_combine_codeblocks(_first_fenced_block(reasoning_content), tools_needing_probing)
     return code
+
+
+def _first_fenced_block(text: str) -> str:
+    """Keep only the leading ```python fence; pass text through if there are 0–1."""
+    blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
+    if len(blocks) < 2:
+        return text
+    return f"```python{blocks[0]}```"
 
 
 def make_tool_awaitable(func: Callable[..., Any]) -> Callable[..., Any]:
