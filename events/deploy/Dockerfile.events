@@ -61,4 +61,10 @@ ENV EVENTS_SLACK_BACKEND=direct
 # Default role: vanilla CUGA — registry (8001) + agent (7860). The `--events` flag this used to
 # carry is GONE: the eventing layer is no longer mounted onto this server, it is the separate
 # service 2_deploy.sh starts as cuga-events-svc. Channel loops belong to that process, not this one.
+# The entrypoint writes the managed database's CA before anything connects — the config store
+# uses a verify-full DSN and libpq looks for the cert at a fixed path. See entrypoint.sh.
+COPY events/deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 CMD ["uv", "run", "cuga", "start", "demo"]

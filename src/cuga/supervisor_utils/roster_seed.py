@@ -22,6 +22,15 @@ An agent NAMED IN THE YAML is owned by the YAML: seeding rewrites it on every bo
 stays the reviewed source of truth and a container replace restores it. An agent added through
 the UI has an id the YAML never mentions, so seeding never touches it.
 
+That covers each agent's own record, but NOT its membership of the supervisor, which lives in the
+supervisor's config — a record the YAML does own and does rewrite. Seeding the file's list verbatim
+dropped UI-added sub-agents on every restart: still in the registry, no longer in the supervisor,
+reachable by nobody.
+
+`_partition_prior` keeps them, and uses ROSTER_OWNED_KEY to stay honest in the other direction: a
+ref the file no longer names is kept only if the UI put it there. An agent the roster itself dropped
+is removed, so the file still owns its own entries and stale agents cannot accumulate.
+
 IDEMPOTENCE
 -----------
 ``save_config`` bumps to ``max(version) + 1`` on every call, so naive re-seeding would add a
@@ -41,6 +50,10 @@ from loguru import logger
 # The supervisor's own id in the store. The roster's supervisor block is not a sub-agent, and the
 # events layer addresses exactly one agent by name — see run_routes and the concierge.
 SUPERVISOR_AGENT_ID = "cuga"
+
+# Marks an agent record the seeder owns, so a re-seed can tell "the UI added this"
+# from "the roster used to declare this and no longer does".
+ROSTER_OWNED_KEY = "seeded_from_roster"
 
 
 def roster_path() -> str:
@@ -97,13 +110,54 @@ def _sub_agent_config(entry: Dict[str, Any]) -> Dict[str, Any]:
             # to pick a specialist, and an agent with a blank one is effectively unroutable.
             "description": instructions.split("\n", 1)[0][:300],
             "kind": "single",
+            # PROVENANCE, and it is load-bearing. On a re-seed the supervisor's subAgents list is
+            # rewritten from the file, and a ref that is no longer in the file is ambiguous: it was
+            # either added in the UI (keep it) or deleted from the roster (drop it). Without this
+            # marker both look identical, so either UI additions are lost on every restart or the
+            # file can never remove one of its own agents. See `_partition_prior`.
+            ROSTER_OWNED_KEY: True,
         },
         "tools": [{"name": n} for n in _app_names(entry)],
         "special_instructions": instructions,
     }
 
 
-def _supervisor_config(roster: Dict[str, Any], sub_ids: List[str]) -> Dict[str, Any]:
+async def _partition_prior(prior: List[Dict[str, Any]], yaml_refs: List[str]) -> List[Dict[str, Any]]:
+    """The entries in the CURRENT supervisor that seeding must preserve.
+
+    A prior entry survives when the file does not name it AND it was not put there by an earlier
+    seed. The second half is what makes removal work: drop `weatherbot` from the roster and its
+    record still carries ROSTER_OWNED_KEY, so it is recognised as a roster agent the file has
+    dropped, not as something a human added in the Studio.
+
+    `a2a` entries have no ref and can only have come from the UI, so they are always kept.
+    """
+    from cuga.backend.server.config_store import load_config
+
+    named = set(yaml_refs)
+    keep: List[Dict[str, Any]] = []
+    for entry in prior or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") == "a2a" and entry.get("name"):
+            keep.append(entry)
+            continue
+        ref = entry.get("ref")
+        if not ref or ref in named:
+            continue  # the file names it — it is re-added from the file below
+        try:
+            cfg, _ = await load_config(None, ref)
+        except Exception:  # noqa: BLE001 — an unreadable record is not evidence of ownership
+            cfg = None
+        was_seeded = bool(((cfg or {}).get("agent") or {}).get(ROSTER_OWNED_KEY))
+        if not was_seeded:
+            keep.append(entry)  # genuinely UI-added
+    return keep
+
+
+def _supervisor_config(
+    roster: Dict[str, Any], sub_ids: List[str], prior_subs: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
     sup = roster.get("supervisor") or {}
     return {
         "agent": {
@@ -112,7 +166,7 @@ def _supervisor_config(roster: Dict[str, Any], sub_ids: List[str]) -> Dict[str, 
             "kind": "supervisor",
         },
         "supervisor": {
-            "subAgents": [{"kind": "internal", "ref": ref} for ref in sub_ids],
+            "subAgents": [{"kind": "internal", "ref": r} for r in sub_ids] + (prior_subs or []),
             "planApproval": False,
             **(
                 {"special_instructions": sup["special_instructions"]}
@@ -190,8 +244,19 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"roster seed: {agent_id!r} failed: {e}")
 
+    # Read what is already there so UI-added sub-agents keep their membership (see _merge_sub_agents).
     try:
-        tally[await _upsert(_supervisor_config(roster, sub_ids), SUPERVISOR_AGENT_ID)] += 1
+        from cuga.backend.server.config_store import load_config
+
+        prior_cfg, _ = await load_config(None, SUPERVISOR_AGENT_ID)
+    except Exception:  # noqa: BLE001 — first boot, or an unreachable store; treat as "nothing prior"
+        prior_cfg = None
+    prior_subs = await _partition_prior(
+        ((prior_cfg or {}).get("supervisor") or {}).get("subAgents") or [], sub_ids
+    )
+
+    try:
+        tally[await _upsert(_supervisor_config(roster, sub_ids, prior_subs), SUPERVISOR_AGENT_ID)] += 1
     except Exception as e:  # noqa: BLE001
         logger.warning(f"roster seed: supervisor failed: {e}")
         return len(sub_ids), tally

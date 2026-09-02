@@ -42,6 +42,19 @@ for k in "${KEYS[@]}"; do
   if [[ -n "$val" ]]; then echo "$k=$val" >> "$OUT"; copied+=("$k"); else skipped+=("$k"); fi
 done
 
+# The agent config store shares the events database, so UI-created agents survive an instance
+# replace. Derived rather than asked for: EVENTS_DB is already the managed Postgres DSN, and a
+# second copy in .env would be one more thing to keep in sync. 2_deploy.sh only turns
+# storage.mode=prod on when this key made it into the secret, so an events DB on SQLite (no DSN)
+# simply leaves the config store local instead of deploying something that cannot boot.
+db=$(grep -E "^EVENTS_DB=" "$OUT" | tail -1 | cut -d= -f2-)
+case "$db" in
+  postgres://*|postgresql://*)
+    echo "DYNACONF_STORAGE__POSTGRES_URL=$db" >> "$OUT"
+    copied+=("DYNACONF_STORAGE__POSTGRES_URL")
+    ;;
+esac
+
 echo "wrote $OUT (chmod 600)"
 echo "  copied  : ${copied[*]}"
 echo "  skipped : ${skipped[*]:-none} (absent/empty in $SRC)"

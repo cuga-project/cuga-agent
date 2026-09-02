@@ -73,7 +73,11 @@ core_args=(
   --env "DEPLOY_REV=$DEPLOY_REV"
   # No EVENTS_ENABLED: this is plain CUGA. /run mounts because GATEWAY_TOKEN rides in via the
   # secret (unconfigured, it is not mounted at all), and every call must carry that token.
-  --command "uv" --argument "run" --argument "cuga" --argument "start" --argument "demo"
+  # Routed through the image entrypoint, which installs the managed database CA before the
+  # process starts. `--command` REPLACES the image ENTRYPOINT (Knative semantics), so naming
+  # `uv` directly here silently skipped it and the config store could not verify TLS.
+  --command "/usr/local/bin/entrypoint.sh"
+  --argument "uv" --argument "run" --argument "cuga" --argument "start" --argument "demo"
 )
 # THE ROSTER LIVES WHERE EXECUTION LIVES. In the split, /run on THIS app is what actually runs the
 # agent, so the supervisor and its sub-agents must be loaded HERE. Putting them on the events app
@@ -86,6 +90,35 @@ if [[ "$CE_EVENTS_SUPERVISOR" == "1" ]]; then
   # from the roster and routes internally. EVENTS_SUPERVISOR would be inert here — that flag is
   # read by the events layer's runtime, which this app deliberately does not have.
   core_args+=( --env "CUGA_SUPERVISOR_ROSTER=$CE_ROSTER" )
+  # The roster is IMPORTED into the agent config store at startup (supervisor_utils/roster_seed)
+  # and /run reads the store, so the Manage UI and /run cannot disagree about what is loaded.
+  # The registry flag makes those seeded agents visible and editable there; without it
+  # `list_agents` short-circuits to cuga-default and the roster is invisible in the UI.
+  #
+  # Set HERE rather than by changing settings.toml: flipping that default would turn the
+  # registry on for every CUGA user and expose create/delete-agent to anyone with manage access.
+  core_args+=( --env "DYNACONF_SUPERVISOR__REGISTRY_ENABLED=true" )
+  # PERSISTENCE for anything composed in the UI. The roster self-heals from the file on every
+  # boot, but an agent added in the Studio exists only in the config store — which defaults to
+  # SQLite on the container's ephemeral disk, so an instance replace would drop it.
+  # storage.mode=prod moves the store to the same managed Postgres the events layer uses.
+  #
+  # It also moves the embedding and policy backends, and the embedding one needs pgvector:
+  # ProdEmbeddingStore runs CREATE EXTENSION IF NOT EXISTS vector. Verified installed (0.8.2)
+  # on this database — if you point this at a fresh Postgres, install it there first or
+  # knowledge queries fail while everything else looks healthy.
+  # Guarded, because mode=prod with no URL is a HARD FAILURE: get_relational_store raises
+  # "storage.postgres_url is required when storage.mode=prod" and the server never starts. The URL
+  # travels IN the secret (EVENTS_DB is not a shell var here — it arrives via --env-from-secret),
+  # so if it is absent we stay on the local store rather than deploying something that cannot boot.
+  if secret_has_key "$SECRET_NAME" DYNACONF_STORAGE__POSTGRES_URL; then
+    core_args+=( --env "DYNACONF_STORAGE__MODE=prod" )
+    echo "   agent config store: PostgreSQL (UI-created agents survive an instance replace)"
+  else
+    echo "   ⚠ agent config store: local SQLite — add DYNACONF_STORAGE__POSTGRES_URL to $SECRET_NAME"
+    echo "     for agents composed in the Studio to survive a restart. The roster itself re-seeds"
+    echo "     from the file either way."
+  fi
   echo "   roster on cuga-core (preloaded supervisor): $CE_ROSTER"
 fi
 if ibmcloud ce app get -n "$CORE_APP" >/dev/null 2>&1; then
@@ -117,7 +150,8 @@ ev_args=(
   --env "DEPLOY_REV=$DEPLOY_REV"
   # The Studio UI is served by cuga-core and calls this service cross-origin — allow it.
   --env "EVENTS_CORS_ORIGINS=$CORE_URL"
-  --command "uv" --argument "run" --argument "python" --argument "-m"
+  --command "/usr/local/bin/entrypoint.sh"
+  --argument "uv" --argument "run" --argument "python" --argument "-m"
   --argument "cuga.backend.events.service"
 )
 
