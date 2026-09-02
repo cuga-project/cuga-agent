@@ -3,6 +3,9 @@ from typing import Literal
 
 VerifyGate = Literal["ok", "revise", "unknown"]
 
+# Lives here (not in pre_execute) so response_utils can import it without the LLM chain.
+VERIFY_BLOCKED_PREFIX = "VERIFY blocked this code block before execution."
+
 
 @dataclass(frozen=True)
 class VerifyDecision:

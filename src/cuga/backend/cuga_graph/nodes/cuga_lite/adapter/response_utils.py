@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from langchain_core.messages import HumanMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VERIFY_BLOCKED_PREFIX
 
 
 def clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -17,15 +18,15 @@ def clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str,
 
 
 def reflection_current_task(state: Any) -> str:
-    """Prefer ``sub_task``; else last user message that is not sandbox feedback."""
+    """Prefer ``sub_task``; else last user message that is not sandbox or VERIFY feedback."""
     if (state.sub_task or "").strip():
         return state.sub_task.strip()
     if state.chat_messages:
-        execution_prefix = EXECUTION_OUTPUT_PREFIX
+        feedback_prefixes = (EXECUTION_OUTPUT_PREFIX, VERIFY_BLOCKED_PREFIX)
         for msg in reversed(state.chat_messages):
             if isinstance(msg, HumanMessage):
                 content = (msg.content or "").strip()
-                if content and not content.startswith(execution_prefix):
+                if content and not content.startswith(feedback_prefixes):
                     return content
     return ""
 

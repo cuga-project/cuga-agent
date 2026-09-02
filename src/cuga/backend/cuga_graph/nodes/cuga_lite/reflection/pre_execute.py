@@ -10,6 +10,7 @@ from loguru import logger
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify import verify_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import (
+    VERIFY_BLOCKED_PREFIX,
     VerifyDecision,
     parse_verify_output,
 )
@@ -20,7 +21,6 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
 from cuga.backend.cuga_graph.utils.context_management_utils import prepare_verify_context
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 
-VERIFY_BLOCKED_PREFIX = "VERIFY blocked this code block before execution."
 VERIFY_REVISE_STREAK_CAP = 2
 
 

@@ -12,6 +12,7 @@ syntax.
 from __future__ import annotations
 
 import ast
+import operator
 from typing import Any, Dict, List, Optional, Tuple
 
 # Calls that never mutate state. Anything not listed here and not ending in
@@ -95,52 +96,104 @@ def _call_name(node: ast.Call) -> str:
     return ""
 
 
-# Container and string methods. ``d.get(...)``/``s.add(...)`` mutate local
-# objects, never remote state, and reporting them buries the real write row.
-CONTAINER_METHODS = frozenset(
+# Methods that only read their receiver. Exempt on any receiver: ``client.get``
+# is a read even when the receiver came from outside the block.
+READ_ONLY_METHODS = frozenset(
     {
-        "add",
-        "append",
-        "clear",
         "copy",
         "count",
         "encode",
         "endswith",
-        "extend",
         "find",
         "format",
         "get",
         "index",
-        "insert",
         "items",
         "join",
         "keys",
         "lower",
         "lstrip",
-        "pop",
-        "remove",
         "replace",
-        "reverse",
         "rsplit",
         "rstrip",
-        "sort",
         "split",
         "startswith",
         "strip",
         "title",
-        "update",
         "upper",
         "values",
     }
 )
 
+# Methods that mutate their receiver. Exempt only when the receiver is a name
+# bound in this block: ``rows.append(x)`` on a local list is skipped, while
+# ``client.update(...)`` on an object from outside the block is verified.
+LOCAL_MUTATORS = frozenset(
+    {
+        "add",
+        "append",
+        "clear",
+        "extend",
+        "insert",
+        "pop",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+    }
+)
 
-def _is_write_call(node: ast.Call) -> bool:
+CONTAINER_METHODS = READ_ONLY_METHODS | LOCAL_MUTATORS
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _receiver_root(expr: ast.expr) -> Optional[str]:
+    """Name at the root of ``a.b[0].c`` — None when the receiver is not a name."""
+    while isinstance(expr, (ast.Attribute, ast.Subscript)):
+        expr = expr.value
+    return expr.id if isinstance(expr, ast.Name) else None
+
+
+def _target_names(target: ast.expr) -> List[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for elt in target.elts for n in _target_names(elt)]
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    return []
+
+
+def _bound_names(tree: ast.AST) -> set:
+    """Names this block binds itself (assignments, loop and with targets)."""
+    names: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign,)):
+            for target in node.targets:
+                names.update(_target_names(target))
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension)):
+            names.update(_target_names(node.target))
+        elif isinstance(node, ast.NamedExpr):
+            names.update(_target_names(node.target))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    names.update(_target_names(item.optional_vars))
+    return names
+
+
+def _is_write_call(node: ast.Call, local_names: set) -> bool:
     name = _call_name(node)
     if not name:
         return True
-    if isinstance(node.func, ast.Attribute) and name in CONTAINER_METHODS:
-        return False
+    if isinstance(node.func, ast.Attribute):
+        if name in READ_ONLY_METHODS:
+            return False
+        if name in LOCAL_MUTATORS:
+            root = _receiver_root(node.func.value)
+            return root is None or root not in local_names
     if name.endswith("_get"):
         return False
     return name not in READ_ONLY_CALLS
@@ -155,31 +208,64 @@ def has_write_call(code: Optional[str]) -> bool:
         tree = ast.parse(text)
     except SyntaxError:
         return True
+    local_names = _bound_names(tree)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _is_write_call(node):
+        if isinstance(node, ast.Call) and _is_write_call(node, local_names):
             return True
     return False
 
 
-def _assignments(tree: ast.AST) -> List[Tuple[int, str, ast.expr]]:
-    """Single-target name assignments, in source order."""
-    out: List[Tuple[int, str, ast.expr]] = []
+_Scope = Optional[ast.AST]
+_Assignment = Tuple[int, str, ast.expr, _Scope]
+
+
+def _scope_chains(tree: ast.AST) -> Dict[int, Tuple[ast.AST, ...]]:
+    """id(node) -> enclosing function/class/lambda nodes, innermost first.
+
+    An empty chain means module level. A ``def`` statement itself belongs to
+    the scope that contains it; only its body is inside the new scope.
+    """
+    chains: Dict[int, Tuple[ast.AST, ...]] = {}
+
+    def visit(node: ast.AST, chain: Tuple[ast.AST, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            chains[id(child)] = chain
+            visit(child, (child,) + chain if isinstance(child, _SCOPE_NODES) else chain)
+
+    visit(tree, ())
+    return chains
+
+
+def _assignments(tree: ast.AST, chains: Dict[int, Tuple[ast.AST, ...]]) -> List[_Assignment]:
+    """Single-target name assignments with their lexical scope, in source order."""
+    out: List[_Assignment] = []
     for node in ast.walk(tree):
+        chain = chains.get(id(node), ())
+        scope: _Scope = chain[0] if chain else None
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if isinstance(target, ast.Name):
-                out.append((getattr(node, "lineno", 0), target.id, node.value))
+                out.append((getattr(node, "lineno", 0), target.id, node.value, scope))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
-            out.append((getattr(node, "lineno", 0), node.target.id, node.value))
+            out.append((getattr(node, "lineno", 0), node.target.id, node.value, scope))
     out.sort(key=lambda item: item[0])
     return out
 
 
-def _env_before(assigns: List[Tuple[int, str, ast.expr]], lineno: int) -> Dict[str, ast.expr]:
+def _env_before(assigns: List[_Assignment], lineno: int, chain: Tuple[ast.AST, ...]) -> Dict[str, ast.expr]:
+    """Assignments visible at ``lineno`` from the call's own scope chain.
+
+    A name bound inside a nested ``def`` is not visible to a call outside it,
+    so a helper's local ``amount`` never overrides the module-level one.
+    """
+    visible = {id(scope) for scope in chain}
     env: Dict[str, ast.expr] = {}
-    for line, name, value in assigns:
-        if line < lineno:
-            env[name] = value
+    for line, name, value, scope in assigns:
+        if line >= lineno:
+            continue
+        if scope is not None and id(scope) not in visible:
+            continue
+        env[name] = value
     return env
 
 
@@ -221,16 +307,62 @@ def _free_names(node: ast.expr) -> set:
     return {s.id for s in ast.walk(node) if isinstance(s, ast.Name)} - bound
 
 
+_BIN_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_UNARY_OPS = {ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Not: operator.not_}
+_MAX_POW_EXPONENT = 64
+_MAX_FOLDED_STR = 4096
+
+
+def _safe_eval(node: ast.AST) -> Any:
+    """Evaluate literals, arithmetic and direct ``_FOLD_NAMESPACE`` calls only.
+
+    The proposed code is model-generated and has not run in the sandbox yet,
+    so this never hands it to ``eval``: attribute access, subscripts,
+    comprehensions, lambdas and indirect calls are rejected outright.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float, str, bool)) or node.value is None:
+            return node.value
+        raise ValueError("unsupported constant")
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
+        return _UNARY_OPS[type(node.op)](_safe_eval(node.operand))
+    if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
+        left, right = _safe_eval(node.left), _safe_eval(node.right)
+        if isinstance(node.op, ast.Pow) and (
+            not isinstance(right, (int, float)) or abs(right) > _MAX_POW_EXPONENT
+        ):
+            raise ValueError("exponent too large")
+        value = _BIN_OPS[type(node.op)](left, right)
+        if isinstance(value, (str, list, tuple)) and len(value) > _MAX_FOLDED_STR:
+            raise ValueError("folded value too large")
+        return value
+    if isinstance(node, (ast.Tuple, ast.List)):
+        items = [_safe_eval(elt) for elt in node.elts]
+        return tuple(items) if isinstance(node, ast.Tuple) else items
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FOLD_NAMESPACE:
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            kw.arg is None for kw in node.keywords
+        ):
+            raise ValueError("star arguments are not folded")
+        return _FOLD_NAMESPACE[node.func.id](
+            *[_safe_eval(arg) for arg in node.args],
+            **{kw.arg: _safe_eval(kw.value) for kw in node.keywords if kw.arg},
+        )
+    raise ValueError(f"unsupported node {type(node).__name__}")
+
+
 def _fold(node: ast.expr) -> Optional[str]:
     """Evaluate the expression when it depends on nothing outside the block."""
     try:
-        if _free_names(node) - set(_FOLD_NAMESPACE):
-            return None
-        value = eval(  # noqa: S307 - only constants and _FOLD_NAMESPACE reach here
-            compile(ast.Expression(body=node), "<verify>", "eval"),
-            {"__builtins__": {}},
-            dict(_FOLD_NAMESPACE),
-        )
+        value = _safe_eval(node)
     except Exception:
         return None
     if isinstance(value, (int, float, str, bool)) or value is None:
@@ -252,15 +384,17 @@ def describe_write_arguments(code: Optional[str]) -> str:
     except SyntaxError:
         return "(code does not parse; verify the source directly)"
 
-    assigns = _assignments(tree)
+    chains = _scope_chains(tree)
+    assigns = _assignments(tree, chains)
+    local_names = _bound_names(tree)
     rows: List[str] = []
     unresolved: set = set()
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_write_call(node):
+        if not isinstance(node, ast.Call) or not _is_write_call(node, local_names):
             continue
         name = _call_name(node) or "<call>"
-        env = _env_before(assigns, getattr(node, "lineno", 0))
+        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()))
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
         args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
         if not args:
