@@ -1,12 +1,3 @@
-[agent.task_decomposition.model]
-platform = "rits"
-model_name = "google/gemma-4-31B-it"
-url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
-max_tokens = 1000
-
 [agent.planner.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
@@ -16,16 +7,6 @@ temperature = 0.1
 top_p = 1.0
 max_tokens = 7000
 
-[agent.shortlister.model]
-platform = "rits"
-model_name = "google/gemma-4-31B-it"
-url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
-max_tokens = 7000
-
-
 [agent.chat.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
@@ -34,16 +15,6 @@ apikey_name = "RITS_API_KEY"
 temperature = 0.1
 top_p = 1.0
 max_tokens = 5000
-
-[agent.plan_controller.model]
-platform = "rits"
-model_name = "google/gemma-4-31B-it"
-url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
-max_tokens = 5000
-
 
 [agent.final_answer.model]
 platform = "rits"
@@ -55,15 +26,6 @@ top_p = 1.0
 max_tokens = 15000
 
 [agent.code.model]
-platform = "rits"
-model_name = "google/gemma-4-31B-it"
-url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-top_p = 1.0
-max_tokens = 3000
-
-[agent.code_planner.model]
 platform = "rits"
 model_name = "google/gemma-4-31B-it"
 url="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it-a100/v1"

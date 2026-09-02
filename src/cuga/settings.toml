@@ -14,10 +14,8 @@ cuga_mode = "balanced"
 [advanced_features]
 web_arena_eval = false
 use_vision = true
-use_paraphrase = false
 tracker_enabled = false
 run_receipt = false  # Attach a per-run token/cost/timing receipt to SDK InvokeResult (backend/cuga_graph/utils/run_receipt.py)
-use_location_resolver = false
 langfuse_tracing = false
 wxo_integration = false
 benchmark = "default"
@@ -25,18 +23,11 @@ benchmark = "default"
 appworld_final_answer_plain = true
 mode = 'api'
 use_extension = false
-code_planner_enabled = true
-api_planner_hitl = false
-lite_mode = true  # Enable CugaLite for simple API tasks (faster execution)
-lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this many tools
-force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
-save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
-decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
@@ -47,7 +38,6 @@ e2b_cleanup_on_create = true  # Run periodic cleanup when creating new sandboxes
 e2b_cleanup_frequency = 0  # Check all sandboxes every N get_or_create calls (0 = only on create)
 message_window_limit = 500  # Maximum number of messages to keep in history (sliding window)
 max_input_length = 20000  # Maximum characters allowed in user input (prevents abuse)
-sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 sandbox_execution_timeout = 30  # Seconds; per-block wall clock for sandbox code execution (incl. embedded LLM calls like find_tools). Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT
@@ -151,6 +141,10 @@ enabled = false  # Enable CugaSupervisor for multi-agent coordination
 config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
 agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
+# Manage-UI multi-agent registry: create/list extra agents and route /stream via X-Agent-ID.
+# Default off so a tenant/instance stays one runnable agent. Turned on by
+# `cuga start demo_supervisor` and `cuga start manager --seed-supervisor-demo`.
+registry_enabled = false
 
 [storage]
 # [storage].mode selects policy vectors, knowledge vectors, and knowledge metadata backend (see table).
@@ -284,7 +278,6 @@ enabled = true             # Master toggle for Evolve integration
 url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint
 mode = "auto"               # "auto" = registry first, then direct SSE fallback; "registry" = registry only; "direct" = direct SSE only
 app_name = "evolve"         # MCP app/server name to use when Evolve is managed by the CUGA registry
-lite_mode_only = true        # Only activate Evolve for CugaLite mode
 save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
