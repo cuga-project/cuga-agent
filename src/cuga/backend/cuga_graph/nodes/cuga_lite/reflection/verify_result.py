@@ -8,6 +8,7 @@ VerifyGate = Literal["ok", "revise", "unknown"]
 class VerifyDecision:
     gate: VerifyGate
     alert: str = ""
+    raw: str = ""
 
 
 def parse_verify_output(text: str) -> VerifyDecision:
@@ -31,4 +32,4 @@ def parse_verify_output(text: str) -> VerifyDecision:
             continue
         if gate == "revise" and stripped:
             alert_lines.append(stripped)
-    return VerifyDecision(gate=gate, alert="\n".join(alert_lines).strip())
+    return VerifyDecision(gate=gate, alert="\n".join(alert_lines).strip(), raw=raw)

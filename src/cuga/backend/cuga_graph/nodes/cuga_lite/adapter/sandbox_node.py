@@ -25,6 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
     decide_pre_execute_verify,
+    log_pre_execute_verify,
     verify_blocked_message,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
@@ -181,10 +182,10 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     config=config or {},
                     max_chars=verify_text_limit,
                 )
+                log_pre_execute_verify(adapter._tracker, decision)
                 if decision.gate == "revise":
                     ToolCallTracker.stop_tracking()
                     msg = verify_blocked_message(decision.alert)
-                    adapter._tracker.collect_step(step=Step(name="PreExecuteVerify", data=msg))
                     new_message = HumanMessage(content=msg)
                     updated_messages, error_message = core_append_with_step_limit(
                         adapter, state, [new_message], max_steps

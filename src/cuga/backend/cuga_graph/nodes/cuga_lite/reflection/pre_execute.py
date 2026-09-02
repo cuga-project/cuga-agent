@@ -2,20 +2,43 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from loguru import logger
 
+from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify import verify_task
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import (
     VerifyDecision,
     parse_verify_output,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+    describe_write_arguments,
+    has_write_call,
 )
 from cuga.backend.cuga_graph.utils.context_management_utils import prepare_verify_context
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 
 VERIFY_BLOCKED_PREFIX = "VERIFY blocked this code block before execution."
 VERIFY_REVISE_STREAK_CAP = 2
+
+
+def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> None:
+    if tracker is None:
+        return
+    tracker.collect_step(
+        step=Step(
+            name="PreExecuteVerify",
+            data=json.dumps(
+                {
+                    "gate": decision.gate,
+                    "alert": decision.alert,
+                    "output": decision.raw,
+                }
+            ),
+        )
+    )
 
 
 async def decide_pre_execute_verify(
@@ -40,6 +63,9 @@ async def decide_pre_execute_verify(
     if streak >= VERIFY_REVISE_STREAK_CAP:
         logger.info("Pre-execute VERIFY skipped: revise streak {}", streak)
         return VerifyDecision(gate="ok")
+    if not has_write_call(script):
+        logger.debug("Pre-execute VERIFY skipped: read-only block")
+        return VerifyDecision(gate="ok")
     try:
         history, variables, proposed = prepare_verify_context(
             list(chat_messages or []),
@@ -47,12 +73,13 @@ async def decide_pre_execute_verify(
             script or "",
             max_chars=max_chars,
         )
+        write_arguments = describe_write_arguments(script)
         clamp_watsonx_completion_for_messages(
             model,
             [
                 {
                     "role": "user",
-                    "content": "\n".join([current_task, history, variables, proposed]),
+                    "content": "\n".join([current_task, history, variables, proposed, write_arguments]),
                 }
             ],
         )
@@ -62,6 +89,7 @@ async def decide_pre_execute_verify(
                 "agent_history": history,
                 "variables_snapshot": variables,
                 "proposed_code": proposed,
+                "write_arguments": write_arguments,
             },
             config=config or {},
         )
@@ -70,7 +98,7 @@ async def decide_pre_execute_verify(
         return decision
     except Exception as e:
         logger.warning(f"Pre-execute VERIFY failed: {e}")
-        return VerifyDecision(gate="unknown")
+        return VerifyDecision(gate="unknown", alert=str(e))
 
 
 def verify_blocked_message(alert: str) -> str:
@@ -78,6 +106,7 @@ def verify_blocked_message(alert: str) -> str:
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
         f"{body}\n"
-        "Rewrite the block: bind write arguments to retrieved variables or to "
-        "results from reads in this same block. Do not repeat the ungrounded literals."
+        "Rewrite the block so each write argument evaluates to a value you can "
+        "point at in the retrieved data. Do not re-send the same value through a "
+        "different expression."
     )

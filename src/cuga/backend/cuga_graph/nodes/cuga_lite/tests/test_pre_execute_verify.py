@@ -102,11 +102,18 @@ async def test_verify_revise_skips_executor_ok_runs():
         ):
             skipped = await node(
                 _state(),
-                config={"configurable": {"reflection_enabled": True, "llm": MagicMock()}},
+                config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
             )
         eval_mock.assert_not_called()
         assert VERIFY_BLOCKED_PREFIX in skipped["chat_messages"][-1].content
         assert skipped["verify_revise_streak"] == 1
+        verify_steps = [
+            c.kwargs["step"]
+            for c in adapter._tracker.collect_step.call_args_list
+            if c.kwargs.get("step") and c.kwargs["step"].name == "PreExecuteVerify"
+        ]
+        assert verify_steps
+        assert "revise" in (verify_steps[0].data or "")
 
         eval_mock.reset_mock()
         with patch(
@@ -115,8 +122,89 @@ async def test_verify_revise_skips_executor_ok_runs():
         ):
             ran = await node(
                 _state(),
-                config={"configurable": {"reflection_enabled": True, "llm": MagicMock()}},
+                config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
             )
         eval_mock.assert_awaited()
         assert ran["verify_revise_streak"] == 0
         assert "executed" in ran["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+def test_has_write_call_skips_read_only_blocks():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    assert not has_write_call('tools = await find_tools("x", "phone")\nprint(tools)')
+    assert not has_write_call("orders = await amazon_show_orders_orders_get(page_index=0)")
+    assert has_write_call("await venmo_create_payment_request_payment_requests_post(amount=1)")
+    # unknown callables and unparseable code are verified, never skipped
+    assert has_write_call("await pay(amount=35.0)")
+    assert has_write_call("this is not python(")
+    assert not has_write_call("")
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_resolves_values_through_variables():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # 92fe421_1: the wrong share is invisible at the call site.
+    out = describe_write_arguments(
+        "total_paid = 140.0\n"
+        "total_people = len(roommates) + 1\n"
+        "share = round(total_paid / total_people, 2)\n"
+        'await venmo_create_payment_request_payment_requests_post('
+        'user_email=e, amount=share, description="Amazon Subscription")\n'
+    )
+    assert "round(140.0 / (len(roommates) + 1), 2)" in out
+    assert "'Amazon Subscription'" in out
+    assert "roommates" in out  # flagged as coming from an earlier block
+
+    # A fully constant expression folds to the value that will be written.
+    folded = describe_write_arguments("n = 4\nawait send_money(amount=round(140.0 / n, 2))")
+    assert "-> 35.0" in folded
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_exposes_aggregation_source():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # fa327a6_1: summing every transaction, not only the Amazon one.
+    out = describe_write_arguments(
+        'paid = sum(tx["amount"] for tx in brenda_txs)\n'
+        'total = sum(o["paid_amount"] for o in amazon_orders)\n'
+        "diff = round(total - paid, 2)\n"
+        "await venmo_create_transaction_transactions_post(receiver_email=e, amount=abs(diff))\n"
+    )
+    assert "brenda_txs" in out and "amazon_orders" in out
+    assert "sum(" in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_read_only_block_skips_the_verify_call():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    chain = MagicMock()
+    chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script='tools = await find_tools("orders", "amazon")\nprint(tools)',
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=MagicMock(),
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok"
+    chain.ainvoke.assert_not_called()
