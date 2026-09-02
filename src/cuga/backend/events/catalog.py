@@ -1548,7 +1548,7 @@ def _feasibility(integration: str, ap_trigger: str) -> tuple[str, str]:
             "setup",
             "arms today as a CUGA-owned direct watcher (no AP flow). The Slack app "
             "must be SUBSCRIBED to this event type in its Event Subscriptions — see "
-            "events_docs/setup/SLACK.md — then a real reaction/mention/join fires it.",
+            "the events docs (setup/SLACK.md) — then a real reaction/mention/join fires it.",
         )
     if integration == "discord":
         need = (

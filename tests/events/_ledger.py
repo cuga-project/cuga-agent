@@ -5,8 +5,8 @@ Any harness that proves something calls::
     from _ledger import record
     record("box", "fire_real", "ok", "real upload → detected → judged")
 
-Records land in events_docs/verification_data.json keyed by (surface, capability) — newest wins —
-and scripts/gen_ledger.py renders events_docs/verification.html from them. So the ledger updates
+Records land in the events docs (verification_data.json) keyed by (surface, capability) — newest wins —
+and scripts/gen_ledger.py renders the events docs (verification.html) from them. So the ledger updates
 itself every time a test runs, and a cell's date is always the date it was last PROVEN.
 """
 

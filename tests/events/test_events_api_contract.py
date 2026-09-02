@@ -1082,9 +1082,9 @@ def test_admin_add_user_without_a_user_store_is_501():
 
 # NOTE: three tests lived here, all of them guarding committed HTML that no longer exists.
 #
-#   test_api_spec_is_golden               → events_docs/api/api_spec.html  (204 KB, generated)
-#   test_examples_board_matches_catalog   → events_docs/api/examples.html  (71 KB)
-#   test_every_route_appears_in_the_api_reference → events_docs/api/api.html (37 KB)
+#   test_api_spec_is_golden               → the events docs (api/api_spec.html)  (204 KB, generated)
+#   test_examples_board_matches_catalog   → the events docs (api/examples.html)  (71 KB)
+#   test_every_route_appears_in_the_api_reference → the events docs (api/api.html) (37 KB)
 #
 # All three pages are gone, along with `scripts/gen_api_spec.py` and `scripts/gen_examples.py`. The
 # repo was carrying ~110 KB of HTML in every clone, plus the generators that produced it, so that
@@ -1099,22 +1099,18 @@ def test_admin_add_user_without_a_user_store_is_501():
 # is preserved by `test_every_route_is_self_documenting` below, without a committed artifact.
 
 
-def test_every_trigger_appears_in_its_setup_guide():
-    """Every registry trigger must be named (as `event`) in its app's events_docs/setup/<APP>.md —
-    the setup guides are where a tester learns which scope/intent/subscription each trigger needs
-    (Slack scopes, Discord privileged intents, the one-credential-covers-all note for gmail/github/
-    box). A trigger added without its permissions documented is a support ticket waiting."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[2] / "events_docs" / "setup"
-    from events import triggers as tr
-
-    missing = []
-    for t in tr.rows():
-        doc = root / f"{t.app.upper()}.md"
-        if not doc.exists() or f"`{t.event}`" not in doc.read_text():
-            missing.append(f"{t.app}/{t.event} → setup/{doc.name}")
-    assert not missing, "triggers not documented in their setup guide:\n  " + "\n  ".join(missing)
+# NOTE: `test_every_trigger_appears_in_its_setup_guide` lived here. It read
+# `the events docs (setup)<APP>.md` and asserted every registry trigger was named in its app's guide, so
+# that a trigger could not ship without its scopes/intents documented.
+#
+# The setup guides now live in the events documentation repository, out of this tree. A test cannot
+# assert against a file this repo does not contain: pointed at a path outside it, the check either
+# fails everywhere or skips everywhere, and a permanently-skipped test is worse than none — it reads
+# as coverage while guarding nothing.
+#
+# The guarantee it provided is real and did not move with it: a trigger added here with no matching
+# entry in the guides is now only caught by review. If that becomes a problem, the check belongs in
+# the docs repository, running against the trigger registry it can import — not here.
 
 
 def test_every_route_is_self_documenting():

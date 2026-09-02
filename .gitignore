@@ -126,9 +126,6 @@ src/cuga/frontend/dist/*.map
 .venv-events/
 .events.db
 
-# events_docs local cruft
-events_docs/**/__pycache__/
-events_docs/**/.DS_Store
 
 # Code Engine deploy secrets / generated URLs
 deploy/ce/.env.ce

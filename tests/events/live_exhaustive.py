@@ -1,6 +1,6 @@
 """EXHAUSTIVE live matrix — every agent, every trigger, every channel: arm → FIRE → answer-VERIFIED.
 
-The three gates per case (events_docs/plans/EXHAUSTIVE_MATRIX.md):
+The three gates per case (the events docs (plans/EXHAUSTIVE_MATRIX.md)):
   ARMED   — the flow/subscription really exists (not just a polite reply),
   FIRED   — an event traverses the REAL path (trigger/gateway → /invoke → supervisor → answer),
   QUALITY — the answer contains the case's planted facts (expect_any) and NONE of the failure

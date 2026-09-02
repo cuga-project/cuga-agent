@@ -1,6 +1,6 @@
 """The concierge — the NL→Flow COMPILER in front of THE one agent ("cuga").
 
-SINGLE-AGENT WORLD (events_docs/plans/SUPERVISOR_REFACTOR.md): the concierge does NO agent
+SINGLE-AGENT WORLD (the events docs (plans/SUPERVISOR_REFACTOR.md)): the concierge does NO agent
 routing — there is nothing to route between. Every hand-off and every flow targets ``cuga``
 (a supervisor over YAML-defined sub-agents when EVENTS_SUPERVISOR=1, else the plain classic
 agent). When an end user chats, the concierge:
@@ -25,7 +25,7 @@ import os
 import re
 import uuid
 
-# THE one addressable agent (supervisor model — events_docs/plans/SUPERVISOR_REFACTOR.md).
+# THE one addressable agent (supervisor model — the events docs (plans/SUPERVISOR_REFACTOR.md)).
 # Every flow and every chat hand-off targets it; specialist routing happens INSIDE it.
 THE_AGENT = "cuga"
 
@@ -756,7 +756,7 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         ""
                         if base_app != "slack"
                         else " (the Slack app must be subscribed to this event type — see "
-                        "events_docs/setup/SLACK.md)"
+                        "the events docs (setup/SLACK.md))"
                     )
                     return (
                         f"ARMED direct watcher ({base_app}/{event}{_cfg}) for {agent} → {sink}"
@@ -1372,7 +1372,7 @@ class Concierge:
 
         SUPERVISOR MODEL: the concierge does NOT pick an agent — every flow targets the ONE
         agent, "cuga"; routing to a specialist happens inside it, per wake-up
-        (events_docs/plans/SUPERVISOR_REFACTOR.md)."""
+        (the events docs (plans/SUPERVISOR_REFACTOR.md))."""
         tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
         if tool is None:
             return None
