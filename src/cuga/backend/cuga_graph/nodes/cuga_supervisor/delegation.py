@@ -7,6 +7,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+    child_checkpoint_lock,
+    resolve_child_checkpoint_id,
+)
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
     resolve_supervisor_execution_context,
@@ -109,13 +113,21 @@ def create_agent_delegation_func(
                 vars_to_pass = resolve_names_from_caller_frame(variables)
             else:
                 vars_to_pass = _variables_from_supervisor_vm()
-            result = await agent_or_config.invoke(
-                task,
-                thread_id=f"supervisor_conversational_{agent_name}",
-                variables=vars_to_pass if vars_to_pass else None,
-            )
-
             exec_ctx = resolve_supervisor_execution_context()
+            child_thread_id = resolve_child_checkpoint_id(
+                state=None if exec_ctx is None else exec_ctx.state,
+                adapter=adapter,
+                agent_name=agent_name,
+                agent_or_config=agent_or_config,
+            )
+            lock = child_checkpoint_lock(agent_or_config, child_thread_id)
+            async with lock:
+                result = await agent_or_config.invoke(
+                    task,
+                    thread_id=child_thread_id,
+                    variables=vars_to_pass if vars_to_pass else None,
+                )
+
             if (
                 hasattr(result, "variables")
                 and result.variables

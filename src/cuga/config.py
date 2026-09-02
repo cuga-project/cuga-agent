@@ -250,6 +250,7 @@ validators = [
     ),
     Validator("supervisor.enabled", default=False),
     Validator("supervisor.registry_enabled", default=False),
+    Validator("supervisor.sub_agent_memory_scope", default="conversation"),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

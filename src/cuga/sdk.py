@@ -3255,6 +3255,7 @@ class CugaSupervisor:
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
+        name: Optional[str] = None,
     ):
         """
         Initialize supervisor.
@@ -3277,6 +3278,7 @@ class CugaSupervisor:
             auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
+            name: Optional supervisor identity mixed into child sub-agent checkpoint keys
         """
         from cuga.config import settings
 
@@ -3300,6 +3302,7 @@ class CugaSupervisor:
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
         self._reset_policy_storage = reset_policy_storage
+        self._name = name or "cuga-supervisor"
 
         if tool_provider is not None:
             from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import ensure_toolguard_provider
@@ -3346,6 +3349,7 @@ class CugaSupervisor:
             agents=config.agents,
             model=None,
             special_instructions=config.supervisor.get("special_instructions"),
+            name=config.supervisor.get("name"),
         )
 
     @property
@@ -3391,6 +3395,7 @@ class CugaSupervisor:
             special_instructions=self._special_instructions,
             tool_provider=self.tool_provider,
             callbacks=self._callbacks,
+            supervisor_id=self._name,
         )
         compiled_subgraph = supervisor_subgraph.compile()
 

@@ -77,6 +77,9 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
                         f"CugaAgent instance (got {type(agent).__name__})"
                     )
 
+                memory_scope = agent_config.get("memory_scope")
+                if memory_scope:
+                    agent._memory_scope = str(memory_scope)
                 agents[agent_name] = agent
                 logger.info(f"✅ Imported agent '{agent_name}' from {import_path}")
             except Exception as e:
@@ -116,6 +119,9 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
             )
             feature_overrides = agent_config.get("feature_overrides") or {}
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
+            memory_scope = agent_config.get("memory_scope")
+            if memory_scope:
+                agent._memory_scope = str(memory_scope)
 
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
@@ -195,6 +201,8 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
                     or agent_meta.get("description"),
                     "model": _model_config_from_stored_llm(ref_config.get("llm")),
                     "feature_overrides": extract_agent_feature_overrides(ref_config),
+                    "memory_scope": (ref_config.get("feature_flags") or {}).get("sub_agent_memory_scope")
+                    or (ref_config.get("advanced_features") or {}).get("sub_agent_memory_scope"),
                 }
             )
         elif kind == "a2a":
