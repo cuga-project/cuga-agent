@@ -211,6 +211,36 @@ def test_mcp_catalog_full_set():
     assert mcp_catalog.known_mcp_url("cuga_finance").endswith("/mcp")
 
 
+# ---- legacy names: agents provisioned before the cuga-web → cuga_web rename ----
+def test_legacy_catalog_names_migrate_but_foreign_names_do_not():
+    """The migration is BOUNDED to this catalog's own seven names, and that bound is the point.
+
+    A pre-rename agent stored `cuga-web`. Left alone, a backend="cuga" worker hands that to CUGA,
+    which scopes verbatim against underscore registry keys — no match, no tools, one log warning.
+    So it is rewritten.
+
+    An operator's OWN server may legitimately be registered as `my-server`: mcp_manager stores the
+    YAML key verbatim. Rewriting that would scope THEIR agent to a key the registry does not have —
+    the same failure, caused by the fix. Hence a name-by-name map rather than s/-/_/.
+    """
+    got = mcp_catalog.migrate_legacy_names(["cuga-web", "cuga_finance", "my-server", "cuga-nope"])
+    assert got == ["cuga_web", "cuga_finance", "my-server", "cuga-nope"]
+
+
+def test_the_store_migrates_legacy_names_on_read():
+    """End-to-end through storage: no migration step and no operator action."""
+    from agent_store import AgentStore
+    from runtime import AgentSpec, AgentStoreRuntime
+
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
+    # A row exactly as a pre-rename Studio/concierge would have written it.
+    rt.upsert_agent(AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance", "my-server"]))
+
+    got = rt.get_agent("pricebot")
+    assert got.mcp_servers == ["cuga_finance", "my-server"]
+    assert rt.list_agents()[0].mcp_servers == ["cuga_finance", "my-server"]  # list() too, not just get()
+
+
 # ---- seed: pre-built agents carry channels + integrations ----------------
 def test_seed_agents_carry_connectors():
     import seed

@@ -24,6 +24,11 @@ try:
 except ImportError:  # flat load (offline tests put the events dir on sys.path)
     from runtime import AgentSpec
 
+try:
+    from . import mcp_catalog
+except ImportError:  # flat load, as above
+    import mcp_catalog
+
 
 class AgentStore:
     def __init__(self, db_path: str = ":memory:"):
@@ -79,7 +84,11 @@ class AgentStore:
             name=r["name"],
             prompt=r["prompt"] or "",
             backend=r["backend"],
-            mcp_servers=json.loads(r["mcp_servers"]),
+            # Read-time migration of this catalog's pre-rename spellings (cuga-web → cuga_web).
+            # Rows written before the rename would otherwise scope a backend="cuga" worker to a
+            # key CUGA's registry does not have, leaving it with no tools and only a log warning.
+            # Bounded to the seven names we renamed — see mcp_catalog.migrate_legacy_names.
+            mcp_servers=mcp_catalog.migrate_legacy_names(json.loads(r["mcp_servers"])),
             builtin_tools=json.loads(r["builtin_tools"]),
             channels=json.loads(r["channels"]),
             integrations=json.loads(r["integrations"] if "integrations" in k else "[]"),

@@ -50,6 +50,27 @@ def known_mcp_url(name: str) -> str | None:
     return None
 
 
+def migrate_legacy_names(names: list) -> list:
+    """Rewrite THIS catalog's own pre-rename spellings: ``cuga-web`` → ``cuga_web``.
+
+    Agents provisioned before the rename carry the hyphenated name in storage. The events-native
+    backend still resolves those (``known_mcp_url`` accepts both), but a ``backend="cuga"`` worker
+    hands the name to CUGA, which scopes verbatim against registry keys that are underscore names —
+    so the agent runs with NO tools and only a log warning. Applied on read, so no migration step
+    and no operator action; re-saving the agent persists the new spelling.
+
+    DELIBERATELY BOUNDED to the seven names this project renamed. It is not a hyphen→underscore
+    rewrite: an operator's own server registered as ``my-server`` is a legitimate registry key and
+    passes through untouched. A blanket rewrite is exactly the bug this replaced — it scoped such
+    an agent to a key the registry does not have.
+    """
+    out = []
+    for n in names or []:
+        s = str(n)
+        out.append(f"cuga_{s[5:]}" if s[:5] == "cuga-" and s[5:] in CUGA_APPS else n)
+    return out
+
+
 def to_client_config(name: str, transport: str = "streamable_http") -> dict | None:
     """A MultiServerMCPClient-style config entry for a known server, else None.
 
