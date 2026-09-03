@@ -227,6 +227,31 @@ def test_legacy_catalog_names_migrate_but_foreign_names_do_not():
     assert got == ["cuga_web", "cuga_finance", "my-server", "cuga-nope"]
 
 
+def test_resolve_accepts_a_server_it_has_never_heard_of_if_given_a_url():
+    """The react backend builds LangChain tools in THIS process, so it needs an endpoint. A name
+    it does not know is unresolvable — but a {'name', 'url'} entry is not, and that is the escape
+    hatch that keeps the catalog a convenience rather than a limit."""
+    cfg = mcp_catalog.resolve([{"name": "acme_crm", "url": "https://crm.acme.test/mcp"}, "cuga_geo"])
+
+    assert cfg["acme_crm"]["url"] == "https://crm.acme.test/mcp"
+    assert cfg["acme_crm"]["transport"] == "streamable_http"  # sane default
+    assert cfg["cuga_geo"]["url"].endswith("/mcp")  # the built-in still resolves by name alone
+
+
+def test_resolve_says_so_when_it_drops_a_server(caplog):
+    """It used to skip unresolvable names SILENTLY — the agent came up with fewer tools than it
+    declared, said "I don't have a tool for that", and nothing anywhere explained why. Skipping is
+    still right (one bad server should not sink an agent with three good ones) but it must be
+    visible."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cuga.events"):
+        cfg = mcp_catalog.resolve(["cuga_geo", "acme_crm"])
+
+    assert "cuga_geo" in cfg and "acme_crm" not in cfg  # the good one still resolves
+    assert any("acme_crm" in r.getMessage() for r in caplog.records), "dropped a server with no warning"
+
+
 def test_the_store_migrates_legacy_names_on_read():
     """End-to-end through storage: no migration step and no operator action."""
     from agent_store import AgentStore

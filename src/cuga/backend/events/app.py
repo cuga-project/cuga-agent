@@ -1649,14 +1649,53 @@ def register_events_routes(
 
     @app.get("/api/events/mcp-servers")
     async def events_mcp_servers():
-        """The tool servers a builder can attach to an agent (name + one-line hint). Drives the
-        Agent-editor form so the UI never hardcodes the catalog. Also returns the MCP registry URL so
-        the Studio can link out to the tool explorer (its interactive /docs)."""
+        """The tool servers a builder can attach to an agent (name + one-line hint).
+
+        Sourced from the LIVE CUGA registry, so a server somebody registered in their own
+        MCP_SERVERS_FILE appears in the Studio picker with no code change. It used to return
+        mcp_catalog's built-in seven and nothing else, which — together with a validator that
+        rejected everything outside them — made the catalog a closed allow-list.
+
+        The catalog is now only the fallback, for when the registry is unreachable: an editor with
+        an empty tool picker is useless, and "the registry is down" should not look like "you have
+        no tools". Names from both sources are merged, registry first, so the built-in hints still
+        annotate the cuga_* servers when the registry describes them tersely.
+        """
         from . import mcp_catalog
 
         registry_url = (os.environ.get("EVENTS_REGISTRY_URL") or "http://localhost:8001").rstrip("/")
+        servers: list[dict] = []
+        seen: set[str] = set()
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{registry_url}/applications")
+            if r.status_code == 200:
+                data = r.json()
+                # /applications answers either a list of {name, description} or a name-keyed dict.
+                rows = data if isinstance(data, list) else [{"name": k, **(v or {})} for k, v in data.items()]
+                for row in rows:
+                    n = (row.get("name") or "").strip() if isinstance(row, dict) else str(row).strip()
+                    if not n or n in seen:
+                        continue
+                    seen.add(n)
+                    hint = mcp_catalog.HINTS.get(n) or (
+                        row.get("description") if isinstance(row, dict) else ""
+                    )
+                    servers.append({"name": n, "hint": (hint or "").strip()})
+        except Exception as e:  # noqa: BLE001 — an unreachable registry must not empty the picker
+            _elog.warning(
+                f"mcp-servers: registry at {registry_url} unreachable ({e}); using the built-in catalog"
+            )
+
+        for n in mcp_catalog.known_names():
+            if n not in seen:
+                seen.add(n)
+                servers.append({"name": n, "hint": mcp_catalog.HINTS.get(n, "")})
+
         return {
-            "servers": [{"name": n, "hint": mcp_catalog.HINTS.get(n, "")} for n in mcp_catalog.known_names()],
+            "servers": servers,
             "registry_url": registry_url,
             "explorer_url": f"{registry_url}/docs",
         }
@@ -1672,11 +1711,21 @@ def register_events_routes(
         backend = (body.get("backend") or "cuga").strip()
         if backend not in ("react", "cuga"):
             return None, "backend must be 'react' or 'cuga'"
-        known = set(mcp_catalog.known_names())
+        # BRING YOUR OWN MCP SERVER. Any name is accepted here. This used to reject anything
+        # outside mcp_catalog, which made the built-in seven a closed allow-list: somebody running
+        # the events layer against their own registry could not create an agent that used it.
+        #
+        # The catalog is a convenience default, not a permission list, and the check was in the
+        # wrong process anyway. For backend="cuga" — the normal path — the name is only ever
+        # resolved by CUGA against whatever MCP_SERVERS_FILE its registry serves; the events layer
+        # has no way to know what is in there and no business ruling on it.
+        #
+        # backend="react" is the narrower case: it builds LangChain tools here, so it needs a URL
+        # and can only use servers this process can resolve. That is enforced where the tools are
+        # actually built (ReactRuntime → mcp_catalog.resolve), which fails loudly, rather than by
+        # refusing to store the agent.
         mcp = [str(m) for m in (body.get("mcp_servers") or [])]
-        bad = [m for m in mcp if m not in known]
-        if bad:
-            return None, f"unknown mcp_servers: {bad} (known: {sorted(known)})"
+        mcp = mcp_catalog.migrate_legacy_names(mcp)  # cuga-web → cuga_web, if a client still sends it
         channels = [str(c) for c in (body.get("channels") or [])]
         bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
         if bad_ch:

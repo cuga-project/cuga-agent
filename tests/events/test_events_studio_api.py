@@ -613,11 +613,55 @@ def _agent_client(runtime):
     return TestClient(app)
 
 
-def test_mcp_servers_endpoint():
+def test_mcp_servers_endpoint_falls_back_to_the_catalog_when_the_registry_is_down():
+    """No registry is running in this test, so this is the fallback path — and it must still
+    return a usable list. An editor whose tool picker is empty is useless, and "the registry is
+    unreachable" must not present as "you have no tools"."""
     r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
     assert r.status_code == 200
     names = {s["name"] for s in r.json()["servers"]}
     assert "cuga_web" in names and "cuga_finance" in names
+
+
+def test_mcp_servers_endpoint_serves_what_the_live_registry_reports(monkeypatch):
+    """THE BRING-YOUR-OWN PATH. The picker is sourced from CUGA's registry, so a server somebody
+    registered in their own MCP_SERVERS_FILE shows up with no code change. It used to return the
+    built-in seven and nothing else, which is what made them a closed list."""
+    import httpx
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return [
+                {"name": "acme_crm", "description": "the customer system"},
+                {"name": "cuga_web", "description": "terse registry text"},
+            ]
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
+    servers = {s["name"]: s["hint"] for s in r.json()["servers"]}
+
+    assert "acme_crm" in servers and servers["acme_crm"] == "the customer system"
+    # the built-in hint wins over the registry's terser description for a server we describe
+    assert servers["cuga_web"] == "web search / browse / weather / wiki"
+    # and the rest of the catalog is still offered alongside whatever the registry knows
+    assert "cuga_finance" in servers
 
 
 def test_agent_create_list_and_update():
@@ -660,19 +704,38 @@ def test_agents_carry_example_utterances():
 
 def test_agent_create_validation_rejects_bad_input():
     c = _agent_client(_FakeRuntime())
-    # unknown mcp server
-    r = c.post(
-        "/api/events/agents",
-        json={"name": "x", "mcp_servers": ["not-a-server"]},
-        headers={"x-user-id": "admin"},
-    )
-    assert r.status_code == 400
     # whitespace in name
     r = c.post("/api/events/agents", json={"name": "bad name"}, headers={"x-user-id": "admin"})
     assert r.status_code == 400
     # PUT to a non-existent agent → 404
     r = c.put("/api/events/agents/ghost", json={"name": "ghost"}, headers={"x-user-id": "admin"})
     assert r.status_code == 404
+
+
+def test_an_agent_may_name_an_mcp_server_this_process_has_never_heard_of():
+    """BRING YOUR OWN MCP SERVER. This used to be a 400.
+
+    `mcp_catalog` lists seven servers so the demos work out of the box, and the editor rejected
+    anything outside them — which made a convenience default into a permission list, and meant
+    somebody running the events layer against their own registry could not build an agent that
+    used it. There is no way for this process to know what CUGA's registry serves, so it is not
+    the right place to rule on the name: a backend="cuga" agent's servers are resolved by CUGA,
+    against whatever MCP_SERVERS_FILE it was given.
+
+    The legacy cuga-web → cuga_web mapping still applies to names a stale client may still send;
+    `acme_crm` is left exactly as written.
+    """
+    c = _agent_client(_FakeRuntime())
+    r = c.post(
+        "/api/events/agents",
+        json={"name": "crmbot", "mcp_servers": ["acme_crm", "cuga-web"]},
+        headers={"x-user-id": "admin"},
+    )
+    assert r.status_code in (200, 201), r.text
+
+    got = c.get("/api/events/agents", headers={"x-user-id": "admin"}).json()
+    spec = next(a for a in got["agents"] if a["name"] == "crmbot")
+    assert spec["mcp_servers"] == ["acme_crm", "cuga_web"]
 
 
 def test_agent_triggers_survive_the_save_round_trip():

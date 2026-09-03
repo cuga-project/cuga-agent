@@ -1,8 +1,15 @@
 """The `cuga_*` MCP server catalog — auto-registration by name.
 
+A CONVENIENCE, NOT AN ALLOW-LIST. These seven are wired by name so the demos work out of the box;
+they are not the set of servers an agent may use. Anything registered in the CUGA registry can be
+named by a `backend="cuga"` agent (CUGA resolves it there, and this process never sees it), and a
+`backend="react"` agent can carry its own endpoint as ``{"name": …, "url": …}``. This module used
+to be enforced as a closed list by the agent-editor validator, which meant nobody could attach
+their own MCP server; that check is gone.
+
 Ported from event-agent-ap so the concierge can wire the well-known cuga-apps MCP
 servers just by naming them (``cuga_finance``, ``cuga_knowledge``, …). Scale-to-zero
-on Code Engine → warm them before demos/tests. Stdlib-only.
+on Code Engine → warm them before demos/tests. Stdlib-only apart from the logger.
 
 UNDERSCORES, NOT HYPHENS, and this is the one naming rule worth stating. These names are
 registry app names, and CUGA composes a tool identifier as ``<app>_<tool>`` — so a hyphen
@@ -14,6 +21,10 @@ not identifiers, and _CODE_ENGINE below builds them from the bare suffix.
 """
 
 from __future__ import annotations
+
+import logging
+
+_log = logging.getLogger("cuga.events")
 
 # The cuga-apps MCP servers hosted on IBM Code Engine.
 CUGA_APPS = ("web", "knowledge", "geo", "finance", "code", "local", "text")
@@ -71,22 +82,50 @@ def migrate_legacy_names(names: list) -> list:
     return out
 
 
-def to_client_config(name: str, transport: str = "streamable_http") -> dict | None:
-    """A MultiServerMCPClient-style config entry for a known server, else None.
+def to_client_config(name, transport: str = "streamable_http") -> dict | None:
+    """A MultiServerMCPClient-style config entry for a server, else None.
 
     {"cuga_finance": {"url": "...", "transport": "streamable_http"}}
+
+    ``name`` is either a well-known catalog name or a dict carrying its own endpoint —
+    ``{"name": …, "url": …, "transport": …}``. The dict form is how an agent reaches an MCP server
+    this catalog has never heard of, which is the whole point: the seven below are a convenience,
+    not the set of servers that may exist.
     """
+    if isinstance(name, dict):
+        url = (name.get("url") or "").strip()
+        if not url:
+            return None
+        return {"url": url, "transport": (name.get("transport") or transport)}
     url = known_mcp_url(name)
     if url is None:
         return None
     return {"url": url, "transport": transport}
 
 
-def resolve(names: list[str]) -> dict:
-    """Turn a list of server names into a MultiServerMCPClient config dict (known ones only)."""
+def resolve(names: list) -> dict:
+    """Turn server names into a MultiServerMCPClient config dict.
+
+    Anything that cannot be resolved to a URL is SKIPPED AND LOGGED. It used to be skipped
+    silently, which is the worst of the options: the agent came up with fewer tools than it
+    declared, answered "I don't have a tool for that", and nothing anywhere said why.
+
+    Skipping rather than raising is deliberate — one unreachable server should not take down an
+    agent that has three others — but it has to be visible. Only the react backend comes through
+    here; a backend="cuga" worker never does, because CUGA resolves names against its own registry.
+    """
     out: dict = {}
     for n in names or []:
         cfg = to_client_config(n)
+        key = n.get("name") if isinstance(n, dict) else n
         if cfg is not None:
-            out[n] = cfg
+            out[key] = cfg
+        else:
+            _log.warning(
+                "mcp_catalog.resolve: no endpoint for %r — this agent will run WITHOUT its tools. "
+                "Either it is one of the built-in %s, or pass {'name': ..., 'url': ...} so this "
+                "process knows where to reach it.",
+                key,
+                known_names(),
+            )
     return out
