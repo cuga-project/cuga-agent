@@ -16,6 +16,7 @@ import {
   CarbonTheme,
   BusEventType,
 } from '@carbon/ai-chat';
+import { Button } from '@carbon/react';
 import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-react";
 import {
   registerCiteElement,
@@ -102,6 +103,7 @@ interface CarbonChatProps {
   sessionDocsVersion?: number;
   onSessionDocsChanged?: () => void;
   onOpenKnowledge?: () => void;
+  onOpenMemoryUsage?: (entityIds: string[]) => void;
   onPreviewKnowledgeAttachment?: (attachment: KnowledgeAttachmentSnapshot) => void;
 }
 
@@ -253,6 +255,7 @@ const CarbonChat = ({
   sessionDocsVersion = 0,
   onSessionDocsChanged,
   onOpenKnowledge,
+  onOpenMemoryUsage,
   onPreviewKnowledgeAttachment,
 }: CarbonChatProps) => {
   const hs = homescreen ?? DEFAULT_HOMESCREEN;
@@ -334,9 +337,25 @@ const CarbonChat = ({
 
   const renderUserDefinedResponse = useCallback((state: RenderUserDefinedState) => {
     const item = state.messageItem as any;
-    if (item?.user_defined?.type !== 'cuga_sources') {
-      return undefined;
+    if (item?.user_defined?.type === 'cuga_memory_usage') {
+      if (!onOpenMemoryUsage) return undefined;
+      const entityIds = Array.isArray(item.user_defined.entity_ids)
+        ? item.user_defined.entity_ids.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+      if (entityIds.length === 0) return undefined;
+      const count = typeof item.user_defined.count === 'number' ? item.user_defined.count : entityIds.length;
+      return (
+        <Button
+          className="cuga-memory-usage-link"
+          kind="ghost"
+          size="sm"
+          onClick={() => onOpenMemoryUsage(entityIds)}
+        >
+          {count} {count === 1 ? "memory" : "memories"} used
+        </Button>
+      );
     }
+    if (item?.user_defined?.type !== 'cuga_sources') return undefined;
     const sources = (item.user_defined.sources ?? []) as MessageSource[];
     const messageKey = String(
       item.user_defined.message_key ?? (state.fullMessage as any)?.id ?? '',
@@ -350,7 +369,7 @@ const CarbonChat = ({
         onOpen={(n: number) => setSourcesPanel({ sources, activeN: n })}
       />
     );
-  }, []);
+  }, [onOpenMemoryUsage]);
 
   useEffect(() => {
     initAgentProfile(useDraft);
