@@ -346,9 +346,9 @@ async def run_code(
     python_file_dir = os.path.join(LOGGING_DIR, python_file_dir)
     file_path = python_file_dir + "/" + f"{mask_with_timestamp(tracker.task_id)}.py"
 
-    wrapped_code = f"""async def __cuga_async_wrapper__():
-{chr(10).join('    ' + line for line in code.split(chr(10)))}
-"""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.code_wrapper import CodeWrapper
+
+    wrapped_code = CodeWrapper.wrap_in_async_def(code, "__cuga_async_wrapper__")
 
     # Docker/Podman: Use asyncio.run() to execute from sync context
     wrapped_code_with_call = wrapped_code + "\nimport asyncio\nasyncio.run(__cuga_async_wrapper__())\n"
