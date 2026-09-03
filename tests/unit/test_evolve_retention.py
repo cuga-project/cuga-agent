@@ -75,7 +75,17 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
             }
         ],
         "flagged": [],
-        "skipped": [],
+        "skipped": [
+            {
+                "entity_id": "guideline-a",
+                "entity_type": "guideline",
+                "action": "skip",
+                "outcome": "skipped",
+                "reason": "unused",
+                "rule": "unused-guidelines",
+                "detail": "provider detail containing private memory",
+            }
+        ],
         "policy": {"secret": "provider internals"},
         "errors": ["database error containing private memory"],
         "warnings": ["warning containing user-9"],
@@ -111,6 +121,15 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
     assert response.json()["run_id"] == "run-a"
     assert "dry_run" not in response.json()
     assert response.json()["deleted"] == [{"entity_id": "entity-a", "action": "delete", "outcome": "deleted"}]
+    assert response.json()["skipped"] == [
+        {
+            "entity_id": "guideline-a",
+            "entity_type": "guideline",
+            "action": "skip",
+            "outcome": "skipped",
+            "reason": "No recorded last-used date was available, so this guideline was kept instead of being deleted.",
+        }
+    ]
     assert "private memory" not in response.text
     assert "user-9" not in response.text
     run_retention.assert_awaited_once_with(
