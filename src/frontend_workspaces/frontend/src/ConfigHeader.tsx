@@ -19,6 +19,12 @@ export function ConfigHeader({
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(
     agentId ? { agent_id: agentId, config_version: null } : null
   );
+  // Show the Events Studio entry only when the events SERVICE answers (see getEventsStatus).
+  // Vanilla CUGA (flag off) → getEventsStatus() returns null → link stays hidden.
+  const [studioOn, setStudioOn] = useState(false);
+  useEffect(() => {
+    api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (agentId) return;
@@ -46,6 +52,7 @@ export function ConfigHeader({
         { label: "Conversations", onClick: onToggleLeftSidebar },
         { label: "Agent Config", onClick: onToggleWorkspace },
         { label: "Manage", href: "/manage" },
+        ...(studioOn ? [{ label: "Events Studio ⚗", href: "/studio" }] : []),
       ]}
     />
   );

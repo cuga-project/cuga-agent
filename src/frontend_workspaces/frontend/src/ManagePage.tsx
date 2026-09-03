@@ -467,6 +467,9 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  // Events Studio entry — shown only when the events SERVICE answers (see getEventsStatus).
+  const [studioOn, setStudioOn] = useState(false);
+  useEffect(() => { api.getEventsStatus().then((s) => setStudioOn(!!s)).catch(() => {}); }, []);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -1536,6 +1539,7 @@ export function ManagePage() {
         navItems={[
           { label: "Agents", to: `/manage${search}` },
           { label: "Chat", to: `/chat/${encodeURIComponent(effectiveAgentId)}` },
+          ...(studioOn ? [{ label: "Events Studio ⚗", to: "/studio" }] : []),
         ]}
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}
