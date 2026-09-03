@@ -477,6 +477,7 @@ function ReportItems({
           const title = memory?.title ?? item.title;
           const outcome = item.outcome ? displayType(item.outcome) : undefined;
           const itemType = item.entityType ? displayType(item.entityType) : undefined;
+          const reason = item.reason?.trim();
           return (
             <li key={`${item.entityId ?? "unknown"}-${index}`}>
               {memory ? (
@@ -490,10 +491,10 @@ function ReportItems({
                 <strong>{title ?? "Memory record unavailable"}</strong>
               )}
               <span>
-                {memory && memory.state === "Needs attention"
+                {reason || (memory && memory.state === "Needs attention"
                   ? memoryStatusDetail(memory, capabilities)
                   : [itemType, outcome].filter(Boolean).join(" / ") ||
-                    (item.entityId ? `Memory ${item.entityId}` : "Unknown memory")}
+                    (item.entityId ? `Memory ${item.entityId}` : "Unknown memory"))}
               </span>
             </li>
           );

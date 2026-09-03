@@ -67,6 +67,7 @@ export type RetentionReportItem = {
   title?: string;
   action?: "flag" | "delete" | "skip";
   outcome?: string;
+  reason?: string;
 };
 
 export type RetentionReport = {
