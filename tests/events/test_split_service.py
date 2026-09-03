@@ -610,14 +610,25 @@ def test_run_api_is_not_mounted_without_configuration(monkeypatch):
 
     /run executes an agent and requires a shared secret, so with nothing configured every call
     would 401; mounting it then serves only to advertise an endpoint nobody can use. Mirrors A2A's
-    `if settings.a2a.enabled`. Anything that means to use the seam sets one of these.
+    `if settings.a2a.enabled`.
+
+    Mounting now takes TWO things: CUGA_EVENTS_ENABLED (this instance takes part in eventing at all)
+    and a credential (how callers authenticate). The second half below therefore sets the switch —
+    it is what the deployment does. See test_events_master_switch.py for the switch on its own.
     """
     from cuga.backend.server import run_routes as rr
 
-    for var in ("CUGA_RUN_TOKEN", "GATEWAY_TOKEN", "CUGA_SUPERVISOR_ROSTER", rr.RUN_DEV_UNAUTH_ENV):
-        monkeypatch.delenv(var, raising=False)
+    for var in (
+        "CUGA_EVENTS_ENABLED",
+        "CUGA_RUN_TOKEN",
+        "GATEWAY_TOKEN",
+        "CUGA_SUPERVISOR_ROSTER",
+        rr.RUN_DEV_UNAUTH_ENV,
+    ):
+        monkeypatch.setenv(var, "")
     assert rr.run_api_enabled() is False
 
+    monkeypatch.setenv("CUGA_EVENTS_ENABLED", "1")
     for var, val in (
         ("CUGA_RUN_TOKEN", "s3cret"),
         ("GATEWAY_TOKEN", "s3cret"),
@@ -626,7 +637,7 @@ def test_run_api_is_not_mounted_without_configuration(monkeypatch):
     ):
         monkeypatch.setenv(var, val)
         assert rr.run_api_enabled() is True, var
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")
 
 
 # ── /run accepts a LOGGED-IN USER too, not only the shared secret ────────────────────────────────
