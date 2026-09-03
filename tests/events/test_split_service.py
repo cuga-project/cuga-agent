@@ -772,3 +772,57 @@ def test_switch_plus_token_mounts_run(monkeypatch):
     monkeypatch.setenv("GATEWAY_TOKEN", "s3cret")
 
     assert rr.run_api_enabled() is True
+
+
+def test_run_uses_the_authenticated_user_not_the_body(monkeypatch):
+    """A SIGNED-IN CALLER IS WHO THE TOKEN SAYS.
+
+    `/run` read `body["user_id"]` unconditionally, so a logged-in user could act as anyone simply
+    by naming them — their thread, their history, their scope. The body still decides for the
+    MACHINE caller (the eventing service has no session, and body user_id is the only way a
+    channel's user reaches CUGA at all), so both halves are asserted here.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from cuga.backend.server import run_routes as rr
+    import cuga.backend.server.auth.dependencies as dep
+
+    seen = {}
+
+    async def _capturing_stream(*a, **kw):
+        seen["user_id"] = kw.get("user_id")
+        if False:  # pragma: no cover
+            yield None
+
+    app = FastAPI()
+    app.include_router(rr.build_run_router(event_stream=_capturing_stream, default_user_id="tester"))
+    c = TestClient(app, raise_server_exceptions=False)
+    monkeypatch.setenv(rr.RUN_DEV_UNAUTH_ENV, "1")  # past the auth gate; identity is the point here
+
+    # 1) a SIGNED-IN caller naming somebody else — the token wins
+    class _User:
+        sub = "alice"
+
+    async def _as_alice(request):
+        return _User()
+
+    monkeypatch.setattr(dep, "require_chat_access", _as_alice)
+    c.post("/run", json={"query": "hi", "user_id": "bob"})
+    assert seen.get("user_id") == "alice", "a signed-in user could still act as somebody else"
+
+    # 2) a MACHINE caller — authenticates with the shared secret, has no session. The body is the
+    #    only identity there is, so it stands: this is how a Slack/Telegram user reaches CUGA.
+    seen.clear()
+    monkeypatch.setenv("CUGA_RUN_TOKEN", "s3cret")
+
+    async def _nobody(request):
+        return None  # what require_chat_access returns when auth is disabled
+
+    monkeypatch.setattr(dep, "require_chat_access", _nobody)
+    r = c.post(
+        "/run",
+        json={"query": "hi", "user_id": "slack:U123"},
+        headers={"X-Gateway-Token": "s3cret"},
+    )
+    assert r.status_code != 401, r.text
+    assert seen.get("user_id") == "slack:U123", "the channel user no longer reaches CUGA"

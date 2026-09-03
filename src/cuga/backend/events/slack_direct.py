@@ -48,7 +48,22 @@ def verify_signature(headers, raw_body: str) -> tuple[bool, str]:
     set SLACK_SIGNING_SECRET to lock this down."""
     secret = signing_secret()
     if not secret:
-        return True, "unverified (SLACK_SIGNING_SECRET not set)"
+        # FAIL CLOSED. This returned True — "allow it but flag it" — so a missing signing secret
+        # disabled verification entirely and the endpoint accepted forged Slack events from anyone
+        # who could reach it. The events URL is public on Code Engine, so "flag it" meant a log
+        # line next to an unauthenticated agent-execution path.
+        #
+        # Opening it now requires saying so, the same way /run's dev opt-out works.
+        import os
+
+        if (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return True, "unverified (EVENTS_ALLOW_UNAUTHENTICATED=1)"
+        return False, "SLACK_SIGNING_SECRET not set — refusing unverified Slack events"
     ts = headers.get("x-slack-request-timestamp") or headers.get("X-Slack-Request-Timestamp") or ""
     sig = headers.get("x-slack-signature") or headers.get("X-Slack-Signature") or ""
     if not ts or not sig:

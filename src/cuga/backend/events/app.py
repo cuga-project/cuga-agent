@@ -30,6 +30,34 @@ from .trace import Trace, new_trace_id
 _elog = logging.getLogger("cuga.events")
 
 
+def _open_by_choice() -> bool:
+    """Is this server DELIBERATELY running without authentication?
+
+    The events seams (``/invoke``, the poll endpoints, the inbound webhook, Slack's signature
+    check) each used to enforce only when their secret happened to be set, which meant an unset
+    secret silently disabled the check. Now they refuse instead, and running open has to be said
+    out loud — the same shape as ``CUGA_RUN_ALLOW_UNAUTHENTICATED`` on ``/run``.
+
+    Deliberately NOT read through the secret seam: this is a local-dev switch, not a credential,
+    and it must never arrive from a vault reference.
+    """
+    return (os.environ.get("EVENTS_ALLOW_UNAUTHENTICATED", "") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _gateway_denied(token: str, request) -> bool:
+    """True when this request must be refused. Missing token = refuse, unless opened by choice."""
+    if _open_by_choice():
+        return False
+    if not token:
+        return True  # nothing to check against → closed, not open
+    return request.headers.get("X-Gateway-Token") != token
+
+
 def _iso(ts: float) -> str:
     """epoch seconds → the ISO shape Activepieces uses (UTC, milliseconds, Z) so NOW runs and AP
     flow-runs sort together as strings in the unified Runs log."""
@@ -142,21 +170,30 @@ def register_events_routes(
     from .secret_seam import secret as _secret
 
     token = gateway_token if gateway_token is not None else _secret("GATEWAY_TOKEN")
-    if not token:
-        # /invoke runs agents on a caller-supplied scope; with no token the seam is open. Fine for
-        # local dev, dangerous in a shared deploy — warn loudly rather than fail silently.
+
+    # FAIL CLOSED. These guards were all written as "enforce IF configured", so an unset secret
+    # meant no enforcement at all — the service warned in a log nobody reads and then served every
+    # request. On a public URL that is not a warning, it is an open endpoint: /api/events/hook/<x>
+    # ran an agent for anyone who knew the address.
+    #
+    # Inverted to match what /run already does with CUGA_RUN_ALLOW_UNAUTHENTICATED: missing
+    # credential = refuse, and running open requires SAYING SO. One flag covers the events seams.
+    if _open_by_choice():
         _elog.warning(
-            "events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
-            "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server."
+            "events: EVENTS_ALLOW_UNAUTHENTICATED=1 — /invoke, the poll/webhook seams and Slack "
+            "signature checks are OPEN. Local development only; never on a reachable host."
         )
-    if not os.environ.get("EVENTS_WEBHOOK_KEY"):
-        # The hook runs an agent and can post into a channel. Unset, `?key=` is not merely optional —
-        # it is ignored, so a WRONG key is accepted too. That surprises people; say it plainly.
-        _elog.warning(
-            "events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> accepts "
-            "ANY request, including one with a wrong ?key=. Set it before exposing this "
-            "server on a public URL."
-        )
+    else:
+        if not token:
+            _elog.warning(
+                "events: GATEWAY_TOKEN is empty — /invoke and the poll seams will REFUSE every "
+                "request (401). Set GATEWAY_TOKEN, or EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev."
+            )
+        if not os.environ.get("EVENTS_WEBHOOK_KEY"):
+            _elog.warning(
+                "events: EVENTS_WEBHOOK_KEY is empty — POST /api/events/hook/<name> will REFUSE "
+                "every request (401). Set it, or EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev."
+            )
     if not os.environ.get("SLACK_SIGNING_SECRET") and os.environ.get("SLACK_BOT_TOKEN"):
         _elog.warning(
             "events: SLACK_SIGNING_SECRET is empty — /api/events/slack/events accepts "
@@ -267,7 +304,7 @@ def register_events_routes(
         X-Gateway-Token; `deliver` decides whether the answer is also pushed to a channel."""
         body = await request.json()
         tr = Trace(body.get("trace_id") or new_trace_id())
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from .envelope import validate as _validate_envelope
 
@@ -1333,7 +1370,7 @@ def register_events_routes(
             )
         # Same seam as /invoke: this runs an agent with the caller's credentials and delivers to a
         # real channel, so it must not be weaker than /invoke's gate.
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         sub, _ = _owned_sub(sub_id, request)
         if sub is None:
@@ -2115,7 +2152,7 @@ def register_events_routes(
         defaults to the AP PUSH trigger (create_push_flow) — this endpoint is the manual/AP-free
         alternative you drive/schedule yourself. Gateway-token protected. Body:
         {folder_id, since?, agent?, deliver_to?, scope?}. Returns the new files + newest created_at."""
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import box_direct
 
@@ -2237,7 +2274,7 @@ def register_events_routes(
         Disable with EVENTS_DEBUG_RUN=0 (same switch as /run)."""
         if os.environ.get("EVENTS_DEBUG_RUN", "1") == "0":
             return JSONResponse({"ok": False, "error": "debug endpoint disabled (EVENTS_DEBUG_RUN=0)"}, 403)
-        if token and request.headers.get("X-Gateway-Token") != token:
+        if _gateway_denied(token, request):
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import triggers as _triggers
 
@@ -2444,9 +2481,23 @@ def register_events_routes(
         import json as _json
         import httpx
 
+        # FAIL CLOSED. This used to be `if want and …`, so an unset EVENTS_WEBHOOK_KEY skipped the
+        # check entirely: the endpoint ran an agent for anyone who knew the URL, and a WRONG ?key=
+        # was accepted too. On a public deployment that is an open agent-execution endpoint —
+        # unauthenticated LLM spend, reading whatever the service account can reach.
         want = os.environ.get("EVENTS_WEBHOOK_KEY")
-        if want and not _hmac.compare_digest(request.query_params.get("key") or "", want):
-            return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
+        if not _open_by_choice():
+            if not want:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "webhook disabled: set EVENTS_WEBHOOK_KEY (or "
+                        "EVENTS_ALLOW_UNAUTHENTICATED=1 for local dev)",
+                    },
+                    401,
+                )
+            if not _hmac.compare_digest(request.query_params.get("key") or "", want):
+                return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
         payload = await _safe_json(request)
         route = (request.query_params.get("route") or "").strip().lower()
         routed = route in ("1", "true", "yes", "llm", "concierge")

@@ -147,7 +147,7 @@ def _no_footer():
 
 
 # ── POST /invoke — the gateway every armed AP flow calls back into ────────────
-def test_invoke_rejects_missing_gateway_token():
+def test_invoke_rejects_missing_gateway_token(closed_gates):
     """/invoke runs an agent on a caller-supplied scope. With a token configured, an unsigned call
     is 401 — before the envelope is even parsed."""
     c, _ = _client(gateway_token="s3cret")
@@ -788,7 +788,7 @@ def test_debug_run_surfaces_an_ap_refusal_as_502():
     assert r.status_code == 502 and "Activepieces refused" in r.json()["error"]
 
 
-def test_debug_run_requires_the_gateway_token():
+def test_debug_run_requires_the_gateway_token(closed_gates):
     """It runs an agent with the caller's credentials and posts to a real channel. Its gate must not
     be weaker than /invoke's."""
     c, _ = _client([_sub()], engine=_RunEngine(), gateway_token="s3cret")

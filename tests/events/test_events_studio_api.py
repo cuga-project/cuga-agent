@@ -303,7 +303,7 @@ def test_box_direct_new_files_filter():
         os.environ.pop("BOX_DEV_TOKEN", None)
 
 
-def test_box_poll_endpoint_dispatches_new_files():
+def test_box_poll_endpoint_dispatches_new_files(closed_gates):
     """POST /api/events/box/poll (gateway-token) lists new files and fires the watcher per file
     through /invoke, returning the newest created_at as the next baseline. AP-free path."""
     import httpx as _httpx
@@ -545,7 +545,7 @@ def test_inbound_webhook_routed_uses_the_concierge():
         os.environ.pop("GATEWAY_TOKEN", None)
 
 
-def test_webhook_key_gate():
+def test_webhook_key_gate(closed_gates):
     """When EVENTS_WEBHOOK_KEY is set, the webhook requires a matching ?key= (else 401)."""
     os.environ["EVENTS_WEBHOOK_KEY"] = "s3cr3t"
     try:
