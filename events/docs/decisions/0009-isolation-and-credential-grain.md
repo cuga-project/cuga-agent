@@ -37,6 +37,28 @@ setting, not an unfixed bug. Consequences, accepted knowingly:
 **3. `scope` stays plumbed end to end** — poll body → `/invoke` → subscriptions → agent store. It
 already is. Turning isolation on later is enabling a filter, not building one.
 
+## What single-scope does NOT break: replying to the right person
+
+Worth stating explicitly, because it is the first thing people assume is broken. **Delivery is
+already per-person and does not depend on `scope`.** At arm time the concierge captures the
+caller's channel-NATIVE id from the thread and stores it on the subscription row
+(`deliver_target` / `deliver_direct_target`). Ten people messaging one WhatsApp Business number
+produce ten rows with ten different targets; a fire replies to the number that armed it, even
+though every one of them resolves to `user_id="local"`. The reply target is captured from the
+ORIGIN, never derived from the principal.
+
+The line is therefore:
+
+| | Needs identity? |
+|---|---|
+| reply to where it came from · conversation threading | **no** — native id on the row |
+| reply to a DIFFERENT channel ("arm from WhatsApp, post to Slack") | **yes** |
+| "email me" / "me" as a person rather than a chat | **yes** |
+| flow ownership + visibility · data access | **yes** |
+
+So a shared bot with same-channel delivery works correctly today. It is cross-channel delivery,
+"me", and authorization that need the identity map.
+
 ## THE CONDITION THIS BREAKS UNDER — read this before widening the channel
 
 `perms.py` documents the invariant the authorization model rests on:
@@ -57,7 +79,9 @@ That is tolerable only while the channel is closed. It breaks the moment:
 
 1. **A channel is reachable by people outside the trust boundary** (WhatsApp/Telegram by phone
    number, a public Slack Connect channel, a Discord invite). They resolve to `local` like everyone
-   else and inherit full service-account access.
+   else and inherit full service-account access. A WhatsApp **Business** number is the sharpest
+   case: many senders, one bot, and identity is only a phone number — replies still route
+   correctly (see above), but every sender shares one authorization and one flow list.
 2. **The service account can see anything not everyone may see** — HR, finance, private repos. CUGA
    then *is* the escalation path: the only gate is being able to type `/automate`.
 3. **Two teams share one deployment** — shared flows become leakage rather than a feature.
