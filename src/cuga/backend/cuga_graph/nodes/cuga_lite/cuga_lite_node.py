@@ -3,6 +3,7 @@ CugaLite Node - Fast execution node using CugaLite subgraph
 """
 
 import json
+import re
 from typing import Literal, Dict, Any, List, Optional, Callable
 from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
@@ -181,6 +182,48 @@ class CugaLiteNode(BaseNode):
         # Use creation_order to ensure chronological ordering
         current_var_names = state.variable_creation_order
         return [name for name in current_var_names if name not in initial_var_names]
+
+    @staticmethod
+    def _should_regenerate_final_answer(state: AgentState, answer: str, new_var_names: List[str]) -> bool:
+        """Return whether a CugaLite sign-off omitted a newly-created result."""
+        if not answer or not new_var_names:
+            return False
+
+        answer_lower = answer.casefold()
+        signoff_patterns = (
+            "let me know",
+            "feel free to",
+            "would you like",
+            "if you'd like",
+            "if you would like",
+            "if you need",
+            "anything else",
+            "additional details",
+        )
+        if not any(pattern in answer_lower for pattern in signoff_patterns):
+            return False
+
+        def contains_scalar(value: Any) -> bool:
+            if isinstance(value, dict):
+                return any(contains_scalar(item) for item in value.values())
+            if isinstance(value, (list, tuple, set)):
+                return any(contains_scalar(item) for item in value)
+            if value is None:
+                return False
+            if isinstance(value, str):
+                value = value.strip().casefold()
+                return (
+                    bool(value) and re.search(rf"(?<!\w){re.escape(value)}(?!\w)", answer_lower) is not None
+                )
+            if isinstance(value, (int, float, bool)):
+                candidates = {str(value), f"{value:,}"}
+                return any(
+                    re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", answer_lower)
+                    for candidate in candidates
+                )
+            return False
+
+        return not contains_scalar(state.variables_manager.get_variable(new_var_names[-1]))
 
     @staticmethod
     def _log_variable_changes(state: AgentState, initial_var_names: List[str]) -> None:
@@ -477,6 +520,10 @@ class CugaLiteNode(BaseNode):
 
         state.final_answer = answer
         state.sender = NodeNames.CUGA_LITE
+        state.cuga_lite_metadata = {
+            **(state.cuga_lite_metadata or {}),
+            "regenerate_final_answer": self._should_regenerate_final_answer(state, answer, new_var_names),
+        }
         if state.hybrid_phase == "api":
             state.hybrid_api_answer = answer
             state.hybrid_phase = "web"

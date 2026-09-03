@@ -145,7 +145,11 @@ class FinalAnswerNode(BaseNode):
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
+            should_regenerate = (state.cuga_lite_metadata or {}).get("regenerate_final_answer", False)
             state.sender = name
+            if should_regenerate:
+                await FinalAnswerNode._generate_final_answer(state, agent, name)
+                return Command(update=state.model_dump(), goto=NodeNames.END)
             FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
