@@ -153,7 +153,7 @@ NOW_CASES = [
         "now/pricebot/crypto",
         "pricebot",
         "what is the current price of bitcoin in usd? just the number",
-        all_of(has_digit, used("cuga-finance")),
+        all_of(has_digit, used("cuga_finance")),
         PASS,
         "",
     ),
@@ -161,7 +161,7 @@ NOW_CASES = [
         "now/pricebot/stock",
         "pricebot",
         "what's IBM stock trading at right now?",
-        all_of(has_digit, used("cuga-finance")),
+        all_of(has_digit, used("cuga_finance")),
         PASS,
         "",
     ),
@@ -178,7 +178,7 @@ NOW_CASES = [
         "now/weatherbot/city",
         "weatherbot",
         "what's the weather in Tokyo right now?",
-        all_of(has_digit, used("cuga-web")),
+        all_of(has_digit, used("cuga_web")),
         PASS,
         "",
     ),
@@ -186,7 +186,7 @@ NOW_CASES = [
         "now/papers/arxiv",
         "papers",
         "find recent arXiv papers on mixture of experts",
-        all_of(longer_than(80), used("cuga-knowledge")),
+        all_of(longer_than(80), used("cuga_knowledge")),
         PASS,
         "",
     ),
@@ -194,7 +194,7 @@ NOW_CASES = [
         "now/research_compass/topic",
         "research_compass",
         "research retrieval-augmented generation: name the key papers and what to read next",
-        all_of(longer_than(200), used("cuga-knowledge")),
+        all_of(longer_than(200), used("cuga_knowledge")),
         PASS,
         "",
     ),
@@ -202,7 +202,7 @@ NOW_CASES = [
         "now/city_briefing/lisbon",
         "city_briefing",
         "give me a briefing on Lisbon",
-        all_of(longer_than(200), used("cuga-geo")),
+        all_of(longer_than(200), used("cuga_geo")),
         PASS,
         "",
     ),
@@ -210,7 +210,7 @@ NOW_CASES = [
         "now/code_auditor/snippet",
         "code_auditor",
         "analyze this snippet: def f(x): return x/0",
-        all_of(contains("zero", "division", "divide"), used("cuga-code")),
+        all_of(contains("zero", "division", "divide"), used("cuga_code")),
         PASS,
         "",
     ),
@@ -218,16 +218,16 @@ NOW_CASES = [
         "now/github_trending/repos",
         "github_trending",
         "what are the top trending GitHub repos right now?",
-        all_of(longer_than(100), used("cuga-web")),
+        all_of(longer_than(100), used("cuga_web")),
         PASS,
         "",
     ),
-    # ── Tier A (new): the cuga-web tools beyond web_search ────────────────────
+    # ── Tier A (new): the cuga_web tools beyond web_search ────────────────────
     (
         "now/webpage_summarizer/url",
         "webpage_summarizer",
         "summarize https://example.com",
-        all_of(contains("example domain", "illustrative", "placeholder"), used("cuga-web")),
+        all_of(contains("example domain", "illustrative", "placeholder"), used("cuga_web")),
         PASS,
         "",
     ),
@@ -235,7 +235,7 @@ NOW_CASES = [
         "now/video_qa/youtube",
         "video_qa",
         "what is this video about? https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        all_of(longer_than(50), used("cuga-web")),
+        all_of(longer_than(50), used("cuga_web")),
         PASS,
         "",
     ),
@@ -243,7 +243,7 @@ NOW_CASES = [
         "now/feed_watcher/rss",
         "feed_watcher",
         "what is new on https://hnrss.org/frontpage ?",
-        all_of(longer_than(80), used("cuga-web")),
+        all_of(longer_than(80), used("cuga_web")),
         PASS,
         "",
     ),
@@ -251,7 +251,7 @@ NOW_CASES = [
         "now/trip_planner/boulder",
         "trip_planner",
         "plan an outdoor day near Boulder, Colorado",
-        all_of(longer_than(150), used("cuga-geo")),
+        all_of(longer_than(150), used("cuga_geo")),
         PASS,
         "",
     ),
@@ -297,7 +297,7 @@ NOW_CASES = [
         "summarize my unread emails from today",
         lambda a, m: not refuses_honestly(a, m),  # desired: it actually summarizes the inbox
         XFAIL,
-        "mailbot has mcp_servers=['cuga-text'] only. Gmail is an INTEGRATION (AP owns the token), "
+        "mailbot has mcp_servers=['cuga_text'] only. Gmail is an INTEGRATION (AP owns the token), "
         "not a tool, so it has nothing to fetch mail with. It asks for the content instead — an "
         "HONEST failure. Closing this means giving mailbot a Gmail read tool.",
     ),
@@ -307,7 +307,7 @@ NOW_CASES = [
         "give me the overnight support digest",
         refuses_honestly,  # desired: refuse, since it has no ticket source
         XFAIL,
-        "support_digest has cuga-web but NO source of support tickets, so it Tavily-searches the "
+        "support_digest has cuga_web but NO source of support tickets, so it Tavily-searches the "
         "phrase and dresses up whatever it finds as a digest — observed returning a marketing "
         "blog TEMPLATE, complete with a source URL, as if it were your overnight tickets. It "
         "FABRICATES rather than refusing: the dangerous failure, and the one worth fixing first. "

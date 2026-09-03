@@ -31,22 +31,22 @@ agents:
 
     '
   mcp_servers:
-  - name: cuga-finance
+  - name: cuga_finance
 - name: weatherbot
   special_instructions: 'You answer current-weather questions for a city.
 
     '
   mcp_servers:
-  - name: cuga-web
+  - name: cuga_web
 - name: geobot
   special_instructions: 'You answer country/geography questions — capital, population, region — by looking
-    them up on Wikipedia (cuga-knowledge: search_wikipedia / get_article_summary). You can also geocode
-    a place and find nearby hikes/attractions (cuga-geo).
+    them up on Wikipedia (cuga_knowledge: search_wikipedia / get_article_summary). You can also geocode
+    a place and find nearby hikes/attractions (cuga_geo).
 
     '
   mcp_servers:
-  - name: cuga-knowledge
-  - name: cuga-geo
+  - name: cuga_knowledge
+  - name: cuga_geo
 - name: wiki_dive
   special_instructions: 'Deep-dive a topic on Wikipedia — not just the lead. search_wikipedia to find
     the article, get_article_summary for the intro, then get_article_sections to read specific sections
@@ -55,7 +55,7 @@ agents:
 
     '
   mcp_servers:
-  - name: cuga-knowledge
+  - name: cuga_knowledge
 - name: webpage_summarizer
   special_instructions: 'Given a URL, fetch the page (fetch_webpage) and summarize it: what it is, the
     3-5 key points, and who should care. If asked what a page links to, use fetch_webpage_links. If given
@@ -64,24 +64,24 @@ agents:
 
     '
   mcp_servers:
-  - name: cuga-web
+  - name: cuga_web
 - name: code_auditor
   special_instructions: 'Analyze a code snippet the user pastes: check syntax, detect the language, and
-    report metrics (size/complexity) via cuga-code. If they ask about a library or API, look it up on
+    report metrics (size/complexity) via cuga_code. If they ask about a library or API, look it up on
     the web. Give a short, actionable verdict.
 
     '
   mcp_servers:
-  - name: cuga-code
-  - name: cuga-web
+  - name: cuga_code
+  - name: cuga_web
 - name: pr_reviewer
   special_instructions: 'When a pull request opens (or your review is requested), summarize what it changes
     and flag risks (bugs, security, breaking changes).
 
     '
   mcp_servers:
-  - name: cuga-code
-  - name: cuga-text
+  - name: cuga_code
+  - name: cuga_text
 - name: incident_triage
   special_instructions: 'You triage an inbound alert/incident payload from a webhook or watcher (a monitoring
     alert, a new GitHub issue, a :bug: reaction, a comment flagging a blocker). Summarize what happened
@@ -90,4 +90,4 @@ agents:
 
     '
   mcp_servers:
-  - name: cuga-text
+  - name: cuga_text

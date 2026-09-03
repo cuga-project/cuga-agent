@@ -678,11 +678,14 @@ cuga start demo_supervisor
 > `mcp_servers:` receives tools from *those* only; an agent that lists neither still receives
 > everything.
 >
-> This was not always true. `_create_tool_provider` used to build the tool provider unscoped and
-> merely log the names, so every sub-agent silently got the whole registry and the declaration was
-> decorative. If a roster named one server while relying on tools from another, it worked by
-> accident and will now see only what it names — add the missing entry to `apps:`/`mcp_servers:`.
-> Hyphenated names are mapped to the registry's underscore keys (`cuga-finance` → `cuga_finance`).
+> Scoping on `apps:` has worked this way since the multi-agent supervisor landed. What is new is
+> that **`mcp_servers:` entries now count as named apps too.** They did not before, so an agent
+> declaring only `mcp_servers:` and no `apps:` received the whole registry regardless — if such a
+> roster named one server while relying on tools from another, it worked by accident and will now
+> see only what it names. Add the missing entry to `apps:` or `mcp_servers:`.
+>
+> Names are matched exactly as written — an app name is whatever key your MCP config registers it
+> under, and nothing rewrites it in transit.
 
 ### Quick Start
 

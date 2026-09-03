@@ -132,7 +132,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Paper Scout + Web Researcher (cuga-knowledge + cuga-web)",
+        note="cuga-apps: Paper Scout + Web Researcher (cuga_knowledge + cuga_web)",
     ),
     _ex(
         "now-city",
@@ -143,7 +143,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: City Beat + Travel Planner (cuga-geo + cuga-web + cuga-knowledge)",
+        note="cuga-apps: City Beat + Travel Planner (cuga_geo + cuga_web + cuga_knowledge)",
     ),
     _ex(
         "now-code",
@@ -154,9 +154,9 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Code Reviewer (cuga-code + cuga-web)",
+        note="cuga-apps: Code Reviewer (cuga_code + cuga_web)",
     ),
-    # ── agents that reach the cuga-web tools BEYOND web_search (fetch_webpage / feeds / youtube) ──
+    # ── agents that reach the cuga_web tools BEYOND web_search (fetch_webpage / feeds / youtube) ──
     _ex(
         "now-webpage",
         "Summarize a web page",
@@ -166,7 +166,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Webpage Summarizer — the only agent that calls cuga-web.fetch_webpage",
+        note="cuga-apps: Webpage Summarizer — the only agent that calls cuga_web.fetch_webpage",
     ),
     _ex(
         "now-video",
@@ -177,7 +177,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Video QA — cuga-web.get_youtube_transcript + get_youtube_video_info",
+        note="cuga-apps: Video QA — cuga_web.get_youtube_transcript + get_youtube_video_info",
     ),
     _ex(
         "now-yt-research",
@@ -276,7 +276,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: AI Labs News / Newsletter — cuga-web.fetch_feed; the natural CRON/POLL agent",
+        note="cuga-apps: AI Labs News / Newsletter — cuga_web.fetch_feed; the natural CRON/POLL agent",
     ),
     _ex(
         "now-trip",
@@ -287,7 +287,7 @@ EXAMPLES = [
         channel="web",
         phase="run",
         live=True,
-        note="cuga-apps: Hiking Research + Travel Planner — cuga-geo.find_hikes/search_attractions",
+        note="cuga-apps: Hiking Research + Travel Planner — cuga_geo.find_hikes/search_attractions",
     ),
     _ex(
         "now-discord",

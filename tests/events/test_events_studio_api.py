@@ -617,7 +617,7 @@ def test_mcp_servers_endpoint():
     r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
     assert r.status_code == 200
     names = {s["name"] for s in r.json()["servers"]}
-    assert "cuga-web" in names and "cuga-finance" in names
+    assert "cuga_web" in names and "cuga_finance" in names
 
 
 def test_agent_create_list_and_update():
@@ -628,7 +628,7 @@ def test_agent_create_list_and_update():
         "name": "digestbot",
         "backend": "cuga",
         "prompt": "post a digest",
-        "mcp_servers": ["cuga-web"],
+        "mcp_servers": ["cuga_web"],
         "channels": ["web", "slack"],
         "integrations": [{"app": "github", "ownership": "per-user"}],
         "access": ["builder"],

@@ -1,6 +1,6 @@
 """LIVE smoke — a **CUGA worker using its MCP tools** answers a real question.
 
-The full chain: concierge-provisioned worker (backend=cuga) with ``mcp_servers=['cuga-finance']``
+The full chain: concierge-provisioned worker (backend=cuga) with ``mcp_servers=['cuga_finance']``
 → ``AgentStoreRuntime`` builds a ``DynamicAgentGraph`` whose ``CombinedToolProvider(app_names=[...])``
 pulls the server's tools from the CUGA **registry** → CUGA calls ``get_crypto_price`` → real number.
 
@@ -57,17 +57,17 @@ async def main() -> int:
         return {"policy_system": policy, "langfuse_handler": None, "get_include_by_app": None}
 
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"), app_context=app_context)
-    # a worker WITH an MCP server — CUGA must load cuga-finance tools from the registry
+    # a worker WITH an MCP server — CUGA must load cuga_finance tools from the registry
     rt.upsert_agent(
-        AgentSpec(name="pricebot", prompt="You answer finance questions.", mcp_servers=["cuga-finance"]),
+        AgentSpec(name="pricebot", prompt="You answer finance questions.", mcp_servers=["cuga_finance"]),
         scope=DEFAULT_SCOPE,
     )
     print("registry:", os.environ["DYNACONF_SERVER_PORTS__REGISTRY_HOST"])
-    print("provisioned 'pricebot' backend=cuga mcp=[cuga-finance]")
+    print("provisioned 'pricebot' backend=cuga mcp=[cuga_finance]")
 
     q = "What is the current price of Bitcoin in USD? Give the number."
     print("Q:", q)
-    print("… building CUGA graph (loads cuga-finance tools) + running …")
+    print("… building CUGA graph (loads cuga_finance tools) + running …")
     answer = await rt.run("pricebot", "cuga-mcp-1", q, scope=DEFAULT_SCOPE)
     print("A:", (answer or "")[:400])
 
@@ -79,7 +79,7 @@ async def main() -> int:
         "RESULT:",
         "PASS — CUGA worker used its MCP tool (numeric price)"
         if ok
-        else "FAIL — no numeric answer (registry up + cuga-finance warm?)",
+        else "FAIL — no numeric answer (registry up + cuga_finance warm?)",
     )
     return 0 if ok else 1
 

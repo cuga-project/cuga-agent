@@ -317,10 +317,14 @@ async def _create_tool_provider(
             app_names.append(n)
 
     if app_names or mcp_servers:
-        # Registry keys are underscore names ('cuga_finance') while rosters write them with hyphens
-        # ('cuga-finance'). Scoping on the hyphenated spelling matches nothing, and a hyphen that
-        # survives into a generated identifier ('cuga-finance_get_price') parses as subtraction.
-        app_names = [n.replace("-", "_") for n in app_names]
+        # Names are passed through EXACTLY as declared — no normalising, no rewriting. There was a
+        # hyphen→underscore translation here for a while, because the events roster spelled its
+        # servers `cuga-finance` while the registry keys them `cuga_finance`. It was the wrong
+        # place to fix that: `mcp_manager` stores an MCP server's YAML key verbatim, so rewriting
+        # names in transit scoped an operator whose server really is registered as `my-server` to
+        # a key the registry does not have — no error, just a log warning and an agent with no
+        # tools. The roster now spells the names the way the registry does (see
+        # events/mcp_catalog.py), which removes the need for a translation rather than hiding it.
         logger.info(
             f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
         )

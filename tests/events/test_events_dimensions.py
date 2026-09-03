@@ -158,7 +158,7 @@ def test_storage_isolation_via_agentstore():
 
     rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
     rt.upsert_agent(
-        AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance"]), scope="acme/·/alice"
+        AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga_finance"]), scope="acme/·/alice"
     )
     got = rt.get_agent("pricebot", scope="acme/·/alice")
     assert got is not None and got.backend == "cuga"  # tagged cuga
@@ -207,8 +207,8 @@ def test_the_events_package_no_longer_imports_cugas_graph():
 def test_mcp_catalog_full_set():
     names = mcp_catalog.known_names()
     for app in ("web", "knowledge", "geo", "finance", "code", "local", "text"):
-        assert f"cuga-{app}" in names  # all 7 event-agent-ap servers
-    assert mcp_catalog.known_mcp_url("cuga-finance").endswith("/mcp")
+        assert f"cuga_{app}" in names  # all 7 event-agent-ap servers
+    assert mcp_catalog.known_mcp_url("cuga_finance").endswith("/mcp")
 
 
 # ---- seed: pre-built agents carry channels + integrations ----------------

@@ -33,12 +33,12 @@ agents:
     special_instructions: |
       You answer crypto/stock price questions.
     mcp_servers:
-      - name: cuga-finance
+      - name: cuga_finance
   - name: weatherbot
     special_instructions: You answer current-weather questions.
     mcp_servers:
-      - name: cuga-web
-      - name: cuga-geo
+      - name: cuga_web
+      - name: cuga_geo
 """
 
 
@@ -84,7 +84,7 @@ async def test_sub_agent_record_matches_what_the_ui_writes(roster_file):
     assert cfg["agent"]["name"] == "weatherbot"
     assert cfg["special_instructions"].startswith("You answer current-weather")
     # mcp_servers become registry-app entries under `tools`, which is the shape the UI stores
-    assert cfg["tools"] == [{"name": "cuga-web"}, {"name": "cuga-geo"}]
+    assert cfg["tools"] == [{"name": "cuga_web"}, {"name": "cuga_geo"}]
 
 
 @pytest.mark.asyncio
@@ -145,7 +145,7 @@ async def test_underscored_names_survive_verbatim(tmp_path):
         "agents:\n"
         "  - name: code_auditor\n"
         "    special_instructions: You audit code.\n"
-        "    mcp_servers: [{name: cuga-code}]\n"
+        "    mcp_servers: [{name: cuga_code}]\n"
     )
 
     await roster_seed.seed_roster(str(p))
@@ -191,7 +191,7 @@ async def test_a_sub_agent_may_not_squat_on_the_supervisor_id(tmp_path):
     """A roster entry literally named `cuga` would otherwise overwrite the supervisor record with a
     `kind: single` one, and /run would stop seeing a supervisor at all."""
     p = tmp_path / "r.yaml"
-    p.write_text("agents:\n  - name: cuga\n    mcp_servers: [{name: cuga-web}]\n  - name: pricebot\n")
+    p.write_text("agents:\n  - name: cuga\n    mcp_servers: [{name: cuga_web}]\n  - name: pricebot\n")
 
     await roster_seed.seed_roster(str(p))
 

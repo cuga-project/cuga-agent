@@ -286,11 +286,14 @@ agents:
 class TestToolProviderScoping:
     """A sub-agent gets ONLY the registry apps it names.
 
-    `_create_tool_provider` used to build `CombinedToolProvider()` with no arguments and log the
-    app names as if they were a filter — every agent silently received the whole registry. Passing
-    `app_names=` makes the declaration real, which is the fix, but it also means an agent that
-    named one server and quietly leaned on the rest now sees only what it asked for. These pin the
-    behaviour so it cannot drift back, and so the change is visible if it ever does.
+    Scoping on `apps:` is upstream behaviour, settled in #433 — `app_names=app_names or None`. What
+    is new here is that `mcp_servers:` entries count as named apps too. They did not before, so an
+    agent declaring only `mcp_servers:` — which is every agent in the events roster — produced an
+    empty list, fell through to `or None`, and received the entire registry; the declaration was
+    decorative. That is the one narrowing, and it is deliberate.
+
+    Names are otherwise passed through verbatim — see tests/unit/test_supervisor_tool_scoping.py,
+    which guards that specifically.
     """
 
     @pytest.mark.asyncio
@@ -309,12 +312,11 @@ class TestToolProviderScoping:
         monkeypatch.setattr(sc, "CombinedToolProvider", _Provider)
 
         provider = await sc._create_tool_provider(
-            apps=[{"name": "cuga-finance"}], mcp_servers=[{"name": "cuga-web"}]
+            apps=[{"name": "cuga_finance"}], mcp_servers=[{"name": "cuga_web"}]
         )
 
         assert provider is not None and seen["initialized"] is True
-        # hyphens become underscores: registry keys are underscore names, and 'cuga-finance_get'
-        # would parse as subtraction once composed into a tool identifier downstream.
+        # `apps:` first, then `mcp_servers:`, each exactly as declared.
         assert seen["app_names"] == ["cuga_finance", "cuga_web"]
 
     @pytest.mark.asyncio

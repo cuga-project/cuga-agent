@@ -1,11 +1,11 @@
 # cuga-apps MCP servers — the full event-agent-ap set (7 servers on IBM Code Engine).
 # Point the CUGA registry at this file so event-layer CUGA workers get their tools:
 #     MCP_SERVERS_FILE=src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml uv run registry
-# App names use UNDERSCORES (cuga_finance, not cuga-finance) because CUGA's code-execution agent
-# composes `<app>_<tool>` as a Python identifier — a hyphen (`cuga-finance_get_crypto_price`)
-# parses as subtraction → NameError. The events layer maps its hyphenated names to these:
-# a worker provisioned with mcp_server_names=['cuga-finance'] → the roster passes
-# app_names=['cuga_finance'] to CombinedToolProvider (hyphens → underscores at load time).
+# App names use UNDERSCORES (cuga_finance) because CUGA's code-execution agent composes
+# `<app>_<tool>` as a Python identifier — a hyphen (`cuga-finance_get_crypto_price`) parses as
+# subtraction → NameError. The events layer spells its server names the same way, so a worker
+# provisioned with mcp_server_names=['cuga_finance'] scopes straight to the key below with no
+# translation anywhere in between. The Code Engine hostnames keep their hyphens; they are DNS.
 # NOTE: these Code Engine servers scale to zero — warm them before a demo/test.
 mcpServers:
   cuga_web:

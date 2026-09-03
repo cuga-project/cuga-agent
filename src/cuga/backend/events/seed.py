@@ -41,7 +41,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="pricebot",
             backend=b,
-            mcp_servers=["cuga-finance"],
+            mcp_servers=["cuga_finance"],
             channels=web,
             prompt="You answer crypto/stock price questions concisely using your tools "
             "(get_crypto_price / get_stock_quote). Give the price, the 24h change, and a "
@@ -50,30 +50,30 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="geobot",
             backend=b,
-            mcp_servers=["cuga-knowledge", "cuga-geo"],
+            mcp_servers=["cuga_knowledge", "cuga_geo"],
             channels=web,
             prompt="You answer country/geography questions — capital, population, region — by looking "
-            "them up on Wikipedia (cuga-knowledge: search_wikipedia / get_article_summary). "
-            "You can also geocode a place and find nearby hikes/attractions (cuga-geo).",
+            "them up on Wikipedia (cuga_knowledge: search_wikipedia / get_article_summary). "
+            "You can also geocode a place and find nearby hikes/attractions (cuga_geo).",
         ),
         AgentSpec(
             name="weatherbot",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="You answer current-weather questions for a city.",
         ),
         AgentSpec(
             name="papers",
             backend=b,
-            mcp_servers=["cuga-knowledge"],
+            mcp_servers=["cuga_knowledge"],
             channels=web,
             prompt="You find and summarize recent arXiv papers on a topic.",
         ),
         AgentSpec(
             name="market_briefer",
             backend=b,
-            mcp_servers=["cuga-finance", "cuga-web"],
+            mcp_servers=["cuga_finance", "cuga_web"],
             channels=web,
             access=["builder", "admin"],  # restricted → demonstrates perms
             prompt="You produce a short market brief on request.",
@@ -82,39 +82,39 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="research_compass",
             backend=b,
-            mcp_servers=["cuga-knowledge", "cuga-web"],
+            mcp_servers=["cuga_knowledge", "cuga_web"],
             channels=web,  # inspired by cuga-apps: Paper Scout + Web Researcher
             integrations=[
                 {"app": "slack", "ownership": "shared", "triggers": ["new_slack_mention", "saved_message"]}
             ],
-            prompt="Research any topic. Search arXiv + Semantic Scholar (cuga-knowledge) AND the "
-            "web (cuga-web), then synthesize the findings with citations, name the 2-3 most "
+            prompt="Research any topic. Search arXiv + Semantic Scholar (cuga_knowledge) AND the "
+            "web (cuga_web), then synthesize the findings with citations, name the 2-3 most "
             "important papers/sources, and suggest what to read next. Be concrete.",
         ),
         AgentSpec(
             name="city_briefing",
             backend=b,
-            mcp_servers=["cuga-geo", "cuga-web", "cuga-knowledge"],
+            mcp_servers=["cuga_geo", "cuga_web", "cuga_knowledge"],
             channels=web,  # inspired by cuga-apps: City Beat + Travel Planner
             prompt="Given a city, produce a one-screen briefing: geocode it and get current weather "
-            "(cuga-geo), 3-5 key facts (cuga-knowledge/Wikipedia), and 3-5 things to do "
+            "(cuga_geo), 3-5 key facts (cuga_knowledge/Wikipedia), and 3-5 things to do "
             "(attractions/hikes). Tight, scannable, bulleted.",
         ),
         AgentSpec(
             name="code_auditor",
             backend=b,
-            mcp_servers=["cuga-code", "cuga-web"],
+            mcp_servers=["cuga_code", "cuga_web"],
             channels=web,
             prompt="Analyze a code snippet the user pastes: check syntax, detect the language, and "
-            "report metrics (size/complexity) via cuga-code. If they ask about a library or "
+            "report metrics (size/complexity) via cuga_code. If they ask about a library or "
             "API, look it up on the web. Give a short, actionable verdict.",
         ),
-        # ── agents that reach the cuga-web tools BEYOND web_search. Before these, the whole fleet
+        # ── agents that reach the cuga_web tools BEYOND web_search. Before these, the whole fleet
         #    used exactly one of that server's seven tools (see tests/events/AGENT_NOW_CATALOG.md).
         AgentSpec(
             name="webpage_summarizer",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             integrations=[{"app": "telegram", "ownership": "shared", "triggers": ["new_channel_message"]}],
             prompt="Given a URL, fetch the page (fetch_webpage) and summarize it: what it is, the "
@@ -125,7 +125,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="video_qa",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="Answer questions about a YouTube video. Use get_youtube_video_info for title/"
             "channel/duration and get_youtube_transcript for what was actually said. Quote "
@@ -134,7 +134,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="feed_watcher",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="Report what is new in an RSS/Atom feed. Use fetch_feed for one feed, or "
             "search_feeds to scan several for keywords. List items newest-first with title, "
@@ -144,7 +144,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="trip_planner",
             backend=b,
-            mcp_servers=["cuga-geo", "cuga-web"],
+            mcp_servers=["cuga_geo", "cuga_web"],
             channels=web,
             prompt="Plan an outdoor day near a place. Geocode it (geocode), then find hikes "
             "(find_hikes) and attractions (search_attractions), and check the weather "
@@ -156,7 +156,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="ai_labs_news",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=["web", "slack", "telegram"],  # digest-y → demoes scheduled delivery
             prompt="Produce a glanceable digest of the latest posts from the major AI labs "
             "(OpenAI, Anthropic, Google DeepMind, Meta AI, Mistral, …). Use web_search / "
@@ -168,7 +168,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="wiki_dive",
             backend=b,
-            mcp_servers=["cuga-knowledge"],
+            mcp_servers=["cuga_knowledge"],
             channels=web,
             prompt="Deep-dive a topic on Wikipedia — not just the lead. search_wikipedia to find "
             "the article, get_article_summary for the intro, then get_article_sections to "
@@ -179,7 +179,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="movie_recommender",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="Recommend movies/shows from a free-form description of the user's taste. You "
             "are STATELESS — infer everything from the current message (liked titles, mood, "
@@ -190,7 +190,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="recipe_composer",
             backend=b,
-            mcp_servers=["cuga-web", "cuga-text"],
+            mcp_servers=["cuga_web", "cuga_text"],
             channels=web,
             prompt="Compose a recipe from a free-form request. You are STATELESS — use only what "
             "the message states (ingredients on hand, cuisine, diet, allergies, time). Use "
@@ -201,7 +201,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="meetup_finder",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="Find upcoming events/meetups (tech/AI by default) for a topic + city + "
             "timeframe. Use web_search and fetch_webpage over Meetup, Luma, and Eventbrite "
@@ -211,7 +211,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="youtube_research",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             prompt="Research a topic across YouTube. Given a topic (no URL), web_search for the "
             "best videos, then get_youtube_video_info + get_youtube_transcript on the top "
@@ -222,10 +222,10 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="find_a_doctor",
             backend=b,
-            mcp_servers=["cuga-web", "cuga-geo"],
+            mcp_servers=["cuga_web", "cuga_geo"],
             channels=web,
             prompt="Help find a good doctor/provider in a location, grounded in real listings and "
-            "review snippets. Geocode the location if useful (cuga-geo), then web_search "
+            "review snippets. Geocode the location if useful (cuga_geo), then web_search "
             "trusted directories and fetch_webpage the best listings for specialty, "
             "experience, and patient-review signals. Return 3-6 candidates: name · specialty "
             "· location · why they fit (with a source). Never fabricate a provider or review.",
@@ -233,7 +233,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="ibm_docs_qa",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=web,
             integrations=[{"app": "discord", "ownership": "shared", "triggers": ["new_channel_message"]}],
             prompt="Answer IBM Cloud questions from real IBM documentation. For each question, "
@@ -245,7 +245,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="mailbot",
             backend=b,
-            mcp_servers=["cuga-text"],
+            mcp_servers=["cuga_text"],
             channels=web,
             integrations=[{"app": "gmail", "ownership": "per-user"}],
             prompt="You summarize and triage the user's Gmail. Uses their own Gmail login.",
@@ -253,7 +253,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="resume_judge",
             backend=b,
-            mcp_servers=["cuga-text"],
+            mcp_servers=["cuga_text"],
             channels=web,
             integrations=[{"app": "box", "ownership": "per-user"}, {"app": "gmail", "ownership": "per-user"}],
             # The watcher inlines the resume's TEXT into the message — CUGA downloads it
@@ -273,7 +273,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="support_digest",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=["web", "slack"],
             integrations=[
                 {
@@ -292,7 +292,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="pr_reviewer",
             backend=b,
-            mcp_servers=["cuga-code", "cuga-text"],
+            mcp_servers=["cuga_code", "cuga_text"],
             channels=web,
             # trigger-grain declaration: WHICH github events this agent handles. Issues and
             # repo-lifecycle events belong to incident_triage / repo_watcher below.
@@ -308,7 +308,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="repo_watcher",
             backend=b,
-            mcp_servers=["cuga-text", "cuga-web"],
+            mcp_servers=["cuga_text", "cuga_web"],
             channels=["web", "slack", "telegram"],
             integrations=[
                 {
@@ -339,7 +339,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="github_trending",
             backend=b,
-            mcp_servers=["cuga-web"],
+            mcp_servers=["cuga_web"],
             channels=["web", "slack", "telegram"],
             prompt="Report the current top trending GitHub repositories (search the web / browse "
             "github.com/trending). For each of ~5–7 repos give: name, primary language, and "
@@ -350,7 +350,7 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(
             name="incident_triage",
             backend=b,
-            mcp_servers=["cuga-text"],
+            mcp_servers=["cuga_text"],
             channels=["web", "slack"],
             # triage-shaped triggers beyond the webhook: new github issues / blocker comments,
             # :bug:-reaction escalations, box file-comment action items. slack is a DIRECT
