@@ -5,9 +5,13 @@ once; CUGA hosts the redirect + callback so a chatting user logs in with THEIR O
 resulting token is stored as an AP connection (``ea::<tenant>::<user>::<app>``) which AP refreshes.
 
 Two kinds of integration auth:
-  - **oauth**  (gmail/box/slack/outlook) — redirect-based consent. CUGA builds the authorize URL,
-    the user consents, CUGA exchanges the code, then creates an AP OAUTH2 connection.
-  - **token**  (github PAT, telegram bot) — no redirect; the user pastes a secret → AP SECRET_TEXT
+  - **oauth**  (gmail/box/slack/**github**/outlook) — redirect-based consent. CUGA builds the
+    authorize URL and the user consents; the code→token exchange is then done by AP
+    (``UpsertOAuth2Request`` wants the CODE, not tokens), so ``exchange_code`` below is currently
+    unused. GitHub belongs HERE, not under "token": ``PROVIDERS`` carries its authorize URL and
+    ``setup/GITHUB.md`` is explicit that a pasted PAT is *rejected* — AP accepts it into the
+    connection store and it is then unusable for the piece triggers.
+  - **token**  (telegram bot) — no redirect; the user pastes a secret → AP SECRET_TEXT
     connection (``APEngine.ensure_secret_connection``, already built).
 
 BOUNDARY (clarified): **CUGA hosts the connect UX for EVERY connector — the user never hops to
@@ -151,10 +155,69 @@ def _env(app: str, key: str) -> str:
     return _secret(f"EVENTS_OAUTH_{app.upper()}_{key}")
 
 
+def _fernet():
+    """Fernet on ``CUGA_SECRET_KEY``, or None when it is unset. Never raises — an unreadable key
+    must degrade to plaintext, not take the store down.
+
+    Built HERE rather than imported from ``cuga.backend.storage.secrets_store``. The events package
+    imports exactly one thing from CUGA core (``resolve_secret``, via the seam) and
+    ``test_core_decoupled`` enforces it, so that the layer can run beside a different CUGA build.
+    Same key, same algorithm, same ciphertext — interoperable with core's store, just not coupled
+    to it. The key itself comes through the seam, so ``CUGA_SECRET_KEY=vault://…`` works.
+    """
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:  # noqa: BLE001 — cryptography absent → plaintext, as before
+        return None
+    try:
+        from .secret_seam import secret as _secret
+    except ImportError:  # flat load (tests put the events dir on sys.path)
+        from secret_seam import secret as _secret
+    key = (_secret("CUGA_SECRET_KEY") or "").strip()
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode())
+    except Exception:  # noqa: BLE001 — a malformed key must not break setup
+        return None
+
+
+_ENC = "fernet:"  # marker prefix, so a store can hold both old plaintext and new ciphertext
+
+
+def _enc_secret(v: str) -> str:
+    f = _fernet()
+    if not f or not v or v.startswith(_ENC):
+        return v
+    try:
+        return _ENC + f.encrypt(v.encode()).decode()
+    except Exception:  # noqa: BLE001
+        return v
+
+
+def _dec_secret(v: str) -> str:
+    if not v or not v.startswith(_ENC):
+        return v  # legacy plaintext row, or no key configured — read it as-is
+    f = _fernet()
+    if not f:
+        return ""  # encrypted but the key is gone: return nothing rather than ciphertext
+    try:
+        return f.decrypt(v[len(_ENC) :].encode()).decode()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 class OAuthAppStore:
     """Admin-entered OAuth app credentials (client id/secret per provider), so setup is UI-only.
-    NOTE: plaintext at rest (parity with .env). Production TODO: back with CUGA's Fernet
-    secrets. Runs on SQLite or Postgres via db.connect."""
+
+    ``client_secret`` is ENCRYPTED AT REST with CUGA's Fernet (``CUGA_SECRET_KEY``) when a key is
+    configured — the value is stored as ``fernet:<ciphertext>``. Without a key it stays plaintext,
+    which keeps dev and existing rows working; the marker prefix is what lets both live in one
+    column, so this needs no migration and rows re-encrypt as they are rewritten.
+
+    A deployment that accepts admin-entered OAuth secrets should set ``CUGA_SECRET_KEY``. Note the
+    client_id is deliberately NOT encrypted: it is not a secret, and leaving it readable keeps
+    ``status()`` and debugging honest. Runs on SQLite or Postgres via db.connect."""
 
     def __init__(self, db_path: str = ":memory:"):
         self._db = _db.connect(db_path)
@@ -172,7 +235,7 @@ class OAuthAppStore:
                VALUES (?,?,?,?,?) ON CONFLICT(tenant,app) DO UPDATE SET
                  client_id=excluded.client_id, client_secret=excluded.client_secret,
                  scopes=excluded.scopes""",
-            (tenant, app.lower(), client_id, client_secret, scopes),
+            (tenant, app.lower(), client_id, _enc_secret(client_secret), scopes),
         )
         self._db.commit()
 
@@ -185,7 +248,9 @@ class OAuthAppStore:
         r = self._db.execute(
             f"SELECT {col} FROM oauth_app WHERE tenant=? AND app=?", (tenant, app.lower())
         ).fetchone()
-        return r[0] if r else ""
+        if not r:
+            return ""
+        return _dec_secret(r[0]) if col == "client_secret" else r[0]
 
     def status(self, tenant: str) -> list[dict]:
         """Per provider: is it configured? (never returns the secret)."""

@@ -2055,19 +2055,30 @@ def register_events_routes(
             kind = direct_events.kind_for("slack", ev_type)
             if kind:
                 item = ev.get("item") or {}
+                # POINTER-SHAPED EVENTS: a reaction/star carries item.{channel,ts} but NOT the
+                # message. Resolve it so the agent gets something to act on — "when someone reacts
+                # :bug:, review the code" is useless with a reaction and no code. describe() already
+                # renders a "text" key, so hydrating it here reaches the prompt with no other change.
+                payload = dict(ev)
+                if not payload.get("text") and item.get("ts") and item.get("channel"):
+                    payload["text"] = await slack_direct.fetch_message_text(
+                        str(item["channel"]), str(item["ts"])
+                    )
                 subs = direct_events.match(
                     store,
                     "slack",
                     kind,
                     channel=str(ev.get("channel") or item.get("channel") or ""),
-                    text=str(ev.get("text") or ""),
+                    # the config `pattern` filter now matches the MESSAGE, which is what a user
+                    # arming "react :bug: on a message containing traceback" means.
+                    text=str(payload.get("text") or ""),
                     emoji=str(ev.get("reaction") or ""),
                 )
                 if subs:
                     Trace(new_trace_id())("slack.direct", event=kind, matched=len(subs))
                     asyncio.create_task(
                         direct_events.dispatch_all(
-                            subs, app="slack", event=kind, payload=dict(ev), engine=engine
+                            subs, app="slack", event=kind, payload=payload, engine=engine
                         )
                     )
         return {"ok": True}
@@ -2796,8 +2807,12 @@ def register_events_routes(
                     ext,
                     prov["piece"],
                     code,
-                    client_id=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_ID", ""),
-                    client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
+                    # Through oauth._env, NOT a raw environ read: the seam resolves `vault://` /
+                    # `aws://` references and the admin-entered OAuthAppStore. A raw read passed the
+                    # LITERAL string "vault://…" as the client secret, which authenticates against
+                    # nothing and fails with no hint that the reference was never resolved.
+                    client_id=oauth._env(app, "CLIENT_ID"),
+                    client_secret=oauth._env(app, "CLIENT_SECRET"),
                     scope=" ".join(prov.get("scopes", [])),
                     redirect_url=oauth.redirect_uri(app),
                     authorization_method=prov.get("authorization_method", "BODY"),

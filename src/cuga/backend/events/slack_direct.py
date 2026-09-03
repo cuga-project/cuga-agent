@@ -172,6 +172,37 @@ async def _bot_in_thread(channel: str, thread_ts: str, uid: str) -> bool:
     return False
 
 
+async def fetch_message_text(channel: str, ts: str) -> str:
+    """The text of the message at ``ts`` — "" if it can't be read.
+
+    POINTER-SHAPED EVENTS. Slack's `reaction_added` / `reaction_removed` / `star_added` carry only
+    `item.channel` + `item.ts`; the message itself is NOT in the payload. So a watcher armed as
+    "when someone reacts :bug:, review the code" reached the agent with a reaction and no code, and
+    the agent truthfully answered that it had nothing to review — no error anywhere.
+
+    Resolving the pointer here (rather than giving the agent a Slack tool) keeps the bot token in
+    the one module that already owns it, and fixes every pointer-shaped trigger at once.
+
+    Needs `channels:history` — the same scope SLACK.md already requires for `message.channels`, so
+    no new permission. Returns "" on any failure: a watcher that fires with less context is better
+    than one that does not fire.
+    """
+    tok = bot_token()
+    if not (tok and channel and ts):
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://slack.com/api/conversations.replies",
+                params={"channel": channel, "ts": ts, "limit": 1, "inclusive": "true"},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        msgs = (r.json() or {}).get("messages") or []
+    except Exception:  # noqa: BLE001
+        return ""
+    return str((msgs[0] or {}).get("text") or "") if msgs else ""
+
+
 async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:
     """Post a reply via chat.postMessage (bot token) — no AP connection needed. When ``thread_ts``
     is given the reply lands IN THAT THREAD (Slack roots a thread at that ts), so a threaded
