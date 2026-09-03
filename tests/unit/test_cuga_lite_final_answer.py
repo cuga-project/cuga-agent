@@ -38,6 +38,24 @@ def test_terminal_thanks_without_result_requests_final_answer_generation():
     assert CugaLiteNode._should_regenerate_final_answer(state, "Thanks!", ["top_account"])
 
 
+def test_numeric_integer_followed_by_sentence_terminator_keeps_fast_path():
+    state = SimpleNamespace(variables_manager=_Variables({"result": 9}))
+
+    assert not CugaLiteNode._should_regenerate_final_answer(state, "The result is 9. Thanks!", ["result"])
+
+
+def test_numeric_comma_value_followed_by_punctuation_keeps_fast_path():
+    state = SimpleNamespace(variables_manager=_Variables({"result": 9_000}))
+
+    assert not CugaLiteNode._should_regenerate_final_answer(state, "The result is 9,000. Thanks!", ["result"])
+
+
+def test_numeric_decimal_followed_by_punctuation_keeps_fast_path():
+    state = SimpleNamespace(variables_manager=_Variables({"result": 9.5}))
+
+    assert not CugaLiteNode._should_regenerate_final_answer(state, "The result is 9.5! Thanks!", ["result"])
+
+
 def test_numeric_candidate_is_not_found_inside_decimal_answer():
     state = SimpleNamespace(variables_manager=_Variables({"result": 9}))
 

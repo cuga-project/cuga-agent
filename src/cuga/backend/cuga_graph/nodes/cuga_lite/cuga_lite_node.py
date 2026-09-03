@@ -219,7 +219,7 @@ class CugaLiteNode(BaseNode):
                 )
             if isinstance(value, (int, float, bool)):
                 candidates = {str(value), f"{value:,}"}
-                numeric_pattern = r"(?<![\w.,]){}(?![\w.,])"
+                numeric_pattern = r"(?<!\w)(?<!\d[.,]){}(?!\w)(?![.,]\d)"
                 return any(
                     re.search(numeric_pattern.format(re.escape(candidate)), answer_lower)
                     for candidate in candidates
