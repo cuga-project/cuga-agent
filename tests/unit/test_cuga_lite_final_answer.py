@@ -32,6 +32,18 @@ def test_signoff_without_result_requests_final_answer_generation():
     assert CugaLiteNode._should_regenerate_final_answer(state, answer, ["top_account"])
 
 
+def test_terminal_thanks_without_result_requests_final_answer_generation():
+    state = _state_with_top_account()
+
+    assert CugaLiteNode._should_regenerate_final_answer(state, "Thanks!", ["top_account"])
+
+
+def test_numeric_candidate_is_not_found_inside_decimal_answer():
+    state = SimpleNamespace(variables_manager=_Variables({"result": 9}))
+
+    assert CugaLiteNode._should_regenerate_final_answer(state, "The result is 9.5. Thanks!", ["result"])
+
+
 def test_signoff_with_result_value_keeps_fast_path():
     state = _state_with_top_account()
     answer = (

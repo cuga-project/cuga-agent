@@ -199,6 +199,8 @@ class CugaLiteNode(BaseNode):
             "if you need",
             "anything else",
             "additional details",
+            "thanks",
+            "thank you",
         )
         if not any(pattern in answer_lower for pattern in signoff_patterns):
             return False
@@ -217,8 +219,9 @@ class CugaLiteNode(BaseNode):
                 )
             if isinstance(value, (int, float, bool)):
                 candidates = {str(value), f"{value:,}"}
+                numeric_pattern = r"(?<![\w.,]){}(?![\w.,])"
                 return any(
-                    re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", answer_lower)
+                    re.search(numeric_pattern.format(re.escape(candidate)), answer_lower)
                     for candidate in candidates
                 )
             return False
