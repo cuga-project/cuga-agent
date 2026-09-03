@@ -9,10 +9,6 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
 from cuga.backend.cuga_graph.nodes.chat.chat_agent.chat_agent import ChatAgent
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
-    create_flow_approve,
-    create_new_flow_approve,
-)
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 
@@ -21,8 +17,6 @@ from cuga.config import settings
 
 
 tracker = ActivityTracker()
-
-ENABLE_SAVE_REUSE = settings.features.save_reuse
 
 
 class ChatHumanInTheLoopHandler:
@@ -62,6 +56,40 @@ class ChatHumanInTheLoopHandler:
 
 
 class ChatNode(BaseNode):
+    @staticmethod
+    def _prepare_execution_task(state: AgentState, tool_args: dict) -> None:
+        task = tool_args.get("task") or state.input
+        relevant_variables = tool_args.get("relevant_variables") or []
+        mode = getattr(settings.advanced_features, "mode", "api")
+
+        state.hybrid_original_task = None
+        state.hybrid_api_task = None
+        state.hybrid_web_task = None
+        state.hybrid_api_answer = None
+        state.hybrid_phase = None
+        state.sub_task = None
+        state.sub_task_app = None
+
+        if mode == "hybrid":
+            task_type = tool_args.get("task_type") or "api"
+            if task_type == "hybrid":
+                state.sub_task_type = "hybrid"
+                state.hybrid_original_task = task
+                state.hybrid_api_task = tool_args.get("api_task") or task
+                state.hybrid_web_task = tool_args.get("web_task") or task
+                state.hybrid_phase = "api"
+                task = state.hybrid_api_task
+            else:
+                state.sub_task_type = "web" if task_type == "web" else "api"
+        elif mode == "web":
+            state.sub_task_type = "web"
+        else:
+            state.sub_task_type = "api"
+
+        if relevant_variables:
+            task = f"task: {task}\n relevant variables from history: {relevant_variables}"
+        state.input = task
+
     def __init__(self):
         super().__init__()
         self.chat_agent: Optional[ChatAgent] = None
@@ -138,7 +166,7 @@ class ChatNode(BaseNode):
     @staticmethod
     async def node_handler(
         state: AgentState, agent: ChatAgent, hitl_handler: ChatHumanInTheLoopHandler, name: str
-    ) -> Command[Literal["FinalAnswerAgent", "TaskAnalyzerAgent", "SuggestHumanActions"]]:
+    ) -> Command[Literal["FinalAnswerAgent", "EntryRouter", "SuggestHumanActions"]]:
         # Handle human-in-the-loop responses
         if (
             state.sender == NodeNames.WAIT_FOR_RESPONSE
@@ -174,12 +202,12 @@ class ChatNode(BaseNode):
             tool = ToolCall(**state.hitl_response.additional_data.tool)
             state.input = tool.get("args").get("user_task")
             state.sender = "ChatAgent"
-            return Command(update=state.model_dump(), goto=NodeNames.TASK_ANALYZER_AGENT)
+            return Command(update=state.model_dump(), goto=NodeNames.ENTRY_ROUTER)
 
         # If chat feature is disabled, go directly to task analyzer
         if not settings.features.chat:
             state.sender = name
-            return Command(update=state.model_dump(), goto=NodeNames.TASK_ANALYZER_AGENT)
+            return Command(update=state.model_dump(), goto=NodeNames.ENTRY_ROUTER)
 
         # Process chat input
         state.sender = name
@@ -190,39 +218,10 @@ class ChatNode(BaseNode):
         if res.tool_calls:
             res = await ChatNode._execute_direct_tool_calls(state, agent, res)
 
-        # Handle tool calls - require human approval
-        if ENABLE_SAVE_REUSE and res.tool_calls and res.tool_calls[0].get("name") == "run_new_flow":
-            state.final_answer = state.chat_agent_messages[-1].content
-            state.sender = name
-            state.hitl_action = create_new_flow_approve(tool=res.tool_calls[0])
-            return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
-
-        if (
-            ENABLE_SAVE_REUSE
-            and res.tool_calls
-            and agent.requires_human_approval(res.tool_calls[0].get("name"))
-        ):
-            state.final_answer = state.chat_agent_messages[-1].content
-            state.sender = name
-            state.hitl_action = create_flow_approve(tool=res.tool_calls[0])
-            return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
-
-        if (
-            not ENABLE_SAVE_REUSE
-            and res.tool_calls
-            and len(res.tool_calls) > 0
-            and res.tool_calls[0].get("name") == "execute_task"
-        ):
+        if res.tool_calls and len(res.tool_calls) > 0 and res.tool_calls[0].get("name") == "execute_task":
             logger.debug(f"tool call in chat node {res.tool_calls[0]}")
-            variables_rel = res.tool_calls[0].get("args").get("relevant_variables")
-            if variables_rel and len(variables_rel) > 0:
-                state.input = (
-                    f"task: {res.tool_calls[0].get('args').get('task')}"
-                    + f"\n relevant variables from history: {res.tool_calls[0].get('args').get('relevant_variables')}"
-                )
-            else:
-                state.input = res.tool_calls[0].get("args").get("task")
-            return Command(update=state.model_dump(), goto="TaskAnalyzerAgent")
+            ChatNode._prepare_execution_task(state, res.tool_calls[0].get("args") or {})
+            return Command(update=state.model_dump(), goto=NodeNames.ENTRY_ROUTER)
         # Regular chat response - add to messages and continue+
         res.content = state.variables_manager.replace_variables_placeholders(res.content)
         state.messages.append(res)

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { ChatLanding } from "./ChatLanding";
@@ -13,6 +13,13 @@ import "./global.css";
 
 function RouteRoot({ children }: { children: React.ReactNode }) {
   return <div className="route-root">{children}</div>;
+}
+
+// Keying by agentId forces a full remount when switching agents from within the chat page
+// (same Route pattern, different param — React Router does not remount on its own).
+function ChatLandingRoute() {
+  const { agentId } = useParams<{ agentId?: string }>();
+  return <ChatLanding key={agentId ?? "cuga-default"} />;
 }
 
 function AuthGate({ children }: { children: React.ReactNode }) {
@@ -111,7 +118,8 @@ function renderApp(): void {
                 </RequireRole>
               }
             />
-            <Route path="/chat" element={<RouteRoot><ChatLanding /></RouteRoot>} />
+            <Route path="/chat" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
+            <Route path="/chat/:agentId" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
             <Route path="/unauthorized" element={<RouteRoot><UnauthorizedPage /></RouteRoot>} />
           </Routes>
         </AuthProvider>

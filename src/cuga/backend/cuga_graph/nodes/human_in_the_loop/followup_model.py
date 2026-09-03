@@ -68,17 +68,6 @@ class FollowUpAction(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
 
-def create_save_reuse_action():
-    return FollowUpAction(
-        action_name="Save for later",
-        action_id=ActionIds.SAVE_REUSE,
-        description="Save the current flow for later use",
-        type=ActionType.CONFIRMATION,
-        callback_url="/save",
-        button_text="Save for later reuse",
-    )
-
-
 def create_flow_approve(tool: Any):
     return FollowUpAction(
         action_name="Approve & Run",
@@ -102,16 +91,6 @@ def create_new_flow_approve(tool: Any):
         type=ActionType.CONFIRMATION,
         callback_url="/save",
         button_text="Run",
-    )
-
-
-def create_get_more_utterances():
-    return FollowUpAction(
-        action_name="Provide example intents",
-        action_id=ActionIds.SAVE_REUSE_INTENT,
-        description="Can you provide me with more examples of utterances you would like me to handle next time?",
-        type=ActionType.NATURAL_LANGUAGE,
-        callback_url="/resume",
     )
 
 

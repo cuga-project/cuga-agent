@@ -1,26 +1,8 @@
 instruction_set = "default"
 base_path = "./configurations/instructions"
 
-[plan_controller]
-instructions = "@format {this.base_path}/{this.instruction_set}/plan_controller.md"
-
-[task_decomposition]
-instructions = "@format {this.base_path}/{this.instruction_set}/task_decomposition.md"
-
-[api_planner]
-instructions = "@format {this.base_path}/{this.instruction_set}/api_planner.md"
-
-[shortlister]
-instructions = "@format {this.base_path}/{this.instruction_set}/shortlister.md"
-
-[code_agent]
-instructions = "@format {this.base_path}/{this.instruction_set}/code_agent.md"
-
-[api_reflection]
-instructions = "@format {this.base_path}/{this.instruction_set}/reflection.md"
-
-[api_code_planner]
-instructions = "@format {this.base_path}/{this.instruction_set}/api_code_planner.md"
+[plan]
+instructions = ""
 
 [answer]
 instructions = "@format {this.base_path}/{this.instruction_set}/answer.md"

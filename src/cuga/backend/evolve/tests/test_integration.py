@@ -16,6 +16,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from cuga.backend.evolve.integration import EvolveIntegration
 
+pytestmark = pytest.mark.unit
+
 
 class TestIsEnabled:
     """Test EvolveIntegration.is_enabled() with various config combinations."""
@@ -23,29 +25,11 @@ class TestIsEnabled:
     @patch("cuga.backend.evolve.integration.settings")
     def test_disabled_when_evolve_not_enabled(self, mock_settings):
         mock_settings.evolve.enabled = False
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = True
         assert EvolveIntegration.is_enabled() is False
 
     @patch("cuga.backend.evolve.integration.settings")
-    def test_enabled_when_evolve_enabled_and_lite_mode(self, mock_settings):
+    def test_enabled_when_evolve_enabled(self, mock_settings):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = True
-        assert EvolveIntegration.is_enabled() is True
-
-    @patch("cuga.backend.evolve.integration.settings")
-    def test_disabled_when_lite_mode_only_but_not_in_lite_mode(self, mock_settings):
-        mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = True
-        mock_settings.advanced_features.lite_mode = False
-        assert EvolveIntegration.is_enabled() is False
-
-    @patch("cuga.backend.evolve.integration.settings")
-    def test_enabled_when_lite_mode_only_is_false(self, mock_settings):
-        mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
-        mock_settings.advanced_features.lite_mode = False
         assert EvolveIntegration.is_enabled() is True
 
 
@@ -122,7 +106,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_store_user_facts_calls_tool(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = {"stored_count": 1}
 
         await EvolveIntegration.store_user_facts(
@@ -150,7 +133,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_retrieve_user_facts_returns_payload(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = {
             "user_id": "user-123",
             "matched_count": 1,
@@ -171,7 +153,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_retrieve_user_facts_returns_none_on_error(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
 
         result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
@@ -183,7 +164,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_returns_guidelines_when_available(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = "Use pagination when fetching data"
         result = await EvolveIntegration.get_guidelines("fetch all users")
         assert result == "Use pagination when fetching data"
@@ -194,7 +174,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_returns_none_on_empty_result(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = None
         result = await EvolveIntegration.get_guidelines("test task")
         assert result is None
@@ -204,7 +183,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_returns_none_on_error_gracefully(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
         result = await EvolveIntegration.get_guidelines("test task")
         assert result is None
@@ -216,7 +194,6 @@ class TestUserFacts:
         import asyncio
 
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.side_effect = asyncio.TimeoutError("Operation timed out")
         result = await EvolveIntegration.get_guidelines("test task")
         assert result is None
@@ -226,7 +203,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_passes_multi_user_params(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = "guideline text"
         result = await EvolveIntegration.get_guidelines(
             "test task", user_id="user-1", namespace_id="tenant-a", session_id="thread-99"
@@ -242,7 +218,6 @@ class TestUserFacts:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_omits_none_multi_user_params(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_call_tool.return_value = "guideline text"
         await EvolveIntegration.get_guidelines("test task", user_id=None, namespace_id=None)
         mock_call_tool.assert_called_once_with("get_guidelines", {"task": "test task"})
@@ -323,7 +298,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_skips_when_save_on_success_false_and_success(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = False
         mock_settings.evolve.save_on_failure = True
         await EvolveIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)
@@ -334,7 +308,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_skips_when_save_on_failure_false_and_failure(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = False
         await EvolveIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=False)
@@ -345,7 +318,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_saves_on_success(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         messages = [
@@ -366,7 +338,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_skips_empty_messages(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         await EvolveIntegration.save_trajectory([SystemMessage(content="system")], "task_1", success=True)
@@ -377,7 +348,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_handles_error_gracefully(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
@@ -390,7 +360,6 @@ class TestSaveTrajectory:
         import asyncio
 
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         mock_call_tool.side_effect = asyncio.TimeoutError("Operation timed out")
@@ -401,7 +370,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_passes_multi_user_params(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         messages = [HumanMessage(content="Hello"), AIMessage(content="Hi")]
@@ -428,7 +396,6 @@ class TestSaveTrajectory:
     @patch("cuga.backend.evolve.integration.settings")
     async def test_omits_none_multi_user_params(self, mock_settings, mock_call_tool):
         mock_settings.evolve.enabled = True
-        mock_settings.evolve.lite_mode_only = False
         mock_settings.evolve.save_on_success = True
         mock_settings.evolve.save_on_failure = True
         messages = [HumanMessage(content="Hello"), AIMessage(content="Hi")]

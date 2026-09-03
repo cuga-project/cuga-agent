@@ -9,17 +9,15 @@ from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import BaseModel, Field
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ApiDescription
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.api_models import ApiDescription
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.task_models import (
+    AnalyzeTaskOutput,
+    TaskDecompositionPlan,
+)
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import FollowUpAction, ActionResponse
 from cuga.backend.cuga_graph.state.api_planner_history import (
     HistoricalAction,
-)
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_analyzer_agent.prompts.load_prompt import (
-    AnalyzeTaskOutput,
-)
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decomposition_agent.prompts.load_prompt import (
-    TaskDecompositionPlan,
 )
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
@@ -947,7 +945,11 @@ def default_state(page, observation, goal, chat_messages=None):
     from cuga.config import get_service_instance_id, get_tenant_id
 
     state = AgentState(
-        input=goal, url=page.url if page else "", chat_messages=chat_messages if chat_messages else []
+        input=goal,
+        url=page.url if page else "",
+        chat_messages=chat_messages if chat_messages else [],
+        sub_task=goal if page else None,
+        sub_task_type="web" if page else None,
     )
     state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
     return state
@@ -984,7 +986,9 @@ class AgentState(BaseModel):
         description="Tenant and instance context for multi-tenant/prod DB scoping",
     )
     current_datetime: Optional[str] = ""
-    lite_mode: Optional[bool] = None  # If set, overrides settings.advanced_features.lite_mode
+    lite_mode: Optional[bool] = None  # Deprecated; ignored (kept for persisted state compatibility)
+    # Per-agent supervisor graphs set this to override the global routing setting.
+    supervisor_mode: Optional[bool] = None
     variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     variable_counter_state: int = 0
     variable_creation_order: List[str] = Field(default_factory=list)
@@ -997,6 +1001,13 @@ class AgentState(BaseModel):
     supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
         default_factory=list
     )  # Supervisor's conversation history
+    # Mirrors CugaSupervisorState.supervisor_metadata so CugaSupervisorNode can read/set approval
+    # flags (e.g. plan_approved) on the outer AgentState across the HITL interrupt boundary — the
+    # subgraph's own state does not survive a WaitForResponse pause/resume.
+    supervisor_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    # Frozen supervisor delegation script. Same interrupt-boundary reason as supervisor_metadata:
+    # without this field the approved plan is dropped and resume re-calls the model.
+    script: Optional[str] = None
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None
@@ -1011,7 +1022,12 @@ class AgentState(BaseModel):
     api_planner_history: Optional[List[HistoricalAction]] = Field(default_factory=list)
     api_planner_human_consultations: Optional[List[Dict]] = Field(default_factory=list)
     sub_task_app: Optional[str] = None
-    sub_task_type: Optional[Literal['web', 'api']] = None
+    sub_task_type: Optional[Literal['web', 'api', 'hybrid']] = None
+    hybrid_original_task: Optional[str] = None
+    hybrid_api_task: Optional[str] = None
+    hybrid_web_task: Optional[str] = None
+    hybrid_api_answer: Optional[str] = None
+    hybrid_phase: Optional[Literal['api', 'web']] = None
     input: str = ""  # User request (empty on HITL/save-reuse resume, which carries no new input)
     last_planner_answer: Optional[str] = None
     last_question: Optional[str] = None
@@ -1101,7 +1117,8 @@ class AgentState(BaseModel):
             self.supervisor_chat_messages = self.supervisor_chat_messages[-limit:]
 
     def format_subtask(self):
-        return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])
+        app = (self.sub_task_app or "")[:30]
+        return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, app)
 
     async def manage_message_context(
         self,
