@@ -251,6 +251,8 @@ async def _apply_orphaned_memory_retention(
             "entity_type": entity.get("type"),
             "created_at": entity.get("created_at"),
             "action": "delete",
+            "reason": "orphaned_conversation",
+            "rule": "orphaned-conversations",
             **({"title": title} if (title := memory_title(entity)) else {}),
         }
         try:
