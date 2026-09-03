@@ -578,16 +578,25 @@ def test_setup_guides_connection_status_and_scope():
     assert guides["Gmail"]["connection_scope"] == "user"
 
 
-def test_channels_report_direct_vs_ap_backend():
-    """The channels endpoint tells the UI HOW each channel talks to the world (ADR-0008):
-    Slack/Discord are direct backends, Telegram is AP."""
-    r = _client().get("/api/events/channels")
-    chans = {c["name"]: c for c in r.json()["channels"]}
+def test_channels_report_direct_vs_ap_backend(monkeypatch):
+    """The channels endpoint tells the UI HOW each channel talks to the world.
+
+    Slack and Discord have one transport each. Telegram has two, so it is reported from
+    EVENTS_TELEGRAM_BACKEND rather than assumed: this used to assert a hardcoded "ap", which had
+    stopped being true when telegram_direct landed and made long-poll the default. A deployment
+    running the default with AP unreachable was told its working Telegram channel was down.
+    """
+    monkeypatch.delenv("EVENTS_TELEGRAM_BACKEND", raising=False)
+    chans = {c["name"]: c for c in _client().get("/api/events/channels").json()["channels"]}
     assert chans["slack"]["backend"] == "direct"
     assert chans["discord"]["backend"] == "direct"
-    assert chans["telegram"]["backend"] == "ap"
+    assert chans["telegram"]["backend"] == "direct"  # the default, per telegram_direct.py
     # all channels are live now — no stale "Phase 3" markers
     assert all(c["live"] for c in chans.values())
+
+    monkeypatch.setenv("EVENTS_TELEGRAM_BACKEND", "ap")
+    chans = {c["name"]: c for c in _client().get("/api/events/channels").json()["channels"]}
+    assert chans["telegram"]["backend"] == "ap"  # and the opt-in webhook still reports honestly
 
 
 class _FakeRuntime:

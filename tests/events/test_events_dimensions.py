@@ -43,6 +43,24 @@ def test_channels_status_env_driven():
         os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 
 
+def test_telegram_reports_the_backend_it_is_actually_running(monkeypatch):
+    """Telegram is the one channel with two transports, and the report used to hardcode the AP
+    webhook. On a deployment running the default (direct long-poll) with AP unreachable, that told
+    an operator a working channel was down and pointed them at installing Activepieces to fix a
+    problem they did not have. Every other reader of this variable defaults to direct."""
+    for value, expected in (("direct", "direct"), ("ap", "ap"), ("", "direct")):
+        monkeypatch.setenv("EVENTS_TELEGRAM_BACKEND", value)
+        tg = {c["name"]: c for c in connectors.channels_status()}["telegram"]
+        assert tg["backend"] == expected, f"EVENTS_TELEGRAM_BACKEND={value!r}"
+        assert ("AP Telegram piece" in tg["note"]) == (expected == "ap")
+
+    monkeypatch.delenv("EVENTS_TELEGRAM_BACKEND", raising=False)
+    ch = {c["name"]: c for c in connectors.channels_status()}
+    assert ch["telegram"]["backend"] == "direct"  # unset is direct, as everywhere else
+    # the single-transport channels are untouched
+    assert ch["slack"]["backend"] == ch["discord"]["backend"] == ch["web"]["backend"] == "direct"
+
+
 # ---- connectors: integrations (AP-connection-driven status) --------------
 def test_integrations_status_from_connections():
     # AP off → everything ap_not_configured
