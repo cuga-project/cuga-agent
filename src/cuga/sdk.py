@@ -68,7 +68,7 @@ Tool Approval Example (with HITL):
     ```
 """
 
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
+from typing import Callable, List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import time
 import uuid
 from loguru import logger
@@ -81,6 +81,7 @@ from cuga.backend.observability.openlit_init import init_openlit, set_session_at
 from cuga.config import settings
 
 if TYPE_CHECKING:
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
     from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
     from cuga.backend.cuga_graph.nodes.cuga_lite.shortlister import Shortlister
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
@@ -1724,6 +1725,29 @@ class PoliciesManager:
         return guard_code
 
 
+def _finalization_ran(result: dict) -> bool:
+    """Whether a FinalAnswerNode terminal branch delivered THIS turn's answer.
+
+    Reads AgentState.final_answer_finalized — a per-invocation flag set by
+    every FinalAnswerNode terminal branch and reset by each turn's fresh
+    input state, so historical turns can never false-positive (review:
+    haroldship + coderabbitai on #707).
+    """
+    return bool(result.get("final_answer_finalized", False))
+
+
+def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
+    """Whether an empty final_answer is a deliberate answer-function result.
+
+    True only when a formatter is in play AND finalization ran — then ""
+    must be delivered as-is (no transcript recovery, no error substitution,
+    no re-application; once-only contract). With no formatter configured
+    this is always False, so the pre-existing empty-answer recovery behaves
+    exactly as before this feature (review: haroldship on #707).
+    """
+    return formatter_configured and _finalization_ran(result)
+
+
 class CugaAgent:
     """
     Simple SDK interface for CUGA Agent.
@@ -1812,6 +1836,7 @@ class CugaAgent:
         enable_skills: Optional[bool] = None,
         skills_folder: Optional[str] = None,
         shortlister: Optional["Shortlister"] = None,
+        final_answer: "Optional[Union[str, Callable[[str], str], FinalAnswerConfig]]" = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1834,6 +1859,13 @@ class CugaAgent:
             shortlister: How to shrink a large tool set before the model sees it, e.g.
                 `Shortlister(strategy="hybrid")`. None = use `[shortlister]` settings
                 (default `"llm"`, i.e. unchanged behavior). Overridable per invoke()/stream().
+            final_answer: How the final answer is shaped. A `str` adds guidance for the
+                answer-composing LLM; a callable `(str) -> str` deterministically
+                post-processes the composed answer before delivery (must be pure;
+                applied once per delivered answer); `FinalAnswerConfig(instructions=...,
+                function=...)` combines both. None = unchanged behavior. Non-SDK
+                deployments use the `[final_answer]` settings section. Not applied to
+                supervisor-composed synthesis (#621).
 
         Example with tool approval policy:
             ```python
@@ -1866,6 +1898,51 @@ class CugaAgent:
         self._compiled_graph = None
         self._policy_system = policy_system
         self._special_instructions = special_instructions
+
+        # final_answer: str -> LLM guidance; callable -> deterministic function;
+        # FinalAnswerConfig -> both. In the SDK graph the answer is composed by
+        # CugaLite, so guidance is injected into its prompt (special_instructions
+        # channel); the function is installed on FinalAnswerNode at build time.
+        self._answer_function: Optional[Callable[[str], str]] = None
+        if final_answer is not None:
+            from cuga.backend.cuga_graph.nodes.answer.answer_function import FinalAnswerConfig
+
+            fa_instructions: Optional[str] = None
+            # Classes are callable: a bare class here (e.g. FinalAnswerConfig
+            # with a forgotten `()`) would silently install as the answer
+            # function and never format anything — reject it explicitly.
+            if isinstance(final_answer, type):
+                raise TypeError(
+                    f"final_answer got the class {final_answer.__name__} — pass an instance "
+                    f"(e.g. {final_answer.__name__}(...)) or a plain (str) -> str function"
+                )
+            if isinstance(final_answer, str):
+                fa_instructions = final_answer
+            elif isinstance(final_answer, FinalAnswerConfig):
+                if isinstance(final_answer.function, type):
+                    raise TypeError(
+                        f"FinalAnswerConfig.function got the class {final_answer.function.__name__} — "
+                        "pass a (str) -> str function, not a class"
+                    )
+                if final_answer.function is not None and not callable(final_answer.function):
+                    raise TypeError(
+                        "FinalAnswerConfig.function must be a (str) -> str callable, "
+                        f"got {type(final_answer.function).__name__}"
+                    )
+                self._answer_function = final_answer.function
+                fa_instructions = final_answer.instructions
+            elif callable(final_answer):
+                self._answer_function = final_answer
+            else:
+                raise TypeError(
+                    "final_answer must be a str (LLM guidance), a callable (str) -> str, "
+                    f"or FinalAnswerConfig — got {type(final_answer).__name__}"
+                )
+            if fa_instructions:
+                block = f"## Final answer instructions\n{fa_instructions}"
+                self._special_instructions = (
+                    f"{self._special_instructions}\n\n{block}" if self._special_instructions else block
+                )
 
         # Use settings defaults if not provided
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
@@ -1961,6 +2038,12 @@ class CugaAgent:
         if self._auto_load_policies or self._reset_policy_storage:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
+
+    def _formatter_in_play(self) -> bool:
+        """An answer function is configured: SDK-injected or settings path."""
+        from cuga.backend.cuga_graph.nodes.answer.answer_function import answer_function_configured
+
+        return self._answer_function is not None or answer_function_configured()
 
     def _build_callbacks(self) -> List[BaseCallbackHandler]:
         """
@@ -2261,7 +2344,7 @@ class CugaAgent:
         # Create nodes
         suggest_actions = SuggestHumanActions()
         wait_for_response = WaitForResponse()
-        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create())
+        final_answer_node = FinalAnswerNode(FinalAnswerAgent.create(), answer_function=self._answer_function)
 
         # Create wrapper graph using AgentState (compatible with HITL nodes)
         wrapper = StateGraph(AgentState)
@@ -2654,16 +2737,19 @@ class CugaAgent:
             else:
                 result = await self.graph.ainvoke(None, config=run_config)
 
-            # Extract final answer
+            # Extract final answer. A "" from a completed finalize with a
+            # formatter configured is a deliberate result — skip the empty-
+            # answer substitutions below (same gate as the fresh-turn path).
             final_answer = result.get("final_answer", "")
+            empty_is_final = not final_answer and _empty_answer_is_final(result, self._formatter_in_play())
 
             error_msg = None
-            if not final_answer and result.get("error"):
+            if not final_answer and not empty_is_final and result.get("error"):
                 error_msg = result['error']
                 final_answer = f"Error: {error_msg}"
 
             # Check if graph interrupted again
-            if not final_answer:
+            if not final_answer and not empty_is_final:
                 try:
                     state = self.graph.get_state(run_config)
                     if state.next:  # Has pending nodes = interrupted again
@@ -2840,8 +2926,12 @@ class CugaAgent:
         # Fallback: if final_answer is still empty, look at the last non-empty AI message.
         # Reasoning models sometimes return content='' with the answer only in
         # additional_kwargs['reasoning_content'], so check both fields.
+        # Gated on finalization NOT having run (every FinalAnswerNode terminal
+        # branch appends an AIMessage named FinalAnswerAgent): an empty string
+        # from a completed finalize is a valid answer-function result, and the
+        # fallback re-applying the function would break the once-only contract.
         fallback_sources = None
-        if not final_answer:
+        if not final_answer and not _empty_answer_is_final(result, self._formatter_in_play()):
             for msg in reversed(result.get("chat_messages", [])):
                 if getattr(msg, "type", None) != "ai":
                     continue
@@ -2854,8 +2944,18 @@ class CugaAgent:
                     break
 
             # Chat transcript keeps raw [sN] markers by design; the
-            # fallback text bypassed FinalAnswerNode resolution, so
-            # resolve here before returning it to the caller.
+            # fallback text bypassed FinalAnswerNode entirely, so mirror
+            # finalize_answer here: answer function first, then citation
+            # resolution, before returning it to the caller.
+            if final_answer:
+                from types import SimpleNamespace as _NS
+
+                from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
+
+                _shim = _NS(final_answer=final_answer)
+                apply_answer_function(_shim, self._answer_function)
+                final_answer = _shim.final_answer
+
             from cuga.backend.knowledge.sources import (
                 get_ledger,
                 has_citation_markers,
@@ -3435,6 +3535,10 @@ class CugaSupervisor:
                 metadata_key="supervisor_metadata",
             )
 
+            # NOTE: no [final_answer].function application here — sub-agents
+            # apply it in their own FinalAnswerNode (already-shaped text with
+            # resolved [n] chips must not be re-shaped); supervisor-composed
+            # synthesis is a documented v1 gap (#621).
             # NOTE: no citation resolution here — sub-agents resolve their own
             # answers via FinalAnswerNode; if supervisor-level retrieval is ever
             # added, resolve [sN] markers before END (see

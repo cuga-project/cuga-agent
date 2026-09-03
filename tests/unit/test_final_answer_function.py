@@ -1,0 +1,352 @@
+"""Unit tests for the configurable final answer (#621): the deterministic
+answer function, its ordering inside FinalAnswerNode.finalize_answer, and
+the instructions override."""
+
+from types import SimpleNamespace
+
+import pytest
+
+from cuga.backend.cuga_graph.nodes.answer.answer_function import (
+    FinalAnswerConfig,
+    apply_answer_function,
+    resolve_answer_function,
+    resolve_final_answer_instructions,
+)
+from cuga.backend.cuga_graph.nodes.answer.final_answer import FinalAnswerNode
+from cuga.backend.knowledge.sources import _reset_all_ledgers_for_tests, get_ledger
+from cuga.config import settings
+
+pytestmark = pytest.mark.unit
+
+
+class _State(SimpleNamespace):
+    pass
+
+
+def _state(answer, thread_id="t-fn"):
+    return _State(final_answer=answer, thread_id=thread_id, sources=[])
+
+
+def setup_function():
+    _reset_all_ledgers_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _clean_final_answer_settings():
+    """Force-empty the [final_answer] settings for every test, restore after.
+
+    Force-set (not just restore): a developer's DYNACONF_FINAL_ANSWER__*
+    env vars must not leak into tests that assert empty-settings behavior.
+    """
+    before_fn = settings.final_answer.function
+    before_instr = settings.final_answer.instructions
+    settings.set("final_answer.function", "")
+    settings.set("final_answer.instructions", "")
+    yield
+    settings.set("final_answer.function", before_fn)
+    settings.set("final_answer.instructions", before_instr)
+
+
+def _strip_brackets(text: str) -> str:
+    """Reference contract function: idempotent bare-value normalizer."""
+    out = text.strip()
+    while out.startswith("[[") and out.endswith("]]"):
+        out = out[2:-2].strip()
+    return out
+
+
+# --- defaults: byte-identical behavior -------------------------------------
+
+
+def test_defaults_leave_answer_untouched():
+    assert settings.final_answer.function == ""
+    assert settings.final_answer.instructions == ""
+    state = _state("[[New Hampshire]] *raw* text")
+    FinalAnswerNode.finalize_answer(state)
+    assert state.final_answer == "[[New Hampshire]] *raw* text"
+    assert state.sources == []
+
+
+# --- the function: settings path and injected callable ----------------------
+
+
+def test_settings_dotted_path_applies():
+    settings.set("final_answer.function", "json.dumps")
+    state = _state("hello")
+    FinalAnswerNode.finalize_answer(state)
+    assert state.final_answer == '"hello"'
+
+
+def test_injected_callable_applies_and_wins_over_settings():
+    settings.set("final_answer.function", "json.dumps")
+    state = _state("[[42]]")
+    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    assert state.final_answer == "42"
+
+
+def test_idempotent_function_double_application_is_stable():
+    # The seam applies the function once per delivered answer; idempotency is
+    # a recommended safety margin, and this locks that an idempotent function
+    # survives an accidental second pass unchanged.
+    state = _state("[[42]]")
+    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    assert state.final_answer == "42"
+
+
+# --- ordering ----------------------------------------------------------------
+
+
+def test_function_receives_harmony_stripped_text():
+    seen = {}
+
+    def probe(text):
+        seen["input"] = text
+        return text
+
+    state = _state("The total is 42<|return|>")
+    FinalAnswerNode.finalize_answer(state, probe)
+    assert seen["input"] == "The total is 42"
+    assert state.final_answer == "The total is 42"
+
+
+def test_function_sees_raw_citation_markers_not_resolved_chips():
+    ledger = get_ledger("t-fn")
+    ledger.register(
+        SimpleNamespace(text="chunk", filename="f.pdf", page=1, scope="agent", score=0.9, section_path=""),
+        query="q",
+    )
+    seen = {}
+
+    def probe(text):
+        seen["input"] = text
+        return text
+
+    state = _state("answer [s1] done")
+    FinalAnswerNode.finalize_answer(state, probe)
+    assert seen["input"] == "answer [s1] done"  # pre-citation
+    assert state.final_answer == "answer [1] done"  # citations still resolve after
+
+
+# --- failure paths: answer delivery must survive ----------------------------
+
+
+def test_function_raising_delivers_original():
+    def boom(_):
+        raise RuntimeError("nope")
+
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state, boom)
+    assert state.final_answer == "safe answer"
+
+
+def test_function_returning_non_str_is_ignored():
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state, lambda _t: 42)
+    assert state.final_answer == "safe answer"
+
+
+def test_unresolvable_settings_path_delivers_original():
+    settings.set("final_answer.function", "no.such.module.fn")
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state)
+    assert state.final_answer == "safe answer"
+
+
+def test_empty_answer_skips_function():
+    calls = []
+    state = _state("")
+    apply_answer_function(state, lambda t: calls.append(t) or t)
+    assert calls == []
+    assert state.final_answer == ""
+
+
+def test_empty_string_return_is_a_valid_result():
+    state = _state("refused")
+    FinalAnswerNode.finalize_answer(state, lambda _t: "")
+    assert state.final_answer == ""
+
+
+# --- resolver ----------------------------------------------------------------
+
+
+def test_resolver_rejects_non_callable():
+    with pytest.raises(TypeError):
+        resolve_answer_function("json.__name__")
+
+
+def test_resolver_rejects_class_paths():
+    # A class is callable but constructs an instance — silent never-formats.
+    with pytest.raises(TypeError, match="is a class"):
+        resolve_answer_function("collections.OrderedDict")
+
+
+def test_settings_class_path_delivers_original():
+    settings.set("final_answer.function", "collections.OrderedDict")
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state)
+    assert state.final_answer == "safe answer"
+
+
+def test_non_str_settings_values_never_break_delivery():
+    settings.set("final_answer.function", 1)
+    settings.set("final_answer.instructions", 1)
+    state = _state("safe answer")
+    FinalAnswerNode.finalize_answer(state)  # must not raise
+    assert state.final_answer == "safe answer"
+    assert resolve_final_answer_instructions() == ""
+
+
+# --- instructions override ----------------------------------------------------
+
+
+def test_instructions_resolve_from_settings():
+    settings.set("final_answer.instructions", "Answer with the bare value only.")
+    assert resolve_final_answer_instructions() == "Answer with the bare value only."
+
+
+def test_instructions_empty_when_unset():
+    # Callers fall back lazily: resolve_final_answer_instructions() or get_instructions(...)
+    assert resolve_final_answer_instructions() == ""
+
+
+# --- single-application guarantees (review findings) --------------------------
+
+
+def test_hitl_default_continuation_does_not_reapply_function():
+    # The HITL default fallback resumes an already-finalized answer; the
+    # function must not run a second time there (only citation resolution).
+    from cuga.backend.cuga_graph.nodes.answer.final_answer import HumanInTheLoopHandler
+
+    settings.set("final_answer.function", "json.dumps")
+
+    class _HitlState(SimpleNamespace):
+        def model_dump(self):
+            return {}
+
+    state = _HitlState(
+        final_answer="already finalized",
+        thread_id="t-hitl",
+        sources=[],
+        hitl_response=SimpleNamespace(action_id="unknown_action"),
+    )
+    HumanInTheLoopHandler().handle_human_response(state, "FinalAnswerAgent")
+    assert state.final_answer == "already finalized"  # not '"already finalized"'
+
+
+def test_finalization_flag_is_per_turn_not_historical():
+    # The gate reads the per-invocation flag, never historical messages: a
+    # FinalAnswerAgent message from an earlier turn must not mark the current
+    # unfinalized turn as finalized (review: haroldship + coderabbitai).
+    from cuga.sdk import _finalization_ran
+
+    historical_msg = SimpleNamespace(name="FinalAnswerAgent")
+    assert _finalization_ran({"final_answer_finalized": True}) is True
+    assert _finalization_ran({"final_answer_finalized": False, "messages": [historical_msg]}) is False
+    assert _finalization_ran({"messages": [historical_msg]}) is False
+    assert _finalization_ran({}) is False
+
+
+def test_terminal_branches_set_the_finalized_flag():
+    state = _state("[[42]]")
+    state.final_answer_finalized = False
+    FinalAnswerNode.finalize_answer(state, _strip_brackets)
+    assert state.final_answer_finalized is True
+
+
+def test_empty_answer_gate_requires_formatter_and_finalization():
+    # The invoke()-shaped gate (review: haroldship). Empty-answer recovery must
+    # behave exactly as pre-feature when no formatter is configured — even on
+    # a turn that finalized.
+    from cuga.sdk import _empty_answer_is_final
+
+    finalized = {"final_answer_finalized": True, "final_answer": ""}
+    unfinalized = {"final_answer_finalized": False, "final_answer": ""}
+
+    # no formatter: recovery always allowed (defaults are a no-op)
+    assert _empty_answer_is_final(finalized, formatter_configured=False) is False
+    # formatter + finalized this turn: "" is a deliberate result — keep it
+    assert _empty_answer_is_final(finalized, formatter_configured=True) is True
+    # formatter but this turn never finalized (e.g. interrupted): recover
+    assert _empty_answer_is_final(unfinalized, formatter_configured=True) is False
+
+
+def test_formatter_in_play_reflects_sdk_and_settings():
+    import cuga
+
+    agent = cuga.CugaAgent(final_answer=_strip_brackets)
+    assert agent._formatter_in_play() is True
+    plain = cuga.CugaAgent()
+    assert plain._formatter_in_play() is False
+    settings.set("final_answer.function", "json.dumps")
+    assert plain._formatter_in_play() is True
+
+
+def test_malformed_env_does_not_break_import():
+    # Strict validators would raise at import for bad DYNACONF values;
+    # config must import and the consumers must treat non-str as unset.
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["DYNACONF_FINAL_ANSWER__FUNCTION"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import cuga.config; print('OK')"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert "OK" in proc.stdout
+
+
+# --- SDK surface --------------------------------------------------------------
+
+
+def test_sdk_rejects_class_passed_as_final_answer():
+    # Classes are callable — a forgotten `()` must raise, not silently
+    # install the class as the answer function.
+    import cuga
+
+    with pytest.raises(TypeError, match="pass an instance"):
+        cuga.CugaAgent(final_answer=FinalAnswerConfig)
+    with pytest.raises(TypeError, match="must be a str"):
+        cuga.CugaAgent(final_answer=123)
+    with pytest.raises(TypeError, match="not a class"):
+        cuga.CugaAgent(final_answer=FinalAnswerConfig(function=dict))
+    with pytest.raises(TypeError, match="must be a .*callable"):
+        cuga.CugaAgent(final_answer=FinalAnswerConfig(function=123))
+
+
+def test_sdk_happy_paths_wire_each_form():
+    # The three accepted forms and where each lands (review: haroldship).
+    import cuga
+
+    a1 = cuga.CugaAgent(final_answer="Answer with the bare value only.")
+    assert "## Final answer instructions" in a1._special_instructions
+    assert "bare value only" in a1._special_instructions
+    assert a1._answer_function is None
+
+    a2 = cuga.CugaAgent(final_answer=_strip_brackets)
+    assert a2._answer_function is _strip_brackets
+    assert a2._special_instructions is None
+
+    a3 = cuga.CugaAgent(final_answer=FinalAnswerConfig(instructions="be terse", function=_strip_brackets))
+    assert a3._answer_function is _strip_brackets
+    assert "be terse" in a3._special_instructions
+
+    # str form composes with existing special_instructions, not replaces
+    a4 = cuga.CugaAgent(special_instructions="prior", final_answer="guidance")
+    assert a4._special_instructions.startswith("prior")
+    assert "guidance" in a4._special_instructions
+
+
+def test_final_answer_config_dataclass_and_lazy_export():
+    import cuga
+
+    cfg = cuga.FinalAnswerConfig(instructions="be terse", function=_strip_brackets)
+    assert cfg is not None
+    assert isinstance(cfg, FinalAnswerConfig)
+    assert cfg.function("[[x]]") == "x"
