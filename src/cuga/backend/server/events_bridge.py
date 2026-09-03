@@ -26,6 +26,29 @@ from loguru import logger
 # depends on a bot-id lookup succeeding. If it ever doesn't, "<@U123> /automate …" must still be
 # recognised as arming — handing it to the plain agent is the silent-failure trap (it tries to
 # IMPLEMENT the schedule), which is precisely what this feature exists to prevent.
+# ── the master switch ──────────────────────────────────────────────────────────────────────────
+# CUGA_EVENTS_ENABLED gates EVERY events-facing seam in core: whether /run and /run/agents are
+# mounted, whether a roster is imported at startup, and whether `/automate …` is forwarded. Off by
+# default, so a CUGA that was not deliberately configured for eventing has none of it.
+#
+# WHY A SWITCH AND NOT JUST THE INDIVIDUAL VARIABLES. Each seam used to turn itself on from
+# whichever variable it happened to need — /run mounted because GATEWAY_TOKEN was set, the roster
+# seeded because CUGA_SUPERVISOR_ROSTER was set. Both of those get set for other reasons, so
+# eventing could switch on as a side effect of unrelated configuration, and there was no single
+# place to say "not here". One explicit opt-in is answerable; four implicit ones are not.
+#
+# NOT the old ``EVENTS_ENABLED``. That one gated MOUNTING the events layer inside CUGA's process,
+# and it is gone with combined mode. This gates core's outward-facing seams towards a SEPARATE
+# events service, which is a different question with a different answer.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def events_enabled() -> bool:
+    """Is this CUGA configured to take part in eventing at all?"""
+    raw = (os.environ.get("CUGA_EVENTS_ENABLED", "") or "").split(" #", 1)[0].strip().lower()
+    return raw in _TRUTHY
+
+
 SLASH_VERB_NAMES = frozenset({"automate", "watch", "schedule", "cron", "poll", "push", "cancel"})
 
 
@@ -86,8 +109,8 @@ def events_api_url() -> str:
 
 
 def forwards_to_events(query: str, thread_id: Optional[str]) -> bool:
-    if not events_api_url():
-        return False  # no eventing service configured → plain chat, as before
+    if not events_enabled() or not events_api_url():
+        return False  # eventing off, or no service configured → plain chat, as before
     if slash_verb(query or ""):
         return True
     return bool(thread_id) and thread_id in _events_open_threads

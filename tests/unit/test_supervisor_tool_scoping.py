@@ -13,18 +13,22 @@ decided in main, not something this branch imposes — so the flag is gone.
 
 WHAT STILL NEEDS GUARDING
 -------------------------
-Two things main's version does not do, both of which the events roster depends on:
+One thing main's version does not do, which the events roster depends on: `mcp_servers:` entries
+must count as named apps. Every agent in the events roster declares ONLY `mcp_servers:` — no `apps:`
+key at all. Without this, app_names comes out empty, `or None` hands back the entire registry, and
+the "specialist" is a specialist in name only. It fails by handing over too many tools, with no
+error, so nothing but a test will notice.
 
-  1. `mcp_servers:` entries must count as named apps. Every agent in the events roster declares ONLY
-     `mcp_servers:` — no `apps:` key at all. Without this, app_names comes out empty, `or None`
-     hands back the entire registry, and the "specialist" is a specialist in name only.
-
-  2. Hyphen → underscore. Rosters write `cuga-finance`; registry keys are `cuga_finance`. Scoping on
-     the hyphenated spelling matches nothing, and a hyphen surviving into a generated identifier
-     (`cuga-finance_get_price`) parses as subtraction.
-
-Neither is visible from the outside: both fail by handing over too many tools or too few, with no
-error. Hence these tests.
+AND ONE THING THAT MUST NOT COME BACK
+-------------------------------------
+Names are passed through exactly as declared. There was a hyphen→underscore rewrite here for a
+while, to bridge a roster that spelled its servers `cuga-finance` to registry keys spelled
+`cuga_finance`. It was the wrong place to fix that. `mcp_manager` stores an MCP server's YAML key
+verbatim and the downstream filter is `app.name in app_names`, so rewriting names in transit scoped
+an operator whose server really is registered as `my-server` to a key the registry does not have:
+no error, one log warning, an agent with no tools. The roster was renamed to match the registry
+instead, which removes the mismatch rather than translating it. `test_names_are_passed_through_
+verbatim` is the guard.
 """
 
 from __future__ import annotations
@@ -74,14 +78,20 @@ async def test_apps_and_mcp_servers_combine(spy):
 
 
 @pytest.mark.asyncio
-async def test_hyphens_are_mapped_to_registry_keys(spy):
-    """Rosters say `cuga-finance`; the registry key is `cuga_finance`."""
+async def test_names_are_passed_through_verbatim(spy):
+    """THE REGRESSION GUARD. An operator's own MCP server may genuinely be registered under a
+    hyphenated name: `mcp_manager` stores the YAML key verbatim, with no normalisation of its own.
+    An earlier version of this function rewrote hyphens to underscores, which scoped such an agent
+    to `my_server` — a key the registry does not have — so it silently ran with no tools.
+
+    Equality, not a subset check: nothing may be added either. A rewrite that merely *also* offered
+    the underscore form would pass a subset check while still being a translation layer this
+    function has no business owning."""
     await supervisor_config._create_tool_provider(
-        apps=[{"name": "cuga-finance"}, "cuga-web"], mcp_servers=[{"name": "cuga-geo"}]
+        apps=[{"name": "my-server"}, "another-one"], mcp_servers=[{"name": "third-server"}]
     )
 
-    assert spy.last_app_names == ["cuga_finance", "cuga_web", "cuga_geo"]
-    assert not any("-" in n for n in spy.last_app_names)
+    assert spy.last_app_names == ["my-server", "another-one", "third-server"]
 
 
 @pytest.mark.asyncio
@@ -94,6 +104,6 @@ async def test_naming_nothing_still_gets_everything(spy):
 @pytest.mark.asyncio
 async def test_string_entries_are_accepted_too(spy):
     """`apps: [crm]` is as valid as `apps: [{name: crm}]`."""
-    await supervisor_config._create_tool_provider(apps=["crm"], mcp_servers=["cuga-web"])
+    await supervisor_config._create_tool_provider(apps=["crm"], mcp_servers=["cuga_web"])
 
     assert spy.last_app_names == ["crm", "cuga_web"]

@@ -8,18 +8,23 @@ Any harness that proves something calls::
 Records land in events/docs/verification_data.json keyed by (surface, capability) — newest wins —
 and events/scripts/gen_ledger.py renders events/docs/verification.html from them. So the ledger updates
 itself every time a test runs, and a cell's date is always the date it was last PROVEN.
+
+The destination has to be a directory this repo actually has. On the 602 branch the docs tree lived
+outside the repository, so every record silently failed the `open()` below and the ledger recorded
+nothing at all — no error, just an empty ledger. `events/docs/` is back here, so the path is valid
+again, and the `makedirs` beneath is what keeps the failure from being silent a second time.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DATA = os.path.join(ROOT, "events/docs", "verification_data.json")
+os.makedirs(os.path.dirname(DATA), exist_ok=True)
 
 
 def record(surface: str, capability: str, verdict: str, note: str = "", source: str = "") -> None:
@@ -36,8 +41,5 @@ def record(surface: str, capability: str, verdict: str, note: str = "", source: 
             "date": time.strftime("%Y-%m-%d %H:%M"),
         }
         json.dump(data, open(DATA, "w"), indent=1, ensure_ascii=False)
-        subprocess.run(
-            [sys.executable, os.path.join(ROOT, "scripts", "gen_ledger.py")], capture_output=True, timeout=60
-        )
     except Exception:  # noqa: BLE001
         pass

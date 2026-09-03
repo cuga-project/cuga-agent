@@ -16,15 +16,15 @@ card*, and nothing is armed until you reply `yes`.
 
 | Ask | Lands on | Needs |
 |---|---|---|
-| `what is IBM trading at?` | `pricebot` | cuga-finance |
-| `price of bitcoin, and what moved it?` | `pricebot` | cuga-finance |
-| `what's the weather in Pleasantville NY?` | `weatherbot` | cuga-web |
-| `what's the capital of Malawi and how many people live there?` | `geobot` | cuga-knowledge |
-| `find me hikes near Beacon NY` | `geobot` | cuga-geo |
-| `deep-dive the history of the Bretton Woods system` | `wiki_dive` | cuga-knowledge |
-| `summarize https://example.com/some-article` | `webpage_summarizer` | cuga-web |
-| `what does this page link to? <url>` | `webpage_summarizer` | cuga-web |
-| `audit this snippet: def f(x): return x/0` | `code_auditor` | cuga-code |
+| `what is IBM trading at?` | `pricebot` | cuga_finance |
+| `price of bitcoin, and what moved it?` | `pricebot` | cuga_finance |
+| `what's the weather in Pleasantville NY?` | `weatherbot` | cuga_web |
+| `what's the capital of Malawi and how many people live there?` | `geobot` | cuga_knowledge |
+| `find me hikes near Beacon NY` | `geobot` | cuga_geo |
+| `deep-dive the history of the Bretton Woods system` | `wiki_dive` | cuga_knowledge |
+| `summarize https://example.com/some-article` | `webpage_summarizer` | cuga_web |
+| `what does this page link to? <url>` | `webpage_summarizer` | cuga_web |
+| `audit this snippet: def f(x): return x/0` | `code_auditor` | cuga_code |
 
 These never touch the eventing service. If you shut `cuga-events-svc` down entirely, every line
 above still works from the Studio.
@@ -93,7 +93,7 @@ The workhorse. Give it a percentage and it stays silent until the move is big en
 /automate watch IBM every 15 minutes, alert me on a 1% swing either way
 /automate every 5 minutes check ethereum — only ping me on a 3% move
 ```
-→ **`pricebot`** · `cuga-finance`. Verified behaviour with a 2% threshold from a baseline of 100:
+→ **`pricebot`** · `cuga_finance`. Verified behaviour with a 2% threshold from a baseline of 100:
 
 | tick | value | result |
 |---|---|---|
@@ -115,7 +115,7 @@ Fires on a key it has never seen, never twice on the same item.
 /automate every 30 minutes check the Wikipedia current-events page and report only new entries
 /automate check https://status.cloud.ibm.com every 15 minutes and tell me about any NEW incident
 ```
-→ **`webpage_summarizer`** · `cuga-web`. Verified:
+→ **`webpage_summarizer`** · `cuga_web`. Verified:
 
 | tick | keys the agent returned | result |
 |---|---|---|

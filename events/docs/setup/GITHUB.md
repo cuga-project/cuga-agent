@@ -9,7 +9,7 @@ my repo…"* (`create_push_flow`). AP creates a real webhook on the repo, so it 
 new PR / issue ─▶ AP github trigger (OAuth conn) ─▶ /invoke (pr_reviewer) ─▶ deliver (any channel)
 ```
 
-The seeded **`pr_reviewer`** agent summarizes a PR and flags risks (uses `cuga-code` + `cuga-text`).
+The seeded **`pr_reviewer`** agent summarizes a PR and flags risks (uses `cuga_code` + `cuga_text`).
 
 ## GitHub is OAuth, **not** a pasted PAT
 

@@ -120,14 +120,19 @@ const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord"];
 const KNOWN_INTEGRATIONS = ["box", "discord", "github", "gmail", "slack", "telegram", "webhook"];
 // Fallback tool catalog so the picker is NEVER empty (used if /api/events/mcp-servers is
 // unreachable, e.g. an older running server). Enriched with live hints when the fetch succeeds.
+// UNDERSCORES. These names are picked here and stored on the agent as `mcp_servers`, then used
+// verbatim to scope its tools against the CUGA registry — whose keys are underscore names, because
+// a tool identifier is composed as `<app>_<tool>` and `cuga-web_web_search` parses as subtraction.
+// Spelling one of these with a hyphen provisions an agent that resolves no tools at all, with
+// nothing but a log warning to say so. Keep in step with events/mcp_catalog.py.
 const FALLBACK_MCP = [
-  { name: "cuga-web", hint: "web search / browse / weather / wiki" },
-  { name: "cuga-finance", hint: "stock quote / crypto price" },
-  { name: "cuga-knowledge", hint: "search arXiv (recent papers)" },
-  { name: "cuga-geo", hint: "country capital / population / region" },
-  { name: "cuga-text", hint: "summarize / translate / text utilities" },
-  { name: "cuga-code", hint: "explain / analyze code" },
-  { name: "cuga-local", hint: "local / system operations" },
+  { name: "cuga_web", hint: "web search / browse / weather / wiki" },
+  { name: "cuga_finance", hint: "stock quote / crypto price" },
+  { name: "cuga_knowledge", hint: "search arXiv (recent papers)" },
+  { name: "cuga_geo", hint: "country capital / population / region" },
+  { name: "cuga_text", hint: "summarize / translate / text utilities" },
+  { name: "cuga_code", hint: "explain / analyze code" },
+  { name: "cuga_local", hint: "local / system operations" },
 ];
 
 // The Add/Edit agent form. A builder defines an agent = skill (prompt) + tools (mcp_servers) +

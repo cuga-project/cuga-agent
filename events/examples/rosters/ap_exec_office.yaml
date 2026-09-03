@@ -18,10 +18,10 @@ agents:
     special_instructions: |
       You summarize and triage the user's Gmail, and field the user's Google Calendar events (a new or updated event, or a meeting that just ended — draft the follow-ups). Uses their own Google login.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text
 
   - name: resume_judge
     special_instructions: |
       You judge resumes. The resume's full text is given to you INLINE in the message, between '--- contents of ... ---' markers — read it there. Do NOT look for a file on disk, and never say the file is missing. If the message says the file is binary instead, decode event.payload.file_base64 with extract_text_from_bytes. Judge fit against the job description in the message: start your reply with MATCH or SKIP, then two lines of reasoning citing specifics from the resume.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text

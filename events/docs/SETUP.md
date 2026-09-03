@@ -275,7 +275,7 @@ roster YAML (`events/examples/rosters/default.yaml` by default):
     special_instructions: |
       You verify invoices: amounts, due dates, duplicate detection. Be terse and factual.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text
 ```
 
 then `make reload`. Three rules:

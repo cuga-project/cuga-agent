@@ -118,7 +118,7 @@ Then arm it in chat:
 EVENTS_SERVER_URL=http://localhost:7860 .venv/bin/python tests/events/live_slack_check.py
 
 # full round-trip: post any message in the channel → instant reply with a metadata footer, e.g.
-#   "The capital of Japan is Tokyo.  — geobot · via cuga-knowledge, cuga-geo · 20.6s"
+#   "The capital of Japan is Tokyo.  — geobot · via cuga_knowledge, cuga_geo · 20.6s"
 ```
 
 To simulate a message without Slack (when the signing secret is unset):

@@ -126,12 +126,12 @@ def test_envelope_validate():
 
 # ---- mcp_catalog ---------------------------------------------------------
 def test_mcp_catalog():
-    assert mcp_catalog.known_mcp_url("cuga-finance").endswith(
+    assert mcp_catalog.known_mcp_url("cuga_finance").endswith(
         "mcp-finance.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp"
     )
     assert mcp_catalog.known_mcp_url("not-a-cuga") is None
-    cfg = mcp_catalog.resolve(["cuga-geo", "cuga-nope"])
-    assert list(cfg) == ["cuga-geo"] and cfg["cuga-geo"]["transport"] == "streamable_http"
+    cfg = mcp_catalog.resolve(["cuga_geo", "cuga-nope"])
+    assert list(cfg) == ["cuga_geo"] and cfg["cuga_geo"]["transport"] == "streamable_http"
     assert len(mcp_catalog.known_names()) == 7
 
 

@@ -22,7 +22,7 @@ agents:
       date · one-line takeaway. Built for a schedule — when asked what's new, report ONLY items
       you have not reported before.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: competitive_analyst
     special_instructions: |
@@ -31,8 +31,8 @@ agents:
       it's a genuine threat/gap, and write a short brief: what they shipped · why it matters · does
       our roadmap already cover it · recommended response. Flag real gaps clearly; don't cry wolf.
     mcp_servers:
-      - name: cuga-web
-      - name: cuga-knowledge
+      - name: cuga_web
+      - name: cuga_knowledge
 
   - name: feed_watcher
     special_instructions: |
@@ -41,7 +41,7 @@ agents:
       and a one-line summary. Built for a schedule — report ONLY items not reported before. For
       Pinterest content-watch events (a new pin, board, or follower), summarize what appeared.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: video_researcher
     special_instructions: |
@@ -51,7 +51,7 @@ agents:
       videos, transcribe the top few, and synthesize what creators actually say, attributing points
       to specific videos.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: market_briefer
     special_instructions: |
@@ -60,15 +60,15 @@ agents:
       headline moves, then 3-5 bullets on what's driving them. For a single quote: price, 24h
       change, and a one-line read. Built to run at market open/close on a schedule.
     mcp_servers:
-      - name: cuga-finance
-      - name: cuga-web
+      - name: cuga_finance
+      - name: cuga_web
 
   - name: paper_scout
     special_instructions: |
       You find and summarize recent research on a topic. Search arXiv + Semantic Scholar
-      (cuga-knowledge) and the web, then name the 2-3 most important papers with a one-line
+      (cuga_knowledge) and the web, then name the 2-3 most important papers with a one-line
       contribution each and suggest what to read next. Built for a schedule — surface only papers
       newer than what you've already reported.
     mcp_servers:
-      - name: cuga-knowledge
-      - name: cuga-web
+      - name: cuga_knowledge
+      - name: cuga_web

@@ -20,23 +20,23 @@ agents:
     special_instructions: |
       Answer IBM Cloud questions from real IBM documentation. For each question, web_search with `site:cloud.ibm.com` or `site:ibm.com` prepended, review the snippets, fetch_webpage the most relevant doc, and answer grounded in it. Cite the doc URL. If the docs don't cover it, say so rather than guessing.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: code_auditor
     special_instructions: |
-      Analyze a code snippet the user pastes: check syntax, detect the language, and report metrics (size/complexity) via cuga-code. If they ask about a library or API, look it up on the web. Give a short, actionable verdict.
+      Analyze a code snippet the user pastes: check syntax, detect the language, and report metrics (size/complexity) via cuga_code. If they ask about a library or API, look it up on the web. Give a short, actionable verdict.
     mcp_servers:
-      - name: cuga-code
-      - name: cuga-web
+      - name: cuga_code
+      - name: cuga_web
 
   - name: incident_triage
     special_instructions: |
       You triage an inbound alert/incident payload from a watcher (a :bug: reaction, a comment flagging a blocker, a message posted to an on-call channel). Summarize what happened in one line, classify severity (P1/P2/P3), name the likely component, and suggest the first action. Be concise — this goes to a busy on-call channel.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text
 
   - name: support_digest
     special_instructions: |
       You post an overnight support digest to a shared Slack channel, and handle workspace-lifecycle events: welcome a new teammate or server member with a short onboarding note, announce a newly-created channel with a suggested charter, or note a new custom emoji.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web

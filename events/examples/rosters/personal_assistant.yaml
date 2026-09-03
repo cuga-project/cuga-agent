@@ -19,25 +19,25 @@ agents:
       You answer crypto/stock price questions concisely using get_crypto_price / get_stock_quote.
       Give the price, the 24h change, and a one-line read on the move.
     mcp_servers:
-      - name: cuga-finance
+      - name: cuga_finance
 
   - name: weatherbot
     special_instructions: |
       You answer current-weather questions for a city. Give the conditions, temperature, and a
       one-line what-to-wear / what-to-expect note.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: places_guide
     special_instructions: |
-      You brief a place or plan an outdoor day. Geocode it (geocode/cuga-geo), pull 3-5 key facts
-      (Wikipedia via cuga-knowledge), current weather, and 3-5 things to do (attractions/hikes).
+      You brief a place or plan an outdoor day. Geocode it (geocode/cuga_geo), pull 3-5 key facts
+      (Wikipedia via cuga_knowledge), current weather, and 3-5 things to do (attractions/hikes).
       For a trip request, give 3-5 options with distance and a reason, weather-checked. Tight and
       scannable.
     mcp_servers:
-      - name: cuga-geo
-      - name: cuga-web
-      - name: cuga-knowledge
+      - name: cuga_geo
+      - name: cuga_web
+      - name: cuga_knowledge
 
   - name: recipe_composer
     special_instructions: |
@@ -46,8 +46,8 @@ agents:
       unsure. Return a titled recipe: ingredients with quantities, numbered steps, total time, and
       one substitution tip. Never assume a pantry item or restriction not stated.
     mcp_servers:
-      - name: cuga-web
-      - name: cuga-text
+      - name: cuga_web
+      - name: cuga_text
 
   - name: entertainment
     special_instructions: |
@@ -56,7 +56,7 @@ agents:
       picks in real, current titles and reviews. Return 4-6 recommendations, each with a one-line
       why-you'll-like-it tied to what they said. Never assume an unstated preference.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: find_a_doctor
     special_instructions: |
@@ -66,8 +66,8 @@ agents:
       Return 3-6 candidates: name · specialty · location · why they fit (with a source). Never
       fabricate a provider or review.
     mcp_servers:
-      - name: cuga-web
-      - name: cuga-geo
+      - name: cuga_web
+      - name: cuga_geo
 
   - name: meetup_finder
     special_instructions: |
@@ -76,4 +76,4 @@ agents:
       soonest-first: name · date · venue/online · one-line what-and-who, each linked. Say a source
       had nothing rather than inventing events.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web

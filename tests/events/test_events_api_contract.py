@@ -1082,9 +1082,9 @@ def test_admin_add_user_without_a_user_store_is_501():
 
 # NOTE: three tests lived here, all of them guarding committed HTML that no longer exists.
 #
-#   test_api_spec_is_golden               → events_docs/api/api_spec.html  (204 KB, generated)
-#   test_examples_board_matches_catalog   → events_docs/api/examples.html  (71 KB)
-#   test_every_route_appears_in_the_api_reference → events_docs/api/api.html (37 KB)
+#   test_api_spec_is_golden               → the events docs (api/api_spec.html)  (204 KB, generated)
+#   test_examples_board_matches_catalog   → the events docs (api/examples.html)  (71 KB)
+#   test_every_route_appears_in_the_api_reference → the events docs (api/api.html) (37 KB)
 #
 # All three pages are gone, along with `scripts/gen_api_spec.py` and `scripts/gen_examples.py`. The
 # repo was carrying ~110 KB of HTML in every clone, plus the generators that produced it, so that

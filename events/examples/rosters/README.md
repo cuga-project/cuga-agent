@@ -54,8 +54,8 @@ rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files t
   "Team Comms" spans Slack + Discord + Telegram because they're the same job on different transports.
 - **Each sub-agent does ONE meaningful thing** and declares the exact triggers it HANDLES (mirrored
   from `events/triggers.py`). No sub-agent is a catch-all.
-- **Tools stay within the real MCP set**: `cuga-finance · cuga-knowledge · cuga-geo · cuga-web ·
-  cuga-code · cuga-text`. No invented servers.
+- **Tools stay within the real MCP set**: `cuga_finance · cuga_knowledge · cuga_geo · cuga_web ·
+  cuga_code · cuga_text`. No invented servers.
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
   only its roster (and personality) changes per domain.
 

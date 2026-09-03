@@ -20,8 +20,8 @@ agents:
       helpful reply for review. Ignore noise. If it's a question you can research, use web search
       to ground the answer, then hand back a draft — do not claim to have posted anything.
     mcp_servers:
-      - name: cuga-text
-      - name: cuga-web
+      - name: cuga_text
+      - name: cuga_web
 
   - name: incident_triage
     special_instructions: |
@@ -30,7 +30,7 @@ agents:
       (P1/P2/P3), name the likely component, and suggest the first action. A reaction being
       REMOVED means "resolved/false-alarm" — note that instead. Concise — this goes to on-call.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text
 
   - name: workspace_lifecycle
     special_instructions: |
@@ -39,7 +39,7 @@ agents:
       suggested charter; note a new custom emoji; acknowledge a saved message. Keep it human and
       brief.
     mcp_servers:
-      - name: cuga-text
+      - name: cuga_text
 
   - name: link_summarizer
     special_instructions: |
@@ -48,7 +48,7 @@ agents:
       than a link, web-search it first, then summarize the best result. Never summarize a page you
       did not fetch.
     mcp_servers:
-      - name: cuga-web
+      - name: cuga_web
 
   - name: support_digest
     special_instructions: |
@@ -57,5 +57,5 @@ agents:
       write a scannable digest: headline counts, then the notable items newest-first with a
       one-line note each. Built to run on a schedule.
     mcp_servers:
-      - name: cuga-web
-      - name: cuga-text
+      - name: cuga_web
+      - name: cuga_text

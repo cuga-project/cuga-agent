@@ -33,7 +33,7 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -55,11 +55,17 @@ def run_api_enabled() -> bool:
     secret, so with nothing configured every call 401s — mounting them then only advertises an
     endpoint nobody can use. Vanilla CUGA therefore gets a 404 and no extra surface.
 
-    Enabled by any of:
+    Requires ``CUGA_EVENTS_ENABLED`` — the master switch — AND one of:
       * ``CUGA_RUN_TOKEN`` / ``GATEWAY_TOKEN`` — a deployment that means to use the machine seam
       * ``CUGA_SUPERVISOR_ROSTER``            — this server is a preloaded supervisor
       * ``CUGA_RUN_ALLOW_UNAUTHENTICATED``    — the explicit development opt-out
+
+    The switch is checked FIRST and on purpose. These used to be sufficient on their own, so a
+    GATEWAY_TOKEN set for any other reason silently mounted an endpoint that executes an agent.
+    Opting into eventing is now a decision someone made, not a side effect.
     """
+    if not events_bridge.events_enabled():
+        return False
     return bool(_run_token() or _supervisor_roster_path() or _run_dev_unauthenticated())
 
 
@@ -223,7 +229,43 @@ def warn_if_run_is_unauthenticated() -> None:
         )
 
 
-def _run_auth_failure(request: Request) -> Optional[JSONResponse]:
+async def _jwt_denial(request: Request) -> Optional[JSONResponse]:
+    """``None`` when the caller is an authenticated user allowed to chat; a response otherwise.
+
+    Calls the SAME dependency ``/stream`` uses and nothing else, so the two cannot drift: whether
+    authentication is on, which roles count, and the wording of the 403 all stay in one place. The
+    knowledge layer resolves identity the same way (``knowledge/auth.py``) — check, call, and treat
+    both an exception and a ``None`` user as a denial.
+
+    A ``None`` user is the case worth stating. ``require_chat_access`` returns it when
+    authentication is DISABLED, meaning "nobody is logged in and that is fine here" — which is not
+    permission to execute an agent. Reading it as success would restore the exact hole this gate was
+    written to close, so it is a denial and the caller falls back to the shared secret. That also
+    makes a separate ``_auth_enabled()`` probe unnecessary: the dependency already answers it, so
+    this reaches for no private helper.
+    """
+    from cuga.backend.server.auth.dependencies import require_chat_access
+
+    try:
+        user = await require_chat_access(request)
+    except HTTPException as e:
+        # FIXED TEXT, not `e.detail` (#681): the detail is composed upstream and can carry
+        # configuration — the role names a deployment expects, for instance — which is not something
+        # to hand an unauthenticated caller. The status code is what the caller needs to act on: 403
+        # means "you are known but not permitted", so do not go looking for a token. The specifics
+        # go to the log.
+        logger.info("/run: authentication rejected the caller ({}): {}", e.status_code, e.detail)
+        message = "not authorised to run agents" if e.status_code == 403 else "authentication required"
+        return JSONResponse({"ok": False, "status": "error", "error": message}, e.status_code)
+    except Exception:  # noqa: BLE001 — a broken auth backend must not read as "authorised"
+        logger.exception("/run: the authentication check failed")
+        return JSONResponse({"ok": False, "status": "error", "error": "authentication failed"}, 401)
+    if user is None:
+        return JSONResponse({"ok": False, "status": "error", "error": "authentication required"}, 401)
+    return None
+
+
+async def _run_auth_failure(request: Request) -> Optional[JSONResponse]:
     """Guard the machine seam. Returns the 401 to send, or None to proceed.
 
     ``/run`` and ``/run/agents`` EXECUTE an agent. The gate used to read
@@ -233,20 +275,41 @@ def _run_auth_failure(request: Request) -> Optional[JSONResponse]:
     agent, including while CUGA authentication was enabled and ``/stream`` was login-gated behind
     ``require_chat_access``. An always-mounted endpoint must not be the one unlocked door.
 
-    So it FAILS CLOSED: a token is required. The single way out is an explicit development flag,
-    which is deliberately verbose and logged at startup — a deployment cannot end up unauthenticated
-    by simply forgetting to configure something.
+    So it FAILS CLOSED: a caller must present ONE of two credentials, and the single way out is an
+    explicit development flag, deliberately verbose and logged at startup.
+
+    TWO CREDENTIALS, because this endpoint has two kinds of caller:
+
+      * a SERVICE — the eventing layer, a scheduled tick, a webhook. It holds a shared secret, not
+        a login session, so it sends ``X-Gateway-Token``.
+      * a PERSON or the UI — a browser session that already carries a JWT. Requiring the shared
+        secret from them would mean handing a machine credential to every user; requiring a JWT
+        from the events service would mean it needs a login it cannot have.
+
+    So a valid JWT is accepted on exactly the terms ``/stream`` accepts it — ``require_chat_access``,
+    the same dependency, so the same roles and the same 403 — and a valid token is accepted for the
+    machines. This ADDS a path; it does not weaken the token requirement. With authentication off,
+    ``require_chat_access`` cannot vouch for anyone, so the token remains the only way in.
     """
     token = _run_token()
-    if token:
-        supplied = request.headers.get("X-Gateway-Token") or ""
+    supplied = request.headers.get("X-Gateway-Token") or ""
+    if token and supplied:
         # compare_digest on `str` raises TypeError for non-ASCII, and this header is attacker
         # supplied — compare bytes so a hostile header is a 401, not a 500.
-        if not hmac.compare_digest(supplied.encode("utf-8", "replace"), token.encode("utf-8", "replace")):
-            return JSONResponse(
-                {"ok": False, "status": "error", "error": "bad or missing X-Gateway-Token"}, 401
-            )
+        if hmac.compare_digest(supplied.encode("utf-8", "replace"), token.encode("utf-8", "replace")):
+            return None
+        return JSONResponse({"ok": False, "status": "error", "error": "bad or missing X-Gateway-Token"}, 401)
+
+    # No token presented. A logged-in caller is still legitimate — this is the path that makes /run
+    # consistent with every other endpoint instead of a parallel auth scheme.
+    denied = await _jwt_denial(request)
+    if denied is None:
         return None
+    if denied is not None and denied.status_code == 403:
+        return denied  # authenticated but lacking the chat role — say so rather than "missing token"
+
+    if token:
+        return JSONResponse({"ok": False, "status": "error", "error": "bad or missing X-Gateway-Token"}, 401)
     if _run_dev_unauthenticated():
         return None
     return JSONResponse(
@@ -300,7 +363,7 @@ async def run_sync(request: Request):
     # load_dotenv(override=False) refills any variable that is currently ABSENT, so a lazy import
     # could put GATEWAY_TOKEN back mid-request and change the answer the gate gives. An auth check
     # that depends on import side effects is not a check.
-    denied = _run_auth_failure(request)
+    denied = await _run_auth_failure(request)
     if denied is not None:
         return denied
 
@@ -503,7 +566,7 @@ async def run_agents(request: Request):
     and returns UI card data for the configured agent. This is the machine seam, guarded by the same
     shared secret as /run.
     """
-    denied = _run_auth_failure(request)
+    denied = await _run_auth_failure(request)
     if denied is not None:
         return denied
     # "Is this a supervisor?" is answered by the STORE, not by the env var: a roster composed in the

@@ -21,8 +21,8 @@ agents:
       tools on the diff. End with a verdict: APPROVE / COMMENT / NEEDS_CHANGES and the single most
       important thing to fix. Be specific about files and lines when the diff gives them.
     mcp_servers:
-      - name: cuga-code
-      - name: cuga-text
+      - name: cuga_code
+      - name: cuga_text
 
   - name: security_watchdog
     special_instructions: |
@@ -32,8 +32,8 @@ agents:
       dependencies. If you find something, name the exact concern and severity (HIGH/MED/LOW) and
       recommend a senior review. If clean on the security axis, say so in one line.
     mcp_servers:
-      - name: cuga-code
-      - name: cuga-web
+      - name: cuga_code
+      - name: cuga_web
 
   - name: issue_triager
     special_instructions: |
@@ -42,8 +42,8 @@ agents:
       action. If it reads like a duplicate or needs-info, say so. Concise — this posts to a busy
       triage channel.
     mcp_servers:
-      - name: cuga-text
-      - name: cuga-code
+      - name: cuga_text
+      - name: cuga_code
 
   - name: repo_lifecycle
     special_instructions: |
@@ -53,8 +53,8 @@ agents:
       one-line changelog digest; a push → note what changed; a new collaborator → note their
       access level). Chat-friendly and concise.
     mcp_servers:
-      - name: cuga-text
-      - name: cuga-web
+      - name: cuga_text
+      - name: cuga_web
 
   - name: release_notes
     special_instructions: |
@@ -63,5 +63,5 @@ agents:
       highlights, and suggest the semver bump if it isn't already tagged. Draft it ready to
       publish or announce.
     mcp_servers:
-      - name: cuga-text
-      - name: cuga-code
+      - name: cuga_text
+      - name: cuga_code

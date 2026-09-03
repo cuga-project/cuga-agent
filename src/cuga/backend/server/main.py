@@ -562,9 +562,13 @@ async def lifespan(app: FastAPI):
     # changes nothing writes nothing; a missing or malformed file degrades to "no supervisor"
     # rather than blocking startup.
     try:
+        from cuga.backend.server import events_bridge as _eb
         from cuga.supervisor_utils.roster_seed import seed_roster
 
-        await seed_roster()
+        # Behind the master switch: importing a roster is an events-layer behaviour, and a stray
+        # CUGA_SUPERVISOR_ROSTER should not rewrite this instance's agent config store.
+        if _eb.events_enabled():
+            await seed_roster()
     except Exception as _roster_err:  # noqa: BLE001 — seeding must never stop the server booting
         logger.warning("roster seed skipped: {}", _roster_err)
 
@@ -2166,7 +2170,15 @@ async def ui_config():
         {
             "hide_cuga_logo": hide_logo,
             "brand_name": brand_name,
-            "events_api_url": (os.environ.get("EVENTS_API_URL", "") or "").strip().rstrip("/"),
+            # Behind the master switch too: this is what tells the SPA where to send /api/events/*,
+            # so advertising it with eventing off would put the Studio entry back in the header and
+            # point it at a service this instance is not part of. Empty is exactly what vanilla CUGA
+            # reports, and the UI already treats empty as "events is off".
+            "events_api_url": (
+                (os.environ.get("EVENTS_API_URL", "") or "").strip().rstrip("/")
+                if events_bridge.events_enabled()
+                else ""
+            ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
         }
     )
