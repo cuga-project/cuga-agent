@@ -249,7 +249,14 @@ async def _jwt_denial(request: Request) -> Optional[JSONResponse]:
     try:
         user = await require_chat_access(request)
     except HTTPException as e:
-        return JSONResponse({"ok": False, "status": "error", "error": str(e.detail)}, e.status_code)
+        # FIXED TEXT, not `e.detail` (#681): the detail is composed upstream and can carry
+        # configuration — the role names a deployment expects, for instance — which is not something
+        # to hand an unauthenticated caller. The status code is what the caller needs to act on: 403
+        # means "you are known but not permitted", so do not go looking for a token. The specifics
+        # go to the log.
+        logger.info("/run: authentication rejected the caller ({}): {}", e.status_code, e.detail)
+        message = "not authorised to run agents" if e.status_code == 403 else "authentication required"
+        return JSONResponse({"ok": False, "status": "error", "error": message}, e.status_code)
     except Exception:  # noqa: BLE001 — a broken auth backend must not read as "authorised"
         logger.exception("/run: the authentication check failed")
         return JSONResponse({"ok": False, "status": "error", "error": "authentication failed"}, 401)

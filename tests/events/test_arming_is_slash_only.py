@@ -37,6 +37,8 @@ from events.agent_store import AgentStore, AgentSpec  # noqa: E402
 from events.runtime import AgentStoreRuntime  # noqa: E402
 from events.subscriptions import SubscriptionStore  # noqa: E402
 
+pytestmark = pytest.mark.unit
+
 ARM_ARGS = dict(agent="cuga", kind="cron", prompt="give me a joke", every_minutes=5, deliver_to="web")
 
 
