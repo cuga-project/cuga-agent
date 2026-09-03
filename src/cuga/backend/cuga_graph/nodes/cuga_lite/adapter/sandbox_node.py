@@ -125,6 +125,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if "reflection_enabled" in configurable
             else settings.advanced_features.reflection_enabled
         )
+        verify_enabled = (
+            configurable.get("pre_execute_verify_enabled")
+            if "pre_execute_verify_enabled" in configurable
+            else settings.advanced_features.pre_execute_verify_enabled
+        )
 
         # Get existing variables using CugaLiteState's own variables_manager
         existing_vars = {}
@@ -159,7 +164,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         )
 
         try:
-            if reflection_enabled and state.script:
+            if verify_enabled and state.script:
                 try:
                     configured_model = configurable.get("llm") or None
                     verify_text_limit = min(

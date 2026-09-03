@@ -83,6 +83,7 @@ _FOLD_NAMESPACE: Dict[str, Any] = {
 }
 
 _MAX_EXPANSION_DEPTH = 8
+_MAX_EXPAND_VISITS = 256
 _MAX_EXPR_CHARS = 300
 _MAX_ROWS = 20
 
@@ -147,6 +148,7 @@ LOCAL_MUTATORS = frozenset(
 CONTAINER_METHODS = READ_ONLY_METHODS | LOCAL_MUTATORS
 
 _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+_BRANCHING = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try)
 
 
 def _receiver_root(expr: ast.expr) -> Optional[str]:
@@ -252,28 +254,96 @@ def _assignments(tree: ast.AST, chains: Dict[int, Tuple[ast.AST, ...]]) -> List[
     return out
 
 
-def _env_before(assigns: List[_Assignment], lineno: int, chain: Tuple[ast.AST, ...]) -> Dict[str, ast.expr]:
-    """Assignments visible at ``lineno`` from the call's own scope chain.
+def _unreliable_names(tree: ast.AST) -> set:
+    """Names that are not a unique straight-line assignment in their scope.
+
+    AugAssign, a second assignment, or an assignment inside if/for/while/try
+    means the value is not a proven constant. VERIFY must not fold those to
+    a fake literal.
+    """
+    counts: Dict[Tuple[Optional[int], str], int] = {}
+    unreliable: set = set()
+
+    def visit(node: ast.AST, branched: bool, chain: Tuple[ast.AST, ...]) -> None:
+        next_chain = (node,) + chain if isinstance(node, _SCOPE_NODES) else chain
+        next_branched = False if isinstance(node, _SCOPE_NODES) else branched
+        if isinstance(node, _BRANCHING):
+            for child in ast.iter_child_nodes(node):
+                visit(child, True, next_chain)
+            return
+        scope_key = id(chain[0]) if chain else None
+        if isinstance(node, ast.AugAssign):
+            for name in _target_names(node.target):
+                unreliable.add((scope_key, name))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in _target_names(target):
+                    key = (scope_key, name)
+                    counts[key] = counts.get(key, 0) + 1
+                    if branched:
+                        unreliable.add(key)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            key = (scope_key, node.target.id)
+            counts[key] = counts.get(key, 0) + 1
+            if branched:
+                unreliable.add(key)
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_branched, next_chain)
+
+    visit(tree, False, ())
+    for key, n in counts.items():
+        if n > 1:
+            unreliable.add(key)
+    return unreliable
+
+
+def _env_before(
+    assigns: List[_Assignment],
+    lineno: int,
+    chain: Tuple[ast.AST, ...],
+    unreliable: set,
+) -> Dict[str, ast.expr]:
+    """Straight-line assignments visible at ``lineno`` from the call's scope.
 
     A name bound inside a nested ``def`` is not visible to a call outside it,
     so a helper's local ``amount`` never overrides the module-level one.
+    Names in ``unreliable`` are omitted so loop accumulators and if/else
+    bindings stay unresolved instead of folding to a fake constant.
     """
     visible = {id(scope) for scope in chain}
     env: Dict[str, ast.expr] = {}
+    skipped: set = set()
     for line, name, value, scope in assigns:
         if line >= lineno:
             continue
         if scope is not None and id(scope) not in visible:
             continue
+        key = (id(scope) if scope is not None else None, name)
+        if key in unreliable:
+            skipped.add(name)
+            continue
         env[name] = value
+    for name in skipped:
+        env.pop(name, None)
     return env
 
 
+class _ExpandBudgetExceeded(Exception):
+    pass
+
+
 class _Expander(ast.NodeTransformer):
-    def __init__(self, env: Dict[str, ast.expr], seen: frozenset, depth: int):
+    def __init__(self, env: Dict[str, ast.expr], seen: frozenset, depth: int, visits: List[int]):
         self.env = env
         self.seen = seen
         self.depth = depth
+        self.visits = visits
+
+    def visit(self, node: ast.AST) -> ast.AST:
+        self.visits[0] += 1
+        if self.visits[0] > _MAX_EXPAND_VISITS:
+            raise _ExpandBudgetExceeded
+        return super().visit(node)
 
     def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
         if self.depth >= _MAX_EXPANSION_DEPTH or node.id in self.seen:
@@ -281,14 +351,14 @@ class _Expander(ast.NodeTransformer):
         value = self.env.get(node.id)
         if value is None:
             return node
-        return _Expander(self.env, self.seen | {node.id}, self.depth + 1).visit(
+        return _Expander(self.env, self.seen | {node.id}, self.depth + 1, self.visits).visit(
             ast.parse(ast.unparse(value), mode="eval").body
         )
 
 
 def _expand(node: ast.expr, env: Dict[str, ast.expr]) -> ast.expr:
     try:
-        return _Expander(env, frozenset(), 0).visit(ast.parse(ast.unparse(node), mode="eval").body)
+        return _Expander(env, frozenset(), 0, [0]).visit(ast.parse(ast.unparse(node), mode="eval").body)
     except Exception:
         return node
 
@@ -513,6 +583,7 @@ def describe_write_arguments(code: Optional[str]) -> str:
 
     chains = _scope_chains(tree)
     assigns = _assignments(tree, chains)
+    unreliable = _unreliable_names(tree)
     local_names = _bound_names(tree)
     rows: List[str] = []
     unresolved: set = set()
@@ -521,7 +592,7 @@ def describe_write_arguments(code: Optional[str]) -> str:
         if not isinstance(node, ast.Call) or not _is_write_call(node, local_names):
             continue
         name = _call_name(node) or "<call>"
-        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()))
+        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable)
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
         args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
         if not args:

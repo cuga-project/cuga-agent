@@ -219,6 +219,19 @@ async def test_prepare_never_resets_the_thread_budget():
     )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_prepare_resets_verify_revise_streak_every_turn():
+    state = _make_state(
+        chat_messages=[HumanMessage(content="follow-up"), AIMessage(content="ok")], task_todos=None
+    )
+    state.verify_revise_streak = 2
+
+    result = await _run_prepare(state)
+
+    assert result.update.get("verify_revise_streak") == 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "thread_used,expected",

@@ -79,7 +79,14 @@ async def decide_pre_execute_verify(
                 raise ValueError("No model or model factory configured for pre-execute VERIFY")
             active_model = model_factory()
         history, variables, proposed = prepare_verify_context(
-            list(chat_messages or []),
+            [
+                m
+                for m in (chat_messages or [])
+                if not (
+                    isinstance(getattr(m, "content", None), str)
+                    and m.content.startswith(VERIFY_BLOCKED_PREFIX)
+                )
+            ],
             variables_snapshot,
             script or "",
             max_chars=max_chars,
@@ -117,7 +124,5 @@ def verify_blocked_message(alert: str) -> str:
     return (
         f"{VERIFY_BLOCKED_PREFIX}\n"
         f"{body}\n"
-        "Rewrite the block so each write argument evaluates to a value you can "
-        "point at in the retrieved data. Do not re-send the same value through a "
-        "different expression."
+        "Rewrite the block so each write argument is grounded in retrieved data."
     )

@@ -291,6 +291,7 @@ class PolicyConfigurable:
                             "Execution output",
                             "Execution output preview",
                             "Error during execution",
+                            "VERIFY blocked this code block before execution.",
                         ]
                     ):
                         user_input = content

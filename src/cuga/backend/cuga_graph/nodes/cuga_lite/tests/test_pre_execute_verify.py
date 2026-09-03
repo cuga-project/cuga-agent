@@ -119,7 +119,13 @@ async def test_verify_revise_skips_executor_ok_runs():
         ):
             skipped = await node(
                 _state(),
-                config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+                config={
+                    "configurable": {
+                        "reflection_enabled": True,
+                        "pre_execute_verify_enabled": True,
+                        "llm": MagicMock(spec=[]),
+                    }
+                },
             )
         eval_mock.assert_not_called()
         assert VERIFY_BLOCKED_PREFIX in skipped["chat_messages"][-1].content
@@ -139,7 +145,13 @@ async def test_verify_revise_skips_executor_ok_runs():
         ):
             ran = await node(
                 _state(),
-                config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+                config={
+                    "configurable": {
+                        "reflection_enabled": True,
+                        "pre_execute_verify_enabled": True,
+                        "llm": MagicMock(spec=[]),
+                    }
+                },
             )
         eval_mock.assert_awaited()
         assert ran["verify_revise_streak"] == 0
@@ -255,7 +267,7 @@ async def test_verify_model_resolution_failure_fails_open_to_executor():
     ):
         result = await node(
             _state(),
-            config={"configurable": {"reflection_enabled": True}},
+            config={"configurable": {"reflection_enabled": True, "pre_execute_verify_enabled": True}},
         )
 
     eval_mock.assert_awaited_once()
@@ -288,7 +300,13 @@ async def test_verify_setup_failure_fails_open_to_executor():
     ):
         result = await node(
             _state(),
-            config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
         )
 
     eval_mock.assert_awaited_once()
@@ -330,7 +348,13 @@ async def test_verify_telemetry_failure_downgrades_revise_and_runs_executor():
     ):
         result = await node(
             _state(),
-            config={"configurable": {"reflection_enabled": True, "llm": MagicMock(spec=[])}},
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
         )
 
     eval_mock.assert_awaited_once()
@@ -506,3 +530,197 @@ def test_reflection_current_task_skips_verify_feedback():
         ],
     )
     assert reflection_current_task(state) == "split the amazon prime bill"
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_does_not_fold_loop_accumulators():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    out = describe_write_arguments(
+        "total = 0\n"
+        "for tx in txs:\n"
+        '    total += tx["amount"]\n'
+        'await venmo_send_payment(amount=total, note="split")\n'
+    )
+    assert "-> 0" not in out
+    assert "amount=) -> total" in out
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_does_not_fold_if_else_assignments():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    fallback = describe_write_arguments(
+        "amount = 0.0\n"
+        "if found:\n"
+        '    amount = round(found["total"] / n, 2)\n'
+        "else:\n"
+        "    amount = 0.0\n"
+        "await venmo_send_payment(amount=amount)\n"
+    )
+    assert "-> 0.0" not in fallback
+    assert "amount=) -> amount" in fallback
+
+    branched = describe_write_arguments(
+        "amount = 35.0\nif cond:\n    amount = 46.67\nawait venmo_send_payment(amount=amount)\n"
+    )
+    assert "-> 35.0" not in branched
+    assert "-> 46.67" not in branched
+    assert "amount=) -> amount" in branched
+
+
+@pytest.mark.unit
+def test_expander_visit_budget_keeps_diamond_fanout_unexpanded():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    lines = ["v0 = (1, 1, 1, 1, 1, 1, 1, 1)"]
+    for i in range(1, 4):
+        prev = f"v{i - 1}"
+        lines.append(f"v{i} = ({', '.join([prev] * 8)})")
+    lines.append("await pay(amount=v3)")
+    out = describe_write_arguments("\n".join(lines))
+    assert "pay(amount=) -> v3" in out
+
+
+@pytest.mark.unit
+def test_verify_blocked_message_does_not_tell_model_to_change_the_value():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        verify_blocked_message,
+    )
+
+    msg = verify_blocked_message("amount 35.0 contradicts 46.67")
+    assert VERIFY_BLOCKED_PREFIX in msg
+    assert "Do not re-send the same value" not in msg
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_history_drops_blocked_feedback():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+        verify_blocked_message,
+    )
+
+    captured = {}
+    chain = MagicMock()
+
+    async def _ainvoke(payload, config=None):
+        captured.update(payload)
+        return SimpleNamespace(content="GATE: ok")
+
+    chain.ainvoke = _ainvoke
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script="await pay(amount=35.0)",
+            chat_messages=[
+                HumanMessage(content="split the amazon prime bill"),
+                HumanMessage(content=verify_blocked_message("amount 35.0 is ungrounded")),
+            ],
+            variables_snapshot="",
+            current_task="split the amazon prime bill",
+            model=MagicMock(spec=[]),
+            config={},
+            max_chars=10_000,
+        )
+    history = captured.get("agent_history", "")
+    assert "split the amazon prime bill" in history
+    assert VERIFY_BLOCKED_PREFIX not in history
+    assert "35.0 is ungrounded" not in history
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_flag_is_independent_of_reflection():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    revise_chain = MagicMock()
+    revise_chain.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="GATE: revise\nALERT: amount 35.0 contradicts 46.67")
+    )
+    noop_plan = MagicMock()
+    noop_plan.ainvoke = AsyncMock(return_value=SimpleNamespace(content=""))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+    patches = (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=noop_plan,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=revise_chain,
+        ),
+    )
+    with patches[0], patches[1], patches[2], patches[3]:
+        held_out = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": False,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+        eval_mock.assert_awaited()
+        assert VERIFY_BLOCKED_PREFIX not in held_out["chat_messages"][-1].content
+        revise_chain.ainvoke.assert_not_called()
+
+        eval_mock.reset_mock()
+        blocked = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": False,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+        eval_mock.assert_not_called()
+        assert VERIFY_BLOCKED_PREFIX in blocked["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+def test_policy_user_input_skips_verify_feedback():
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+    state = SimpleNamespace(
+        intent=None,
+        goal=None,
+        input=None,
+        chat_messages=[
+            HumanMessage(content="split the bill"),
+            HumanMessage(content=f"{VERIFY_BLOCKED_PREFIX}\namount 35.0"),
+        ],
+        tools=None,
+        apps=None,
+        current_agent=None,
+        current_node=None,
+        sub_task=None,
+        current_task=None,
+        final_answer=None,
+        messages=None,
+    )
+    ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
+    assert ctx.user_input == "split the bill"
