@@ -1,10 +1,14 @@
 name: Tests
 
+# `event_support` is listed for PRs so that a STACKED pr (this branch targets event_support,
+# which targets main) still runs CI. Without it the filter matches nothing, GitHub reports an
+# EMPTY check list, and an empty check list is indistinguishable from an all-green one — the
+# review sees no red and assumes it passed. Remove the entry once event_support merges.
 on:
   push:
     branches: [ main, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, event_support ]
   workflow_dispatch:
 
 concurrency:
