@@ -266,7 +266,7 @@ async def _apply_orphaned_memory_retention(
         if deletion.get("success"):
             merged["deleted"].append({**item, "outcome": "deleted"})
         else:
-            merged["skipped"].append({**item, "outcome": "skipped"})
+            merged["skipped"].append({**item, "outcome": "skipped", "reason": "delete_failed"})
             errors = merged.setdefault("errors", [])
             if isinstance(errors, list):
                 errors.append("An orphaned memory could not be deleted")

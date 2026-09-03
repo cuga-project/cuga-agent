@@ -91,6 +91,16 @@ def memory_title(entity: dict[str, Any]) -> str | None:
     return title[:200] if title else None
 
 
+def _safe_skip_reason(item: dict[str, Any]) -> str:
+    if item.get("rule") == "unused-guidelines" and item.get("reason") == "unused":
+        return (
+            "No recorded last-used date was available, so this guideline was kept instead of being deleted."
+        )
+    if item.get("reason") == "delete_failed":
+        return "The memory could not be deleted, so it was kept."
+    return "The retention action could not be applied safely, so this memory was kept."
+
+
 def find_orphaned_memory_entities(
     entities: list[dict[str, Any]],
     conversation_keys: set[tuple[str, str]],
@@ -174,18 +184,21 @@ def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
     sanitized["error_count"] = len(errors) if isinstance(errors, list) else int(bool(errors))
     sanitized["warning_count"] = len(warnings) if isinstance(warnings, list) else int(bool(warnings))
     for bucket in ("flagged", "deleted", "skipped"):
-        sanitized[bucket] = [
-            (
-                {
-                    key: value
-                    for key, value in item.items()
-                    if key in _REPORT_ITEM_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
-                }
-                | ({"title": title} if (title := memory_title(item)) else {})
-            )
-            for item in report.get(bucket, [])
-            if isinstance(item, dict)
-        ]
+        sanitized_items = []
+        for item in report.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            sanitized_item = {
+                key: value
+                for key, value in item.items()
+                if key in _REPORT_ITEM_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
+            }
+            if title := memory_title(item):
+                sanitized_item["title"] = title
+            if bucket == "skipped":
+                sanitized_item["reason"] = _safe_skip_reason(item)
+            sanitized_items.append(sanitized_item)
+        sanitized[bucket] = sanitized_items
     return sanitized
 
 
@@ -194,7 +207,7 @@ def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
         bucket: [
             {
                 key: item[key]
-                for key in ("entity_id", "entity_type", "action", "outcome", "title")
+                for key in ("entity_id", "entity_type", "action", "outcome", "title", "reason")
                 if key in item
             }
             for item in report.get(bucket, [])
