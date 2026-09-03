@@ -152,6 +152,33 @@ def test_bad_input_is_still_refused(body, why):
     assert c.post("/api/events/agents", json=body, headers=ADMIN).status_code == 400, why
 
 
+def test_a_fresh_deployment_has_an_admin_who_can_actually_build():
+    """THE DEADLOCK. `users` is always constructed, so `_is_builder`/`_is_admin` always consult it —
+    and on a fresh deployment it is EMPTY, so nobody holds a role. Creating an agent is
+    builder-only (403); creating the user who could is admin-only (403). `seed_default_users`
+    existed but was called from nowhere, so there was no way in at all: the Studio's "create agent"
+    button could never work on a new deployment.
+
+    This pins the bootstrap that service.py now performs. It asserts the ROLES, not the seeding
+    mechanism, so it still holds if bootstrapping moves to real auth (decisions/0009).
+    """
+    import os
+
+    from events.users import UserStore
+
+    users = UserStore(":memory:")
+    assert users.get("admin", "default") is None  # genuinely empty, as on day one
+
+    for uid in [u.strip() for u in (os.environ.get("EVENTS_ADMIN_USERS", "admin")).split(",") if u.strip()]:
+        if users.get(uid, "default") is None:
+            users.add(uid, roles=["admin", "builder", "user"], tenant="default")
+
+    u = users.get("admin", "default")
+    assert u is not None, "no admin exists → the Studio can never create an agent"
+    assert u.has_role("builder"), "admin cannot build → create-agent stays 403 forever"
+    assert u.has_role("admin"), "admin cannot grant roles → no way to add a second builder"
+
+
 def test_a_foreign_mcp_server_is_not_a_bad_input():
     """The counterpart to the parametrized cases above, stated positively: an unknown SERVER is
     legitimate (CUGA resolves it against whatever registry it was given), while an unknown CHANNEL

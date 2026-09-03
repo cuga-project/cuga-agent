@@ -147,6 +147,27 @@ def create_app():
     identity = IdentityMap(db)
     oauth_store = OAuthAppStore(db)
 
+    # BOOTSTRAP THE FIRST ADMIN, or the deployment deadlocks.
+    #
+    # `users` is always constructed, so `_is_builder`/`_is_admin` always consult it — and on a fresh
+    # deployment it is EMPTY, which means nobody holds a role. Creating an agent in the Studio is
+    # builder-only (403) and creating the user who could is admin-only (403), so there was no path
+    # in: `seed_default_users` existed but was never called from anywhere.
+    #
+    # Identity only, no password: roles are what the gates read, and the local-login path is
+    # separate. This grants nothing that the header-based principal model does not already grant —
+    # see decisions/0009, which is where wiring real auth is tracked.
+    _admins = [
+        u.strip() for u in (os.environ.get("EVENTS_ADMIN_USERS", "admin") or "").split(",") if u.strip()
+    ]
+    for _uid in _admins:
+        try:
+            if users.get(_uid, "default") is None:
+                users.add(_uid, roles=["admin", "builder", "user"], tenant="default")
+                log.info("events service: bootstrapped admin/builder identity %r", _uid)
+        except Exception as e:  # noqa: BLE001 — never block startup on the user store
+            log.warning("events service: could not bootstrap admin %r: %s", _uid, e)
+
     # THE split: the worker crosses the wire. Everything else — triggers, scheduler, channels,
     # concierge, delivery — stays right here, which is why the direct integrations are unaffected.
     runtime = make_runtime(
