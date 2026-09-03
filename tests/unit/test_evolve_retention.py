@@ -64,12 +64,14 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
         "deleted": [
             {
                 "entity_id": "entity-a",
+                "entity_type": "guideline",
                 "action": "delete",
                 "outcome": "deleted",
                 "content": "private memory",
                 "user_id": "user-9",
                 "detail": "provider detail with private memory",
-                "reason": "provider reason with user-9",
+                "reason": "unused",
+                "rule": "unused-guidelines",
                 "session_id": "private-session",
                 "source_task_id": "private-task",
             }
@@ -120,7 +122,15 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
     assert response.status_code == 200
     assert response.json()["run_id"] == "run-a"
     assert "dry_run" not in response.json()
-    assert response.json()["deleted"] == [{"entity_id": "entity-a", "action": "delete", "outcome": "deleted"}]
+    assert response.json()["deleted"] == [
+        {
+            "entity_id": "entity-a",
+            "entity_type": "guideline",
+            "action": "delete",
+            "outcome": "deleted",
+            "reason": "Deleted because no use was recorded for more than 180 days.",
+        }
+    ]
     assert response.json()["skipped"] == [
         {
             "entity_id": "guideline-a",
@@ -298,6 +308,7 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
             "action": "delete",
             "outcome": "deleted",
             "title": "Orphaned preference",
+            "reason": "Deleted because its source conversation had been unavailable for more than 7 days.",
         }
     ]
     assert "private memory content" not in response.text

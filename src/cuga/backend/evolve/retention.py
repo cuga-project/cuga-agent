@@ -91,14 +91,26 @@ def memory_title(entity: dict[str, Any]) -> str | None:
     return title[:200] if title else None
 
 
-def _safe_skip_reason(item: dict[str, Any]) -> str:
-    if item.get("rule") == "unused-guidelines" and item.get("reason") == "unused":
-        return (
-            "No recorded last-used date was available, so this guideline was kept instead of being deleted."
-        )
-    if item.get("reason") == "delete_failed":
-        return "The memory could not be deleted, so it was kept."
-    return "The retention action could not be applied safely, so this memory was kept."
+def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
+    rule = item.get("rule")
+    reason = item.get("reason")
+    if bucket == "skipped":
+        if rule == "unused-guidelines" and reason == "unused":
+            return "No recorded last-used date was available, so this guideline was kept instead of being deleted."
+        if reason == "delete_failed":
+            return "The memory could not be deleted, so it was kept."
+        return "The retention action could not be applied safely, so this memory was kept."
+    if bucket != "deleted":
+        return None
+    if rule == "unused-guidelines" and reason == "unused":
+        return "Deleted because no use was recorded for more than 180 days."
+    if rule == "old-sessions" and reason == "age":
+        return "Deleted because the source conversation was more than one year old."
+    if isinstance(reason, str) and reason.startswith("cascade:"):
+        return "Deleted because it was derived from a conversation deleted by the retention policy."
+    if rule == "orphaned-conversations" and reason == "orphaned_conversation":
+        return "Deleted because its source conversation had been unavailable for more than 7 days."
+    return "Deleted because it matched a deletion rule in the retention policy."
 
 
 def find_orphaned_memory_entities(
@@ -195,8 +207,8 @@ def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
             }
             if title := memory_title(item):
                 sanitized_item["title"] = title
-            if bucket == "skipped":
-                sanitized_item["reason"] = _safe_skip_reason(item)
+            if reason := _safe_report_reason(item, bucket):
+                sanitized_item["reason"] = reason
             sanitized_items.append(sanitized_item)
         sanitized[bucket] = sanitized_items
     return sanitized
