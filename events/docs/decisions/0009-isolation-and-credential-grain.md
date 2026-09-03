@@ -26,13 +26,25 @@ Bot tokens do not expire. GitHub and Box mint short-lived tokens on demand from 
 (`vault://`, `aws://`, `db://`, `env://` via `secret_seam`) is sufficient — note only
 `VaultBackend` has a `set()`, so a rotating store would need new write paths. We avoid needing one.
 
-**2. Identity runs single-scope for v1.** `Principal.user_id` stays `"local"`; this is a deliberate
-setting, not an unfixed bug. Consequences, accepted knowingly:
+**2. Identity is PER-USER, and linking is mandatory.** Flows belong to the person who armed them.
+`Principal.user_id` must resolve to a real authenticated CUGA user; `"local"` is a bug, not a
+setting.
 
-- every armed flow is visible to everyone in the Studio, and anyone can cancel anyone's
-- conversation memory is shared per thread key
-- every watcher fires for every user's events (`direct_events.match` already ignores scope)
-- "my Box folder" means the **service account's** folders, so users must share folders with it
+- **Web**: `user_id` comes from CUGA's authenticated session (`current_user.sub`, OIDC).
+- **Channels** (Slack · Discord · Telegram · WhatsApp): the sender must **link** their channel
+  account to their CUGA login once, via the existing `IdentityMap` link-token flow.
+- **Unlinked senders are refused** — not silently downgraded to a shared principal. The refusal is
+  a helpful prompt ("log in to CUGA and send me this code"), not an error.
+
+Rejected alternative: deriving a pseudo-user from the channel-native id (`slack:U123`) for unlinked
+senders. It gives isolation for free and needs no login, but it creates a second identity per human
+per channel, orphans flows when they later link, and — decisively — leaves an unauthenticated
+stranger able to run agents against app-level credentials. Isolation without authentication is
+bookkeeping, not security.
+
+**Refuse arming AND chat for unlinked senders.** Because credentials are app-level (decision 1), a
+single unlinked question ("summarise the newest file in /HR") already reads service-account data.
+Gating only the standing flows would leave the larger hole open.
 
 **3. `scope` stays plumbed end to end** — poll body → `/invoke` → subscriptions → agent store. It
 already is. Turning isolation on later is enabling a filter, not building one.
@@ -86,15 +98,55 @@ That is tolerable only while the channel is closed. It breaks the moment:
    then *is* the escalation path: the only gate is being able to type `/automate`.
 3. **Two teams share one deployment** — shared flows become leakage rather than a feature.
 
+## Implementing mandatory linking — what exists, what is missing
+
+**Already built (isolation is not the work):**
+
+- `_owned_sub` gates pause/resume/delete on `sub.tenant == caller scope`; the list endpoint passes
+  `store.list(scope=…)`. Ownership enforcement is real — it is only trivially satisfied today
+  because every caller resolves to `local`.
+- `/invoke` already calls `principal.resolve_channel(channel, native_id, identity_map)` and uses
+  the linked principal's scope when it resolves; it logs `channel.unlinked` otherwise.
+- `IdentityMap` has `issue_token` / `redeem_token` (15-min TTL, single-use) and `link` / `resolve`.
+- CUGA has OIDC and `current_user.sub`.
+
+**The four gaps:**
+
+1. **Core never forwards the authenticated user.** `events_bridge` *relays* `X-User-Id` if the
+   inbound request carries it — and a browser never does. It must be **injected** from
+   `current_user.sub` (plus the tenant claim) when core forwards to the events service. Without
+   this the web side authenticates and then discards the identity.
+2. **No link UX.** Needs an authenticated endpoint to issue a code, and a redeem branch on the
+   inbound channel path (Telegram deep-link `?start=<token>`, `/link <code>` elsewhere).
+3. **The gate itself.** At the `channel.unlinked` branch, stop falling through to header
+   resolution; return the link prompt instead.
+4. **Link tokens are stored in plaintext** — `link_token.token` is the primary key, so a database
+   read yields live bearer tokens. Store `sha256(token)` and look up by hash. Also raise
+   `secrets.token_urlsafe(8)` (64 bits) to 16, and rate-limit redemption.
+
+**Where credentials live under this decision — unchanged.** Linking introduces **no new long-lived
+secret**, so the vault story does not move:
+
+| | Sensitivity | Storage |
+|---|---|---|
+| provider secrets (bot tokens, GitHub App key, Box client secret) | long-lived, high | `secret_seam` → `vault://` / `aws://` (already) |
+| OIDC client secret | long-lived, high | same resolver |
+| link tokens | 15-min single-use bearer | **hash at rest** — a verifier, not a secret to retrieve |
+| identity mappings (`native_id → user_id`) | not secret | plain table |
+| per-user OAuth tokens | — | none; deferred with Gmail/Outlook |
+
 ## Mitigations, in the order they buy the most
 
 1. **Scope the service account down** to exactly the folders/repos the whole audience may see.
    Cheapest, and it holds even if everything else is wrong.
 2. **Keep bot channels closed** — invite-only workspaces; do not expose Telegram/WhatsApp bots to
    arbitrary senders while credentials are app-level.
-3. **Wire auth → `user_id`.** Then add `scope=` to `direct_events.match`'s `store.list(...)` (the one
-   read path that omits the available isolation filter). Pointless before this — with everyone at
-   `local` the filter matches everything.
+3. **Wire auth → `user_id`** (now decision 2, mandatory). NOTE: do **not** add a per-user `scope=`
+   filter to `direct_events.match`. A watcher must fire on events caused by OTHER people — Alice
+   arms "watch #eng for :bug:", Bob reacts, Alice's watcher fires and delivers to Alice. Filtering
+   there by the event author's scope would break that. Isolation at fire time is per-TENANT, not
+   per-user, and `sub.tenant` currently stores the full `tenant/instance/user` string, so a tenant
+   filter needs a prefix match or its own column.
 4. **Box `box_subject_type=user`** with an authenticated `(tenant, "box", cuga_user_id) → box_user_id`
    mapping. Restores real per-user permissions *without* per-user secrets, because the subject
    varies while the client secret does not — Box then enforces access, and a user cannot watch a
