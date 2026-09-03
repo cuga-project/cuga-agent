@@ -64,6 +64,7 @@ type RetentionReportItemResponse = {
   title?: string;
   action?: "flag" | "delete" | "skip";
   outcome?: string;
+  reason?: string;
 };
 
 type RetentionReportResponse = {
@@ -220,6 +221,7 @@ function mapReportItem(item: RetentionReportItemResponse): RetentionReportItem {
     title: item.title,
     action: item.action,
     outcome: item.outcome,
+    reason: item.reason,
   };
 }
 
