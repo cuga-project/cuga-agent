@@ -2,9 +2,11 @@
 # ============================================================
 # Step 2 — Deploy CUGA + the eventing service. TWO apps, ONE image.
 #
-#   cuga-core     vanilla CUGA. Serves /stream, /run and the UI. EVENTS_ENABLED is NOT set,
-#                 so it carries no triggers, no scheduler, no channel loops — and, deliberately,
-#                 no channel secrets.
+#   cuga-core     CUGA itself. Serves /stream, /run and the UI. It hosts NO events layer — no
+#                 triggers, no scheduler, no channel loops, and deliberately no channel secrets.
+#                 It does set CUGA_EVENTS_ENABLED, which is a different question: not "host the
+#                 events layer" but "take part in eventing", i.e. expose /run to the service that
+#                 does. Without it there is no /run and no roster.
 #   cuga-events   the eventing service. Owns triggers, the native scheduler, channels, the
 #                 concierge and /invoke; executes agents by calling cuga-core's /run over HTTP.
 #
@@ -71,8 +73,21 @@ core_args=(
   --env-from-secret "$SECRET_NAME"
   --env "MCP_SERVERS_FILE=$MCP_SERVERS_FILE_IN_IMAGE"
   --env "DEPLOY_REV=$DEPLOY_REV"
-  # No EVENTS_ENABLED: this is plain CUGA. /run mounts because GATEWAY_TOKEN rides in via the
-  # secret (unconfigured, it is not mounted at all), and every call must carry that token.
+  # THE MASTER SWITCH. Required, and required HERE at create time rather than by a later
+  # `app update`: whether /run mounts is decided when main.py is imported, so a switch that
+  # arrives on a later revision is a switch that was absent for the first boot.
+  #
+  # It gates all four of core's events seams — /run + /run/agents mounting, the roster import,
+  # /automate forwarding, and the events_api_url the SPA reads. Omit it and cuga-core comes up
+  # with no /run and no roster, and the post-deploy check reports "roster: 0 agent(s)" — which
+  # reads as "the roster vanished", not "a flag is missing".
+  #
+  # NOT the old EVENTS_ENABLED. That one asked "should this process host the events layer?" and
+  # went away with combined mode; the answer here is still no. This asks "does this instance take
+  # part in eventing at all?", and for cuga-core in the split the answer is yes: it is the worker
+  # the events service calls. /run additionally requires a credential — GATEWAY_TOKEN, which
+  # rides in via the secret — so both must be present before the endpoint exists.
+  --env "CUGA_EVENTS_ENABLED=true"
   # Routed through the image entrypoint, which installs the managed database CA before the
   # process starts. `--command` REPLACES the image ENTRYPOINT (Knative semantics), so naming
   # `uv` directly here silently skipped it and the config store could not verify TLS.

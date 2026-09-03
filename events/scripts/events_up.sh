@@ -121,6 +121,9 @@ if [ "${1:-}" = "--reload" ]; then
   pkill -f "uvicorn cuga.backend.server.main" 2>/dev/null || true
   sleep 2
   export_public_url   # keep the server's EVENTS_PUBLIC_URL matched to the (unchanged) live tunnel
+  # THE MASTER SWITCH — see the note at the other `cuga start demo` below. Without it CUGA boots
+  # with no /run and no roster, and every fire answers as a bare agent with no tools.
+  export CUGA_EVENTS_ENABLED="${CUGA_EVENTS_ENABLED:-true}"
   export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-events/examples/rosters/default.yaml}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
@@ -209,8 +212,15 @@ if [ -z "$NO_TUNNEL" ]; then
 fi
 
 echo "== 1/2 CUGA server :$CUGA_PORT  (registry :$REGISTRY_PORT boots inside it) =="
-# Plain CUGA — no events. CUGA_SUPERVISOR_ROSTER preloads it AS the supervisor, which is what the
-# eventing service targets over /run, and also puts the tool registry in FILE mode.
+# Plain CUGA — no events layer hosted here. CUGA_SUPERVISOR_ROSTER preloads it AS the supervisor,
+# which is what the eventing service targets over /run, and also puts the tool registry in FILE mode.
+#
+# CUGA_EVENTS_ENABLED is the master switch and is REQUIRED for any of that to take effect: it gates
+# /run mounting, the roster import, the /automate forward and the events_api_url the SPA reads. It
+# is off by default, so a script that sets the roster but not the switch starts a CUGA with neither
+# — and it fails quietly, because a developer whose own .env sets the switch never sees it. Setting
+# it here is what makes `make up` behave the same on a machine with no .env.
+export CUGA_EVENTS_ENABLED="${CUGA_EVENTS_ENABLED:-true}"
 export MCP_SERVERS_FILE="$REPO/$CFG" CUGA_SUPERVISOR_ROSTER="${CUGA_SUPERVISOR_ROSTER:-events/examples/rosters/default.yaml}"
   # CUGA IS THE DOOR: /run and /stream forward slash verbs (and open arming dialogues) to the
   # eventing service. Without EVENTS_API_URL that forward is disabled and "/automate …" is
