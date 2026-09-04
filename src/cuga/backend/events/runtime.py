@@ -41,6 +41,11 @@ class AgentSpec:
     channels: list = field(default_factory=list)  # converse-on: ["web","telegram",…]
     integrations: list = field(default_factory=list)  # watch/act-on: [{"app","ownership"},…]
     access: list = field(default_factory=list)  # roles/user_ids allowed ([] = everyone)
+    # WHO MADE THIS. "studio" = a human built it here; "seed" = one of the demo agents
+    # seed.py writes when EVENTS_SEED_AGENTS=1. The distinction exists because in the split
+    # topology CUGA's roster is the executable truth, so list_agents shows the roster PLUS
+    # anything a human built — but must not resurrect ~27 stale demo rows alongside it.
+    source: str = "studio"
 
 
 class AgentRuntime(abc.ABC):
@@ -314,12 +319,24 @@ class HttpRuntime(AgentStoreRuntime):
         so a reporting call never takes the events layer down.
         """
         remote = self._remote_roster()
+        local = super().list_agents(scope=scope) or []
         if remote:
-            return remote
+            # ROSTER FIRST, THEN WHAT A HUMAN BUILT. Returning only the roster meant an agent
+            # created in the Studio was stored, addressable and runnable — but never listed. Create
+            # returned 200 and it vanished. Write-only, with no error anywhere.
+            #
+            # A blind merge is wrong the other way: EVENTS_SEED_AGENTS=1 puts ~27 demo agents in
+            # this same store, and surfacing those next to the live roster is the stale-row bug this
+            # method was written to fix. `source` is what separates the two — human-built rows join
+            # the list, seeded ones do not.
+            #
+            # On a NAME COLLISION the roster still wins: it is what actually executes, and a stale
+            # local copy must never mask it.
+            seen = {a.name for a in remote}
+            mine = [a for a in local if a.name not in seen and getattr(a, "source", "studio") != "seed"]
+            return remote + mine
         # The supervisor is always addressable even when the roster can't be listed.
-        return super().list_agents(scope=scope) or [
-            AgentSpec(name="cuga", backend="http", prompt="the CUGA supervisor")
-        ]
+        return local or [AgentSpec(name="cuga", backend="http", prompt="the CUGA supervisor")]
 
     def get_agent(self, agent_id: str, *, scope: str = DEFAULT_SCOPE) -> AgentSpec | None:
         """SUPERVISOR MODEL: "cuga" is always addressable — the one agent exists by construction,

@@ -18,9 +18,15 @@ request — but nothing parses YAML to answer a request.
 
 OWNERSHIP RULE
 --------------
-An agent NAMED IN THE YAML is owned by the YAML: seeding rewrites it on every boot, so the file
-stays the reviewed source of truth and a container replace restores it. An agent added through
-the UI has an id the YAML never mentions, so seeding never touches it.
+An agent NAMED IN THE YAML is owned by the YAML *until a human edits it*. Seeding rewrites it on
+every boot, so the file stays the reviewed source of truth and a container replace restores it —
+but only while nobody has changed it in Manage. Each seeded record carries a hash of what the
+roster wrote (``_roster_seed_hash``); if the stored config no longer matches that hash, somebody
+edited it and seeding leaves it alone.
+
+Without that, every restart silently reverted the Manage UI to the YAML, and the edit looked like
+it had never been saved. An agent added through the UI has an id the YAML never mentions, so
+seeding never touches it either way.
 
 That covers each agent's own record, but NOT its membership of the supervisor, which lives in the
 supervisor's config — a record the YAML does own and does rewrite. Seeding the file's list verbatim
@@ -177,11 +183,36 @@ def _supervisor_config(
     }
 
 
+_SEED_MARK = "_roster_seed_hash"
+
+
+def _body_hash(config: Dict[str, Any]) -> str:
+    """A stable hash of a config IGNORING the seed marker, so we can ask "has a human touched this
+    since we wrote it?" without the marker itself changing the answer."""
+    import hashlib
+    import json as _json
+
+    body = {k: v for k, v in (config or {}).items() if k != _SEED_MARK}
+    return hashlib.sha256(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
 async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
     """Write `config` as the published config for `agent_id`, without churning versions.
 
-    Returns "created" | "updated" | "unchanged" — the caller logs a summary, and the tests assert
-    that a second identical seed is a no-op.
+    Returns "created" | "updated" | "unchanged" | "skipped" — the caller logs a summary, and the
+    tests assert that a second identical seed is a no-op.
+
+    RESPECTS EDITS MADE IN MANAGE. This used to overwrite whenever `existing != config`, which is
+    exactly the shape of "a human changed it" — so every restart silently reverted the Manage UI to
+    the YAML and the edit looked like it had never been saved.
+
+    Each seeded config now carries a hash of what the roster wrote. On the next boot:
+
+      * no marker            → an agent we did not create. Never take it over.
+      * marker != body hash  → a human edited it since. Leave it alone.
+      * marker == body hash  → still ours and untouched, so a changed roster may update it.
+
+    The roster therefore self-heals when nobody has intervened, and defers the moment somebody has.
     """
     from cuga.backend.server.config_store import (
         load_config,
@@ -189,10 +220,16 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
         update_published_config_at_version,
     )
 
+    config = {**config, _SEED_MARK: _body_hash(config)}
     existing, version = await load_config(None, agent_id)
     if existing is None or not version:
         await save_config(config, agent_id=agent_id)
         return "created"
+    prior_mark = (existing or {}).get(_SEED_MARK)
+    if prior_mark is None:
+        return "skipped"  # not roster-managed — a hand-made agent that happens to share the name
+    if prior_mark != _body_hash(existing):
+        return "skipped"  # edited in Manage since we wrote it; the human's version wins
     if existing == config:
         return "unchanged"
     # `load_config(None, ...)` only ever returns a published (numeric) version, but
@@ -209,7 +246,7 @@ async def _upsert(config: Dict[str, Any], agent_id: str) -> str:
 async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
     """Import the roster at `path` (default: $CUGA_SUPERVISOR_ROSTER) into the config store.
 
-    Returns ``(agents_seeded, {"created": n, "updated": n, "unchanged": n})``. Never raises: a
+    Returns ``(agents_seeded, {"created": n, "updated": n, "unchanged": n, "skipped": n})``. Never raises: a
     malformed or missing roster must not stop the server from booting — it degrades to "no
     supervisor", which is exactly what an unset variable does.
     """
@@ -229,7 +266,7 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
         logger.warning(f"roster seed: {path!r} declares no agents")
         return 0, {}
 
-    tally: Dict[str, int] = {"created": 0, "updated": 0, "unchanged": 0}
+    tally: Dict[str, int] = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0}
     sub_ids: List[str] = []
 
     for entry in entries:
@@ -263,6 +300,7 @@ async def seed_roster(path: Optional[str] = None) -> Tuple[int, Dict[str, int]]:
 
     logger.info(
         f"roster seed: {len(sub_ids)} sub-agent(s) + supervisor from {path} "
-        f"({tally['created']} created, {tally['updated']} updated, {tally['unchanged']} unchanged)"
+        f"({tally['created']} created, {tally['updated']} updated, {tally['unchanged']} unchanged"
+        f"{', ' + str(tally['skipped']) + ' left alone (edited in Manage)' if tally['skipped'] else ''})"
     )
     return len(sub_ids) + 1, tally

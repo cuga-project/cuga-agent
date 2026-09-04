@@ -257,3 +257,41 @@ async def test_a_sub_agent_may_not_squat_on_the_supervisor_id(tmp_path):
     sup, _ = await config_store.load_config(None, "cuga")
     assert sup["agent"]["kind"] == "supervisor"
     assert sup["supervisor"]["subAgents"] == [{"kind": "internal", "ref": "pricebot"}]
+
+
+@pytest.mark.asyncio
+async def test_an_edit_made_in_manage_survives_a_restart(roster_file):
+    """SAMI'S POINT F. Seeding overwrote whenever `existing != config` — which is precisely the
+    shape of "a human changed it". So every restart silently reverted the Manage UI to the YAML and
+    the edit looked like it had never been saved.
+
+    Each seeded record now carries a hash of what the roster wrote. A stored config that no longer
+    matches that hash was edited by somebody, and seeding defers to them.
+    """
+    await roster_seed.seed_roster(roster_file)
+
+    # a human edits pricebot in Manage
+    cfg, _ = await config_store.load_config(None, "pricebot")
+    cfg["special_instructions"] = "EDITED BY A HUMAN IN MANAGE"
+    await config_store.save_config(cfg, agent_id="pricebot")
+
+    _, tally = await roster_seed.seed_roster(roster_file)  # restart
+
+    after, _ = await config_store.load_config(None, "pricebot")
+    assert after["special_instructions"] == "EDITED BY A HUMAN IN MANAGE", "the restart clobbered it"
+    assert tally["skipped"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_agent_still_self_heals_from_the_file(roster_file, tmp_path):
+    """The other half — deferring to humans must not stop the roster being the source of truth for
+    agents nobody has touched. A container replace has to restore them."""
+    await roster_seed.seed_roster(roster_file)
+
+    # nobody edits anything; the FILE changes
+    (tmp_path / "supervisor_agents.yaml").write_text(ROSTER.replace("crypto/stock price", "ONLY crypto"))
+    _, tally = await roster_seed.seed_roster(roster_file)
+
+    cfg, _ = await config_store.load_config(None, "pricebot")
+    assert "ONLY crypto" in cfg["special_instructions"]
+    assert tally["updated"] >= 1 and tally["skipped"] == 0

@@ -190,3 +190,52 @@ def test_a_foreign_mcp_server_is_not_a_bad_input():
         headers=ADMIN,
     )
     assert r.status_code in (200, 201), r.text
+
+
+# ------------------------------------------------- the split-topology trap
+def test_a_studio_agent_is_listed_alongside_cugas_roster(monkeypatch):
+    """THE WRITE-ONLY BUG. In the split, list_agents asked CUGA for its roster and RETURNED IT
+    INSTEAD of the local store. Correct for a name collision — a stale local row must not mask the
+    live roster — but it also hid agents that exist ONLY here. Everything built in the Studio lives
+    in THIS process's store and is absent from CUGA's roster, so create returned 200 and the agent
+    then vanished from the list. It still ran if you addressed it by name; you just could not find it.
+    """
+    from events.runtime import AgentSpec, HttpRuntime
+
+    rt = HttpRuntime(agent_store=AgentStore(":memory:"), base_url="http://cuga.invalid")
+    rt.upsert_agent(AgentSpec(name="invoice_triage", prompt="mine", mcp_servers=["acme_ledger"]))
+    roster = [AgentSpec(name="cuga", backend="http"), AgentSpec(name="pricebot", backend="http")]
+    monkeypatch.setattr(rt, "_remote_roster", lambda: roster)
+
+    names = [a.name for a in rt.list_agents()]
+    assert "invoice_triage" in names, "the Studio-created agent is invisible again"
+    assert names[:2] == ["cuga", "pricebot"], "roster must come first — it is what executes"
+
+
+def test_seeded_demo_agents_do_not_join_the_roster(monkeypatch):
+    """THE OTHER HALF, and why a blind merge is wrong. EVENTS_SEED_AGENTS=1 writes ~27 demo agents
+    into this same store; surfacing them beside the live roster is the stale-row bug list_agents
+    exists to prevent. `source` is the whole distinction."""
+    from events.runtime import AgentSpec, HttpRuntime
+
+    rt = HttpRuntime(agent_store=AgentStore(":memory:"), base_url="http://cuga.invalid")
+    rt.upsert_agent(AgentSpec(name="demo_bot", prompt="seeded", source="seed"))
+    rt.upsert_agent(AgentSpec(name="my_bot", prompt="human"))  # defaults to studio
+    monkeypatch.setattr(rt, "_remote_roster", lambda: [AgentSpec(name="cuga", backend="http")])
+
+    names = [a.name for a in rt.list_agents()]
+    assert "my_bot" in names and "demo_bot" not in names, names
+
+
+def test_the_roster_still_wins_a_name_collision(monkeypatch):
+    """The original bug this must not reintroduce: one leftover local row reported 1 agent while
+    CUGA was serving 9."""
+    from events.runtime import AgentSpec, HttpRuntime
+
+    rt = HttpRuntime(agent_store=AgentStore(":memory:"), base_url="http://cuga.invalid")
+    rt.upsert_agent(AgentSpec(name="pricebot", prompt="STALE local copy"))
+    monkeypatch.setattr(
+        rt, "_remote_roster", lambda: [AgentSpec(name="pricebot", backend="http", prompt="live")]
+    )
+    got = rt.list_agents()
+    assert len(got) == 1 and got[0].prompt == "live", "the stale local row masked the roster again"

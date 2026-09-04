@@ -181,13 +181,23 @@ def test_roster_is_cached_not_re_read_per_call(patch_httpx_sync):
 
 
 def test_cugas_roster_beats_a_stale_local_row(patch_httpx_sync):
-    """A leftover row in ~/.cuga/events.db from an earlier run used to mask the live roster —
-    the service reported 1 agent while CUGA was serving 9. CUGA wins."""
+    """A leftover row in ~/.cuga/events.db from an earlier run used to MASK the live roster — the
+    service reported 1 agent while CUGA was serving 9.
+
+    The assertion softened when Studio-created agents started being listed too (they live only in
+    this store, so returning the roster alone made them invisible). The BUG this guards is the
+    roster being replaced or reordered, and that is what is asserted: the full roster, first, in
+    order. A local row may follow it; it can no longer displace it.
+
+    A row seeded by EVENTS_SEED_AGENTS is excluded outright — see
+    test_seeded_demo_agents_do_not_join_the_roster.
+    """
     patch_httpx_sync(_FakeCugaRoster([{"name": "cuga"}, {"name": "pricebot"}]))
     store = AgentStore(":memory:")
     store.upsert("default", AgentSpec(name="Digital Sales Agent", prompt="stale", integrations=[]))
     rt = HttpRuntime(agent_store=store, base_url="http://cuga.test", token="t0k")
-    assert [a.name for a in rt.list_agents(scope="default")] == ["cuga", "pricebot"]
+    names = [a.name for a in rt.list_agents(scope="default")]
+    assert names[:2] == ["cuga", "pricebot"], f"the roster was masked or reordered: {names}"
 
 
 def test_local_store_is_the_fallback_when_cuga_is_unreachable(patch_httpx_sync):
