@@ -132,6 +132,14 @@ events/deploy/.env.ce
 events/deploy/.ce_urls.env
 events/deploy/.ce_urls_split.env
 
+# Hand-made copies of the secret files. `.env` and `.env.ce` are ignored, but the natural thing
+# to do before editing one — `cp .env .env.bak` — produces a file holding every live credential
+# that IS committable, and shows up as an innocuous untracked entry for `git add -A` to sweep up.
+.env.*.bak
+.env.bak*
+*.env.bak*
+events/deploy/.env.ce.bak*
+
 # Roo AI assistant
 .roo/
 events/deploy/.env.ce

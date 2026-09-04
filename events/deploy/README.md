@@ -30,14 +30,35 @@ succeeds anyway. Fill it in from [`../docs/SETUP.md`](../docs/SETUP.md) → *`.e
 **2. Run `./4_postgres.sh` BEFORE `./2_deploy.sh` on a new project.** `2_deploy.sh` branches on
 whether `EVENTS_DB` is already in the CE secret: present → managed PostgreSQL; absent → it falls
 back to `EVENTS_DB=/app/.cuga/events.db`, which is **ephemeral container storage**. Every armed flow
-is then lost on the next instance replace, and the deploy **still exits 0** — you get a `✗
-durability` line in the post-deploy checks and nothing else. `4_postgres.sh` is idempotent: it
-reuses an existing database instance rather than provisioning a second one.
+is then lost on the next instance replace. `4_postgres.sh` is idempotent: it reuses an existing
+database instance rather than provisioning a second one.
 
-> The DSN and its CA certificate live **only** in the CE secret — they are not in `.env`, not in
-> `.env.ce`, and not in `make_env_ce.sh`'s key list. A normal redeploy keeps them because
-> `ibmcloud ce secret update` *merges*; a `teardown.sh WIPE_SECRET=1` or a fresh project does not,
-> because that takes the `secret create` path. Re-run `4_postgres.sh` to restore it.
+> **The two keys that used to exist in only one place.** The DSN (`EVENTS_DB`) and its CA
+> (`EVENTS_DB_CA_B64`) are provisioned in the cloud, not typed into `.env`. They used to be written
+> *only* into the live CE secret, which was survivable by accident: `ibmcloud ce secret update`
+> **merges**, so a normal redeploy kept them. But `teardown.sh WIPE_SECRET=1` and a fresh project
+> both take the `secret create` path, which writes only what `.env.ce` contains — and `.env.ce` did
+> not contain them. The result was a deployment that came up healthy on ephemeral SQLite and
+> **exited 0**.
+>
+> Fixed on both ends. `4_postgres.sh` now writes both keys into `.env.ce` as well as the secret, and
+> `make_env_ce.sh` **carries them forward** instead of truncating the file (it never reads them from
+> `.env` — the local `EVENTS_DB` there points at `localhost:5432` and would aim Code Engine at its
+> own empty container). `.env.ce` is now sufficient to rebuild the secret from nothing.
+>
+> `2_deploy.sh` also runs a **preflight** before touching the secret, because this class of failure
+> is invisible afterwards — on an existing project the merge quietly supplies whatever is missing.
+> It refuses to deploy without `GATEWAY_TOKEN`, `AGENT_SETTING_CONFIG`, or a CA for a `verify-full`
+> DSN, and warns on `EVENTS_WEBHOOK_KEY` / `CUGA_SECRET_KEY`.
+
+**2b. `ibmcloud ce secret get` PRINTS EVERY VALUE.** It is not a listing command — the human-readable
+form base64-encodes them and `--output json` returns them in the clear. Base64 is not encryption;
+that output *is* the secret, and it should not go into a terminal you are sharing, a bug report, or
+a scrollback you keep. To check what a secret contains, use the key-name-only helper:
+
+```bash
+source config.sh && secret_key_names cuga-events-secrets
+```
 
 **3. The route is stable — you never have to guess it.** Code Engine derives it from the app name
 and the project subdomain, both fixed, so redeploying under the same names gives the same URL:
@@ -106,7 +127,8 @@ pod started at 11:24, and `ibmcloud ce app get` still read `Restarts: 0` through
 
 ```bash
 cd deploy/ce
-YES=1 ./4_postgres.sh          # provisions the DB + credentials, writes the DSN into the CE secret
+YES=1 ./4_postgres.sh          # provisions the DB + credentials, writes the DSN + CA into BOTH
+                               # the CE secret and .env.ce (so a from-scratch deploy can rebuild)
 ```
 
 It creates an IBM Cloud Databases for PostgreSQL instance (**billable**; 8 GB RAM is the enforced
@@ -172,7 +194,7 @@ The container's env comes from three places, applied in this order — **last wi
 | # | Source | Set at | Holds | Change it by |
 |---|---|---|---|---|
 | 1 | **Dockerfile `ENV`** ([Dockerfile.events](Dockerfile.events)) | **build time** | rarely-changing non-secret defaults: `CUGA_HOST=0.0.0.0`, `DYNACONF_SERVER_PORTS__DEMO=7860`, `MCP_SERVERS_FILE`, `EVENTS_SCHEDULER=native`, the direct channel backends | edit the Dockerfile → rebuild (step 1) |
-| 2 | **CE secret** `cuga-events-secrets` via `--env-from-secret` | **deploy time** (from `.env.ce`) | credentials + config-from-.env: `AGENT_SETTING_CONFIG`, `WATSONX_*`, `LLM_*`, `GATEWAY_TOKEN`, the channel tokens | edit `.env` → `./make_env_ce.sh` → step 2 |
+| 2 | **CE secret** `cuga-events-secrets` via `--env-from-secret` | **deploy time** (from `.env.ce`) | credentials + config-from-.env: `AGENT_SETTING_CONFIG`, `WATSONX_*`, `LLM_*`, `GATEWAY_TOKEN`, `EVENTS_WEBHOOK_KEY`, `CUGA_SECRET_KEY`, the channel tokens — **plus** the cloud-provisioned `EVENTS_DB` + `EVENTS_DB_CA_B64`, which `make_env_ce.sh` carries forward rather than reading from `.env` | edit `.env` → `./make_env_ce.sh` → step 2 |
 | 3 | **Deploy-time `--env` literals** ([2_deploy.sh](2_deploy.sh)) | **deploy time** | per-deploy runtime knobs: `EVENTS_WORKER_BACKEND`, `EVENTS_SCHEDULER`, the backends, `MCP_SERVERS_FILE`, `CUGA_SUPERVISOR_ROSTER` (on cuga-core), `DEPLOY_REV`, and **`EVENTS_PUBLIC_URL`** (see below) | env vars on the `2_deploy.sh` command line, or edit the script |
 
 Precedence: a deploy-time `--env` (source 3) **overrides** the same key baked into the
@@ -280,7 +302,7 @@ only light up their SaaS triggers once Activepieces is deployed.
 |---|---|
 | `config.sh` | account/region/project/registry + app sizing + admin guard |
 | `Dockerfile.events` | the one image both apps run; `2_deploy.sh` picks the command per app |
-| `make_env_ce.sh` | build the gitignored `.env.ce` from your local `.env` |
+| `make_env_ce.sh` | build the gitignored `.env.ce` from your local `.env` — copies the allow-listed keys, **carries forward** the cloud-provisioned `EVENTS_DB` + `EVENTS_DB_CA_B64` |
 | `1_build_push_image.sh` | cloud buildrun → ICR |
 | `2_deploy.sh` | create the CE secret + app; set `EVENTS_PUBLIC_URL` |
 | `3_smoke.py` | capability report + channels + a web-chat probe |

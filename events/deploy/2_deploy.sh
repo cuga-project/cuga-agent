@@ -49,6 +49,48 @@ if [[ ! -f "$ENV_CE_FILE" ]]; then
   exit 1
 fi
 
+# ---- preflight: is .env.ce complete enough to deploy from? ------------------
+# This runs BEFORE the secret is touched, because the failure it catches is invisible afterwards.
+# `secret update` merges, so on an existing project a missing key is quietly supplied by whatever
+# is already in the live secret and nothing looks wrong. The same .env.ce in a FRESH project takes
+# the `secret create` branch, which writes only what the file contains — and every one of these
+# gates fails closed, so the result is a deployment that starts, reports healthy, and refuses or
+# loses work. That combination shipped once; hence a check that runs every time.
+echo "== preflight: $ENV_CE_FILE =="
+has_env_key() { grep -qE "^$1=." "$ENV_CE_FILE"; }
+_fatal=0
+# Fatal — each of these produces a deployment that comes up and does not work.
+for _k in GATEWAY_TOKEN AGENT_SETTING_CONFIG; do
+  has_env_key "$_k" || { echo "  ✗ $_k missing — required"; _fatal=1; }
+done
+case "$(grep -E '^EVENTS_DB=' "$ENV_CE_FILE" | tail -1)" in
+  *verify-full*)
+    # verify-full means libpq MUST have the CA. Not having it is not a downgrade to a weaker
+    # connection, it is no connection at all.
+    has_env_key EVENTS_DB_CA_B64 || {
+      echo "  ✗ EVENTS_DB is sslmode=verify-full but EVENTS_DB_CA_B64 is missing —"
+      echo "    the database will refuse to connect. Fix: CUGA_CE_ADMIN=1 YES=1 ./4_postgres.sh"
+      _fatal=1; }
+    ;;
+  "") if [[ -z "${EVENTS_STATE_STORE:-}" ]]; then
+        echo "  ⚠ EVENTS_DB missing — falling back to EPHEMERAL SQLite. Armed flows will be lost"
+        echo "    on the next pod replace. Fix: CUGA_CE_ADMIN=1 YES=1 ./4_postgres.sh"
+      fi ;;
+esac
+# Warn — the deployment works, but a feature is off in a way nothing else reports.
+has_env_key EVENTS_WEBHOOK_KEY || \
+  echo "  ⚠ EVENTS_WEBHOOK_KEY missing — POST /api/events/hook/<name> will 401 every request"
+has_env_key CUGA_SECRET_KEY || \
+  echo "  ⚠ CUGA_SECRET_KEY missing — admin-entered OAuth secrets get stored in PLAINTEXT"
+if [[ "$_fatal" == "1" ]]; then
+  echo
+  echo "Refusing to deploy. Regenerate with ./make_env_ce.sh (it carries the provisioned keys"
+  echo "forward) and re-run."
+  exit 1
+fi
+echo "  ✓ required keys present"
+unset _fatal _k
+
 # ---- secret ----------------------------------------------------------------
 # Both apps read the SAME secret today (it carries the LLM creds both need, plus the channel
 # tokens only the events app uses). Splitting it so cuga-core never sees a bot token is the next

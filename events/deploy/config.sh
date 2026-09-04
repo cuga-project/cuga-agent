@@ -97,9 +97,22 @@ function admin_guard() {
 }
 
 # Does a Code Engine secret define KEY? Used to decide whether the events DB is PostgreSQL (DSN
-# supplied via the secret, because it carries a password) or the SQLite+COS fallback. `secret get`
-# prints key NAMES but never values, so this leaks nothing.
+# supplied via the secret, because it carries a password) or the SQLite+COS fallback.
+#
+# ⚠ `ibmcloud ce secret get` PRINTS EVERY VALUE, base64-encoded — it is not a listing command.
+# An earlier version of this comment claimed the opposite ("prints key NAMES but never values, so
+# this leaks nothing"), which is exactly the sort of thing someone reads before pasting the command
+# into a shared terminal or a bug report. Base64 is not encryption; that output is the secret.
+# So: the pipeline below is safe only because stdout goes to `grep -q` and is never displayed.
+# Do NOT run `ibmcloud ce secret get` by hand to check whether a key exists — use this function,
+# or `--output json` piped through a key-name extractor.
 secret_has_key() {
   local secret="$1" key="$2"
   ibmcloud ce secret get --name "$secret" 2>/dev/null | grep -qE "^[[:space:]]*${key}([[:space:]]|:|$)"
+}
+
+# Print only the KEY NAMES in a Code Engine secret — the safe counterpart to the warning above.
+secret_key_names() {
+  ibmcloud ce secret get --name "$1" --output json 2>/dev/null \
+    | python3 -c 'import sys,json;print("\n".join(sorted((json.load(sys.stdin).get("data") or {}).keys())))'
 }
