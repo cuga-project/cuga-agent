@@ -62,6 +62,13 @@ def test_numeric_candidate_is_not_found_inside_decimal_answer():
     assert CugaLiteNode._should_regenerate_final_answer(state, "The result is 9.5. Thanks!", ["result"])
 
 
+@pytest.mark.parametrize("answer", ["The result is -9. Thanks!", "The result is +9. Thanks!"])
+def test_unsigned_numeric_candidate_is_not_found_inside_signed_answer(answer):
+    state = SimpleNamespace(variables_manager=_Variables({"result": 9}))
+
+    assert CugaLiteNode._should_regenerate_final_answer(state, answer, ["result"])
+
+
 def test_signoff_with_result_value_keeps_fast_path():
     state = _state_with_top_account()
     answer = (
