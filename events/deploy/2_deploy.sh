@@ -91,16 +91,34 @@ fi
 echo "  ✓ required keys present"
 unset _fatal _k
 
-# ---- secret ----------------------------------------------------------------
-# Both apps read the SAME secret today (it carries the LLM creds both need, plus the channel
-# tokens only the events app uses). Splitting it so cuga-core never sees a bot token is the next
-# tightening step; it needs make_env_ce.sh to emit two files.
-echo "== syncing secret '$SECRET_NAME' =="
-if ibmcloud ce secret get -n "$SECRET_NAME" >/dev/null 2>&1; then
-  ibmcloud ce secret update --name "$SECRET_NAME" --from-env-file "$ENV_CE_FILE" >/dev/null
-else
-  ibmcloud ce secret create --name "$SECRET_NAME" --from-env-file "$ENV_CE_FILE" >/dev/null
+# ---- secrets: ONE PER APP --------------------------------------------------
+# The two apps no longer share a secret. cuga-core never talks to Slack/Discord/Telegram/WhatsApp
+# — the adapters own those sockets and live in the events service — so it has no business holding
+# their tokens. It used to anyway, and that was not merely untidy: server/main.py runs
+# seed_secrets_from_env() at boot, which copies every env var matching KEY|SECRET|TOKEN|PASSWORD
+# into the `secrets` table, encrypted. cuga-core was persisting bot tokens it never reads into the
+# database, as write-only rows.
+#
+# make_env_ce.sh emits both files: .env.ce (events, everything) and .env.ce.core (the same minus
+# the ten channel/webhook keys). Core keeps the LLM creds, GATEWAY_TOKEN, CUGA_SECRET_KEY and the
+# database keys, because it genuinely needs all four.
+CORE_SECRET_NAME="${CORE_SECRET_NAME:-cuga-core-secrets}"
+CORE_ENV_FILE="${CORE_ENV_FILE:-$CE_DIR/.env.ce.core}"
+if [[ ! -f "$CORE_ENV_FILE" ]]; then
+  echo "Missing $CORE_ENV_FILE — regenerate both files:  ./make_env_ce.sh"
+  exit 1
 fi
+sync_secret() {  # name, env-file
+  if ibmcloud ce secret get -n "$1" >/dev/null 2>&1; then
+    ibmcloud ce secret update --name "$1" --from-env-file "$2" >/dev/null
+  else
+    ibmcloud ce secret create --name "$1" --from-env-file "$2" >/dev/null
+  fi
+}
+echo "== syncing secret '$SECRET_NAME' (events — all credentials) =="
+sync_secret "$SECRET_NAME" "$ENV_CE_FILE"
+echo "== syncing secret '$CORE_SECRET_NAME' (core — no channel tokens) =="
+sync_secret "$CORE_SECRET_NAME" "$CORE_ENV_FILE"
 
 DEPLOY_REV="$(date +%s)"
 
@@ -112,7 +130,7 @@ core_args=(
   --min-scale 1 --max-scale "${CORE_MAX_SCALE:-1}"
   --cpu "$CPU" --memory "$MEMORY" --ephemeral-storage "$EPHEMERAL"
   --request-timeout "$REQUEST_TIMEOUT"
-  --env-from-secret "$SECRET_NAME"
+  --env-from-secret "$CORE_SECRET_NAME"
   --env "MCP_SERVERS_FILE=$MCP_SERVERS_FILE_IN_IMAGE"
   --env "DEPLOY_REV=$DEPLOY_REV"
   # THE MASTER SWITCH. Required, and required HERE at create time rather than by a later
@@ -168,7 +186,9 @@ if [[ "$CE_EVENTS_SUPERVISOR" == "1" ]]; then
   # "storage.postgres_url is required when storage.mode=prod" and the server never starts. The URL
   # travels IN the secret (EVENTS_DB is not a shell var here — it arrives via --env-from-secret),
   # so if it is absent we stay on the local store rather than deploying something that cannot boot.
-  if secret_has_key "$SECRET_NAME" DYNACONF_STORAGE__POSTGRES_URL; then
+  # Check the CORE secret — that is the one cuga-core actually reads. Checking the events secret
+  # here would test a variable this app never receives.
+  if secret_has_key "$CORE_SECRET_NAME" DYNACONF_STORAGE__POSTGRES_URL; then
     core_args+=( --env "DYNACONF_STORAGE__MODE=prod" )
     echo "   agent config store: PostgreSQL (UI-created agents survive an instance replace)"
   else

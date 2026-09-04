@@ -128,7 +128,10 @@ src/cuga/frontend/dist/*.map
 
 
 # Code Engine deploy secrets / generated URLs
+# .env.ce is the EVENTS secret source; .env.ce.core is cuga-core's (same minus the channel
+# tokens). The glob covers both plus anything else make_env_ce.sh emits alongside them.
 events/deploy/.env.ce
+events/deploy/.env.ce.*
 events/deploy/.ce_urls.env
 events/deploy/.ce_urls_split.env
 
