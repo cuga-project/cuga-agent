@@ -52,6 +52,17 @@ TOOL_BUDGET_EXHAUSTED_INSTRUCTION = (
     "answer with what you have and state plainly what is missing and why."
 )
 
+# One-shot marker: set when an empty reply has already been retried, cleared by
+# ``build_metadata_update`` on the following turn. Consumer predates the producer
+# — ``clean_empty_response_retry_meta`` has popped this key since #178 while
+# nothing ever set it.
+EMPTY_RESPONSE_CORRECTION_KEY = "_empty_response_correction"
+
+EMPTY_RESPONSE_CORRECTION = (
+    "Your last reply was empty. Continue the task: either emit the next code "
+    "block, or state the final answer."
+)
+
 
 def create_call_model_node(
     adapter: CoreGraphAdapter,
@@ -291,6 +302,42 @@ def create_call_model_node(
                     "script": code,
                     "step_count": new_step_count,
                     **meta_update,
+                },
+            )
+
+        # ── Empty reply: retry once before finalizing ──────────────────────
+        # A reply with neither visible content nor reasoning carries no answer
+        # and no continuation signal — the model simply returned nothing. Ending
+        # the turn here delivers whatever happens to be left over (the previous
+        # execution output, or "No answer found"). Ask once for a real reply.
+        #
+        # This sits ahead of classify_auto_continue deliberately: an empty reply
+        # is a transport anomaly, not a continuation judgement, so it must not be
+        # gated behind the NL auto-continue feature flag.
+        #
+        # Reasoning counts as content. A reply with empty visible text but real
+        # reasoning is finalized from the reasoning below, and retrying it would
+        # discard a usable answer.
+        both_blank = not (content or "").strip() and not (reasoning or "").strip()
+        already_retried = bool(adapter.get_metadata(state).get(EMPTY_RESPONSE_CORRECTION_KEY))
+        if both_blank and not already_retried and not budget_exhausted:
+            logger.warning(
+                f"{adapter.sender_name}: model returned an empty reply "
+                "(no content, no reasoning) — retrying once"
+            )
+            retry_meta = dict(adapter.build_metadata_update(state, playbook_fired=playbook_fired) or {})
+            # build_metadata_update clears this key every turn, so set it after:
+            # the marker survives exactly one turn and the retry cannot repeat.
+            retry_meta[EMPTY_RESPONSE_CORRECTION_KEY] = True
+            return Command(
+                goto="call_model",
+                update={
+                    adapter.messages_key: final_messages + [HumanMessage(content=EMPTY_RESPONSE_CORRECTION)],
+                    "script": None,
+                    "final_answer": "",
+                    "execution_complete": False,
+                    "step_count": new_step_count,
+                    adapter.metadata_key: retry_meta,
                 },
             )
 
