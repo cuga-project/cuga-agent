@@ -230,8 +230,11 @@ run-events: ## Run ONLY the eventing service on :$(EVENTS_PORT) (needs CUGA up; 
 # ── individual harnesses (hidden from `make help`; run by `make test-report`, or directly for a focused check) ──
 test-all:
 	$(PY) -m pytest tests/events tests/unit -q
-bench:
-	$(PY) -m pytest tests/events/test_nl_to_flow_bench.py tests/events/test_flowspec_bench.py -q -s
+bench: ## Offline FlowSpec compile bench (no AP, no network)
+	# test_nl_to_flow_bench.py went away with the connector-action half (c9a2f7dc) and this target
+	# was not updated, so `make bench` has been an instant "file or directory not found" ever since.
+	# The live counterpart that needs a real AP is tests/events/live_nl_to_flow_bench.py.
+	$(PY) -m pytest tests/events/test_flowspec_bench.py -q -s
 test-live:
 	EVENTS_SERVER_URL=$(EVENTS_URL) $(PY) tests/events/live_e2e.py $(ARGS)
 
