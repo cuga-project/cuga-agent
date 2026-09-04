@@ -12,6 +12,7 @@ instead.
 
 import pytest
 
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.code_wrapper import CodeWrapper
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import BlockToolCallCounter
 
@@ -19,13 +20,7 @@ pytestmark = pytest.mark.unit
 
 
 def _wrap(body: str) -> str:
-    indented = "\n".join("    " + line for line in body.split("\n"))
-    return f"""
-import asyncio
-async def _async_main():
-{indented}
-    return locals()
-"""
+    return CodeWrapper.wrap_code(body)
 
 
 @pytest.mark.asyncio
