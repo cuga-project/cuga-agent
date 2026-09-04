@@ -211,8 +211,11 @@ def main() -> int:
 
     # ── WEBHOOK (generic inbound; direct, no AP) ─────────────────────────
     print("\n[WEBHOOK] POST an alert → incident_triage → response")
+    # ?key= when one is configured — the hook authenticates on a query param, and the gate fails
+    # closed, so a keyless POST is a 401 against any properly-secured deployment.
+    _wk = _env("EVENTS_WEBHOOK_KEY")
     code, r = _post(
-        "/api/events/hook/monitoring",
+        "/api/events/hook/monitoring" + (f"?key={_wk}" if _wk else ""),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
     )
     ans = r.get("answer") or ""

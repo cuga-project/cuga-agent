@@ -583,7 +583,10 @@ def leg_synth_fires(r: Report):
     for key, (payload, text, expect) in sorted(SYNTH_FIRES.items()):
         app, event = key.split("/")
         if app == "webhook":
-            code, rep = http("POST", "/api/events/hook/monitoring", payload)
+            # ?key= when one is configured — the hook authenticates on a query param, and the gate
+            # fails closed, so a keyless POST is a 401 against any properly-secured deployment.
+            _wk = _env("EVENTS_WEBHOOK_KEY")
+            code, rep = http("POST", "/api/events/hook/monitoring" + (f"?key={_wk}" if _wk else ""), payload)
             ans = str(rep.get("answer") or "")
             ok, why = quality(ans, expect)
             r.add("fire", key, "REAL", code == 200 and ok, why or ans[:70].replace("\n", " "))
