@@ -26,8 +26,8 @@ import {
   TableCell,
 } from "@carbon/react";
 import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity, Dashboard } from "@carbon/icons-react";
-import * as api from "./api";
-import { CugaHeader } from "./CugaHeader";
+import * as api from "../api";
+import { CugaHeader } from "../CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
 import "./StudioPage.css";
 
@@ -314,7 +314,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p className="studio-muted" style={{ margin: 0 }}>
           <b>One agent — CUGA.</b> These are its sub-agents (the roster), defined in{" "}
-          <code>docs/examples/events/supervisor_agents.yaml</code> — edit the file and <code>make reload</code> to change
+          <code>events/examples/rosters/default.yaml</code> — edit the file and <code>make reload</code> to change
           them. CUGA routes to the right specialist internally; nothing here is addressed directly.
         </p>
       </div>
@@ -335,7 +335,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No sub-agents loaded"
-          subtitle="The roster lives in docs/examples/events/supervisor_agents.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
+          subtitle="The roster lives in events/examples/rosters/default.yaml — edit it and run make reload. (There is one agent, CUGA; these are its sub-agents.)" />
       )}
       <div className="studio-grid">
         {data?.map((a) => (
@@ -377,7 +377,7 @@ function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => 
         ))}
       </div>
       {/* the editor is retired in the single-agent world — the roster lives in
-          docs/examples/events/supervisor_agents.yaml (edit + make reload); kept mounted for type stability */}
+          events/examples/rosters/default.yaml (edit + make reload); kept mounted for type stability */}
       <AgentEditor open={editorOpen} editing={editing} onClose={onClose} />
     </div>
   );
@@ -1173,17 +1173,27 @@ function AdminTab({ refresh }: { refresh: number }) {
 
 // The API reference — FastAPI's own Swagger UI, embedded live from the events service.
 //
-// This used to iframe two hand-maintained pages (the events docs (api){api,examples}.html, ~110 KB kept
-// in git). Both are gone: Swagger is generated from the running routes, so it can never drift, and
+// This used to iframe two hand-maintained pages (the events documentation repository/api/{api,examples}.html, ~110 KB kept
+// in git). Both are gone: Swagger is generated from the running routes so it can never drift, and
 // the examples board was always redundant — the Examples tab reads GET /api/events/examples, the
 // same catalog.py the deleted page was generated from.
-//
-// It must point at the EVENTS service, not CUGA. The old code used getApiBaseUrl() (CUGA's origin),
-// where /api/events/docs/* isn't served at all — the SPA fallback answered, so the iframe rendered
-// CUGA's own index.html inside the Studio.
 function ApiTab() {
-  const base = api.eventsBaseUrlSync();
-  const url = `${base}/docs`;
+  // Served by the EVENTS service, not by whoever served this SPA. `getApiBaseUrl()` returns
+  // window.location.origin — CUGA's — so in a split deployment the iframe asked CUGA and hit the
+  // SPA catch-all, rendering a copy of CUGA inside the tab. Resolved asynchronously and held in
+  // state rather than through the sync helper, because on first mount that cache is cold and would
+  // fall back to the same wrong origin.
+  const [base, setBase] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getEventsBaseUrl().then((b) => {
+      if (live) setBase(b);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const url = base ? `${base}/docs` : "";
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -1191,14 +1201,21 @@ function ApiTab() {
           The live API contract, generated from the running service — every route, its parameters and
           its responses. Machine-readable at <code>/openapi.json</code>.
         </p>
-        <Button size="sm" kind="ghost" renderIcon={Launch} href={`${base}/openapi.json`} target="_blank">
+        <Button size="sm" kind="ghost" renderIcon={Launch} href={base ? `${base}/openapi.json` : ""}
+          target="_blank" disabled={!base}>
           openapi.json
         </Button>
-        <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank">Open full page</Button>
+        <Button size="sm" kind="ghost" renderIcon={Launch} href={url} target="_blank" disabled={!base}>
+          Open full page
+        </Button>
       </div>
-      <iframe title="API reference" src={url}
-        style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
-                 borderRadius: 6, background: "#fff" }} />
+      {base ? (
+        <iframe title="API reference" src={url}
+          style={{ width: "100%", height: "72vh", border: "1px solid var(--cds-border-subtle, #e0e0e0)",
+                   borderRadius: 6, background: "#fff" }} />
+      ) : (
+        <p className="studio-muted" style={{ fontSize: 13 }}>Loading the API reference…</p>
+      )}
     </div>
   );
 }

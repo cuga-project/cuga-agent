@@ -14,7 +14,8 @@ Status is derived from **real state**, never hardcoded "connected":
 So what the UI shows is exactly what the backend can do right now.
 
 ``live`` = wired end-to-end and verified. Channels deliver two-way today: web (built-in),
-Telegram (AP webhook), Slack + Discord (DIRECT backends — Events API / Gateway, see ADR-0008).
+Slack + Discord (DIRECT backends — Events API / Gateway), and Telegram, which is direct long-poll
+by default with the AP webhook available behind ``EVENTS_TELEGRAM_BACKEND=ap``.
 Integrations watch/act through AP (OAuth/token connection + a piece trigger). ``outlook`` is the
 one connector still genuinely planned.
 """
@@ -41,8 +42,11 @@ CHANNELS = [
         "label": "Telegram",
         "env": "TELEGRAM_BOT_TOKEN",
         "live": True,
-        "backend": "ap",
-        "note": "two-way via the AP Telegram piece (webhook)",
+        # Resolved per-request from EVENTS_TELEGRAM_BACKEND — see _telegram_backend() below. These
+        # were hardcoded to the AP webhook, which contradicted every other reader of that variable
+        # (app.py, capability.py, telegram_direct.py and delivery.py all default to direct).
+        "backend": None,
+        "note": None,
     },
     {
         "name": "discord",
@@ -134,6 +138,19 @@ INTEGRATIONS = [
 ]
 
 
+def _telegram_backend() -> tuple[str, str]:
+    """(backend, note) for Telegram, read from the environment rather than assumed.
+
+    Telegram is the one channel with two transports, and the report used to claim the AP webhook
+    unconditionally. On a deployment running the default (direct long-poll) with AP unreachable,
+    that told an operator their working channel was down — and pointed them at setting up
+    Activepieces to fix a problem they did not have.
+    """
+    if os.environ.get("EVENTS_TELEGRAM_BACKEND", "direct").split(" #", 1)[0].strip() == "ap":
+        return "ap", "two-way via the AP Telegram piece (webhook)"
+    return "direct", "two-way via direct long-poll (getUpdates/sendMessage) — no AP, no public URL"
+
+
 def channels_status() -> list[dict]:
     """Each channel + whether its token is present (→ it can actually deliver)."""
     out = []
@@ -151,8 +168,10 @@ def channels_status() -> list[dict]:
                 "status": status,
                 "configured_via": c["env"] or "built-in",
                 "live": c["live"],
-                "backend": c.get("backend", "ap"),
-                "note": c["note"],
+                # A None backend/note means "resolve it now" — only Telegram, which has two
+                # transports and must report the one actually configured.
+                "backend": c.get("backend") or _telegram_backend()[0],
+                "note": c["note"] or _telegram_backend()[1],
             }
         )
     return out

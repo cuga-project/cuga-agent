@@ -8,7 +8,7 @@ import {
   Tag,
 } from "@carbon/react";
 import { Send } from "@carbon/icons-react";
-import * as api from "./api";
+import * as api from "../api";
 
 /**
  * ConciergeChat — a DUMB chat surface over POST /api/concierge.

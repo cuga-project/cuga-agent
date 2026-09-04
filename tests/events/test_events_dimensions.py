@@ -43,6 +43,24 @@ def test_channels_status_env_driven():
         os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 
 
+def test_telegram_reports_the_backend_it_is_actually_running(monkeypatch):
+    """Telegram is the one channel with two transports, and the report used to hardcode the AP
+    webhook. On a deployment running the default (direct long-poll) with AP unreachable, that told
+    an operator a working channel was down and pointed them at installing Activepieces to fix a
+    problem they did not have. Every other reader of this variable defaults to direct."""
+    for value, expected in (("direct", "direct"), ("ap", "ap"), ("", "direct")):
+        monkeypatch.setenv("EVENTS_TELEGRAM_BACKEND", value)
+        tg = {c["name"]: c for c in connectors.channels_status()}["telegram"]
+        assert tg["backend"] == expected, f"EVENTS_TELEGRAM_BACKEND={value!r}"
+        assert ("AP Telegram piece" in tg["note"]) == (expected == "ap")
+
+    monkeypatch.delenv("EVENTS_TELEGRAM_BACKEND", raising=False)
+    ch = {c["name"]: c for c in connectors.channels_status()}
+    assert ch["telegram"]["backend"] == "direct"  # unset is direct, as everywhere else
+    # the single-transport channels are untouched
+    assert ch["slack"]["backend"] == ch["discord"]["backend"] == ch["web"]["backend"] == "direct"
+
+
 # ---- connectors: integrations (AP-connection-driven status) --------------
 def test_integrations_status_from_connections():
     # AP off → everything ap_not_configured
@@ -209,6 +227,61 @@ def test_mcp_catalog_full_set():
     for app in ("web", "knowledge", "geo", "finance", "code", "local", "text"):
         assert f"cuga_{app}" in names  # all 7 event-agent-ap servers
     assert mcp_catalog.known_mcp_url("cuga_finance").endswith("/mcp")
+
+
+# ---- legacy names: agents provisioned before the cuga-web → cuga_web rename ----
+def test_legacy_catalog_names_migrate_but_foreign_names_do_not():
+    """The migration is BOUNDED to this catalog's own seven names, and that bound is the point.
+
+    A pre-rename agent stored `cuga-web`. Left alone, a backend="cuga" worker hands that to CUGA,
+    which scopes verbatim against underscore registry keys — no match, no tools, one log warning.
+    So it is rewritten.
+
+    An operator's OWN server may legitimately be registered as `my-server`: mcp_manager stores the
+    YAML key verbatim. Rewriting that would scope THEIR agent to a key the registry does not have —
+    the same failure, caused by the fix. Hence a name-by-name map rather than s/-/_/.
+    """
+    got = mcp_catalog.migrate_legacy_names(["cuga-web", "cuga_finance", "my-server", "cuga-nope"])
+    assert got == ["cuga_web", "cuga_finance", "my-server", "cuga-nope"]
+
+
+def test_resolve_accepts_a_server_it_has_never_heard_of_if_given_a_url():
+    """The react backend builds LangChain tools in THIS process, so it needs an endpoint. A name
+    it does not know is unresolvable — but a {'name', 'url'} entry is not, and that is the escape
+    hatch that keeps the catalog a convenience rather than a limit."""
+    cfg = mcp_catalog.resolve([{"name": "acme_crm", "url": "https://crm.acme.test/mcp"}, "cuga_geo"])
+
+    assert cfg["acme_crm"]["url"] == "https://crm.acme.test/mcp"
+    assert cfg["acme_crm"]["transport"] == "streamable_http"  # sane default
+    assert cfg["cuga_geo"]["url"].endswith("/mcp")  # the built-in still resolves by name alone
+
+
+def test_resolve_says_so_when_it_drops_a_server(caplog):
+    """It used to skip unresolvable names SILENTLY — the agent came up with fewer tools than it
+    declared, said "I don't have a tool for that", and nothing anywhere explained why. Skipping is
+    still right (one bad server should not sink an agent with three good ones) but it must be
+    visible."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cuga.events"):
+        cfg = mcp_catalog.resolve(["cuga_geo", "acme_crm"])
+
+    assert "cuga_geo" in cfg and "acme_crm" not in cfg  # the good one still resolves
+    assert any("acme_crm" in r.getMessage() for r in caplog.records), "dropped a server with no warning"
+
+
+def test_the_store_migrates_legacy_names_on_read():
+    """End-to-end through storage: no migration step and no operator action."""
+    from agent_store import AgentStore
+    from runtime import AgentSpec, AgentStoreRuntime
+
+    rt = AgentStoreRuntime(agent_store=AgentStore(":memory:"))
+    # A row exactly as a pre-rename Studio/concierge would have written it.
+    rt.upsert_agent(AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance", "my-server"]))
+
+    got = rt.get_agent("pricebot")
+    assert got.mcp_servers == ["cuga_finance", "my-server"]
+    assert rt.list_agents()[0].mcp_servers == ["cuga_finance", "my-server"]  # list() too, not just get()
 
 
 # ---- seed: pre-built agents carry channels + integrations ----------------

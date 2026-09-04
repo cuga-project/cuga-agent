@@ -3,11 +3,14 @@ name: Smoke pip install (isolated)
 # "Wheel install + demo_crm OpenAPI" is a required context in main's branch
 # protection. Do not add paths filters: a PR that skips this workflow never
 # reports that context and can never be merged.
+# `event_support` is listed for PRs so a stacked PR into it still runs CI — an unmatched filter
+# yields an empty check list, which reads as green rather than as "never ran". Same hazard the
+# note above describes for paths filters. Remove once event_support merges.
 on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, event_support]
   workflow_dispatch:
 
 concurrency:

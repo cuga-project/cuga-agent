@@ -53,11 +53,11 @@ _utterance: contextvars.ContextVar[str] = contextvars.ContextVar("utterance", de
 # ONLY way to reach the arming machinery — from every surface, web chat and channels alike. Plain
 # English answers once, now, and never creates a standing flow.
 #
-# A ContextVar rather than an argument because the two paths that used to arm without a verb do not
-# share a call signature: the deterministic pre-router calls the tool directly, and the react-agent
-# calls it as an LLM tool call several frames away. `run()` clears it on every turn and only the
-# post-approval armer sets it, so "did a human type the verb and then say yes?" is the one question
-# the tool has to answer.
+# This is a ContextVar rather than an argument because the two paths that used to arm without a
+# verb do not share a call signature: the deterministic pre-router calls the tool directly, and the
+# react-agent calls it as an LLM tool call several frames away. `run()` clears it on every turn and
+# only the post-approval armer sets it, so "did a human type the verb and then say yes?" is the one
+# question the tool has to answer.
 _arm_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar("arm_allowed", default=False)
 
 CHAT_STYLE = (
@@ -455,13 +455,13 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             The agent's answer is delivered to deliver_to (or the origin channel). The events layer
             never runs connector actions — the agent's own tools do that.
             Reuses a matching flow (agent+source+event+cadence+sink+owner) instead of duplicating."""
-            # THE GATE. Reached only when a human typed `/automate …`, saw the confirmation card and
-            # replied yes — `run()` clears the flag every turn and only the post-approval armer sets
-            # it. Reached any other way (the deterministic pre-router, or the react-agent deciding a
-            # sentence sounded like a schedule) this refuses and says how to ask properly.
+            # SLASH-ONLY GATE. Arming is a standing commitment — it runs unattended, on a schedule,
+            # against real credentials — so it takes an explicit verb and an explicit "yes". Reached
+            # any other way (the deterministic pre-router, or the react-agent deciding on its own
+            # that a sentence sounded like a schedule) this refuses and says how to ask properly.
             #
-            # The refusal is a plain sentence, not an error, because the LLM reads it: given a tool
-            # result that names the correct phrasing it relays that to the human rather than
+            # The refusal is a plain sentence rather than an error because the LLM reads it: given a
+            # tool result that names the correct phrasing, it relays that to the human instead of
             # inventing a different tool call.
             if not _arm_allowed.get():
                 return (
@@ -659,13 +659,33 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 f"{agent}|{source or 'time'}|{cadence}|{_cfg_tag}|{_sink_tag}|"
                 f"{_task_tag}|{_owner_scope(spec, p)}"
             )
-            existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
-            if existing:
-                nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
-                return (
-                    f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
-                    f"(subscription {existing.id}). Nothing new created."
-                )
+            # REUSE IS OFF BY DEFAULT (EVENTS_FLOW_REUSE=1 to restore it).
+            #
+            # Silently answering "REUSING existing flow … Nothing new created" to a human who just
+            # confirmed an arming is the worst failure shape available: they typed yes, they were
+            # told nothing was created, and the flow they asked for does not exist. Observed on a
+            # real Slack arm — "every 3 minutes give me a joke" was folded into a pre-existing
+            # 1-minute flow.
+            #
+            # The identity was never trustworthy for cron/poll either. The task hash reads
+            # `_utterance`, a ContextVar the react-agent does not reliably propagate into tool
+            # execution (the same caveat documented at the poll-tier selection below) — so two
+            # different requests can hash identically, which is exactly a collision.
+            #
+            # Leaving dedup_key EMPTY (rather than deleting the column) is what actually disables
+            # this: the store's UNIQUE index is partial — `WHERE dedup_key != ''` — so an empty key
+            # cannot collide, and `upsert` can never raise DuplicateSubscription. Flip the flag on
+            # and both the lookup and the index constraint come back exactly as before.
+            if os.environ.get("EVENTS_FLOW_REUSE", "0").split(" #", 1)[0].strip() != "1":
+                dedup_key = ""
+            else:
+                existing = store.find_by_dedup_key(dedup_key, scope=p.scope)
+                if existing:
+                    nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
+                    return (
+                        f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
+                        f"(subscription {existing.id}). Nothing new created."
+                    )
             origin = _origin.get()
             if kind == "push":
                 if not source:
@@ -1186,7 +1206,7 @@ class Concierge:
 
         p = principal or DEFAULT_PRINCIPAL
         arming.reset()
-        _arm_allowed.set(False)  # slash-only; re-granted below, per approved arming
+        _arm_allowed.set(False)  # slash-only; re-granted per approved arming below
         _utterance.set(text)  # tools read arm-time qualifiers from the RAW text (see ttl_of)
         # HITL ARMING GATE. An in-flight arming dialogue on this thread owns the next message —
         # it is answering a question or standing at the CONFIRM gate. Checked FIRST so a bare

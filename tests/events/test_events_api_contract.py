@@ -147,7 +147,7 @@ def _no_footer():
 
 
 # ── POST /invoke — the gateway every armed AP flow calls back into ────────────
-def test_invoke_rejects_missing_gateway_token():
+def test_invoke_rejects_missing_gateway_token(closed_gates):
     """/invoke runs an agent on a caller-supplied scope. With a token configured, an unsigned call
     is 401 — before the envelope is even parsed."""
     c, _ = _client(gateway_token="s3cret")
@@ -788,7 +788,7 @@ def test_debug_run_surfaces_an_ap_refusal_as_502():
     assert r.status_code == 502 and "Activepieces refused" in r.json()["error"]
 
 
-def test_debug_run_requires_the_gateway_token():
+def test_debug_run_requires_the_gateway_token(closed_gates):
     """It runs an agent with the caller's credentials and posts to a real channel. Its gate must not
     be weaker than /invoke's."""
     c, _ = _client([_sub()], engine=_RunEngine(), gateway_token="s3cret")
@@ -1098,19 +1098,12 @@ def test_admin_add_user_without_a_user_store_is_501():
 # What the route test was actually protecting — "a route nobody outside this repo can discover" —
 # is preserved by `test_every_route_is_self_documenting` below, without a committed artifact.
 
-
 # NOTE: `test_every_trigger_appears_in_its_setup_guide` lived here. It read
-# `the events docs (setup)<APP>.md` and asserted every registry trigger was named in its app's guide, so
-# that a trigger could not ship without its scopes/intents documented.
-#
-# The setup guides now live in the events documentation repository, out of this tree. A test cannot
-# assert against a file this repo does not contain: pointed at a path outside it, the check either
-# fails everywhere or skips everywhere, and a permanently-skipped test is worse than none — it reads
-# as coverage while guarding nothing.
-#
-# The guarantee it provided is real and did not move with it: a trigger added here with no matching
-# entry in the guides is now only caught by review. If that becomes a problem, the check belongs in
-# the docs repository, running against the trigger registry it can import — not here.
+# `setup/<APP>.md` in the events documentation repository and asserted every registry trigger was named in its app's guide, so
+# a trigger could not ship without its Slack scopes / Discord intents documented. The setup guides
+# now live in the events documentation repository, so the assertion has nothing in-repo to read.
+# Restore it there, alongside the guides, rather than here — a test that reads a tree this repo does
+# not own passes vacuously the moment the tree moves, which is worse than not having it.
 
 
 def test_every_route_is_self_documenting():
