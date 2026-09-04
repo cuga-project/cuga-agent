@@ -31,7 +31,6 @@ MARKER = "pyproject.toml"  # exists only at the repo root
 # without updating its climb fails HERE, naming the file, instead of somewhere downstream.
 PY_ROOTS = [
     ("events/scripts/run_all_tests.py", 2),
-    ("events/scripts/gen_supervisor_roster.py", 2),
 ]
 
 

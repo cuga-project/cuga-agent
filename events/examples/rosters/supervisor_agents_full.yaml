@@ -1,4 +1,5 @@
-# GENERATED once by events/scripts/gen_supervisor_roster.py — now the SOURCE OF TRUTH.
+# Originally machine-generated from the seeded worker fleet; this file is now the SOURCE OF TRUTH
+# and the generator has been removed (it could only ever have been run once).
 # Edit by hand; `make reload` rebuilds the supervisor.
 
 supervisor:

@@ -1,7 +1,9 @@
 # Domain Rosters — organized agent families
 
-The default roster `events/examples/rosters/default.yaml` is one flat supervisor over ~27 sub-agents thrown together —
-a grab-bag with no theme. These roster files reorganize the **same schema** into **coherent
+The big roster `events/examples/rosters/supervisor_agents_full.yaml` is one flat supervisor over 27
+sub-agents thrown together — a grab-bag with no theme. (`default.yaml`, the roster actually shipped
+and deployed, is the small no-AP core: 8 sub-agents under the `cuga` supervisor.)
+These roster files reorganize the **same schema** into **coherent
 domain-intelligence families**: one supervisor per domain, each owning a *small set of focused
 sub-agents that belong together*, so an agent means something ("Box Intelligence") instead of
 being a random pile.
@@ -35,7 +37,7 @@ A second, orthogonal cut for demoing "the teams an enterprise would deploy." The
 is a property of the *triggers*, not the agents** — an `ap_*` roster fields SaaS push events
 (Gmail/GitHub/Box/Calendar) that CUGA can't watch directly, so it needs AP; a `no_ap_*` roster's
 triggers are all direct channels (Slack/Discord/Telegram) + native cron/poll/RSS, so it runs with
-**zero AP infra**. All agents are pulled verbatim from `events/examples/rosters/default.yaml` — regrouped, not
+**zero AP infra**. All agents are pulled verbatim from `supervisor_agents_full.yaml` — regrouped, not
 rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files trim its
 `HANDLES TRIGGERS` lines down to only the AP-free triggers so the file is honestly no-AP.
 
@@ -53,7 +55,7 @@ rewritten. Where a borrowed agent had a mixed trigger set, the `no_ap_*` files t
   single integration. "Box Intelligence" is about documents, so it also fields email attachments;
   "Team Comms" spans Slack + Discord + Telegram because they're the same job on different transports.
 - **Each sub-agent does ONE meaningful thing** and declares the exact triggers it HANDLES (mirrored
-  from `events/triggers.py`). No sub-agent is a catch-all.
+  from `src/cuga/backend/events/triggers.py`). No sub-agent is a catch-all.
 - **Tools stay within the real MCP set**: `cuga_finance · cuga_knowledge · cuga_geo · cuga_web ·
   cuga_code · cuga_text`. No invented servers.
 - **Supervisor name stays `cuga`** so a file is drop-in: events still address the one agent `cuga`;
@@ -66,7 +68,7 @@ and nothing needs restoring — `make reload` on its own puts the default back.
 
 ```sh
 # from repo root
-CUGA_SUPERVISOR_ROSTER=rosters/box_document_intelligence.yaml make reload
+CUGA_SUPERVISOR_ROSTER=events/examples/rosters/box_document_intelligence.yaml make reload
 # …exercise it (synth-fire a box/new_file, or chat)…
 make reload                                                # back to the default roster
 ```

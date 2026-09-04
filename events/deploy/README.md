@@ -116,7 +116,8 @@ against a fire.
 **Verify the background loops.** The direct channel loops (Telegram long-poll, Discord Gateway) and
 the native scheduler only run if the events-background launcher fires at boot — confirm with
 `make ce-logs GREP=launched` → `events: launched N background task(s)`. (That launcher was once
-dropped in a merge, silently breaking Telegram/Discord + cron/poll; it's restored in `server/main.py`.)
+dropped in a merge, silently breaking Telegram/Discord + cron/poll; it's restored in
+`src/cuga/backend/server/main.py`.)
 
 ## The events database (do this ONCE, before the first deploy)
 
