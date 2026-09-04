@@ -130,6 +130,26 @@ def gw_headers():
     return {"X-Gateway-Token": env("GATEWAY_TOKEN")}
 
 
+def hook_path(name: str, **params) -> str:
+    """Path for the inbound webhook, carrying ?key= when one is configured.
+
+    The webhook authenticates on a QUERY PARAM, not a header, so gw_headers() does nothing for it.
+    This harness used to POST with no key at all and pass — because the gate was "enforce if
+    configured" and the deployment had no EVENTS_WEBHOOK_KEY set, which is exactly the hole that
+    made /api/events/hook/<name> an unauthenticated agent-execution endpoint. Now that the gate
+    fails closed, a keyless POST is a 401 and these four assertions went red against a perfectly
+    healthy deployment.
+
+    Sends nothing when the variable is unset, so a local run with EVENTS_ALLOW_UNAUTHENTICATED=1
+    still exercises the open path.
+    """
+    from urllib.parse import urlencode
+
+    key = env("EVENTS_WEBHOOK_KEY")
+    q = {**params, **({"key": key} if key else {})}
+    return f"/api/events/hook/{name}" + (f"?{urlencode(q)}" if q else "")
+
+
 def has_digit(s: str) -> bool:
     return any(c.isdigit() for c in s or "")
 
@@ -973,7 +993,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  POST an alert → incident_triage → severity")
     code, rep = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {"alert": "HighCPU", "service": "checkout-api", "value": "97%", "threshold": "85%"},
         timeout=240,
     )
@@ -1002,7 +1022,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  POST a non-alert shape (CI failure) → same worker")
     code2, rep2 = srv(
         "POST",
-        "/api/events/hook/monitoring",
+        hook_path("monitoring"),
         {
             "event": "build.failed",
             "repo": "anupamamurthi/pachyderm",
@@ -1041,7 +1061,7 @@ def flow_webhook(r: Report):
     print("\n\033[1m[flow · WEBHOOK]\033[0m  ROUTED (?route=1) — concierge picks the agent, like chat")
     code3, rep3 = srv(
         "POST",
-        "/api/events/hook/ci?route=1",
+        hook_path("ci", route="1"),
         {
             "pull_request": {
                 "title": "Refactor auth module",
