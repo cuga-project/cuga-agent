@@ -282,21 +282,30 @@ The agent model is pure env, so switching is just a **re-run of step 2** (the im
 never changes):
 
 ```bash
-# classic single generalist (script default)
+# script default — supervisor ON over the 8-agent core roster
+# (CE_EVENTS_SUPERVISOR defaults to 1 and CE_ROSTER to events/examples/rosters/default.yaml,
+#  so this is exactly what `make ce-deploy` runs and what the live deploy uses)
 CUGA_CE_ADMIN=1 ./2_deploy.sh
 
-# supervisor over the full 27-agent roster (what the live deploy uses)
-CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=events/examples/rosters/default.yaml ./2_deploy.sh
+# the big 27-agent grab-bag roster instead
+CUGA_CE_ADMIN=1 CE_ROSTER=events/examples/rosters/supervisor_agents_full.yaml ./2_deploy.sh
 
-# supervisor over a focused, curated roster
-CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=1 CE_ROSTER=rosters/no_ap_research_desk.yaml ./2_deploy.sh
+# a focused, curated roster
+CUGA_CE_ADMIN=1 CE_ROSTER=events/examples/rosters/no_ap_research_desk.yaml ./2_deploy.sh
+
+# classic single generalist — no roster at all (opt OUT explicitly)
+CUGA_CE_ADMIN=1 CE_EVENTS_SUPERVISOR=0 ./2_deploy.sh
 ```
-`CE_EVENTS_SUPERVISOR=1` is the gate that makes the deploy pass a roster at all; `CE_ROSTER` sets
-`CUGA_SUPERVISOR_ROSTER` on **cuga-core** (see [2_deploy.sh](2_deploy.sh) — `EVENTS_SUPERVISOR`
-itself is inert and is deliberately not passed). Every roster (`events/examples/rosters/default.yaml` + all of `rosters/`)
-is baked into the image, so any of them is available without a rebuild. Any
-`rosters/no_ap_*.yaml` (and the 27-agent default) runs with zero AP; the `ap_*` rosters
-only light up their SaaS triggers once Activepieces is deployed.
+`CE_EVENTS_SUPERVISOR` is the gate that makes the deploy pass a roster at all, and it **defaults to
+1**. It used to default to off, and that was a trap: a plain `./2_deploy.sh` produced a CUGA whose
+`/run/agents` reported one agent, so every fired flow ran as the bare default with no sub-agents and
+no scoped tools — nothing errored, the answers were just quietly worse.
+
+`CE_ROSTER` sets `CUGA_SUPERVISOR_ROSTER` on **cuga-core** (see [2_deploy.sh](2_deploy.sh) —
+`EVENTS_SUPERVISOR` itself is inert and is deliberately not passed). Every roster under
+`events/examples/rosters/` is baked into the image, so any of them is available without a rebuild.
+The default and every `no_ap_*.yaml` run with zero AP; the `ap_*` rosters only light up their SaaS
+triggers once Activepieces is deployed.
 
 ## Files
 | File | Purpose |
