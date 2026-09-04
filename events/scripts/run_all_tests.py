@@ -376,7 +376,7 @@ def main() -> int:
             v["crashed"] = True
             v["note"] = "exit 0 but NO summary parsed — harness output format changed? (all-zero row)"
         results.append(v)
-        # refresh the VERIFICATION LEDGER cell this harness proves (events/docs/verification.html)
+        # refresh the VERIFICATION LEDGER cell this harness proves (verification.html, in the events documentation repository)
         try:
             sys.path.insert(0, os.path.join(REPO, "tests", "events"))
             from _ledger import record as _lrec

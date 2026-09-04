@@ -7,7 +7,7 @@ concierge routes an end user's utterance to one of four outcomes:
   • DECLINE when no agent fits (never invents one),
   • CONNECT-NEEDED when a per-user integration isn't logged in.
 
-Prereqs (see events/docs/MCP_SETUP.md):
+Prereqs (see the events docs (MCP_SETUP.md)):
   registry with cuga-apps config +  the server:
     # CUGA (the worker) on :7860, then the events SERVICE on :8100 — the combined mount and its
     # EVENTS_ENABLED flag are gone, so these are two processes now.

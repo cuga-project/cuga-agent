@@ -16,7 +16,7 @@ It exercises, over real HTTP against the running server:
 Prereqs:
   registry (cuga-apps) + server with a live AP engine:
     EVENTS_WORKER_BACKEND=cuga EVENTS_SEED_AGENTS=1 AP_BASE_URL=… (AP up)
-  For a FULL PUSH e2e, connect the integration first (per events/docs/setup/{BOX,GITHUB,GMAIL}.md):
+  For a FULL PUSH e2e, connect the integration first (per the events docs (setup/{BOX,GITHUB,GMAIL}.md)):
     • Box/Gmail: GET /api/events/connect/{app}  (OAuth consent)
     • GitHub:    POST /api/events/connect/github/token  {token: <PAT>}
 Env: EVENTS_SERVER_URL (default http://localhost:7860), GATEWAY_TOKEN (from .env).
@@ -229,7 +229,7 @@ def main() -> int:
     unconn = [a for a in ("box", "github", "gmail") if conn.get(a) != "connected"]
     if unconn:
         print(f"\nNOTE: {', '.join(unconn)} not connected → their PUSH shows CONNECT-NEEDED (wiring proven).")
-        print("For a FULL AP push e2e, connect them (see events/docs/setup/) and re-run:")
+        print("For a FULL AP push e2e, connect them (see the events docs (setup)) and re-run:")
         print("  • Box/Gmail: open  GET /api/events/connect/{box,gmail}  (OAuth consent)")
         print("  • GitHub:    POST /api/events/connect/github/token  {\"token\":\"<PAT>\"}")
     print("RESULT:", "PASS" if passed == len(checks) else "PARTIAL — see FAILs above")

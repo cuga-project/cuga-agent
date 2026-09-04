@@ -1,7 +1,7 @@
 """Activepieces flow **builders** — deterministic, testable, pure functions.
 
 The concierge (an LLM) picks typed slots; these builders render a valid AP flow JSON
-(see events/docs/ARCHITECTURE.md). Every flow is: TRIGGER ▸ POST /invoke ▸ [Router] ▸ sink.
+(see the events docs (ARCHITECTURE.md)). Every flow is: TRIGGER ▸ POST /invoke ▸ [Router] ▸ sink.
 No LLM here, no I/O — just dict construction, so it's fully unit-testable and diff-able
 against tests/events (offline flow-builder tests).
 

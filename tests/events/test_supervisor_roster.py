@@ -1,5 +1,5 @@
 """Offline gates for the SUPERVISOR ROSTER (supervisor_agents.yaml — the canonical source of
-truth for sub-agents; events/docs/plans/SUPERVISOR_REFACTOR.md).
+truth for sub-agents; the events docs (plans/SUPERVISOR_REFACTOR.md)).
 
 The supervisor routes on the sub-agent NAME (its prompt has no other description to go on). These
 gates keep the roster honest without an LLM in the loop:

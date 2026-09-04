@@ -6,7 +6,7 @@
       "agent":  "<target agent_id, when the subscription names one>",
       "deliver": true }
 
-Stdlib-only and self-contained so it's trivially testable. See events/docs/ARCHITECTURE.md.
+Stdlib-only and self-contained so it's trivially testable. See the events docs (ARCHITECTURE.md).
 """
 
 from __future__ import annotations

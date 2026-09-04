@@ -1173,7 +1173,7 @@ function AdminTab({ refresh }: { refresh: number }) {
 
 // The API reference — FastAPI's own Swagger UI, embedded live from the events service.
 //
-// This used to iframe two hand-maintained pages (events/docs/api/{api,examples}.html, ~110 KB kept
+// This used to iframe two hand-maintained pages (the events documentation repository/api/{api,examples}.html, ~110 KB kept
 // in git). Both are gone: Swagger is generated from the running routes so it can never drift, and
 // the examples board was always redundant — the Examples tab reads GET /api/events/examples, the
 // same catalog.py the deleted page was generated from.

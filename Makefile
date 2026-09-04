@@ -251,11 +251,6 @@ report: ## Open the latest HTML report (results/index.html) — does not run any
 	@test -f results/index.html || { echo "no report yet — run: make test-report"; exit 1; }
 	@open results/index.html 2>/dev/null || echo "results/index.html"
 
-api-docs: ## SERVE the API reference over http:// (Try-it needs http://, not file://)
-	@echo "API reference → http://localhost:8123/api.html   (ctrl-c to stop)"
-	@open "http://localhost:8123/api.html" 2>/dev/null || true
-	@$(PY) -m http.server 8123 --directory events/docs/api
-
 test-delegation:
 	$(PY) tests/events/live_delegation_bench.py
 
@@ -297,7 +292,7 @@ preflight: ## Check the TOOLS `make up` needs are installed & running — fails 
 	  else echo "· EVENTS_NGROK_DOMAIN unset — CUGA will use an EPHEMERAL cloudflared tunnel (URL changes each run; re-point Slack/OAuth). ngrok is recommended — see setup/NGROK.md"; fi; \
 	command -v node >/dev/null 2>&1 || echo "· node missing — only needed to build the Studio UI (scripts/frontend_build.sh), NOT to run the stack"; \
 	$(MAKE) --no-print-directory check-gateway-token || ok=0; \
-	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: events/docs/SETUP.md → Prerequisites.)"; exit 1; fi
+	if [ $$ok = 1 ]; then echo "✓ tools present.   → NEXT: make up"; else echo; echo "Fix the ✗ item(s) above, then re-run \`make preflight\`. (Full list: the events documentation repository (SETUP.md → Prerequisites).)"; exit 1; fi
 
 test-exhaustive:
 	$(PY) tests/events/live_exhaustive.py $(ARGS)

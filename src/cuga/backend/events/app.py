@@ -1,6 +1,6 @@
 """FastAPI wiring for the events layer — registered onto the eventing service's own app.
 
-Two new endpoints (events/docs/ARCHITECTURE.md):
+Two new endpoints (the events docs (ARCHITECTURE.md)):
   - ``POST /invoke``         — the seam AP calls back through (X-Gateway-Token).
   - ``POST /api/concierge``  — NL → decide; ``?dry_run=1`` builds the flow without publishing.
 
@@ -2084,7 +2084,7 @@ def register_events_routes(
         # 3b) every OTHER event type (app_mention → new_slack_mention watchers, reaction_added,
         #     channel_created, team_join, emoji_changed, star_added, …) → the DIRECT watcher dispatcher.
         #     These used to be silently dropped at should_process — 15 of Slack's event types were
-        #     unreachable. Requires the Slack app to be SUBSCRIBED to the event (events/docs/setup/SLACK.md).
+        #     unreachable. Requires the Slack app to be SUBSCRIBED to the event (the events docs (setup/SLACK.md)).
         ev_type = ev.get("type") or ""
         if ev_type and store is not None:
             from . import direct_events

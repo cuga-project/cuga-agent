@@ -23,7 +23,7 @@
 # NOTE ON THE DESIGN. The store is COS-backed (object storage). SQLite must NOT run on it — no
 # POSIX locking, whole-object rewrites, corruption. So the live DB stays on local disk and the
 # service snapshots to the mount (src/cuga/backend/events/db_persist.py). This is correct for the
-# single writer we deploy (min=max=1). Multiple replicas need Postgres — see events/docs/.
+# single writer we deploy (min=max=1). Multiple replicas need Postgres — see the events documentation repository.
 # ============================================================
 set -euo pipefail
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )

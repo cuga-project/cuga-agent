@@ -1098,23 +1098,12 @@ def test_admin_add_user_without_a_user_store_is_501():
 # What the route test was actually protecting — "a route nobody outside this repo can discover" —
 # is preserved by `test_every_route_is_self_documenting` below, without a committed artifact.
 
-
-def test_every_trigger_appears_in_its_setup_guide():
-    """Every registry trigger must be named (as `event`) in its app's events/docs/setup/<APP>.md —
-    the setup guides are where a tester learns which scope/intent/subscription each trigger needs
-    (Slack scopes, Discord privileged intents, the one-credential-covers-all note for gmail/github/
-    box). A trigger added without its permissions documented is a support ticket waiting."""
-    import pathlib
-
-    root = pathlib.Path(__file__).resolve().parents[2] / "events" / "docs" / "setup"
-    from events import triggers as tr
-
-    missing = []
-    for t in tr.rows():
-        doc = root / f"{t.app.upper()}.md"
-        if not doc.exists() or f"`{t.event}`" not in doc.read_text():
-            missing.append(f"{t.app}/{t.event} → setup/{doc.name}")
-    assert not missing, "triggers not documented in their setup guide:\n  " + "\n  ".join(missing)
+# NOTE: `test_every_trigger_appears_in_its_setup_guide` lived here. It read
+# `setup/<APP>.md` in the events documentation repository and asserted every registry trigger was named in its app's guide, so
+# a trigger could not ship without its Slack scopes / Discord intents documented. The setup guides
+# now live in the events documentation repository, so the assertion has nothing in-repo to read.
+# Restore it there, alongside the guides, rather than here — a test that reads a tree this repo does
+# not own passes vacuously the moment the tree moves, which is worse than not having it.
 
 
 def test_every_route_is_self_documenting():

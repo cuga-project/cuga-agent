@@ -3,7 +3,7 @@
 A concierge turns natural language into standing flows; every trigger (channel message, app
 event, cron, run-once) re-enters through ``POST /invoke``, and the worker call goes out to CUGA's
 ``POST /run`` over HTTP. This package is never mounted onto CUGA's app — that "combined" mode was
-removed, along with the ``EVENTS_ENABLED`` flag that gated it. See ``events/docs/ARCHITECTURE.md``.
+removed, along with the ``EVENTS_ENABLED`` flag that gated it. See ``the events docs (ARCHITECTURE.md)``.
 
 Import policy: this ``__init__`` stays import-light on purpose. The pure modules
 (``envelope``, ``mcp_catalog``, ``trace``, ``flows``, ``subscriptions``, ``classify``)

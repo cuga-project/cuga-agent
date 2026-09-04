@@ -78,4 +78,4 @@ else
 fi
 
 echo
-echo "Done. Integrations (GitHub/Box/Gmail) are armed per-trigger from chat, not here — see events/docs/setup/."
+echo "Done. Integrations (GitHub/Box/Gmail) are armed per-trigger from chat, not here — see the events docs (setup)."

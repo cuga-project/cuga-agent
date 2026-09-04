@@ -206,7 +206,7 @@ export function ConciergeChat({
  * ArmConfirmCard — the CONFIRM gate, rendered.
  *
  * Nothing is armed until the human approves the exact prompt the agent will be handed on every
- * fire (events/docs/plans/SPLIT_AND_HITL_ARMING_SPEC.md §5). The card exists so that prompt is
+ * fire (the events docs (plans/SPLIT_AND_HITL_ARMING_SPEC.md) §5). The card exists so that prompt is
  * impossible to miss: it is the one thing a bad automation gets wrong, forever, silently.
  *
  * The buttons are shortcuts, not a separate protocol — each sends the same plain text a user could

@@ -156,7 +156,7 @@ _need="uv"
 if [ -z "$NO_TUNNEL" ]; then
   if [ -n "$NGROK_DOMAIN" ]; then _need="uv ngrok"; else _need="uv cloudflared"; fi
 fi
-for c in $_need; do command -v $c >/dev/null || { echo "MISSING: $c (see events/docs/SETUP.md)"; exit 1; }; done
+for c in $_need; do command -v $c >/dev/null || { echo "MISSING: $c (see the events docs (SETUP.md))"; exit 1; }; done
 [ -d .venv ] || { echo "no .venv — running uv sync (minutes)…"; uv sync --python 3.12; }
 if [ -n "$NO_TUNNEL" ]; then
   echo "== NO-AP mode: skipping tunnel; AP not required =="

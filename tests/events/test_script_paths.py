@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-Moving `scripts/` to `events/scripts/` (and `events_docs/` to `events/docs/`) put six files one
+Moving `scripts/` to `events/scripts/` put several files one
 directory deeper. Each of them walks up a FIXED number of levels to find the repo root:
 
     cd "$(dirname "$0")/.."                  # bash
@@ -30,11 +30,8 @@ MARKER = "pyproject.toml"  # exists only at the repo root
 # (path, number of levels it climbs). Kept explicit rather than parsed so that moving a file
 # without updating its climb fails HERE, naming the file, instead of somewhere downstream.
 PY_ROOTS = [
-    ("events/docs/setup/scripts/_common.py", 4),
     ("events/scripts/run_all_tests.py", 2),
     ("events/scripts/gen_supervisor_roster.py", 2),
-    ("events/scripts/gen_ledger.py", 2),
-    ("events/scripts/gen_slides.py", 2),
 ]
 
 

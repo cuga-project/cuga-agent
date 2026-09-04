@@ -5,14 +5,14 @@ Any harness that proves something calls::
     from _ledger import record
     record("box", "fire_real", "ok", "real upload → detected → judged")
 
-Records land in events/docs/verification_data.json keyed by (surface, capability) — newest wins —
-and events/scripts/gen_ledger.py renders events/docs/verification.html from them. So the ledger updates
-itself every time a test runs, and a cell's date is always the date it was last PROVEN.
+Records land in `results/verification_data.json` keyed by (surface, capability) — newest wins — so
+the ledger updates itself every time a live harness runs, and a cell's date is always the date it
+was last PROVEN.
 
-The destination has to be a directory this repo actually has. On the 602 branch the docs tree lived
-outside the repository, so every record silently failed the `open()` below and the ledger recorded
-nothing at all — no error, just an empty ledger. `events/docs/` is back here, so the path is valid
-again, and the `makedirs` beneath is what keeps the failure from being silent a second time.
+`results/` is gitignored: local evidence, not a committed artifact. The destination MUST be a
+directory this repo actually has — the docs tree now lives outside the repository again, and writing
+into a path the repo does not own made every record fail the `open()` below silently, leaving an
+empty ledger with no error. The `makedirs` is what stops that recurring.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import sys
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA = os.path.join(ROOT, "events/docs", "verification_data.json")
+DATA = os.path.join(ROOT, "results", "verification_data.json")
 os.makedirs(os.path.dirname(DATA), exist_ok=True)
 
 

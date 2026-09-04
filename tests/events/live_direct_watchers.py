@@ -12,7 +12,7 @@ filters) → agent dispatch → real delivery back into Slack.
 
 The ONE thing it cannot prove is that Slack *delivers* the event to us — that depends on the Slack
 app being subscribed to the event type and holding the paired OAuth scope (see
-events/docs/setup/SLACK.md). ``--scopes`` reports exactly which of those are in place, so a missing
+the events docs (setup/SLACK.md)). ``--scopes`` reports exactly which of those are in place, so a missing
 scope is reported as a SETUP gap rather than a silent failure.
 
 Run:  .venv/bin/python tests/events/live_direct_watchers.py            # arm + fire every watcher
@@ -294,7 +294,7 @@ def main() -> int:
     if missing:
         print(
             f"  NOTE: {len(missing)} watcher(s) will not receive REAL Slack events until their "
-            f"scope is granted + the app is subscribed (events/docs/setup/SLACK.md). The synthetic "
+            f"scope is granted + the app is subscribed (the events docs (setup/SLACK.md)). The synthetic "
             f"fire above still proves CUGA's side."
         )
     return 0 if npass == len(SLACK_WATCHERS) else 1

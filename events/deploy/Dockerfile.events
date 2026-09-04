@@ -32,11 +32,6 @@ COPY docs/ ./docs/
 # and quietly runs as ONE bare agent with no sub-agents and no scoped tools.
 COPY events/examples/ ./events/examples/
 
-# The Studio's API tab embeds these two pages via GET /api/events/docs/{api,examples}, which resolve
-# to <repo>/events/docs/api/. The Dockerfile never copied them, so that tab has always 404'd on a
-# deployment while working locally — the kind of gap only a request against the live route finds.
-COPY events/docs/api/ ./events/docs/api/
-
 RUN uv sync
 
 RUN mkdir -p /app/cuga_workspace
