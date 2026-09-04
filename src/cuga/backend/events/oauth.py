@@ -43,9 +43,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import time
+
+_log = logging.getLogger("cuga.events")
 
 # provider registry — endpoints + default scopes + the AP piece the connection is for.
 PROVIDERS: dict[str, dict] = {
@@ -179,6 +182,16 @@ def _fernet():
     try:
         return Fernet(key.encode())
     except Exception:  # noqa: BLE001 — a malformed key must not break setup
+        # SET-BUT-BROKEN IS NOT THE SAME AS UNSET, and returning None for both was the same
+        # fail-open shape as the auth gates: the operator believes secrets are encrypted, and they
+        # are written in plaintext instead. The likely cause is generating this with
+        # `secrets.token_urlsafe(32)` — right for GATEWAY_TOKEN, rejected by Fernet, which needs
+        # 32 url-safe base64 bytes from `Fernet.generate_key()`.
+        _log.error(
+            "CUGA_SECRET_KEY is set but is not a valid Fernet key — OAuth app secrets are being "
+            "stored UNENCRYPTED. Generate it with: python -c \"from cryptography.fernet import "
+            'Fernet; print(Fernet.generate_key().decode())"'
+        )
         return None
 
 
