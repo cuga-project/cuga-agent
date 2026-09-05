@@ -62,7 +62,7 @@ the two seams this spec makes pluggable.
 
 | # | Layer | Location | Trigger | LLM? |
 |---|---|---|---|---|
-| 1 | App-level filtering | `adapter/prepare_node.py:169-224` | `sub_task_app` / `api_intent_relevant_apps` / `force_lite_mode_apps` | no |
+| 1 | App-level filtering | `adapter/prepare_node.py:169-224` | `sub_task_app` / `api_intent_relevant_apps` | no |
 | 2 | Prompt collapse to `find_tools` | `adapter/prepare_node.py:225-263` | `total_tool_count > shortlisting_tool_threshold` (35) | no |
 | **3** | **Runtime discovery — `find_tools`** | `helpers/find_tools.py:54-137` → `prompt_utils.py:297-458` | agent calls it | **yes — seam A** |
 | **4** | **Bind-time provider cap** | `bind_tools/cap.py:275-383` → `prompt_utils.py:461-541` | candidates > `cuga_lite_bind_tools_max_count` (128) | **yes — seam B** |
@@ -909,17 +909,13 @@ Found while tracing; each is a deliberate call, not an oversight:
 1. **`advanced_features.shortlisting_tool_threshold` has no dynaconf Validator**, unlike every
    other cap in this area. A missing settings.toml key `AttributeError`s at
    `adapter/prepare_node.py:117`. → **Fix in PR 1** (one line, same file we're already editing).
-2. **Both Lite shortlister paths default to `settings.agent.code.model`, not
-   `settings.agent.shortlister.model`** (`prompt_utils.py:347` and `:518`) — only the classic
-   graph node uses the dedicated model. → Exposed as `[shortlister] model`, defaulting to `""`
-   = today's behavior. **Not** changed by default.
-3. **Dead assets**: `cuga_lite/prompts/shortlister/user.jinja2` is referenced by no Python
-   (both callers inline their human messages);
-   `configurations/instructions/default/shortlister.md` is 0 bytes, so `{{ instructions }}` in
-   the classic prompt is always empty. → Noted; **out of scope**.
-4. **Shortlisting is undocumented** outside `settings.toml` inline comments — nothing in
-   README/AGENTS/docs describes `find_tools`, `shortlisting_tool_threshold`, or
-   `cuga_lite_bind_tools_*`. → PR 4 closes this gap for the whole subsystem.
+2. **Current LLM shortlister paths use `settings.agent.code.model`**
+   (`prompt_utils.py:347` and `:518`). The retired classic graph's dedicated model sections
+   have been removed.
+3. **Dead asset**: `cuga_lite/prompts/shortlister/user.jinja2` is referenced by no Python
+   because both current callers inline their human messages. → Noted; **out of scope**.
+4. **Shortlisting documentation** now lives in README's **Tool Shortlisting** section,
+   including `find_tools`, `shortlisting_tool_threshold`, and the bind-time cap.
 5. **Version drift**: `src/cuga/__init__.py:28` says `0.2.20`, `pyproject.toml:3` says `0.3.1`.
    → Pre-existing, unrelated, **out of scope**.
 

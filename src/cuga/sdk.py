@@ -1930,6 +1930,7 @@ class CugaAgent:
 
         # Initialize knowledge manager (cached instance)
         self._knowledge_client = None
+        self._feature_overrides: Dict[str, Any] = {}
 
     async def initialize(self):
         """
@@ -1995,6 +1996,9 @@ class CugaAgent:
         """
         run_config: dict = dict(config) if config else {}
         run_config["configurable"] = dict(run_config.get("configurable") or {})
+        for key, value in (getattr(self, "_feature_overrides", None) or {}).items():
+            if value is not None:
+                run_config["configurable"].setdefault(key, value)
         return run_config
 
     def _apply_shortlister(self, run_config: dict, shortlister: Optional["Shortlister"] = None) -> None:
@@ -2143,7 +2147,7 @@ class CugaAgent:
         - SDKCallback handles response -> back to CugaLiteSubgraph or FinalAnswerAgent
         - Otherwise -> FinalAnswerAgent -> END
 
-        Dummy nodes (APIPlannerAgent, ChatAgent, CugaLite) are added to support
+        Dummy nodes (ChatAgent, CugaLite, EntryRouter) are added to support
         internal routing from CugaLiteSubgraph that references these nodes.
         """
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
@@ -2175,11 +2179,6 @@ class CugaAgent:
         compiled_subgraph = cuga_lite_subgraph.compile()
 
         # Dummy nodes to support internal CugaLiteSubgraph routing
-        async def dummy_api_planner_node(state: AgentState) -> Command[Literal['SDKCallback']]:
-            """Dummy APIPlannerAgent node - routes back to SDK callback."""
-            logger.debug("Dummy APIPlannerAgent node - routing to SDKCallback")
-            return Command(update=state.model_dump(), goto="SDKCallback")
-
         async def dummy_chat_agent_node(state: AgentState) -> Command[Literal['SDKCallback']]:
             """Dummy ChatAgent node - routes back to SDK callback."""
             logger.debug("Dummy ChatAgent node - routing to SDKCallback")
@@ -2188,6 +2187,11 @@ class CugaAgent:
         async def dummy_cuga_lite_node(state: AgentState) -> Command[Literal['SDKCallback']]:
             """Dummy CugaLite node - routes back to SDK callback."""
             logger.debug("Dummy CugaLite node - routing to SDKCallback")
+            return Command(update=state.model_dump(), goto="SDKCallback")
+
+        async def dummy_entry_router_node(state: AgentState) -> Command[Literal['SDKCallback']]:
+            """Dummy EntryRouter node - routes back to SDK callback."""
+            logger.debug("Dummy EntryRouter node - routing to SDKCallback")
             return Command(update=state.model_dump(), goto="SDKCallback")
 
         # Create custom callback node for SDK (simpler than full CugaLiteNode)
@@ -2270,9 +2274,9 @@ class CugaAgent:
         wrapper.add_node(final_answer_node.final_answer_agent.name, final_answer_node.node)
 
         # Add dummy nodes for internal CugaLiteSubgraph routing
-        wrapper.add_node(NodeNames.API_PLANNER_AGENT, dummy_api_planner_node)
         wrapper.add_node(NodeNames.CHAT_AGENT, dummy_chat_agent_node)
         wrapper.add_node(NodeNames.CUGA_LITE, dummy_cuga_lite_node)
+        wrapper.add_node(NodeNames.ENTRY_ROUTER, dummy_entry_router_node)
 
         # Add static edges (routing is done via Command objects in nodes)
         wrapper.add_edge(START, "CugaLiteSubgraph")
@@ -3455,8 +3459,8 @@ class CugaSupervisor:
         for node_name in (
             "FinalAnswerAgent",
             NodeNames.CHAT_AGENT,
-            NodeNames.API_PLANNER_AGENT,
             NodeNames.CUGA_LITE,
+            NodeNames.ENTRY_ROUTER,
         ):
             wrapper.add_node(node_name, dummy_route_to_callback)
 
