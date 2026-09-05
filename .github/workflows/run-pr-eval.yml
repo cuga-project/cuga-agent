@@ -22,7 +22,8 @@ jobs:
       (
         github.event.comment.author_association == 'OWNER' ||
         github.event.comment.user.login == 'AnkitaNaik' ||
-        github.event.comment.user.login == 'Sergey-Zeltyn'
+        github.event.comment.user.login == 'Sergey-Zeltyn' ||
+        github.event.comment.user.login == 'haroldship'
       )
     runs-on: [self-hosted, linux, run-pr-eval]
     timeout-minutes: 120
@@ -64,13 +65,34 @@ jobs:
             echo "${GITHUB_WORKSPACE}/src/cuga not found"
           fi
 
+      - name: Parse eval provider
+        id: eval-provider
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          provider="rits"
+          normalized_comment="${COMMENT_BODY//$'\r'/ }"
+          normalized_comment="${normalized_comment//$'\n'/ }"
+
+          for token in ${normalized_comment}; do
+            case "${token}" in
+              provider=*)
+                provider="${token#provider=}"
+                ;;
+            esac
+          done
+
+          provider="$(printf '%s' "${provider}" | tr '[:upper:]' '[:lower:]')"
+          echo "provider=${provider}" >> "${GITHUB_OUTPUT}"
+
       - name: Run AppWorld evaluation
         id: evaluation
         shell: bash
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          RITS_API_KEY: ${{ secrets.RITS_API_KEY }}
-          LITE_LLM_KEY: ${{ secrets.LITE_LLM_KEY }}
+          OPENAI_API_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.OPENAI_API_KEY || '' }}
+          RITS_API_KEY: ${{ steps.eval-provider.outputs.provider == 'rits' && secrets.RITS_API_KEY || '' }}
+          LITE_LLM_KEY: ${{ steps.eval-provider.outputs.provider == 'litellm' && secrets.LITE_LLM_KEY || '' }}
           AGENT_SETTING_CONFIG: settings.rits.toml
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           MODEL_NAME: ${{ vars.MODEL_NAME }}
@@ -104,7 +126,7 @@ jobs:
           cp "${output_log}" "${GITHUB_WORKSPACE}/run-pr-eval-output.md"
           cp "${exit_code_log}" "${GITHUB_WORKSPACE}/run-pr-eval-exit-code.txt"
 
-          exit 0
+          exit "${status}"
 
       - name: Upload full evaluation output
         if: always()
