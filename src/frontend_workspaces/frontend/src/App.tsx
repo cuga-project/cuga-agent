@@ -9,10 +9,34 @@ import { AuthProvider, useAuth } from "./AuthContext";
 import * as api from "./api";
 import * as auth from "./auth";
 import "./carbon.scss";
+
 import "./global.css";
+
+// Studio is LAZY on purpose. It is the events control plane, reachable only at /studio and only
+// when the events service answers — but a static import put its whole tree in the main chunk, so
+// every vanilla CUGA user downloaded it and never used it. React.lazy makes webpack emit it as a
+// separate chunk fetched on navigation.
+const StudioPage = React.lazy(() =>
+  import("./StudioPage").then((m) => ({ default: m.StudioPage }))
+);
 
 function RouteRoot({ children }: { children: React.ReactNode }) {
   return <div className="route-root">{children}</div>;
+}
+
+// Renders its children only when the events layer is mounted + enabled; otherwise redirects home.
+// The nav entries already hide when events is off (via getEventsStatus); this also blocks DIRECT
+// navigation to /studio so Studio can never appear in vanilla CUGA (no events service reachable).
+function EventsGate({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<"checking" | "on" | "off">("checking");
+  useEffect(() => {
+    api.getEventsStatus()
+      .then((s) => setState(s ? "on" : "off"))
+      .catch(() => setState("off"));
+  }, []);
+  if (state === "checking") return null;                 // don't flash Studio before the check resolves
+  if (state === "off") return <Navigate to="/" replace />;
+  return <>{children}</>;
 }
 
 // Keying by agentId forces a full remount when switching agents from within the chat page
@@ -120,6 +144,16 @@ function renderApp(): void {
             />
             <Route path="/chat" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
             <Route path="/chat/:agentId" element={<RouteRoot><ChatLandingRoute /></RouteRoot>} />
+            <Route
+              path="/studio"
+              element={
+                <RequireRole requiredRoles={["ServiceOwner", "ServiceAdmin"]}>
+                  <EventsGate><RouteRoot>
+                    <React.Suspense fallback={null}><StudioPage /></React.Suspense>
+                  </RouteRoot></EventsGate>
+                </RequireRole>
+              }
+            />
             <Route path="/unauthorized" element={<RouteRoot><UnauthorizedPage /></RouteRoot>} />
           </Routes>
         </AuthProvider>

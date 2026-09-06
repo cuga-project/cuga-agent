@@ -556,6 +556,22 @@ async def lifespan(app: FastAPI):
     except Exception as _seed_err:
         logger.debug("secrets seed skipped: {}", _seed_err)
 
+    # Import the roster YAML into the agent config store, when one is configured. This is what makes
+    # CUGA_SUPERVISOR_ROSTER work without a second runtime path: /run reads the store like the
+    # Manage UI does, and the YAML is only ever an import format. Idempotent, so a restart that
+    # changes nothing writes nothing; a missing or malformed file degrades to "no supervisor"
+    # rather than blocking startup.
+    try:
+        from cuga.backend.server import events_bridge as _eb
+        from cuga.supervisor_utils.roster_seed import seed_roster
+
+        # Behind the master switch: importing a roster is an events-layer behaviour, and a stray
+        # CUGA_SUPERVISOR_ROSTER should not rewrite this instance's agent config store.
+        if _eb.events_enabled():
+            await seed_roster()
+    except Exception as _roster_err:  # noqa: BLE001 — seeding must never stop the server booting
+        logger.warning("roster seed skipped: {}", _roster_err)
+
     # Load hardcoded policies if configured via environment variable
     if os.getenv("CUGA_LOAD_POLICIES", "false").lower() in ("true", "1", "yes", "on"):
         try:
@@ -1105,7 +1121,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
 
+    # NB: the events background loops (Telegram long-poll, Discord Gateway, native scheduler) are
+    # NOT launched here any more — they belong to the eventing service's own lifespan
+    # (cuga/backend/events/service.py). This server starts no event loops at all.
+
     # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
+    # RESTORED (2026-08-05): a casualty of the event_support merge conflict in this file — upstream
+    # main.py has this at the same point in lifespan and the merged file simply lost it. Nothing
+    # failed loudly; ephemeral rows just accumulated forever.
     try:
         removed = await get_conversation_db().gc_ephemeral_stream_events()
         if removed:
@@ -2066,6 +2089,22 @@ app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 app.include_router(agents_routes.router)
 
+# ---- the eventing layer is a SEPARATE SERVICE ----------------------------------------------
+# It used to mount onto this app ("combined mode"). That is gone: the eventing layer now runs as
+# its own FastAPI service (`python -m cuga.backend.events.service`) and reaches CUGA over HTTP via
+# POST /run. This file therefore imports NOTHING from cuga.backend.events — CUGA core carries no
+# triggers, no scheduler, no channel loops, and no bot tokens.
+#
+# What CUGA still owes the eventing service, all defined above:
+#   POST /run          run one task, return one JSON answer  (the worker call)
+#   GET  /run/agents   what roster this server has loaded    (the events side asks, never guesses)
+#   /api/ui/config     carries EVENTS_API_URL so the SPA can find the events service
+# and the slash forwarder in /stream, which is pure HTTP — see events_bridge.
+#
+# events_bridge is the ONE module in core that knows the eventing layer exists, and it only
+# knows a URL: it detects `/automate …` and POSTs it. Inert when EVENTS_API_URL is unset.
+from cuga.backend.server import events_bridge  # noqa: E402
+
 
 if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
     # The A2A package is only imported when explicitly enabled in settings,
@@ -2125,10 +2164,23 @@ async def ui_config():
     """Return UI configuration flags from settings."""
     hide_logo = settings.ui.hide_cuga_logo
     brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
+    # SPLIT TOPOLOGY: this server may serve the UI while the eventing layer runs as its own
+    # service. The SPA otherwise assumes one origin for everything, so its Studio calls would land
+    # here — where /api/events/* does not exist — and silently fall through to the SPA catch-all.
+    # Empty (the default, combined mode) means "same origin", so nothing changes when unset.
     return JSONResponse(
         {
             "hide_cuga_logo": hide_logo,
             "brand_name": brand_name,
+            # Behind the master switch too: this is what tells the SPA where to send /api/events/*,
+            # so advertising it with eventing off would put the Studio entry back in the header and
+            # point it at a service this instance is not part of. Empty is exactly what vanilla CUGA
+            # reports, and the UI already treats empty as "events is off".
+            "events_api_url": (
+                (os.environ.get("EVENTS_API_URL", "") or "").strip().rstrip("/")
+                if events_bridge.events_enabled()
+                else ""
+            ),
             "agent_registry": agent_registry.is_agent_registry_enabled(),
         }
     )
@@ -2614,6 +2666,32 @@ async def stream(
     # User message will be saved as part of the event stream buffer
     # No need to save it separately here to avoid race conditions
 
+    # EDGE DISPATCH — the ONE rule, identical on every surface (web here, channels in /invoke):
+    #   an explicit slash verb                 → the eventing SERVICE (arming)
+    #   an OPEN arming dialogue on this thread → the eventing SERVICE (it owns yes/edit/cancel)
+    #   everything else                        → plain chat, straight through to the agent below.
+    #
+    # This used to call the concierge in-process. It is now a plain HTTP forward to the eventing
+    # service (see events_bridge.forward_slash_to_events), so this file imports nothing from the
+    # events package.
+    #
+    # The NL classifier used to sit here too ("every morning …" was auto-detected as arming). It is
+    # gone deliberately: auto-detection mis-fires on ordinary chat, and arming is now an explicit,
+    # confirmed act. The cost is that a plain-English standing request runs ONCE as chat; the fix is
+    # to type /automate, which is discoverable and never surprises.
+    if isinstance(query, str) and events_bridge.forwards_to_events(query, thread_id):
+        _q, _tid = query, thread_id
+
+        async def _arming_stream():
+            # StreamEvent is imported INSIDE event_stream, so it is not in this scope —
+            # referencing it here used to raise NameError and kill the whole arming reply.
+            from cuga.backend.cuga_graph.utils.agent_loop import StreamEvent as _SE
+
+            reply = await events_bridge.forward_slash_to_events(_q, _tid, request.headers)
+            yield _SE(name="Answer", data=reply).format(app_state.output_format, thread_id=_tid)
+
+        return StreamingResponse(_arming_stream(), media_type="text/event-stream")
+
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
         "1",
@@ -2655,6 +2733,22 @@ async def stream(
         ),
         media_type="text/event-stream",
     )
+
+
+# ── /run, the roster, and the events bridge ───────────────────────────────────────────────────
+# All of it lives in cuga.backend.server.run_routes / events_bridge, mounted here the same way A2A
+# is (build_a2a_router_for_settings + include_router). Keeping it out of this file is the point:
+# /run, /run/agents and the supervisor roster arrived with the event-driven layer and were ~540
+# lines of growth in an already 4,300-line module.
+#
+# CONDITIONAL, like A2A. /run executes an agent and requires a shared secret, so with nothing
+# configured every call would 401 — mounting it then serves only to advertise an endpoint nobody
+# can use. Vanilla CUGA gets a 404 instead, and gains no new attack surface.
+from cuga.backend.server.run_routes import build_run_router, run_api_enabled  # noqa: E402
+
+if run_api_enabled():
+    app.include_router(build_run_router(event_stream=event_stream, default_user_id=DEFAULT_USER_ID))
+    logger.info("/run and /run/agents mounted (machine seam)")
 
 
 @app.post("/stop")

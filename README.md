@@ -37,6 +37,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Code generation profiles** (fast / balanced / accurate) | `[features] cuga_mode` in [`settings.toml`](src/cuga/settings.toml) · [`configurations/modes/`](src/cuga/configurations/modes/) |
 > | **Hybrid API + browser tasks** | `[advanced_features] mode = 'hybrid'` · Playwright + [browser extension](src/frontend_workspaces/extension/readme.md) |
 > | **Multi-agent (CugaSupervisor)** | `cuga start demo_supervisor` · `[supervisor]` in [`settings.toml`](src/cuga/settings.toml) |
+> | **Event-driven agents** (channels · triggers · standing flows) | `cuga start demo` **+** `python -m cuga.backend.events.service` — web chat, Slack/Discord/Telegram, webhooks, cron/poll/push flows armed from natural language with a human confirming each one, one supervisor agent over a YAML roster. Runs as **a second service beside CUGA** (:7860 + :8100); CUGA is unchanged when it is not deployed. Setup and the per-connector guides live in the events documentation repository. |
 > | **A2A & remote agents** | External agent entries in supervisor config · [CugaSupervisor](https://docs.cuga.dev/docs/sdk/cuga_supervisor) |
 > | **Policies & HITL** | [Policies SDK](https://docs.cuga.dev/docs/sdk/policies/) — Intent Guard, Playbook, Tool Approval, Tool Guide, Output Formatter |
 > | **Manage & publish** | `cuga start manager` · draft tools, MCP, LLM, and policies in the web UI, then **publish** a versioned config for production chat ([details](#manage-publish-and-self-hosting)) |
@@ -671,6 +672,20 @@ Orchestrate multiple agents with a single supervisor: delegate tasks to speciali
 ```bash
 cuga start demo_supervisor
 ```
+
+> [!IMPORTANT]
+> **Sub-agents are scoped to the registry apps they name.** An agent that lists `apps:` or
+> `mcp_servers:` receives tools from *those* only; an agent that lists neither still receives
+> everything.
+>
+> Scoping on `apps:` has worked this way since the multi-agent supervisor landed. What is new is
+> that **`mcp_servers:` entries now count as named apps too.** They did not before, so an agent
+> declaring only `mcp_servers:` and no `apps:` received the whole registry regardless — if such a
+> roster named one server while relying on tools from another, it worked by accident and will now
+> see only what it names. Add the missing entry to `apps:` or `mcp_servers:`.
+>
+> Names are matched exactly as written — an app name is whatever key your MCP config registers it
+> under, and nothing rewrites it in transit.
 
 ### Quick Start
 
