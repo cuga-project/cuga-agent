@@ -22,10 +22,19 @@ class SupervisorConfig(BaseModel):
     a2a: Dict[str, Any] = {}
 
 
-async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def build_agents_from_list(
+    agents_list: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from a list of
     agent config dicts (the ``agents:`` section of a supervisor YAML file).
+
+    ``auto_load_policies`` is the default for sub-agents that do not set it themselves. ``None``
+    (the default) preserves existing behaviour — each CugaAgent falls back to
+    ``settings.policy.auto_load_policies``. Pass ``False`` for HEADLESS callers (scheduled flows,
+    webhooks, channel events): nobody is present to answer an approval interrupt, and one would hang
+    the run until the caller times out. A per-agent ``auto_load_policies:`` key in the YAML always
+    wins over this.
 
     Shared by the YAML loader (:func:`load_supervisor_config`) and the manage-UI
     store-sourced loader (:func:`build_agents_from_stored_subagents`), so both paths
@@ -107,12 +116,21 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
             # Get model config if specified
             model = _get_model_from_config(agent_config.get("model"))
 
-            # Create agent
+            # Policy auto-load. Precedence: the YAML entry wins; otherwise the caller's default;
+            # otherwise None, which lets CugaAgent fall back to `settings.policy.auto_load_policies`
+            # exactly as it always has.
+            #
+            # This defaulted to False for a while, which was a silent regression for everyone else:
+            # `load_supervisor_config` is public API (CugaSupervisor.from_yaml, documented in the
+            # README, plus cuga_graph/graph.py), so hardcoding False disabled policy loading for
+            # every downstream supervisor user regardless of their settings — with no error to
+            # notice. Headless callers now ask for it explicitly instead of imposing it on all.
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
+                auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
             )
             feature_overrides = agent_config.get("feature_overrides") or {}
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
@@ -123,13 +141,17 @@ async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str,
     return agents
 
 
-async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+async def load_supervisor_config(
+    yaml_path: str, *, auto_load_policies: Optional[bool] = None
+) -> SupervisorConfig:
     """
     Load and parse supervisor YAML configuration.
     Creates internal CugaAgent instances from YAML config.
 
     Args:
         yaml_path: Path to YAML configuration file
+        auto_load_policies: Default for sub-agents that do not set it themselves. ``None`` (the
+            default) preserves existing behaviour. See :func:`build_agents_from_list`.
 
     Returns:
         SupervisorConfig with loaded configuration
@@ -137,7 +159,7 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
-    agents = await build_agents_from_list(config.get("agents", []))
+    agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
 
     return SupervisorConfig(
         supervisor=config.get("supervisor", {}),
@@ -146,10 +168,16 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
     )
 
 
-async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def build_agents_from_stored_subagents(
+    sub_agents: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
     stored ``supervisor.subAgents`` list (see ``agents_routes.py`` / ``ManagePage.tsx``).
+
+    ``auto_load_policies`` is forwarded to :func:`build_agents_from_list` and defaults to ``None``,
+    which is the existing behaviour for every caller. ``/run`` passes ``False`` because its runs are
+    headless — see the note at that call site.
 
     Each entry is either:
       - ``{"kind": "internal", "ref": "<agent_id>"}`` — resolved to a CugaAgent built
@@ -227,7 +255,7 @@ async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -
         else:
             logger.warning(f"Unknown supervisor sub-agent kind: {kind!r}")
 
-    return await build_agents_from_list(agent_configs)
+    return await build_agents_from_list(agent_configs, auto_load_policies=auto_load_policies)
 
 
 async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[Any]:
@@ -263,7 +291,10 @@ async def _create_tool_provider(
     agent_id: Optional[str] = None,
     include_by_app: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[ToolProviderInterface]:
-    """Create a tool provider from apps and MCP servers configuration."""
+    """Create a tool provider from apps and MCP servers configuration.
+
+    An agent that names NOTHING gets `app_names=None`, i.e. the whole registry — unchanged.
+    """
     if not apps and not mcp_servers:
         return None
 
@@ -276,7 +307,24 @@ async def _create_tool_provider(
         elif isinstance(app_config, str):
             app_names.append(app_config)
 
+    # An `mcp_servers:` entry names a registry app just as much as an `apps:` entry does. Without
+    # this, a roster that declares ONLY mcp_servers — which every agent in the events roster does —
+    # produces an empty app_names, falls through to `or None`, and the "specialist" silently gets
+    # the entire registry.
+    for m in mcp_servers or []:
+        n = m.get("name") if isinstance(m, dict) else str(m)
+        if n:
+            app_names.append(n)
+
     if app_names or mcp_servers:
+        # Names are passed through EXACTLY as declared — no normalising, no rewriting. There was a
+        # hyphen→underscore translation here for a while, because the events roster spelled its
+        # servers `cuga-finance` while the registry keys them `cuga_finance`. It was the wrong
+        # place to fix that: `mcp_manager` stores an MCP server's YAML key verbatim, so rewriting
+        # names in transit scoped an operator whose server really is registered as `my-server` to
+        # a key the registry does not have — no error, just a log warning and an agent with no
+        # tools. The roster now spells the names the way the registry does (see
+        # events/mcp_catalog.py), which removes the need for a translation rather than hiding it.
         logger.info(
             f"Creating CombinedToolProvider for apps: {app_names}, MCP servers: {len(mcp_servers) if mcp_servers else 0}"
         )
