@@ -63,7 +63,10 @@ def _get_reasoning_chat_openai():
                 if i >= len(result.generations):
                     break
                 raw_msg = res.get("message") or {}
-                reasoning = raw_msg.get("reasoning_content")
+                # Providers disagree on the field name: DeepSeek-style endpoints use
+                # ``reasoning_content``, Mistral on RITS uses ``reasoning``. Accept
+                # either, or the trace is silently lost.
+                reasoning = raw_msg.get("reasoning_content") or raw_msg.get("reasoning")
                 if reasoning and isinstance(result.generations[i].message, AIMessage):
                     result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
             return result
@@ -1329,8 +1332,6 @@ class LLMManager:
             llm = ChatWatsonx(**watsonx_params)
             ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
-            from langchain_openai import ChatOpenAI
-
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
@@ -1350,7 +1351,28 @@ class LLMManager:
             if not is_reasoning:
                 rits_params["temperature"] = temperature
                 rits_params["top_p"] = model_settings.get('top_p', 1.0)
-            llm = ChatOpenAI(**rits_params)
+            # extra_params carries provider knobs the client has no field for —
+            # notably reasoning_effort, which RITS honours per model. Without this
+            # the TOML setting is silently dropped and the request runs at the
+            # provider default (no reasoning).
+            _merge_optional_sampling(
+                rits_params,
+                model_settings,
+                keys=("frequency_penalty", "presence_penalty", "stop"),
+                include_extra=True,
+            )
+            # REASONING_EFFORT env override, mirroring MODEL_NAME/RITS_BASE_URL:
+            # lets a run switch effort without editing the profile. Supported
+            # values differ per model — RITS rejects an unsupported level with a
+            # 400 naming the ones it accepts.
+            env_effort = os.environ.get("REASONING_EFFORT")
+            if env_effort:
+                rits_params["reasoning_effort"] = env_effort
+                logger.info(f"Using REASONING_EFFORT from environment: {env_effort}")
+            # Reasoning-preserving subclass, as the openai/openrouter/minimax
+            # branches use: plain ChatOpenAI discards the provider's reasoning
+            # field during message conversion.
+            llm = _get_reasoning_chat_openai()(**rits_params)
         elif platform == "rits-restricted":
             from langchain_openai import ChatOpenAI
 
