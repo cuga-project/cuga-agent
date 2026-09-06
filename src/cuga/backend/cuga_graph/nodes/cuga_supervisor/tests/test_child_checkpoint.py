@@ -12,7 +12,9 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
     CHILD_CHECKPOINT_PREFIX,
     MEMORY_SCOPE_CALL,
     MEMORY_SCOPE_CONVERSATION,
+    AgentMap,
     _checkpoint_locks,
+    agent_map_memory_scopes,
     attach_agent_memory_scopes,
     child_checkpoint_id,
     child_checkpoint_lock,
@@ -111,8 +113,8 @@ def test_resolve_memory_scope_uses_feature_override():
 
 def test_adapter_memory_scope_does_not_mutate_shared_agent():
     shared = SimpleNamespace(_memory_scope="conversation")
-    agents_a = {"worker": shared}
-    agents_b = {"worker": shared}
+    agents_a = AgentMap({"worker": shared})
+    agents_b = AgentMap({"worker": shared})
     attach_agent_memory_scopes(agents_a, {"worker": "call"})
     attach_agent_memory_scopes(agents_b, {"worker": "conversation"})
     adapter_a = SupervisorGraphAdapter(agents=agents_a)
@@ -120,6 +122,18 @@ def test_adapter_memory_scope_does_not_mutate_shared_agent():
     assert resolve_memory_scope(shared, adapter=adapter_a, agent_name="worker") == MEMORY_SCOPE_CALL
     assert resolve_memory_scope(shared, adapter=adapter_b, agent_name="worker") == MEMORY_SCOPE_CONVERSATION
     assert shared._memory_scope == "conversation"
+
+
+def test_agent_map_scopes_follow_map_lifecycle():
+    import gc
+
+    agents = AgentMap({"worker": object()})
+    attach_agent_memory_scopes(agents, {"worker": "call"})
+    assert agent_map_memory_scopes(agents) == {"worker": "call"}
+    del agents
+    gc.collect()
+    fresh = AgentMap({"worker": object()})
+    assert agent_map_memory_scopes(fresh) == {}
 
 
 def test_resolve_reuses_id_within_one_parent_conversation():

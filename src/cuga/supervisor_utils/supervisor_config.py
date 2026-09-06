@@ -41,9 +41,12 @@ async def build_agents_from_list(
     feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
     the exact same agent shapes.
     """
-    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import attach_agent_memory_scopes
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        AgentMap,
+        attach_agent_memory_scopes,
+    )
 
-    agents = {}
+    agents = AgentMap()
     memory_scopes: Dict[str, str] = {}
 
     for agent_config in agents_list:
@@ -170,13 +173,20 @@ async def load_supervisor_config(
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
-    agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
+        agent_map_memory_scopes,
+        attach_agent_memory_scopes,
+    )
 
-    return SupervisorConfig(
+    agents = await build_agents_from_list(config.get("agents", []), auto_load_policies=auto_load_policies)
+    loaded = SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
         a2a=config.get("a2a", {}),
     )
+    if loaded.agents is not agents:
+        attach_agent_memory_scopes(loaded.agents, agent_map_memory_scopes(agents))
+    return loaded
 
 
 async def build_agents_from_stored_subagents(

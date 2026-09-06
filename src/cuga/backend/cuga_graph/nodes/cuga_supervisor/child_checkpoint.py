@@ -32,19 +32,36 @@ class _LockLease:
 
 
 _checkpoint_locks: dict[tuple[int, str], _LockLease] = {}
-_agent_map_scopes: dict[int, dict[str, str]] = {}
+
+
+class AgentMap(dict):
+    """Supervisor agent registry that can carry per-name memory scopes.
+
+    Scopes live on this map, not on shared CugaAgent instances, so they die
+    with the map and cannot be reused via ``id()`` recycling.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.memory_scopes: dict[str, str] = {}
 
 
 def attach_agent_memory_scopes(agents: dict, scopes: dict[str, str]) -> None:
     """Bind per-agent memory scopes to one supervisor agent map (not the agents)."""
-    if scopes:
-        _agent_map_scopes[id(agents)] = dict(scopes)
+    if not scopes:
+        return
+    target = getattr(agents, "memory_scopes", None)
+    if target is None:
+        try:
+            agents.memory_scopes = {}
+            target = agents.memory_scopes
+        except AttributeError:
+            return
+    target.update(scopes)
 
 
 def agent_map_memory_scopes(agents: Any) -> dict[str, str]:
-    if agents is None:
-        return {}
-    return dict(_agent_map_scopes.get(id(agents)) or {})
+    return dict(getattr(agents, "memory_scopes", None) or {})
 
 
 def _as_str(value: Any) -> str:
