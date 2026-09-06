@@ -9,6 +9,7 @@ the union has to carry them through the way the ``$ref`` branch already does.
 import pytest
 
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import SimpleOpenAPIParser
+from cuga.backend.tools_env.registry.mcp_manager.openapi_parser_v0 import OpenAPITransformer
 
 pytestmark = pytest.mark.unit
 
@@ -62,3 +63,84 @@ def test_multi_variant_union_keeps_wrapper_description():
 
     assert parsed.description == "A figure or its label."
     assert parsed.title == "Answer"
+
+
+def _spec_with_optional_body_param(prop_schema: dict) -> dict:
+    """A minimal spec whose POST body carries a single property."""
+    return {
+        "openapi": "3.0.0",
+        "info": {"title": "t", "version": "1"},
+        "x-app-name": "demo",
+        "paths": {
+            "/reply": {
+                "post": {
+                    "operationId": "reply_to_email",
+                    "summary": "Reply to an email",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "title": "Body",
+                                    "properties": {"email_addresses": prop_schema},
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "ok"}},
+                }
+            }
+        },
+    }
+
+
+def _transformed_param(prop_schema: dict) -> dict:
+    tools = OpenAPITransformer(_spec_with_optional_body_param(prop_schema)).transform()
+    parameters = next(iter(tools.values()))["parameters"]
+    return next(p for p in parameters if p["name"] == "email_addresses")
+
+
+def test_transformer_optional_body_param_keeps_wrapper_description_and_title():
+    """The documentation the model reads comes from OpenAPITransformer, not the
+    execution-side parser, so it needs the same wrapper carry-through."""
+    param = _transformed_param(
+        {
+            "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
+            "description": "If passed, it'll reply to all recipients in the list.",
+            "title": "Email Addresses",
+        }
+    )
+
+    assert param["description"] == "If passed, it'll reply to all recipients in the list."
+    assert param["type"] == "array"
+
+
+def test_transformer_variant_description_survives_when_wrapper_has_none():
+    param = _transformed_param({"anyOf": [{"type": "string", "description": "inner"}, {"type": "null"}]})
+
+    assert param["description"] == "inner"
+
+
+def test_transformer_wrapper_description_outranks_the_variant():
+    param = _transformed_param(
+        {
+            "anyOf": [{"type": "string", "description": "inner"}, {"type": "null"}],
+            "description": "outer",
+        }
+    )
+
+    assert param["description"] == "outer"
+
+
+def test_transformer_plain_array_param_description_is_unchanged():
+    """Guard the non-union path that already worked."""
+    param = _transformed_param(
+        {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of absolute file paths to attach to the email.",
+        }
+    )
+
+    assert param["description"] == "List of absolute file paths to attach to the email."
+    assert param["type"] == "array"
