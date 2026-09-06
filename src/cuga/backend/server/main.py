@@ -1011,6 +1011,7 @@ async def lifespan(app: FastAPI):
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
         enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
     )
     await app_state.agent.build_graph()
 
@@ -1098,6 +1099,7 @@ async def lifespan(app: FastAPI):
         enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
+        supervisor_id=app_state.agent_id,
     )
     await draft_app_state.agent.build_graph()
 
@@ -2590,6 +2592,7 @@ async def _resolve_stream_agent(
                     supervisor_agents=agents_dict,
                     supervisor_enabled=True,
                     supervisor_plan_approval=bool(supervisor_cfg.get("planApproval")),
+                    supervisor_id=agent_id,
                 )
             else:
                 # Single agent with its own tools/LLM/special_instructions — built the same way
