@@ -1342,6 +1342,10 @@ class LLMManager:
             rits_params: Dict[str, Any] = {
                 "api_key": "dummy" if api_key else None,
                 "base_url": base_url,
+                # RITS parameters to support eval implementation.
+                "openai_api_key": "/",
+                "openai_api_base": base_url,
+                "model_name": model_name,
                 "max_tokens": max_tokens,
                 "model": model_name,
                 "seed": 42,
