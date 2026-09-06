@@ -800,6 +800,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # it would leave a long thread unbounded, which is exactly the gap the
         # per-turn reset opens.
         update_payload["tool_calls_used_run"] = 0
+        update_payload["verify_revise_streak"] = 0
         # A thread that is already over its ceiling starts the turn exhausted, so
         # it goes straight to a final synthesis pass instead of burning a step to
         # discover the budget is gone.

@@ -76,6 +76,8 @@ result = {
 }
 """
 
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.code_wrapper import CodeWrapper
+
     # Step 4: Combine everything into complete code for E2B
     complete_code = f"""
 import asyncio
@@ -84,9 +86,7 @@ import asyncio
 
 {variables_code}
 
-async def _async_main():
-{_indent_code(user_code, 1)}
-    return locals()
+{CodeWrapper.build_async_main(user_code)}
 
 # Execute
 _result_locals = await asyncio.wait_for(_async_main(), timeout=30)
@@ -196,9 +196,3 @@ def _serialize_tools(tools: dict) -> str:
             continue
 
     return "\n".join(lines)
-
-
-def _indent_code(code: str, levels: int = 1) -> str:
-    """Indent code by specified number of levels (4 spaces per level)."""
-    indent = "    " * levels
-    return "\n".join(indent + line for line in code.split("\n"))

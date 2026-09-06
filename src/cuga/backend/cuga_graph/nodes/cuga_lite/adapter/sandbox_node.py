@@ -23,7 +23,13 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+    decide_pre_execute_verify,
+    log_pre_execute_verify,
+    verify_blocked_message,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
 from cuga.backend.cuga_graph.utils.context_management_utils import (
     prepare_reflection_context,
     truncate_text_for_context,
@@ -119,6 +125,11 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if "reflection_enabled" in configurable
             else settings.advanced_features.reflection_enabled
         )
+        verify_enabled = (
+            configurable.get("pre_execute_verify_enabled")
+            if "pre_execute_verify_enabled" in configurable
+            else settings.advanced_features.pre_execute_verify_enabled
+        )
 
         # Get existing variables using CugaLiteState's own variables_manager
         existing_vars = {}
@@ -153,6 +164,73 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         )
 
         try:
+            if verify_enabled and state.script:
+                try:
+                    configured_model = configurable.get("llm") or None
+                    verify_text_limit = min(
+                        30_000,
+                        settings.advanced_features.execution_output_max_length // 2,
+                    )
+                    var_snapshot = ""
+                    get_summary = getattr(state.variables_manager, "get_variables_summary", None)
+                    if callable(get_summary):
+                        try:
+                            var_snapshot = get_summary() or ""
+                        except Exception:
+                            var_snapshot = ""
+                    decision = await decide_pre_execute_verify(
+                        enabled=True,
+                        streak=int(getattr(state, "verify_revise_streak", 0) or 0),
+                        script=state.script,
+                        chat_messages=list(state.chat_messages or []),
+                        variables_snapshot=var_snapshot,
+                        current_task=reflection_current_task(state) or "(no task text)",
+                        model=configured_model,
+                        model_factory=(
+                            None
+                            if configured_model is not None
+                            else lambda: _llm_manager.get_model(settings.agent.planner.model)
+                        ),
+                        config=config or {},
+                        max_chars=verify_text_limit,
+                    )
+                except Exception as e:
+                    logger.warning("Pre-execute VERIFY setup failed: {}", e)
+                    decision = VerifyDecision(gate="unknown", alert=str(e))
+                if not log_pre_execute_verify(adapter._tracker, decision):
+                    decision = VerifyDecision(
+                        gate="unknown",
+                        alert="Pre-execute VERIFY telemetry failed",
+                    )
+                if decision.gate == "revise":
+                    ToolCallTracker.stop_tracking()
+                    msg = verify_blocked_message(decision.alert)
+                    new_message = HumanMessage(content=msg)
+                    updated_messages, error_message = core_append_with_step_limit(
+                        adapter, state, [new_message], max_steps
+                    )
+                    skip_updates = {
+                        "variables_storage": state.variables_storage,
+                        "variable_counter_state": state.variable_counter_state,
+                        "variable_creation_order": state.variable_creation_order,
+                        "verify_revise_streak": int(getattr(state, "verify_revise_streak", 0) or 0) + 1,
+                        "tool_calls": state.tool_calls or [],
+                        **_budget_updates(),
+                    }
+                    if error_message:
+                        return core_create_error_command(
+                            adapter,
+                            updated_messages,
+                            error_message,
+                            state.step_count,
+                            additional_updates=skip_updates,
+                        )
+                    return {
+                        "chat_messages": updated_messages,
+                        "step_count": state.step_count + 1,
+                        **skip_updates,
+                    }
+
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
             _exec_plan = ExecutionRouter.resolve(settings)
             if _exec_plan.split_execution_active:
@@ -287,6 +365,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         "variables_storage": state.variables_storage,
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
+                        "verify_revise_streak": 0,
                         "tool_calls": accumulated_tool_calls,
                         # The block already ran and may have spent budget. Omitting
                         # these leaves the key absent from the update, so the
@@ -304,6 +383,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "variable_counter_state": state.variable_counter_state,
                 "variable_creation_order": state.variable_creation_order,
                 "step_count": state.step_count + 1,
+                "verify_revise_streak": 0,
                 "tool_calls": accumulated_tool_calls,
                 "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),
@@ -342,6 +422,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 "final_answer": error_msg,
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
+                "verify_revise_streak": 0,
                 "tool_calls": accumulated_tool_calls,
                 "tool_calls_used_run": ToolCallTracker.get_run_budget_used(),
                 "tool_calls_used_thread": ToolCallTracker.get_thread_budget_used(),

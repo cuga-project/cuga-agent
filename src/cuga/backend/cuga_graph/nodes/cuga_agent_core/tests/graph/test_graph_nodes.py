@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END
 
@@ -35,6 +36,23 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
 def test_execution_output_text_format():
     assert execution_output_text("hello\nworld") == "Execution output:\nhello\nworld"
     assert execution_output_text("") == "Execution output:\n"
+
+
+@pytest.mark.unit
+def test_sandbox_step_execution_output_ignores_stale_output_after_verify_block():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+        sandbox_step_execution_output,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import (
+        VERIFY_BLOCKED_PREFIX,
+    )
+
+    messages = [
+        HumanMessage(content=execution_output_text("paid 46.67")),
+        HumanMessage(content=f"{VERIFY_BLOCKED_PREFIX}\namount 35.0"),
+    ]
+    assert sandbox_step_execution_output(messages) == ""
+    assert sandbox_step_execution_output([messages[0]]) == "paid 46.67"
 
 
 # ─── CoreGraphAdapter.get_variable_manager default + override ────────────────

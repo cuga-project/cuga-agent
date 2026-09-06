@@ -30,6 +30,8 @@ def get_latest_memory_query(messages: Sequence[BaseMessage] | None) -> str:
             content = str(content)
         if content.startswith("Execution output:"):
             continue
+        if content.startswith("VERIFY blocked this code block before execution."):
+            continue
         if content:
             return content
     return ""

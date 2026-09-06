@@ -231,6 +231,19 @@ def execution_output_text(output: str) -> str:
     return f"{EXECUTION_OUTPUT_PREFIX}\n{output}"
 
 
+def sandbox_step_execution_output(messages: Any) -> str:
+    """Output of this sandbox step only. Do not reuse an older Execution output: message."""
+    if not messages:
+        return ""
+    msg = messages[-1]
+    content = getattr(msg, "content", None)
+    if isinstance(msg, dict):
+        content = msg.get("content", "")
+    if not isinstance(content, str) or not content.startswith(EXECUTION_OUTPUT_PREFIX):
+        return ""
+    return content.split(f"{EXECUTION_OUTPUT_PREFIX}\n")[-1]
+
+
 def enforce_step_limit(
     adapter: CoreGraphAdapter,
     *,
