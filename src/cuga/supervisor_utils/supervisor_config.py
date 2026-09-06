@@ -41,7 +41,10 @@ async def build_agents_from_list(
     feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
     the exact same agent shapes.
     """
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import attach_agent_memory_scopes
+
     agents = {}
+    memory_scopes: Dict[str, str] = {}
 
     for agent_config in agents_list:
         agent_name = agent_config["name"]
@@ -88,7 +91,7 @@ async def build_agents_from_list(
 
                 memory_scope = agent_config.get("memory_scope")
                 if memory_scope:
-                    agent._memory_scope = str(memory_scope)
+                    memory_scopes[agent_name] = str(memory_scope)
                 agents[agent_name] = agent
                 logger.info(f"✅ Imported agent '{agent_name}' from {import_path}")
             except Exception as e:
@@ -139,11 +142,13 @@ async def build_agents_from_list(
             agent._feature_overrides = {k: v for k, v in feature_overrides.items() if v is not None}
             memory_scope = agent_config.get("memory_scope")
             if memory_scope:
+                memory_scopes[agent_name] = str(memory_scope)
                 agent._memory_scope = str(memory_scope)
 
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
 
+    attach_agent_memory_scopes(agents, memory_scopes)
     return agents
 
 

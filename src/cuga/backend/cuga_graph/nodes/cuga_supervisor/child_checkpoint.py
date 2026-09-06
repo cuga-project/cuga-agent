@@ -32,6 +32,19 @@ class _LockLease:
 
 
 _checkpoint_locks: dict[tuple[int, str], _LockLease] = {}
+_agent_map_scopes: dict[int, dict[str, str]] = {}
+
+
+def attach_agent_memory_scopes(agents: dict, scopes: dict[str, str]) -> None:
+    """Bind per-agent memory scopes to one supervisor agent map (not the agents)."""
+    if scopes:
+        _agent_map_scopes[id(agents)] = dict(scopes)
+
+
+def agent_map_memory_scopes(agents: Any) -> dict[str, str]:
+    if agents is None:
+        return {}
+    return dict(_agent_map_scopes.get(id(agents)) or {})
 
 
 def _as_str(value: Any) -> str:
@@ -77,7 +90,14 @@ def child_checkpoint_id(
     return f"{CHILD_CHECKPOINT_PREFIX}{digest}"
 
 
-def resolve_memory_scope(agent_or_config: Any) -> str:
+def resolve_memory_scope(
+    agent_or_config: Any,
+    adapter: Any = None,
+    agent_name: Optional[str] = None,
+) -> str:
+    scopes = getattr(adapter, "_agent_memory_scopes", None) or {}
+    if agent_name and agent_name in scopes:
+        return normalize_memory_scope(scopes[agent_name])
     for attr in ("_memory_scope", "memory_scope"):
         raw = getattr(agent_or_config, attr, None)
         if raw:
@@ -113,7 +133,7 @@ def resolve_child_checkpoint_id(
     """
     tenant_id, user_id, parent_thread_id = _identity_from_state(state)
     supervisor_id = _as_str(getattr(adapter, "_supervisor_id", None))
-    memory_scope = resolve_memory_scope(agent_or_config)
+    memory_scope = resolve_memory_scope(agent_or_config, adapter=adapter, agent_name=agent_name)
     if not parent_thread_id or memory_scope == MEMORY_SCOPE_CALL:
         return child_checkpoint_id(
             tenant_id=tenant_id,

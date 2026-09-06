@@ -13,6 +13,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.child_checkpoint import (
     MEMORY_SCOPE_CALL,
     MEMORY_SCOPE_CONVERSATION,
     _checkpoint_locks,
+    attach_agent_memory_scopes,
     child_checkpoint_id,
     child_checkpoint_lock,
     normalize_memory_scope,
@@ -106,6 +107,19 @@ def test_resolve_memory_scope_prefers_agent_attribute():
 def test_resolve_memory_scope_uses_feature_override():
     agent = SimpleNamespace(_feature_overrides={"sub_agent_memory_scope": "call"})
     assert resolve_memory_scope(agent) == MEMORY_SCOPE_CALL
+
+
+def test_adapter_memory_scope_does_not_mutate_shared_agent():
+    shared = SimpleNamespace(_memory_scope="conversation")
+    agents_a = {"worker": shared}
+    agents_b = {"worker": shared}
+    attach_agent_memory_scopes(agents_a, {"worker": "call"})
+    attach_agent_memory_scopes(agents_b, {"worker": "conversation"})
+    adapter_a = SupervisorGraphAdapter(agents=agents_a)
+    adapter_b = SupervisorGraphAdapter(agents=agents_b)
+    assert resolve_memory_scope(shared, adapter=adapter_a, agent_name="worker") == MEMORY_SCOPE_CALL
+    assert resolve_memory_scope(shared, adapter=adapter_b, agent_name="worker") == MEMORY_SCOPE_CONVERSATION
+    assert shared._memory_scope == "conversation"
 
 
 def test_resolve_reuses_id_within_one_parent_conversation():
