@@ -6,10 +6,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from cuga.backend.memory_graph import MemoryEdge, MemoryGraph, MemoryNode
+from cuga.backend.memory_graph import LogicLayer, MemoryEdge, MemoryGraph, MemoryNode
 
 
-GRAPH_SERIALIZATION_FORMAT_VERSION = 1
+# v4 invalidates pre-embedding authority-graph caches. Those v3 graphs are still
+# structurally readable in principle, but they do not contain the new cached
+# retrieval vectors and would otherwise silently bypass the post-tree Qwen pass.
+GRAPH_SERIALIZATION_FORMAT_VERSION = 4
 MEMORY_GRAPHS_INDEX_FORMAT_VERSION = 1
 DEFAULT_MEMORY_GRAPHS_FILE = Path("memory_graphs.json")
 
@@ -52,8 +55,8 @@ def _normalize_graph_type(graph_type: str) -> str:
 def serialize_graph(graph: MemoryGraph) -> dict[str, Any]:
     """Serialize a ``MemoryGraph`` into a JSON-compatible dictionary.
 
-    The payload deliberately stores only persistent graph state: nodes and
-    edges. ``MemoryGraph``'s internal incoming/outgoing indexes are derived state
+    The payload stores persistent graph state: nodes, edges, and the partial
+    logic layer. ``MemoryGraph``'s internal incoming/outgoing indexes are derived state
     and are reconstructed automatically by ``MemoryGraph.add_edge`` when the
     graph is loaded.
 
@@ -78,6 +81,7 @@ def serialize_graph(graph: MemoryGraph) -> dict[str, Any]:
                 graph.edges[edge_id].model_dump(mode="json")
                 for edge_id in sorted(graph.edges)
             ],
+            "logic_layer": graph.logic_layer.model_dump(mode="json"),
         },
     }
 
@@ -335,6 +339,7 @@ def deserialize_graph(payload: dict[str, Any]) -> MemoryGraph:
 
     raw_nodes = graph_payload.get("nodes")
     raw_edges = graph_payload.get("edges")
+    raw_logic_layer = graph_payload.get("logic_layer")
 
     if not isinstance(raw_nodes, list):
         raise GraphSerializationError(
@@ -343,6 +348,10 @@ def deserialize_graph(payload: dict[str, Any]) -> MemoryGraph:
     if not isinstance(raw_edges, list):
         raise GraphSerializationError(
             "Serialized graph field 'graph.edges' must be a list."
+        )
+    if not isinstance(raw_logic_layer, dict):
+        raise GraphSerializationError(
+            "Serialized graph field 'graph.logic_layer' must be an object."
         )
 
     graph = MemoryGraph()
@@ -355,6 +364,8 @@ def deserialize_graph(payload: dict[str, Any]) -> MemoryGraph:
         for raw_edge in raw_edges:
             edge = MemoryEdge.model_validate(raw_edge)
             graph.add_edge(edge)
+
+        graph.logic_layer = LogicLayer.model_validate(raw_logic_layer)
     except Exception as exc:
         raise GraphSerializationError(
             "Failed to reconstruct MemoryGraph from serialized payload: "

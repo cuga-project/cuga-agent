@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -20,12 +22,26 @@ from .schemas import (
     LocalLogicNode,
     LocalLogicOperand,
     LocalLogicRule,
+    LocalLogicSlot,
+    LocalNormalizedRelation,
+    LogicPropositionCandidate,
     LogicalOperator,
+    LogicSlotBindingRequest,
+    LogicSlotBindingResponse,
     RelationBuildRequest,
     RelationBuildResponse,
     RelationDecision,
     RelationDirection,
     RelationType,
+)
+
+from .decomposition_guidance_spacy import extract_decomposition_guidance_spacy
+from .logging_utils import memory_graph_trace_enabled
+
+
+from .logic_slot_binding_deberta import (
+    MATCHER_MODEL_NAME as _LOGIC_SLOT_MATCHER_NAME,
+    call_logic_slot_binding_model as _call_logic_slot_binding_backend,
 )
 
 
@@ -46,7 +62,74 @@ class RelationModelError(RuntimeError):
 
 
 class LogicalStructureModelError(RuntimeError):
-    """Raised when local Boolean/cardinality extraction cannot be recovered."""
+    """Raised when propositional logic extraction cannot be recovered."""
+
+
+class LogicSlotBindingModelError(RuntimeError):
+    """Raised when runtime logic-slot binding cannot be recovered."""
+
+
+def _capture_logic_slot_binding_dataset(
+    request: LogicSlotBindingRequest,
+    response: LogicSlotBindingResponse,
+) -> None:
+    """Optionally record candidate-pair labels to a dedicated JSONL dataset.
+
+    Pair-level records are intentionally NOT emitted to the normal Loguru stream:
+    they are extremely verbose and made ordinary verifier logs unusable. Set
+    ``CUGA_LOGIC_MATCH_DATASET`` to a file path when dataset capture is needed.
+    ``label_value`` is the matched slot polarity; ``label_match`` is the
+    semantic-identity decision.
+    """
+    output_path = os.getenv("CUGA_LOGIC_MATCH_DATASET", "").strip()
+    if not output_path:
+        return
+
+    by_slot: dict[str, list[Any]] = {}
+    for binding in response.bindings:
+        by_slot.setdefault(binding.slot_id, []).append(binding)
+
+    rows: list[dict[str, Any]] = []
+    for candidate in request.candidates:
+        matched = by_slot.get(candidate.slot_id, [])
+        values = sorted({item.value for item in matched})
+        label_class = (
+            "no_match"
+            if not values
+            else "positive"
+            if values == [True]
+            else "negative"
+            if values == [False]
+            else "ambiguous"
+        )
+        row = {
+            "node_id": request.node_id,
+            "node_content": request.node_content,
+            "node_routing_text": request.node_routing_text,
+            "node_context_paths": request.node_context_paths,
+            "slot_id": candidate.slot_id,
+            "slot_source_text": candidate.source_text,
+            "slot_context_paths": candidate.context_paths,
+            "slot_bound_node_ids": candidate.bound_node_ids,
+            "label_class": label_class,
+            "label_match": bool(values),
+            "label_value": values[0] if len(values) == 1 else None,
+            "matcher": _LOGIC_SLOT_MATCHER_NAME,
+            "matcher_confidence": (
+                max((item.confidence for item in matched), default=None)
+            ),
+            # Retained for compatibility with the earlier extraction scripts.
+            "teacher_confidence": (
+                max((item.confidence for item in matched), default=None)
+            ),
+        }
+        rows.append(row)
+
+    path = Path(output_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 class LogicalStructureAssessment(BaseModel):
@@ -58,13 +141,171 @@ class LogicalStructureAssessment(BaseModel):
     reason: str = ""
 
 
-class DecompositionCoverageAssessment(BaseModel):
-    """Semantic coverage audit for one local decomposition decision."""
+class DecompositionAuditResult(BaseModel):
+    """One-shot semantic audit result for a composite decomposition.
+
+    The auditor either accepts the proposed decomposition unchanged or returns
+    the complete corrected LocalDecompositionDecision itself. There is no
+    separate semantic repair model and corrected output is not re-audited.
+    """
+
+    action: Literal["pass", "corrected"]
+    corrected_decision: LocalDecompositionDecision | None = None
+    reason: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.action == "pass":
+            if self.corrected_decision is not None:
+                raise ValueError(
+                    "A passing decomposition audit must not return a correction."
+                )
+            return
+
+        if self.corrected_decision is None:
+            raise ValueError(
+                "A corrected decomposition audit must return corrected_decision."
+            )
+        if self.corrected_decision.kind != "composite":
+            raise ValueError(
+                "A composite decomposition audit may only return a corrected "
+                "composite decision."
+            )
+
+
+
+
+class ChunkSemanticAuditIssue(BaseModel):
+    """One semantic defect found after a complete contextual chunk subtree exists."""
+
+    issue_type: Literal[
+        "missing_semantics",
+        "distorted_semantics",
+        "unsupported_semantics",
+        "missing_relation",
+        "incorrect_relation",
+        "logic_error",
+        "atomicity",
+    ]
+    description: str = Field(min_length=1)
+    node_temporary_ids: list[str] = Field(default_factory=list)
+    logic_slot_ids: list[str] = Field(default_factory=list)
+
+
+class ChunkSemanticAuditResult(BaseModel):
+    """One-shot audit of the fully constructed subtree for one source chunk."""
 
     complete: bool
-    missing_semantics: list[str] = Field(default_factory=list)
-    unsupported_children: list[str] = Field(default_factory=list)
+    issues: list[ChunkSemanticAuditIssue] = Field(default_factory=list)
     reason: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.complete and self.issues:
+            raise ValueError("A complete chunk semantic audit cannot contain issues.")
+        if not self.complete and not self.issues:
+            raise ValueError("An incomplete chunk semantic audit must identify at least one issue.")
+
+
+
+
+class AtomicClassificationAssessment(BaseModel):
+    """Semantic audit for whether one local statement is truly atomic."""
+
+    classification_valid: bool
+    reason: str = ""
+
+
+class LogicNormalizationClause(BaseModel):
+    """One source-explicit logical clause in temporary canonical form."""
+
+    kind: Literal["assertion", "rule"]
+    root: LocalLogicOperand | None = None
+    condition: LocalLogicOperand | None = None
+    effect: LocalLogicOperand | None = None
+    evidence_text: str = Field(min_length=1)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.kind == "assertion":
+            if self.root is None or self.condition is not None or self.effect is not None:
+                raise ValueError(
+                    "Assertion clause requires root and forbids condition/effect."
+                )
+        elif self.kind == "rule":
+            if self.root is not None or self.condition is None or self.effect is None:
+                raise ValueError(
+                    "Rule clause requires condition/effect and forbids root."
+                )
+
+
+class LogicNormalizationDecision(BaseModel):
+    """Temporary canonical structure produced from one source statement.
+
+    This is deliberately not the persisted logic representation. The LLM only
+    normalizes natural-language operators into binary semantic relations plus
+    Boolean slots/expressions/clauses. Python later decides which Boolean clauses
+    can be distributed into simple IMPLIES graph edges and which genuinely require
+    a compound AST.
+    """
+
+    relations: list[LocalNormalizedRelation] = Field(default_factory=list)
+    slots: list[LocalLogicSlot] = Field(default_factory=list)
+    expressions: list[LocalLogicNode] = Field(default_factory=list)
+    clauses: list[LogicNormalizationClause] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        slot_ids = {slot.slot_id for slot in self.slots}
+        if len(slot_ids) != len(self.slots):
+            raise ValueError("Logical slot_id values must be unique.")
+
+        expression_by_id = {item.expression_id: item for item in self.expressions}
+        if len(expression_by_id) != len(self.expressions):
+            raise ValueError("Logical expression_id values must be unique.")
+
+        def validate_ref(ref: LocalLogicOperand, label: str) -> None:
+            if ref.slot_id is not None and ref.slot_id not in slot_ids:
+                raise ValueError(f"{label} references unknown slot_id={ref.slot_id}.")
+            if ref.expression_id is not None and ref.expression_id not in expression_by_id:
+                raise ValueError(
+                    f"{label} references unknown expression_id={ref.expression_id}."
+                )
+
+        for expression in self.expressions:
+            for operand in expression.operands:
+                validate_ref(operand, f"Expression {expression.expression_id}")
+        for index, clause in enumerate(self.clauses):
+            if clause.root is not None:
+                validate_ref(clause.root, f"Clause[{index}] root")
+            if clause.condition is not None:
+                validate_ref(clause.condition, f"Clause[{index}] condition")
+            if clause.effect is not None:
+                validate_ref(clause.effect, f"Clause[{index}] effect")
+
+        visiting: set[int] = set()
+        visited: set[int] = set()
+
+        def visit(expression_id: int) -> None:
+            if expression_id in visited:
+                return
+            if expression_id in visiting:
+                raise ValueError(
+                    "Logical normalization expression graph contains a cycle."
+                )
+            visiting.add(expression_id)
+            for operand in expression_by_id[expression_id].operands:
+                if operand.expression_id is not None:
+                    visit(operand.expression_id)
+            visiting.remove(expression_id)
+            visited.add(expression_id)
+
+        for expression_id in expression_by_id:
+            visit(expression_id)
+
+
+@dataclass(frozen=True)
+class CompiledStructureDecision:
+    """Deterministic routing result from temporary normalized structure."""
+
+    logic: LocalLogicDecision
+    relations: tuple[LocalNormalizedRelation, ...] = ()
 
 
 class SemanticSegmentPlan(BaseModel):
@@ -94,12 +335,30 @@ class FinalChunkContextDecision(BaseModel):
     chunks: list[FinalChunkContextPlan] = Field(min_length=1)
 
 
+class ContextualChunkIssue(BaseModel):
+    """One localized semantic defect in a contextualized leaf chunk."""
+
+    chunk_index: int = Field(ge=0)
+    issue: str = Field(min_length=1)
+
+
 class ContextualChunkingAssessment(BaseModel):
-    """Semantic audit of finalized contextualized leaf chunks."""
+    """Semantic audit of finalized contextualized leaf chunks.
+
+    Every negative audit is localized to exact ``chunk_index`` values so the
+    repair pass can be monotonic: good leaves are preserved byte-for-byte and
+    only defective leaves are regenerated.
+    """
 
     complete: bool
-    issues: list[str] = Field(default_factory=list)
+    issues: list[ContextualChunkIssue] = Field(default_factory=list)
     reason: str = ""
+
+
+class FinalChunkContextRepair(BaseModel):
+    """Targeted replacements for only the contextualized leaves under repair."""
+
+    replacements: list[FinalChunkContextPlan] = Field(min_length=1)
 
 
 @dataclass(frozen=True)
@@ -777,207 +1036,232 @@ The contextualized text is only a derived aid for later decomposition.
 
 Return:
 - complete: true/false
-- issues: concise descriptions of any semantic distortion, unresolved dependency,
-  wrong referent, lost scope, unsupported addition, or excessive context copying
+- issues: a list of localized issue objects. Every issue object MUST contain:
+  - chunk_index: the exact zero-based chunk_index from FINAL_CONTEXTUALIZED_LEAVES
+  - issue: a concise description of the semantic distortion, unresolved dependency,
+    wrong referent, lost scope, unsupported addition, or excessive context copying
 - reason: concise overall assessment
+
+LOCALIZATION REQUIREMENT
+------------------------
+When complete=false, identify every defective leaf by its exact supplied
+chunk_index. Do not report an unindexed/global issue when the defect belongs to a
+leaf. Do not include good leaves in issues. When complete=true, issues must be
+empty.
 """.strip()
 
 
-_LOGICAL_STRUCTURE_SYSTEM_PROMPT = """
-You extract SOURCE-EXPLICIT Boolean/cardinality structure and conditional rule
-structure over the DIRECT semantic children of exactly one composite statement.
+_LOGIC_NORMALIZATION_SYSTEM_PROMPT = """
+Normalize source-explicit RELATIONAL and PROPOSITIONAL structure in exactly ONE
+source statement.
+
+This is a narrow language-normalization task. Do not build persistent graph edges,
+do not create semantic nodes, and do not decide whether an AST is required. Python
+performs deterministic routing after your response.
 
 You receive:
-- the original composite SOURCE statement;
-- the already-established direct CHILDREN with stable zero-based indices.
+- SOURCE: the exact statement being analyzed;
+- AVAILABLE_PROPOSITIONS: semantic atomic descendants already produced for this
+  statement.
 
-You do NOT create, rewrite, merge, delete, or reinterpret semantic children.
-You do NOT construct the semantic memory graph.
-You do NOT infer broad semantic relations.
-Your task is only to preserve explicit Boolean/cardinality grouping and explicit
-condition -> effect structure among the supplied children.
+Return LogicNormalizationDecision with two independent kinds of structure:
+1. ``relations`` for source-explicit BINARY semantic relations whose two endpoints
+   are exact AVAILABLE_PROPOSITIONS;
+2. ``slots`` / ``expressions`` / ``clauses`` only for Boolean/cardinality structure
+   that must first be normalized canonically.
 
-Allowed Boolean/cardinality operators
--------------------------------------
-AND:
-    All operands participate jointly in the expressed group.
+If SOURCE has no source-explicit binary relation or Boolean/cardinality structure,
+return empty relations, slots, expressions, and clauses. Ordinary standalone facts,
+requirements, prohibitions, and procedures do not need an entry merely because they
+are propositions.
 
-OR:
-    The operands are alternatives; at least one is sufficient unless the source
-    explicitly states a stricter cardinality.
-
-NOT:
-    Negates exactly one nested term. Preserve grouping: "not (A and B)" is
-    NOT(AND(A,B)), not AND(NOT(A),NOT(B)).
-
-AT_LEAST / AT_MOST / EXACTLY:
-    Explicit cardinality constraints. Put the stated non-negative integer in
-    ``threshold``. Do not expand cardinality into a large SAT formula.
-
-Flat expression representation
-------------------------------
-- Return a flat ``expressions`` list. Every expression has a unique integer
-  ``expression_id``, one operator, and non-recursive operands.
-- Each operand references exactly one supplied child through ``child_index`` OR
-  one other logical expression through ``expression_id``.
-- Nested grouping is created by expression_id references, not recursive JSON.
-- For AND/OR, threshold must be null.
-- NOT has exactly one operand and threshold=null.
-- Cardinality operators have one or more operands and a threshold.
-
-Assertions versus rules
------------------------
-Use ``assertions`` ONLY for standalone Boolean/cardinality OPERATOR EXPRESSIONS
-whose grouping would otherwise be lost from the semantic graph. An assertion
-references ``root_expression_id`` and can never directly reference a child.
-
-Ordinary standalone semantic children are already represented by the semantic
-memory graph. Do NOT duplicate a fact, definition, requirement, prohibition,
-permission, procedure, exception, qualification, or other standalone child as a
-logic assertion merely because it exists or is not used in a rule. A child may
-legitimately appear nowhere in the logic layer.
-
-Example:
-    "A and B"
-    expression 0 = AND(child A, child B)
-    assertion.root_expression_id = 0
-
-Example:
-    "A. B. C."
-    expressions=[]
-    assertions=[]
-    rules=[]
-
-Example:
-    "A and B. C."
-    expression 0 = AND(child A, child B)
-    assertion.root_expression_id = 0
-    # No assertion is created for standalone child C.
-
-Use ``rules`` when the source explicitly states that one logical term governs,
-triggers, or is the condition for another logical term. A rule has:
-- ``condition``: one child OR one expression;
-- ``effect``: one child OR one expression.
-
-Both sides are fully general logical terms.
+BINARY SEMANTIC RELATIONS
+-------------------------
+Use ``relations`` when SOURCE explicitly relates two semantic propositions with one
+binary relation that can live directly in the graph. Important examples include:
+- PRECEDES for before/after/first/then ordering;
+- REQUIRES for an explicit prerequisite/dependency relation;
+- ENABLES for an explicitly stated enabling/establishment relation;
+- CAUSES for explicit causal language;
+- QUALIFIES for an explicit qualification/exception relation;
+- SUPPORTS or SUPERSEDES when explicitly stated.
 
 Examples:
-    "If A, do X"
-        rule: condition=child A, effect=child X
+- "Before A, do B" -> B PRECEDES A.
+- "After A, do B" -> A PRECEDES B.
+- "B requires A" -> B REQUIRES A.
+- "A enables B" -> A ENABLES B.
 
-    "If A and B, do X"
-        expression 0 = AND(A,B)
-        rule: condition=expression 0, effect=X
+Use proposition indices only for exact endpoint identity. Do not point a relation at
+a broader rule node merely because it contains one endpoint. Do not invent a binary
+relation when the source is ambiguous. ``DECOMPOSES_INTO`` is forbidden.
 
-    "If A, do X and Y"
-        expression 0 = AND(X,Y)
-        rule: condition=A, effect=expression 0
+Do NOT directly emit IMPLIES for Boolean condition/effect language. Normalize such
+language through clauses below so Python can determine whether it reduces to one or
+more binary IMPLIES edges or requires compound logic.
 
-    "If A or B, do X and Y"
-        expression 0 = OR(A,B)
-        expression 1 = AND(X,Y)
-        rule: condition=expression 0, effect=expression 1
-
-IMPORTANT: implication/conditional direction is NOT a Boolean operator. Do not
-invent an IMPLIES node. Represent it with a rule whose condition and effect are
-references to children or expressions.
-
-Important distinctions
+LANGUAGE NORMALIZATION
 ----------------------
-- Do not encode temporal ordering here; PRECEDES belongs to the semantic relation
-  layer.
-- Do not encode causality, enablement, qualification, or ordinary semantic
-  relations as Boolean operators.
-- Preserve source grouping rather than algebraically normalizing it. For example,
-  keep OR(A,B) -> AND(X,Y) rather than rewriting it into multiple equivalent
-  implications.
-- Do not interpret plain proximity as conjunction/disjunction.
-- Do not infer exclusivity from ordinary "or". "A or B" means OR(A,B) unless the
-  source explicitly says exactly one, only one, mutually exclusive, etc.
-- "all of" naturally maps to AND; "any of" naturally maps to OR; "none of"
-  can be represented as NOT(OR(...)) when that is what the source says.
-- Preserve parentheses/scope/grouping exactly.
+Interpret equivalent natural-language connectives, not only literal keywords.
+Conjunction may be expressed by "and", "both", "together with", "along with",
+"as well as", or "in addition to". Disjunction may be expressed by "or",
+"either", "one of", "alternatively", or equivalent phrasing. Conditions may use
+"if", "when", "provided that", "assuming", "only if", "unless", or equivalent
+constructions. Temporal order may use "before", "after", "first", "then",
+"prior to", "following", or equivalent phrasing. Normalize meaning, not surface
+words.
 
-Evidence
---------
-Every assertion and every rule must include ``evidence_text`` that quotes or
-closely reproduces the immediate source wording expressing that logical
-structure. Evidence for an assertion must support the Boolean/cardinality
-grouping itself, not merely the existence of one semantic child.
+SLOTS AND BINDING
+-----------------
+Create a slot only for a proposition that participates in Boolean/cardinality
+structure. Bind proposition_index only when one AVAILABLE_PROPOSITION independently
+expresses the same complete proposition. A broader conditional/rule node is not
+identical to one of its internal operands. Leave proposition_index=null when there
+is no exact semantic proposition. Unresolved slots are valid.
 
-Sparse output
--------------
-If the source does not explicitly express Boolean/cardinality composition or an
-explicit condition -> effect rule among these direct children, return:
-    expressions=[]
-    assertions=[]
-    rules=[]
+Use proposition_value=false only when the available proposition explicitly asserts
+the negation of the slot. Never bind by inference, arithmetic, date reasoning,
+world knowledge, or implication.
 
-Return only the structured LocalLogicDecision.
+TEMPORARY CANONICAL EXPRESSIONS
+-------------------------------
+Use direct signed slot operands for literals. Use expression nodes only to expose
+the source's actual grouping:
+- AND
+- OR
+- NOT for scoped negation that cannot be represented as a signed literal
+- AT_LEAST / AT_MOST / EXACTLY for Boolean cardinality only
+
+Do NOT optimize or distribute expressions yourself. Python owns that decision.
+Examples:
+- "If A then B" -> rule with condition=A, effect=B.
+- "A only if B" -> rule with condition=A, effect=B.
+- "A if B" -> rule with condition=B, effect=A.
+- "If A then B and C" -> rule with effect=AND(B,C).
+- "If A or B then C" -> rule with condition=OR(A,B).
+- "If A and B then C" -> rule with condition=AND(A,B).
+- "If A then B or C" -> rule with effect=OR(B,C).
+
+Python will later convert reducible literal-level rules into graph IMPLIES edges,
+for example:
+- A -> (B AND C) becomes A->B and A->C;
+- (A OR B) -> C becomes A->C and B->C;
+while irreducible forms such as (A AND B)->C or A->(B OR C) remain in the logic
+layer.
+
+CLAUSES
+-------
+Use kind=rule for explicit Boolean condition -> effect structure. Use kind=assertion
+only when truth-functional grouping itself must be preserved, such as an asserted
+OR, cardinality constraint, or scoped compound negation. Do not create an assertion
+for ordinary standalone A, NOT A, or A AND B when the semantic graph already carries
+those independent assertions.
+
+A statement may contain more than one explicit relation or logical clause.
+evidence_text must be a source-supported excerpt.
+
+Return only LogicNormalizationDecision.
 """.strip()
+
 
 _LOGICAL_STRUCTURE_AUDIT_SYSTEM_PROMPT = """
-You audit a proposed source-local Boolean/cardinality and conditional-rule
-extraction.
+Audit one proposed COMPOUND propositional-logic remainder against SOURCE and
+AVAILABLE_PROPOSITIONS.
 
-You receive:
-- the original SOURCE composite statement;
-- its already-established indexed direct CHILDREN;
-- the proposed LocalLogicDecision.
+This is a compound-logic audit, not semantic coverage and not a checklist of
+available propositions. SOURCE-explicit simple binary relations are supplied
+separately as NORMALIZED_SIMPLE_RELATIONS and are owned by the semantic relation
+graph, not by the logic layer.
 
-Mark complete=true only if every explicit Boolean/cardinality grouping AND every
-explicit condition -> effect structure among the supplied children is preserved
-with correct scope and no unsupported logic is added.
+Representation rule
+-------------------
+Simple A -> B and every other Boolean rule that Python can distribute losslessly
+to binary IMPLIES edges belongs in NORMALIZED_SIMPLE_RELATIONS and should NOT be
+duplicated in PROPOSED_COMPOUND_LOGIC. AST expressions are appropriate only for
+genuine irreducible AND/OR/cardinality/nested Boolean structure.
 
-Check especially:
-- conjunction vs disjunction;
-- nested grouping and parentheses/scope;
-- negation scope;
-- "all", "any", "none", "either", "neither", and equivalent constructions;
-- at-least / at-most / exactly thresholds and the operands they govern;
-- conditional direction for if/when/unless/provided/only-if style constructions;
-- whether the condition and effect each reference the correct child or grouped
-  expression;
-- grouped consequents: "if C, do A and B" must be C -> AND(A,B), not AND(C,A,B);
-- grouped antecedents: "if A and B, do X" must be AND(A,B) -> X;
-- ordinary "or" must not be strengthened to XOR/exactly-one;
-- temporal ordering, causality, enablement, qualification, and ordinary semantic
-  relations must NOT be invented as Boolean structure.
+Unresolved slots are valid
+--------------------------
+An unresolved slot is a first-class Boolean variable. It may appear anywhere a
+resolved slot may appear: as a rule condition/effect or inside a compound
+expression. ``proposition_index=null`` means only that no existing semantic node
+is bound yet. It does NOT invalidate the surrounding logical structure.
 
-RESPONSIBILITY BOUNDARY: semantic coverage is out of scope here. The decomposition
-stage has already established and audited the semantic children. Do NOT require
-every supplied child to appear in the logic layer. Do NOT report missing logic
-merely because a standalone fact, definition, requirement, prohibition,
-permission, procedure, exception, qualification, or other semantic child is not
-referenced by an assertion or rule.
+AVAILABLE_PROPOSITIONS boundary
+-------------------------------
+Bind proposition_index only for exact proposition identity. Containment, overlap,
+or participation in a larger rule is not identity.
 
-Use assertions only for standalone Boolean/cardinality OPERATOR EXPRESSIONS
-without explicit condition -> effect direction. An assertion must reference an
-expression_id; a bare child must never be asserted. Use rules for explicit
-conditional direction. Either side of a rule may be a single child or a logical
-expression.
+Examples:
+- available: "If C, perform A"; slot: "perform A" => DO NOT bind.
+- available: "When time is needed, use get_current_time()"; slot: "use
+  get_current_time()" => DO NOT bind unless a separate proposition independently
+  states the action.
+- available: "Y requires P"; slots "Y" and "P" => neither is automatically bound
+  to the broader requirement node.
+- available: "At least 30 days have passed"; matching slot => bind.
 
-Examples for audit scope:
-- SOURCE "A. B. C." with empty logic is COMPLETE.
-- SOURCE "A and B. C." needs ASSERT(AND(A,B)); standalone C needs nothing.
-- SOURCE "If A, do B and C. D." needs A -> AND(B,C); standalone D needs nothing.
+Completeness criteria
+---------------------
+Mark complete=true when:
+- every irreducible SOURCE-explicit Boolean/cardinality structure is represented
+  with correct scope, direction, and polarity;
+- any reducible Boolean structure is already represented by
+  NORMALIZED_SIMPLE_RELATIONS rather than duplicated as an AST;
+- compound ASTs are used only where compound structure is actually required;
+- every proposition_index binding is an exact semantic-identity binding;
+- slots lacking an exact available proposition remain unresolved;
+- rule-only terms are not incorrectly asserted true;
+- truth-functional assertions whose grouping matters (for example OR/cardinality)
+  are preserved; ordinary semantic facts are not duplicated as logic assertions;
+- no arithmetic/date/world/deductive reasoning was used to fill missing slots.
 
-The proposed decision may be empty when no explicit Boolean/cardinality grouping
-or conditional rule exists between the supplied children.
+IMPORTANT:
+- A partial representation is NOT incomplete because slots are unresolved.
+- Do not require graph-owned PRECEDES/REQUIRES/ENABLES/CAUSES/QUALIFIES relations
+  to appear in the logic layer.
+- Do not require a reducible IMPLIES relation to appear in the logic layer when it
+  is present in NORMALIZED_SIMPLE_RELATIONS.
+- Do not require every AVAILABLE_PROPOSITION to appear in logic.
+- Ordinary non-logical statements do not need logic entries.
+- Never set complete=false for an item you call optional, preferable, cleaner, or
+  merely an alternative representation.
 
 Return:
-- complete: true/false
-- missing_logic: concise descriptions of omitted logical/rule structure
-- unsupported_logic: concise descriptions of invented or mis-scoped structure
-- reason: concise overall assessment
+- complete
+- missing_logic: only required source-explicit logical structure that is absent or
+  materially misrepresented
+- unsupported_logic: invented/mis-scoped structure, invalid exact bindings, or
+  unnecessary AST structure that changes meaning
+- reason: concise assessment
 """.strip()
 
+# The previous 120B logic-slot matcher prompt and implementation are preserved
+# in logic_slot_binding_llm_legacy.py. The active backend is local DeBERTa.
+
 _LOGIC_CUE_RE = re.compile(
-    r"\b(?:and|or|either|neither|both|not|all|any|none)\b"
-    r"|\b(?:if|when|whenever|unless|provided|assuming)\b"
+    # Boolean implication / conditional / prerequisite language.
+    r"\b(?:if|when|whenever|unless|provided|assuming|otherwise|else)\b"
     r"|\bonly\s+if\b|\bprovided\s+that\b|\bin\s+case\b"
-    r"|\b(?:at\s+least|at\s+most|exactly)\b"
-    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+of\b",
+    r"|\b(?:as\s+long\s+as|so\s+long\s+as|on\s+condition\s+that)\b"
+    r"|\b(?:in\s+the\s+event\s+that|contingent\s+upon|contingent\s+on)\b"
+    r"|\b(?:subject\s+to|requires?|requirement|depends?\s+on|conditional\s+on)\b"
+    # Source-explicit temporal/procedural relations that should be normalized
+    # onto graph edges rather than retained as connective fragments in nodes.
+    r"|\b(?:before|after|first|then|previously|subsequently)\b"
+    r"|\b(?:prior\s+to|followed\s+by|following)\b"
+    r"|\b(?:enables?|enabled\s+by|causes?|caused\s+by)\b"
+    r"|\b(?:leads?\s+to|results?\s+in|supersedes?|replaces?)\b"
+    r"|\b(?:qualifies?|qualified\s+by|except(?:\s+when|\s+if)?)\b"
+    # Disjunction is not reducible to independent asserted facts, so it deserves
+    # inspection even without an implication cue.
+    r"|\b(?:or|either|alternatively)\b"
+    r"|\bfailing\s+that\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+of\b"
+    # Boolean cardinality. Numeric predicates such as 'at least 30 days' are
+    # intentionally excluded unless they use the '<N> of <terms>' form.
+    r"|\b(?:at\s+least|at\s+most|exactly)\s+"
+    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+of\b",
     flags=re.IGNORECASE,
 )
 
@@ -1069,6 +1353,14 @@ All other allowed relations are directional.
 
 Important rules
 ---------------
+- ``anchor_context_paths`` and candidate ``context_paths`` are semantic ancestry,
+  not extra facts. Use them to disambiguate inherited scope and referents.
+- Identical leaf wording under different parents does NOT imply equivalent_to,
+  corefers_with, or any other identity relation. Compare complete contextual
+  meanings. If "this rule" points to different rules, keep the occurrences
+  distinct.
+- Different wording may still be equivalent when the contextual paths establish
+  the same complete proposition.
 - Omit candidates that have no meaningful direct relation to the anchor.
 - Do not create a relation merely because two propositions share a broad topic.
 - Prefer the most specific supported relation over related_to.
@@ -1093,6 +1385,8 @@ Important rules
   - "After A, perform B" -> A PRECEDES B.
 - PRECEDES is directional. The source is the earlier action/state and the target
   is the later action/state.
+- IMPLIES is reserved for the source-explicit normalization pass and must not be
+  inferred by this broader relation-linking model.
 - The hierarchical relation decomposes_into is forbidden here; it is owned by
   deterministic hierarchy construction.
 - other_node_id must be the ID of one of the supplied candidates.
@@ -1102,16 +1396,36 @@ Important rules
 _DECOMPOSITION_SYSTEM_PROMPT = """
 You decompose exactly ONE statement at a time.
 
+A deterministic dependency-parser scaffold may be supplied with the request. It
+is ADVISORY structural evidence, not authoritative semantics. Use its predicate
+frames, participants, modality/negation, and connective cues to avoid dropping
+source meaning. If the parser is wrong, preserve the source meaning rather than
+forcing the scaffold.
+
 You are NOT constructing a graph.
 You are NOT responsible for canonical node IDs, parent IDs, hierarchy edges, graph
-depth, graph mutation, candidate retrieval, or global lateral-relation discovery.
-For a composite statement, you MAY return sparse local relation hints only when the
-relation is explicit in the same parent statement.
+depth, graph mutation, candidate retrieval, global lateral-relation discovery, or
+formal logical parsing.
 
-Your goal is LOSSLESS semantic decomposition, not summarization.
-The direct children of a composite statement must collectively preserve every
-operationally or logically meaningful part of the parent. Hierarchy may compress
-structure, but the atomic leaves must not compress away decision-relevant meaning.
+A dedicated SECOND PASS runs after semantic decomposition and receives the original
+source plus all semantic propositions produced by this pass. That second pass owns
+source-explicit relations/connectives between operands, including temporal order,
+prerequisites, simple condition -> effect structure, Boolean/cardinality grouping,
+and IF/WHEN/UNLESS/ONLY-IF/OTHERWISE semantics. Python routes reducible binary
+structure to graph relations and keeps only irreducible Boolean structure in the
+logic layer. A later relation linker owns broader cross-node relation discovery.
+
+For a composite statement, you MAY return sparse local relation hints when a
+relation is completely unambiguous and explicitly stated by the immediate parent.
+These hints are optional conveniences. They are NOT part of the semantic-completeness
+contract of this pass because the second normalization pass receives the unchanged
+SOURCE and can recover source-explicit relations there.
+
+Your goal is LOSSLESS SEMANTIC PROPOSITION DECOMPOSITION, not summarization and not
+logical reconstruction. The direct children of a composite statement must
+collectively preserve every operationally meaningful OPERAND and every qualifier
+that belongs inside an operand. Connective words whose only job is to relate two
+separate operands should not be turned into standalone semantic children.
 
 Your only task is to decide whether the supplied statement is:
 
@@ -1123,19 +1437,45 @@ Your only task is to decide whether the supplied statement is:
      If it contains multiple independently applicable clauses, conditions,
      procedures, exceptions, or ordered requirements, it is composite.
    - Return kind="atomic".
-   - Return a structured proposition.
    - Return children=[].
+   - An atomic statement MUST be a standalone, semantically meaningful proposition.
+     It must not be a bare auxiliary/modal/connective fragment whose meaning depends
+     on a missing lexical predicate or complement. Never emit/accept fragments such
+     as "have to", "has to", "must", "should", "can", "need to", "only if",
+     or a bare infinitival marker as an atomic proposition. Keep modality and
+     auxiliaries attached to the lexical predicate and its required arguments.
+   - Do not generate subjects/predicates/objects here. A dedicated post-tree
+     extractor fills retrieval payloads only after final atomic leaves are known.
 
 2. composite
    - Its meaning can be separated into more specific direct semantic components.
    - Return kind="composite".
    - Return the DIRECT child statements only.
    - Do not recursively decompose the children yourself.
-   - Do not return a proposition for the composite statement.
+   - Do not generate subjects/predicates/objects for the composite statement.
+   - Do not return proposition/S/P/O fields for children. Retrieval payloads are
+     generated only after the complete semantic hierarchy is built.
 
 A composite child must be strictly narrower than its parent.
 Never return the complete parent statement unchanged as one of its children.
 Do not create vague heading-like children when the parent contains concrete rules.
+
+OCCURRENCE IDENTITY AND REPEATED WORDING
+----------------------------------------
+Do not emit the same semantic child twice for the same source occurrence. However,
+identical or near-identical wording can legitimately appear more than once when it
+belongs to different source occurrences, referents, scopes, or parent rules. Those
+occurrences must remain distinct.
+
+When the immediate parent makes an anaphoric referent unambiguous, make the child
+content self-contained enough to preserve that context. For example, prefer
+"The tool-V requirement may be overridden when the user is a kid" over an isolated
+"This statement may be overridden when the user is a kid" when "this statement"
+clearly refers to the tool-V requirement. Preserve genuine ambiguity rather than
+inventing a referent.
+
+Never deduplicate children merely because their surface strings match. Source
+occurrence and inherited parent meaning are part of proposition identity.
 
 CHILD OUTPUT CONTRACT
 ---------------------
@@ -1158,7 +1498,7 @@ parent MUST be represented by at least one direct child. Do not select only the
 how, when, under what condition, by what procedure, in what order, or with what
 qualification a rule applies.
 
-Preserve, whenever present:
+Preserve in CHILD CONTENT whenever present:
 - facts and assertions;
 - requirements and prohibitions;
 - permissions and optional actions;
@@ -1168,17 +1508,50 @@ Preserve, whenever present:
 - statements that explain how a prerequisite, state, condition, or result is
   established or verified;
 - exceptions, overrides, and fallback rules;
-- temporal and ordering constraints such as before, after, first, then, until;
+- temporal scope that belongs inside one proposition, such as "before 5 PM" or
+  "until the account closes";
 - thresholds, counts, quantifiers, and selection rules;
 - polarity, modality, attribution, uncertainty, and scope;
 - restrictive or satisfaction-changing qualifiers.
 
-SEMANTIC OPERATORS MUST SURVIVE
--------------------------------
-Words and constructions such as "only", "unless", "before", "after", "first",
-"then", "correctly", "at least", "at most", "exactly", "any", "all", "none",
-"except", "if", "when", "until", and equivalent phrasing are semantically
-binding when they affect whether a rule is satisfied. Do not paraphrase them away.
+The structured PropositionPayload does NOT need to duplicate these nuances. It is
+only a coarse subject/predicate/object lexical index; exact semantic fidelity is
+owned by child content and the later relation/logic passes.
+
+SEMANTIC OPERANDS MUST SURVIVE; FORMAL CONNECTORS MAY BE DEFERRED
+----------------------------------------------------------------
+Preserve every independently meaningful operand and every qualifier that belongs
+inside an operand. The later normalization pass receives the exact original SOURCE,
+so relational/Boolean connectors BETWEEN returned children do not need to be
+redundantly copied into child content.
+
+Examples:
+- "If A, then B" may decompose to children A and B. The later logic pass owns A -> B.
+- "Either A or B" may decompose to children A and B. The later logic pass owns OR.
+- "Before A, do B" should decompose to clean children A and B. The later
+  normalization pass owns B PRECEDES A; do not create a child "Before A".
+- "B requires A" should decompose to clean children B and A. The later
+  normalization pass owns B REQUIRES A; do not keep "requires A" attached to B
+  merely to preserve the relation word.
+- "At least 30 days have passed" is one semantic proposition: "at least 30 days"
+  is internal to that proposition and must NOT be weakened to "30 days".
+- "Only authorized users may act" must preserve "only authorized users" because
+  that restricts the operand itself.
+
+RELATIONAL CONNECTIVES VS OPERAND-INTERNAL QUALIFIERS
+-----------------------------------------------------
+When before/after/first/then/if/when/unless/requires/depends-on or equivalent
+language CONNECTS two independently meaningful operands, return the clean operands
+and leave the relation/connective to the later normalization pass.
+
+Do NOT create connective-only children such as "Before", "After", "If", "Then",
+"Unless", or "Requires". Do NOT recursively split a clean operand just to preserve
+a connective that belongs between siblings.
+
+Preserve temporal/restrictive wording when it is INTERNAL to one proposition and
+cannot be represented as a relation between sibling operands. Examples include
+"before 5 PM", "for at least 30 days", "already verified", and "only authorized
+users".
 
 PROCEDURES AND PREREQUISITES
 ----------------------------
@@ -1194,27 +1567,28 @@ Examples of generic forms that contain procedural meaning:
 
 Do NOT collapse these into only "B requires P" or only "P is required".
 Preserve the procedure/method A as its own child when it is independently useful.
-Do NOT encode a procedure as proposition.condition unless the source actually
-states it as a condition or prerequisite.
+Do NOT collapse an establishment/checking procedure into a generic condition.
+Preserve the procedure as semantic content when it is independently useful.
 
 SOURCE GROUNDING
 ----------------
 Every child must be directly supported by a specific phrase, sentence, or clause
 in the supplied parent statement. A child may paraphrase for clarity, but it must
 not add a rule, prerequisite, exception, or implication that is absent from the
-source. Return that support explicitly in the child's ``source_text`` field. Prefer a
-verbatim contiguous excerpt from the parent whenever possible. Before returning,
+source. Return that support explicitly in the child's ``source_text`` field. Prefer
+a verbatim contiguous excerpt from the parent whenever possible. Before returning,
 map every child back to supporting source wording and confirm that no operative
 source clause is left unmapped. Exact punctuation or formatting identity is less
 important than faithful semantic support.
 
 For policy/rule text:
 - preserve requirements, prohibitions, permissions, conditions, and procedures;
-- preserve modality, ordering, exceptions, and satisfaction criteria;
+- preserve modality, operand-internal temporal scope, exceptions, and satisfaction
+  criteria;
 - preserve how prerequisites are established, not only that they are required;
 - preserve what must be true for a condition to count as satisfied;
-- put an explicit prerequisite in proposition.condition only when the current
-  atomic statement itself is conditional on that prerequisite.
+- preserve explicit prerequisite wording in semantic content; the later
+  normalization pass owns condition/prerequisite relations between propositions.
 
 For user messages:
 - preserve requests, preferences, values supplied by the user, and claims;
@@ -1233,178 +1607,227 @@ For executable code or tool-use text:
 - preserve dependencies between actions when one action supplies information
   needed to determine another.
 
-LOCAL RELATION HINTS
---------------------
-For composite statements, return ``local_relations`` only for relations that are
-explicitly expressed by the immediate parent text between two returned children.
-Do not perform broad/global relation discovery here. The later relation linker
-owns inferred relations across the graph.
+LOCAL RELATION HINTS ARE OPTIONAL
+---------------------------------
+For composite statements, ``local_relations`` are OPTIONAL hints only. Return one
+only when the immediate parent explicitly and unambiguously states that semantic
+relation between two returned children.
 
 Use zero-based child indices. ``source_child_index`` is the relation source and
-``target_child_index`` is the relation target. ``evidence_text`` should preferably be a verbatim contiguous excerpt from the
-parent that supports the relation. Minor formatting normalization is acceptable
-when the relation is still explicitly supported by the parent.
+``target_child_index`` is the relation target. ``evidence_text`` should preferably
+be a verbatim contiguous excerpt from the parent that supports the relation.
 
-Examples of generic source-explicit patterns:
-- "To establish P, perform A" -> A ENABLES P when both meanings are represented
-  by returned children.
-- "B requires P" -> B REQUIRES P.
-- "Rule R applies only when C" -> C QUALIFIES R when represented as separate
-  children.
-- "First A, then B" -> A PRECEDES B.
-- "Before B, perform A" -> A PRECEDES B.
-- "After A, perform B" -> A PRECEDES B.
+Important boundaries:
+- Do NOT use local_relations as a substitute for clean semantic operands. The
+  dedicated normalization pass owns Boolean/simple-conditional structure and can
+  also recover source-explicit temporal/prerequisite relations.
+- Do NOT add PRECEDES solely because a word such as "first" appears. Emit PRECEDES
+  only when the immediate source makes both ordered endpoints unambiguous.
+- Do NOT add REQUIRES/QUALIFIES merely to encode a conditional whose wording is
+  already preserved for the logic pass.
+- Do NOT reverse an establishment procedure into a prerequisite.
+- If uncertain whether the relation is explicit, omit it. The later relation
+  linker can infer semantic relations after node construction.
+- Set origin="source_explicit" for any hint you do emit.
 
-Keep ordering distinct from prerequisites:
-- PRECEDES means one action/state must occur earlier than another.
-- REQUIRES means one action/state depends on another condition/state being
-  satisfied or true.
-- Do not use REQUIRES merely to encode that A comes before B.
-
-Do not reverse an establishment procedure into a prerequisite. If A is the
-permitted method used to establish/check P, do not emit A REQUIRES P merely
-because another action later requires P.
-
-Set origin="source_explicit" for these hints. If a relation would require
-additional inference rather than being expressed in the parent, omit it and let
-the relation linker infer it later.
+The absence of local_relations MUST NOT cause you to add, remove, merge, or rewrite
+semantic children. Proposition decomposition comes first.
 
 FINAL SELF-CHECK BEFORE RETURNING
 ---------------------------------
 If kind="composite", ask yourself:
-1. Did every MUST/MUST NOT/MAY/ONLY/UNLESS/IF/WHEN clause survive?
+1. Did every independently operative semantic operand/clause survive as a child?
+   Relational/Boolean connectors between those operands may be deferred to the
+   normalization pass.
 2. Did every procedure or "how to establish/check X" clause survive?
-3. Did every ordering word such as before/after/first/then survive?
-4. Did every qualifier or threshold that changes satisfaction survive?
-5. Did every exception/override survive?
+3. Did I keep relation words BETWEEN operands out of standalone children while
+   preserving temporal/restrictive wording that belongs INSIDE an operand?
+4. Did every qualifier or threshold internal to a proposition survive?
+5. Did every exception/override operand survive, even if its formal connection is
+   deferred to the logic pass?
 6. Is every child directly supported by source_text from the parent?
-7. Did I preserve any source-explicit child-to-child REQUIRES, ENABLES,
-   QUALIFIES, PRECEDES, or other direct relation that would otherwise be lost?
-8. Is every local relation directly backed by evidence_text from the parent?
+7. Did I avoid inventing child-to-child logical or temporal relations merely to
+   make the decomposition look formally complete?
+8. For every local relation I did return, is it explicit and unambiguous in the
+   immediate parent text?
 
-If any answer is no, add or revise direct children/local relations before returning.
+If a source meaning is missing, revise the children. Do NOT invent a local relation
+as a substitute for missing semantic content.
 
 routing_text must be a short retrieval-oriented description of the current
 statement. It is not a substitute for content and must not contain important
 semantics that are absent from content.
-
-The proposition schema is strict.
-The ONLY allowed proposition fields are:
-- subject
-- predicate
-- object
-- polarity
-- modality
-- quantifier
-- temporal_scope
-- condition
-- attribution
-- qualifiers
-
-Every proposition field except qualifiers must be a string or null.
-Structured lists or dictionaries belong inside qualifiers.
 """.strip()
 
-_DECOMPOSITION_COVERAGE_SYSTEM_PROMPT = """
-You audit one proposed semantic decomposition for LOSSLESS coverage.
+
+_CHUNK_SEMANTIC_AUDIT_SYSTEM_PROMPT = """
+You audit ONE fully constructed semantic-decomposition chunk after recursive
+construction is complete.
+
+The decomposition itself was produced from deterministic dependency-parser
+scaffolds plus an OSS-120B semantic decomposer. You are NOT repairing the chunk.
+You return only PASS/FAIL diagnostics. If the chunk is incomplete, the graph build
+will stop rather than enter a repair loop.
 
 You receive:
-- the original SOURCE statement;
-- a proposed LocalDecompositionDecision.
+- PRIMARY_SOURCE: the exact authoritative source slice for this chunk;
+- CONTEXT_SOURCE_TEXTS: exact external source excerpts used only when needed to
+  interpret the primary slice;
+- CONTEXTUALIZED_INPUT: the derived self-contained text actually decomposed;
+- CHUNK_STRUCTURE: every node, hierarchy edge, source-explicit relation, and local
+  logic object produced while building this chunk, before cross-chunk slot binding.
 
-You are NOT decomposing the source yourself and you are NOT building a graph.
-Your task is to detect semantic loss or unsupported additions.
+Judge semantic fidelity of the completed subtree as a whole, not each recursive
+LLM call in isolation.
 
-Mark complete=true only when the proposed decision preserves every independently
-operative part of the source that can affect later reasoning or verification.
+Check for:
+- missing_semantics: an operative source proposition/condition/procedure/exception
+  is absent from the completed subtree;
+- distorted_semantics: a represented proposition changes actor, modality,
+  polarity, scope, qualifier, threshold, temporal restriction, or other
+  satisfaction-changing meaning;
+- unsupported_semantics: a node asserts meaning not supported by the authoritative
+  primary/context sources;
+- missing_relation: an explicit source relation/connective that should have been
+  represented by the source-normalization layer is absent;
+- incorrect_relation: a stored source relation has wrong endpoints or direction;
+- logic_error: Boolean/conditional/cardinality structure materially changes the
+  source meaning;
+- atomicity: a final atomic leaf still contains multiple independently operative
+  semantic propositions, or a composite node has no meaningful decomposition.
 
-Check especially for omitted or weakened:
-- requirements, prohibitions, permissions;
-- prerequisites, conditions, and postconditions;
-- procedures or prescribed methods, including how a prerequisite/state/result is
-  established, checked, verified, or obtained;
-- exceptions, overrides, and fallback rules;
-- ordering constraints such as before/after/first/then/until; when ordering is
-  represented between separate children, PRECEDES is the canonical relation;
-- restrictive qualifiers and satisfaction criteria such as only, unless,
-  correctly, thresholds, counts, and quantifiers.
+Do NOT fail merely because parser guidance was imperfect, because routing_text is
+brief, because S/P/O payloads are not present yet, or because broad inferred
+lateral relations have not been linked. S/P/O extraction and broad relation linking
+happen later. Cross-chunk slot identity binding also happens later.
 
-BOOLEAN/CARDINALITY RESPONSIBILITY BOUNDARY
-------------------------------------------
-A dedicated logical-structure extractor runs immediately after a composite
-decomposition and is responsible for preserving AND/OR/NOT grouping and explicit
-AT_LEAST/AT_MOST/EXACTLY cardinality over the returned direct children.
-
-Therefore, do NOT mark an otherwise complete decomposition incomplete solely
-because Boolean/cardinality grouping among already-present child meanings is not
-encoded in local_relations. Do still mark it incomplete if an operand meaning,
-threshold value, polarity, condition, or other semantic content needed by that
-logical extractor has been omitted or weakened from the children themselves.
-- modality, polarity, attribution, uncertainty, temporal scope, and quantifiers.
-
-Also detect unsupported children: a child is unsupported if it adds a rule,
-condition, implication, prerequisite, exception, or factual claim that the source
-does not state or clearly entail. Judge support from the SOURCE itself. The
-child's source_text is a provenance aid, not an independent semantic assertion.
-
-Do NOT mark the decomposition incomplete solely because source_text or
-evidence_text differs from the source in bullet markers, whitespace, punctuation,
-quote style, capitalization, or other minor formatting normalization. Exact
-provenance precision is checked deterministically outside this semantic audit.
-
-Audit local_relations too. A local relation is valid here only when the immediate
-source explicitly expresses the relation between the referenced child meanings.
-Missing an explicit procedure/prerequisite relation that materially affects later
-reasoning counts as missing semantics.
-
-Important distinctions:
-- An ordering relation is not the same as a prerequisite. If the source states
-  only that A occurs before B, PRECEDES is appropriate; do not require A or B
-  merely because they are ordered.
-- A prerequisite is not the same as the permitted procedure used to establish or
-  check that prerequisite. If the source contains both, both must survive.
-- "provides X" is not equivalent to "provides X correctly" when correctness is
-  part of the satisfaction criterion.
-- A large parent may be composite even if the proposed decision labels it atomic.
-- A concise paraphrase is acceptable only if it preserves all operative meaning.
-
-Return:
-- complete: true/false
-- missing_semantics: short descriptions of source meanings that are absent or
-  materially weakened
-- unsupported_children: short descriptions of proposed child meanings not
-  supported by the source
-- reason: concise overall assessment
-
-Do not propose benchmark-specific fixes. Judge only semantic coverage of the
-supplied source.
+Return complete=true with issues=[] only when the completed chunk preserves the
+source semantics safely. Otherwise return complete=false and precise issue objects.
 """.strip()
 
-_ALLOWED_PROPOSITION_FIELDS = {
-    "subject",
-    "predicate",
-    "object",
-    "polarity",
-    "modality",
-    "quantifier",
-    "temporal_scope",
-    "condition",
-    "attribution",
-    "qualifiers",
-}
+_ATOMIC_CLASSIFICATION_AUDIT_SYSTEM_PROMPT = """
+Audit only whether one proposed ATOMIC semantic statement is truly atomic.
 
-_STRING_PROPOSITION_FIELDS = {
-    "subject",
-    "predicate",
-    "object",
-    "polarity",
-    "modality",
-    "quantifier",
-    "temporal_scope",
-    "condition",
-    "attribution",
-}
+The authoritative graph node content remains the exact SOURCE text. Decide only:
 
+classification_valid
+  Is SOURCE one semantically indivisible operand in its inherited SEMANTIC_ROLE,
+  so kind=atomic is appropriate? A role-bound condition, exception,
+  qualification, procedure, or intended action does not need to be a complete
+  standalone sentence if it expresses one coherent operand. Return false when
+  SOURCE contains multiple independently applicable clauses/procedures/branches
+  that need separate semantic children.
+
+Connective-only fragments such as "Before", "After", "If", "Then", "Unless",
+or "Requires" are never valid atomic operands. However do not split a coherent
+role-bound operand merely because its grammar depends on the parent context.
+
+Do NOT evaluate or comment on PropositionPayload here. Retrieval payloads are
+generated only after the complete semantic hierarchy has been built and only for
+nodes that remain atomic leaves.
+
+Do not require formal Boolean AST/implication structure here. The separate
+logic-normalization pass owns formal structure.
+""".strip()
+
+
+_DECOMPOSITION_AUDIT_SYSTEM_PROMPT = """
+You audit exactly one proposed COMPOSITE semantic decomposition for LOSSLESS
+CHILD COVERAGE. You are also the ONLY semantic repair step.
+
+You receive:
+- the exact original SOURCE statement;
+- one proposed LocalDecompositionDecision.
+
+Return exactly one DecompositionAuditResult with one of two actions:
+
+1. action="pass"
+   Use this only when the proposed decomposition is semantically lossless and
+   contains no unsupported/duplicate child meaning or unsafe local relation.
+   corrected_decision must be null.
+
+2. action="corrected"
+   If anything is missing, weakened, duplicated, unsupported, or incorrectly
+   scoped, return the COMPLETE corrected LocalDecompositionDecision in
+   corrected_decision. Do the correction yourself in this same response.
+
+CORRECTION RULES
+----------------
+- Make the minimum semantic edits needed to make the decomposition lossless.
+- You MAY replace an existing child when a qualifier, modality, condition,
+  actor, restriction, or scope was lost. Prefer replacement over adding a
+  near-duplicate child.
+- You MAY delete unsupported or duplicate children.
+- You MAY add a genuinely missing child.
+- Preserve already-correct children unchanged whenever possible.
+- Keep kind="composite".
+- Return the whole corrected decision, not a patch, issue list, or prose repair
+  instruction.
+- Do not create PropositionPayload/S-P-O fields. Those are generated later.
+- Child content must be meaningful semantic propositions, not connective-only
+  fragments such as "Before", "After", "If", "Then", "Unless",
+  "Requires", "And", or "Or".
+- source_text should remain grounded in the immediate SOURCE; minor formatting
+  normalization is acceptable.
+- routing_text should remain a concise retrieval-oriented rendering of the same
+  current statement.
+
+SEMANTIC COVERAGE
+-----------------
+Preserve every independently operative source meaning, especially:
+- requirements, prohibitions, and permissions;
+- actors/subjects whose identity changes the proposition;
+- prerequisites/conditions and postconditions as semantic operands;
+- procedures or prescribed methods for establishing/checking a state;
+- exception/override/fallback operands and their scope;
+- modality, polarity, attribution, uncertainty, quantifiers, thresholds, counts,
+  durations, and restrictive qualifiers such as "only", "below", "already";
+- temporal/restrictive wording that belongs INSIDE one proposition, such as
+  "before 5 PM" or "until closed".
+
+FORMAL-STRUCTURE RESPONSIBILITY BOUNDARY
+----------------------------------------
+A later normalization pass receives the unchanged SOURCE and owns relations and
+formal connectives between preserved operands. Therefore do NOT reject or modify
+an otherwise lossless decomposition merely because child text omits a connector
+whose only role is to connect separate operands, including:
+- AND / OR / NOT grouping;
+- AT_LEAST / AT_MOST / EXACTLY cardinality;
+- IF / WHEN / UNLESS / ONLY-IF / OTHERWISE condition -> effect structure;
+- prerequisite direction such as REQUIRES or QUALIFIES;
+- temporal/order edges such as PRECEDES.
+
+Examples:
+- SOURCE: "If A, then B". Clean children A and B are sufficient; later logic
+  normalization reconstructs A -> B.
+- SOURCE: "First A, then B". Clean children A and B are sufficient; later
+  normalization reconstructs PRECEDES.
+- SOURCE: "Y requires P". Clean children Y and P are sufficient; later
+  normalization reconstructs REQUIRES.
+
+But connective-like wording that is internal to one proposition MUST remain.
+For example "only authorized users", "at least 30 days", "before 5 PM",
+or a condition that semantically scopes the child itself must not be weakened.
+
+DUPLICATES AND SCOPE
+--------------------
+Do not solve a missing qualifier by adding a second near-duplicate child. Edit
+the existing child so the complete proposition carries its proper scope.
+If two children repeat the same semantic proposition from the same source
+occurrence, return a corrected decision that removes/merges the redundancy.
+Repeated wording from distinct source occurrences may remain distinct when its
+referent or inherited scope differs.
+
+LOCAL RELATIONS
+---------------
+local_relations are optional hints. Their absence is not a failure. If present,
+keep only relations explicitly and unambiguously supported by the immediate
+SOURCE. Remove any invented relation in the corrected decision.
+
+Do not return missing_semantics, unsupported_children, or instructions for a
+second repair model. Either PASS the proposed decomposition or RETURN THE FULL
+CORRECTED DECOMPOSITION.
+""".strip()
 
 def _get_model(*, reasoning_effort: Literal["low", "medium", "high"] = "low"):
     model = LLMManager().get_model(settings.agent.code.model)
@@ -1419,52 +1842,177 @@ def _get_model(*, reasoning_effort: Literal["low", "medium", "high"] = "low"):
     return model
 
 
-def _normalize_proposition_payload(
-    proposition: dict[str, Any],
-) -> dict[str, Any]:
-    """Normalize common provider drift without weakening the strict schema."""
-    proposition = dict(proposition)
 
-    qualifiers = proposition.get("qualifiers")
-    if not isinstance(qualifiers, dict):
-        qualifiers = (
-            {}
-            if qualifiers is None
-            else {"raw_qualifiers": qualifiers}
-        )
+_DECOMPOSITION_MODEL_NAME = os.environ.get(
+    "CUGA_DECOMPOSITION_MODEL",
+    "Azure/gpt-5-nano-2025-08-07",
+).strip() or "Azure/gpt-5-nano-2025-08-07"
+_DECOMPOSITION_REASONING_EFFORT = os.environ.get(
+    "CUGA_DECOMPOSITION_REASONING_EFFORT",
+    "minimal",
+).strip() or "minimal"
+_DECOMPOSITION_VERBOSITY = os.environ.get(
+    "CUGA_DECOMPOSITION_VERBOSITY",
+    "low",
+).strip() or "low"
+_DECOMPOSITION_MAX_COMPLETION_TOKENS = int(
+    os.environ.get("CUGA_DECOMPOSITION_MAX_COMPLETION_TOKENS", "8000")
+)
+_DECOMPOSITION_MODEL_CACHE: Any | None = None
+
+
+def _get_decomposition_model() -> Any:
+    """Clone CUGA's configured OpenAI-compatible client for decomposition only.
+
+    The global/default model remains untouched (normally OSS-120B).  The clone
+    reuses the exact same LiteLLM/OpenAI-compatible client, credentials and base
+    URL, but overrides only the request model.  For GPT-5-family decomposition we
+    suppress sampling parameters and bind minimal reasoning + low verbosity.
+    """
+    global _DECOMPOSITION_MODEL_CACHE
+    if _DECOMPOSITION_MODEL_CACHE is not None:
+        return _DECOMPOSITION_MODEL_CACHE
+
+    base_model = LLMManager().get_model(settings.agent.code.model)
+    model_name = _DECOMPOSITION_MODEL_NAME
+
+    # ChatOpenAI clients are Pydantic models.  A shallow model_copy preserves the
+    # already-configured HTTP client/auth/base URL while letting this one call path
+    # use a different gateway model alias.  This avoids mutating MODEL_NAME or the
+    # cached OSS-120B instance used by the rest of the graph pipeline.
+    if hasattr(base_model, "model_copy"):
+        update: dict[str, Any] = {}
+        if hasattr(base_model, "model_name"):
+            update["model_name"] = model_name
+        elif hasattr(base_model, "model"):
+            update["model"] = model_name
+
+        # GPT-5 reasoning models should not inherit OSS/non-reasoning sampling
+        # parameters.  Setting these model fields to None keeps them out of the
+        # normal ChatOpenAI default payload.
+        if "gpt-5" in model_name.casefold():
+            for field_name in ("temperature", "top_p", "max_tokens"):
+                if hasattr(base_model, field_name):
+                    update[field_name] = None
+            if hasattr(base_model, "max_completion_tokens"):
+                update["max_completion_tokens"] = (
+                    _DECOMPOSITION_MAX_COMPLETION_TOKENS
+                )
+
+        model = base_model.model_copy(update=update, deep=False)
     else:
-        qualifiers = dict(qualifiers)
+        # Defensive fallback for a non-Pydantic chat model.  Runtime binding still
+        # leaves the global model object unchanged.
+        model = base_model.bind(model=model_name)
 
-    action = proposition.pop("action", None)
-    if action is not None:
-        if not proposition.get("predicate"):
-            proposition["predicate"] = str(action)
-        else:
-            qualifiers["action"] = action
+    if "gpt-5" in model_name.casefold():
+        model = model.bind(
+            reasoning_effort=_DECOMPOSITION_REASONING_EFFORT,
+            verbosity=_DECOMPOSITION_VERBOSITY,
+            max_completion_tokens=_DECOMPOSITION_MAX_COMPLETION_TOKENS,
+        )
 
-    for key in list(proposition):
-        if key not in _ALLOWED_PROPOSITION_FIELDS:
-            qualifiers[key] = proposition.pop(key)
+    logger.info(
+        "Decomposition model configured: model={} reasoning_effort={} "
+        "verbosity={} max_completion_tokens={} global_model_unchanged=true",
+        model_name,
+        _DECOMPOSITION_REASONING_EFFORT if "gpt-5" in model_name.casefold() else "n/a",
+        _DECOMPOSITION_VERBOSITY if "gpt-5" in model_name.casefold() else "n/a",
+        _DECOMPOSITION_MAX_COMPLETION_TOKENS,
+    )
+    _DECOMPOSITION_MODEL_CACHE = model
+    return model
 
-    for key in _STRING_PROPOSITION_FIELDS:
-        value = proposition.get(key)
-        if value is None or isinstance(value, str):
-            continue
 
-        qualifiers[f"raw_{key}"] = value
-        if isinstance(value, list):
-            proposition[key] = ", ".join(str(item) for item in value)
-        elif isinstance(value, dict):
-            proposition[key] = json.dumps(
-                value,
-                ensure_ascii=False,
-                sort_keys=True,
+_ATOMIC_FRAGMENT_EXACT = {
+    "have to",
+    "has to",
+    "had to",
+    "need to",
+    "needs to",
+    "needed to",
+    "must",
+    "should",
+    "can",
+    "could",
+    "may",
+    "might",
+    "shall",
+    "would",
+    "will",
+    "only if",
+    "if",
+    "unless",
+    "then",
+    "before",
+    "after",
+    "and",
+    "or",
+}
+
+
+def _atomic_fragment_risk(text: str) -> str | None:
+    """Return a diagnostic reason for obviously non-standalone atomic fragments.
+
+    This is logging-only.  It deliberately does not repair/reject the model result,
+    so runtime experiments measure the decomposer we are actually testing.
+    """
+    normalized = re.sub(r"\s+", " ", text.strip().casefold()).strip(" .,:;!?\"'")
+    if not normalized:
+        return "empty atomic text"
+    if normalized in _ATOMIC_FRAGMENT_EXACT:
+        return "bare modal/auxiliary/connective fragment"
+    words = normalized.split()
+    if len(words) <= 4 and words[-1:] == ["to"]:
+        return "short atomic fragment ends in infinitival marker 'to'"
+    return None
+
+
+def _log_decomposition_trace(
+    *,
+    request: GraphBuildRequest,
+    guidance_text: str,
+    decision: LocalDecompositionDecision,
+    stage: str,
+    structural_repairs: int,
+) -> None:
+    """Emit one machine-readable parent -> decomposition record to wlateral logs."""
+    payload = {
+        "source_id": request.source_id,
+        "source_type": request.source_type.value,
+        "depth": request.metadata.get("decomposition_depth", 0),
+        "semantic_role": request.metadata.get("semantic_role"),
+        "model": _DECOMPOSITION_MODEL_NAME,
+        "reasoning_effort": _DECOMPOSITION_REASONING_EFFORT,
+        "verbosity": _DECOMPOSITION_VERBOSITY,
+        "stage": stage,
+        "structural_repairs": structural_repairs,
+        "input_statement": request.content,
+        "dependency_guidance": guidance_text,
+        "decision": decision.model_dump(mode="json", exclude_none=True),
+    }
+    logger.info(
+        "DECOMPOSITION_TRACE {}",
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    if decision.kind == "atomic":
+        risk = _atomic_fragment_risk(request.content)
+        if risk is not None:
+            logger.warning(
+                "ATOMIC_FRAGMENT_RISK {}",
+                json.dumps(
+                    {
+                        "source_id": request.source_id,
+                        "depth": request.metadata.get("decomposition_depth", 0),
+                        "model": _DECOMPOSITION_MODEL_NAME,
+                        "statement": request.content,
+                        "reason": risk,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             )
-        else:
-            proposition[key] = str(value)
-
-    proposition["qualifiers"] = qualifiers
-    return proposition
 
 
 def _normalize_enum_token(value: Any) -> Any:
@@ -1483,13 +2031,14 @@ def _normalize_local_decomposition(raw: dict[str, Any]) -> dict[str, Any]:
     """
     raw = dict(raw)
 
+    # Retrieval payload generation is a dedicated post-tree pass. Ignore any
+    # eager top-level payload emitted by a provider so semantic decomposition
+    # remains independent of S/P/O extraction.
+    raw.pop("proposition", None)
+
     kind = raw.get("kind")
     if isinstance(kind, str):
         raw["kind"] = kind.strip().casefold()
-
-    proposition = raw.get("proposition")
-    if isinstance(proposition, dict):
-        raw["proposition"] = _normalize_proposition_payload(proposition)
 
     children = raw.get("children")
     if isinstance(children, list):
@@ -1499,6 +2048,9 @@ def _normalize_local_decomposition(raw: dict[str, Any]) -> dict[str, Any]:
                 normalized_children.append(child)
                 continue
             normalized_child = dict(child)
+            # S/P/O is not part of semantic decomposition. Tolerate providers that
+            # still emit the legacy child field by discarding it before validation.
+            normalized_child.pop("proposition", None)
             if "semantic_role" in normalized_child:
                 normalized_child["semantic_role"] = _normalize_enum_token(
                     normalized_child["semantic_role"]
@@ -2636,12 +3188,70 @@ def _contextual_chunking_audit_text(
     )
 
 
+def _try_validate_contextual_chunking_assessment(
+    payload: Any,
+    *,
+    source_id: str,
+    chunk_count: int,
+) -> ContextualChunkingAssessment | None:
+    """Validate audit output and require exact per-leaf localization."""
+    try:
+        assessment = (
+            payload
+            if isinstance(payload, ContextualChunkingAssessment)
+            else ContextualChunkingAssessment.model_validate(payload)
+        )
+    except ValidationError as exc:
+        logger.warning(
+            "Contextual chunk audit output failed validation for source_id={}: {}",
+            source_id,
+            exc,
+        )
+        return None
+
+    invalid_indices = sorted(
+        {
+            issue.chunk_index
+            for issue in assessment.issues
+            if issue.chunk_index >= chunk_count
+        }
+    )
+    if invalid_indices:
+        logger.warning(
+            "Contextual chunk audit referenced invalid chunk indices for "
+            "source_id={}: invalid={} chunk_count={}",
+            source_id,
+            invalid_indices,
+            chunk_count,
+        )
+        return None
+
+    if assessment.complete and assessment.issues:
+        logger.warning(
+            "Contextual chunk audit returned complete=true with localized issues "
+            "for source_id={}; retrying the same audit",
+            source_id,
+        )
+        return None
+
+    if not assessment.complete and not assessment.issues:
+        logger.warning(
+            "Contextual chunk audit returned complete=false without any localized "
+            "chunk issues for source_id={}; retrying the same audit",
+            source_id,
+        )
+        return None
+
+    return assessment
+
+
 def _assess_contextual_chunking(
     *,
     request: GraphBuildRequest,
     blocks: list[ContextSourceBlock],
     chunks: list[ContextualSourceChunk],
 ) -> ContextualChunkingAssessment:
+    """Audit contextualized leaves and require exact bad-leaf indices."""
     messages: list[BaseMessage] = [
         SystemMessage(content=_CONTEXTUAL_CHUNKING_AUDIT_SYSTEM_PROMPT),
         HumanMessage(
@@ -2654,80 +3264,86 @@ def _assess_contextual_chunking(
     ]
 
     model = _get_model(reasoning_effort="medium")
-    structured_model = model.with_structured_output(
-        ContextualChunkingAssessment,
-        method="function_calling",
-        include_raw=True,
+
+    # Protocol failure is not semantic failure. If the auditor omits chunk_index,
+    # returns an impossible index, or otherwise violates the structured contract,
+    # retry the SAME audit without changing any contextualized leaf.
+    for protocol_attempt in range(2):
+        structured_model = model.with_structured_output(
+            ContextualChunkingAssessment,
+            method="function_calling",
+            include_raw=True,
+        )
+
+        try:
+            result = structured_model.invoke(messages)
+        except Exception as exc:
+            logger.warning(
+                "Contextual chunk audit structured call failed for source_id={} "
+                "protocol_attempt={}/2: {}",
+                request.source_id,
+                protocol_attempt + 1,
+                exc,
+            )
+            result = None
+
+        if isinstance(result, dict):
+            for payload in (
+                result.get("parsed"),
+                _extract_structured_args(result.get("raw")),
+            ):
+                if payload is None:
+                    continue
+                assessment = _try_validate_contextual_chunking_assessment(
+                    payload,
+                    source_id=request.source_id,
+                    chunk_count=len(chunks),
+                )
+                if assessment is not None:
+                    return assessment
+
+        raw_args = _plain_json_retry(
+            model=model,
+            messages=messages,
+            schema=ContextualChunkingAssessment,
+            label="contextual chunk audit",
+        )
+        if raw_args is not None:
+            assessment = _try_validate_contextual_chunking_assessment(
+                raw_args,
+                source_id=request.source_id,
+                chunk_count=len(chunks),
+            )
+            if assessment is not None:
+                return assessment
+
+        logger.warning(
+            "Contextual chunk auditor protocol failed for source_id={} "
+            "protocol_attempt={}/2; retrying the same audit without changing "
+            "the contextualization candidate",
+            request.source_id,
+            protocol_attempt + 1,
+        )
+
+    raise ContextualChunkingModelError(
+        "Could not recover localized ContextualChunkingAssessment for "
+        f"source_id={request.source_id}"
     )
 
-    try:
-        result = structured_model.invoke(messages)
-    except Exception as exc:
-        logger.warning(
-            "Contextual chunk audit structured call failed for source_id={}: {}. "
-            "Retrying once as plain JSON.",
-            request.source_id,
-            exc,
-        )
-        raw_args = _plain_json_retry(
-            model=model,
-            messages=messages,
-            schema=ContextualChunkingAssessment,
-            label="contextual chunk audit",
-        )
-        if raw_args is None:
-            raise ContextualChunkingModelError(
-                "Could not recover contextual chunk audit for "
-                f"source_id={request.source_id}"
-            ) from exc
-        return ContextualChunkingAssessment.model_validate(raw_args)
 
-    parsed = result.get("parsed")
-    if parsed is not None:
-        return (
-            parsed
-            if isinstance(parsed, ContextualChunkingAssessment)
-            else ContextualChunkingAssessment.model_validate(parsed)
-        )
-
-    raw_message = result.get("raw")
-    parsing_error = result.get("parsing_error")
-    raw_args = _extract_structured_args(raw_message)
-
-    if raw_args is None:
-        logger.warning(
-            "Contextual chunk audit returned no recoverable structured output "
-            "for source_id={}: {}. Retrying once as plain JSON.",
-            request.source_id,
-            parsing_error,
-        )
-        raw_args = _plain_json_retry(
-            model=model,
-            messages=messages,
-            schema=ContextualChunkingAssessment,
-            label="contextual chunk audit",
-        )
-
-    if raw_args is None:
-        raise ContextualChunkingModelError(
-            "Could not recover ContextualChunkingAssessment JSON for "
-            f"source_id={request.source_id}"
-        )
-
-    return ContextualChunkingAssessment.model_validate(raw_args)
-
-
-def _final_contextualization_repair_message(
+def _final_contextualization_structural_repair_message(
     *,
     decision: FinalChunkContextDecision,
     issue: str,
 ) -> HumanMessage:
+    """Fallback only for batch-level structural corruption before semantic audit."""
     return HumanMessage(
         content=(
-            "FINAL_CONTEXTUALIZATION_REPAIR_REQUIRED\n"
-            "Revise the contextualization of the SAME finalized leaf chunks. "
-            "Do not change chunk boundaries.\n\n"
-            f"ISSUE:\n{issue}\n\n"
+            "FINAL_CONTEXTUALIZATION_STRUCTURAL_REPAIR_REQUIRED\n"
+            "The batch output cannot be materialized structurally, so exact bad "
+            "leaf indices are not yet trustworthy. Revise the contextualization "
+            "of the SAME finalized leaf chunks. Do not change chunk boundaries.\n\n"
+            f"STRUCTURAL_ISSUE:\n{issue}\n\n"
             "PREVIOUS_DECISION_BEGIN\n"
             f"{json.dumps(decision.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n"
             "PREVIOUS_DECISION_END\n\n"
@@ -2737,6 +3353,266 @@ def _final_contextualization_repair_message(
         )
     )
 
+
+def _final_contextualization_targeted_repair_text(
+    *,
+    request: GraphBuildRequest,
+    blocks: list[ContextSourceBlock],
+    leaves: list[SemanticLeafChunk],
+    decision: FinalChunkContextDecision,
+    assessment: ContextualChunkingAssessment,
+    max_contextualized_chars: int,
+) -> tuple[str, tuple[int, ...]]:
+    """Serialize only the leaves named by the audit, plus their exact feedback."""
+    by_index = {plan.chunk_index: plan for plan in decision.chunks}
+    issues_by_index: dict[int, list[str]] = {}
+    for issue in assessment.issues:
+        issues_by_index.setdefault(issue.chunk_index, []).append(issue.issue)
+
+    target_indices = tuple(sorted(issues_by_index))
+    if not target_indices:
+        raise ContextualChunkingModelError(
+            "Targeted contextualization repair requires at least one bad chunk"
+        )
+
+    targets: list[dict[str, Any]] = []
+    for chunk_index in target_indices:
+        if chunk_index >= len(leaves):
+            raise ContextualChunkingModelError(
+                f"Targeted repair references invalid chunk_index={chunk_index}"
+            )
+        prior = by_index.get(chunk_index)
+        if prior is None:
+            raise ContextualChunkingModelError(
+                "Targeted repair cannot find the previous contextualization for "
+                f"chunk_index={chunk_index}"
+            )
+        leaf = leaves[chunk_index]
+        targets.append(
+            {
+                "chunk_index": chunk_index,
+                "start_block_index": leaf.start_block_index,
+                "end_block_index": leaf.end_block_index,
+                "source_span": {"start": leaf.start, "end": leaf.end},
+                "source_text": request.content[leaf.start:leaf.end],
+                "previous_context_block_indices": list(
+                    prior.context_block_indices
+                ),
+                "previous_contextualized_text": prior.contextualized_text,
+                "audit_feedback": issues_by_index[chunk_index],
+            }
+        )
+
+    text = (
+        f"SOURCE_TYPE: {request.source_type.value}\n"
+        f"SOURCE_ID: {request.source_id}\n"
+        f"TARGET_REPAIR_COUNT: {len(target_indices)}\n"
+        f"MAX_CONTEXTUALIZED_TEXT_CHARS: {max_contextualized_chars}\n\n"
+        "SOURCE_BLOCKS_BEGIN\n"
+        f"{_render_context_source_blocks(blocks)}\n"
+        "SOURCE_BLOCKS_END\n\n"
+        "TARGET_LEAVES_BEGIN\n"
+        f"{json.dumps(targets, ensure_ascii=False, indent=2)}\n"
+        "TARGET_LEAVES_END\n\n"
+        "Repair ONLY the supplied TARGET_LEAVES. For each target, use its exact "
+        "source_text as authoritative, preserve everything already correct in "
+        "the previous contextualization, and correct the listed audit_feedback. "
+        "Do not return or rewrite any non-target chunk."
+    )
+    return text, target_indices
+
+
+def _targeted_context_repair_contract_issue(
+    repair: FinalChunkContextRepair,
+    *,
+    target_indices: tuple[int, ...],
+) -> str | None:
+    """Return a protocol error when repair indices are not exactly the targets."""
+    actual = [plan.chunk_index for plan in repair.replacements]
+    if len(actual) != len(set(actual)):
+        return f"duplicate replacement indices: actual={actual}"
+    expected_set = set(target_indices)
+    actual_set = set(actual)
+    if actual_set != expected_set:
+        return (
+            "replacement indices do not match audit targets: "
+            f"expected={sorted(expected_set)} actual={sorted(actual_set)}"
+        )
+    return None
+
+
+def _invoke_final_contextualization_targeted_repair(
+    *,
+    model: Any,
+    request: GraphBuildRequest,
+    blocks: list[ContextSourceBlock],
+    leaves: list[SemanticLeafChunk],
+    decision: FinalChunkContextDecision,
+    assessment: ContextualChunkingAssessment,
+    max_contextualized_chars: int,
+) -> tuple[FinalChunkContextRepair, tuple[int, ...]]:
+    """Regenerate only audit-identified bad leaves with their local feedback."""
+    repair_text, target_indices = _final_contextualization_targeted_repair_text(
+        request=request,
+        blocks=blocks,
+        leaves=leaves,
+        decision=decision,
+        assessment=assessment,
+        max_contextualized_chars=max_contextualized_chars,
+    )
+
+    system_prompt = (
+        _FINAL_CONTEXTUALIZATION_SYSTEM_PROMPT
+        + "\n\nTARGETED REPAIR MODE\n"
+        + "--------------------\n"
+        + "This TARGETED REPAIR MODE overrides the normal full-batch output "
+        + "contract above. You are repairing only the explicitly supplied "
+        + "TARGET_LEAVES. Return FinalChunkContextRepair with exactly one "
+        + "replacement for every target "
+        + "chunk_index and no replacements for any other chunk. Keep each target's "
+        + "chunk_index unchanged. The supplied audit_feedback is correction guidance, "
+        + "while SOURCE BLOCKS and target source_text remain authoritative."
+    )
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=repair_text),
+    ]
+
+    structured_model = model.with_structured_output(
+        FinalChunkContextRepair,
+        method="function_calling",
+        include_raw=True,
+    )
+    try:
+        result = structured_model.invoke(messages)
+    except Exception as exc:
+        logger.warning(
+            "Targeted final contextualization repair structured call failed for "
+            "source_id={} targets={}: {}. Retrying once as plain JSON.",
+            request.source_id,
+            list(target_indices),
+            exc,
+        )
+        result = None
+
+    if isinstance(result, dict):
+        for payload in (
+            result.get("parsed"),
+            _extract_structured_args(result.get("raw")),
+        ):
+            if payload is None:
+                continue
+            try:
+                repair = (
+                    payload
+                    if isinstance(payload, FinalChunkContextRepair)
+                    else FinalChunkContextRepair.model_validate(payload)
+                )
+                contract_issue = _targeted_context_repair_contract_issue(
+                    repair,
+                    target_indices=target_indices,
+                )
+                if contract_issue is None:
+                    return repair, target_indices
+                logger.warning(
+                    "Targeted final contextualization repair violated target "
+                    "contract for source_id={} targets={}: {}",
+                    request.source_id,
+                    list(target_indices),
+                    contract_issue,
+                )
+            except ValidationError as exc:
+                logger.warning(
+                    "Targeted final contextualization repair output failed "
+                    "validation for source_id={} targets={}: {}",
+                    request.source_id,
+                    list(target_indices),
+                    exc,
+                )
+
+    raw_args = _plain_json_retry(
+        model=model,
+        messages=messages,
+        schema=FinalChunkContextRepair,
+        label="targeted final chunk contextualization repair",
+    )
+    if raw_args is not None:
+        try:
+            repair = FinalChunkContextRepair.model_validate(raw_args)
+            contract_issue = _targeted_context_repair_contract_issue(
+                repair,
+                target_indices=target_indices,
+            )
+            if contract_issue is None:
+                return repair, target_indices
+            logger.warning(
+                "Targeted final contextualization plain-JSON repair violated "
+                "target contract for source_id={} targets={}: {}",
+                request.source_id,
+                list(target_indices),
+                contract_issue,
+            )
+        except ValidationError as exc:
+            logger.warning(
+                "Targeted final contextualization plain-JSON repair failed "
+                "validation for source_id={} targets={}: {}",
+                request.source_id,
+                list(target_indices),
+                exc,
+            )
+
+    raise ContextualChunkingModelError(
+        "Could not recover targeted final contextualization repair for "
+        f"source_id={request.source_id} targets={list(target_indices)}"
+    )
+
+
+def _apply_final_contextualization_replacements(
+    *,
+    decision: FinalChunkContextDecision,
+    repair: FinalChunkContextRepair,
+    target_indices: tuple[int, ...],
+) -> FinalChunkContextDecision:
+    """Splice repaired leaves into the prior decision without touching good leaves."""
+    target_set = set(target_indices)
+    replacements: dict[int, FinalChunkContextPlan] = {}
+    for plan in repair.replacements:
+        if plan.chunk_index not in target_set:
+            raise ContextualChunkingModelError(
+                "Targeted contextualization repair returned an unrequested "
+                f"chunk_index={plan.chunk_index}; targets={sorted(target_set)}"
+            )
+        if plan.chunk_index in replacements:
+            raise ContextualChunkingModelError(
+                "Targeted contextualization repair duplicated "
+                f"chunk_index={plan.chunk_index}"
+            )
+        replacements[plan.chunk_index] = plan
+
+    if set(replacements) != target_set:
+        raise ContextualChunkingModelError(
+            "Targeted contextualization repair did not return exactly the bad "
+            f"leaves: expected={sorted(target_set)} actual={sorted(replacements)}"
+        )
+
+    updated: list[FinalChunkContextPlan] = []
+    changed_indices: list[int] = []
+    for plan in decision.chunks:
+        replacement = replacements.get(plan.chunk_index)
+        if replacement is None:
+            # Preserve every good leaf object exactly as it was.
+            updated.append(plan)
+            continue
+        updated.append(replacement)
+        changed_indices.append(plan.chunk_index)
+
+    if set(changed_indices) != target_set:
+        raise ContextualChunkingModelError(
+            "Previous contextualization decision is missing one or more targeted "
+            f"leaves: expected={sorted(target_set)} changed={sorted(changed_indices)}"
+        )
+
+    return FinalChunkContextDecision(chunks=updated)
 
 def call_contextual_chunking_model(
     request: GraphBuildRequest,
@@ -2817,11 +3693,10 @@ def call_contextual_chunking_model(
     ]
 
     contextualization_model = _get_model(reasoning_effort="low")
-    generation_messages = list(base_messages)
 
     decision = _invoke_final_contextualization_decision(
         model=contextualization_model,
-        messages=generation_messages,
+        messages=list(base_messages),
         source_id=request.source_id,
         label="final chunk contextualization",
     )
@@ -2848,18 +3723,21 @@ def call_contextual_chunking_model(
             if attempt >= _MAX_CONTEXTUALIZATION_RETRIES:
                 raise
 
-            generation_messages = [
+            # A batch-level structural failure can make the trustworthy target
+            # indices unknowable (wrong count, duplicate/missing indices, etc.).
+            # Only this protocol-recovery path is allowed to regenerate the batch.
+            structural_repair_messages = [
                 *base_messages,
-                _final_contextualization_repair_message(
+                _final_contextualization_structural_repair_message(
                     decision=decision,
                     issue=str(exc),
                 ),
             ]
             decision = _invoke_final_contextualization_decision(
                 model=contextualization_model,
-                messages=generation_messages,
+                messages=structural_repair_messages,
                 source_id=request.source_id,
-                label="final chunk contextualization repair",
+                label="final chunk contextualization structural repair",
             )
             continue
 
@@ -2869,15 +3747,17 @@ def call_contextual_chunking_model(
             chunks=chunks,
         )
 
+        bad_indices = sorted({issue.chunk_index for issue in assessment.issues})
         logger.info(
             "Final contextualization audit: source_id={} attempt={}/{} "
-            "complete={} chunks={} issues={} reason={}",
+            "complete={} chunks={} issues={} bad_indices={} reason={}",
             request.source_id,
             attempt + 1,
             _MAX_CONTEXTUALIZATION_RETRIES + 1,
             assessment.complete,
             len(chunks),
             len(assessment.issues),
+            bad_indices,
             assessment.reason,
         )
 
@@ -2899,27 +3779,35 @@ def call_contextual_chunking_model(
             raise ContextualChunkingModelError(
                 "Final contextualization remained semantically unsafe after "
                 f"{_MAX_CONTEXTUALIZATION_RETRIES} repair attempt(s) for "
-                f"source_id={request.source_id}. Issues={assessment.issues}; "
+                f"source_id={request.source_id}. Issues="
+                f"{[item.model_dump(mode='json') for item in assessment.issues]}; "
                 f"Reason={assessment.reason}"
             )
 
-        issue = (
-            "; ".join(assessment.issues)
-            if assessment.issues
-            else assessment.reason
-        )
-        generation_messages = [
-            *base_messages,
-            _final_contextualization_repair_message(
-                decision=decision,
-                issue=issue,
-            ),
-        ]
-        decision = _invoke_final_contextualization_decision(
+        repair, target_indices = _invoke_final_contextualization_targeted_repair(
             model=contextualization_model,
-            messages=generation_messages,
-            source_id=request.source_id,
-            label="final chunk contextualization repair",
+            request=request,
+            blocks=blocks,
+            leaves=leaves,
+            decision=decision,
+            assessment=assessment,
+            max_contextualized_chars=max_contextualized_chars,
+        )
+        decision = _apply_final_contextualization_replacements(
+            decision=decision,
+            repair=repair,
+            target_indices=target_indices,
+        )
+        logger.warning(
+            "Applied monotonic targeted contextualization repair for "
+            "source_id={}: repaired_indices={} preserved_indices={}",
+            request.source_id,
+            list(target_indices),
+            [
+                index
+                for index in range(len(leaves))
+                if index not in set(target_indices)
+            ],
         )
 
     raise ContextualChunkingModelError(
@@ -2928,7 +3816,7 @@ def call_contextual_chunking_model(
     )
 
 
-_MAX_DECOMPOSITION_COVERAGE_RETRIES = 2
+_MAX_DECOMPOSITION_STRUCTURAL_RETRIES = 2
 
 
 def _invoke_local_decomposition_decision(
@@ -3066,11 +3954,16 @@ def _coverage_request_text(
     request: GraphBuildRequest,
     decision: LocalDecompositionDecision,
 ) -> str:
-    """Serialize the source and proposed decision for semantic coverage audit."""
+    """Serialize the source and proposed composite decision for coverage audit."""
     decision_payload = decision.model_dump(
         mode="json",
         exclude_none=True,
     )
+    # Direct-child payloads are provider drift. Retrieval payload generation is a
+    # dedicated post-tree pass, so child payloads are excluded from semantic audit.
+    for child in decision_payload.get("children", []):
+        if isinstance(child, dict):
+            child.pop("proposition", None)
     return (
         f"SOURCE_TYPE: {request.source_type.value}\n"
         f"SOURCE_ID: {request.source_id}\n\n"
@@ -3083,203 +3976,337 @@ def _coverage_request_text(
     )
 
 
-def _assess_decomposition_coverage(
+def _try_validate_decomposition_audit(
+    payload: Any,
+    *,
+    source_id: str,
+) -> DecompositionAuditResult | None:
+    if isinstance(payload, DecompositionAuditResult):
+        return payload
+    try:
+        return DecompositionAuditResult.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Decomposition audit output failed validation for source_id={}: {}",
+            source_id,
+            exc,
+        )
+        return None
+
+
+def _audit_and_correct_decomposition(
     *,
     request: GraphBuildRequest,
     decision: LocalDecompositionDecision,
-) -> DecompositionCoverageAssessment:
-    """Audit whether a local decomposition preserves all operative semantics."""
+) -> DecompositionAuditResult:
+    """Audit once; return PASS or the complete corrected composite decision.
+
+    Provider/protocol recovery may retry malformed structured output, but there
+    is no separate semantic repair model and no semantic re-audit of a returned
+    correction.
+    """
     messages: list[BaseMessage] = [
-        SystemMessage(content=_DECOMPOSITION_COVERAGE_SYSTEM_PROMPT),
+        SystemMessage(content=_DECOMPOSITION_AUDIT_SYSTEM_PROMPT),
         HumanMessage(content=_coverage_request_text(request, decision)),
     ]
-
-    # Coverage checking is deliberately given slightly more reasoning budget than
-    # decomposition because its job is to notice subtle omissions/weakening rather
-    # than to generate a concise decomposition.
     model = _get_model(reasoning_effort="medium")
-    structured_model = model.with_structured_output(
-        DecompositionCoverageAssessment,
-        method="function_calling",
-        include_raw=True,
+
+    for protocol_attempt in range(2):
+        structured_model = model.with_structured_output(
+            DecompositionAuditResult,
+            method="function_calling",
+            include_raw=True,
+        )
+        try:
+            result = structured_model.invoke(messages)
+        except Exception as exc:
+            logger.warning(
+                "Decomposition audit structured call failed for source_id={} "
+                "protocol_attempt={}/2: {}",
+                request.source_id,
+                protocol_attempt + 1,
+                exc,
+            )
+            result = None
+
+        if isinstance(result, dict):
+            for payload in (
+                result.get("parsed"),
+                _extract_structured_args(result.get("raw")),
+            ):
+                if payload is None:
+                    continue
+                audit = _try_validate_decomposition_audit(
+                    payload,
+                    source_id=request.source_id,
+                )
+                if audit is not None:
+                    return audit
+
+        raw_args = _plain_json_retry(
+            model=model,
+            messages=messages,
+            schema=DecompositionAuditResult,
+            label="decomposition audit/correction",
+        )
+        if raw_args is not None:
+            audit = _try_validate_decomposition_audit(
+                raw_args,
+                source_id=request.source_id,
+            )
+            if audit is not None:
+                return audit
+
+        logger.warning(
+            "Decomposition auditor protocol failed for source_id={} "
+            "protocol_attempt={}/2; retrying the same audit without changing "
+            "the decomposition candidate",
+            request.source_id,
+            protocol_attempt + 1,
+        )
+
+    raise PromptDecompositionModelError(
+        "Could not recover DecompositionAuditResult for "
+        f"source_id={request.source_id}"
     )
 
+
+def _atomic_classification_request_text(
+    request: GraphBuildRequest,
+) -> str:
+    semantic_role = request.metadata.get("semantic_role")
+    return (
+        f"SOURCE_TYPE: {request.source_type.value}\n"
+        f"SOURCE_ID: {request.source_id}\n"
+        f"SEMANTIC_ROLE: {semantic_role or 'unspecified'}\n\n"
+        "SOURCE_BEGIN\n"
+        f"{request.content}\n"
+        "SOURCE_END"
+    )
+
+
+def _try_validate_atomic_classification_assessment(
+    payload: Any,
+    *,
+    source_id: str,
+) -> AtomicClassificationAssessment | None:
+    if isinstance(payload, AtomicClassificationAssessment):
+        return payload
     try:
-        result = structured_model.invoke(messages)
-    except Exception as exc:
+        return AtomicClassificationAssessment.model_validate(payload)
+    except ValidationError as exc:
         logger.warning(
-            "Decomposition coverage structured call failed for source_id={}: {}. "
-            "Retrying once as plain JSON.",
-            request.source_id,
+            "Atomic classification audit output failed validation for source_id={}: {}",
+            source_id,
             exc,
         )
+        return None
+
+
+def _assess_atomic_classification(
+    *,
+    request: GraphBuildRequest,
+) -> AtomicClassificationAssessment:
+    """Audit only semantic atomicity during recursive tree construction."""
+    messages: list[BaseMessage] = [
+        SystemMessage(content=_ATOMIC_CLASSIFICATION_AUDIT_SYSTEM_PROMPT),
+        HumanMessage(content=_atomic_classification_request_text(request)),
+    ]
+    model = _get_model(reasoning_effort="medium")
+
+    for protocol_attempt in range(2):
+        structured_model = model.with_structured_output(
+            AtomicClassificationAssessment,
+            method="function_calling",
+            include_raw=True,
+        )
+        try:
+            result = structured_model.invoke(messages)
+        except Exception as exc:
+            logger.warning(
+                "Atomic classification audit structured call failed for source_id={} "
+                "protocol_attempt={}/2: {}",
+                request.source_id,
+                protocol_attempt + 1,
+                exc,
+            )
+            result = None
+
+        if isinstance(result, dict):
+            candidates = [
+                result.get("parsed"),
+                _extract_structured_args(result.get("raw")),
+            ]
+            for payload in candidates:
+                if payload is None:
+                    continue
+                assessment = _try_validate_atomic_classification_assessment(
+                    payload,
+                    source_id=request.source_id,
+                )
+                if assessment is not None:
+                    return assessment
+
         raw_args = _plain_json_retry(
             model=model,
             messages=messages,
-            schema=DecompositionCoverageAssessment,
-            label="decomposition coverage audit",
+            schema=AtomicClassificationAssessment,
+            label="atomic classification audit",
         )
-        if raw_args is None:
-            raise PromptDecompositionModelError(
-                "Could not recover decomposition coverage audit for "
-                f"source_id={request.source_id}"
-            ) from exc
-        return DecompositionCoverageAssessment.model_validate(raw_args)
+        if raw_args is not None:
+            assessment = _try_validate_atomic_classification_assessment(
+                raw_args,
+                source_id=request.source_id,
+            )
+            if assessment is not None:
+                return assessment
 
-    parsed = result.get("parsed")
-    if parsed is not None:
-        return (
-            parsed
-            if isinstance(parsed, DecompositionCoverageAssessment)
-            else DecompositionCoverageAssessment.model_validate(parsed)
-        )
-
-    raw_message = result.get("raw")
-    parsing_error = result.get("parsing_error")
-    raw_args = _extract_structured_args(raw_message)
-
-    if raw_args is None:
         logger.warning(
-            "Decomposition coverage audit returned no recoverable structured "
-            "output for source_id={}: {}. Retrying once as plain JSON.",
+            "Atomic classification auditor protocol failed for source_id={} "
+            "protocol_attempt={}/2; retrying the same audit",
             request.source_id,
-            parsing_error,
-        )
-        raw_args = _plain_json_retry(
-            model=model,
-            messages=messages,
-            schema=DecompositionCoverageAssessment,
-            label="decomposition coverage audit",
+            protocol_attempt + 1,
         )
 
-    if raw_args is None:
-        raise PromptDecompositionModelError(
-            "Could not recover DecompositionCoverageAssessment JSON for "
-            f"source_id={request.source_id}. "
-            f"Original parsing error: {parsing_error}"
-        )
-
-    return DecompositionCoverageAssessment.model_validate(raw_args)
+    raise PromptDecompositionModelError(
+        "Could not recover AtomicClassificationAssessment for "
+        f"source_id={request.source_id}"
+    )
 
 
-def _coverage_feedback_message(
-    assessment: DecompositionCoverageAssessment,
+def _normalized_semantic_child_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+_CONNECTIVE_ONLY_SEMANTIC_CHILDREN = frozenset(
+    {
+        "before",
+        "after",
+        "first",
+        "then",
+        "if",
+        "when",
+        "unless",
+        "otherwise",
+        "requires",
+        "require",
+        "and",
+        "or",
+    }
+)
+
+
+def _atomic_classification_feedback_message(
+    assessment: AtomicClassificationAssessment,
 ) -> HumanMessage:
-    """Turn a failed audit into focused, source-grounded repair feedback."""
-    missing = assessment.missing_semantics or ["none reported"]
-    unsupported = assessment.unsupported_children or ["none reported"]
-
     return HumanMessage(
         content=(
-            "SEMANTIC_COVERAGE_AUDIT_FAILED\n"
-            "The proposed decomposition was structurally valid but was not "
-            "semantically lossless. Revise the decomposition of the SAME source "
-            "statement. Do not answer the audit; return a new "
-            "LocalDecompositionDecision.\n\n"
-            "MISSING_OR_WEAKENED_SEMANTICS:\n- "
-            + "\n- ".join(missing)
-            + "\n\nUNSUPPORTED_CHILD_MEANINGS:\n- "
-            + "\n- ".join(unsupported)
-            + "\n\nAUDIT_REASON:\n"
-            + assessment.reason
-            + "\n\nRepair requirements:\n"
-            "- preserve every omitted operative clause as a direct child or in "
-            "the atomic proposition, as appropriate;\n"
-            "- restore lost procedures, ordering, modality, conditions, "
-            "exceptions, thresholds, and restrictive qualifiers;\n"
-            "- remove or rewrite unsupported child meanings;\n"
-            "- keep every child semantically grounded in the original source;\n"
-            "- do not spend a repair attempt merely fixing punctuation, bullet "
-            "markers, or whitespace in provenance excerpts;\n"
-            "- do not merely make the previous children more verbose."
+            "ATOMIC_CLASSIFICATION_AUDIT_FAILED\n"
+            "The source was classified atomic, but it is not one valid indivisible "
+            "semantic operand in its inherited role. Re-decompose the SAME source "
+            "only when it contains multiple meaningful operands. Do not manufacture "
+            "standalone connective children such as Before/After/If/Then/Unless. "
+            "If relational wording merely connects operands, return the clean "
+            "operands and leave the relation to the later normalization pass. This "
+            "is a semantic-structure repair, not a payload or AST task.\n\n"
+            "AUDIT_REASON:\n" + assessment.reason
         )
     )
+
 
 def _logic_request_text(
     request: GraphBuildRequest,
-    decision: LocalDecompositionDecision,
+    propositions: list[LogicPropositionCandidate],
 ) -> str:
-    children = [
-        {
-            "child_index": index,
-            "content": child.content,
-            "semantic_role": child.semantic_role.value,
-            "source_text": child.source_text,
-        }
-        for index, child in enumerate(decision.children)
-    ]
+    payload = [item.model_dump(mode="json") for item in propositions]
     return (
         f"SOURCE_TYPE: {request.source_type.value}\n"
         f"SOURCE_ID: {request.source_id}\n\n"
         "SOURCE_BEGIN\n"
         f"{request.content}\n"
         "SOURCE_END\n\n"
-        "DIRECT_CHILDREN_BEGIN\n"
-        f"{json.dumps(children, ensure_ascii=False, indent=2)}\n"
-        "DIRECT_CHILDREN_END"
+        "AVAILABLE_PROPOSITIONS_BEGIN\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+        "AVAILABLE_PROPOSITIONS_END"
     )
-
-
-def _iter_local_logic_child_indices(
-    decision: LocalLogicDecision,
-):
-    for node in decision.expressions:
-        for operand in node.operands:
-            if operand.child_index is not None:
-                yield operand.child_index
-
-    # Assertions can only reference expression IDs. Child references contained
-    # inside those expressions are already yielded above.
-
-    for rule in decision.rules:
-        if rule.condition.child_index is not None:
-            yield rule.condition.child_index
-        if rule.effect.child_index is not None:
-            yield rule.effect.child_index
 
 
 def _validate_local_logic_decision(
     *,
     decision: LocalLogicDecision,
-    child_count: int,
+    proposition_count: int,
 ) -> None:
-    expression_ids = {node.expression_id for node in decision.expressions}
-
-    for assertion_index, assertion in enumerate(decision.assertions):
-        if assertion.root_expression_id not in expression_ids:
+    for slot in decision.slots:
+        if (
+            slot.proposition_index is not None
+            and slot.proposition_index >= proposition_count
+        ):
             raise LogicalStructureModelError(
-                f"Logical assertion[{assertion_index}] references unknown "
-                f"root_expression_id={assertion.root_expression_id}"
-            )
-
-    for child_index in _iter_local_logic_child_indices(decision):
-        if child_index < 0 or child_index >= child_count:
-            raise LogicalStructureModelError(
-                f"Logical structure references child_index={child_index} "
-                f"outside child_count={child_count}"
+                f"Logical slot {slot.slot_id} references proposition_index="
+                f"{slot.proposition_index} outside proposition_count="
+                f"{proposition_count}"
             )
 
 
-def _invoke_local_logic_decision(
+def _normalize_local_logic_payload(payload: Any) -> Any:
+    """Remove harmless provider confidence metadata from nested logic output."""
+    if isinstance(payload, list):
+        return [_normalize_local_logic_payload(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    return {
+        key: _normalize_local_logic_payload(value)
+        for key, value in payload.items()
+        if key != "confidence"
+    }
+
+
+def _try_validate_logic_normalization(
+    payload: Any,
+    *,
+    source_id: str,
+    label: str,
+) -> LogicNormalizationDecision | None:
+    if isinstance(payload, LogicNormalizationDecision):
+        return payload
+
+    normalized = _normalize_local_logic_payload(payload)
+    try:
+        return LogicNormalizationDecision.model_validate(normalized)
+    except ValidationError as exc:
+        logger.warning(
+            "{} output failed LogicNormalizationDecision validation for "
+            "source_id={}: {}",
+            label,
+            source_id,
+            exc,
+        )
+        return None
+
+
+def _invoke_logic_normalization(
     *,
     model: Any,
     messages: list[BaseMessage],
     source_id: str,
     label: str,
-) -> LocalLogicDecision:
+) -> LogicNormalizationDecision:
+    """Recover one narrow natural-language -> canonical-logic normalization."""
     structured_model = model.with_structured_output(
-        LocalLogicDecision,
+        LogicNormalizationDecision,
         method="function_calling",
         include_raw=True,
     )
     structured_exception: Exception | None = None
+
     try:
         result = structured_model.invoke(messages)
     except Exception as exc:
         structured_exception = exc
         logger.warning(
-            "{} structured call failed for source_id={}: {}. "
-            "Retrying once as plain JSON.",
+            "{} structured call failed for source_id={}: {}. Retrying once as "
+            "plain JSON.",
             label,
             source_id,
             exc,
@@ -3289,92 +4316,655 @@ def _invoke_local_logic_decision(
     if isinstance(result, dict):
         parsed = result.get("parsed")
         if parsed is not None:
-            try:
-                return (
-                    parsed
-                    if isinstance(parsed, LocalLogicDecision)
-                    else LocalLogicDecision.model_validate(parsed)
-                )
-            except ValidationError as exc:
-                logger.warning(
-                    "{} parsed output failed validation for source_id={}: {}",
-                    label,
-                    source_id,
-                    exc,
-                )
+            decision = _try_validate_logic_normalization(
+                parsed,
+                source_id=source_id,
+                label=f"{label} parsed",
+            )
+            if decision is not None:
+                return decision
 
-        raw_message = result.get("raw")
-        parsing_error = result.get("parsing_error")
-        raw_args = _extract_structured_args(raw_message)
+        raw_args = _extract_structured_args(result.get("raw"))
         if raw_args is not None:
-            try:
-                return LocalLogicDecision.model_validate(raw_args)
-            except ValidationError as exc:
-                logger.warning(
-                    "{} raw args failed validation for source_id={}: {}",
-                    label,
-                    source_id,
-                    exc,
-                )
-        logger.warning(
-            "{} returned no valid structured decision for source_id={}: {}. "
-            "Retrying once as plain JSON.",
-            label,
-            source_id,
-            parsing_error,
-        )
+            decision = _try_validate_logic_normalization(
+                raw_args,
+                source_id=source_id,
+                label=f"{label} raw args",
+            )
+            if decision is not None:
+                return decision
 
     raw_args = _plain_json_retry(
         model=model,
         messages=messages,
-        schema=LocalLogicDecision,
+        schema=LogicNormalizationDecision,
         label=label,
     )
     if raw_args is not None:
-        try:
-            return LocalLogicDecision.model_validate(raw_args)
-        except ValidationError as exc:
-            logger.warning(
-                "{} plain-JSON retry failed validation for source_id={}: {}",
-                label,
-                source_id,
-                exc,
-            )
+        decision = _try_validate_logic_normalization(
+            raw_args,
+            source_id=source_id,
+            label=f"{label} plain-JSON retry",
+        )
+        if decision is not None:
+            return decision
 
     error = LogicalStructureModelError(
-        f"Could not recover LocalLogicDecision for source_id={source_id}"
+        f"Could not recover LogicNormalizationDecision for source_id={source_id}"
     )
     if structured_exception is not None:
         raise error from structured_exception
     raise error
 
 
+def _compile_logic_normalization(
+    normalized: LogicNormalizationDecision,
+    *,
+    proposition_count: int,
+) -> CompiledStructureDecision:
+    """Route normalized structure to graph relations vs sparse compound logic.
+
+    Python owns the representation choice. Source-explicit binary semantic
+    relations are kept as graph relations. Boolean rules are distributed only by
+    truth-preserving equivalences:
+
+    - (A OR B) -> C  == A -> C AND B -> C
+    - A -> (B AND C) == A -> B AND A -> C
+    - asserted (A AND B) == assert A AND assert B
+
+    A distributed literal implication becomes a graph IMPLIES relation only when
+    both signed literals are already represented by exact semantic propositions.
+    Otherwise it stays in the logic layer as a fallback. Irreducible compound
+    structure always stays in the logic layer.
+    """
+    expression_by_id = {
+        item.expression_id: item
+        for item in normalized.expressions
+    }
+    slot_by_id = {slot.slot_id: slot for slot in normalized.slots}
+
+    normalized_relations: list[LocalNormalizedRelation] = []
+    for relation in normalized.relations:
+        if relation.source_proposition_index >= proposition_count:
+            raise LogicalStructureModelError(
+                "Normalized relation references source_proposition_index="
+                f"{relation.source_proposition_index} outside proposition_count="
+                f"{proposition_count}"
+            )
+        if relation.target_proposition_index >= proposition_count:
+            raise LogicalStructureModelError(
+                "Normalized relation references target_proposition_index="
+                f"{relation.target_proposition_index} outside proposition_count="
+                f"{proposition_count}"
+            )
+        normalized_relations.append(relation)
+
+    def expression_for(ref: LocalLogicOperand) -> LocalLogicNode | None:
+        if ref.expression_id is None:
+            return None
+        return expression_by_id.get(ref.expression_id)
+
+    def collapse_signed_literal(ref: LocalLogicOperand) -> LocalLogicOperand:
+        """Collapse NOT(literal) and double-negation to a signed slot operand."""
+        if ref.slot_id is not None:
+            return ref
+
+        node = expression_for(ref)
+        if (
+            node is None
+            or node.operator != LogicalOperator.NOT
+            or len(node.operands) != 1
+        ):
+            return ref
+
+        inner = collapse_signed_literal(node.operands[0])
+        if inner.slot_id is None:
+            return ref
+        return LocalLogicOperand(
+            slot_id=inner.slot_id,
+            value=not inner.value,
+        )
+
+    def split_top_level(
+        ref: LocalLogicOperand,
+        *,
+        operator: LogicalOperator,
+    ) -> list[LocalLogicOperand]:
+        ref = collapse_signed_literal(ref)
+        if ref.slot_id is not None:
+            return [ref]
+        node = expression_for(ref)
+        if node is None or node.operator != operator:
+            return [ref]
+
+        result: list[LocalLogicOperand] = []
+        for operand in node.operands:
+            result.extend(split_top_level(operand, operator=operator))
+        return result
+
+    def bound_semantic_index(ref: LocalLogicOperand) -> int | None:
+        """Return the semantic proposition that exactly expresses this literal."""
+        ref = collapse_signed_literal(ref)
+        if ref.slot_id is None:
+            return None
+        slot = slot_by_id.get(ref.slot_id)
+        if slot is None or slot.proposition_index is None:
+            return None
+        if slot.proposition_index >= proposition_count:
+            raise LogicalStructureModelError(
+                f"Logical slot {slot.slot_id} references proposition_index="
+                f"{slot.proposition_index} outside proposition_count="
+                f"{proposition_count}"
+            )
+        # A bound semantic node represents the literal only when its asserted
+        # polarity matches the operand's signed truth value.
+        if bool(slot.proposition_value) != bool(ref.value):
+            return None
+        return slot.proposition_index
+
+    compiled_assertions: list[LocalLogicAssertion] = []
+    compiled_rules: list[LocalLogicRule] = []
+
+    for clause in normalized.clauses:
+        if clause.kind == "assertion":
+            assert clause.root is not None
+            for root in split_top_level(
+                clause.root,
+                operator=LogicalOperator.AND,
+            ):
+                root = collapse_signed_literal(root)
+                # An independently represented semantic literal is already an
+                # asserted fact in the semantic graph; do not duplicate it in
+                # the logic layer. Compound OR/cardinality/scoped negation is not
+                # suppressible and remains below.
+                if bound_semantic_index(root) is not None:
+                    continue
+                compiled_assertions.append(
+                    LocalLogicAssertion(
+                        root=root,
+                        evidence_text=clause.evidence_text,
+                    )
+                )
+            continue
+
+        assert clause.condition is not None
+        assert clause.effect is not None
+        conditions = split_top_level(
+            clause.condition,
+            operator=LogicalOperator.OR,
+        )
+        effects = split_top_level(
+            clause.effect,
+            operator=LogicalOperator.AND,
+        )
+        for condition in conditions:
+            condition = collapse_signed_literal(condition)
+            for effect in effects:
+                effect = collapse_signed_literal(effect)
+                source_index = bound_semantic_index(condition)
+                target_index = bound_semantic_index(effect)
+                if (
+                    source_index is not None
+                    and target_index is not None
+                    and source_index != target_index
+                ):
+                    normalized_relations.append(
+                        LocalNormalizedRelation(
+                            source_proposition_index=source_index,
+                            target_proposition_index=target_index,
+                            relation=RelationType.IMPLIES,
+                            evidence_text=clause.evidence_text,
+                        )
+                    )
+                    continue
+
+                compiled_rules.append(
+                    LocalLogicRule(
+                        condition=condition,
+                        effect=effect,
+                        evidence_text=clause.evidence_text,
+                    )
+                )
+
+    referenced_expression_ids: set[int] = set()
+    referenced_slot_ids: set[int] = set()
+
+    def collect(ref: LocalLogicOperand) -> None:
+        if ref.slot_id is not None:
+            referenced_slot_ids.add(ref.slot_id)
+            return
+        if (
+            ref.expression_id is None
+            or ref.expression_id in referenced_expression_ids
+        ):
+            return
+        node = expression_by_id.get(ref.expression_id)
+        if node is None:
+            raise LogicalStructureModelError(
+                f"Compiled logic references unknown expression_id={ref.expression_id}"
+            )
+        referenced_expression_ids.add(ref.expression_id)
+        for operand in node.operands:
+            collect(operand)
+
+    for assertion in compiled_assertions:
+        collect(assertion.root)
+    for rule in compiled_rules:
+        collect(rule.condition)
+        collect(rule.effect)
+
+    slots = [
+        slot
+        for slot in normalized.slots
+        if slot.slot_id in referenced_slot_ids
+    ]
+    expressions = [
+        expression
+        for expression in normalized.expressions
+        if expression.expression_id in referenced_expression_ids
+    ]
+
+    logic = LocalLogicDecision(
+        slots=slots,
+        expressions=expressions,
+        assertions=compiled_assertions,
+        rules=compiled_rules,
+    )
+
+    deduped_relations: list[LocalNormalizedRelation] = []
+    relation_by_key: dict[
+        tuple[int, int, RelationType],
+        LocalNormalizedRelation,
+    ] = {}
+    for relation in normalized_relations:
+        key = (
+            relation.source_proposition_index,
+            relation.target_proposition_index,
+            relation.relation,
+        )
+        prior = relation_by_key.get(key)
+        if prior is None:
+            relation_by_key[key] = relation
+            deduped_relations.append(relation)
+            continue
+        if relation.confidence > prior.confidence:
+            replacement = relation
+            relation_by_key[key] = replacement
+            deduped_relations[deduped_relations.index(prior)] = replacement
+
+    return CompiledStructureDecision(
+        logic=logic,
+        relations=tuple(deduped_relations),
+    )
+
+
 def _logic_audit_text(
     request: GraphBuildRequest,
-    decomposition: LocalDecompositionDecision,
+    propositions: list[LogicPropositionCandidate],
+    relations: tuple[LocalNormalizedRelation, ...],
     logic: LocalLogicDecision,
 ) -> str:
     return (
-        f"{_logic_request_text(request, decomposition)}\n\n"
-        "PROPOSED_LOGIC_BEGIN\n"
+        f"{_logic_request_text(request, propositions)}\n\n"
+        "NORMALIZED_SIMPLE_RELATIONS_BEGIN\n"
+        f"{json.dumps([item.model_dump(mode='json') for item in relations], ensure_ascii=False, indent=2)}\n"
+        "NORMALIZED_SIMPLE_RELATIONS_END\n\n"
+        "PROPOSED_COMPOUND_LOGIC_BEGIN\n"
         f"{json.dumps(logic.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n"
-        "PROPOSED_LOGIC_END"
+        "PROPOSED_COMPOUND_LOGIC_END"
     )
+
+
+def _try_validate_logical_structure_assessment(
+    payload: Any,
+    *,
+    source_id: str,
+) -> LogicalStructureAssessment | None:
+    if isinstance(payload, LogicalStructureAssessment):
+        return payload
+    try:
+        return LogicalStructureAssessment.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Logic structure audit output failed validation for source_id={}: {}",
+            source_id,
+            exc,
+        )
+        return None
 
 
 def _assess_logical_structure(
     *,
     request: GraphBuildRequest,
-    decomposition: LocalDecompositionDecision,
+    propositions: list[LogicPropositionCandidate],
+    relations: tuple[LocalNormalizedRelation, ...],
     logic: LocalLogicDecision,
 ) -> LogicalStructureAssessment:
+    """Audit only genuinely compound persisted logic."""
     messages: list[BaseMessage] = [
         SystemMessage(content=_LOGICAL_STRUCTURE_AUDIT_SYSTEM_PROMPT),
-        HumanMessage(content=_logic_audit_text(request, decomposition, logic)),
+        HumanMessage(
+            content=_logic_audit_text(
+                request,
+                propositions,
+                relations,
+                logic,
+            )
+        ),
+    ]
+    model = _get_model(reasoning_effort="medium")
+
+    for protocol_attempt in range(2):
+        structured_model = model.with_structured_output(
+            LogicalStructureAssessment,
+            method="function_calling",
+            include_raw=True,
+        )
+        try:
+            result = structured_model.invoke(messages)
+        except Exception as exc:
+            logger.warning(
+                "Logic structure audit structured call failed for source_id={} "
+                "protocol_attempt={}/2: {}",
+                request.source_id,
+                protocol_attempt + 1,
+                exc,
+            )
+            result = None
+
+        if isinstance(result, dict):
+            parsed = result.get("parsed")
+            if parsed is not None:
+                assessment = _try_validate_logical_structure_assessment(
+                    parsed,
+                    source_id=request.source_id,
+                )
+                if assessment is not None:
+                    return assessment
+
+            raw_args = _extract_structured_args(result.get("raw"))
+            if raw_args is not None:
+                assessment = _try_validate_logical_structure_assessment(
+                    raw_args,
+                    source_id=request.source_id,
+                )
+                if assessment is not None:
+                    return assessment
+
+        raw_args = _plain_json_retry(
+            model=model,
+            messages=messages,
+            schema=LogicalStructureAssessment,
+            label="compound logic structure audit",
+        )
+        if raw_args is not None:
+            assessment = _try_validate_logical_structure_assessment(
+                raw_args,
+                source_id=request.source_id,
+            )
+            if assessment is not None:
+                return assessment
+
+        logger.warning(
+            "Compound logic auditor protocol failed for source_id={} "
+            "protocol_attempt={}/2; retrying the same audit without changing "
+            "the logic candidate",
+            request.source_id,
+            protocol_attempt + 1,
+        )
+
+    raise LogicalStructureModelError(
+        f"Could not recover LogicalStructureAssessment for source_id={request.source_id}"
+    )
+
+
+def _logic_normalization_repair_message(
+    *,
+    assessment: LogicalStructureAssessment,
+) -> HumanMessage:
+    missing = assessment.missing_logic or ["none reported"]
+    unsupported = assessment.unsupported_logic or ["none reported"]
+    return HumanMessage(
+        content=(
+            "COMPOUND_LOGIC_AUDIT_FAILED\n"
+            "Re-normalize the same source-explicit relational/logical operators "
+            "and operands. Preserve correct binary semantic relations, but do not "
+            "choose a persisted AST/simple representation for Boolean clauses; "
+            "Python will route them deterministically. Do not create semantic "
+            "nodes or infer facts.\n\n"
+            "MISSING_LOGIC:\n- " + "\n- ".join(missing)
+            + "\n\nUNSUPPORTED_LOGIC:\n- " + "\n- ".join(unsupported)
+            + "\n\nAUDIT_REASON:\n" + assessment.reason
+        )
+    )
+
+
+def call_logic_structure_model(
+    request: GraphBuildRequest,
+    propositions: list[LogicPropositionCandidate],
+) -> CompiledStructureDecision:
+    """Selectively normalize source relations/logic, then route deterministically."""
+    empty = CompiledStructureDecision(logic=LocalLogicDecision())
+    if (
+        _LOGIC_CUE_RE.search(request.content) is None
+        and not bool(request.metadata.get("logic_semantic_signal", False))
+    ):
+        return empty
+
+    base_messages: list[BaseMessage] = [
+        SystemMessage(content=_LOGIC_NORMALIZATION_SYSTEM_PROMPT),
+        HumanMessage(content=_logic_request_text(request, propositions)),
+    ]
+    model = _get_model(reasoning_effort="low")
+    generation_messages = list(base_messages)
+
+    best_compiled = empty
+    for attempt in range(_MAX_LOGICAL_STRUCTURE_RETRIES + 1):
+        try:
+            normalized = _invoke_logic_normalization(
+                model=model,
+                messages=generation_messages,
+                source_id=request.source_id,
+                label="relation/logic normalization",
+            )
+            compiled = _compile_logic_normalization(
+                normalized,
+                proposition_count=len(propositions),
+            )
+            _validate_local_logic_decision(
+                decision=compiled.logic,
+                proposition_count=len(propositions),
+            )
+            best_compiled = compiled
+        except (LogicalStructureModelError, ValidationError, ValueError) as exc:
+            if bool(request.metadata.get("logic_fail_soft", False)):
+                logger.warning(
+                    "Relation/logic normalization failed softly for source_id={}: {}",
+                    request.source_id,
+                    exc,
+                )
+                return best_compiled
+            raise
+
+        if memory_graph_trace_enabled():
+            logger.info(
+                "Structure normalization compiled: source_id={} attempt={}/{} "
+                "relations={} logic_slots={} assertions={} rules={} expressions={}",
+                request.source_id,
+                attempt + 1,
+                _MAX_LOGICAL_STRUCTURE_RETRIES + 1,
+                len(compiled.relations),
+                len(compiled.logic.slots),
+                len(compiled.logic.assertions),
+                len(compiled.logic.rules),
+                len(compiled.logic.expressions),
+            )
+
+        # Graph-owned binary relations and literal-level fallback logic are
+        # accepted after deterministic validation. Only surviving compound ASTs
+        # incur the extra semantic logic audit.
+        if not compiled.logic.expressions:
+            return compiled
+
+        try:
+            assessment = _assess_logical_structure(
+                request=request,
+                propositions=propositions,
+                relations=compiled.relations,
+                logic=compiled.logic,
+            )
+        except LogicalStructureModelError as exc:
+            if bool(request.metadata.get("logic_fail_soft", False)):
+                logger.warning(
+                    "Compound logic audit failed softly; preserving compiled "
+                    "structure for source_id={}: {}",
+                    request.source_id,
+                    exc,
+                )
+                return compiled
+            raise
+
+        if memory_graph_trace_enabled():
+            logger.info(
+                "Compound logic structure audit: source_id={} attempt={}/{} complete={} "
+                "relations={} slots={} assertions={} rules={} expressions={} missing={} "
+                "unsupported={} reason={}",
+                request.source_id,
+                attempt + 1,
+                _MAX_LOGICAL_STRUCTURE_RETRIES + 1,
+                assessment.complete,
+                len(compiled.relations),
+                len(compiled.logic.slots),
+                len(compiled.logic.assertions),
+                len(compiled.logic.rules),
+                len(compiled.logic.expressions),
+                len(assessment.missing_logic),
+                len(assessment.unsupported_logic),
+                assessment.reason,
+            )
+        if assessment.complete:
+            return compiled
+
+        if attempt >= _MAX_LOGICAL_STRUCTURE_RETRIES:
+            if bool(request.metadata.get("logic_fail_soft", False)):
+                logger.warning(
+                    "Compound logic remained incomplete after repair; preserving "
+                    "best compiled structure: source_id={} missing={} unsupported={} "
+                    "reason={}",
+                    request.source_id,
+                    assessment.missing_logic,
+                    assessment.unsupported_logic,
+                    assessment.reason,
+                )
+                return compiled
+            raise LogicalStructureModelError(
+                "Compound logical structure remained incomplete after repair for "
+                f"source_id={request.source_id}. Missing={assessment.missing_logic}; "
+                f"Unsupported={assessment.unsupported_logic}; Reason={assessment.reason}"
+            )
+
+        generation_messages = [
+            *base_messages,
+            _logic_normalization_repair_message(assessment=assessment),
+        ]
+
+    return best_compiled
+
+
+def call_logic_slot_binding_model(
+    request: LogicSlotBindingRequest,
+) -> LogicSlotBindingResponse:
+    """Match one semantic node to logic slots using the active local backend.
+
+    The active backend is ``cross-encoder/nli-deberta-v3-small``. The prior 120B
+    implementation is preserved verbatim in ``logic_slot_binding_llm_legacy.py``
+    and can be restored with a one-line backend-import change near the top of
+    this module.
+    """
+    if not request.candidates:
+        return LogicSlotBindingResponse()
+
+    try:
+        response = _call_logic_slot_binding_backend(request)
+    except Exception as exc:
+        raise LogicSlotBindingModelError(
+            "Local logic-slot matcher failed for "
+            f"node_id={request.node_id}: {exc}"
+        ) from exc
+
+    allowed = {candidate.slot_id for candidate in request.candidates}
+    filtered = [binding for binding in response.bindings if binding.slot_id in allowed]
+    if len(filtered) != len(response.bindings):
+        logger.warning(
+            "Logic-slot matcher returned unknown slot IDs for node_id={}; dropping them",
+            request.node_id,
+        )
+
+    filtered_response = LogicSlotBindingResponse(bindings=filtered)
+    _capture_logic_slot_binding_dataset(request, filtered_response)
+    return filtered_response
+
+
+
+def _try_validate_chunk_semantic_audit(
+    payload: Any,
+    *,
+    source_id: str,
+    chunk_index: int,
+) -> ChunkSemanticAuditResult | None:
+    if isinstance(payload, ChunkSemanticAuditResult):
+        return payload
+    try:
+        return ChunkSemanticAuditResult.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            "Chunk semantic audit output failed validation for source_id={} chunk={}: {}",
+            source_id,
+            chunk_index,
+            exc,
+        )
+        return None
+
+
+def audit_completed_chunk_model(
+    *,
+    request: GraphBuildRequest,
+    chunk_index: int,
+    primary_source_text: str,
+    context_source_texts: list[str],
+    contextualized_input: str,
+    chunk_structure: dict[str, Any],
+) -> ChunkSemanticAuditResult:
+    """Run one semantic audit after the complete chunk subtree has been built.
+
+    This is deliberately one-shot. A malformed provider response gets one plain
+    JSON protocol retry; a semantic FAIL is returned directly and is never
+    automatically repaired or re-audited.
+    """
+    body = (
+        f"SOURCE_TYPE: {request.source_type.value}\n"
+        f"SOURCE_ID: {request.source_id}\n"
+        f"CHUNK_INDEX: {chunk_index}\n\n"
+        "PRIMARY_SOURCE_BEGIN\n"
+        f"{primary_source_text}\n"
+        "PRIMARY_SOURCE_END\n\n"
+        "CONTEXT_SOURCE_TEXTS_BEGIN\n"
+        f"{json.dumps(context_source_texts, ensure_ascii=False, indent=2)}\n"
+        "CONTEXT_SOURCE_TEXTS_END\n\n"
+        "CONTEXTUALIZED_INPUT_BEGIN\n"
+        f"{contextualized_input}\n"
+        "CONTEXTUALIZED_INPUT_END\n\n"
+        "CHUNK_STRUCTURE_BEGIN\n"
+        f"{json.dumps(chunk_structure, ensure_ascii=False, indent=2)}\n"
+        "CHUNK_STRUCTURE_END"
+    )
+    messages: list[BaseMessage] = [
+        SystemMessage(content=_CHUNK_SEMANTIC_AUDIT_SYSTEM_PROMPT),
+        HumanMessage(content=body),
     ]
     model = _get_model(reasoning_effort="medium")
     structured_model = model.with_structured_output(
-        LogicalStructureAssessment,
+        ChunkSemanticAuditResult,
         method="function_calling",
         include_raw=True,
     )
@@ -3382,272 +4972,65 @@ def _assess_logical_structure(
         result = structured_model.invoke(messages)
     except Exception as exc:
         logger.warning(
-            "Logical structure audit structured call failed for source_id={}: {}. "
-            "Retrying once as plain JSON.",
+            "Chunk semantic audit structured call failed for source_id={} chunk={}: {}",
             request.source_id,
+            chunk_index,
             exc,
         )
-        raw_args = _plain_json_retry(
-            model=model,
-            messages=messages,
-            schema=LogicalStructureAssessment,
-            label="logical structure audit",
-        )
-        if raw_args is None:
-            raise LogicalStructureModelError(
-                f"Could not recover logical structure audit for source_id="
-                f"{request.source_id}"
-            ) from exc
-        return LogicalStructureAssessment.model_validate(raw_args)
+        result = None
 
-    parsed = result.get("parsed")
-    if parsed is not None:
-        return (
-            parsed
-            if isinstance(parsed, LogicalStructureAssessment)
-            else LogicalStructureAssessment.model_validate(parsed)
-        )
-
-    raw_args = _extract_structured_args(result.get("raw"))
-    if raw_args is None:
-        raw_args = _plain_json_retry(
-            model=model,
-            messages=messages,
-            schema=LogicalStructureAssessment,
-            label="logical structure audit",
-        )
-    if raw_args is None:
-        raise LogicalStructureModelError(
-            f"Could not recover LogicalStructureAssessment for source_id="
-            f"{request.source_id}"
-        )
-    return LogicalStructureAssessment.model_validate(raw_args)
-
-
-def _logic_repair_message(
-    *,
-    decision: LocalLogicDecision,
-    assessment: LogicalStructureAssessment,
-) -> HumanMessage:
-    missing = assessment.missing_logic or ["none reported"]
-    unsupported = assessment.unsupported_logic or ["none reported"]
-    return HumanMessage(
-        content=(
-            "LOGICAL_STRUCTURE_AUDIT_FAILED\n"
-            "Revise ONLY the Boolean/cardinality and condition/effect structure "
-            "over the same supplied children. Do not change or invent semantic "
-            "children. Do not add assertions for standalone semantic children; "
-            "assertions must reference Boolean/cardinality expressions.\n\n"
-            "MISSING_LOGIC:\n- " + "\n- ".join(missing)
-            + "\n\nUNSUPPORTED_LOGIC:\n- " + "\n- ".join(unsupported)
-            + "\n\nAUDIT_REASON:\n" + assessment.reason
-            + "\n\nPREVIOUS_DECISION_BEGIN\n"
-            + json.dumps(decision.model_dump(mode="json"), ensure_ascii=False, indent=2)
-            + "\nPREVIOUS_DECISION_END"
-        )
-    )
-
-
-def call_logical_structure_model(
-    request: GraphBuildRequest,
-    decomposition: LocalDecompositionDecision,
-) -> LocalLogicDecision:
-    """Extract explicit Boolean/cardinality and condition/effect structure.
-
-    This is deliberately a second model call after semantic decomposition. The
-    model may only arrange existing child indices; it cannot create semantic
-    propositions. Empty output is valid when the parent has no explicit logical
-    grouping or conditional rule that needs a separate representation.
-    """
-    if decomposition.kind != "composite" or len(decomposition.children) < 2:
-        return LocalLogicDecision()
-
-    # Avoid doubling LLM calls for composites with no lexical sign of Boolean,
-    # cardinality, or conditional structure. This is a generic syntax-level gate.
-    if _LOGIC_CUE_RE.search(request.content) is None:
-        return LocalLogicDecision()
-
-    base_messages: list[BaseMessage] = [
-        SystemMessage(content=_LOGICAL_STRUCTURE_SYSTEM_PROMPT),
-        HumanMessage(content=_logic_request_text(request, decomposition)),
-    ]
-    model = _get_model(reasoning_effort="low")
-    generation_messages = list(base_messages)
-    decision = _invoke_local_logic_decision(
-        model=model,
-        messages=generation_messages,
-        source_id=request.source_id,
-        label="logical structure extraction",
-    )
-
-    for attempt in range(_MAX_LOGICAL_STRUCTURE_RETRIES + 1):
-        _validate_local_logic_decision(
-            decision=decision,
-            child_count=len(decomposition.children),
-        )
-        assessment = _assess_logical_structure(
-            request=request,
-            decomposition=decomposition,
-            logic=decision,
-        )
-        logger.info(
-            "Logical structure audit: source_id={} attempt={}/{} complete={} "
-            "assertions={} rules={} expressions={} missing={} unsupported={} reason={}",
-            request.source_id,
-            attempt + 1,
-            _MAX_LOGICAL_STRUCTURE_RETRIES + 1,
-            assessment.complete,
-            len(decision.assertions),
-            len(decision.rules),
-            len(decision.expressions),
-            len(assessment.missing_logic),
-            len(assessment.unsupported_logic),
-            assessment.reason,
-        )
-        if assessment.complete:
-            return decision
-        if attempt >= _MAX_LOGICAL_STRUCTURE_RETRIES:
-            raise LogicalStructureModelError(
-                "Logical structure remained incomplete after "
-                f"{_MAX_LOGICAL_STRUCTURE_RETRIES} repair attempt(s) for "
-                f"source_id={request.source_id}. Missing={assessment.missing_logic}; "
-                f"Unsupported={assessment.unsupported_logic}; Reason={assessment.reason}"
+    if isinstance(result, dict):
+        for payload in (
+            result.get("parsed"),
+            _extract_structured_args(result.get("raw")),
+        ):
+            if payload is None:
+                continue
+            audit = _try_validate_chunk_semantic_audit(
+                payload,
+                source_id=request.source_id,
+                chunk_index=chunk_index,
             )
-        generation_messages = [
-            *base_messages,
-            _logic_repair_message(decision=decision, assessment=assessment),
-        ]
-        decision = _invoke_local_logic_decision(
-            model=model,
-            messages=generation_messages,
-            source_id=request.source_id,
-            label="logical structure repair",
-        )
+            if audit is not None:
+                return audit
 
-    raise LogicalStructureModelError(
-        f"Unexpected logical structure state for source_id={request.source_id}"
+    raw_args = _plain_json_retry(
+        model=model,
+        messages=messages,
+        schema=ChunkSemanticAuditResult,
+        label="completed chunk semantic audit",
+    )
+    if raw_args is not None:
+        audit = _try_validate_chunk_semantic_audit(
+            raw_args,
+            source_id=request.source_id,
+            chunk_index=chunk_index,
+        )
+        if audit is not None:
+            return audit
+
+    raise PromptDecompositionModelError(
+        "Could not recover ChunkSemanticAuditResult for "
+        f"source_id={request.source_id} chunk={chunk_index}"
     )
 
 
 def call_prompt_decomposition_model(
     request: GraphBuildRequest,
 ) -> LocalDecompositionDecision:
-    """Decompose one statement with semantic coverage verification.
+    """Compatibility entrypoint for the active Stanza + DeDisCo pipeline.
 
-    ``GraphBuilder`` still owns recursive traversal and deterministic hierarchy
-    edges. This wrapper owns the semantic contract of each local decomposition:
-    generation -> lossless-coverage audit -> bounded repair when needed.
-
-    The returned ``LocalDecompositionDecision`` carries child-level source
-    provenance and optional source-explicit local relation hints. ``GraphBuilder``
-    remains responsible for resolving excerpts to source spans and materializing
-    canonical graph edges.
+    The previous parser-guided GPT-5-nano implementation is preserved in
+    ``model_wrapper_parser_guided_gpt5_nano_legacy.py``.  Keep this wrapper so
+    external callers that historically imported decomposition from
+    ``model_wrapper`` automatically use the new local pipeline.
     """
-    depth = request.metadata.get("decomposition_depth", 0)
-
-    base_messages: list[BaseMessage] = [
-        SystemMessage(content=_DECOMPOSITION_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"SOURCE_TYPE: {request.source_type.value}\n"
-                f"SOURCE_ID: {request.source_id}\n"
-                f"CURRENT_DEPTH: {depth}\n\n"
-                "STATEMENT_BEGIN\n"
-                f"{request.content}\n"
-                "STATEMENT_END"
-            )
-        ),
-    ]
-
-    model = _get_model(reasoning_effort="low")
-    generation_messages = list(base_messages)
-
-    decision = _invoke_local_decomposition_decision(
-        model=model,
-        messages=generation_messages,
-        source_id=request.source_id,
-        depth=depth,
-        label="prompt decomposition",
+    from .decomposition_stanza_dedisco import (
+        call_prompt_decomposition_model as call_stanza_dedisco_decomposition,
     )
 
-    for audit_attempt in range(_MAX_DECOMPOSITION_COVERAGE_RETRIES + 1):
-        grounding_issues = _decomposition_grounding_issues(
-            request=request,
-            decision=decision,
-        )
+    return call_stanza_dedisco_decomposition(request)
 
-        if grounding_issues:
-            logger.warning(
-                "Prompt decomposition provenance is approximate for "
-                "source_id={} depth={}: {}",
-                request.source_id,
-                depth,
-                grounding_issues,
-            )
-
-        # Provenance precision is diagnostic. Semantic coverage remains strict.
-        # The builder will resolve exact excerpts when possible and otherwise
-        # inherit a proven parent source span rather than inventing offsets.
-        assessment = _assess_decomposition_coverage(
-            request=request,
-            decision=decision,
-        )
-
-        logger.info(
-            "Prompt decomposition coverage: source_id={} depth={} "
-            "attempt={}/{} complete={} missing={} unsupported={} reason={}",
-            request.source_id,
-            depth,
-            audit_attempt + 1,
-            _MAX_DECOMPOSITION_COVERAGE_RETRIES + 1,
-            assessment.complete,
-            len(assessment.missing_semantics),
-            len(assessment.unsupported_children),
-            assessment.reason,
-        )
-
-        if assessment.complete:
-            return decision
-
-        if audit_attempt >= _MAX_DECOMPOSITION_COVERAGE_RETRIES:
-            raise PromptDecompositionModelError(
-                "Semantic coverage remained incomplete after "
-                f"{_MAX_DECOMPOSITION_COVERAGE_RETRIES} repair attempt(s) for "
-                f"source_id={request.source_id} depth={depth}. "
-                f"Missing={assessment.missing_semantics}; "
-                f"Unsupported={assessment.unsupported_children}; "
-                f"Reason={assessment.reason}"
-            )
-
-        logger.warning(
-            "Prompt decomposition failed semantic coverage for source_id={} "
-            "depth={}; retrying with audit feedback. missing={} unsupported={}",
-            request.source_id,
-            depth,
-            assessment.missing_semantics,
-            assessment.unsupported_children,
-        )
-
-        # Keep only the source plus the latest coverage feedback. We intentionally
-        # do not include the previous model answer as an assistant message: the
-        # audit already summarizes what was missing/unsupported, and this avoids
-        # anchoring the repair on a lossy decomposition.
-        generation_messages = [
-            *base_messages,
-            _coverage_feedback_message(assessment),
-        ]
-        decision = _invoke_local_decomposition_decision(
-            model=model,
-            messages=generation_messages,
-            source_id=request.source_id,
-            depth=depth,
-            label="prompt decomposition repair",
-        )
-
-    # Defensive; the loop either returns a complete decision or raises above.
-    raise PromptDecompositionModelError(
-        f"Unexpected decomposition coverage state for source_id={request.source_id}"
-    )
 
 _SYMMETRIC_RELATIONS = {
     RelationType.RELATED_TO,
@@ -3665,6 +5048,7 @@ def _relation_request_text(request: RelationBuildRequest) -> str:
         "node_id": request.anchor_node_id,
         "content": request.anchor_content,
         "routing_text": request.anchor_routing_text,
+        "context_paths": request.anchor_context_paths,
         "proposition": (
             request.anchor_proposition.model_dump(
                 mode="json",
@@ -3680,6 +5064,7 @@ def _relation_request_text(request: RelationBuildRequest) -> str:
             "node_id": candidate.node_id,
             "content": candidate.content,
             "routing_text": candidate.routing_text,
+            "context_paths": candidate.context_paths,
             "proposition": (
                 candidate.proposition.model_dump(
                     mode="json",
@@ -3725,10 +5110,14 @@ def _normalize_relation_response(
             )
             continue
 
-        if decision.relation == RelationType.DECOMPOSES_INTO:
+        if decision.relation in {
+            RelationType.DECOMPOSES_INTO,
+            RelationType.IMPLIES,
+        }:
             logger.warning(
-                "Ignoring forbidden lateral decomposes_into relation "
+                "Ignoring relation={} reserved from broad relation inference "
                 "for anchor_node_id={} candidate_node_id={}",
+                decision.relation.value,
                 request.anchor_node_id,
                 decision.other_node_id,
             )

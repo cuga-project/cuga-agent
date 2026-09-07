@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -17,7 +16,6 @@ from .atomic_payload_spacy import extract_atomic_payloads_spacy
 from .logging_utils import memory_graph_trace_enabled
 from .decomposition_stanza_dedisco import (
     call_prompt_decomposition_model,
-    call_prompt_decomposition_models,
     classify_terminal_for_retrieval,
 )
 from .model_wrapper import (
@@ -47,10 +45,7 @@ from .schemas import (
     GraphBuildResult,
     LocalDecompositionDecision,
     LocalLogicDecision,
-    LocalLogicNode,
     LocalLogicOperand,
-    LocalLogicRule,
-    LocalLogicSlot,
     LocalNormalizedRelation,
     LogicPropositionCandidate,
     LogicCompoundAssertion,
@@ -290,110 +285,6 @@ def _sanitize_atomic_payload(
 
 _RETRIEVAL_BLANK = " "
 
-# Semantic-context closure is deliberately separate from lateral relation
-# traversal.  The graph builder marks an atomic leaf only when the source unit
-# that produced it is not semantically self-contained: its proposition has no
-# explicit subject, no finite/modal governor, and is not a self-contained
-# imperative.  The marker records the exact hierarchy ancestor that encloses
-# the missing external scope.  The verifier can then enforce closure
-# deterministically without guessing how many hierarchy levels to climb.
-_SEMANTIC_CONTEXT_DEPENDENCY_VERSION = "boundary_crossing_v1"
-_FINITE_SCOPE_WORDS = {
-    "am", "are", "can", "cannot", "could", "did", "does", "had", "has",
-    "is", "may", "might", "must", "shall", "should", "was", "were",
-    "will", "would",
-}
-
-
-def _payload_values(values: list[str] | None) -> list[str]:
-    return [
-        str(value).strip()
-        for value in (values or [])
-        if str(value).strip() and str(value) != _RETRIEVAL_BLANK
-    ]
-
-
-def _source_unit_external_semantic_dependency_issue(
-    *,
-    source_unit: DraftNode,
-    atomic_descendants: list[DraftNode],
-) -> str | None:
-    """Return why a source unit needs enclosing semantic scope, if any.
-
-    This implements the boundary-crossing dependency rule used by verifier
-    reconstruction.  It is intentionally not a ``list_item`` special case.
-    Source-block metadata identifies the unit boundary, while semantic closure is
-    decided from the unit's own proposition shape:
-
-    * an explicit grammatical subject closes ordinary declarative scope;
-    * an imperative closes scope through its implicit ``you`` governor;
-    * an overt finite/modal/copular governor closes scope;
-    * otherwise the unit is phrase-like/non-finite and therefore inherits a
-      semantic operator from outside its extracted boundary.
-
-    A future decomposer may set ``semantic_context_dependency_external``
-    explicitly; that deterministic annotation takes precedence over this
-    conservative fallback.
-    """
-    metadata = dict(source_unit.metadata or {})
-
-    explicit = metadata.get("semantic_context_dependency_external")
-    if explicit is False:
-        return None
-    if explicit is True:
-        return str(
-            metadata.get("semantic_context_dependency_reason")
-            or "explicit_external_semantic_dependency"
-        )
-
-    source_block_kind = str(metadata.get("source_block_kind") or "").strip()
-    if not source_block_kind:
-        # This is not a source-unit boundary produced by deterministic document
-        # splitting, so do not invent an external scope dependency here.
-        return None
-    if source_block_kind == "heading":
-        # Headings are scope anchors rather than propositions governed by an
-        # enclosing proposition.
-        return None
-
-    if bool(metadata.get("retrieval_only", False)):
-        return None
-
-    for descendant in atomic_descendants:
-        proposition = descendant.proposition
-        if proposition is None:
-            continue
-        if _payload_values(proposition.subjects):
-            return None
-
-    semantic_role = (
-        str(metadata.get("semantic_role"))
-        if metadata.get("semantic_role") is not None
-        else None
-    )
-    if _allows_implicit_you(source_unit.content, semantic_role):
-        return None
-
-    tokens = _lexical_tokens(source_unit.content)
-    if any(token in _FINITE_SCOPE_WORDS for token in tokens):
-        return None
-
-    # If there is no grounded predicate at all, the unit is even less capable of
-    # standing as an independent proposition.  If there is a predicate but no
-    # subject/finite/imperative governor (e.g. "Changing account settings" or
-    # "identity verification failures requiring specialist"), it is a non-finite
-    # proposition whose semantic operator lies outside this source-unit span.
-    has_grounded_predicate = any(
-        descendant.proposition is not None
-        and bool(_payload_values(descendant.proposition.predicates))
-        for descendant in atomic_descendants
-    )
-    return (
-        "source_unit_nonfinite_without_local_semantic_governor"
-        if has_grounded_predicate
-        else "source_unit_fragment_without_local_semantic_governor"
-    )
-
 
 def _blank_retrieval_payload() -> PropositionPayload:
     """Return zero-signal placeholders for unavailable S/P/O metadata."""
@@ -428,21 +319,11 @@ ModelCallable = Callable[
     LocalDecompositionDecision | dict[str, Any],
 ]
 
-BatchModelCallable = Callable[
-    [list[GraphBuildRequest]],
-    list[LocalDecompositionDecision | dict[str, Any]],
-]
-
 
 EmbeddingCallable = Callable[
     [list[str]],
     list[list[float]],
 ]
-
-
-def _decomposition_batching_enabled() -> bool:
-    raw = os.environ.get("CUGA_DECOMPOSITION_BATCHING", "1").strip().casefold()
-    return raw not in {"0", "false", "off", "no", "disabled"}
 
 
 # Cross-chunk augmentation is deliberately bounded. The slot-binding model is an
@@ -463,7 +344,6 @@ class _DraftAccumulator:
     logic_rules: list[DraftLogicRule] = field(default_factory=list)
     next_logic_slot_id: int = 0
     deferred_local_relations: list[dict[str, Any]] = field(default_factory=list)
-    heavy_logic_cache: dict[tuple[Any, ...], Any] = field(default_factory=dict)
     next_id: int = 0
 
     def allocate_id(self) -> str:
@@ -487,687 +367,6 @@ def _skip_logic_enrichment(request: GraphBuildRequest) -> bool:
     return bool(request.metadata.get("skip_logic_enrichment", False))
 
 
-@dataclass(frozen=True)
-class _BooleanShape:
-    """Conservative Boolean shape over already-created atomic graph leaves.
-
-    The fast path deliberately recognizes only a literal or one *flat*,
-    homogeneous conjunction/disjunction.  Anything nested, mixed, structurally
-    incomplete, or dependent on a learned DeDisCo relation is ``complex`` and
-    falls back to the existing LLM normalizer/auditor.
-    """
-
-    kind: str
-    atomic_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class _LogicFastPath:
-    """Result of the deterministic pre-LLM logic gate."""
-
-    group: str
-    reason: str
-    decision: LocalLogicDecision | None = None
-
-
-_POSITIVE_CONDITIONAL_MARKERS = {
-    "if",
-    "when",
-    "whenever",
-    "provided",
-    "provided that",
-    "providing",
-    "assuming",
-    "assuming that",
-}
-_NEGATED_CONDITIONAL_MARKERS = {"unless", "without"}
-
-_ONLY_IF_RE = re.compile(
-    r"\bonly\b(?:(?![.!?]).){0,180}?\b(?:if|when)\b",
-    flags=re.IGNORECASE,
-)
-
-# Broad cue inventory used only for the relationless-parent duplicate proof.
-# Unlike the model-wrapper gate, this includes AND because the proof asks
-# whether any source-explicit logical connective remains at the current parent
-# level after direct-child ownership is assigned.
-_PARENT_LOGIC_CUE_RE = re.compile(
-    r"\b(?:if|when|whenever|unless|without|provided|assuming|otherwise|else)\b"
-    r"|\bonly\b|\band\b|\bor\b|\beither\b|\balternatively\b"
-    r"|\b(?:before|after|first|then|previously|subsequently|once)\b"
-    r"|\b(?:requires?|requirement|depends?\s+on|conditional\s+on)\b"
-    r"|\b(?:causes?|caused\s+by|leads?\s+to|results?\s+in)\b"
-    r"|\b(?:at\s+least|at\s+most|exactly)\s+"
-    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+of\b"
-    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+of\b",
-    flags=re.IGNORECASE,
-)
-
-
-def _direct_child_ids(
-    accumulator: _DraftAccumulator,
-    parent_temporary_id: str,
-) -> list[str]:
-    return [
-        edge.child_temporary_id
-        for edge in accumulator.hierarchy
-        if edge.parent_temporary_id == parent_temporary_id
-    ]
-
-
-def _direct_parent_id(
-    accumulator: _DraftAccumulator,
-    child_temporary_id: str,
-) -> str | None:
-    for edge in accumulator.hierarchy:
-        if edge.child_temporary_id == child_temporary_id:
-            return edge.parent_temporary_id
-    return None
-
-
-def _local_relation_records_for_parent(
-    accumulator: _DraftAccumulator,
-    parent_temporary_id: str,
-) -> list[dict[str, Any]]:
-    """Return Stanza/DeDisCo local relation evidence, including deferred hints.
-
-    Local relation hints whose direct endpoints later became composites are not
-    persisted as lateral graph edges. They are nevertheless exactly the syntax
-    evidence needed by this classifier, so include the diagnostic/deferred copy.
-    """
-
-    records: list[dict[str, Any]] = []
-    for relation in accumulator.relations:
-        if relation.metadata.get("construction") != "local_decomposition_relation":
-            continue
-        if relation.metadata.get("parent_temporary_id") != parent_temporary_id:
-            continue
-        records.append(
-            {
-                "source_temporary_id": relation.source_temporary_id,
-                "target_temporary_id": relation.target_temporary_id,
-                "metadata": dict(relation.metadata),
-                "deferred": False,
-            }
-        )
-
-    for record in accumulator.deferred_local_relations:
-        if record.get("parent_temporary_id") != parent_temporary_id:
-            continue
-        metadata = {
-            "construction": "local_decomposition_relation",
-            **dict(record.get("relation_metadata") or {}),
-        }
-        records.append(
-            {
-                "source_temporary_id": record.get("source_temporary_id"),
-                "target_temporary_id": record.get("target_temporary_id"),
-                "metadata": metadata,
-                "deferred": True,
-            }
-        )
-    return records
-
-
-def _has_logic_scope_warning(metadata: dict[str, Any]) -> bool:
-    notes = metadata.get("reconstruction_notes") or []
-    return any("LOGIC_SCOPE:" in str(note) for note in notes)
-
-
-def _explicit_syntax(record: dict[str, Any]) -> bool:
-    return record["metadata"].get("discourse_classifier") == "explicit_syntax"
-
-
-def _relation_type(record: dict[str, Any]) -> str:
-    return str(record["metadata"].get("discourse_relation") or "").casefold()
-
-
-def _relation_marker(record: dict[str, Any]) -> str:
-    return str(record["metadata"].get("stanza_marker") or "").strip().casefold()
-
-
-def _relation_direct_children_ok(
-    accumulator: _DraftAccumulator,
-    parent_temporary_id: str,
-    record: dict[str, Any],
-) -> bool:
-    children = set(_direct_child_ids(accumulator, parent_temporary_id))
-    return (
-        record.get("source_temporary_id") in children
-        and record.get("target_temporary_id") in children
-    )
-
-
-def _classify_flat_boolean_subtree(
-    accumulator: _DraftAccumulator,
-    temporary_id: str,
-    *,
-    _active: frozenset[str] = frozenset(),
-) -> _BooleanShape:
-    """Classify one flat homogeneous AND/OR subtree over atomic graph leaves.
-
-    This mirrors the validated deterministic simulator: a composite qualifies
-    only when explicit Stanza conjunction/alternation relations connect all of
-    its direct children with one homogeneous operator. Nested composites are
-    allowed only when they use the same operator and satisfy the same proof.
-    """
-
-    if temporary_id in _active:
-        return _BooleanShape("complex")
-    node = _draft_node_by_id(accumulator, temporary_id)
-    if node.kind == NodeKind.ATOMIC_FACT:
-        if bool(node.metadata.get("retrieval_only", False)):
-            return _BooleanShape("complex")
-        return _BooleanShape("literal", (temporary_id,))
-
-    children = _direct_child_ids(accumulator, temporary_id)
-    if len(children) < 2 or len(children) != len(set(children)):
-        return _BooleanShape("complex")
-
-    records = _local_relation_records_for_parent(accumulator, temporary_id)
-    boolean_records = [
-        record
-        for record in records
-        if _explicit_syntax(record)
-        and _relation_type(record) in {"conjunction", "alternation"}
-        and _relation_marker(record) in {"and", "or"}
-    ]
-    if not boolean_records or len(boolean_records) != len(records):
-        return _BooleanShape("complex")
-
-    markers = {_relation_marker(record) for record in boolean_records}
-    if len(markers) != 1:
-        return _BooleanShape("complex")
-    marker = next(iter(markers))
-
-    if any(
-        not _relation_direct_children_ok(accumulator, temporary_id, record)
-        for record in boolean_records
-    ):
-        return _BooleanShape("complex")
-    if any(_has_logic_scope_warning(record["metadata"]) for record in boolean_records):
-        return _BooleanShape("complex")
-
-    adjacency: dict[str, set[str]] = {child: set() for child in children}
-    for record in boolean_records:
-        source_id = record["source_temporary_id"]
-        target_id = record["target_temporary_id"]
-        adjacency[source_id].add(target_id)
-        adjacency[target_id].add(source_id)
-
-    seen: set[str] = set()
-    stack = [children[0]]
-    while stack:
-        current = stack.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        stack.extend(adjacency[current] - seen)
-    if seen != set(children):
-        return _BooleanShape("complex")
-    if len(boolean_records) < len(children) - 1:
-        return _BooleanShape("complex")
-
-    operator_kind = "flat_and" if marker == "and" else "flat_or"
-    next_active = _active | {temporary_id}
-    flattened: list[str] = []
-    for child_id in children:
-        child_shape = _classify_flat_boolean_subtree(
-            accumulator,
-            child_id,
-            _active=next_active,
-        )
-        if child_shape.kind == "literal":
-            flattened.extend(child_shape.atomic_ids)
-        elif child_shape.kind == operator_kind:
-            flattened.extend(child_shape.atomic_ids)
-        else:
-            return _BooleanShape("complex")
-
-    if len(flattened) < 2 or len(flattened) != len(set(flattened)):
-        return _BooleanShape("complex")
-    return _BooleanShape(operator_kind, tuple(flattened))
-
-
-def _deterministic_logic_decision(
-    *,
-    statement: str,
-    condition: _BooleanShape,
-    effect: _BooleanShape,
-    propositions: list[LogicPropositionCandidate],
-) -> LocalLogicDecision | None:
-    """Compile a deterministic flat conditional using exact atomic leaves."""
-
-    proposition_index_by_id = {
-        proposition.temporary_id: proposition.proposition_index
-        for proposition in propositions
-    }
-    node_text_by_id = {
-        proposition.temporary_id: proposition.content
-        for proposition in propositions
-    }
-    ordered_atomic_ids: list[str] = []
-    for temporary_id in (*condition.atomic_ids, *effect.atomic_ids):
-        if temporary_id not in proposition_index_by_id:
-            return None
-        if temporary_id not in ordered_atomic_ids:
-            ordered_atomic_ids.append(temporary_id)
-
-    slot_id_by_node: dict[str, int] = {}
-    slots: list[LocalLogicSlot] = []
-    for slot_id, temporary_id in enumerate(ordered_atomic_ids):
-        slot_id_by_node[temporary_id] = slot_id
-        slots.append(
-            LocalLogicSlot(
-                slot_id=slot_id,
-                source_text=node_text_by_id[temporary_id],
-                proposition_index=proposition_index_by_id[temporary_id],
-                proposition_value=True,
-                confidence=1.0,
-            )
-        )
-
-    expressions: list[LocalLogicNode] = []
-
-    def ref_for_shape(shape: _BooleanShape) -> LocalLogicOperand:
-        if shape.kind == "literal":
-            return LocalLogicOperand(slot_id=slot_id_by_node[shape.atomic_ids[0]])
-        if shape.kind not in {"flat_and", "flat_or"}:
-            raise ValueError(f"Unsupported deterministic Boolean shape: {shape.kind}")
-        expression_id = len(expressions)
-        expressions.append(
-            LocalLogicNode(
-                expression_id=expression_id,
-                operator=(
-                    LogicalOperator.AND
-                    if shape.kind == "flat_and"
-                    else LogicalOperator.OR
-                ),
-                operands=[
-                    LocalLogicOperand(slot_id=slot_id_by_node[temporary_id])
-                    for temporary_id in shape.atomic_ids
-                ],
-            )
-        )
-        return LocalLogicOperand(expression_id=expression_id)
-
-    return LocalLogicDecision(
-        slots=slots,
-        expressions=expressions,
-        rules=[
-            LocalLogicRule(
-                condition=ref_for_shape(condition),
-                effect=ref_for_shape(effect),
-                evidence_text=statement,
-                confidence=1.0,
-            )
-        ],
-    )
-
-
-def _parent_logic_cues(text: str) -> list[dict[str, Any]]:
-    return [
-        {"text": match.group(0), "start": match.start(), "end": match.end()}
-        for match in _PARENT_LOGIC_CUE_RE.finditer(text)
-    ]
-
-
-def _gap_is_structural_only(text: str) -> bool:
-    # Deliberately strict: no lexical material may remain between direct child
-    # statements. Whitespace and punctuation are allowed.
-    return re.search(r"[A-Za-z0-9]", text) is None
-
-
-def _relationless_parent_duplicate_proof(
-    accumulator: _DraftAccumulator,
-    parent_temporary_id: str,
-) -> dict[str, Any]:
-    """Prove that a relationless multi-child parent adds no parent-level logic.
-
-    This is a structural proof, not semantic equivalence. Direct child texts must
-    exactly partition the parent in hierarchy order, gaps must be punctuation/
-    whitespace only, and every broad logic cue in the parent must be owned by a
-    child span.
-    """
-
-    parent_text = _draft_node_by_id(accumulator, parent_temporary_id).content
-    children = _direct_child_ids(accumulator, parent_temporary_id)
-    if len(children) < 2:
-        return {"proven": False, "reason": "fewer_than_two_direct_children"}
-
-    owned_ranges: list[dict[str, Any]] = []
-    cursor = 0
-    for child_id in children:
-        child_text = _draft_node_by_id(accumulator, child_id).content
-        start = parent_text.find(child_text, cursor)
-        if start < 0:
-            return {
-                "proven": False,
-                "reason": "direct_child_text_not_locatable_in_parent_in_tree_order",
-                "failed_child_id": child_id,
-            }
-        end = start + len(child_text)
-        owned_ranges.append(
-            {
-                "child_id": child_id,
-                "start": start,
-                "end": end,
-                "text": child_text,
-            }
-        )
-        cursor = end
-
-    gaps: list[dict[str, Any]] = []
-    previous = 0
-    for item in owned_ranges:
-        if item["start"] > previous:
-            gap_text = parent_text[previous:item["start"]]
-            gaps.append(
-                {
-                    "start": previous,
-                    "end": item["start"],
-                    "text": gap_text,
-                    "structural_only": _gap_is_structural_only(gap_text),
-                }
-            )
-        previous = item["end"]
-    if previous < len(parent_text):
-        gap_text = parent_text[previous:]
-        gaps.append(
-            {
-                "start": previous,
-                "end": len(parent_text),
-                "text": gap_text,
-                "structural_only": _gap_is_structural_only(gap_text),
-            }
-        )
-
-    cue_records: list[dict[str, Any]] = []
-    unowned_cues: list[dict[str, Any]] = []
-    for cue in _parent_logic_cues(parent_text):
-        owner = next(
-            (
-                item["child_id"]
-                for item in owned_ranges
-                if cue["start"] >= item["start"] and cue["end"] <= item["end"]
-            ),
-            None,
-        )
-        record = {**cue, "owner_child_id": owner}
-        cue_records.append(record)
-        if owner is None:
-            unowned_cues.append(record)
-
-    nonstructural_gaps = [gap for gap in gaps if not gap["structural_only"]]
-    proven = not unowned_cues and not nonstructural_gaps
-    return {
-        "proven": proven,
-        "reason": (
-            "all_parent_logic_cues_child_owned_and_gaps_structural_only"
-            if proven
-            else "parent_has_unowned_logic_or_nonstructural_gap"
-        ),
-        "direct_child_ranges": owned_ranges,
-        "gaps": gaps,
-        "logic_cues": cue_records,
-        "unowned_logic_cues": unowned_cues,
-        "nonstructural_gaps": nonstructural_gaps,
-    }
-
-
-def _classify_logic_fast_path(
-    *,
-    statement: str,
-    parent_temporary_id: str,
-    propositions: list[LogicPropositionCandidate],
-    accumulator: _DraftAccumulator,
-) -> _LogicFastPath:
-    """Deterministically route post-decomposition logic before any logic LLM.
-
-    This mirrors ``deterministic_logic.py`` v3:
-    - atomic leaves are indivisible and never receive a second logic analysis;
-    - top-level contextual chunk roots and proven relationless parent containers
-      are structural logic duplicates and are skipped;
-    - already-materialized parent-level Boolean/non-Boolean relations are Case 1
-      with child subtrees treated as opaque;
-    - the narrow safe Case-2 grammar is compiled directly over existing atomic
-      leaves, including explicit ``ONLY ... IF`` direction reversal;
-    - anything else remains on the existing heavy normalizer/auditor path.
-
-    LOGIC_SCOPE condition warnings are intentionally left heavy. In particular,
-    this preserves the current behavior for local-235/local-36 as requested.
-    """
-
-    parent_node = _draft_node_by_id(accumulator, parent_temporary_id)
-
-    if parent_node.kind == NodeKind.ATOMIC_FACT:
-        return _LogicFastPath("simple", "atomic_graph_leaf_is_indivisible")
-
-    if _direct_parent_id(accumulator, parent_temporary_id) is None:
-        return _LogicFastPath("simple", "top_level_source_chunk_root")
-
-    children = _direct_child_ids(accumulator, parent_temporary_id)
-    records = _local_relation_records_for_parent(accumulator, parent_temporary_id)
-
-    if not records:
-        if len(children) == 1:
-            return _LogicFastPath("simple", "single_direct_child_relationless_wrapper")
-        duplicate_proof = _relationless_parent_duplicate_proof(
-            accumulator,
-            parent_temporary_id,
-        )
-        parent_node.metadata["logic_duplicate_proof"] = duplicate_proof
-        if duplicate_proof.get("proven"):
-            return _LogicFastPath(
-                "simple",
-                "relationless_parent_adds_no_parent_level_logic",
-            )
-        return _LogicFastPath(
-            "heavy",
-            "relationless_multi_child_logic_container_requires_dedup_proof",
-        )
-
-    condition_records = [
-        record for record in records if _relation_type(record) == "condition"
-    ]
-    boolean_records = [
-        record
-        for record in records
-        if _relation_type(record) in {"conjunction", "alternation"}
-    ]
-
-    if len(condition_records) > 1:
-        return _LogicFastPath("heavy", "multiple_direct_condition_relations")
-    if condition_records and len(records) != 1:
-        return _LogicFastPath("heavy", "condition_mixed_with_other_direct_relations")
-
-    if len(condition_records) == 1:
-        condition_record = condition_records[0]
-        metadata = condition_record["metadata"]
-        if not _explicit_syntax(condition_record):
-            return _LogicFastPath("heavy", "condition_not_explicit_stanza_syntax")
-        if metadata.get("stanza_syntax_type") != "advcl":
-            return _LogicFastPath("heavy", "condition_not_advcl")
-        if not _relation_direct_children_ok(
-            accumulator,
-            parent_temporary_id,
-            condition_record,
-        ):
-            return _LogicFastPath("heavy", "condition_endpoint_not_direct_child")
-        if _has_logic_scope_warning(metadata):
-            return _LogicFastPath("heavy", "stanza_logic_scope_warning")
-
-        source_id = condition_record.get("source_temporary_id")
-        target_id = condition_record.get("target_temporary_id")
-        if not isinstance(source_id, str) or not isinstance(target_id, str):
-            return _LogicFastPath("heavy", "missing_condition_effect_endpoint")
-
-        left = _classify_flat_boolean_subtree(accumulator, source_id)
-        right = _classify_flat_boolean_subtree(accumulator, target_id)
-        only_if = _ONLY_IF_RE.search(statement) is not None
-
-        if only_if:
-            # "B ONLY if/when A" means B -> A. Stanza exposes A as the
-            # condition-side source and B as the governor/target, so reverse.
-            condition_shape = right
-            effect_shape = left
-            if (
-                condition_shape.kind == "literal"
-                and effect_shape.kind in {"literal", "flat_and", "flat_or"}
-            ):
-                decision = _deterministic_logic_decision(
-                    statement=statement,
-                    condition=condition_shape,
-                    effect=effect_shape,
-                    propositions=propositions,
-                )
-                if decision is not None:
-                    return _LogicFastPath(
-                        "deterministic",
-                        "explicit_only_if_direction_with_atomic_leaf_binding",
-                        decision,
-                    )
-            return _LogicFastPath(
-                "heavy",
-                "only_if_operands_not_deterministically_bindable",
-            )
-
-        marker = _relation_marker(condition_record)
-        if marker in {"if", "when", "whenever"}:
-            if left.kind == "literal" and right.kind == "literal":
-                return _LogicFastPath(
-                    "simple",
-                    "simple_literal_conditional_no_ast_needed",
-                )
-            if left.kind == "literal" and right.kind == "flat_or":
-                return _LogicFastPath(
-                    "simple",
-                    "literal_to_flat_or_kept_as_intact_source",
-                )
-
-            if left.kind in {"flat_and", "flat_or"} and right.kind == "literal":
-                decision = _deterministic_logic_decision(
-                    statement=statement,
-                    condition=left,
-                    effect=right,
-                    propositions=propositions,
-                )
-                if decision is not None:
-                    return _LogicFastPath(
-                        "deterministic",
-                        "flat_boolean_condition_to_literal_effect",
-                        decision,
-                    )
-            if left.kind == "literal" and right.kind == "flat_and":
-                decision = _deterministic_logic_decision(
-                    statement=statement,
-                    condition=left,
-                    effect=right,
-                    propositions=propositions,
-                )
-                if decision is not None:
-                    return _LogicFastPath(
-                        "deterministic",
-                        "literal_condition_to_flat_and_effect",
-                        decision,
-                    )
-            return _LogicFastPath(
-                "heavy",
-                "conditional_shape_not_in_safe_case1_or_case2_grammar",
-            )
-
-        if marker in _NEGATED_CONDITIONAL_MARKERS:
-            if left.kind == "literal" and right.kind == "literal":
-                return _LogicFastPath(
-                    "simple",
-                    f"simple_{marker}_conditional_no_ast_needed",
-                )
-            return _LogicFastPath(
-                "heavy",
-                f"compound_{marker}_conditional_not_supported_deterministically",
-            )
-
-        if left.kind == "literal" and right.kind == "literal":
-            return _LogicFastPath(
-                "simple",
-                f"simple_condition_marker_{marker or 'unknown'}_no_ast",
-            )
-        return _LogicFastPath(
-            "heavy",
-            f"compound_condition_marker_{marker or 'unknown'}",
-        )
-
-    # Case-1 operator ownership: classify only the relation introduced at this
-    # hierarchy level. Direct child subtrees are opaque; their internal logic is
-    # handled at the child level and does not make this parent hard.
-    if boolean_records and len(boolean_records) == len(records):
-        if all(_explicit_syntax(record) for record in boolean_records):
-            markers = {_relation_marker(record) for record in boolean_records}
-            if len(markers) == 1 and markers <= {"and", "or"} and children:
-                if all(
-                    _relation_direct_children_ok(
-                        accumulator,
-                        parent_temporary_id,
-                        record,
-                    )
-                    for record in boolean_records
-                ):
-                    adjacency: dict[str, set[str]] = {
-                        child_id: set() for child_id in children
-                    }
-                    for record in boolean_records:
-                        source_id = record["source_temporary_id"]
-                        target_id = record["target_temporary_id"]
-                        adjacency[source_id].add(target_id)
-                        adjacency[target_id].add(source_id)
-                    seen: set[str] = set()
-                    stack = [children[0]]
-                    while stack:
-                        current = stack.pop()
-                        if current in seen:
-                            continue
-                        seen.add(current)
-                        stack.extend(adjacency[current] - seen)
-                    if seen == set(children):
-                        return _LogicFastPath(
-                            "simple",
-                            "parent_level_boolean_relation_already_materialized_children_opaque",
-                        )
-        return _LogicFastPath(
-            "heavy",
-            "boolean_relations_not_homogeneous_explicit_stanza",
-        )
-
-    # Temporal / causal / explanatory / elaboration / contrast / organization
-    # relations are already materialized. Preserve intact source and relation;
-    # no AST or heavy normalization is needed at this parent level.
-    return _LogicFastPath(
-        "simple",
-        "parent_level_nonboolean_relation_already_materialized_children_opaque",
-    )
-
-def _heavy_logic_fingerprint(
-    *,
-    source_request: GraphBuildRequest,
-    statement: str,
-    statement_source_spans: list[SourceSpan],
-    propositions: list[LogicPropositionCandidate],
-) -> tuple[Any, ...]:
-    """Exact cache key for a heavy logic-analysis input.
-
-    Text alone is intentionally insufficient: repeated wording at different
-    source occurrences or with different atomic descendants must remain distinct.
-    Proposition order is retained because model output uses proposition indices.
-    """
-
-    return (
-        source_request.source_id,
-        tuple((span.start, span.end) for span in statement_source_spans),
-        re.sub(r"\s+", " ", statement).strip().casefold(),
-        tuple(proposition.temporary_id for proposition in propositions),
-    )
-
-
 class GraphBuilder:
     """Transforms one prompt/message delta into a validated local graph patch.
 
@@ -1180,7 +379,6 @@ class GraphBuilder:
         self,
         *,
         model_callable: ModelCallable = call_prompt_decomposition_model,
-        batch_model_callable: BatchModelCallable | None = None,
         validator: DecompositionValidator | None = None,
         max_decomposition_depth: int = 8,
         embedding_callable: EmbeddingCallable | None = None,
@@ -1212,45 +410,10 @@ class GraphBuilder:
             raise ValueError("embedding_model_name cannot be empty")
 
         self._model_callable = model_callable
-        # Preserve custom/test decomposition callables exactly as before unless a
-        # matching batch adapter is explicitly supplied. The production default
-        # gets the Stanza/DeDisCo batch implementation automatically.
-        if batch_model_callable is not None:
-            self._batch_model_callable = batch_model_callable
-        elif model_callable is call_prompt_decomposition_model:
-            self._batch_model_callable = call_prompt_decomposition_models
-        else:
-            self._batch_model_callable = None
         self._validator = validator or DecompositionValidator()
         self._max_decomposition_depth = max_decomposition_depth
         self._embedding_callable = embedding_callable
         self._embedding_model_name = embedding_model_name
-
-    def _call_decomposition_batch(
-        self,
-        requests: list[GraphBuildRequest],
-    ) -> list[LocalDecompositionDecision]:
-        """Resolve independent decomposition requests while preserving order.
-
-        The production Stanza/DeDisCo adapter can evaluate a sibling/root frontier
-        as one batch. Custom model callables remain serial by default so tests and
-        external integrations do not silently change semantics.
-        """
-        if not requests:
-            return []
-
-        if self._batch_model_callable is None:
-            raw_results = [self._model_callable(request) for request in requests]
-        else:
-            raw_results = self._batch_model_callable(requests)
-
-        if len(raw_results) != len(requests):
-            raise InvalidModelOutputError(
-                "The decomposition batch returned the wrong number of decisions: "
-                f"expected {len(requests)}, got {len(raw_results)}"
-            )
-
-        return [self._parse_local_model_output(result) for result in raw_results]
 
     def build(self, request: GraphBuildRequest) -> GraphBuildResult:
         if bool(request.metadata.get("candidate", False)):
@@ -1360,31 +523,6 @@ class GraphBuilder:
         # deterministic Stanza reconstruction guarded by semantic closure.
         source_chunks = split_source_for_decomposition(request.content)
 
-        # Precompute the independent top-level chunk decisions together. We still
-        # materialize chunks in the original order below, so temporary IDs,
-        # hierarchy order, logic reconciliation, and all downstream behavior stay
-        # deterministic.
-        root_requests = [
-            request.model_copy(
-                update={
-                    "content": chunk.text,
-                    "metadata": {
-                        **request.metadata,
-                        "decomposition_depth": 0,
-                        "decomposition_parent_temporary_id": None,
-                    },
-                }
-            )
-            for chunk in source_chunks
-        ]
-        if self._batch_model_callable is not None and _decomposition_batching_enabled():
-            root_decisions: list[LocalDecompositionDecision | None] = list(
-                self._call_decomposition_batch(root_requests)
-            )
-        else:
-            # Exact historical DFS route for rollback/A-B validation.
-            root_decisions = [None] * len(root_requests)
-
         for chunk_index, chunk in enumerate(source_chunks):
             prior_node_ids = {node.temporary_id for node in accumulator.nodes}
             prior_slot_ids = {slot.temporary_id for slot in accumulator.logic_slots}
@@ -1412,7 +550,6 @@ class GraphBuilder:
                 depth=0,
                 ancestors=frozenset(),
                 accumulator=accumulator,
-                precomputed_decision=root_decisions[chunk_index],
             )
 
             # Reuse the existing identity-only logic-slot augmentation operation
@@ -1636,105 +773,6 @@ class GraphBuilder:
 
             node.proposition = sanitized
 
-        # Mark boundary-crossing semantic dependencies only after final atomic
-        # S/P/O payloads exist. The source-unit boundary comes from deterministic
-        # document decomposition, while subject/predicate evidence comes from the
-        # already-grounded final atomic payloads. Each dependent atom records the
-        # exact parent of its source unit as the minimum hierarchy ancestor that
-        # closes the missing semantic scope.
-        node_by_id = {node.temporary_id: node for node in accumulator.nodes}
-        parent_by_child: dict[str, str] = {}
-        for edge in accumulator.hierarchy:
-            if edge.parent_temporary_id is None:
-                continue
-            existing_parent = parent_by_child.get(edge.child_temporary_id)
-            if existing_parent is not None and existing_parent != edge.parent_temporary_id:
-                raise InvalidModelOutputError(
-                    "Semantic-context closure requires a tree hierarchy, but draft "
-                    "node {!r} has multiple parents {!r} and {!r}.".format(
-                        edge.child_temporary_id,
-                        existing_parent,
-                        edge.parent_temporary_id,
-                    )
-                )
-            parent_by_child[edge.child_temporary_id] = edge.parent_temporary_id
-
-        source_unit_cache: dict[str, DraftNode | None] = {}
-        dependency_cache: dict[str, tuple[str | None, str | None]] = {}
-
-        def nearest_source_unit(atom: DraftNode) -> DraftNode | None:
-            if atom.temporary_id in source_unit_cache:
-                return source_unit_cache[atom.temporary_id]
-
-            current = atom
-            visited: set[str] = set()
-            while current.temporary_id not in visited:
-                visited.add(current.temporary_id)
-                if str(current.metadata.get("source_block_kind") or "").strip():
-                    source_unit_cache[atom.temporary_id] = current
-                    return current
-                parent_id = parent_by_child.get(current.temporary_id)
-                if parent_id is None:
-                    break
-                current = node_by_id[parent_id]
-
-            source_unit_cache[atom.temporary_id] = None
-            return None
-
-        dependency_leaf_count = 0
-        dependency_source_units: set[str] = set()
-        for atom in atomic_leaves:
-            source_unit = nearest_source_unit(atom)
-            if source_unit is None:
-                continue
-
-            cached_dependency = dependency_cache.get(source_unit.temporary_id)
-            if cached_dependency is None:
-                closure_parent_id = parent_by_child.get(source_unit.temporary_id)
-                if closure_parent_id is None:
-                    issue = None
-                else:
-                    issue = _source_unit_external_semantic_dependency_issue(
-                        source_unit=source_unit,
-                        atomic_descendants=_atomic_descendants(
-                            accumulator,
-                            source_unit.temporary_id,
-                        ),
-                    )
-                cached_dependency = (issue, closure_parent_id)
-                dependency_cache[source_unit.temporary_id] = cached_dependency
-
-            issue, closure_parent_id = cached_dependency
-            if issue is None or closure_parent_id is None:
-                continue
-
-            dependency_leaf_count += 1
-            dependency_source_units.add(source_unit.temporary_id)
-            annotation = {
-                "semantic_context_dependency_external": True,
-                "semantic_context_dependency_reason": issue,
-                "semantic_context_dependency_version": (
-                    _SEMANTIC_CONTEXT_DEPENDENCY_VERSION
-                ),
-                "semantic_context_source_unit_temporary_id": (
-                    source_unit.temporary_id
-                ),
-                "semantic_context_closure_ancestor_temporary_id": (
-                    closure_parent_id
-                ),
-            }
-            atom.metadata.update(annotation)
-            source_unit.metadata.update(annotation)
-
-        if dependency_leaf_count:
-            logger.info(
-                "Semantic-context dependency annotations complete: source_id={} "
-                "dependent_atomic_leaves={} dependent_source_units={}",
-                source_request.source_id,
-                dependency_leaf_count,
-                len(dependency_source_units),
-            )
-
         logger.info(
             "Post-tree atomic S/P/O extraction complete: source_id={} leaves={} "
             "extractor=en_core_web_trf skipped_nodes_with_children={} "
@@ -1762,7 +800,6 @@ class GraphBuilder:
         ancestors: frozenset[str],
         accumulator: _DraftAccumulator,
         statement_metadata: dict[str, Any] | None = None,
-        precomputed_decision: LocalDecompositionDecision | dict[str, Any] | None = None,
     ) -> str:
         if depth > self._max_decomposition_depth:
             raise InvalidModelOutputError(
@@ -1802,30 +839,16 @@ class GraphBuilder:
             }
         )
 
-        decision = (
-            self._parse_local_model_output(precomputed_decision)
-            if precomputed_decision is not None
-            else self._parse_local_model_output(self._model_callable(local_request))
+        decision = self._parse_local_model_output(
+            self._model_callable(local_request)
         )
 
         temporary_id = accumulator.allocate_id()
 
         if decision.kind == "atomic":
-            source_unit_kind = str(
-                (statement_metadata or {}).get("source_unit_kind")
-                or local_request.metadata.get("source_unit_kind")
-                or ""
+            terminal_class, terminal_reasons = classify_terminal_for_retrieval(
+                statement
             )
-            if source_unit_kind == "markdown_heading":
-                # Headings are semantic retrieval/scope anchors, but they are not
-                # standalone factual propositions. Keep them as atomic graph
-                # leaves while bypassing proposition logic/S-P-O enrichment.
-                terminal_class = "retrieval_only:markdown_heading"
-                terminal_reasons = ["markdown_heading_scope_anchor"]
-            else:
-                terminal_class, terminal_reasons = classify_terminal_for_retrieval(
-                    statement
-                )
             retrieval_only = (
                 terminal_class.startswith("retrieval_only:")
                 or terminal_class == "structural_artifact"
@@ -1926,36 +949,6 @@ class GraphBuilder:
             return temporary_id
 
         next_ancestors = ancestors | {statement_key}
-
-        # The direct children are independent decomposition requests at this
-        # hierarchy level. Precompute their Stanza/DeDisCo decisions together,
-        # then recurse through them in the exact historical DFS order. This is
-        # batching, not parallel graph mutation: IDs and hierarchy construction
-        # remain serialized and deterministic.
-        child_model_requests = [
-            source_request.model_copy(
-                update={
-                    "content": child.content.strip(),
-                    "metadata": {
-                        **source_request.metadata,
-                        **dict(child.metadata),
-                        "decomposition_depth": depth + 1,
-                        "decomposition_parent_temporary_id": temporary_id,
-                        "semantic_role": child.semantic_role.value,
-                    },
-                }
-            )
-            for child in decision.children
-        ]
-        if self._batch_model_callable is not None and _decomposition_batching_enabled():
-            child_precomputed_decisions: list[LocalDecompositionDecision | None] = list(
-                self._call_decomposition_batch(child_model_requests)
-            )
-        else:
-            # No precomputation: recursive calls below invoke the historical
-            # one-request adapter at the original DFS point.
-            child_precomputed_decisions = [None] * len(child_model_requests)
-
         # Surface text is not semantic identity. Track same-looking direct
         # children together with their resolved source occurrence so we only
         # coalesce the narrow case that is provably duplicate model output:
@@ -2036,8 +1029,7 @@ class GraphBuilder:
                 depth=depth + 1,
                 ancestors=next_ancestors,
                 accumulator=accumulator,
-                statement_metadata=(dict(child.metadata) or None),
-                precomputed_decision=child_precomputed_decisions[child_index],
+                statement_metadata=None,
             )
             direct_child_ids.append(child_temporary_id)
             seen_children[child_key].append(
@@ -2197,24 +1189,19 @@ class GraphBuilder:
         depth: int,
         accumulator: _DraftAccumulator,
     ) -> None:
-        """Enrich one statement with the cheapest faithful logic representation.
+        """Normalize source-explicit relations and sparse compound logic locally.
 
-        A conservative pre-LLM gate first uses already-materialized explicit Stanza
-        syntax. Group-1 conditionals are left as intact source/decomposition text
-        for verifier reasoning; Group-2 conditionals compile a flat deterministic
-        AST whose leaves are existing atomic graph nodes. Everything else falls
-        through to ``call_logic_structure_model`` unchanged. Exact heavy-analysis
-        inputs are cached so the same source occurrence + atomic catalog is never
-        sent through the heavy normalizer/auditor twice. Failures remain fail-soft.
+        ``call_logic_structure_model`` performs a cheap lexical gate before any LLM
+        call. The model only normalizes the statement's natural-language
+        relationships/operators. Python routes source-explicit binary relations
+        (including reducible IMPLIES) to the semantic relation layer and keeps only
+        irreducible/unresolved Boolean structure in the logic layer. Normalization
+        failure is fail-soft and never invalidates the semantic subtree.
         """
-        proposition_nodes = [
-            node
-            for node in _atomic_descendants(
-                accumulator,
-                parent_temporary_id,
-            )
-            if node.metadata.get("source_unit_kind") != "markdown_heading"
-        ]
+        proposition_nodes = _atomic_descendants(
+            accumulator,
+            parent_temporary_id,
+        )
         propositions = [
             LogicPropositionCandidate(
                 proposition_index=index,
@@ -2243,58 +1230,6 @@ class GraphBuilder:
             )
         )
 
-        fast_path = _classify_logic_fast_path(
-            statement=statement,
-            parent_temporary_id=parent_temporary_id,
-            propositions=propositions,
-            accumulator=accumulator,
-        )
-        parent_node.metadata["logic_fast_path_group"] = fast_path.group
-        parent_node.metadata["logic_fast_path_reason"] = fast_path.reason
-
-        if fast_path.group == "simple":
-            # Group 1: preserve the intact source statement and its ordinary
-            # decomposition/retrieval structure.  The verifier can perform this
-            # short reasoning directly; do not create a formal AST or invoke the
-            # logic LLM.
-            if memory_graph_trace_enabled():
-                logger.info(
-                    "Logic fast path: source_id={} parent={} group=simple "
-                    "reason={} propositions={} preview={!r}",
-                    source_request.source_id,
-                    parent_temporary_id,
-                    fast_path.reason,
-                    len(propositions),
-                    statement[:220],
-                )
-            return
-
-        if fast_path.group == "deterministic" and fast_path.decision is not None:
-            # Group 2: Stanza has proven a single flat Boolean side.  Compile it
-            # directly over the existing atomic graph leaves.
-            _append_local_logic_decision(
-                source_request=source_request,
-                statement=statement,
-                statement_source_spans=statement_source_spans,
-                parent_temporary_id=parent_temporary_id,
-                propositions=propositions,
-                decision=fast_path.decision,
-                accumulator=accumulator,
-            )
-            if memory_graph_trace_enabled():
-                logger.info(
-                    "Logic fast path: source_id={} parent={} group=deterministic "
-                    "reason={} propositions={} expressions={} rules={} preview={!r}",
-                    source_request.source_id,
-                    parent_temporary_id,
-                    fast_path.reason,
-                    len(propositions),
-                    len(fast_path.decision.expressions),
-                    len(fast_path.decision.rules),
-                    statement[:220],
-                )
-            return
-
         local_request = source_request.model_copy(
             update={
                 "source_id": (
@@ -2312,38 +1247,7 @@ class GraphBuilder:
                 },
             }
         )
-        heavy_fingerprint = _heavy_logic_fingerprint(
-            source_request=source_request,
-            statement=statement,
-            statement_source_spans=statement_source_spans,
-            propositions=propositions,
-        )
-        if heavy_fingerprint in accumulator.heavy_logic_cache:
-            cached = accumulator.heavy_logic_cache[heavy_fingerprint]
-            structure = (
-                cached.model_copy(deep=True)
-                if hasattr(cached, "model_copy")
-                else cached
-            )
-            parent_node.metadata["logic_heavy_cache_hit"] = True
-            if memory_graph_trace_enabled():
-                logger.info(
-                    "Heavy logic analysis cache HIT: source_id={} parent={} "
-                    "propositions={} preview={!r}",
-                    source_request.source_id,
-                    parent_temporary_id,
-                    len(propositions),
-                    statement[:220],
-                )
-        else:
-            structure = call_logic_structure_model(local_request, propositions)
-            accumulator.heavy_logic_cache[heavy_fingerprint] = (
-                structure.model_copy(deep=True)
-                if hasattr(structure, "model_copy")
-                else structure
-            )
-            parent_node.metadata["logic_heavy_cache_hit"] = False
-
+        structure = call_logic_structure_model(local_request, propositions)
         if not structure.relations and not (
             structure.logic.slots
             or structure.logic.expressions

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
-
 from cuga.backend.activity_tracker.tracker import Step
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
@@ -28,6 +28,108 @@ from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
 
 _llm_manager = LLMManager()
+
+
+def _execution_parameters(tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Capture the concrete runtime parameters passed to one tool invocation.
+
+    Prefer named parameters from the callable signature. Generic ``*args`` / ``**kwargs``
+    wrappers are flattened so the execution record reflects the values the generated
+    code actually supplied rather than the wrapper's implementation details.
+    """
+    try:
+        signature = inspect.signature(tool)
+        bound = signature.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+
+        captured: dict[str, Any] = {}
+        for name, value in bound.arguments.items():
+            parameter = signature.parameters.get(name)
+            if parameter is not None and parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                if isinstance(value, dict):
+                    captured.update(value)
+                else:
+                    captured[name] = value
+            elif parameter is not None and parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+                if value:
+                    captured["_args"] = list(value)
+            else:
+                captured[name] = value
+        return captured
+    except Exception:
+        captured = dict(kwargs)
+        if args:
+            captured["_args"] = list(args)
+        return captured
+
+
+def _exception_output(exc: BaseException) -> dict[str, Any]:
+    """Represent a raised tool call as an observed failure payload."""
+    return {
+        "exception": {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+    }
+
+
+def _wrap_tool_for_prompt_verification(
+    tool_name: str,
+    tool: Any,
+    record_tool_execution: Callable[..., None],
+) -> Callable[..., Any]:
+    """Wrap one sandbox-local tool without mutating the globally registered tool.
+
+    The wrapper records only after the real invocation has produced a return value
+    or exception. If the callable returns an awaitable, recording happens after the
+    await completes, so the graph receives the actual resolved output.
+    """
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        parameters = _execution_parameters(tool, args, kwargs)
+
+        try:
+            result = tool(*args, **kwargs)
+        except Exception as exc:
+            record_tool_execution(
+                tool_name=tool_name,
+                parameters=parameters,
+                output=_exception_output(exc),
+            )
+            raise
+
+        if inspect.isawaitable(result):
+            async def await_and_record() -> Any:
+                try:
+                    resolved = await result
+                except Exception as exc:
+                    record_tool_execution(
+                        tool_name=tool_name,
+                        parameters=parameters,
+                        output=_exception_output(exc),
+                    )
+                    raise
+
+                record_tool_execution(
+                    tool_name=tool_name,
+                    parameters=parameters,
+                    output=resolved,
+                )
+                return resolved
+
+            return await_and_record()
+
+        record_tool_execution(
+            tool_name=tool_name,
+            parameters=parameters,
+            output=result,
+        )
+        return result
+
+    wrapped.__name__ = getattr(tool, "__name__", tool_name)
+    wrapped.__qualname__ = getattr(tool, "__qualname__", wrapped.__name__)
+    wrapped.__doc__ = getattr(tool, "__doc__", None)
+    return wrapped
 
 
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
@@ -57,6 +159,13 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             if "reflection_enabled" in configurable
             else settings.advanced_features.reflection_enabled
         )
+        prompt_verification_enabled = bool(
+            getattr(
+                settings.advanced_features,
+                "prompt_verification_enabled",
+                False,
+            )
+        )
 
         # Get existing variables using CugaLiteState's own variables_manager
         existing_vars = {}
@@ -67,12 +176,30 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 continue
             existing_vars[var_name] = var_value
 
-        # Add tools to context
-        context = {**existing_vars, **adapter._tools_context}
+        # Build this execution's local namespace. Prompt verification instruments
+        # only these local tool references; adapter._tools_context remains untouched.
+        context = {**existing_vars}
+        if prompt_verification_enabled:
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.verification.prompt_verifier import (
+                record_tool_execution,
+            )
 
-        # Start tool call tracking (only if enabled via invoke parameter)
+            for tool_name, tool in adapter._tools_context.items():
+                context[tool_name] = (
+                    _wrap_tool_for_prompt_verification(
+                        str(tool_name),
+                        tool,
+                        record_tool_execution,
+                    )
+                    if callable(tool)
+                    else tool
+                )
+        else:
+            context.update(adapter._tools_context)
+
+        # Existing SDK tool-call tracking remains fully independent. Prompt
+        # verification does not read from or enable this feature.
         ToolCallTracker.start_tracking(enabled=track_tool_calls)
-
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
             _exec_plan = ExecutionRouter.resolve(settings)
@@ -91,7 +218,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 apps_list=current_apps_list,
                 plan=_exec_plan,
             )
-
             adapter._tracker.collect_step(step=Step(name="User_output", data=output))
             adapter._tracker.collect_step(
                 step=Step(
@@ -102,10 +228,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     ),
                 )
             )
-
             # Output is already formatted and trimmed by code_executor
-            logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
-
+            logger.debug(f"\n\n------\n\n Execution output:\n\n{output}\n\n------\n\n")
             # Update variables using CugaLiteState's variables_manager
             # This automatically updates state.variables_storage
             for name, value in new_vars.items():
@@ -114,7 +238,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 state.variables_manager.add_variable(
                     value, name=name, description="Created during code execution"
                 )
-
             reflection_output = ""
             if reflection_enabled:
                 try:
@@ -157,14 +280,12 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
                     reflection_output = ""
-
             # Output is already formatted by code_executor
             execution_message_content = execution_output_text(output)
             if reflection_output:
                 execution_message_content = (
                     f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
                 )
-
             adapter._tracker.collect_step(
                 step=Step(
                     name="User_return",
@@ -176,11 +297,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             updated_messages, error_message = core_append_with_step_limit(
                 adapter, state, [new_message], max_steps
             )
-
             # Collect tool calls from this execution
             execution_tool_calls = ToolCallTracker.stop_tracking()
             accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
-
             if error_message:
                 return core_create_error_command(
                     adapter,
@@ -194,7 +313,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         "tool_calls": accumulated_tool_calls,
                     },
                 )
-
             todo_state_update = extract_task_todos_from_new_vars(new_vars)
             base_update = {
                 "chat_messages": updated_messages,
@@ -211,7 +329,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
             accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
-
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
             new_message = HumanMessage(content=error_msg)
@@ -223,7 +340,6 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 return core_create_error_command(
                     adapter, updated_messages, limit_error_message, state.step_count
                 )
-
             return {
                 "chat_messages": updated_messages,
                 "error": error_msg,

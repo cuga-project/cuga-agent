@@ -593,6 +593,8 @@ def create_mcp_prompt(
     has_knowledge=False,
     few_shot_examples: Optional[List[Dict[str, str]]] = None,
     few_shots_enabled: Optional[bool] = None,
+    prompt_verification_enabled: bool = False,
+    prompt_verification_external_reasoning: bool = True,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -616,6 +618,8 @@ def create_mcp_prompt(
         has_knowledge: If True, include knowledge-base search guidance in the prompt
         few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
         few_shots_enabled: Unused (reserved for API compatibility).
+        prompt_verification_enabled: Enable grounding verification for generated outputs.
+        prompt_verification_external_reasoning: When verification is enabled, expose and verify explicit `REASONING:` steps instead of relying on provider-side internal reasoning.
     """
     processed_tools = []
     # Graph passes "" when no DB instructions; still allow CLI/demo env (e.g. cuga start demo_crm).
@@ -668,6 +672,69 @@ def create_mcp_prompt(
             "enable_shell_tool": enable_shell_tool,
             "sandbox_workspace": sandbox_workspace,
             "has_knowledge": has_knowledge,
+            "prompt_verification_enabled": prompt_verification_enabled,
+            "prompt_verification_external_reasoning": prompt_verification_external_reasoning,
         }
     ).to_string()
     return prompt
+
+
+def create_cuga_policy_prompt(
+    *,
+    base_prompt=None,
+    allow_user_clarification=True,
+    return_to_user_cases=None,
+    instructions=None,
+    task_loaded_from_file=False,
+    is_autonomous_subtask=False,
+    prompt_template=None,
+    enable_find_tools=False,
+    enable_todos=False,
+    special_instructions=None,
+    skills_enabled: bool = False,
+    enable_shell_tool: bool = False,
+    sandbox_workspace: str = "/workspace",
+    has_knowledge: bool = False,
+    prompt_verification_enabled: bool = False,
+    prompt_verification_external_reasoning: bool = True,
+) -> str:
+    """Render the CugaLite behavioral-policy view of the MCP prompt.
+
+    This uses the same MCP prompt template and runtime behavioral flags as the
+    real CugaLite system prompt, but deliberately removes runtime inventories
+    such as concrete tools, applications, and available-skill descriptions.
+
+    The resulting text is intended to be decomposed into the verifier's
+    CUGA-policy authority graph. It is not used as the actual model prompt.
+    """
+    return create_mcp_prompt(
+        tools=[],
+        base_prompt=base_prompt,
+        allow_user_clarification=allow_user_clarification,
+        return_to_user_cases=return_to_user_cases,
+        instructions=instructions,
+        apps=[],
+        task_loaded_from_file=task_loaded_from_file,
+        is_autonomous_subtask=is_autonomous_subtask,
+        prompt_template=prompt_template,
+        enable_find_tools=enable_find_tools,
+        enable_todos=enable_todos,
+        special_instructions=special_instructions,
+        skills_enabled=skills_enabled,
+
+        # Keep the behavioral rules saying how skills must be used, but do not
+        # include the concrete available-skills inventory in the authority graph.
+        skills_prompt_section="",
+
+        enable_shell_tool=enable_shell_tool,
+        sandbox_workspace=sandbox_workspace,
+        has_knowledge=has_knowledge,
+
+        # Few-shots are chat-prefix examples rather than CUGA policy authority,
+        # so they are intentionally omitted.
+        few_shot_examples=None,
+        few_shots_enabled=False,
+
+        prompt_verification_enabled=prompt_verification_enabled,
+        prompt_verification_external_reasoning=prompt_verification_external_reasoning,
+    )

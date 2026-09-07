@@ -8,6 +8,9 @@ from .schemas import (
     CreationMethod,
     EdgeFamily,
     GraphBuildResult,
+    LogicLayer,
+    LogicSlot,
+    LogicSlotBinding,
     MemoryEdge,
     MemoryNode,
     NodeKind,
@@ -26,6 +29,7 @@ class MemoryGraph:
     def __init__(self) -> None:
         self.nodes: dict[str, MemoryNode] = {}
         self.edges: dict[str, MemoryEdge] = {}
+        self.logic_layer = LogicLayer()
         self._outgoing: dict[str, set[str]] = defaultdict(set)
         self._incoming: dict[str, set[str]] = defaultdict(set)
 
@@ -40,7 +44,146 @@ class MemoryGraph:
         for edge in result.edges:
             self.add_edge(edge)
 
+        self.merge_logic_layer(result.logic_layer)
         return new_node_ids
+
+
+    def merge_logic_layer(self, logic_layer: LogicLayer) -> None:
+        """Merge persistent logic structures without requiring slot bindings to be local.
+
+        Runtime augmentation may bind an authority slot to a node living in the
+        session STATE or reasoning graph, so bound node IDs are intentionally not
+        constrained to ``self.nodes`` here.
+        """
+        existing_slot_ids = {slot.id for slot in self.logic_layer.slots}
+        incoming_slot_ids = {slot.id for slot in logic_layer.slots}
+
+        existing_constraint_ids = {
+            *(item.id for item in self.logic_layer.literal_assertions),
+            *(item.id for item in self.logic_layer.relations),
+            *(item.id for item in self.logic_layer.compound_assertions),
+            *(item.id for item in self.logic_layer.compound_rules),
+        }
+        incoming_constraint_ids = {
+            *(item.id for item in logic_layer.literal_assertions),
+            *(item.id for item in logic_layer.relations),
+            *(item.id for item in logic_layer.compound_assertions),
+            *(item.id for item in logic_layer.compound_rules),
+        }
+
+        duplicate_slots = existing_slot_ids & incoming_slot_ids
+        duplicate_constraints = existing_constraint_ids & incoming_constraint_ids
+        if duplicate_slots or duplicate_constraints:
+            raise MemoryGraphError(
+                "Duplicate logic IDs while merging layer: "
+                f"slots={sorted(duplicate_slots)} "
+                f"constraints={sorted(duplicate_constraints)}"
+            )
+
+        self.logic_layer = LogicLayer(
+            slots=[*self.logic_layer.slots, *logic_layer.slots],
+            literal_assertions=[
+                *self.logic_layer.literal_assertions,
+                *logic_layer.literal_assertions,
+            ],
+            relations=[*self.logic_layer.relations, *logic_layer.relations],
+            compound_assertions=[
+                *self.logic_layer.compound_assertions,
+                *logic_layer.compound_assertions,
+            ],
+            compound_rules=[
+                *self.logic_layer.compound_rules,
+                *logic_layer.compound_rules,
+            ],
+        )
+
+    def bind_logic_slot(self, slot_id: str, node_id: str, *, value: bool = True) -> bool:
+        """Bind an established semantic proposition to one persistent logic slot.
+
+        ``value`` is the slot truth value expressed by that semantic node. A
+        positive assertion binds with ``True``; an explicit negation of the same
+        underlying proposition binds with ``False``.
+        """
+        updated: list[LogicSlot] = []
+        found = False
+        changed = False
+        for slot in self.logic_layer.slots:
+            if slot.id != slot_id:
+                updated.append(slot)
+                continue
+            found = True
+            existing = next(
+                (binding for binding in slot.bindings if binding.node_id == node_id),
+                None,
+            )
+            if existing is not None:
+                if existing.value != value:
+                    raise MemoryGraphError(
+                        f"Conflicting logic binding for slot={slot_id} node={node_id}"
+                    )
+                updated.append(slot)
+                continue
+            updated.append(
+                slot.model_copy(update={
+                    "bindings": [
+                        *slot.bindings,
+                        LogicSlotBinding(node_id=node_id, value=value),
+                    ],
+                    "metadata": {
+                        **slot.metadata,
+                        "runtime_augmented": True,
+                    },
+                })
+            )
+            changed = True
+
+        if not found:
+            raise MemoryGraphError(f"Unknown logic slot: {slot_id}")
+        if changed:
+            self.logic_layer = self.logic_layer.model_copy(update={"slots": updated})
+        return changed
+
+    def remove_logic_bindings(self, node_ids: set[str]) -> int:
+        """Remove slot bindings to semantic nodes that are being discarded.
+
+        This is used when a temporary verified-reasoning trajectory is abandoned.
+        Bindings are retained when those reasoning nodes are first transferred to
+        persistent STATE.
+        """
+        if not node_ids:
+            return 0
+        updated: list[LogicSlot] = []
+        removed = 0
+        for slot in self.logic_layer.slots:
+            kept = [binding for binding in slot.bindings if binding.node_id not in node_ids]
+            removed += len(slot.bindings) - len(kept)
+            if len(kept) == len(slot.bindings):
+                updated.append(slot)
+            else:
+                updated.append(slot.model_copy(update={"bindings": kept}))
+        if removed:
+            self.logic_layer = self.logic_layer.model_copy(update={"slots": updated})
+        return removed
+
+    def logic_slot(self, slot_id: str) -> LogicSlot:
+        for slot in self.logic_layer.slots:
+            if slot.id == slot_id:
+                return slot
+        raise MemoryGraphError(f"Unknown logic slot: {slot_id}")
+
+    def merge_graph(self, other: "MemoryGraph") -> set[str]:
+        """Merge another graph, including its persistent logic layer.
+
+        Returns the IDs of nodes inserted from ``other``.
+        """
+        inserted: set[str] = set()
+        for node in other.nodes.values():
+            self.add_node(node)
+            inserted.add(node.id)
+        for edge in other.edges.values():
+            self.add_edge(edge)
+        self.merge_logic_layer(other.logic_layer)
+        return inserted
 
     def add_node(self, node: MemoryNode) -> None:
         if node.id in self.nodes:

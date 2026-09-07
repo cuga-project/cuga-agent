@@ -9,16 +9,46 @@ from .graph import MemoryGraph, MemoryGraphError
 from .schemas import MemoryEdge, MemoryNode, RelationType
 
 
-# Relations that identify another representation of effectively the same
-# semantic object/event. Traversing one of these does not consume bounded
-# traversal depth and resets the bounded-depth counter to zero at the reached
-# node. A best-depth visited map prevents recursive loops.
+# Relations that identify another representation/reference of effectively the
+# same proposition. Traversing one of these does not consume bounded traversal
+# depth, but it also does NOT restore already-consumed budget. If A reaches B at
+# bounded depth 1 and B is equivalent/coreferential with C, C is reached at
+# bounded depth 1 as well.
+#
+# SAME_ENTITY and SAME_EVENT are intentionally excluded: sharing an entity/event
+# is too broad to justify recursive evidence expansion.
 ZERO_COST_RESET_RELATIONS = frozenset(
     {
-        RelationType.SAME_EVENT,
-        RelationType.SAME_ENTITY,
         RelationType.COREFERS_WITH,
         RelationType.EQUIVALENT_TO,
+    }
+)
+
+# Directed relations are traversed according to the context needed to understand
+# the currently selected proposition, rather than simply treating every incident
+# edge as bidirectional.
+#
+# REQUIRES is encoded as dependent -> prerequisite, so from the dependent we
+# follow the outgoing edge to its prerequisite.
+OUTGOING_CONTEXT_RELATIONS = frozenset(
+    {
+        RelationType.REQUIRES,
+    }
+)
+
+# These relations are encoded from supporting/qualifying/enabling/earlier/causal
+# context toward the proposition they inform. From the current proposition we
+# therefore follow the incoming edge back to that context.
+INCOMING_CONTEXT_RELATIONS = frozenset(
+    {
+        RelationType.SUPPORTS,
+        RelationType.QUALIFIES,
+        RelationType.SERVES_GOAL,
+        RelationType.IMPLIES,
+        RelationType.ENABLES,
+        RelationType.PRECEDES,
+        RelationType.CAUSES,
+        RelationType.SUPERSEDES,
     }
 )
 
@@ -26,6 +56,7 @@ ZERO_COST_RESET_RELATIONS = frozenset(
 # by an arbitrary hop count. They do not consume bounded traversal depth.
 CLOSURE_RELATIONS = frozenset(
     {
+        RelationType.IMPLIES,
         RelationType.REQUIRES,
         RelationType.SUPERSEDES,
     }
@@ -49,12 +80,12 @@ CLOSURE_RELATIONS = frozenset(
 DEFAULT_BOUNDED_HOPS: Mapping[RelationType, int] = MappingProxyType(
     {
         RelationType.ENABLES: 2,
+        RelationType.PRECEDES: 2,
         RelationType.QUALIFIES: 2,
         RelationType.CAUSES: 2,
         RelationType.SUPPORTS: 2,
         RelationType.CONTRADICTS: 1,
         RelationType.SERVES_GOAL: 1,
-        RelationType.RELATED_TO: 1,
     }
 )
 
@@ -261,27 +292,29 @@ def expand_evidence_neighborhood(
 ) -> EvidenceMiniGraph:
     """Expand one relation-sensitive lateral evidence neighborhood.
 
-    Traversal is bidirectional with respect to edge discovery: both incoming
-    and outgoing lateral edges are considered. The original source/target
-    direction remains intact on the stored MemoryEdge and is never rewritten.
+    Traversal respects semantic edge direction. Symmetric edges may be followed
+    either way. For directed edges, only the direction that provides context for
+    the current proposition is followed: REQUIRES follows dependent ->
+    prerequisite, while SUPPORTS/QUALIFIES/SERVES_GOAL/IMPLIES/ENABLES/PRECEDES/
+    CAUSES/SUPERSEDES are followed from their target back to their source.
 
     Depth semantics:
 
-    - SAME_EVENT / SAME_ENTITY / COREFERS_WITH / EQUIVALENT_TO
-      are zero-cost semantic jumps. Reaching the neighboring representation
-      resets bounded depth to zero.
+    - COREFERS_WITH / EQUIVALENT_TO are zero-cost semantic jumps. They preserve
+      the current bounded depth; they never reset consumed budget.
 
-    - REQUIRES / SUPERSEDES
-      are followed to closure without consuming bounded depth.
+    - SAME_EVENT / SAME_ENTITY / RELATED_TO are not traversed.
 
-    - ENABLES / QUALIFIES / CAUSES / SUPPORTS
-      may expand to bounded depth 2 by default.
+    - IMPLIES / REQUIRES / SUPERSEDES are followed to closure without consuming
+      bounded depth.
 
-    - CONTRADICTS / SERVES_GOAL / RELATED_TO
-      are more local and default to depth 1.
+    - ENABLES / PRECEDES / QUALIFIES / CAUSES / SUPPORTS may expand to bounded
+      depth 2 by default.
+
+    - CONTRADICTS / SERVES_GOAL are more local and default to depth 1.
 
     A node may be re-expanded if it is later reached with a lower bounded depth.
-    This is required for the reset behavior while remaining cycle-safe.
+    Lower depth means the new path leaves more bounded traversal budget.
     """
     traversal_config = config or TraversalConfig()
 
@@ -304,7 +337,7 @@ def expand_evidence_neighborhood(
     while queue:
         node_id, bounded_depth = queue.popleft()
 
-        # The same node can remain queued after a better reset path reaches it.
+        # The same node can remain queued after a better (lower-depth) path reaches it.
         # Ignore stale queue states.
         if bounded_depth != best_depth_by_node.get(node_id):
             continue
@@ -318,7 +351,9 @@ def expand_evidence_neighborhood(
         )
 
         for edge in incident_edges:
-            neighbor_id = _other_endpoint(edge, node_id)
+            neighbor_id = _contextual_neighbor(edge, node_id)
+            if neighbor_id is None:
+                continue
 
             next_depth, reset_applied, closure_applied = (
                 _next_bounded_depth(
@@ -407,7 +442,9 @@ def _next_bounded_depth(
     A None depth means that relation is not traversable from the current state.
     """
     if relation in config.zero_cost_reset_relations:
-        return 0, True, False
+        # Zero-cost identity/reference hops preserve the budget already consumed
+        # on the path. They do not grant a fresh traversal radius.
+        return current_depth, False, False
 
     if relation in config.closure_relations:
         return current_depth, False, True
@@ -422,6 +459,45 @@ def _next_bounded_depth(
 
     return next_depth, False, False
 
+
+
+def _contextual_neighbor(
+    edge: MemoryEdge,
+    node_id: str,
+) -> str | None:
+    """Return the semantically useful neighbor for traversal from ``node_id``.
+
+    Symmetric relations may be traversed in either direction. Directed relations
+    are intentionally relation-sensitive:
+
+    - REQUIRES: dependent -> prerequisite (outgoing from the current node).
+    - SUPPORTS/QUALIFIES/SERVES_GOAL/IMPLIES/ENABLES/PRECEDES/CAUSES/SUPERSEDES:
+      target -> source (incoming context for the current node).
+
+    Relations not listed in either directional policy are not traversed when the
+    stored edge is directed. This keeps future relation additions conservative.
+    """
+    if edge.source_id != node_id and edge.target_id != node_id:
+        raise MemoryGraphError(
+            f"Edge {edge.id} is not incident to node {node_id}"
+        )
+
+    if not edge.directed:
+        return _other_endpoint(edge, node_id)
+
+    relation = edge.relation
+
+    if relation in OUTGOING_CONTEXT_RELATIONS:
+        if edge.source_id == node_id:
+            return edge.target_id
+        return None
+
+    if relation in INCOMING_CONTEXT_RELATIONS:
+        if edge.target_id == node_id:
+            return edge.source_id
+        return None
+
+    return None
 
 def _other_endpoint(
     edge: MemoryEdge,

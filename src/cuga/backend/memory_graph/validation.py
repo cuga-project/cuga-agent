@@ -40,7 +40,7 @@ class DecompositionValidator:
     def __init__(
         self,
         *,
-        max_nodes: int = 256,
+        max_nodes: int = 1024,
         max_depth: int = 12,
         require_atomic_proposition: bool = True,
         require_source_provenance: bool = True,
@@ -212,7 +212,10 @@ class DecompositionValidator:
                 issues.append(
                     self._error(
                         "atomic_missing_proposition",
-                        "Atomic facts must include a structured proposition payload.",
+                        (
+                            "Atomic facts must include subjects/predicates/objects "
+                            "lexical proposition payload."
+                        ),
                         node.temporary_id,
                     )
                 )
@@ -380,45 +383,118 @@ class DecompositionValidator:
                     )
                 )
 
-            source_depth = analysis.depths.get(source.temporary_id)
-            target_depth = analysis.depths.get(target.temporary_id)
-            if (
-                source_depth is not None
-                and target_depth is not None
-                and source_depth != target_depth
-            ):
-                issues.append(
-                    self._error(
-                        "cross_depth_local_relation",
-                        (
-                            "Decomposition-local relations must connect direct children "
-                            "at the same decomposition depth."
-                        ),
-                        source.temporary_id,
-                    )
+            construction = relation.metadata.get("construction")
+            if construction == "normalized_source_relation":
+                # Normalized source relations are intentionally allowed to connect
+                # atomic descendants from different branches and decomposition depths.
+                # Their locality invariant is the exact semantic scope in which the
+                # normalizer ran, recorded by the builder as
+                # ``logic_parent_temporary_id``. Both endpoints must stay inside that
+                # scope; they do not need to be siblings.
+                scope_root_id = relation.metadata.get(
+                    "logic_parent_temporary_id"
                 )
+                if not isinstance(scope_root_id, str) or not scope_root_id:
+                    issues.append(
+                        self._error(
+                            "normalized_relation_missing_scope",
+                            (
+                                "Normalized source relations must record the semantic "
+                                "scope that produced them in "
+                                "metadata['logic_parent_temporary_id']."
+                            ),
+                            source.temporary_id,
+                        )
+                    )
+                elif scope_root_id not in by_id:
+                    issues.append(
+                        self._error(
+                            "unknown_normalized_relation_scope",
+                            (
+                                "Normalized source relation references an unknown "
+                                f"semantic scope root: {scope_root_id!r}."
+                            ),
+                            source.temporary_id,
+                        )
+                    )
+                else:
+                    if not self._is_descendant_or_self(
+                        node_id=source.temporary_id,
+                        ancestor_id=scope_root_id,
+                        children=analysis.children,
+                    ):
+                        issues.append(
+                            self._error(
+                                "normalized_relation_source_outside_scope",
+                                (
+                                    "Normalized source relation endpoint is outside "
+                                    "the semantic scope that produced the relation. "
+                                    f"Scope root: {scope_root_id!r}."
+                                ),
+                                source.temporary_id,
+                            )
+                        )
+                    if not self._is_descendant_or_self(
+                        node_id=target.temporary_id,
+                        ancestor_id=scope_root_id,
+                        children=analysis.children,
+                    ):
+                        issues.append(
+                            self._error(
+                                "normalized_relation_target_outside_scope",
+                                (
+                                    "Normalized source relation endpoint is outside "
+                                    "the semantic scope that produced the relation. "
+                                    f"Scope root: {scope_root_id!r}."
+                                ),
+                                target.temporary_id,
+                            )
+                        )
+            else:
+                # Direct decomposition relation hints use child indices from one
+                # decomposition call, so their endpoints must remain sibling nodes at
+                # the same layer. Preserve that stricter invariant for local/legacy
+                # relations while allowing normalized semantic relations to span the
+                # full recorded source scope above.
+                source_depth = analysis.depths.get(source.temporary_id)
+                target_depth = analysis.depths.get(target.temporary_id)
+                if (
+                    source_depth is not None
+                    and target_depth is not None
+                    and source_depth != target_depth
+                ):
+                    issues.append(
+                        self._error(
+                            "cross_depth_local_relation",
+                            (
+                                "Decomposition-local relations must connect direct "
+                                "children at the same decomposition depth."
+                            ),
+                            source.temporary_id,
+                        )
+                    )
 
-            source_parents = analysis.parents.get(source.temporary_id, set())
-            target_parents = analysis.parents.get(target.temporary_id, set())
-            shared_non_root_parents = {
-                parent_id
-                for parent_id in source_parents & target_parents
-                if parent_id is not None
-            }
-            shared_root_parent = (
-                None in source_parents and None in target_parents
-            )
-            if not shared_non_root_parents and not shared_root_parent:
-                issues.append(
-                    self._error(
-                        "non_sibling_local_relation",
-                        (
-                            "Decomposition-local relations must connect sibling nodes "
-                            "produced by the same parent decomposition call."
-                        ),
-                        source.temporary_id,
-                    )
+                source_parents = analysis.parents.get(source.temporary_id, set())
+                target_parents = analysis.parents.get(target.temporary_id, set())
+                shared_non_root_parents = {
+                    parent_id
+                    for parent_id in source_parents & target_parents
+                    if parent_id is not None
+                }
+                shared_root_parent = (
+                    None in source_parents and None in target_parents
                 )
+                if not shared_non_root_parents and not shared_root_parent:
+                    issues.append(
+                        self._error(
+                            "non_sibling_local_relation",
+                            (
+                                "Decomposition-local relations must connect sibling "
+                                "nodes produced by the same parent decomposition call."
+                            ),
+                            source.temporary_id,
+                        )
+                    )
 
             # Keep lateral semantic edges atomic-only. This matches
             # MemoryGraph.add_edge(), retrieval, relation linking, and verifier
@@ -551,9 +627,97 @@ class DecompositionValidator:
             else:
                 seen_relations.add(relation_key)
 
-        # The logical layer is intentionally separate from lateral semantic edges.
-        # Every semantic leaf referenced by a local assertion/rule must resolve to
-        # a direct child of the composite parent that produced that structure.
+        # Logic slots are separate from semantic nodes. They may remain unresolved
+        # (no semantic binding) and may later acquire bindings to verified runtime
+        # nodes. Construction-time bindings must point only to existing atomic
+        # semantic nodes; no direct-child locality requirement is imposed.
+        logic_slot_ids = {slot.temporary_id for slot in draft.logic_slots}
+        if len(logic_slot_ids) != len(draft.logic_slots):
+            issues.append(
+                self._error(
+                    "duplicate_logic_slot",
+                    "Logic slot temporary IDs must be unique.",
+                )
+            )
+
+        def validate_spans(*, spans, metadata, parent_id: str, label: str) -> None:
+            if not spans:
+                issues.append(
+                    self._error(
+                        "logic_missing_evidence",
+                        f"{label} requires root-source evidence.",
+                        parent_id,
+                    )
+                )
+                return
+            for span in spans:
+                if span.end == span.start:
+                    issues.append(
+                        self._error(
+                            "empty_logic_evidence_span",
+                            f"{label} evidence span [{span.start}, {span.end}) is empty.",
+                            parent_id,
+                        )
+                    )
+                if span.end > len(request.content):
+                    issues.append(
+                        self._error(
+                            "logic_evidence_span_out_of_bounds",
+                            (
+                                f"{label} evidence span [{span.start}, {span.end}) "
+                                f"exceeds source length {len(request.content)}."
+                            ),
+                            parent_id,
+                        )
+                    )
+            provenance_precision = metadata.get("source_provenance_precision")
+            evidence_text = metadata.get("immediate_evidence_text")
+            if (
+                provenance_precision == "exact"
+                and isinstance(evidence_text, str)
+                and evidence_text
+                and spans
+                and not any(
+                    evidence_text in request.content[span.start:span.end]
+                    for span in spans
+                )
+            ):
+                issues.append(
+                    self._error(
+                        "logic_exact_evidence_mismatch",
+                        f"{label} is marked exact but its evidence text is absent from saved spans.",
+                        parent_id,
+                    )
+                )
+
+        for slot in draft.logic_slots:
+            for semantic_id in slot.bound_semantic_temporary_ids:
+                node = by_id.get(semantic_id)
+                if node is None:
+                    issues.append(
+                        self._error(
+                            "unknown_logic_slot_binding",
+                            f"Logic slot {slot.temporary_id!r} binds unknown semantic node {semantic_id!r}.",
+                        )
+                    )
+                elif node.kind != NodeKind.ATOMIC_FACT:
+                    issues.append(
+                        self._error(
+                            "logic_slot_binding_not_atomic",
+                            f"Logic slot {slot.temporary_id!r} may bind only atomic semantic nodes.",
+                            semantic_id,
+                        )
+                    )
+            validate_spans(
+                spans=slot.evidence_spans,
+                metadata={
+                    **slot.metadata,
+                    "immediate_evidence_text": slot.source_text,
+                },
+                parent_id=slot.bound_semantic_temporary_ids[0] if slot.bound_semantic_temporary_ids else "logic-slot",
+                label=f"Logic slot {slot.temporary_id}",
+            )
+
         def validate_logic_common(
             *,
             parent_temporary_id: str,
@@ -561,8 +725,7 @@ class DecompositionValidator:
             evidence_spans,
             metadata,
         ) -> None:
-            parent = by_id.get(parent_temporary_id)
-            if parent is None:
+            if parent_temporary_id not in by_id:
                 issues.append(
                     self._error(
                         "unknown_logic_parent",
@@ -572,111 +735,25 @@ class DecompositionValidator:
                 )
                 return
 
-            if parent.kind != NodeKind.COMPOSITE:
-                issues.append(
-                    self._error(
-                        "logic_parent_not_composite",
-                        "Local logical structures must belong to a composite semantic node.",
-                        parent_temporary_id,
-                    )
-                )
-
-            direct_children = analysis.children.get(parent_temporary_id, set())
             for label, expression in expressions:
-                for semantic_id in self._logic_semantic_refs(expression):
-                    if semantic_id not in by_id:
-                        issues.append(
-                            self._error(
-                                "unknown_logic_operand",
-                                f"Logical {label} references unknown semantic node: "
-                                f"{semantic_id}",
-                                parent_temporary_id,
-                            )
-                        )
-                    elif semantic_id not in direct_children:
-                        issues.append(
-                            self._error(
-                                "non_local_logic_operand",
-                                (
-                                    "Local logical terms may reference only direct "
-                                    "children of their parent decomposition call. "
-                                    f"Logical {label} referenced {semantic_id!r}."
-                                ),
-                                parent_temporary_id,
-                            )
-                        )
-
-            if not evidence_spans:
-                issues.append(
-                    self._error(
-                        "logic_missing_evidence",
-                        "Source-explicit logical structure requires root-source evidence.",
-                        parent_temporary_id,
-                    )
-                )
-
-            for span in evidence_spans:
-                if span.end == span.start:
+                unknown_slots = set(self._logic_slot_refs(expression)) - logic_slot_ids
+                for slot_id in sorted(unknown_slots):
                     issues.append(
                         self._error(
-                            "empty_logic_evidence_span",
-                            f"Logical evidence span [{span.start}, {span.end}) is empty.",
-                            parent_temporary_id,
-                        )
-                    )
-                if span.end > len(request.content):
-                    issues.append(
-                        self._error(
-                            "logic_evidence_span_out_of_bounds",
-                            (
-                                f"Logical evidence span [{span.start}, {span.end}) "
-                                f"exceeds source length {len(request.content)}."
-                            ),
+                            "unknown_logic_operand",
+                            f"Logical {label} references unknown slot: {slot_id}",
                             parent_temporary_id,
                         )
                     )
 
-            provenance_precision = metadata.get("source_provenance_precision")
-            evidence_text = metadata.get("immediate_evidence_text")
-            if (
-                provenance_precision == "exact"
-                and isinstance(evidence_text, str)
-                and evidence_text
-                and evidence_spans
-                and not any(
-                    evidence_text in request.content[span.start:span.end]
-                    for span in evidence_spans
-                )
-            ):
-                issues.append(
-                    self._error(
-                        "logic_exact_evidence_mismatch",
-                        (
-                            "Logical structure is marked with exact provenance, but "
-                            "its evidence text is not contained in any saved span."
-                        ),
-                        parent_temporary_id,
-                    )
-                )
+            validate_spans(
+                spans=evidence_spans,
+                metadata=metadata,
+                parent_id=parent_temporary_id,
+                label="Logical structure",
+            )
 
         for assertion_index, assertion in enumerate(draft.logic_assertions):
-            if (
-                assertion.root.semantic_temporary_id is not None
-                or assertion.root.operator is None
-            ):
-                issues.append(
-                    self._error(
-                        "logic_assertion_not_operator_expression",
-                        (
-                            "Logic assertions must root at a Boolean/cardinality "
-                            "operator expression. Standalone semantic children are "
-                            "already represented by the semantic graph and must not "
-                            "be duplicated as assertions."
-                        ),
-                        assertion.parent_temporary_id,
-                    )
-                )
-
             validate_logic_common(
                 parent_temporary_id=assertion.parent_temporary_id,
                 expressions=[(f"assertion[{assertion_index}] root", assertion.root)],
@@ -693,26 +770,6 @@ class DecompositionValidator:
                 ],
                 evidence_spans=rule.evidence_spans,
                 metadata=rule.metadata,
-            )
-
-        # Deprecated V1 compatibility structures are still accepted if another
-        # caller supplies them, but the V3 builder itself does not produce them.
-        for binding_index, binding in enumerate(draft.logic_bindings):
-            expressions = [(f"legacy_binding[{binding_index}] expression", binding.expression)]
-            if binding.effect_temporary_id is not None:
-                expressions.append(
-                    (
-                        f"legacy_binding[{binding_index}] effect",
-                        DraftLogicExpression(
-                            semantic_temporary_id=binding.effect_temporary_id
-                        ),
-                    )
-                )
-            validate_logic_common(
-                parent_temporary_id=binding.parent_temporary_id,
-                expressions=expressions,
-                evidence_spans=binding.evidence_spans,
-                metadata=binding.metadata,
             )
 
         accepted = not any(issue.severity == ValidationSeverity.ERROR for issue in issues)
@@ -788,14 +845,37 @@ class DecompositionValidator:
         )
 
     @staticmethod
-    def _logic_semantic_refs(
+    def _is_descendant_or_self(
+        *,
+        node_id: str,
+        ancestor_id: str,
+        children: dict[str | None, set[str]],
+    ) -> bool:
+        """Return whether ``node_id`` lies inside ``ancestor_id``'s hierarchy scope."""
+        if node_id == ancestor_id:
+            return True
+
+        visited: set[str] = set()
+        queue: deque[str] = deque(children.get(ancestor_id, set()))
+        while queue:
+            current = queue.popleft()
+            if current == node_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            queue.extend(children.get(current, set()))
+        return False
+
+    @staticmethod
+    def _logic_slot_refs(
         expression: DraftLogicExpression,
     ):
-        if expression.semantic_temporary_id is not None:
-            yield expression.semantic_temporary_id
+        if expression.slot_temporary_id is not None:
+            yield expression.slot_temporary_id
             return
         for operand in expression.operands:
-            yield from DecompositionValidator._logic_semantic_refs(operand)
+            yield from DecompositionValidator._logic_slot_refs(operand)
 
     @staticmethod
     def _normalize(value: str) -> str:

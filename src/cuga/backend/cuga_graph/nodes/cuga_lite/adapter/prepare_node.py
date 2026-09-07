@@ -33,6 +33,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    create_cuga_policy_prompt,
     create_mcp_prompt,
     format_apps_for_prompt,
     normalize_mcp_few_shot_examples,
@@ -337,6 +338,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         effective_special = "\n\n".join(
             part for part in (adapter._special_instructions, configurable_special) if part
         )
+
+        # Keep a verifier-only copy of the CUGA-owned instruction inputs before
+        # runtime knowledge/context augmentation occurs later in this node.
+        #
+        # adapter._instructions is the CUGA instruction input supplied to the MCP
+        # prompt. Do NOT replace this later with effective_instructions, because
+        # effective_instructions can contain upload/knowledge context.
+        cuga_policy_instructions = adapter._instructions
+
+        # This is the CUGA/system-level special-instruction component. It will later
+        # receive the split-execution rule as well, but deliberately not Evolve memory.
+        cuga_policy_special_instructions = effective_special or ""
+
+
+
         _cfg_skills = _cfg.get("skills_enabled")
         skills_cfg_on = (
             _cfg_skills
@@ -428,16 +444,38 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
         special_instructions_final = effective_special or ""
-        _split_note = split_execution_note(ExecutionRouter.resolve(settings))
+
+        _split_note = split_execution_note(
+            ExecutionRouter.resolve(settings)
+        )
+
         if _split_note:
-            special_instructions_final = (special_instructions_final + "\n\n" + _split_note).strip()
+            special_instructions_final = (
+                special_instructions_final
+                + "\n\n"
+                + _split_note
+            ).strip()
+
+            # The split-execution note is CUGA execution policy, so it belongs in
+            # the verifier's CUGA-policy graph as well.
+            cuga_policy_special_instructions = (
+                cuga_policy_special_instructions
+                + "\n\n"
+                + _split_note
+            ).strip()
+
         evolve_extension = await build_evolve_special_instructions_extension(
             state=state,
             configurable=configurable,
             timeout=settings.evolve.timeout,
         )
+
         if evolve_extension:
-            special_instructions_final = (special_instructions_final or "") + evolve_extension
+            # Evolve memory is dynamic memory/state. It belongs in the actual model
+            # prompt, but not in the static CUGA-policy authority graph.
+            special_instructions_final = (
+                special_instructions_final or ""
+            ) + evolve_extension
 
         cfg = config.get("configurable", {}) if config else {}
         _thread_id = cfg.get("thread_id") or ""
@@ -649,6 +687,22 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
 
+        prompt_verification_enabled = bool(
+            getattr(
+                settings.advanced_features,
+                "prompt_verification_enabled",
+                False,
+            )
+        )
+
+        prompt_verification_external_reasoning = bool(
+            getattr(
+                settings.advanced_features,
+                "prompt_verification_external_reasoning",
+                True,
+            )
+        )
+
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
 
@@ -678,13 +732,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 ),
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
+
+                prompt_verification_enabled=prompt_verification_enabled,
+                prompt_verification_external_reasoning=(
+                    prompt_verification_external_reasoning
+                ),
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
-                "few_shots_as_messages={} prompt_chars={}",
+                "few_shots_as_messages={} prompt_verification={} "
+                "external_reasoning={} prompt_chars={}",
                 enable_find_tools,
                 len(few_shot_examples),
                 bool(few_shot_examples),
+                prompt_verification_enabled,
+                prompt_verification_external_reasoning,
                 len(dynamic_prompt),
             )
         else:
@@ -694,6 +756,104 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 enable_find_tools,
                 len(few_shot_examples),
             )
+
+        # ------------------------------------------------------------------
+        # Prompt-verification CUGA authority
+        # ------------------------------------------------------------------
+        #
+        # Build the CUGA-policy graph only after all behavioral runtime flags
+        # have been resolved, but from clean policy inputs that exclude dynamic
+        # knowledge/upload/Evolve content.
+        if prompt_verification_enabled:
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.verification.prompt_verifier import (
+                initialize_cuga_policy_graph,
+                initialize_verification_runtime,
+            )
+
+            verification_session_id = (
+                configurable.get("thread_id")
+                or state.thread_id
+                or adapter._thread_id
+            )
+
+            if not verification_session_id:
+                raise ValueError(
+                    "Prompt verification requires a thread/session ID before "
+                    "initializing the CUGA-policy graph."
+                )
+
+            if adapter._static_prompt:
+                # A caller-supplied static prompt is already the effective static
+                # CugaLite system authority, so use it directly.
+                cuga_policy_prompt = adapter._static_prompt
+            else:
+                cuga_policy_prompt = create_cuga_policy_prompt(
+                    allow_user_clarification=True,
+                    return_to_user_cases=None,
+
+                    # IMPORTANT: use the original CUGA instructions, not
+                    # effective_instructions, which may now contain upload or
+                    # knowledge context.
+                    instructions=cuga_policy_instructions,
+
+                    task_loaded_from_file=task_loaded_from_file,
+
+                    is_autonomous_subtask=(
+                        settings.advanced_features.force_autonomous_mode
+                        or is_autonomous_subtask
+                    ),
+
+                    prompt_template=adapter._prompt_template,
+                    enable_find_tools=enable_find_tools,
+                    enable_todos=enable_todos,
+
+                    # CUGA/system instructions + split-execution policy only.
+                    # Evolve memory is deliberately excluded.
+                    special_instructions=cuga_policy_special_instructions,
+
+                    # Keep behavioral skill rules, but create_cuga_policy_prompt()
+                    # suppresses the concrete skill inventory.
+                    skills_enabled=skills_enabled,
+
+                    enable_shell_tool=(
+                        getattr(
+                            settings.advanced_features,
+                            "enable_shell_tool",
+                            False,
+                        )
+                        and _cap_enabled(adapter, "enable_shell_tool")
+                    ),
+
+                    # Keep the behavioral rule associated with having knowledge
+                    # available, but not the actual knowledge content/scope text.
+                    has_knowledge=(
+                        has_knowledge_tools
+                        and _cap_enabled(adapter, "enable_knowledge")
+                    ),
+
+                    prompt_verification_enabled=True,
+                    prompt_verification_external_reasoning=(
+                        prompt_verification_external_reasoning
+                    ),
+                )
+
+            await initialize_cuga_policy_graph(
+                session_id=str(verification_session_id),
+                cuga_policy=cuga_policy_prompt,
+            )
+
+            initialize_verification_runtime(
+                session_id=str(verification_session_id),
+                prompt_tools=list(tools_for_prompt or []),
+                execution_tool_names=list(adapter._tools_context.keys()),
+                find_tools_enabled=enable_find_tools,
+                # Register CUGA's persistent VariablesManager with the verifier.
+                # The verifier uses it only to deterministically resolve Python
+                # names in tool-execution candidates; values are not added to
+                # conversational STATE or treated as evidence by themselves.
+                variables_manager=adapter.get_variable_manager(state),
+            )
+
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 

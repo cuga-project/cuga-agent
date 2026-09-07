@@ -1667,6 +1667,11 @@ class CugaAgent:
         self._policy_system = policy_system
         self._special_instructions = special_instructions
 
+        # Prompt-verification Playbooks are snapshotted lazily on the first
+        # user invocation, after the initial policy system is ready but before
+        # the incoming user message is processed.
+        self._verification_playbook_session_id: Optional[str] = None
+
         # Use settings defaults if not provided
         self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
         self._auto_load_policies = (
@@ -1768,6 +1773,104 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
 
+    async def _ensure_prompt_verification_playbooks_initialized(
+        self,
+        *,
+        session_id: str,
+    ) -> None:
+        """Snapshot the initially configured Playbooks for prompt verification."""
+
+        if not getattr(
+            settings.advanced_features,
+            "prompt_verification_enabled",
+            False,
+        ):
+            return
+
+        if self._verification_playbook_session_id == session_id:
+            return
+
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.verification.prompt_verifier import (
+            AuthoritySource,
+            initialize_playbook_graph,
+        )
+        from cuga.backend.cuga_graph.policy.models import Playbook
+
+        playbooks: List[AuthoritySource] = []
+
+        policy_system = self._policy_system
+        storage = (
+            getattr(policy_system, "storage", None)
+            if policy_system is not None
+            else None
+        )
+
+        if storage is not None:
+            policies = await storage.list_policies(
+                enabled_only=True,
+                limit=1000,
+            )
+
+            for policy in policies:
+                if not isinstance(policy, Playbook):
+                    continue
+
+                content = (policy.markdown_content or "").strip()
+                if not content:
+                    continue
+
+                playbooks.append(
+                    AuthoritySource(
+                        source_id=f"playbook:{policy.id}",
+                        content=content,
+                        metadata={
+                            **dict(policy.metadata or {}),
+                            "policy_id": policy.id,
+                            "policy_name": policy.name,
+                        },
+                    )
+                )
+
+        await initialize_playbook_graph(
+            session_id=session_id,
+            playbooks=playbooks,
+        )
+
+        # Set only after successful graph creation.
+        self._verification_playbook_session_id = session_id
+
+        logger.info(
+            "Prompt-verification Playbook graph initialized for "
+            "session {}: playbooks={}",
+            session_id,
+            len(playbooks),
+        )
+
+        def _build_callbacks(self) -> List[BaseCallbackHandler]:
+            """
+            Build callbacks list including TokenUsageTracker for trajectory tracking.
+
+            This ensures that all SDK invocations automatically track prompts and responses
+            for trajectory visualization in tools like cuga-viz.
+
+            Returns:
+                List of callback handlers including TokenUsageTracker and user-provided callbacks
+            """
+            from cuga.backend.activity_tracker.tracker import ActivityTracker
+            from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
+
+            tracker = ActivityTracker()
+            callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+
+            # Add user-provided callbacks
+            if self._callbacks:
+                callbacks.extend(self._callbacks)
+                logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+            else:
+                logger.debug("Built callbacks: TokenUsageTracker only")
+
+            return callbacks
+
     def _build_callbacks(self) -> List[BaseCallbackHandler]:
         """
         Build callbacks list including TokenUsageTracker for trajectory tracking.
@@ -1782,12 +1885,17 @@ class CugaAgent:
         from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
 
         tracker = ActivityTracker()
-        callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+        callbacks: List[BaseCallbackHandler] = [
+            TokenUsageTracker(tracker)
+        ]
 
         # Add user-provided callbacks
         if self._callbacks:
             callbacks.extend(self._callbacks)
-            logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+            logger.debug(
+                f"Built callbacks: TokenUsageTracker + "
+                f"{len(self._callbacks)} user callback(s)"
+            )
         else:
             logger.debug("Built callbacks: TokenUsageTracker only")
 
@@ -2254,6 +2362,54 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first invoke()")
 
+        # --------------------------------------------------------------
+        # Resolve the session/thread before authority initialization.
+        #
+        # Resumes already require an existing thread_id, so only generate
+        # one for a normal new user invocation.
+        # --------------------------------------------------------------
+        is_resume = message is None or action_response is not None
+
+        if not is_resume and not thread_id:
+            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
+            logger.debug(
+                f"Auto-generated thread_id: {thread_id}"
+            )
+
+        # --------------------------------------------------------------
+        # Authority bootstrap.
+        #
+        # This happens after CUGA initialization / initial playbook loading,
+        # but before CUGA interprets or stores the incoming user message.
+        # --------------------------------------------------------------
+        if not is_resume:
+            assert thread_id is not None
+
+            await self._ensure_prompt_verification_playbooks_initialized(
+                session_id=thread_id,
+            )
+
+        # --------------------------------------------------------------
+        # From this point onward CUGA may process the incoming user message.
+        # --------------------------------------------------------------
+        slash_result = None
+
+        dispatch_slash = getattr(self, "_dispatch_slash", None)
+
+        if isinstance(message, str) and dispatch_slash is not None:
+            try:
+                slash_result = await dispatch_slash(
+                    message,
+                    thread_id,
+                )
+            except Exception as e:
+                return InvokeResult(
+                    answer="",
+                    tool_calls=[],
+                    thread_id=thread_id,
+                    error=f"Slash dispatch failed: {e}",
+                )
+
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
 
@@ -2346,11 +2502,6 @@ class CugaAgent:
             new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
-
-        # Auto-generate thread_id if not provided (required for checkpointer)
-        if not thread_id:
-            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
 
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
@@ -2571,6 +2722,21 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first stream()")
 
+        is_resume = message is None or action_response is not None
+
+        if not is_resume and not thread_id:
+            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
+            logger.debug(
+                f"Auto-generated thread_id: {thread_id}"
+            )
+
+        if not is_resume:
+            assert thread_id is not None
+
+            await self._ensure_prompt_verification_playbooks_initialized(
+                session_id=thread_id,
+            )
+
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
 
@@ -2623,11 +2789,6 @@ class CugaAgent:
             messages = [HumanMessage(content=message)]
         else:
             messages = message
-
-        # Auto-generate thread_id if not provided (required for checkpointer)
-        if not thread_id:
-            thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
 
         # Create initial state for HITL wrapper graph (uses AgentState format)
         initial_state = {

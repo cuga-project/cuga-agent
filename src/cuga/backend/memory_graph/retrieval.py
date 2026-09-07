@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from .schemas import MemoryNode, NodeKind
 
 
 DEFAULT_TOP_K = 5
+DEFAULT_MIN_COMBINED_SIMILARITY = 0.45
 DEFAULT_LEXICAL_WEIGHT = 0.5
 DEFAULT_EMBEDDING_WEIGHT = 0.5
 
@@ -48,18 +48,13 @@ _STOPWORDS = {
     "with",
 }
 
-# These are the same deterministic semantic features used by the original
-# relation-linker candidate ranking. The weighted sum is normalized to [0, 1]
-# before it is combined with embedding similarity.
+# PropositionPayload is deliberately limited to coarse subject-predicate-object
+# lexical-anchor lists. Fine-grained semantics remain authoritative in node.content and
+# are handled after retrieval by semantic relation/verification stages.
 _LEXICAL_FIELD_WEIGHTS: dict[str, float] = {
     "subject": 4.0,
     "predicate": 3.0,
     "object": 4.0,
-    "condition": 1.5,
-    "attribution": 1.0,
-    "modality": 0.75,
-    "temporal_scope": 0.75,
-    "qualifiers": 1.0,
     "routing_text": 2.5,
     "content": 1.5,
 }
@@ -172,18 +167,23 @@ def rank_nodes(
     candidates: Iterable[MemoryNode],
     *,
     top_k: int = DEFAULT_TOP_K,
+    min_combined_similarity: float = DEFAULT_MIN_COMBINED_SIMILARITY,
     exclude_node_ids: set[str] | None = None,
     lexical_weight: float = DEFAULT_LEXICAL_WEIGHT,
     embedding_weight: float = DEFAULT_EMBEDDING_WEIGHT,
 ) -> list[RankedNode]:
     """Rank atomic evidence nodes against one atomic query node.
 
-    Ranking is deterministic. Ties are broken by node ID.
+    Candidates below ``min_combined_similarity`` are discarded before the
+    top-k slice, so retrieval may return fewer than ``top_k`` nodes. Ranking
+    is deterministic. Ties are broken by node ID.
     """
     _validate_atomic_node(anchor, role="anchor")
 
     if top_k <= 0:
         raise ValueError("top_k must be positive")
+    if not 0.0 <= min_combined_similarity <= 1.0:
+        raise ValueError("min_combined_similarity must be between 0 and 1")
 
     excluded = set(exclude_node_ids or ())
     excluded.add(anchor.id)
@@ -202,6 +202,9 @@ def rank_nodes(
             lexical_weight=lexical_weight,
             embedding_weight=embedding_weight,
         )
+
+        if pair_score.combined_score < min_combined_similarity:
+            continue
 
         ranked.append(
             RankedNode(
@@ -230,6 +233,7 @@ def retrieve_top_k(
     anchor: MemoryNode,
     *,
     top_k: int = DEFAULT_TOP_K,
+    min_combined_similarity: float = DEFAULT_MIN_COMBINED_SIMILARITY,
     exclude_node_ids: set[str] | None = None,
     active_only: bool = True,
     lexical_weight: float = DEFAULT_LEXICAL_WEIGHT,
@@ -240,6 +244,7 @@ def retrieve_top_k(
         anchor,
         graph.atomic_nodes(active_only=active_only),
         top_k=top_k,
+        min_combined_similarity=min_combined_similarity,
         exclude_node_ids=exclude_node_ids,
         lexical_weight=lexical_weight,
         embedding_weight=embedding_weight,
@@ -254,8 +259,9 @@ def lexical_similarity(
 ) -> float | tuple[float, dict[str, float]]:
     """Return normalized structured lexical similarity in [0, 1].
 
-    This preserves the relation linker's V1 feature weighting while making the
-    result suitable for combination with embedding similarity.
+    Structured lexical scoring uses only the lightweight subject/predicate/object
+    anchor lists plus routing_text/content similarity and the same-source bonus.
+    Each S/P/O component is the maximum pairwise similarity across its two lists.
     """
     _validate_atomic_node(left, role="left")
     _validate_atomic_node(right, role="right")
@@ -264,11 +270,6 @@ def lexical_similarity(
         "subject": 0.0,
         "predicate": 0.0,
         "object": 0.0,
-        "condition": 0.0,
-        "attribution": 0.0,
-        "modality": 0.0,
-        "temporal_scope": 0.0,
-        "qualifiers": 0.0,
         "routing_text": 0.0,
         "content": 0.0,
         "same_source": 0.0,
@@ -278,37 +279,17 @@ def lexical_similarity(
     right_prop = right.proposition
 
     if left_prop is not None and right_prop is not None:
-        components["subject"] = _field_similarity(
-            left_prop.subject,
-            right_prop.subject,
+        components["subject"] = _best_field_similarity(
+            left_prop.subjects,
+            right_prop.subjects,
         )
-        components["predicate"] = _field_similarity(
-            left_prop.predicate,
-            right_prop.predicate,
+        components["predicate"] = _best_field_similarity(
+            left_prop.predicates,
+            right_prop.predicates,
         )
-        components["object"] = _field_similarity(
-            left_prop.object,
-            right_prop.object,
-        )
-        components["condition"] = _field_similarity(
-            left_prop.condition,
-            right_prop.condition,
-        )
-        components["attribution"] = _field_similarity(
-            left_prop.attribution,
-            right_prop.attribution,
-        )
-        components["modality"] = _field_similarity(
-            left_prop.modality,
-            right_prop.modality,
-        )
-        components["temporal_scope"] = _field_similarity(
-            left_prop.temporal_scope,
-            right_prop.temporal_scope,
-        )
-        components["qualifiers"] = _token_similarity(
-            _stable_json(left_prop.qualifiers),
-            _stable_json(right_prop.qualifiers),
+        components["object"] = _best_field_similarity(
+            left_prop.objects,
+            right_prop.objects,
         )
 
     components["routing_text"] = _token_similarity(
@@ -433,6 +414,25 @@ def _field_similarity(
     return _token_similarity(left_norm, right_norm)
 
 
+def _best_field_similarity(
+    left_values: list[str],
+    right_values: list[str],
+) -> float:
+    """Return the strongest lexical alignment between two payload fields.
+
+    Multiple lexical perspectives never accumulate extra score: the field keeps
+    its original weight and contributes only its single best pairwise match.
+    """
+    if not left_values or not right_values:
+        return 0.0
+
+    return max(
+        _field_similarity(left, right)
+        for left in left_values
+        for right in right_values
+    )
+
+
 def _token_similarity(
     left: str,
     right: str,
@@ -467,18 +467,6 @@ def _normalize_text(text: str) -> str:
         match.group(0).casefold()
         for match in _TOKEN_RE.finditer(text or "")
     )
-
-
-def _stable_json(value: object) -> str:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-    except TypeError:
-        return str(value)
 
 
 def _validate_atomic_node(

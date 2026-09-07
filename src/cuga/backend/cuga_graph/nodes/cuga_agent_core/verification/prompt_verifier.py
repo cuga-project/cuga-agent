@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import builtins
+import copy
+import datetime as datetime_module
 import hashlib
 import json
+import os
 import re
 import time
+import typing as typing_module
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cuga.backend.memory_graph import (
     GraphBuildRequest,
@@ -21,17 +26,41 @@ from cuga.backend.memory_graph import (
     MemoryGraph,
     NodeKind,
     SourceType,
+    analyze_entailment,
     link_new_nodes,
+    link_new_nodes_to_logic_slots,
+    match_nodes_to_logic_slots,
 )
 from cuga.backend.memory_graph.graph_serialization import (
     compute_prompt_hash,
     load_graph_for_prompt,
     save_graph,
 )
-from cuga.backend.memory_graph.retrieval import RankedNode, rank_nodes
+from cuga.backend.memory_graph.atomic_payload_spacy import extract_atomic_payloads_spacy
+from cuga.backend.memory_graph.retrieval import (
+    RankedNode,
+    build_retrieval_text,
+    rank_nodes,
+    retrieval_text_hash,
+)
+from cuga.backend.memory_graph.retrieval_embedding_qwen import (
+    embed_retrieval_texts_qwen,
+    embedding_model_name as qwen_embedding_model_name,
+    retrieval_embeddings_enabled,
+)
+from cuga.backend.memory_graph.schemas import (
+    MemoryNode,
+    RetrievalEmbedding,
+    SourceReference,
+    SourceSpan,
+)
 from cuga.backend.memory_graph.traversal import (
     TraversalConfig,
     build_coverage_aware_mini_graphs,
+)
+from cuga.backend.memory_graph.local_community_ppr import (
+    LocalCommunityConfig,
+    LocalCommunityDetector,
 )
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
@@ -83,6 +112,27 @@ class VerificationDecision(BaseModel):
     atoms: list[CandidateAtomDecision] = Field(min_length=1)
 
 
+class CandidateContextDecision(BaseModel):
+    """Final raw-candidate decision against reconstructed source context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["approved", "rejected"]
+    reason: str = ""
+    violated_context_ids: list[str] = Field(default_factory=list)
+
+
+@dataclass
+class _CandidateQueryContextEntry:
+    graph_name: str
+    source_type: str
+    statement_node_id: str
+    statement: str
+    covered_atomic_node_ids: set[str] = field(default_factory=set)
+    triggered_by_candidate_atom_ids: set[str] = field(default_factory=set)
+    context_id: str = ""
+
+
 @dataclass(frozen=True)
 class _EvidenceSource:
     source_id: str
@@ -104,7 +154,9 @@ class _ResolvedExpression:
     provenance: Literal[
         "literal",
         "local_static",
+        "runtime_variable",
         "prior_call_result",
+        "derived_from_prior_call_result",
         "unresolved",
     ]
     static_value: Any | None = None
@@ -115,6 +167,22 @@ class _ResolvedExpression:
 @dataclass(frozen=True)
 class _LocalBinding:
     resolved: _ResolvedExpression
+
+
+@dataclass(frozen=True)
+class _ExecutionRecord:
+    """One completed runtime tool invocation captured by the sandbox boundary.
+
+    The record is already atomic by construction: tool identity, the exact runtime
+    parameters, and the observed return/exception payload remain in one sentence.
+    It is therefore never sent through semantic decomposition.
+    """
+
+    record_id: str
+    tool_name: str
+    parameters_json: str
+    output_json: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -141,15 +209,25 @@ class _PromptVerificationState:
     Playbooks, while ``cuga_policy_graph`` is initialized later from CugaLite's
     effective behavioral prompt path.
 
-    ``state_graph`` is persistent for the session. ``state_context_cursor`` is
-    the number of raw model-context messages already incorporated into that graph.
+    ``state_graph`` is persistent conversational evidence for the session (user,
+    approved assistant, and committed reasoning state only). Completed tool/execution
+    observations live exclusively in ``execution_graph``. ``state_context_cursor`` is
+    the number of raw model-context messages already processed for STATE ingestion.
     ``state_context_signatures`` records the processed raw prefix so we can detect
     truncation or rewriting and safely fall back to a full state rebuild.
 
+    ``execution_graph`` is a separate append-only factual audit graph. Each node
+    is one already-completed tool invocation containing the tool name, exact
+    runtime parameters, and observed output in the same atomic statement. These
+    nodes are not decomposed and have no edges; they participate only in normal
+    candidate-conditioned retrieval.
+
     ``reasoning_graph`` is a separate temporary trajectory containing only
     accepted intermediate reasoning steps for the current internal generation
-    cycle. It is never merged into STATE or authority and therefore cannot be
-    used as self-grounding evidence for external facts.
+    cycle. Verified reasoning propositions may bind persistent logic slots and
+    participate in formal SAT checks. Once a final terminal answer is accepted,
+    the reasoning graph is transferred into STATE before the temporary trace is
+    cleared.
     """
 
     owner_session_id: str | None = None
@@ -160,11 +238,19 @@ class _PromptVerificationState:
     playbook_graph: MemoryGraph | None = None
     runtime_initialized: bool = False
     runtime_facts: dict[str, Any] = field(default_factory=dict)
+    # Mutable CUGA VariablesManager registered at runtime initialization. It is
+    # deliberately kept outside STATE/evidence: it is used only to resolve the
+    # Python meaning of names in pre-execution tool-call candidates.
+    runtime_variables_manager: Any | None = None
     state_graph: MemoryGraph | None = None
     state_context_cursor: int = 0
     state_context_signatures: list[str] = field(default_factory=list)
+    execution_graph: MemoryGraph | None = None
+    execution_records: list[_ExecutionRecord] = field(default_factory=list)
+    execution_graph_cursor: int = 0
     reasoning_graph: MemoryGraph | None = None
     reasoning_steps: list[_ReasoningStepRecord] = field(default_factory=list)
+    committed_reasoning_graph: MemoryGraph | None = None
 
 
 _VERIFICATION_STATE = _PromptVerificationState()
@@ -182,6 +268,10 @@ _GRAPH_BUILD_CONCURRENCY = 4
 # stable regardless of the process working directory used during later loads.
 _GRAPH_CACHE_DIR = Path(".memory_graph_cache")
 _GRAPH_CACHE_INDEX = _GRAPH_CACHE_DIR / "memory_graphs.json"
+# Version verifier authority-graph cache identities whenever reconstruction
+# depends on new construction-time metadata. This avoids globally invalidating
+# unrelated serialized MemoryGraphs.
+_AUTHORITY_GRAPH_CACHE_SCHEMA = "semantic_context_dependency_closure_v1"
 
 # Retrieve independently from the two evidence spaces. The CUGA-policy and
 # Playbook graphs are combined into one logical ADHERENCE graph; STATE remains
@@ -191,7 +281,222 @@ _VERIFIER_TOP_K = 5
 _VERIFIER_TRAVERSAL_CONFIG = TraversalConfig(
     max_nodes_per_mini_graph=50,
 )
+_VERIFIER_LOCAL_COMMUNITY_CONFIG = LocalCommunityConfig(
+    restart_probability=0.15,
+    max_accepted_conductance=0.45,
+    max_sweep_volume_fraction=0.5,
+)
 
+
+
+_SOURCE_CONTEXT_VERIFICATION_SYSTEM_PROMPT = """
+You are a strict verifier for a tool-using agent.
+
+The candidate decomposition was used ONLY as a retrieval aid. It is deliberately
+NOT shown to you because decomposition can lose condition, modality, reference,
+or temporal scope. Judge the untouched [RAW_CANDIDATE] as the authoritative
+meaning of what the agent proposes to say/do.
+
+The user message contains:
+
+[CANDIDATE_KIND]
+One of terminal, reasoning, or tool_execution.
+
+[RAW_CANDIDATE]
+The exact original candidate. Preserve its conditions, hypotheticals, future
+tense, requests, prerequisites, negation, and temporal language. For example,
+"Once I have X, I can do Y" does NOT assert that X is currently true and does
+NOT assert that Y has already happened.
+
+[CANDIDATE_QUERY_CONTEXT]
+A deduplicated list of reconstructed source-level statements. Each item has a
+stable ID Q1, Q2, ... and an origin tag. Normal evidence statements are retrieved
+from four already-built graphs: CUGA policy, Playbook, verified conversational
+STATE, and completed tool-execution history. When present, one additional
+verifier_rejection statement is appended temporarily from the immediately prior
+verifier rejection in the current correction chain; it is not graph evidence.
+Candidate atomic fragments are not evidence and must never be reconstructed or
+treated as independent claims. Retrieved evidence atoms are likewise only retrieval
+anchors: each normal Q statement is reconstructed to at least the complete original
+source sentence containing its selected atomic evidence, and may expand further when
+semantic dependency closure requires broader governing context.
+
+For context origins:
+- cuga_policy: binding behavioral/runtime instructions for the agent.
+- playbook: binding domain/playbook authority.
+- execution: deterministic completed tool-execution evidence. Each execution
+  statement keeps the exact tool identity, exact runtime parameters, and observed
+  output together in one indivisible fact. The fact that a tool was invoked does
+  not by itself mean its intended action succeeded; determine success or failure
+  from the output contained in that same execution statement. Do not combine
+  parameters from one execution statement with the output of another.
+- user: information/intent actually supplied or claimed by the user.
+- assistant: previously approved conversational state; useful for continuity, but
+  do not let it override stronger policy/execution/user evidence.
+- reasoning: previously committed verified reasoning state, when present. It may
+  support continuity but is not user-provided evidence and cannot establish tool
+  outcomes by itself.
+- verifier_rejection: temporary correction-history context containing only the
+  immediately preceding candidate rejected by the verifier and that rejection's
+  result. It is not independent policy, user, execution, or domain evidence and
+  must not be treated as authoritative grounding. Use it only to maintain
+  consistency across consecutive correction attempts and to recognize the issue
+  that the replacement candidate is intended to resolve.
+
+Completed tool observations live only in the execution graph; they are not copied
+into conversational STATE. Provenance is semantically binding. When an applicable
+requirement depends on the USER providing, knowing, confirming, or correctly giving
+information, a value originating only from execution or another internal source
+does NOT satisfy that requirement and must never be attributed to the user. When
+the requirement is to verify a user-provided value against trusted internal data,
+count it as satisfied only when the relevant value is present in a user statement
+and matches the corresponding trusted execution output. A trusted internal value
+by itself proves only what the database/tool contains, not that the user knew or
+supplied it. A mismatch does not count and must not be repaired by substituting the
+internal value for the user's claim.
+
+[EXECUTION_DETAILS]
+Present only when useful for tool_execution. It contains deterministic call,
+argument-provenance, tool-spec, and runtime facts. These are auxiliary runtime
+facts, not candidate decomposition. A provenance entry of
+``runtime_variable(name)`` means CUGA deterministically resolved that Python name
+from its current VariablesManager before verification. This proves what the
+expression will evaluate to at execution time, but it does NOT by itself prove
+that the value was supplied by the user, came from a successful tool result, or
+satisfies a policy prerequisite; use the source-level context for those claims.
+
+For same-candidate multi-tool execution, provenance is also authoritative about
+dataflow. ``prior_call_result(Cn ...)`` means the argument is the direct future
+result of earlier call Cn. ``derived_from_prior_call_result(Cn ...)`` means the
+argument is produced by local Python transformations whose dataflow ultimately
+depends on earlier call Cn. These values do not exist before Cn executes, so do
+NOT require their concrete value or independent factual grounding at pre-execution
+verification time. This exemption applies only to the earlier-tool-derived portion
+of the argument. It does NOT exempt the later tool itself, its policy/prerequisite
+checks, its parameter names/shape, or any independent literal/local/runtime values
+in the same candidate.
+
+[REASONING_HISTORY]
+Previously accepted reasoning trajectory, when present. It may explain continuity
+but is not stronger than policy/playbook/user/execution evidence and must not
+self-ground external facts.
+
+Decision task
+-------------
+Decide whether the RAW candidate is permissible given the supplied source-level
+context. Return approved unless the raw candidate materially violates,
+contradicts, or bypasses an applicable supplied statement/runtime requirement.
+
+Important rules:
+1. Evaluate the RAW candidate holistically. Never turn a condition, future plan,
+   request, hypothetical, or prerequisite into a present-tense factual claim.
+2. A candidate may describe an action that will occur only AFTER a prerequisite;
+   do not reject it merely because that prerequisite is not true yet.
+3. A request for information needed to establish a prerequisite is not the same
+   as claiming that the prerequisite is already satisfied.
+4. Do reject a claim that an action/result already happened when supplied state
+   does not establish it and an applicable policy requires grounding/execution.
+5. Do reject an action that applicable policy/playbook context prohibits or whose
+   required preconditions the candidate actually attempts to bypass.
+6. For tool_execution, verify that executing every shown call now is allowed and
+   that consequential argument values are grounded by the supplied context/runtime
+   facts, EXCEPT for values whose deterministic [EXECUTION_DETAILS] provenance is
+   ``prior_call_result(...)`` or ``derived_from_prior_call_result(...)``. For those
+   same-candidate dependencies, verify only that the dependency is on an earlier
+   listed call and do not require a concrete pre-execution value or independent
+   factual grounding for the derived portion. Still verify the later tool's
+   availability, policy/prerequisites, argument names/shape, and every other
+   independently supplied argument normally. A prior call result must not be
+   treated as already-observed factual evidence before execution.
+7. Absence of a fact from selected context is not automatically proof of its
+   opposite. Reject for missing support only when an applicable supplied rule or
+   runtime requirement makes that support/precondition necessary.
+8. Use only supplied context/runtime evidence plus ordinary linguistic/logical
+   reasoning. Do not import outside domain facts.
+9. Reconcile apparent conflicts and circular dependencies among applicable binding
+   statements before judging the candidate. If a literal reading would make two
+   instructions mutually unsatisfiable, would require a prerequisite to already be
+   true before performing the explicitly prescribed procedure for establishing that
+   prerequisite, or would otherwise make a required procedure impossible, resolve
+   the ambiguity using the narrowest interpretation that allows the applicable
+   statements to remain jointly effective. In particular, when a specific applicable
+   instruction explicitly prescribes an action, lookup, tool, or procedure as the
+   means of checking, satisfying, or establishing a prerequisite imposed by a more
+   general rule, treat that prescribed establishing step as an enabling exception to
+   the general restriction only for the minimum scope necessary to establish the
+   prerequisite, unless the supplied context explicitly says the establishing step
+   itself requires that prerequisite. Prefer a specific procedural instruction over
+   a conflicting general formulation only within that specific procedural scope. Do
+   not invent broader permissions, discard unrelated restrictions, or use this rule
+   to excuse a candidate when no real conflict or circularity exists. If no narrow
+   reconciliation can make the applicable statements jointly coherent, state the
+   unresolved conflict in the rejection reason rather than silently choosing an
+   arbitrary interpretation.
+10. Distinguish internal information access from user-facing disclosure. A read-only
+   internal tool call that retrieves information for the agent is not, by itself, a
+   disclosure of that information to the user. Likewise, information appearing in an
+   execution result, internal runtime observation, or execution-protocol print()
+   output is not user-facing merely because the agent can observe it. Do not treat
+   such internal retrieval or required runtime output as a privacy leak unless an
+   applicable supplied rule explicitly prohibits the lookup/access itself. Evaluate
+   disclosure separately when a terminal/user-facing candidate actually communicates
+   the information to the user; at that point, enforce any applicable privacy,
+   authentication, or non-disclosure requirement normally. This rule does not make
+   read-only access universally permissible and does not override an explicit policy
+   that forbids the internal lookup itself.
+11. When the candidate proposes a policy-controlled categorical value or choice
+   (for example a reason code, status, route, mode, category, or tool selection),
+   treat the proposed value as a hypothesis to verify, not as evidence for its own
+   applicability. Do not approve merely because the proposed value is a valid option
+   or can be made superficially plausible. Instead perform this comparison before
+   deciding:
+   a. Determine the actual situation established by the supplied context/runtime
+      evidence.
+   b. Identify every supplied alternative whose stated applicability conditions may
+      match that situation, not only the alternative named by the candidate.
+   c. Evaluate the applicability of each alternative independently against the
+      supplied evidence. Do not stretch or merge distinct conditions merely because
+      their wording is related. In particular, distinct operations remain distinct
+      unless the supplied context explicitly equates them; for example, a failed
+      account/database lookup is not automatically a failed knowledge-base search.
+   d. Apply any supplied tier, priority, precedence, specificity, or ordering rule
+      after determining applicability. If authority says to choose the highest-priority
+      or highest-tier applicable option, the proposed value is permissible only when
+      no higher-priority applicable alternative is established by the supplied context.
+   e. Reject a lower-priority, lower-tier, catch-all, or less-specific proposed value
+      when a supplied higher-priority/more-specific alternative applies. When possible,
+      cite both the Q statement establishing the selection/priority rule and the Q
+      statement(s) establishing the competing applicable alternative.
+12. Use ordinary linguistic and logical inference when needed to combine supplied
+   facts and apply supplied rules, but distinguish entailment from speculation. Do not
+   introduce a new classification, equivalence, prerequisite, causal link, or factual
+   premise merely because it seems plausible, typical, likely, or semantically similar
+   to something in the context. Any inferred bridge between supplied statements must
+   be supported by their combined meaning strongly enough that the conclusion follows
+   from them, rather than merely being a reasonable guess. Preserve distinctions that
+   the supplied statements preserve; related concepts are not automatically equivalent
+   or members of the same policy category. Before applying a conditional rule, establish
+   that its applicability condition is supported by the supplied evidence or by a
+   strongly entailed inference from that evidence. Do not use a speculative bridge as
+   the basis for rejection. This rule does not require every conclusion to be stated
+   verbatim: ordinary entailments needed to connect facts to an applicable rule remain
+   allowed.
+13. When a verifier_rejection Q statement is present, account for it explicitly when
+   judging the replacement candidate. Do not oscillate back to a position that ignores
+   the immediately preceding rejection. Determine whether the new candidate actually
+   resolves, avoids, or still contains the issue recorded there. The prior rejection is
+   correction-history context only: it does not override stronger current evidence and
+   must not be used by itself as proof that the new candidate is impermissible.
+
+If rejected, violated_context_ids should contain the Q IDs of the statements that
+make the candidate impermissible whenever such Q statements exist. Use only IDs
+actually supplied. If rejection is based solely on deterministic execution/runtime
+facts, the list may be empty. If approved, violated_context_ids must be empty and
+reason may be empty or omitted. If rejected, provide a concise reason when confident;
+do not invent a corrective explanation merely to populate the field. A missing or
+empty reason alone is not a basis for changing the verdict. When a reason is given,
+describe the RAW candidate semantics, not retrieval fragments.
+""".strip()
 
 
 _VERIFICATION_SYSTEM_PROMPT = """
@@ -233,12 +538,26 @@ endpoints are both listed for that atom. A truncation marker means traversal hit
 its configured node limit. Absence from selected evidence is not proof of the
 opposite.
 
+[LOGIC]
+Deterministic propositional verification for candidate atoms that match a stored
+logic slot. Simple literal-to-literal constraints are compiled directly to CNF;
+compound Boolean/cardinality structures are compiled from ASTs only when needed.
+``status=entailed`` means the connected represented logic forces the candidate
+true. ``status=contradicted`` means it forces the candidate false.
+``status=undetermined`` means at least one satisfying assignment still allows the
+candidate to be false; do not let the LLM fill that missing formal premise.
+``status=inconsistent`` means the selected logical component is internally
+inconsistent and must not be used as positive support. Unresolved slots are free
+Boolean variables, never implicitly true.
+
 [REASONING_HISTORY]
 Previously accepted intermediate reasoning steps for this same internal
 generation cycle. They provide trajectory/continuity context ONLY. They are not
 authoritative evidence for external facts, successful actions, permissions, or
 satisfied prerequisites. Never use a prior reasoning step to self-ground a
-material claim in the terminal candidate.
+material claim in the terminal candidate. Verified reasoning propositions may,
+however, have already been incorporated into [LOGIC] as explicit Boolean facts;
+trust only that deterministic projection for such formal use.
 
 [RUNTIME]
 Deterministic runtime tool facts. "directly_callable" is authoritative for tools
@@ -291,6 +610,10 @@ B. Enforce applicable ADHERENCE evidence.
    - Respect conditions, modality, temporal scope, exceptions, qualifiers, and
      explicit override/supersession language.
    - Do not invent precedence that the evidence does not establish.
+   - When [LOGIC] reports a matching candidate as contradicted, reject it. When a
+     candidate is governed by the shown formal rules and is undetermined because
+     a required slot is unresolved/unestablished, treat the missing premise as
+     insufficient rather than reasoning it into existence.
 
 C. Distinguish a prerequisite from a prerequisite-establishing procedure.
    - A rule may require condition P before a protected operation while another
@@ -375,12 +698,22 @@ Typed relations among selected grounding-evidence statements.
 [RELEVANCE]
 The selected ADHERENCE and STATE evidence available to each candidate atom.
 
+[LOGIC]
+Deterministic SAT classification for candidate atoms that match stored logical
+slots. Entailed/contradicted results are authoritative within the represented
+formal logic. Undetermined means the required proposition has not been formally
+established yet; do not perform the missing world/date/arithmetic reasoning inside
+the verifier. The agent must surface that reasoning as a later verified semantic
+proposition, which can then bind the unresolved slot.
+
 [REASONING_HISTORY]
 Previously accepted reasoning steps in this same internal reasoning cycle.
 These steps may establish trajectory, hypotheses already under consideration,
 prior planning choices, and logical continuity. They are NOT authoritative
 external evidence and must never be used to prove bank state, tool outcomes,
-policy permissions, user-provided values, or satisfied prerequisites.
+policy permissions, user-provided values, or satisfied prerequisites merely
+from their text. Once accepted, their semantic propositions may be used by the
+separate deterministic [LOGIC] layer.
 
 [RUNTIME]
 Deterministic runtime tool facts.
@@ -444,13 +777,22 @@ obtained:
 - literal: written directly in the call;
 - local_static(name): resolved from a deterministic local assignment in this
   same code block;
-- prior_call_result(Cn via name): the runtime result of an earlier call in this
-  same execution candidate;
-- unresolved(expr): could not be resolved deterministically.
+- runtime_variable(name): resolved from CUGA's current persistent VariablesManager
+  before this candidate executes;
+- prior_call_result(Cn via name): the direct runtime result of an earlier call
+  in this same execution candidate;
+- derived_from_prior_call_result(Cn via name): a local Python expression whose
+  dataflow depends on an earlier call result (for example parsing, indexing,
+  regex extraction, string cleanup, or another local transformation);
+- unresolved(expr): could not be resolved deterministically and has no known
+  dependency on an earlier same-candidate tool call.
 A local_static value does NOT need a separate STATE fact proving that the Python
 variable exists; its existence/value was established deterministically from the
-candidate code. You must still verify that the semantic CONTENT of a consequential
-local_static value is grounded in STATE/policy as appropriate.
+candidate code. A runtime_variable value likewise does not need STATE evidence
+merely to prove the Python name/value binding: that binding was read directly from
+CUGA's VariablesManager. You must still verify that the semantic CONTENT of a
+consequential local_static or runtime_variable value is grounded in
+STATE/policy/execution evidence as appropriate.
 
 [CALLED_TOOL_SPECS]
 Compact runtime descriptions/signatures for the tools named in [CALLS]. These are
@@ -493,11 +835,18 @@ For each proposed call, verify ONLY the legitimacy of executing that call now:
 2. Arguments/parameters.
    - Argument names and shape must be compatible with the supplied runtime tool
      signature when a signature is available.
-   - Treat values marked literal or local_static as concrete values actually
-     proposed by the candidate. Judge whether their semantic content is grounded;
-     do not reject merely because the original call referred to a local variable.
-   - A prior_call_result(Cn ...) value is an explicit same-candidate dependency.
-     Do not require its runtime value to already exist in pre-candidate STATE.
+   - Treat values marked literal, local_static, or runtime_variable as concrete
+     values actually proposed by the candidate. Judge whether their semantic
+     content is grounded; do not reject merely because the original call referred
+     to a deterministically resolved Python variable.
+   - A prior_call_result(Cn ...) or derived_from_prior_call_result(Cn ...) value
+     is an explicit same-candidate dependency. Do not require its runtime value to
+     already exist in pre-candidate STATE and do not independently grounding-check
+     the earlier-tool-derived portion of that argument. The earlier call has not
+     executed yet; provenance is what is known pre-execution.
+   - This exemption does not authorize the later call. Still verify the later
+     tool's availability, policy/prerequisites, parameter names/shape, and all
+     independent literal/local/runtime argument content normally.
    - An unresolved(...) consequential value normally lacks enough grounding unless
      supplied evidence independently establishes exactly what it denotes.
    - Do not invent IDs, account values, emails, dates, reason enums, or other
@@ -590,22 +939,51 @@ def _reasoning_history_lines() -> list[str]:
     ]
 
 
-def _reset_reasoning_trace(*, reason: str) -> None:
+def _reset_reasoning_trace(
+    *,
+    reason: str,
+    preserve_logic_bindings: bool = False,
+) -> None:
+    reasoning_graph = _VERIFICATION_STATE.reasoning_graph
     step_count = len(_VERIFICATION_STATE.reasoning_steps)
-    node_count = (
-        len(_VERIFICATION_STATE.reasoning_graph.nodes)
-        if _VERIFICATION_STATE.reasoning_graph is not None
-        else 0
-    )
+    reasoning_node_ids = set(reasoning_graph.nodes) if reasoning_graph is not None else set()
+    node_count = len(reasoning_node_ids)
+
+    removed_bindings = 0
+    if reasoning_node_ids and not preserve_logic_bindings:
+        for graph in (
+            _VERIFICATION_STATE.cuga_policy_graph,
+            _VERIFICATION_STATE.playbook_graph,
+            _VERIFICATION_STATE.state_graph,
+        ):
+            if graph is not None:
+                removed_bindings += graph.remove_logic_bindings(reasoning_node_ids)
+
     _VERIFICATION_STATE.reasoning_graph = None
     _VERIFICATION_STATE.reasoning_steps = []
-    if step_count or node_count:
+    if step_count or node_count or removed_bindings:
         logger.info(
-            "Prompt verifier reasoning trace reset: reason={} steps={} nodes={}",
+            "Prompt verifier reasoning trace reset: reason={} steps={} nodes={} "
+            "removed_logic_bindings={} preserve_logic_bindings={}",
             reason,
             step_count,
             node_count,
+            removed_bindings,
+            preserve_logic_bindings,
         )
+
+
+def _logic_target_graphs(*, include_reasoning: bool = True) -> list[MemoryGraph]:
+    graphs: list[MemoryGraph] = []
+    for graph in (
+        _VERIFICATION_STATE.cuga_policy_graph,
+        _VERIFICATION_STATE.playbook_graph,
+        _VERIFICATION_STATE.state_graph,
+        _VERIFICATION_STATE.reasoning_graph if include_reasoning else None,
+    ):
+        if graph is not None and graph not in graphs:
+            graphs.append(graph)
+    return graphs
 
 
 async def _commit_reasoning_candidate_graph(
@@ -614,12 +992,11 @@ async def _commit_reasoning_candidate_graph(
     content: str,
     step_id: str,
 ) -> None:
-    """Commit an already-verified candidate graph to temporary reasoning state.
+    """Commit an already-verified reasoning graph and augment logic slots.
 
-    The candidate graph is merged only into ``reasoning_graph``. After insertion,
-    lateral relations are inferred against earlier reasoning atoms so the
-    temporary graph tracks relationships across accepted reasoning steps. No
-    reasoning node is inserted into STATE or authority.
+    Accepted reasoning remains separate from external STATE while the trajectory
+    is active, but its verified atomic propositions are allowed to bind persistent
+    logic slots and therefore participate in deterministic SAT checks.
     """
     reasoning_graph = _VERIFICATION_STATE.reasoning_graph
     if reasoning_graph is None:
@@ -642,12 +1019,20 @@ async def _commit_reasoning_candidate_graph(
             )
         reasoning_graph.add_edge(edge)
 
+    reasoning_graph.merge_logic_layer(candidate_graph.logic_layer)
+
     edge_ids_before_linking = set(reasoning_graph.edges)
     if new_node_ids:
         await asyncio.to_thread(
             link_new_nodes,
             reasoning_graph,
             new_node_ids,
+        )
+        await asyncio.to_thread(
+            link_new_nodes_to_logic_slots,
+            source_graph=reasoning_graph,
+            new_node_ids=new_node_ids,
+            target_graphs=_logic_target_graphs(include_reasoning=True),
         )
 
     step_edge_ids = {
@@ -668,13 +1053,51 @@ async def _commit_reasoning_candidate_graph(
 
     logger.info(
         "Prompt verifier committed reasoning step: step_id={} nodes={} edges={} "
-        "total_steps={} total_reasoning_nodes={}",
+        "logic_slots={} total_steps={} total_reasoning_nodes={}",
         step_id,
         len(new_node_ids),
         len(step_edge_ids),
+        len(candidate_graph.logic_layer.slots),
         len(_VERIFICATION_STATE.reasoning_steps),
         len(reasoning_graph.nodes),
     )
+
+
+def _transfer_reasoning_to_state(*, reason: str) -> None:
+    """Transfer verified reasoning into persistent STATE before trace deletion."""
+    reasoning_graph = _VERIFICATION_STATE.reasoning_graph
+    if reasoning_graph is None or not reasoning_graph.nodes:
+        _reset_reasoning_trace(reason=reason)
+        return
+
+    state_graph = _VERIFICATION_STATE.state_graph
+    if state_graph is None:
+        raise PromptVerificationError(
+            "Cannot commit verified reasoning before the STATE graph exists"
+        )
+
+    state_graph.merge_graph(reasoning_graph)
+
+    committed = _VERIFICATION_STATE.committed_reasoning_graph
+    if committed is None:
+        committed = MemoryGraph()
+        _VERIFICATION_STATE.committed_reasoning_graph = committed
+    committed.merge_graph(reasoning_graph)
+
+    logger.info(
+        "Prompt verifier transferred reasoning to STATE: reason={} nodes={} "
+        "edges={} logic_slots={}",
+        reason,
+        len(reasoning_graph.nodes),
+        len(reasoning_graph.edges),
+        len(reasoning_graph.logic_layer.slots),
+    )
+    _reset_reasoning_trace(reason=reason, preserve_logic_bindings=True)
+
+
+def commit_reasoning_trace_to_state() -> None:
+    """Public finalization hook for an accepted terminal trajectory."""
+    _transfer_reasoning_to_state(reason="accepted_terminal")
 
 
 def reset_reasoning_trace() -> None:
@@ -705,7 +1128,11 @@ def _static_value_from_expr(
         binding = bindings.get(node.id)
         if (
             binding is not None
-            and binding.resolved.provenance in {"literal", "local_static"}
+            and binding.resolved.provenance in {
+                "literal",
+                "local_static",
+                "runtime_variable",
+            }
         ):
             return True, binding.resolved.static_value, (node.id,)
         return False, None, (node.id,)
@@ -834,6 +1261,20 @@ def _dependency_call_ids_for_expr(
     return tuple(dict.fromkeys(dependencies))
 
 
+def _runtime_variable_source_names(
+    used_names: tuple[str, ...],
+    bindings: dict[str, _LocalBinding],
+) -> tuple[str, ...]:
+    """Return underlying CUGA runtime-variable names used by an expression."""
+    runtime_names: list[str] = []
+    for name in used_names:
+        binding = bindings.get(name)
+        if binding is None or binding.resolved.provenance != "runtime_variable":
+            continue
+        runtime_names.extend(binding.resolved.source_names or (name,))
+    return tuple(dict.fromkeys(runtime_names))
+
+
 def _resolve_expression(
     node: ast.AST,
     bindings: dict[str, _LocalBinding],
@@ -841,19 +1282,39 @@ def _resolve_expression(
     direct_literal: bool = False,
 ) -> _ResolvedExpression:
     """Resolve a candidate expression without executing arbitrary Python."""
+    # Preserve provenance for direct references rather than relabeling them as
+    # generic locals. In particular, a direct name bound to an earlier tool call
+    # remains a direct prior_call_result, while a name already produced by a local
+    # transformation of that result remains derived_from_prior_call_result.
+    if isinstance(node, ast.Name):
+        binding = bindings.get(node.id)
+        if binding is not None and binding.resolved.provenance in {
+            "runtime_variable",
+            "prior_call_result",
+            "derived_from_prior_call_result",
+        }:
+            return binding.resolved
+
     ok, value, used_names = _static_value_from_expr(node, bindings)
     if ok:
+        runtime_names = _runtime_variable_source_names(used_names, bindings)
         provenance: Literal[
             "literal",
             "local_static",
+            "runtime_variable",
             "prior_call_result",
+            "derived_from_prior_call_result",
             "unresolved",
-        ] = "literal" if direct_literal and not used_names else "local_static"
+        ]
+        if runtime_names:
+            provenance = "runtime_variable"
+        else:
+            provenance = "literal" if direct_literal and not used_names else "local_static"
         return _ResolvedExpression(
             rendered=repr(value),
             provenance=provenance,
             static_value=value,
-            source_names=used_names,
+            source_names=runtime_names or used_names,
         )
 
     dependencies = _dependency_call_ids_for_expr(node, bindings)
@@ -867,16 +1328,13 @@ def _resolve_expression(
     rendered = _expr_text(node)
 
     if dependencies:
-        if isinstance(node, ast.Name):
-            binding = bindings.get(node.id)
-            if (
-                binding is not None
-                and binding.resolved.provenance == "prior_call_result"
-            ):
-                return binding.resolved
+        # A non-name expression that depends on an earlier awaited call is not
+        # unresolved: its concrete value is future, but its dataflow provenance is
+        # known. We intentionally do not try to execute/interpret transformations
+        # such as re.search(...), .group(), .strip(), indexing, or parsing here.
         return _ResolvedExpression(
             rendered=rendered,
-            provenance="prior_call_result",
+            provenance="derived_from_prior_call_result",
             dependency_call_ids=dependencies,
             source_names=source_names,
         )
@@ -922,19 +1380,545 @@ def _awaited_call_from_statement(
     return None
 
 
-def _extract_candidate_calls(candidate: str) -> list[dict[str, Any]]:
-    """Build a small sequential execution plan for awaited tool calls.
+class _DryRunBlockedOperation(RuntimeError):
+    """Candidate operation intentionally unavailable in verifier dry-run."""
 
-    The parser walks top-level statements in source order, resolves safe local
-    assignments, and preserves explicit dependencies on results of earlier calls.
-    It never executes candidate code and never evaluates arbitrary function calls.
+
+class _DryRunSymbolicDependency(RuntimeError):
+    """Concrete dry-run cannot continue because it needs a future tool result."""
+
+
+@dataclass(frozen=True)
+class _DryRunToolResult:
+    """Opaque future value returned by a recorder stub instead of a real tool."""
+
+    call_id: str
+    tool_name: str
+
+    def __bool__(self) -> bool:
+        raise _DryRunSymbolicDependency(
+            f"Control flow depends on future result_of({self.call_id})"
+        )
+
+    def __str__(self) -> str:
+        raise _DryRunSymbolicDependency(
+            f"String conversion depends on future result_of({self.call_id})"
+        )
+
+    def __format__(self, format_spec: str) -> str:
+        raise _DryRunSymbolicDependency(
+            f"Formatting depends on future result_of({self.call_id})"
+        )
+
+
+class _DryRunAsyncioModule:
+    """Small asyncio facade without network/subprocess/event-loop escape hatches."""
+
+    gather = staticmethod(asyncio.gather)
+    create_task = staticmethod(asyncio.create_task)
+    wait = staticmethod(asyncio.wait)
+    as_completed = staticmethod(asyncio.as_completed)
+    sleep = staticmethod(asyncio.sleep)
+    Queue = asyncio.Queue
+    Lock = asyncio.Lock
+    Event = asyncio.Event
+    Semaphore = asyncio.Semaphore
+
+
+_DRY_RUN_ALLOWED_MODULES: dict[str, Any] = {
+    "re": re,
+    "json": json,
+    "typing": typing_module,
+    "datetime": datetime_module,
+    "time": time,
+    "asyncio": _DryRunAsyncioModule(),
+}
+
+_DRY_RUN_FORBIDDEN_NAMES = {
+    "open",
+    "eval",
+    "exec",
+    "compile",
+    "globals",
+    "locals",
+    "vars",
+    "input",
+    "breakpoint",
+    "help",
+    "getattr",
+    "setattr",
+    "delattr",
+    "__import__",
+}
+
+
+class _DryRunSafetyValidator(ast.NodeVisitor):
+    """Block capability-bearing code while permitting ordinary local Python."""
+
+    def visit_Import(self, node: ast.Import) -> Any:
+        for alias in node.names:
+            root = alias.name.split(".", 1)[0]
+            if root not in _DRY_RUN_ALLOWED_MODULES:
+                raise _DryRunBlockedOperation(
+                    f"Import {alias.name!r} is unavailable in verifier dry-run"
+                )
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
+        if node.level:
+            raise _DryRunBlockedOperation(
+                "Relative imports are unavailable in verifier dry-run"
+            )
+        root = str(node.module or "").split(".", 1)[0]
+        if root not in _DRY_RUN_ALLOWED_MODULES:
+            raise _DryRunBlockedOperation(
+                f"Import from {node.module!r} is unavailable in verifier dry-run"
+            )
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> Any:
+        if isinstance(node.ctx, ast.Load) and node.id in _DRY_RUN_FORBIDDEN_NAMES:
+            raise _DryRunBlockedOperation(
+                f"Name {node.id!r} is unavailable in verifier dry-run"
+            )
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        # Prevent reflection escapes such as ``obj.__class__.__mro__`` while
+        # leaving normal methods (.group/.strip/.split/etc.) completely usable.
+        if node.attr.startswith("__"):
+            raise _DryRunBlockedOperation(
+                f"Dunder attribute {node.attr!r} is unavailable in verifier dry-run"
+            )
+        self.generic_visit(node)
+
+
+class _DryRunToolCallTransformer(ast.NodeTransformer):
+    """Replace awaited real-tool calls with verifier recorder calls."""
+
+    def __init__(self, *, tool_names: set[str], runtime_names: set[str]) -> None:
+        self.tool_names = set(tool_names)
+        self.runtime_names = set(runtime_names)
+        self._assigned_to: str | None = None
+
+    def _expr_meta(self, node: ast.AST) -> dict[str, Any]:
+        try:
+            ast.literal_eval(node)
+            literal = True
+        except Exception:
+            literal = False
+        names = [
+            child.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Name)
+        ]
+        return {
+            "expr": _expr_text(node),
+            "literal": literal,
+            "direct_runtime_name": (
+                node.id
+                if isinstance(node, ast.Name) and node.id in self.runtime_names
+                else None
+            ),
+            "source_names": list(dict.fromkeys(names)),
+        }
+
+    def visit_Assign(self, node: ast.Assign) -> Any:
+        previous = self._assigned_to
+        self._assigned_to = ", ".join(_expr_text(target) for target in node.targets)
+        node.value = self.visit(node.value)
+        self._assigned_to = previous
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
+        previous = self._assigned_to
+        self._assigned_to = _expr_text(node.target)
+        if node.value is not None:
+            node.value = self.visit(node.value)
+        self._assigned_to = previous
+        return node
+
+    def visit_Expr(self, node: ast.Expr) -> Any:
+        previous = self._assigned_to
+        self._assigned_to = None
+        node.value = self.visit(node.value)
+        self._assigned_to = previous
+        return node
+
+    def visit_Await(self, node: ast.Await) -> Any:
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in self.tool_names
+        ):
+            metadata = {
+                "positional": [self._expr_meta(arg) for arg in value.args],
+                "keywords": [
+                    {
+                        "name": kw.arg,
+                        **self._expr_meta(kw.value),
+                    }
+                    for kw in value.keywords
+                ],
+            }
+            replacement = ast.Await(
+                value=ast.Call(
+                    func=ast.Name(id="__verifier_tool_call__", ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=value.func.id),
+                        ast.Constant(value=self._assigned_to),
+                        ast.Constant(
+                            value=json.dumps(
+                                metadata,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            )
+                        ),
+                        *[self.visit(arg) for arg in value.args],
+                    ],
+                    keywords=[
+                        ast.keyword(arg=kw.arg, value=self.visit(kw.value))
+                        for kw in value.keywords
+                    ],
+                )
+            )
+            return ast.copy_location(replacement, node)
+        return self.generic_visit(node)
+
+
+def _dry_run_import(
+    name: str,
+    globals: dict[str, Any] | None = None,
+    locals: dict[str, Any] | None = None,
+    fromlist: tuple[str, ...] | list[str] = (),
+    level: int = 0,
+) -> Any:
+    if level:
+        raise _DryRunBlockedOperation(
+            "Relative imports are unavailable in verifier dry-run"
+        )
+    root = str(name or "").split(".", 1)[0]
+    module = _DRY_RUN_ALLOWED_MODULES.get(root)
+    if module is None:
+        raise _DryRunBlockedOperation(
+            f"Import {name!r} is unavailable in verifier dry-run"
+        )
+    return module
+
+
+def _dry_run_builtins() -> dict[str, Any]:
+    """Broad local-computation builtins with capability-bearing entries removed."""
+    allowed_names = {
+        "abs",
+        "all",
+        "any",
+        "ascii",
+        "bin",
+        "bool",
+        "bytearray",
+        "bytes",
+        "callable",
+        "chr",
+        "complex",
+        "dict",
+        "divmod",
+        "enumerate",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "hash",
+        "hex",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "map",
+        "max",
+        "memoryview",
+        "min",
+        "next",
+        "object",
+        "oct",
+        "ord",
+        "pow",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "slice",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "type",
+        "zip",
+        "BaseException",
+        "Exception",
+        "ArithmeticError",
+        "AssertionError",
+        "AttributeError",
+        "IndexError",
+        "KeyError",
+        "LookupError",
+        "RuntimeError",
+        "StopIteration",
+        "TypeError",
+        "ValueError",
+        "ZeroDivisionError",
+    }
+    result = {
+        name: getattr(builtins, name)
+        for name in allowed_names
+        if hasattr(builtins, name)
+    }
+    result["__import__"] = _dry_run_import
+    # Printing is execution-protocol mechanics here. Do not emit anything and do
+    # not call str()/repr() on symbolic future tool results.
+    result["print"] = lambda *args, **kwargs: None
+    return result
+
+
+def _dry_run_clone(value: Any) -> Any:
+    """Avoid mutating live VariablesManager values during speculative execution."""
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+def _dry_run_dependency_call_ids(value: Any) -> tuple[str, ...]:
+    dependencies: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, _DryRunToolResult):
+            dependencies.append(item.call_id)
+            return
+        if isinstance(item, dict):
+            for key, val in item.items():
+                collect(key)
+                collect(val)
+            return
+        if isinstance(item, (list, tuple, set, frozenset)):
+            for child in item:
+                collect(child)
+
+    collect(value)
+    return tuple(dict.fromkeys(dependencies))
+
+
+def _dry_run_resolved_expression(
+    value: Any,
+    metadata: dict[str, Any] | None,
+) -> _ResolvedExpression:
+    metadata = dict(metadata or {})
+    expression = str(metadata.get("expr") or repr(value))
+    source_names = tuple(
+        str(name)
+        for name in metadata.get("source_names", [])
+        if str(name)
+    )
+
+    if isinstance(value, _DryRunToolResult):
+        return _ResolvedExpression(
+            rendered=f"result_of({value.call_id})",
+            provenance="prior_call_result",
+            dependency_call_ids=(value.call_id,),
+            source_names=source_names,
+        )
+
+    dependencies = _dry_run_dependency_call_ids(value)
+    if dependencies:
+        return _ResolvedExpression(
+            rendered=expression,
+            provenance="derived_from_prior_call_result",
+            dependency_call_ids=dependencies,
+            source_names=source_names,
+        )
+
+    direct_runtime_name = str(metadata.get("direct_runtime_name") or "").strip()
+    if direct_runtime_name:
+        provenance: Literal[
+            "literal",
+            "local_static",
+            "runtime_variable",
+            "prior_call_result",
+            "derived_from_prior_call_result",
+            "unresolved",
+        ] = "runtime_variable"
+        source_names = (direct_runtime_name,)
+    elif bool(metadata.get("literal", False)):
+        provenance = "literal"
+    else:
+        provenance = "local_static"
+
+    return _ResolvedExpression(
+        rendered=repr(value),
+        provenance=provenance,
+        static_value=_dry_run_clone(value),
+        source_names=source_names,
+    )
+
+
+async def _extract_candidate_calls_dry_run(
+    candidate: str,
+    *,
+    runtime_variables: dict[str, Any] | None = None,
+    tool_names: set[str],
+) -> list[dict[str, Any]]:
+    """Execute local Python faithfully while replacing every real tool with a stub.
+
+    This is verifier-side speculative execution only. Runtime variables are copied
+    into the dry-run function's local namespace. Ordinary deterministic Python is
+    then allowed to run normally (regex, parsing, indexing, comprehensions,
+    conditionals, helper functions, datetime formatting, etc.). Awaited calls whose
+    direct function name is a currently callable CUGA tool are rewritten to an
+    async recorder and are never executed against the real environment.
     """
+    blocks = _PYTHON_BLOCK_RE.findall(candidate)
+    if not blocks:
+        return []
+    if not tool_names:
+        raise _DryRunBlockedOperation(
+            "Runtime tool inventory is unavailable for verifier dry-run"
+        )
+
+    body: list[ast.stmt] = []
+    runtime_names = {
+        str(name)
+        for name in (runtime_variables or {})
+        if isinstance(name, str) and name.isidentifier()
+    }
+    transformer = _DryRunToolCallTransformer(
+        tool_names=tool_names,
+        runtime_names=runtime_names,
+    )
+
+    for block in blocks:
+        tree = ast.parse(block)
+        _DryRunSafetyValidator().visit(tree)
+        transformed = transformer.visit(tree)
+        ast.fix_missing_locations(transformed)
+        body.extend(transformed.body)
+
+    runtime_assignments: list[ast.stmt] = []
+    for name in sorted(runtime_names):
+        runtime_assignments.append(
+            ast.Assign(
+                targets=[ast.Name(id=name, ctx=ast.Store())],
+                value=ast.Subscript(
+                    value=ast.Name(id="__runtime_variables__", ctx=ast.Load()),
+                    slice=ast.Constant(value=name),
+                    ctx=ast.Load(),
+                ),
+            )
+        )
+
+    dry_function = ast.AsyncFunctionDef(
+        name="__verifier_dry_run__",
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        ),
+        body=[*runtime_assignments, *body] or [ast.Pass()],
+        decorator_list=[],
+        returns=None,
+        type_comment=None,
+    )
+    module = ast.Module(body=[dry_function], type_ignores=[])
+    ast.fix_missing_locations(module)
+
+    extracted: list[dict[str, Any]] = []
+
+    async def recorder(
+        tool_name: str,
+        assigned_to: str | None,
+        metadata_json: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> _DryRunToolResult:
+        call_id = f"C{len(extracted) + 1}"
+        try:
+            metadata = json.loads(metadata_json)
+        except Exception:
+            metadata = {}
+        positional_meta = list(metadata.get("positional") or [])
+        keyword_meta_rows = list(metadata.get("keywords") or [])
+        keyword_meta = {
+            str(row.get("name")): row
+            for row in keyword_meta_rows
+            if isinstance(row, dict) and row.get("name") is not None
+        }
+
+        positional_args = [
+            _dry_run_resolved_expression(
+                value,
+                positional_meta[index] if index < len(positional_meta) else None,
+            )
+            for index, value in enumerate(args)
+        ]
+        keyword_args = {
+            name: _dry_run_resolved_expression(value, keyword_meta.get(name))
+            for name, value in kwargs.items()
+        }
+
+        extracted.append(
+            {
+                "call_id": call_id,
+                "call": str(tool_name),
+                "positional_args": positional_args,
+                "keyword_args": keyword_args,
+                "assigned_to": assigned_to,
+            }
+        )
+        return _DryRunToolResult(call_id=call_id, tool_name=str(tool_name))
+
+    dry_globals: dict[str, Any] = {
+        "__builtins__": _dry_run_builtins(),
+        "__name__": "__prompt_verifier_dry_run__",
+        "__runtime_variables__": {
+            name: _dry_run_clone(value)
+            for name, value in (runtime_variables or {}).items()
+            if isinstance(name, str) and name.isidentifier()
+        },
+        "__verifier_tool_call__": recorder,
+    }
+    compiled = compile(module, "<prompt-verifier-dry-run>", "exec")
+    exec(compiled, dry_globals, dry_globals)
+    await dry_globals["__verifier_dry_run__"]()
+    return extracted
+
+
+def _extract_candidate_calls_static(
+    candidate: str,
+    *,
+    runtime_variables: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Legacy conservative AST extractor retained as a compatibility fallback."""
     blocks = _PYTHON_BLOCK_RE.findall(candidate)
     if not blocks:
         return []
 
     extracted: list[dict[str, Any]] = []
-    bindings: dict[str, _LocalBinding] = {}
+    bindings: dict[str, _LocalBinding] = {
+        name: _LocalBinding(
+            resolved=_ResolvedExpression(
+                rendered=repr(value),
+                provenance="runtime_variable",
+                static_value=value,
+                source_names=(name,),
+            )
+        )
+        for name, value in (runtime_variables or {}).items()
+        if isinstance(name, str) and name.isidentifier()
+    }
 
     for block in blocks:
         try:
@@ -982,8 +1966,6 @@ def _extract_candidate_calls(candidate: str) -> list[dict[str, Any]]:
                     )
                 continue
 
-            # Track only simple top-level assignments. Complex targets remain
-            # unresolved rather than being approximated.
             assignment_value: ast.AST | None = None
             if isinstance(statement, ast.Assign):
                 assignment_value = statement.value
@@ -1013,10 +1995,21 @@ def _extract_candidate_calls(candidate: str) -> list[dict[str, Any]]:
                             dict.fromkeys([name, *resolved.source_names])
                         ),
                     )
-                elif resolved.provenance == "prior_call_result":
+                elif resolved.provenance == "runtime_variable":
                     bound = _ResolvedExpression(
                         rendered=resolved.rendered,
-                        provenance="prior_call_result",
+                        provenance="runtime_variable",
+                        static_value=resolved.static_value,
+                        dependency_call_ids=resolved.dependency_call_ids,
+                        source_names=resolved.source_names or (name,),
+                    )
+                elif resolved.provenance in {
+                    "prior_call_result",
+                    "derived_from_prior_call_result",
+                }:
+                    bound = _ResolvedExpression(
+                        rendered=resolved.rendered,
+                        provenance=resolved.provenance,
                         dependency_call_ids=resolved.dependency_call_ids,
                         source_names=tuple(
                             dict.fromkeys([name, *resolved.source_names])
@@ -1035,16 +2028,211 @@ def _extract_candidate_calls(candidate: str) -> list[dict[str, Any]]:
     return extracted
 
 
-def _get_model(*, reasoning_effort: Literal["low", "medium", "high"]):
-    """Get CUGA's configured model and set gpt-oss reasoning effort per call."""
-    model = LLMManager().get_model(settings.agent.code.model)
-    model_name = str(
+async def _extract_candidate_calls(
+    candidate: str,
+    *,
+    runtime_variables: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Prefer faithful restricted dry-run; fall back to the legacy AST extractor."""
+    blocks = _PYTHON_BLOCK_RE.findall(candidate)
+    if not blocks:
+        return []
+
+    tool_names = {
+        str(name).strip()
+        for name in (
+            _VERIFICATION_STATE.runtime_facts.get("execution_context_tool_names", [])
+            if isinstance(_VERIFICATION_STATE.runtime_facts, dict)
+            else []
+        )
+        if str(name).strip()
+    }
+
+    try:
+        extracted = await _extract_candidate_calls_dry_run(
+            candidate,
+            runtime_variables=runtime_variables,
+            tool_names=tool_names,
+        )
+        logger.debug(
+            "Prompt verifier candidate dry-run succeeded: calls={} runtime_variables={}",
+            len(extracted),
+            sorted((runtime_variables or {}).keys()),
+        )
+        return extracted
+    except Exception as exc:
+        logger.debug(
+            "Prompt verifier candidate dry-run fell back to static extraction: "
+            "{}: {}",
+            type(exc).__name__,
+            exc,
+        )
+        return _extract_candidate_calls_static(
+            candidate,
+            runtime_variables=runtime_variables,
+        )
+
+
+# Keep the verifier model independent from the model used by the main CUGA
+# agent. The existing transport/base-URL/auth settings are cloned below; only
+# verifier-specific model/runtime knobs are changed. The default verifier is
+# GPT-OSS-120B and _get_model() binds reasoning_effort="high" for GPT-OSS.
+# PROMPT_VERIFIER_MODEL_NAME remains environment-overridable for experiments.
+PROMPT_VERIFIER_MODEL_NAME = os.environ.get(
+    "PROMPT_VERIFIER_MODEL_NAME",
+    "aws/gpt-oss-120b",
+).strip()
+
+# Claude Haiku 4.5 supports manual extended thinking rather than the newer
+# adaptive/effort API. Its maximum output budget is 64k tokens. Reserve 1,024
+# tokens for the verifier's required JSON answer and give every remaining token
+# to thinking. Environment overrides are retained for controlled experiments.
+PROMPT_VERIFIER_CLAUDE_MAX_TOKENS = int(
+    os.environ.get("PROMPT_VERIFIER_CLAUDE_MAX_TOKENS", "64000")
+)
+PROMPT_VERIFIER_CLAUDE_RESPONSE_TOKEN_RESERVE = int(
+    os.environ.get("PROMPT_VERIFIER_CLAUDE_RESPONSE_TOKEN_RESERVE", "1024")
+)
+PROMPT_VERIFIER_CLAUDE_THINKING_BUDGET_TOKENS = int(
+    os.environ.get(
+        "PROMPT_VERIFIER_CLAUDE_THINKING_BUDGET_TOKENS",
+        str(
+            PROMPT_VERIFIER_CLAUDE_MAX_TOKENS
+            - PROMPT_VERIFIER_CLAUDE_RESPONSE_TOKEN_RESERVE
+        ),
+    )
+)
+
+
+def _validated_claude_thinking_budget() -> tuple[int, int]:
+    """Return (max_tokens, thinking_budget_tokens) for Haiku extended thinking.
+
+    Anthropic requires ``budget_tokens >= 1024`` and ``budget_tokens < max_tokens``.
+    Haiku 4.5 supports up to 64k total output tokens. Keep the verifier-specific
+    defaults at that ceiling while preserving a small visible-output reserve for
+    the required JSON decision.
+    """
+    max_tokens = PROMPT_VERIFIER_CLAUDE_MAX_TOKENS
+    thinking_budget = PROMPT_VERIFIER_CLAUDE_THINKING_BUDGET_TOKENS
+
+    if max_tokens <= 1024 or max_tokens > 64000:
+        raise PromptVerificationError(
+            "PROMPT_VERIFIER_CLAUDE_MAX_TOKENS must be in [1025, 64000]; "
+            f"got {max_tokens}"
+        )
+    if thinking_budget < 1024 or thinking_budget >= max_tokens:
+        raise PromptVerificationError(
+            "PROMPT_VERIFIER_CLAUDE_THINKING_BUDGET_TOKENS must be >= 1024 "
+            "and strictly less than PROMPT_VERIFIER_CLAUDE_MAX_TOKENS; "
+            f"got budget={thinking_budget} max_tokens={max_tokens}"
+        )
+    return max_tokens, thinking_budget
+
+
+def _is_claude_model_name(model_name: str) -> bool:
+    """Whether a provider model alias denotes Claude/Anthropic."""
+    return "claude" in str(model_name or "").lower()
+
+
+def _runtime_model_name(model: Any) -> str:
+    return str(
         getattr(model, "model_name", "")
         or getattr(model, "model", "")
-        or ""
-    ).lower()
+        or PROMPT_VERIFIER_MODEL_NAME
+    )
 
-    if "gpt-oss" in model_name:
+
+def _verifier_model_settings() -> dict[str, Any]:
+    """Clone CUGA transport/auth settings and apply verifier-only model settings.
+
+    Claude is reached through the same OpenAI-compatible provider transport used
+    by CUGA. Do not forward settings that are specific to GPT reasoning models or
+    OpenAI sampling penalties. In particular, CUGA's LLM layer notes that Bedrock
+    Claude variants can reject requests containing both ``temperature`` and
+    ``top_p``; the verifier keeps the inherited temperature and removes ``top_p``.
+    """
+    configured = settings.agent.code.model
+    to_dict = getattr(configured, "to_dict", None)
+    if callable(to_dict):
+        model_settings = dict(to_dict())
+    elif isinstance(configured, dict):
+        model_settings = dict(configured)
+    else:
+        model_settings = dict(configured)
+
+    model_settings["model"] = PROMPT_VERIFIER_MODEL_NAME
+
+    if _is_claude_model_name(PROMPT_VERIFIER_MODEL_NAME):
+        # Haiku 4.5 uses Anthropic manual extended thinking. CUGA's extra_params
+        # is the provider-specific passthrough merged into the OpenAI-compatible
+        # client kwargs, so place the Anthropic ``thinking`` object there.
+        #
+        # Extended thinking is incompatible with non-default temperature/top_k
+        # and with ordinary top_p tuning. Use temperature=1 (Anthropic's allowed
+        # default while thinking is enabled) and omit the other sampling knobs.
+        max_tokens, thinking_budget = _validated_claude_thinking_budget()
+        model_settings["max_tokens"] = max_tokens
+        model_settings["temperature"] = 1.0
+        model_settings["top_p"] = None
+        model_settings.pop("top_k", None)
+        for key in (
+            "reasoning_effort",
+            "frequency_penalty",
+            "presence_penalty",
+        ):
+            model_settings.pop(key, None)
+
+        extra_params = model_settings.get("extra_params")
+        sanitized_extra_params = (
+            dict(extra_params) if isinstance(extra_params, dict) else {}
+        )
+        for key in (
+            "reasoning_effort",
+            "top_p",
+            "top_k",
+            "frequency_penalty",
+            "presence_penalty",
+            "response_format",
+            "thinking",
+        ):
+            sanitized_extra_params.pop(key, None)
+        sanitized_extra_params["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": thinking_budget,
+        }
+        model_settings["extra_params"] = sanitized_extra_params
+
+    return model_settings
+
+
+def _get_model(*, reasoning_effort: Literal["low", "medium", "high"] = "high"):
+    """Get the dedicated verifier model using CUGA's existing provider transport.
+
+    ``reasoning_effort`` is retained only for backwards-compatible environment
+    overrides to GPT-OSS. Claude Haiku 4.5 instead receives Anthropic manual
+    extended thinking with the verifier's maximum configured thinking budget.
+    """
+    model_settings = _verifier_model_settings()
+    model = LLMManager().get_model(model_settings)
+    model_name = _runtime_model_name(model)
+
+    if _is_claude_model_name(model_name):
+        max_tokens, thinking_budget = _validated_claude_thinking_budget()
+        logger.info(
+            "Prompt verifier LLM selected: model={} mode=claude_plain_json "
+            "extended_thinking=enabled max_tokens={} thinking_budget_tokens={} "
+            "response_token_reserve={}",
+            model_name,
+            max_tokens,
+            thinking_budget,
+            max_tokens - thinking_budget,
+        )
+    else:
+        logger.info(
+            "Prompt verifier LLM selected: model={} mode=structured_output",
+            model_name,
+        )
+    if "gpt-oss" in model_name.lower() or "gpt-oss" in PROMPT_VERIFIER_MODEL_NAME.lower():
         return model.bind(reasoning_effort=reasoning_effort)
     return model
 
@@ -1086,6 +2274,40 @@ def _message_text(message: dict[str, Any] | BaseMessage) -> str:
     return str(content or "")
 
 
+_INTERNAL_STATE_MESSAGE_FLAGS = (
+    "cuga_internal_control",
+    "cuga_internal_tool_execution",
+)
+
+
+def _message_additional_kwargs(
+    message: dict[str, Any] | BaseMessage,
+) -> dict[str, Any]:
+    """Return message metadata used to distinguish CUGA control/rendering events."""
+    if isinstance(message, dict):
+        value = message.get("additional_kwargs")
+    else:
+        value = getattr(message, "additional_kwargs", None)
+    return value if isinstance(value, dict) else {}
+
+
+def _is_internal_state_message(
+    message: dict[str, Any] | BaseMessage,
+) -> bool:
+    """Whether a committed chat message is orchestration-only, not evidence.
+
+    Internal CodeAct responses and auto-continue prompts still belong in CUGA's
+    conversational execution history, but they must not become semantic STATE
+    evidence for later verifier decisions.  The surrounding orchestration code
+    tags those messages explicitly rather than relying on brittle text markers.
+    """
+    additional_kwargs = _message_additional_kwargs(message)
+    return any(
+        bool(additional_kwargs.get(flag))
+        for flag in _INTERNAL_STATE_MESSAGE_FLAGS
+    )
+
+
 def _message_signature(
     message: dict[str, Any] | BaseMessage,
 ) -> str:
@@ -1093,6 +2315,9 @@ def _message_signature(
     payload = {
         "role": _message_role(message),
         "content": _message_text(message),
+        # Internal/external status affects whether the message is semantic STATE,
+        # so include it in the append-only prefix signature.
+        "internal_state_message": _is_internal_state_message(message),
     }
     encoded = json.dumps(
         payload,
@@ -1121,30 +2346,252 @@ def _looks_like_tool_result(text: str) -> bool:
     )
 
 
+
+def _json_snapshot(value: Any) -> str:
+    """Serialize runtime execution evidence without mutating the original value."""
+
+    def default(item: Any) -> Any:
+        if hasattr(item, "model_dump"):
+            try:
+                return item.model_dump()
+            except Exception:
+                pass
+        if hasattr(item, "dict"):
+            try:
+                return item.dict()
+            except Exception:
+                pass
+        if isinstance(item, (set, frozenset)):
+            return sorted(str(value) for value in item)
+        if isinstance(item, bytes):
+            return item.decode("utf-8", errors="replace")
+        return str(item)
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=default,
+        )
+    except Exception:
+        return json.dumps(str(value), ensure_ascii=False)
+
+
+def record_tool_execution(
+    *,
+    tool_name: str,
+    parameters: Any,
+    output: Any,
+) -> None:
+    """Record one completed runtime tool invocation for later graph materialization.
+
+    This hook is intentionally synchronous and cheap because it is called directly
+    from the sandbox-local tool wrapper after the real tool has returned or raised.
+    No decomposition, spaCy parsing, embedding generation, graph traversal, or LLM
+    call happens on the tool's execution path.
+    """
+    if _VERIFICATION_STATE.graph_session_id is None:
+        logger.warning(
+            "Prompt verifier execution record ignored because no verifier session "
+            "is initialized: tool_name={}",
+            tool_name,
+        )
+        return
+
+    parameters_json = _json_snapshot(parameters)
+    output_json = _json_snapshot(output)
+    record_index = len(_VERIFICATION_STATE.execution_records) + 1
+    record_id = f"execution-{record_index}"
+    content = (
+        f"Tool {tool_name} was executed with parameters {parameters_json} "
+        f"and gave output {output_json}."
+    )
+    _VERIFICATION_STATE.execution_records.append(
+        _ExecutionRecord(
+            record_id=record_id,
+            tool_name=str(tool_name),
+            parameters_json=parameters_json,
+            output_json=output_json,
+            content=content,
+        )
+    )
+    logger.info(
+        "[PROMPT_VERIFIER_EXECUTION_CAPTURE] record_id={} tool_name={} "
+        "parameters={} output={}",
+        record_id,
+        tool_name,
+        parameters_json,
+        output_json,
+    )
+
+
+def _materialize_execution_records_sync(
+    *,
+    records: list[_ExecutionRecord],
+    session_id: str,
+) -> list[MemoryNode]:
+    """Create flat atomic retrieval nodes for completed execution records.
+
+    The execution sentence is already atomic by schema, so this deliberately skips
+    GraphBuilder/decomposition/relation linking. We still compute the same local
+    S/P/O payload and optional Qwen retrieval embedding used by normal atomic nodes
+    so ranking behaves like the other verifier evidence graphs.
+    """
+    if not records:
+        return []
+
+    batch_source_id = f"execution-batch-{records[0].record_id}-{records[-1].record_id}"
+    request = GraphBuildRequest(
+        session_id=session_id,
+        source_id=batch_source_id,
+        source_type=SourceType.TOOL_RESULT,
+        content="\n".join(record.content for record in records),
+        metadata={
+            "execution_graph": True,
+            "skip_decomposition": True,
+        },
+    )
+    leaves = [
+        {
+            "temporary_id": record.record_id,
+            "content": record.content,
+            "semantic_role": "observation",
+        }
+        for record in records
+    ]
+    payloads = extract_atomic_payloads_spacy(request, leaves=leaves)
+
+    nodes: list[MemoryNode] = []
+    for record in records:
+        node_id = f"{session_id}:{record.record_id}"
+        source_ref = SourceReference(
+            source_id=record.record_id,
+            source_type=SourceType.TOOL_RESULT,
+            span=SourceSpan(start=0, end=len(record.content)),
+            tool_call_id=record.record_id,
+        )
+        nodes.append(
+            MemoryNode(
+                id=node_id,
+                session_id=session_id,
+                source_root_id=node_id,
+                kind=NodeKind.ATOMIC_FACT,
+                depth=0,
+                content=record.content,
+                routing_text=record.content,
+                proposition=payloads.get(record.record_id),
+                source_refs=[source_ref],
+                metadata={
+                    "execution_graph": True,
+                    "atomic_by_construction": True,
+                    "tool_name": record.tool_name,
+                    "parameters_json": record.parameters_json,
+                    "output_json": record.output_json,
+                },
+            )
+        )
+
+    if retrieval_embeddings_enabled():
+        retrieval_texts = [build_retrieval_text(node) for node in nodes]
+        vectors = embed_retrieval_texts_qwen(retrieval_texts)
+        if len(vectors) != len(nodes):
+            raise PromptVerificationError(
+                "Execution-graph embedding count mismatch: "
+                f"expected {len(nodes)}, got {len(vectors)}"
+            )
+        model_name = qwen_embedding_model_name()
+        enriched: list[MemoryNode] = []
+        for node, retrieval_text, vector in zip(
+            nodes,
+            retrieval_texts,
+            vectors,
+            strict=True,
+        ):
+            numeric_vector = [float(value) for value in vector]
+            if not numeric_vector:
+                raise PromptVerificationError(
+                    "Execution-graph embedding adapter returned an empty vector"
+                )
+            embedding = RetrievalEmbedding(
+                model=model_name,
+                vector=numeric_vector,
+                dimensions=len(numeric_vector),
+                text_hash=retrieval_text_hash(retrieval_text),
+            )
+            enriched.append(
+                node.model_copy(update={"retrieval_embedding": embedding})
+            )
+        nodes = enriched
+
+    return nodes
+
+
+async def _update_execution_graph(*, session_id: str) -> tuple[MemoryGraph, int]:
+    """Materialize newly captured executions into the persistent flat graph."""
+    if _VERIFICATION_STATE.execution_graph is None:
+        _VERIFICATION_STATE.execution_graph = MemoryGraph()
+
+    graph = _VERIFICATION_STATE.execution_graph
+    cursor = _VERIFICATION_STATE.execution_graph_cursor
+    pending = _VERIFICATION_STATE.execution_records[cursor:]
+    if not pending:
+        return graph, 0
+
+    new_nodes = await asyncio.to_thread(
+        _materialize_execution_records_sync,
+        records=list(pending),
+        session_id=session_id,
+    )
+    for node in new_nodes:
+        graph.add_node(node)
+
+    _VERIFICATION_STATE.execution_graph_cursor += len(pending)
+    logger.info(
+        "Prompt verifier execution graph updated: new_nodes={} total_nodes={} "
+        "edges={} cursor={}",
+        len(new_nodes),
+        len(graph.nodes),
+        len(graph.edges),
+        _VERIFICATION_STATE.execution_graph_cursor,
+    )
+    return graph, len(new_nodes)
+
+
 def _extract_state_sources(
     current_context: list[dict[str, Any] | BaseMessage],
     *,
     start_index: int = 0,
 ) -> list[_EvidenceSource]:
-    """Extract dynamic conversation/tool evidence from a raw context slice.
+    """Extract persistent conversational evidence from a raw context slice.
+
+    Completed tool observations are intentionally excluded from STATE because the
+    verifier already records each completed invocation in ``execution_graph`` with
+    exact tool identity, parameters, and output kept together. Keeping the sandbox
+    rendering here as well would duplicate evidence and re-decompose an execution
+    fact into semantically weaker fragments.
 
     ``start_index`` is the position of the first supplied message in the original
-    full context. Keeping absolute positions in source IDs makes incremental
-    appends stable: a message originally at context index 8 remains
-    ``context-8-*`` even when only ``current_context[8:]`` is processed.
-
-    System messages are intentionally ignored. Authority is initialized
-    separately through the Playbook and CUGA-policy initialization hooks.
+    full context. Keeping absolute positions in source IDs makes incremental appends
+    stable. System messages and explicitly tagged CUGA orchestration messages are
+    also ignored. The raw cursor still advances over every message through the
+    separate signature bookkeeping.
     """
     state_sources: list[_EvidenceSource] = []
 
-    for index, message in enumerate(
-        current_context,
-        start=start_index,
-    ):
+    for index, message in enumerate(current_context, start=start_index):
         role = _message_role(message)
         text = _message_text(message).strip()
         if not text or role == "system":
+            continue
+
+        if _is_internal_state_message(message):
+            continue
+
+        # Tool-role messages and CUGA sandbox execution-output messages are
+        # represented exclusively by execution_graph. Do not decompose/copy them
+        # into STATE.
+        if role == "tool" or (role == "user" and _looks_like_tool_result(text)):
             continue
 
         source_prefix = f"context-{index}"
@@ -1152,17 +2599,6 @@ def _extract_state_sources(
             "message_role": role,
             "context_index": index,
         }
-
-        if role == "tool":
-            state_sources.append(
-                _EvidenceSource(
-                    source_id=f"{source_prefix}-tool",
-                    source_type=SourceType.TOOL_RESULT,
-                    content=text,
-                    metadata=base_metadata,
-                )
-            )
-            continue
 
         if role == "assistant":
             state_sources.append(
@@ -1176,15 +2612,10 @@ def _extract_state_sources(
             continue
 
         if role == "user":
-            source_type = (
-                SourceType.TOOL_RESULT
-                if _looks_like_tool_result(text)
-                else SourceType.USER_MESSAGE
-            )
             state_sources.append(
                 _EvidenceSource(
                     source_id=f"{source_prefix}-user",
-                    source_type=source_type,
+                    source_type=SourceType.USER_MESSAGE,
                     content=text,
                     metadata=base_metadata,
                 )
@@ -1203,7 +2634,6 @@ def _extract_state_sources(
         )
 
     return state_sources
-
 
 def _extract_json_object_from_text(text: str) -> dict[str, Any] | None:
     """Extract the first JSON object from model text, including fenced JSON."""
@@ -1354,6 +2784,67 @@ def _extract_structured_args(
     return _extract_json_from_message(raw_message)
 
 
+def _plain_json_messages(
+    *,
+    messages: list[BaseMessage],
+    schema: type[BaseModel],
+    retry: bool,
+) -> list[BaseMessage]:
+    """Append provider-neutral JSON-schema instructions to verifier messages."""
+    schema_json = json.dumps(
+        schema.model_json_schema(),
+        ensure_ascii=False,
+    )
+    prefix = (
+        "The previous structured-output attempt did not produce a recoverable "
+        "decision. "
+        if retry
+        else ""
+    )
+    return [
+        *messages,
+        HumanMessage(
+            content=(
+                f"{prefix}Return ONLY one JSON object that matches the following "
+                "JSON schema exactly. Do not use markdown, code fences, commentary, "
+                "or any text outside the JSON object.\n\n"
+                f"JSON_SCHEMA:\n{schema_json}"
+            )
+        ),
+    ]
+
+
+async def _plain_json_invoke(
+    *,
+    model: Any,
+    messages: list[BaseMessage],
+    schema: type[BaseModel],
+    label: str,
+    retry: bool = False,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Invoke the model without function calling and recover one JSON object.
+
+    This is the primary structured-output path for Claude aliases. CUGA already
+    avoids native OpenAI JSON-schema formatting for Claude/Bedrock because that
+    format can be translated to unsupported Bedrock ``output_config`` fields.
+    Prompting for schema-conforming JSON keeps the verifier on the provider's
+    ordinary chat path and remains compatible with OpenAI-style proxy transports.
+    """
+    plain_messages = _plain_json_messages(
+        messages=messages,
+        schema=schema,
+        retry=retry,
+    )
+    log_method = logger.warning if retry else logger.debug
+    log_method(
+        "Invoking {} as plain JSON for {}.",
+        _runtime_model_name(model),
+        label,
+    )
+    response = await model.ainvoke(plain_messages)
+    return response, _extract_json_from_message(response)
+
+
 async def _plain_json_retry(
     *,
     model: Any,
@@ -1362,31 +2853,14 @@ async def _plain_json_retry(
     label: str,
 ) -> dict[str, Any] | None:
     """Retry once without function calling and request a JSON object only."""
-    schema_json = json.dumps(
-        schema.model_json_schema(),
-        ensure_ascii=False,
+    _, parsed = await _plain_json_invoke(
+        model=model,
+        messages=messages,
+        schema=schema,
+        label=label,
+        retry=True,
     )
-
-    retry_messages = [
-        *messages,
-        HumanMessage(
-            content=(
-                "The previous structured-output attempt did not produce a "
-                "recoverable function call. Return ONLY one JSON object that "
-                "matches the following JSON schema exactly. Do not use markdown, "
-                "code fences, commentary, or any text outside the JSON object.\n\n"
-                f"JSON_SCHEMA:\n{schema_json}"
-            )
-        ),
-    ]
-
-    logger.warning(
-        "Structured output missing for {}. Retrying once as plain JSON.",
-        label,
-    )
-
-    response = await model.ainvoke(retry_messages)
-    return _extract_json_from_message(response)
+    return parsed
 
 
 async def _build_source_results(
@@ -1512,11 +2986,11 @@ async def _update_state_graph(
     *,
     session_id: str,
     semaphore: asyncio.Semaphore,
-) -> tuple[MemoryGraph, str, int]:
+) -> tuple[MemoryGraph, str, set[str]]:
     """Bring the persistent state graph up to date with ``current_context``.
 
     Returns:
-        ``(graph, update_mode, appended_source_count)`` where update_mode is one
+        ``(graph, update_mode, new_node_ids)`` where update_mode is one
         of ``initial_build``, ``append``, ``reuse``, ``cursor_advance``, or
         ``fallback_rebuild``.
     """
@@ -1533,11 +3007,16 @@ async def _update_state_graph(
             semaphore=semaphore,
         )
 
+        new_node_ids = set(graph.nodes)
+        committed = _VERIFICATION_STATE.committed_reasoning_graph
+        if committed is not None:
+            graph.merge_graph(committed)
+
         _VERIFICATION_STATE.state_graph = graph
         _VERIFICATION_STATE.state_context_cursor = len(current_context)
         _VERIFICATION_STATE.state_context_signatures = current_signatures
 
-        return graph, "initial_build", len(sources)
+        return graph, "initial_build", new_node_ids
 
     if not _state_prefix_matches(current_signatures):
         logger.warning(
@@ -1557,17 +3036,22 @@ async def _update_state_graph(
             semaphore=semaphore,
         )
 
+        new_node_ids = set(graph.nodes)
+        committed = _VERIFICATION_STATE.committed_reasoning_graph
+        if committed is not None:
+            graph.merge_graph(committed)
+
         _VERIFICATION_STATE.state_graph = graph
         _VERIFICATION_STATE.state_context_cursor = len(current_context)
         _VERIFICATION_STATE.state_context_signatures = current_signatures
 
-        return graph, "fallback_rebuild", len(sources)
+        return graph, "fallback_rebuild", new_node_ids
 
     graph = _VERIFICATION_STATE.state_graph
     cursor = _VERIFICATION_STATE.state_context_cursor
 
     if cursor == len(current_context):
-        return graph, "reuse", 0
+        return graph, "reuse", set()
 
     new_messages = current_context[cursor:]
     new_sources = _extract_state_sources(
@@ -1578,7 +3062,7 @@ async def _update_state_graph(
     # Even if the raw delta contains only ignored system/empty messages, advance
     # the raw cursor after confirming the prefix was unchanged.
     if new_sources:
-        await _append_sources_to_graph(
+        new_node_ids = await _append_sources_to_graph(
             graph,
             new_sources,
             session_id=session_id,
@@ -1586,23 +3070,24 @@ async def _update_state_graph(
         )
         update_mode = "append"
     else:
+        new_node_ids = set()
         update_mode = "cursor_advance"
 
     _VERIFICATION_STATE.state_context_cursor = len(current_context)
     _VERIFICATION_STATE.state_context_signatures = current_signatures
 
-    return graph, update_mode, len(new_sources)
+    return graph, update_mode, new_node_ids
 
 
 def _playbook_graph_cache_prompt(
     playbooks: list[AuthoritySource],
 ) -> str:
-    """Return a deterministic cache identity based only on Playbook text.
+    """Return a deterministic cache identity from schema + Playbook text.
 
     Runtime source IDs and metadata are intentionally excluded because they may
-    change between otherwise identical Tau attempts/runs. The ordered list
-    representation preserves boundaries between multiple Playbooks while making
-    identical textual Playbook inputs reuse the same cached graph.
+    change between otherwise identical Tau attempts/runs. The construction-cache
+    schema is included because verifier reconstruction now depends on semantic-
+    context closure metadata produced by GraphBuilder.
     """
     contents = [
         playbook.content.strip()
@@ -1611,8 +3096,25 @@ def _playbook_graph_cache_prompt(
     ]
 
     return json.dumps(
-        contents,
+        {
+            "cache_schema": _AUTHORITY_GRAPH_CACHE_SCHEMA,
+            "contents": contents,
+        },
         ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _cuga_policy_graph_cache_prompt(content: str) -> str:
+    """Return the versioned authority-cache identity for CUGA policy text."""
+    return json.dumps(
+        {
+            "cache_schema": _AUTHORITY_GRAPH_CACHE_SCHEMA,
+            "content": content.strip(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
         separators=(",", ":"),
     )
 
@@ -1628,10 +3130,11 @@ async def create_cuga_policy_graph(
     if not content:
         return MemoryGraph()
 
-    prompt_hash = compute_prompt_hash(content)
+    cache_prompt = _cuga_policy_graph_cache_prompt(content)
+    prompt_hash = compute_prompt_hash(cache_prompt)
     load_start = time.perf_counter()
     cached_graph = load_graph_for_prompt(
-        content,
+        cache_prompt,
         graph_type="cuga_policy",
         memory_graphs_file=_GRAPH_CACHE_INDEX,
     )
@@ -1669,7 +3172,7 @@ async def create_cuga_policy_graph(
     save_graph(
         graph,
         graph_file,
-        raw_prompt=content,
+        raw_prompt=cache_prompt,
         graph_type="cuga_policy",
         memory_graphs_file=_GRAPH_CACHE_INDEX,
     )
@@ -1802,12 +3305,17 @@ def _prepare_verification_session(session_id: str) -> str:
     _VERIFICATION_STATE.playbook_graph = None
     _VERIFICATION_STATE.runtime_initialized = False
     _VERIFICATION_STATE.runtime_facts = {}
+    _VERIFICATION_STATE.runtime_variables_manager = None
 
     _VERIFICATION_STATE.state_graph = None
     _VERIFICATION_STATE.state_context_cursor = 0
     _VERIFICATION_STATE.state_context_signatures = []
+    _VERIFICATION_STATE.execution_graph = None
+    _VERIFICATION_STATE.execution_records = []
+    _VERIFICATION_STATE.execution_graph_cursor = 0
     _VERIFICATION_STATE.reasoning_graph = None
     _VERIFICATION_STATE.reasoning_steps = []
+    _VERIFICATION_STATE.committed_reasoning_graph = None
 
     return graph_session_id
 
@@ -1989,6 +3497,7 @@ def initialize_verification_runtime(
     prompt_tools: list[Any],
     execution_tool_names: list[str],
     find_tools_enabled: bool,
+    variables_manager: Any | None = None,
 ) -> None:
     """Snapshot deterministic runtime tooling facts for the verifier.
 
@@ -1999,7 +3508,9 @@ def initialize_verification_runtime(
     ``prompt_tools`` describes tools explicitly exposed to the model.
     ``execution_tool_names`` describes callable names actually present in the
     execution context. These sets may differ when find_tools shortlisting is
-    active.
+    active. ``variables_manager`` is CUGA's mutable persistent VariablesManager;
+    it is retained only as a deterministic Python-name resolver for future
+    tool-execution candidates and is never ingested into conversational STATE.
     """
     _prepare_verification_session(session_id)
 
@@ -2018,6 +3529,8 @@ def initialize_verification_runtime(
         item["name"]
         for item in normalized_prompt_tools
     ]
+
+    _VERIFICATION_STATE.runtime_variables_manager = variables_manager
 
     _VERIFICATION_STATE.runtime_facts = {
         "prompt_visible_tools": normalized_prompt_tools,
@@ -2043,12 +3556,69 @@ def initialize_verification_runtime(
 
     logger.info(
         "Prompt verifier runtime initialized: session={} prompt_tools={} "
-        "execution_tools={} find_tools_enabled={}",
+        "execution_tools={} find_tools_enabled={} variables_manager_registered={}",
         session_id,
         prompt_tool_names,
         normalized_execution_names,
         bool(find_tools_enabled),
+        variables_manager is not None,
     )
+
+
+def _snapshot_runtime_variables() -> dict[str, Any]:
+    """Read the current CUGA variable namespace without turning it into evidence.
+
+    The snapshot is taken immediately before candidate parsing so variables created
+    by earlier sandbox executions are available. Values are used only to determine
+    what Python expressions in the proposed tool call evaluate to.
+    """
+    manager = _VERIFICATION_STATE.runtime_variables_manager
+    if manager is None:
+        return {}
+
+    try:
+        get_names = getattr(manager, "get_variable_names", None)
+        if callable(get_names):
+            names = list(get_names() or [])
+        else:
+            raw_variables = getattr(manager, "variables", {})
+            names = list(raw_variables.keys()) if isinstance(raw_variables, dict) else []
+    except Exception as exc:
+        logger.warning(
+            "Prompt verifier could not enumerate CUGA runtime variables: {}: {}",
+            type(exc).__name__,
+            exc,
+        )
+        return {}
+
+    get_variable = getattr(manager, "get_variable", None)
+    if not callable(get_variable):
+        logger.warning(
+            "Prompt verifier VariablesManager has no callable get_variable(); "
+            "persistent names will remain unresolved"
+        )
+        return {}
+
+    snapshot: dict[str, Any] = {}
+    for raw_name in names:
+        name = str(raw_name)
+        if not name.isidentifier():
+            continue
+        try:
+            snapshot[name] = get_variable(name)
+        except Exception as exc:
+            logger.warning(
+                "Prompt verifier could not read runtime variable {}: {}: {}",
+                name,
+                type(exc).__name__,
+                exc,
+            )
+
+    logger.debug(
+        "Prompt verifier runtime-variable snapshot: names={}",
+        sorted(snapshot),
+    )
+    return snapshot
 
 
 def _node_source_type(graph: MemoryGraph, node_id: str) -> SourceType | None:
@@ -2274,9 +3844,11 @@ def _render_resolved_expression(value: Any) -> str:
 
     if value.provenance == "prior_call_result":
         deps = ",".join(value.dependency_call_ids) or "?"
-        if len(value.dependency_call_ids) == 1 and value.rendered.startswith("result_of("):
-            return value.rendered
-        return f"{value.rendered} <depends_on:{deps}>"
+        return f"result_of({deps})"
+
+    if value.provenance == "derived_from_prior_call_result":
+        deps = ",".join(value.dependency_call_ids) or "?"
+        return f"derived_from_result_of({deps})"
 
     if value.provenance == "unresolved":
         return f"unresolved({value.rendered})"
@@ -2332,14 +3904,86 @@ def _provenance_text(value: _ResolvedExpression) -> str:
             return f"local_static({names[0]})"
         return "local_static"
 
+    if value.provenance == "runtime_variable":
+        names = [name for name in value.source_names if name]
+        if names:
+            return f"runtime_variable({', '.join(names)})"
+        return "runtime_variable"
+
     if value.provenance == "prior_call_result":
         deps = ",".join(value.dependency_call_ids) or "?"
         names = [name for name in value.source_names if name]
         if names:
-            return f"prior_call_result({deps} via {names[0]})"
-        return f"prior_call_result({deps})"
+            return (
+                f"prior_call_result({deps} via {names[0]}); "
+                "grounding=exempt_same_candidate_tool_dependency"
+            )
+        return (
+            f"prior_call_result({deps}); "
+            "grounding=exempt_same_candidate_tool_dependency"
+        )
+
+    if value.provenance == "derived_from_prior_call_result":
+        deps = ",".join(value.dependency_call_ids) or "?"
+        names = [name for name in value.source_names if name]
+        if names:
+            return (
+                f"derived_from_prior_call_result({deps} via {names[0]}); "
+                "grounding=exempt_same_candidate_tool_dependency"
+            )
+        return (
+            f"derived_from_prior_call_result({deps}); "
+            "grounding=exempt_same_candidate_tool_dependency"
+        )
 
     return f"unresolved({value.rendered})"
+
+
+def _called_tool_retrieval_lines(
+    calls: list[dict[str, Any]],
+    runtime_facts: dict[str, Any] | None,
+) -> list[str]:
+    """Render semantic retrieval text for the exact runtime tools being called.
+
+    Tool descriptions are runtime capability metadata, not verifier authority.
+    They are used only to explain what an otherwise code-only candidate action
+    means before policy/playbook/context retrieval runs. The final Q statements
+    still come exclusively from the normal evidence graphs.
+    """
+    facts = dict(runtime_facts or {})
+    prompt_tools = facts.get("prompt_visible_tools") or []
+
+    tool_by_name: dict[str, dict[str, Any]] = {}
+    for tool in prompt_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        if name:
+            tool_by_name[name] = tool
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for call in calls:
+        name = str(call.get("call") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+
+        tool = tool_by_name.get(name)
+        if tool is None:
+            continue
+
+        description = str(tool.get("description") or "").strip()
+        if not description:
+            continue
+
+        lines.append(
+            "Called runtime tool semantic context:\n"
+            f"Tool: {name}\n"
+            f"Description: {description}"
+        )
+
+    return lines
 
 
 def _called_tool_spec_lines(
@@ -2428,6 +4072,7 @@ def _combine_evidence_graphs(
                     f"{edge.id}"
                 )
             combined.add_edge(edge)
+        combined.merge_logic_layer(graph.logic_layer)
 
     return combined
 
@@ -2454,13 +4099,11 @@ def _select_evidence_for_atom(
     evidence_graph: MemoryGraph,
     evidence_space: str,
 ) -> dict[str, Any]:
-    """Retrieve and traverse evidence for one candidate atom.
+    """Retrieve top-k anchors and preserve each anchor's expanded mini-graph.
 
-    Retrieval scores, coverage decisions, traversal steps, and depth diagnostics
-    are logged for observability but are intentionally NOT returned to the final
-    verifier prompt. The caller receives only the selected evidence IDs plus the
-    truncation flag, allowing the final payload to serialize each evidence node
-    and relation exactly once.
+    The mini-graph boundary is semantically important for source reconstruction.
+    Expanded nodes are retrieval support for their anchor; they must not later be
+    flattened into independent Q statements.
     """
     ranked = rank_nodes(
         candidate_atom,
@@ -2480,8 +4123,7 @@ def _select_evidence_for_atom(
 
     if not ranked:
         return {
-            "node_ids": [],
-            "edge_ids": [],
+            "mini_graphs": [],
             "truncated": False,
         }
 
@@ -2494,6 +4136,17 @@ def _select_evidence_for_atom(
     selected_node_ids = sorted(traversal.all_node_ids)
     selected_edge_ids = sorted(traversal.all_edge_ids)
 
+    mini_graphs = [
+        {
+            "anchor_id": mini_graph.anchor_id,
+            "node_ids": list(mini_graph.node_ids),
+            "edge_ids": list(mini_graph.edge_ids),
+            "node_depths": list(mini_graph.node_depths),
+            "truncated": bool(mini_graph.truncated),
+        }
+        for mini_graph in traversal.mini_graphs
+    ]
+
     mini_graph_payload = [
         {
             "anchor_id": mini_graph.anchor_id,
@@ -2504,11 +4157,7 @@ def _select_evidence_for_atom(
                     "node_id": node_id,
                     "best_bounded_depth": depth,
                 }
-                for node_id, depth in getattr(
-                    mini_graph,
-                    "node_depths",
-                    (),
-                )
+                for node_id, depth in getattr(mini_graph, "node_depths", ())
             ],
             "truncated": mini_graph.truncated,
             "steps": [
@@ -2542,11 +4191,785 @@ def _select_evidence_for_atom(
     )
 
     return {
-        "node_ids": selected_node_ids,
-        "edge_ids": selected_edge_ids,
+        "mini_graphs": mini_graphs,
         "truncated": traversal.truncated,
     }
 
+def _candidate_atom_order_key(node: Any) -> tuple[int, int, str]:
+    starts = [
+        ref.span.start
+        for ref in getattr(node, "source_refs", [])
+        if getattr(ref, "span", None) is not None
+    ]
+    return (min(starts) if starts else 10**12, int(getattr(node, "depth", 0)), node.id)
+
+
+
+def _hierarchical_ancestor_ids_including_self(
+    graph: MemoryGraph,
+    node_id: str,
+) -> set[str]:
+    """Return hierarchical ancestors of ``node_id`` plus the node itself."""
+    result = {node_id}
+    frontier = [node_id]
+    while frontier:
+        current_id = frontier.pop()
+        for parent in graph.parents(current_id):
+            if parent.id in result:
+                continue
+            result.add(parent.id)
+            frontier.append(parent.id)
+    return result
+
+
+def _covers_partition(
+    *,
+    graph: MemoryGraph,
+    candidate_ancestor_id: str,
+    partition_node_ids: set[str],
+) -> bool:
+    """Whether one hierarchy node covers every selected node in the partition."""
+    return all(
+        candidate_ancestor_id
+        in _hierarchical_ancestor_ids_including_self(graph, node_id)
+        for node_id in partition_node_ids
+    )
+
+
+def _semantic_context_closure_target_id(
+    *,
+    graph: MemoryGraph,
+    node_id: str,
+) -> str | None:
+    """Resolve one atom's mandatory semantic-context closure target.
+
+    Graph construction marks an atomic leaf when the semantic governor for its
+    source unit lies outside the extracted unit.  The marker stores the temporary
+    ID of the minimum hierarchy ancestor that encloses that external scope.  This
+    function resolves that construction-time ID through the actual ancestor chain
+    instead of assuming a fixed number of upward hops.
+
+    Missing metadata means the node is semantically closed under the graph
+    version that produced it.  A present-but-unresolvable target is treated as
+    graph corruption: silently ignoring it would recreate exactly the evidence
+    loss this closure rule is intended to prevent.
+    """
+    node = graph.nodes.get(node_id)
+    if node is None:
+        raise PromptVerificationError(
+            f"Cannot resolve semantic-context closure for unknown node {node_id!r}"
+        )
+
+    metadata = dict(getattr(node, "metadata", {}) or {})
+    if not bool(metadata.get("semantic_context_dependency_external", False)):
+        return None
+
+    target_temporary_id = str(
+        metadata.get("semantic_context_closure_ancestor_temporary_id") or ""
+    ).strip()
+    if not target_temporary_id:
+        raise PromptVerificationError(
+            "Semantic-context-dependent node is missing its closure ancestor: "
+            f"node_id={node_id}"
+        )
+
+    frontier = [node_id]
+    visited: set[str] = set()
+    while frontier:
+        current_id = frontier.pop(0)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+
+        current = graph.nodes.get(current_id)
+        if current is None:
+            continue
+        if str(current.metadata.get("temporary_id") or "") == target_temporary_id:
+            return current_id
+
+        frontier.extend(
+            parent.id
+            for parent in sorted(
+                graph.parents(current_id),
+                key=lambda item: (-int(getattr(item, "depth", 0)), item.id),
+            )
+            if parent.id not in visited
+        )
+
+    raise PromptVerificationError(
+        "Could not resolve semantic-context closure ancestor through hierarchy: "
+        f"node_id={node_id} target_temporary_id={target_temporary_id}"
+    )
+
+
+def _source_sentence_spans(source_text: str) -> list[tuple[int, int]]:
+    """Return deterministic source-level sentence/structural-unit spans.
+
+    Atomic graph nodes are retrieval units, not safe evidence units. Reconstruction
+    therefore needs a source-text floor that restores at least the complete sentence
+    containing each selected atom. We intentionally compute that floor from the
+    immutable RAW_SOURCE text and root-relative source spans rather than from the
+    atom's decomposed wording.
+
+    Sentence-final punctuation is the primary boundary. Markdown headings, bullets,
+    table rows, and blank-line boundaries are also treated as structural sentence
+    boundaries so punctuation-free list items do not absorb unrelated following
+    content. Existing semantic-context dependency closure remains responsible for
+    expanding a self-contained sentence/list item to a larger governing scope when
+    necessary.
+    """
+    text = str(source_text or "")
+    if not text:
+        return []
+
+    boundaries: set[int] = {0, len(text)}
+
+    # Normal prose sentence endings. Require whitespace/end after punctuation so
+    # common inline forms such as ``e.g.,`` do not split at the abbreviation dot.
+    for match in re.finditer(r"[.!?](?:[\"')\]]+)?(?=\s|$)", text):
+        boundaries.add(match.end())
+
+    # Structural Markdown/source boundaries. A bullet/table/heading line is a
+    # complete source unit even when it omits terminal punctuation. Blank lines
+    # also separate independent source blocks.
+    line_start = 0
+    lines = text.splitlines(keepends=True)
+    structural_line_re = re.compile(
+        r"^[ \t]{0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|\|)"
+    )
+    for index, line in enumerate(lines):
+        line_end = line_start + len(line)
+        bare = line.rstrip("\r\n")
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        if (
+            not bare.strip()
+            or structural_line_re.match(line) is not None
+            or structural_line_re.match(next_line) is not None
+        ):
+            boundaries.add(line_end)
+        line_start = line_end
+
+    ordered = sorted(boundary for boundary in boundaries if 0 <= boundary <= len(text))
+    spans: list[tuple[int, int]] = []
+    for left, right in zip(ordered, ordered[1:]):
+        if left >= right:
+            continue
+        # Keep root-relative coordinates but trim surrounding whitespace so the
+        # required span corresponds to the semantic source sentence itself.
+        while left < right and text[left].isspace():
+            left += 1
+        while right > left and text[right - 1].isspace():
+            right -= 1
+        if left < right:
+            spans.append((left, right))
+    return spans
+
+
+def _source_sentence_spans_for_node(
+    *,
+    graph: MemoryGraph,
+    node_id: str,
+) -> list[tuple[str, tuple[int, int]]]:
+    """Return complete source-sentence spans touched by one selected node."""
+    node = graph.nodes.get(node_id)
+    if node is None:
+        raise PromptVerificationError(
+            f"Cannot resolve source-sentence closure for unknown node {node_id!r}"
+        )
+
+    root = graph.nodes.get(node.source_root_id)
+    if root is None:
+        raise PromptVerificationError(
+            "Cannot resolve source-sentence closure because the source root is "
+            f"missing: node_id={node_id} source_root_id={node.source_root_id}"
+        )
+
+    source_text = str(root.content or "")
+    sentence_spans = _source_sentence_spans(source_text)
+    if not sentence_spans:
+        return []
+
+    targets: list[tuple[str, tuple[int, int]]] = []
+    seen: set[tuple[str, int, int]] = set()
+    for source_ref in list(getattr(node, "source_refs", []) or []):
+        span = getattr(source_ref, "span", None)
+        if span is None:
+            continue
+        source_id = str(getattr(source_ref, "source_id", "") or "")
+        start = int(span.start)
+        end = int(span.end)
+        for sentence_start, sentence_end in sentence_spans:
+            # Exact containment is typical. Overlap is retained as a conservative
+            # fallback for an atom whose source span crosses a punctuation boundary.
+            overlaps = start < sentence_end and end > sentence_start
+            contains_start = sentence_start <= start < sentence_end
+            if not overlaps and not contains_start:
+                continue
+            key = (source_id, sentence_start, sentence_end)
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append((source_id, (sentence_start, sentence_end)))
+    return targets
+
+
+def _node_covers_source_span(
+    *,
+    node: Any,
+    source_id: str,
+    target_span: tuple[int, int],
+) -> bool:
+    """Whether one hierarchy node contains the complete target source span."""
+    target_start, target_end = target_span
+    for source_ref in list(getattr(node, "source_refs", []) or []):
+        span = getattr(source_ref, "span", None)
+        if span is None:
+            continue
+        if source_id and str(getattr(source_ref, "source_id", "") or "") != source_id:
+            continue
+        if int(span.start) <= target_start and int(span.end) >= target_end:
+            return True
+    return False
+
+
+def _source_sentence_closure_target_ids(
+    *,
+    graph: MemoryGraph,
+    node_id: str,
+) -> set[str]:
+    """Return lowest ancestor IDs that cover every full sentence touched by node."""
+    targets: set[str] = set()
+    for source_id, sentence_span in _source_sentence_spans_for_node(
+        graph=graph,
+        node_id=node_id,
+    ):
+        ancestor_ids = _hierarchical_ancestor_ids_including_self(graph, node_id)
+        covering = []
+        for ancestor_id in ancestor_ids:
+            ancestor = graph.get_node(ancestor_id)
+            if _node_covers_source_span(
+                node=ancestor,
+                source_id=source_id,
+                target_span=sentence_span,
+            ):
+                covering.append(ancestor)
+        if not covering:
+            raise PromptVerificationError(
+                "No hierarchy ancestor covers the selected atom's complete source "
+                "sentence: "
+                f"node_id={node_id} source_id={source_id!r} "
+                f"sentence_span={sentence_span}"
+            )
+
+        # Highest depth = lowest/closest hierarchy ancestor that restores the
+        # complete source sentence. UUID is only a deterministic tie-breaker.
+        target = max(
+            covering,
+            key=lambda item: (int(getattr(item, "depth", 0)), item.id),
+        )
+        targets.add(target.id)
+    return targets
+
+
+def _partition_required_cover_ids(
+    *,
+    graph: MemoryGraph,
+    partition_node_ids: set[str],
+) -> tuple[set[str], set[str], set[str]]:
+    """Return evidence + sentence floor + semantic dependency closure targets."""
+    sentence_target_ids = {
+        target_id
+        for node_id in partition_node_ids
+        for target_id in _source_sentence_closure_target_ids(
+            graph=graph,
+            node_id=node_id,
+        )
+    }
+    semantic_target_ids = {
+        target_id
+        for node_id in partition_node_ids
+        for target_id in [
+            _semantic_context_closure_target_id(
+                graph=graph,
+                node_id=node_id,
+            )
+        ]
+        if target_id is not None
+    }
+    required = set(partition_node_ids) | sentence_target_ids | semantic_target_ids
+    return required, sentence_target_ids, semantic_target_ids
+
+
+def _closest_covering_ancestor(
+    *,
+    graph: MemoryGraph,
+    partition_node_ids: set[str],
+    preferred_start_id: str | None,
+) -> Any:
+    """Return the lowest hierarchy node satisfying sentence + dependency closure.
+
+    Atomic nodes remain retrieval anchors only. Every selected atom first imposes
+    a source-sentence floor: the reconstructed evidence must cover the complete
+    original source sentence containing that atom. Construction-time semantic
+    dependency metadata may impose an even larger closure target when the sentence
+    itself depends on an external governor/list/conditional scope.
+
+    This is deliberately *not* a fixed ``go up one level`` rule. Reconstruction
+    climbs only as far as needed to cover selected evidence, complete source
+    sentences, and mandatory semantic closure targets. RAW_SOURCE remains legal
+    when it is the only common cover.
+    """
+    if not partition_node_ids:
+        raise PromptVerificationError("Cannot reconstruct an empty mini-graph partition")
+
+    (
+        required_cover_ids,
+        sentence_target_ids,
+        semantic_target_ids,
+    ) = _partition_required_cover_ids(
+        graph=graph,
+        partition_node_ids=partition_node_ids,
+    )
+
+    sentence_ascent_needed = not sentence_target_ids.issubset(partition_node_ids)
+    semantic_ascent_needed = not semantic_target_ids.issubset(partition_node_ids)
+
+    if sentence_target_ids:
+        logger.info(
+            "Prompt verifier source-sentence closure required: partition_nodes={} "
+            "sentence_targets={}",
+            sorted(partition_node_ids),
+            sorted(sentence_target_ids),
+        )
+    if semantic_target_ids:
+        logger.info(
+            "Prompt verifier semantic-context closure required: partition_nodes={} "
+            "closure_targets={}",
+            sorted(partition_node_ids),
+            sorted(semantic_target_ids),
+        )
+
+    if preferred_start_id is not None and preferred_start_id in partition_node_ids:
+        frontier = [graph.get_node(preferred_start_id)]
+        visited: set[str] = set()
+        while frontier:
+            current = frontier.pop(0)
+            if current.id in visited:
+                continue
+            visited.add(current.id)
+            if _covers_partition(
+                graph=graph,
+                candidate_ancestor_id=current.id,
+                partition_node_ids=required_cover_ids,
+            ):
+                if (
+                    (sentence_ascent_needed or semantic_ascent_needed)
+                    and current.id != preferred_start_id
+                ):
+                    logger.info(
+                        "Prompt verifier evidence-context ascent: "
+                        "preferred_start_id={} selected_ancestor_id={} "
+                        "sentence_targets={} semantic_targets={}",
+                        preferred_start_id,
+                        current.id,
+                        sorted(sentence_target_ids),
+                        sorted(semantic_target_ids),
+                    )
+                return current
+            parents = sorted(
+                graph.parents(current.id),
+                key=lambda item: (-int(getattr(item, "depth", 0)), item.id),
+            )
+            frontier.extend(parents)
+
+    common_ids: set[str] | None = None
+    for node_id in sorted(required_cover_ids):
+        ancestors = _hierarchical_ancestor_ids_including_self(graph, node_id)
+        common_ids = ancestors if common_ids is None else common_ids & ancestors
+
+    if not common_ids:
+        raise PromptVerificationError(
+            "Mini-graph source-root partition has no common hierarchical ancestor "
+            "after source-sentence and semantic-context closure: "
+            + ", ".join(sorted(required_cover_ids))
+        )
+
+    candidates = [graph.get_node(node_id) for node_id in common_ids]
+    return max(candidates, key=lambda item: (int(getattr(item, "depth", 0)), item.id))
+
+
+def _partition_mini_graph_by_source_root(
+    *,
+    graph: MemoryGraph,
+    node_ids: list[str],
+) -> dict[str, set[str]]:
+    """Split an expanded anchor mini-graph into independent source trees."""
+    partitions: dict[str, set[str]] = {}
+    for node_id in node_ids:
+        node = graph.nodes.get(node_id)
+        if node is None:
+            continue
+        source_root_id = str(getattr(node, "source_root_id", "") or node.id)
+        partitions.setdefault(source_root_id, set()).add(node_id)
+    return partitions
+
+def _partition_source_root_by_local_community(
+    *,
+    graph: MemoryGraph,
+    detector: LocalCommunityDetector,
+    source_root_node_ids: set[str],
+    preferred_seed_id: str | None,
+    node_depths: dict[str, int],
+) -> list[tuple[str, set[str], str, float | None, bool]]:
+    """Split one source-root mini-graph partition into local semantic hubs.
+
+    Community detection is performed on the full active atomic lateral graph,
+    treating every lateral edge as undirected. Only the nodes already reached by
+    the existing mini-graph traversal are retained for reconstruction. PPR
+    communities can overlap, so the retrieval anchor claims overlap first and
+    remaining reached nodes seed additional communities in traversal-depth order.
+
+    Returns tuples of:
+        (seed_id, selected_node_ids, community_id, sweep_conductance, accepted_cut)
+    """
+    atomic_ids = {
+        node_id
+        for node_id in source_root_node_ids
+        if node_id in graph.nodes
+        and graph.nodes[node_id].kind == NodeKind.ATOMIC_FACT
+    }
+    non_atomic_ids = set(source_root_node_ids) - atomic_ids
+
+    partitions: list[tuple[str, set[str], str, float | None, bool]] = []
+    for partition in detector.partition_selected_nodes(
+        atomic_ids,
+        preferred_seed_id=(
+            preferred_seed_id if preferred_seed_id in atomic_ids else None
+        ),
+        seed_priority=node_depths,
+    ):
+        result = partition.community
+        selected_ids = set(partition.selected_node_ids)
+        partitions.append(
+            (
+                partition.seed_id,
+                selected_ids,
+                result.community_id,
+                result.sweep_conductance,
+                result.accepted_sweep_cut,
+            )
+        )
+        logger.info(
+            "Prompt verifier local community: seed_id={} community_id={} "
+            "selected_nodes={} full_community_nodes={} connected_component_size={} "
+            "sweep_conductance={} accepted_sweep_cut={} sweep_prefix_size={} "
+            "pagerank_iterations={}",
+            partition.seed_id,
+            result.community_id,
+            sorted(selected_ids),
+            len(result.node_ids),
+            result.connected_component_size,
+            result.sweep_conductance,
+            result.accepted_sweep_cut,
+            result.sweep_prefix_size,
+            result.iterations,
+        )
+
+    # Lateral traversal is expected to operate on atomic nodes. Preserve safety
+    # if a future relation source introduces a non-atomic lateral endpoint: never
+    # let such nodes force unrelated atomic hubs to share a covering ancestor.
+    for node_id in sorted(non_atomic_ids):
+        partitions.append(
+            (
+                node_id,
+                {node_id},
+                f"non-atomic-{node_id}",
+                None,
+                False,
+            )
+        )
+
+    return partitions
+
+
+def _node_source_type(node: Any) -> str:
+    source_refs = list(getattr(node, "source_refs", []) or [])
+    if not source_refs:
+        return "unknown"
+    source_type = getattr(source_refs[0], "source_type", None)
+    return getattr(source_type, "value", str(source_type or "unknown"))
+
+
+def _build_candidate_query_context(
+    *,
+    candidate_atoms: list[Any],
+    cuga_policy_graph: MemoryGraph,
+    playbook_graph: MemoryGraph,
+    state_graph: MemoryGraph,
+    execution_graph: MemoryGraph,
+) -> list[_CandidateQueryContextEntry]:
+    """Retrieve per anchor and reconstruct one statement per local semantic hub.
+
+    For each candidate atom and evidence graph:
+      1. retrieve top-k anchors;
+      2. expand each anchor into its existing relation-sensitive mini-graph;
+      3. split that mini-graph by ``source_root_id``;
+      4. within each source tree, separate reached atomic nodes using seeded
+         Personalized PageRank + conductance-sweep local communities;
+      5. emit the lowest covering hierarchy ancestor independently for each
+         resulting local-community partition.
+
+    A lateral relation into another community therefore creates another local
+    hierarchy ascent instead of forcing the original ascent toward RAW_SOURCE.
+    Expanded atomic nodes never independently become Q statements.
+    """
+    graph_specs = [
+        ("cuga_policy", cuga_policy_graph),
+        ("playbook", playbook_graph),
+        ("context", state_graph),
+        ("execution", execution_graph),
+    ]
+    community_detectors = {
+        graph_name: LocalCommunityDetector(
+            evidence_graph,
+            config=_VERIFIER_LOCAL_COMMUNITY_CONFIG,
+        )
+        for graph_name, evidence_graph in graph_specs
+    }
+
+    ordered_entries: list[_CandidateQueryContextEntry] = []
+    entry_by_key: dict[tuple[str, str], _CandidateQueryContextEntry] = {}
+    for candidate_atom in sorted(candidate_atoms, key=_candidate_atom_order_key):
+        for graph_name, evidence_graph in graph_specs:
+            evidence = _select_evidence_for_atom(
+                candidate_atom=candidate_atom,
+                evidence_graph=evidence_graph,
+                evidence_space=graph_name,
+            )
+            detector = community_detectors[graph_name]
+
+            for mini_graph in evidence["mini_graphs"]:
+                anchor_id = str(mini_graph["anchor_id"])
+                node_depths = {
+                    str(node_id): int(depth)
+                    for node_id, depth in mini_graph.get("node_depths", [])
+                }
+                source_root_partitions = _partition_mini_graph_by_source_root(
+                    graph=evidence_graph,
+                    node_ids=list(mini_graph["node_ids"]),
+                )
+                if not source_root_partitions:
+                    continue
+
+                anchor_node = evidence_graph.nodes.get(anchor_id)
+                anchor_root_id = (
+                    str(getattr(anchor_node, "source_root_id", "") or anchor_id)
+                    if anchor_node is not None
+                    else None
+                )
+                ordered_root_ids = sorted(
+                    source_root_partitions,
+                    key=lambda root_id: (0 if root_id == anchor_root_id else 1, root_id),
+                )
+
+                for source_root_id in ordered_root_ids:
+                    source_root_node_ids = source_root_partitions[source_root_id]
+                    hub_partitions = _partition_source_root_by_local_community(
+                        graph=evidence_graph,
+                        detector=detector,
+                        source_root_node_ids=source_root_node_ids,
+                        preferred_seed_id=(
+                            anchor_id if source_root_id == anchor_root_id else None
+                        ),
+                        node_depths=node_depths,
+                    )
+
+                    for (
+                        local_seed_id,
+                        partition_node_ids,
+                        community_id,
+                        sweep_conductance,
+                        accepted_cut,
+                    ) in hub_partitions:
+                        ancestor = _closest_covering_ancestor(
+                            graph=evidence_graph,
+                            partition_node_ids=partition_node_ids,
+                            preferred_start_id=local_seed_id,
+                        )
+
+                        if ancestor.kind == NodeKind.RAW_SOURCE:
+                            logger.warning(
+                                "Prompt verifier local-community reconstruction reached "
+                                "RAW_SOURCE: candidate_atom_id={} evidence_space={} "
+                                "anchor_id={} local_seed_id={} source_root_id={} "
+                                "community_id={} sweep_conductance={} accepted_cut={} "
+                                "partition_nodes={} statement_chars={}",
+                                candidate_atom.id,
+                                graph_name,
+                                anchor_id,
+                                local_seed_id,
+                                source_root_id,
+                                community_id,
+                                sweep_conductance,
+                                accepted_cut,
+                                len(partition_node_ids),
+                                len(ancestor.content or ""),
+                            )
+
+                        key = (graph_name, ancestor.id)
+                        covered_atomic_ids = {
+                            node_id
+                            for node_id in partition_node_ids
+                            if node_id in evidence_graph.nodes
+                            and evidence_graph.nodes[node_id].kind == NodeKind.ATOMIC_FACT
+                        }
+                        entry = entry_by_key.get(key)
+                        if entry is None:
+                            entry = _CandidateQueryContextEntry(
+                                graph_name=graph_name,
+                                source_type=_node_source_type(ancestor),
+                                statement_node_id=ancestor.id,
+                                statement=ancestor.content.strip(),
+                                covered_atomic_node_ids=set(covered_atomic_ids),
+                                triggered_by_candidate_atom_ids={candidate_atom.id},
+                            )
+                            entry_by_key[key] = entry
+                            ordered_entries.append(entry)
+                        else:
+                            entry.covered_atomic_node_ids.update(covered_atomic_ids)
+                            entry.triggered_by_candidate_atom_ids.add(candidate_atom.id)
+
+    for index, entry in enumerate(ordered_entries, start=1):
+        entry.context_id = f"Q{index}"
+        logger.info(
+            "[PROMPT_VERIFIER_QUERY_CONTEXT] id={} graph={} source_type={} "
+            "statement_node_id={} covered_atomic_nodes={} candidate_query_atoms={} "
+            "statement={!r}",
+            entry.context_id,
+            entry.graph_name,
+            entry.source_type,
+            entry.statement_node_id,
+            sorted(entry.covered_atomic_node_ids),
+            sorted(entry.triggered_by_candidate_atom_ids),
+            entry.statement,
+        )
+
+    logger.info(
+        "Prompt verifier candidate query context built: candidate_atoms={} "
+        "context_statements={} policy={} playbook={} context={} execution={}",
+        len(candidate_atoms),
+        len(ordered_entries),
+        sum(1 for item in ordered_entries if item.graph_name == "cuga_policy"),
+        sum(1 for item in ordered_entries if item.graph_name == "playbook"),
+        sum(1 for item in ordered_entries if item.graph_name == "context"),
+        sum(1 for item in ordered_entries if item.graph_name == "execution"),
+    )
+    return ordered_entries
+
+
+_VERIFIER_CONTEXT_ID_RE = re.compile(r"\bQ\d+\b", flags=re.IGNORECASE)
+
+
+def _sanitize_previous_verifier_rejection_result(result: str) -> str:
+    """Remove verifier-local Q labels before carrying a rejection forward.
+
+    Q IDs are meaningful only inside the verifier call that created them. A prior
+    rejection may say things such as "Q28 and Q17 establish ..."; if that text
+    is embedded verbatim into the next call, the model can mistake those stale IDs
+    for IDs in the new [CANDIDATE_QUERY_CONTEXT]. Preserve the substantive rejection
+    explanation while replacing only the obsolete local labels.
+    """
+    sanitized = _VERIFIER_CONTEXT_ID_RE.sub(
+        "the cited prior context statement",
+        str(result or ""),
+    )
+    return _one_line(sanitized)
+
+
+def _append_previous_verifier_rejection_context(
+    entries: list[_CandidateQueryContextEntry],
+    previous_rejection: tuple[str, str] | None,
+) -> None:
+    """Append one label-sanitized ephemeral statement for the prior rejection.
+
+    This record is deliberately not inserted into any memory graph. It exists
+    only in the source-context projection for the current verifier call, so it
+    cannot contaminate STATE, authority, execution history, retrieval, or logic.
+
+    Verifier-local Q IDs from the previous call are stripped before insertion.
+    The new entry receives exactly one fresh Q ID belonging to the current call.
+    """
+    if previous_rejection is None:
+        return
+
+    previous_candidate, previous_result = previous_rejection
+    candidate_text = _one_line(previous_candidate)
+    result_text = _sanitize_previous_verifier_rejection_result(previous_result)
+    if not candidate_text or not result_text:
+        return
+
+    entry = _CandidateQueryContextEntry(
+        graph_name="verifier_rejection",
+        source_type="verifier_rejection",
+        statement_node_id="previous-verifier-rejection",
+        statement=(
+            f"Output [{candidate_text}] was rejected with result [{result_text}]."
+        ),
+        context_id=f"Q{len(entries) + 1}",
+    )
+    entries.append(entry)
+
+    logger.info(
+        "[PROMPT_VERIFIER_QUERY_CONTEXT] id={} graph={} source_type={} "
+        "statement_node_id={} covered_atomic_nodes=[] candidate_query_atoms=[] "
+        "statement={!r}",
+        entry.context_id,
+        entry.graph_name,
+        entry.source_type,
+        entry.statement_node_id,
+        entry.statement,
+    )
+
+
+def _validate_context_decision(
+    decision: CandidateContextDecision,
+    context_entries: list[_CandidateQueryContextEntry],
+) -> None:
+    valid_ids = {entry.context_id for entry in context_entries}
+    invalid = sorted(set(decision.violated_context_ids) - valid_ids)
+    if invalid:
+        raise PromptVerificationError(
+            "Verifier returned unknown candidate-query-context IDs: " + ", ".join(invalid)
+        )
+    if decision.verdict == "approved" and decision.violated_context_ids:
+        raise PromptVerificationError(
+            "Verifier returned violated_context_ids for an approved candidate"
+        )
+
+
+def _candidate_query_origin_label(entry: _CandidateQueryContextEntry) -> str:
+    if entry.graph_name in {"cuga_policy", "playbook", "execution", "verifier_rejection"}:
+        return entry.graph_name
+
+    if entry.graph_name == "context":
+        mapping = {
+            SourceType.USER_MESSAGE.value: "user",
+            SourceType.ASSISTANT_MESSAGE.value: "assistant",
+            "reasoning": "reasoning",
+        }
+        return mapping.get(entry.source_type, entry.source_type or "state")
+
+    return entry.graph_name
+
+
+def _render_candidate_query_context(
+    entries: list[_CandidateQueryContextEntry],
+) -> list[str]:
+    return [
+        f"{entry.context_id} [{_candidate_query_origin_label(entry)}]: "
+        f"{_one_line(entry.statement)}"
+        for entry in entries
+    ]
 
 def _validate_atom_decisions(
     decision: VerificationDecision,
@@ -2617,29 +5040,180 @@ def _aggregate_atom_decisions(
     return False, " ".join(reasons), global_verdict
 
 
+def _logic_literal_text(literal: Any, slot_by_id: dict[str, Any]) -> str:
+    slot_id = getattr(literal, "slot_id", None)
+    slot = slot_by_id.get(slot_id)
+    text = _one_line(slot.source_text) if slot is not None else f"slot:{slot_id}"
+    return text if bool(getattr(literal, "value", True)) else f"NOT({text})"
+
+
+def _logic_expression_text(expression: Any, slot_by_id: dict[str, Any]) -> str:
+    slot_id = getattr(expression, "slot_id", None)
+    if slot_id is not None:
+        slot = slot_by_id.get(slot_id)
+        return _one_line(slot.source_text) if slot is not None else f"slot:{slot_id}"
+
+    operator = getattr(expression, "operator", None)
+    operands = [
+        _logic_expression_text(operand, slot_by_id)
+        for operand in getattr(expression, "operands", [])
+    ]
+    op_value = getattr(operator, "value", str(operator))
+    threshold = getattr(expression, "threshold", None)
+    if op_value == "not" and operands:
+        return f"NOT({operands[0]})"
+    if op_value in {"at_least", "at_most", "exactly"}:
+        return f"{op_value.upper()}({threshold}; {', '.join(operands)})"
+    return f"{op_value.upper()}({', '.join(operands)})"
+
+
+def _logic_rule_text(rule: Any, slot_by_id: dict[str, Any]) -> str:
+    antecedent = getattr(rule, "antecedent", None)
+    consequent = getattr(rule, "consequent", None)
+    if antecedent is not None and consequent is not None:
+        return (
+            f"IF {_logic_literal_text(antecedent, slot_by_id)} "
+            f"THEN {_logic_literal_text(consequent, slot_by_id)}"
+        )
+
+    return (
+        f"IF {_logic_expression_text(rule.condition, slot_by_id)} "
+        f"THEN {_logic_expression_text(rule.effect, slot_by_id)}"
+    )
+
+
+async def _candidate_logic_results(
+    *,
+    candidate_graph: MemoryGraph,
+    candidate_atoms: list[Any],
+    logic_graphs: list[MemoryGraph],
+) -> dict[str, dict[str, Any]]:
+    """Match candidate atoms to logic slots and run deterministic entailment."""
+    if not logic_graphs or not any(graph.logic_layer.slots for graph in logic_graphs):
+        return {}
+
+    matches = await asyncio.to_thread(
+        match_nodes_to_logic_slots,
+        source_graph=candidate_graph,
+        node_ids={node.id for node in candidate_atoms},
+        target_graphs=logic_graphs,
+        bind=False,
+    )
+    if not matches:
+        return {}
+
+    slot_by_id = {
+        slot.id: slot
+        for graph in logic_graphs
+        for slot in graph.logic_layer.slots
+    }
+    rule_by_id = {
+        rule.id: rule
+        for graph in logic_graphs
+        for rule in [
+            *graph.logic_layer.relations,
+            *graph.logic_layer.compound_rules,
+        ]
+    }
+
+    results: dict[str, dict[str, Any]] = {}
+    for candidate_atom in candidate_atoms:
+        bindings = matches.get(candidate_atom.id, [])
+        if not bindings:
+            continue
+        result = analyze_entailment(
+            graphs=logic_graphs,
+            queried_slot_values=[
+                (binding.slot_id, binding.value)
+                for binding in bindings
+            ],
+        )
+        relevant_rules = [
+            rule_by_id[rule_id]
+            for rule_id in result.relevant_rule_ids
+            if rule_id in rule_by_id
+        ]
+        results[candidate_atom.id] = {
+            "result": result,
+            "candidate_slots": [
+                (
+                    _one_line(slot_by_id[binding.slot_id].source_text)
+                    if binding.value
+                    else "NOT " + _one_line(slot_by_id[binding.slot_id].source_text)
+                )
+                for binding in bindings
+                if binding.slot_id in slot_by_id
+            ],
+            "established_slots": [
+                _one_line(slot_by_id[slot_id].source_text)
+                for slot_id in result.established_slot_ids
+                if slot_id in slot_by_id
+            ],
+            "unresolved_slots": [
+                _one_line(slot_by_id[slot_id].source_text)
+                for slot_id in result.unresolved_slot_ids
+                if slot_id in slot_by_id
+            ],
+            "rules": [
+                _logic_rule_text(rule, slot_by_id)
+                for rule in relevant_rules
+            ],
+        }
+    return results
+
+
+def _render_candidate_logic_line(
+    *,
+    candidate_local_id: str,
+    payload: dict[str, Any] | None,
+) -> str:
+    if payload is None:
+        return f"{candidate_local_id}: no_matching_logic"
+    result = payload["result"]
+    parts = [
+        f"{candidate_local_id}: status={result.status}",
+        "candidate_slots=" + (" | ".join(payload["candidate_slots"]) or "-"),
+        "established=" + (" | ".join(payload["established_slots"]) or "-"),
+        "unresolved=" + (" | ".join(payload["unresolved_slots"]) or "-"),
+        "rules=" + (" | ".join(payload["rules"]) or "-"),
+    ]
+    return "; ".join(parts)
+
+
 async def _verify_with_graphs(
     *,
     candidate: str,
     candidate_kind: CandidateKind,
     candidate_graph: MemoryGraph,
     state_graph: MemoryGraph,
+    execution_graph: MemoryGraph,
     cuga_policy_graph: MemoryGraph,
     playbook_graph: MemoryGraph,
+    reasoning_graph: MemoryGraph | None = None,
     runtime_facts: dict[str, Any] | None = None,
-) -> VerificationDecision:
+    runtime_variables: dict[str, Any] | None = None,
+    previous_rejection: tuple[str, str] | None = None,
+) -> CandidateContextDecision:
+    """Verify raw candidate against reconstructed source-level query context.
+
+    Candidate atoms are retrieval queries only. They are never serialized into
+    the final verifier prompt and therefore cannot become claims merely because
+    decomposition lost conditional/reference/temporal scope.
+    """
     candidate_atoms = sorted(
         candidate_graph.atomic_nodes(active_only=True),
-        key=lambda node: (node.depth, node.content, node.id),
+        key=_candidate_atom_order_key,
     )
-
     if not candidate_atoms:
         raise PromptVerificationError(
-            "Candidate decomposition produced no atomic propositions"
+            "Candidate decomposition produced no atomic retrieval propositions"
         )
 
-    candidate_calls = _extract_candidate_calls(candidate)
+    candidate_calls = await _extract_candidate_calls(
+        candidate,
+        runtime_variables=runtime_variables,
+    )
     is_tool_execution = candidate_kind == "tool_execution"
-
     if is_tool_execution and not candidate_calls:
         raise PromptVerificationError(
             "candidate_kind='tool_execution' but no awaited tool calls were found"
@@ -2649,371 +5223,308 @@ async def _verify_with_graphs(
             "A reasoning candidate cannot also contain executable awaited tool calls"
         )
 
+    context_entries = _build_candidate_query_context(
+        candidate_atoms=candidate_atoms,
+        cuga_policy_graph=cuga_policy_graph,
+        playbook_graph=playbook_graph,
+        state_graph=state_graph,
+        execution_graph=execution_graph,
+    )
+    _append_previous_verifier_rejection_context(
+        context_entries,
+        previous_rejection,
+    )
+    context_lines = _render_candidate_query_context(context_entries)
+
     reasoning_history_lines = _reasoning_history_lines()
-
-    adherence_graph = _combine_evidence_graphs(
-        cuga_policy_graph,
-        playbook_graph,
-    )
-
-    evidence_by_candidate_atom: list[dict[str, Any]] = []
-    adherence_node_ids: set[str] = set()
-    adherence_edge_ids: set[str] = set()
-    state_node_ids: set[str] = set()
-    state_edge_ids: set[str] = set()
-
-    for candidate_atom in candidate_atoms:
-        adherence_evidence = _select_evidence_for_atom(
-            candidate_atom=candidate_atom,
-            evidence_graph=adherence_graph,
-            evidence_space="adherence",
-        )
-        state_evidence = _select_evidence_for_atom(
-            candidate_atom=candidate_atom,
-            evidence_graph=state_graph,
-            evidence_space="state",
-        )
-
-        atom_adherence_node_ids = list(adherence_evidence["node_ids"])
-        atom_adherence_edge_ids = list(adherence_evidence["edge_ids"])
-        atom_state_node_ids = list(state_evidence["node_ids"])
-        atom_state_edge_ids = list(state_evidence["edge_ids"])
-
-        adherence_node_ids.update(atom_adherence_node_ids)
-        adherence_edge_ids.update(atom_adherence_edge_ids)
-        state_node_ids.update(atom_state_node_ids)
-        state_edge_ids.update(atom_state_edge_ids)
-
-        evidence_by_candidate_atom.append(
-            {
-                "candidate_atom_real_id": candidate_atom.id,
-                "adherence_node_ids": atom_adherence_node_ids,
-                "state_node_ids": atom_state_node_ids,
-                "adherence_truncated": bool(
-                    adherence_evidence["truncated"]
-                ),
-                "state_truncated": bool(state_evidence["truncated"]),
-            }
-        )
-
-    local_evidence_ids = _build_local_evidence_ids(
-        adherence_graph=adherence_graph,
-        adherence_node_ids=adherence_node_ids,
-        state_graph=state_graph,
-        state_node_ids=state_node_ids,
-    )
-
-    evidence_lines = _render_evidence_lines(
-        adherence_graph=adherence_graph,
-        adherence_node_ids=adherence_node_ids,
-        state_graph=state_graph,
-        state_node_ids=state_node_ids,
-        local_ids=local_evidence_ids,
-    )
-
-    relation_lines = _render_relation_lines(
-        adherence_graph=adherence_graph,
-        adherence_edge_ids=adherence_edge_ids,
-        state_graph=state_graph,
-        state_edge_ids=state_edge_ids,
-        local_ids=local_evidence_ids,
-    )
-
-    directly_callable, prompt_visible, find_tools_enabled = (
-        _runtime_tool_signatures(runtime_facts)
-    )
-
-    runtime_lines = [
-        "directly_callable: "
-        + (", ".join(directly_callable) if directly_callable else "(none)")
-    ]
-    if prompt_visible == directly_callable:
-        runtime_lines.append("prompt_visible: same_as_directly_callable")
-    else:
-        runtime_lines.append(
-            "prompt_visible: "
-            + (", ".join(prompt_visible) if prompt_visible else "(none)")
-        )
-    runtime_lines.append(
-        f"find_tools_enabled: {str(find_tools_enabled).lower()}"
-    )
-
+    execution_lines: list[str] = []
     if is_tool_execution:
-        # Tool execution is verified at CALL level, not at decomposed prose-atom
-        # level. The candidate graph is used only as a retrieval query so policy
-        # and state evidence can still be selected semantically.
-        call_ids = [
-            str(call.get("call_id") or f"C{index}")
+        call_lines = [
+            f"{str(call.get('call_id') or f'C{index}')}: {_render_candidate_call(call)}"
             for index, call in enumerate(candidate_calls, start=1)
         ]
-        call_lines = [
-            f"{call_id}: {_render_candidate_call(call)}"
-            for call_id, call in zip(call_ids, candidate_calls)
+        argument_provenance_lines = _argument_provenance_lines(candidate_calls)
+        tool_spec_lines = _called_tool_spec_lines(candidate_calls, runtime_facts)
+        directly_callable, prompt_visible, find_tools_enabled = _runtime_tool_signatures(
+            runtime_facts
+        )
+        execution_lines = [
+            "CALLS:",
+            *(call_lines or ["(none)"]),
+            "ARGUMENT_PROVENANCE:",
+            *(argument_provenance_lines or ["(none)"]),
+            "CALLED_TOOL_SPECS:",
+            *(tool_spec_lines or ["(none)"]),
+            "RUNTIME:",
+            "directly_callable: " + (", ".join(directly_callable) if directly_callable else "(none)"),
+            "prompt_visible: " + (", ".join(prompt_visible) if prompt_visible else "(none)"),
+            f"find_tools_enabled: {str(find_tools_enabled).lower()}",
         ]
 
-        all_adherence_local_ids = sorted(
-            [
-                local_evidence_ids[("adherence", node_id)]
-                for node_id in adherence_node_ids
-            ],
-            key=_local_id_sort_key,
-        )
-        all_state_local_ids = sorted(
-            [
-                local_evidence_ids[("state", node_id)]
-                for node_id in state_node_ids
-            ],
-            key=_local_id_sort_key,
-        )
-
-        any_adherence_truncated = any(
-            item["adherence_truncated"]
-            for item in evidence_by_candidate_atom
-        )
-        any_state_truncated = any(
-            item["state_truncated"]
-            for item in evidence_by_candidate_atom
-        )
-
-        relevance_lines: list[str] = []
-        for call_id in call_ids:
-            line = (
-                f"{call_id}: "
-                f"adherence={','.join(all_adherence_local_ids) or '-'}; "
-                f"state={','.join(all_state_local_ids) or '-'}"
-            )
-            markers: list[str] = []
-            if any_adherence_truncated:
-                markers.append("adherence_truncated")
-            if any_state_truncated:
-                markers.append("state_truncated")
-            if markers:
-                line += "; " + ",".join(markers)
-            relevance_lines.append(line)
-
-        called_tool_spec_lines = _called_tool_spec_lines(
-            candidate_calls,
-            runtime_facts,
-        )
-        argument_provenance_lines = _argument_provenance_lines(
-            candidate_calls
-        )
-
-        verifier_text = "\n".join(
-            [
-                "[CANDIDATE_KIND]",
-                "tool_execution",
-                "",
-                "[CALLS]",
-                *call_lines,
-                "",
-                "[ARGUMENT_PROVENANCE]",
-                *(argument_provenance_lines or ["(none)"]),
-                "",
-                "[CALLED_TOOL_SPECS]",
-                *(called_tool_spec_lines or ["(none)"]),
-                "",
-                "[EVIDENCE]",
-                *(evidence_lines or ["(none)"]),
-                "",
-                "[RELATIONS]",
-                *(relation_lines or ["(none)"]),
-                "",
-                "[RELEVANCE]",
-                *(relevance_lines or ["(none)"]),
-                "",
-                "[REASONING_HISTORY]",
-                *(reasoning_history_lines or ["(none)"]),
-                "",
-                "[RUNTIME]",
-                *runtime_lines,
-            ]
-        )
-
-        logger.info(
-            "Prompt verifier execution plan: calls={} argument_provenance={}",
-            call_lines,
-            argument_provenance_lines,
-        )
-
-        system_prompt = _TOOL_VERIFICATION_SYSTEM_PROMPT
-        expected_local_ids = call_ids
-        restore_to_graph_ids = False
-        candidate_count_for_log = len(candidate_calls)
-    else:
-        candidate_local_by_real = {
-            node.id: f"C{index}"
-            for index, node in enumerate(candidate_atoms, start=1)
-        }
-        candidate_real_by_local = {
-            local_id: real_id
-            for real_id, local_id in candidate_local_by_real.items()
-        }
-
-        candidate_lines = [
-            f"{candidate_local_by_real[node.id]}: {_one_line(node.content)}"
-            for node in candidate_atoms
+    verifier_text = "\n".join(
+        [
+            "[CANDIDATE_KIND]",
+            candidate_kind,
+            "",
+            "[RAW_CANDIDATE]",
+            candidate.strip(),
+            "",
+            "[CANDIDATE_QUERY_CONTEXT]",
+            *(context_lines or ["(none)"]),
+            "",
+            "[EXECUTION_DETAILS]",
+            *(execution_lines or ["(none)"]),
+            "",
+            "[REASONING_HISTORY]",
+            *(reasoning_history_lines or ["(none)"]),
         ]
-
-        relevance_lines = []
-        for item in evidence_by_candidate_atom:
-            candidate_local_id = candidate_local_by_real[
-                item["candidate_atom_real_id"]
-            ]
-
-            adherence_local_ids = sorted(
-                [
-                    local_evidence_ids[("adherence", node_id)]
-                    for node_id in item["adherence_node_ids"]
-                ],
-                key=_local_id_sort_key,
-            )
-            state_local_ids = sorted(
-                [
-                    local_evidence_ids[("state", node_id)]
-                    for node_id in item["state_node_ids"]
-                ],
-                key=_local_id_sort_key,
-            )
-
-            line = (
-                f"{candidate_local_id}: "
-                f"adherence={','.join(adherence_local_ids) or '-'}; "
-                f"state={','.join(state_local_ids) or '-'}"
-            )
-
-            markers: list[str] = []
-            if item["adherence_truncated"]:
-                markers.append("adherence_truncated")
-            if item["state_truncated"]:
-                markers.append("state_truncated")
-            if markers:
-                line += "; " + ",".join(markers)
-
-            relevance_lines.append(line)
-
-        verifier_text = "\n".join(
-            [
-                "[CANDIDATE_KIND]",
-                candidate_kind,
-                "",
-                "[RAW_CANDIDATE]",
-                candidate.strip(),
-                "",
-                "[CANDIDATE_ATOMS]",
-                *(candidate_lines or ["(none)"]),
-                "",
-                "[EVIDENCE]",
-                *(evidence_lines or ["(none)"]),
-                "",
-                "[RELATIONS]",
-                *(relation_lines or ["(none)"]),
-                "",
-                "[RELEVANCE]",
-                *(relevance_lines or ["(none)"]),
-                "",
-                "[REASONING_HISTORY]",
-                *(reasoning_history_lines or ["(none)"]),
-                "",
-                "[RUNTIME]",
-                *runtime_lines,
-            ]
-        )
-
-        system_prompt = (
-            _REASONING_VERIFICATION_SYSTEM_PROMPT
-            if candidate_kind == "reasoning"
-            else _VERIFICATION_SYSTEM_PROMPT
-        )
-        expected_local_ids = list(candidate_real_by_local)
-        restore_to_graph_ids = True
-        candidate_count_for_log = len(candidate_atoms)
+    )
 
     logger.info(
-        "Prompt verifier minimal projection: candidate_kind={} candidates={} "
-        "adherence_nodes={} adherence_relations={} state_nodes={} "
-        "state_relations={} projection_chars={}",
+        "Prompt verifier source-context projection: candidate_kind={} "
+        "candidate_retrieval_atoms={} context_statements={} "
+        "previous_verifier_rejection={} projection_chars={}",
         candidate_kind,
-        candidate_count_for_log,
-        len(adherence_node_ids),
-        len(adherence_edge_ids),
-        len(state_node_ids),
-        len(state_edge_ids),
+        len(candidate_atoms),
+        len(context_entries),
+        previous_rejection is not None,
         len(verifier_text),
     )
 
-    model = _get_model(reasoning_effort="medium")
-    verification_messages: list[BaseMessage] = [
-        SystemMessage(content=system_prompt),
+    model = _get_model(reasoning_effort="high")
+    messages: list[BaseMessage] = [
+        SystemMessage(content=_SOURCE_CONTEXT_VERIFICATION_SYSTEM_PROMPT),
         HumanMessage(content=verifier_text),
     ]
 
-    structured_model = model.with_structured_output(
-        VerificationDecision,
-        method="function_calling",
-        include_raw=True,
+    # Correlate the untouched candidate, the exact verifier prompt, the raw
+    # structured-output response, and the final parsed decision in one trace.
+    candidate_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:12]
+    verification_id = (
+        f"{candidate_kind}:{candidate_hash}:{time.time_ns()}"
     )
-    result = await structured_model.ainvoke(verification_messages)
 
-    parsed = result.get("parsed")
-    if parsed is not None:
-        local_decision = (
-            parsed
-            if isinstance(parsed, VerificationDecision)
-            else VerificationDecision.model_validate(parsed)
-        )
-        _validate_atom_decisions(local_decision, expected_local_ids)
+    logger.info(
+        "[PROMPT_VERIFIER_LLM_INPUT] verification_id={} candidate_kind={} "
+        "candidate_hash={} context_statements={} previous_verifier_rejection={}\n"
+        "===== VERIFIER SYSTEM PROMPT =====\n{}\n"
+        "===== VERIFIER USER PROMPT =====\n{}\n"
+        "===== END VERIFIER INPUT =====",
+        verification_id,
+        candidate_kind,
+        candidate_hash,
+        len(context_entries),
+        previous_rejection is not None,
+        _SOURCE_CONTEXT_VERIFICATION_SYSTEM_PROMPT,
+        verifier_text,
+    )
 
-        if restore_to_graph_ids:
-            decision = _restore_candidate_atom_ids(
-                local_decision,
-                local_to_real=candidate_real_by_local,
-            )
-            _validate_atom_decisions(
-                decision,
-                [node.id for node in candidate_atoms],
-            )
-            return decision
+    model_name = _runtime_model_name(model)
+    decision_label = "raw-candidate source-context verification decision"
 
-        return local_decision
-
-    raw_message = result.get("raw")
-    parsing_error = result.get("parsing_error")
-    raw_args = _extract_structured_args(raw_message)
-
-    if raw_args is None:
-        raw_args = await _plain_json_retry(
+    if _is_claude_model_name(model_name):
+        # Mirror CUGA's Claude/Bedrock compatibility strategy: do not rely on
+        # OpenAI native structured-output/tool-schema transport for this model.
+        # Ask for schema-conforming JSON on the ordinary chat path instead.
+        raw_message, raw_args = await _plain_json_invoke(
             model=model,
-            messages=verification_messages,
-            schema=VerificationDecision,
-            label=(
-                "per-call tool verification decision"
-                if is_tool_execution
-                else "per-atom verification decision"
-            ),
+            messages=messages,
+            schema=CandidateContextDecision,
+            label=decision_label,
+        )
+        logger.info(
+            "[PROMPT_VERIFIER_LLM_RAW_RESULT] verification_id={} candidate_kind={} "
+            "candidate_hash={} structured_output_mode=plain_json raw={!r}",
+            verification_id,
+            candidate_kind,
+            candidate_hash,
+            raw_message,
         )
 
-    if raw_args is None:
+        if raw_args is None:
+            raw_args = await _plain_json_retry(
+                model=model,
+                messages=messages,
+                schema=CandidateContextDecision,
+                label=decision_label,
+            )
+
+        if raw_args is None:
+            raise PromptVerificationError(
+                "Could not recover CandidateContextDecision JSON from Claude verifier output"
+            )
+
+        try:
+            decision = CandidateContextDecision.model_validate(raw_args)
+        except ValidationError as exc:
+            logger.warning(
+                "Claude verifier returned JSON that did not match the decision schema: {}. "
+                "Retrying once as plain JSON.",
+                exc,
+            )
+            retry_args = await _plain_json_retry(
+                model=model,
+                messages=messages,
+                schema=CandidateContextDecision,
+                label=decision_label,
+            )
+            if retry_args is None:
+                raise PromptVerificationError(
+                    "Claude verifier returned invalid CandidateContextDecision JSON"
+                ) from exc
+            decision = CandidateContextDecision.model_validate(retry_args)
+    else:
+        structured_model = model.with_structured_output(
+            CandidateContextDecision,
+            method="function_calling",
+            include_raw=True,
+        )
+        result = await structured_model.ainvoke(messages)
+
+        logger.info(
+            "[PROMPT_VERIFIER_LLM_RAW_RESULT] verification_id={} candidate_kind={} "
+            "candidate_hash={} parsed={!r} parsing_error={!r} raw={!r}",
+            verification_id,
+            candidate_kind,
+            candidate_hash,
+            result.get("parsed"),
+            result.get("parsing_error"),
+            result.get("raw"),
+        )
+
+        parsed = result.get("parsed")
+        if parsed is not None:
+            decision = (
+                parsed
+                if isinstance(parsed, CandidateContextDecision)
+                else CandidateContextDecision.model_validate(parsed)
+            )
+        else:
+            raw_message = result.get("raw")
+            parsing_error = result.get("parsing_error")
+            raw_args = _extract_structured_args(raw_message)
+            if raw_args is None:
+                raw_args = await _plain_json_retry(
+                    model=model,
+                    messages=messages,
+                    schema=CandidateContextDecision,
+                    label=decision_label,
+                )
+            if raw_args is None:
+                raise PromptVerificationError(
+                    "Could not recover CandidateContextDecision JSON. "
+                    f"Original parsing error: {parsing_error}"
+                )
+            decision = CandidateContextDecision.model_validate(raw_args)
+
+    _validate_context_decision(decision, context_entries)
+    logger.info(
+        "[PROMPT_VERIFIER_LLM_RESULT] verification_id={} candidate_kind={} "
+        "candidate_hash={} verdict={} violated_context_ids={} reason={!r}",
+        verification_id,
+        candidate_kind,
+        candidate_hash,
+        decision.verdict,
+        decision.violated_context_ids,
+        decision.reason,
+    )
+    return decision
+
+
+def _assistant_message_signature_from_text(content: str) -> str:
+    return _message_signature({"role": "assistant", "content": content})
+
+
+async def _build_full_candidate_graph_for_reasoning(
+    *,
+    source: _EvidenceSource,
+    session_id: str,
+    semaphore: asyncio.Semaphore,
+) -> MemoryGraph:
+    """Rebuild an accepted retrieval-only reasoning candidate with full logic."""
+    full_source = _EvidenceSource(
+        source_id=source.source_id,
+        source_type=source.source_type,
+        content=source.content,
+        metadata={
+            **source.metadata,
+            "candidate": False,
+            "post_approval_full_build": True,
+            "skip_logic_enrichment": False,
+        },
+    )
+    return await _build_graph(
+        [full_source],
+        session_id=session_id,
+        semaphore=semaphore,
+        link_relations=False,
+    )
+
+
+async def _promote_approved_terminal_to_state(
+    *,
+    candidate_content: str,
+    session_id: str,
+    semaphore: asyncio.Semaphore,
+) -> set[str]:
+    """Fully materialize an approved terminal response into persistent STATE.
+
+    Verification uses only a retrieval-only candidate view. After approval we run
+    the normal graph build (logic normalization/audits/repairs, S-P-O, embeddings)
+    and append that result to STATE, including lateral linking and logic-slot
+    augmentation. The raw-context cursor is advanced virtually so the same
+    assistant message is not inserted again when it appears in the next model
+    history prefix.
+    """
+    state_graph = _VERIFICATION_STATE.state_graph
+    if state_graph is None:
         raise PromptVerificationError(
-            "Could not recover VerificationDecision JSON. "
-            f"Original parsing error: {parsing_error}"
+            "Cannot promote an approved terminal candidate before STATE exists"
         )
 
-    local_decision = VerificationDecision.model_validate(raw_args)
-    _validate_atom_decisions(local_decision, expected_local_ids)
+    virtual_index = _VERIFICATION_STATE.state_context_cursor
+    source = _EvidenceSource(
+        source_id=f"context-{virtual_index}-assistant",
+        source_type=SourceType.ASSISTANT_MESSAGE,
+        content=candidate_content,
+        metadata={
+            "message_role": "assistant",
+            "context_index": virtual_index,
+            "approved_candidate": True,
+            "post_approval_full_build": True,
+        },
+    )
 
-    if restore_to_graph_ids:
-        decision = _restore_candidate_atom_ids(
-            local_decision,
-            local_to_real=candidate_real_by_local,
+    start = time.perf_counter()
+    new_node_ids = await _append_sources_to_graph(
+        state_graph,
+        [source],
+        session_id=session_id,
+        semaphore=semaphore,
+    )
+    if new_node_ids:
+        await asyncio.to_thread(
+            link_new_nodes_to_logic_slots,
+            source_graph=state_graph,
+            new_node_ids=new_node_ids,
+            target_graphs=_logic_target_graphs(include_reasoning=True),
         )
-        _validate_atom_decisions(
-            decision,
-            [node.id for node in candidate_atoms],
-        )
-        return decision
 
-    return local_decision
+    _VERIFICATION_STATE.state_context_signatures.append(
+        _assistant_message_signature_from_text(candidate_content)
+    )
+    _VERIFICATION_STATE.state_context_cursor += 1
+
+    logger.info(
+        "Prompt verifier promoted approved terminal candidate to STATE: "
+        "source_id={} new_nodes={} state_nodes={} state_cursor={} wall_time={:.3f}s",
+        source.source_id,
+        len(new_node_ids),
+        len(state_graph.nodes),
+        _VERIFICATION_STATE.state_context_cursor,
+        time.perf_counter() - start,
+    )
+    return new_node_ids
 
 
 async def verify_candidate(
@@ -3021,6 +5532,8 @@ async def verify_candidate(
     candidate: str,
     *,
     candidate_kind: CandidateKind | None = None,
+    runtime_variables: dict[str, Any] | None = None,
+    previous_rejection: tuple[str, str] | None = None,
 ) -> VerificationResult:
     """Verify one reasoning/terminal/tool candidate against current evidence.
 
@@ -3030,20 +5543,34 @@ async def verify_candidate(
     persistent STATE graph and become self-grounding evidence.
 
     Candidate-kind behavior:
-    - ``reasoning``: verify one intermediate reasoning step. If accepted, its
-      already-built candidate graph is committed to the temporary reasoning graph.
-    - ``terminal``: verify a user-facing response. Acceptance does not clear the
-      temporary reasoning trace here because orchestration still decides whether
-      the response is truly terminal or should be auto-continued.
+    - ``reasoning``: use a retrieval-only candidate view for verification. If
+      accepted, rebuild it through the full graph/logic pipeline before committing
+      it to the temporary reasoning graph.
+    - ``terminal``: verify the untouched user-facing response against reconstructed
+      source context. If accepted, rebuild it through the full graph/logic pipeline
+      and append it to persistent STATE immediately. Previously verified reasoning
+      remains separate until finalization.
     - ``tool_execution``: verify a pre-execution tool plan. Acceptance keeps the
-      temporary reasoning trace alive so reasoning can continue after the tool
-      observation is incorporated into normal CUGA STATE.
+      temporary reasoning trace alive. After the sandbox actually invokes tools,
+      completed invocations are captured separately in the flat execution graph.
+      Completed tool/execution observations are intentionally excluded from STATE.
     - ``None``: backwards-compatible inference; awaited calls imply
       ``tool_execution``, otherwise ``terminal``.
 
     Rejected candidates never enter the reasoning graph. Previously accepted
     reasoning steps are retained across rejections so orchestration code can pass
     only the latest rejected candidate + verifier feedback on the next attempt.
+
+    ``runtime_variables`` is a per-call snapshot of CUGA's current Python
+    variable namespace supplied by the orchestration layer. The values are used
+    only to resolve generated Python expressions/tool arguments; they are not
+    inserted into STATE or any verifier graph. When omitted, the legacy registered
+    VariablesManager path remains as a compatibility fallback.
+
+    ``previous_rejection`` is the immediately preceding verifier-rejected
+    ``(candidate, result)`` pair for the current correction chain. It is rendered
+    as exactly one temporary Q statement for this verifier call and is never
+    persisted into any graph or conversational STATE.
     """
     raw_candidate = candidate or ""
     if not raw_candidate.strip():
@@ -3055,7 +5582,27 @@ async def verify_candidate(
     total_start = time.perf_counter()
 
     try:
-        candidate_calls = _extract_candidate_calls(raw_candidate)
+        if runtime_variables is None:
+            # Backwards-compatible fallback for older callers. Current CUGA
+            # orchestration passes a fresh value snapshot on every verifier call.
+            runtime_variables = _snapshot_runtime_variables()
+        else:
+            # Treat even an explicitly empty mapping as authoritative: do not
+            # fall back to a previously registered/stale VariablesManager.
+            runtime_variables = {
+                str(name): value
+                for name, value in runtime_variables.items()
+                if isinstance(name, str) and name.isidentifier()
+            }
+            logger.debug(
+                "Prompt verifier received per-call runtime-variable snapshot: names={}",
+                sorted(runtime_variables),
+            )
+
+        candidate_calls = await _extract_candidate_calls(
+            raw_candidate,
+            runtime_variables=runtime_variables,
+        )
 
         if candidate_kind is None:
             resolved_candidate_kind: CandidateKind = (
@@ -3131,11 +5678,28 @@ async def verify_candidate(
 
         candidate_graph_content = candidate_content
         if resolved_candidate_kind == "tool_execution":
-            # Query evidence with semantic tool actions rather than Python
-            # mechanics such as assignment and printing.
+            # Query evidence with both the resolved executable action and the
+            # exact prompt-visible runtime description of every called tool.
+            # The tool description is only semantic retrieval metadata: it is
+            # never emitted as a Q statement and never treated as authority.
+            tool_retrieval_lines = _called_tool_retrieval_lines(
+                candidate_calls,
+                _VERIFICATION_STATE.runtime_facts,
+            )
             candidate_graph_content = "\n".join(
-                f"Proposed tool execution: {_render_candidate_call(call)}"
-                for call in candidate_calls
+                [
+                    *(
+                        f"Proposed tool execution: {_render_candidate_call(call)}"
+                        for call in candidate_calls
+                    ),
+                    *tool_retrieval_lines,
+                ]
+            )
+            logger.debug(
+                "Prompt verifier tool semantic retrieval augmentation: "
+                "called_tools={} descriptions_added={}",
+                [str(call.get("call") or "") for call in candidate_calls],
+                len(tool_retrieval_lines),
             )
 
         prospective_reasoning_step_id = (
@@ -3158,6 +5722,10 @@ async def verify_candidate(
             metadata={
                 "candidate": True,
                 "candidate_kind": resolved_candidate_kind,
+                # Candidate semantics are used only to retrieve source context.
+                # Full logic normalization/audits are deferred until approval.
+                "skip_logic_enrichment": True,
+                "candidate_retrieval_only": True,
                 **(
                     {"reasoning_step_id": prospective_reasoning_step_id}
                     if prospective_reasoning_step_id is not None
@@ -3175,6 +5743,9 @@ async def verify_candidate(
                 semaphore=semaphore,
             )
         )
+        execution_task = asyncio.create_task(
+            _update_execution_graph(session_id=session_id)
+        )
         candidate_task = asyncio.create_task(
             _build_graph(
                 [candidate_source],
@@ -3184,27 +5755,42 @@ async def verify_candidate(
             )
         )
 
-        state_update, candidate_graph = await asyncio.gather(
+        state_update, execution_update, candidate_graph = await asyncio.gather(
             state_task,
+            execution_task,
             candidate_task,
         )
 
-        state_graph, state_update_mode, state_new_sources = state_update
+        state_graph, state_update_mode, state_new_nodes = state_update
+        execution_graph, execution_new_nodes = execution_update
+
+        if state_new_nodes:
+            await asyncio.to_thread(
+                link_new_nodes_to_logic_slots,
+                source_graph=state_graph,
+                new_node_ids=state_new_nodes,
+                target_graphs=_logic_target_graphs(include_reasoning=True),
+            )
+
         graph_time = time.perf_counter() - graph_start
 
         logger.info(
             "Prompt verifier graph preparation complete: candidate_kind={} "
             "cuga_policy_nodes={} playbook_nodes={} state_update_mode={} "
-            "state_new_sources={} state_cursor={} state_nodes={} "
-            "reasoning_steps={} reasoning_nodes={} candidate_nodes={} "
+            "state_new_nodes={} state_cursor={} state_nodes={} "
+            "execution_new_nodes={} execution_nodes={} execution_edges={} "
+            "reasoning_steps={} reasoning_nodes={} candidate_retrieval_nodes={} "
             "wall_time={:.3f}s",
             resolved_candidate_kind,
             len(cuga_policy_graph.nodes),
             len(playbook_graph.nodes),
             state_update_mode,
-            state_new_sources,
+            len(state_new_nodes),
             _VERIFICATION_STATE.state_context_cursor,
             len(state_graph.nodes),
+            execution_new_nodes,
+            len(execution_graph.nodes),
+            len(execution_graph.edges),
             len(_VERIFICATION_STATE.reasoning_steps),
             (
                 len(_VERIFICATION_STATE.reasoning_graph.nodes)
@@ -3221,42 +5807,53 @@ async def verify_candidate(
             candidate_kind=resolved_candidate_kind,
             candidate_graph=candidate_graph,
             state_graph=state_graph,
+            execution_graph=execution_graph,
             cuga_policy_graph=cuga_policy_graph,
             playbook_graph=playbook_graph,
+            reasoning_graph=_VERIFICATION_STATE.reasoning_graph,
             runtime_facts=_VERIFICATION_STATE.runtime_facts,
+            runtime_variables=runtime_variables,
+            previous_rejection=previous_rejection,
         )
         verification_time = time.perf_counter() - verification_start
 
-        valid, reason, global_verdict = _aggregate_atom_decisions(decision)
+        valid = decision.verdict == "approved"
+        reason = "" if valid else decision.reason.strip()
+        global_verdict = decision.verdict
 
         if valid and resolved_candidate_kind == "reasoning":
             assert prospective_reasoning_step_id is not None
+            full_reasoning_graph = await _build_full_candidate_graph_for_reasoning(
+                source=candidate_source,
+                session_id=session_id,
+                semaphore=semaphore,
+            )
             await _commit_reasoning_candidate_graph(
-                candidate_graph=candidate_graph,
+                candidate_graph=full_reasoning_graph,
                 content=candidate_content,
                 step_id=prospective_reasoning_step_id,
             )
             logger.info(
-                "Prompt verifier accepted reasoning step: retained as temporary "
-                "trajectory context only; not added to grounding STATE"
+                "Prompt verifier accepted reasoning step: retrieval-only candidate "
+                "was rebuilt through the full logic pipeline before reasoning commit"
+            )
+        elif valid and resolved_candidate_kind == "terminal":
+            await _promote_approved_terminal_to_state(
+                candidate_content=candidate_content,
+                session_id=session_id,
+                semaphore=semaphore,
+            )
+            logger.info(
+                "Prompt verifier accepted terminal candidate: full approved graph "
+                "is now in STATE; verified reasoning remains pending finalization"
             )
         elif valid:
-            # Do NOT clear the reasoning trace here.
-            #
-            # An accepted tool execution is an intermediate action in the larger
-            # reasoning trajectory: after CUGA executes it, the resulting tool
-            # observation becomes authoritative STATE and the model may continue
-            # reasoning over that observation.
-            #
-            # Likewise, an accepted natural-language candidate is not necessarily
-            # the end of the graph because shared_nodes.py may classify it as
-            # non-terminal and auto-continue. The orchestration layer therefore
-            # owns reasoning-trajectory lifetime and explicitly resets it only
-            # when the graph truly ends or the trajectory aborts.
+            # Pre-execution code is not a factual state observation. The sandbox
+            # records each completed invocation separately after the real tool call.
+            # Completed tool/execution observations are not duplicated into STATE.
             logger.info(
-                "Prompt verifier accepted {} candidate: keeping reasoning trace "
-                "alive; trajectory lifecycle is owned by the orchestrator",
-                resolved_candidate_kind,
+                "Prompt verifier accepted tool-execution candidate: not promoting "
+                "pre-execution code to STATE; awaiting completed execution record"
             )
         else:
             logger.info(
@@ -3267,21 +5864,14 @@ async def verify_candidate(
 
         logger.info(
             "Prompt verifier decision: candidate_kind={} verdict={} "
-            "atom_verdicts={} verification_time={:.3f}s total_time={:.3f}s "
+            "violated_context_ids={} verification_time={:.3f}s total_time={:.3f}s "
             "reason={!r}",
             resolved_candidate_kind,
             global_verdict,
-            [
-                {
-                    "candidate_atom_id": item.candidate_atom_id,
-                    "verdict": item.verdict,
-                    "reason": item.reason,
-                }
-                for item in decision.atoms
-            ],
+            decision.violated_context_ids,
             verification_time,
             time.perf_counter() - total_start,
-            reason,
+            decision.reason,
         )
 
         return VerificationResult(
