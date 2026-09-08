@@ -1,5 +1,10 @@
 .env
-docs/*.md
+# Local-only working docs: session handoff prompts, the by-hand runbook, and the
+# phase-by-phase implementation plan. The decision record (DP1-DP14 spec) and the
+# consolidated docs/observability.md are tracked.
+docs/phase*-handoff-prompt.md
+docs/traceloop-otlp-collector-runbook.md
+docs/traceloop-instrumentation-plan.md
 .omc/
 .omx/
 __pycache__
