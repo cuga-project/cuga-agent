@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 from typing import Any, Callable, Optional
 
@@ -27,6 +29,10 @@ VERIFY_REVISE_STREAK_CAP = 2
 # against cuga_lite_max_steps plus two LLM calls, so a task could spend its whole
 # budget in the gate and never reach its own work. This is the bound that holds.
 VERIFY_REVISE_TOTAL_CAP = 5
+# The gate runs *before* the block, so unlike post-execution reflection a hung
+# provider stalls the work rather than just delaying a summary. Every other
+# failure here degrades to "run the block"; without this, a hang did not.
+VERIFY_LLM_TIMEOUT_SECONDS = 15.0
 
 
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
@@ -111,15 +117,18 @@ async def decide_pre_execute_verify(
                 }
             ],
         )
-        result = await verify_task(llm=active_model).ainvoke(
-            {
-                "current_task": current_task or "(no task text)",
-                "agent_history": history,
-                "variables_snapshot": variables,
-                "proposed_code": proposed,
-                "write_arguments": write_arguments,
-            },
-            config=config or {},
+        result = await asyncio.wait_for(
+            verify_task(llm=active_model).ainvoke(
+                {
+                    "current_task": current_task or "(no task text)",
+                    "agent_history": history,
+                    "variables_snapshot": variables,
+                    "proposed_code": proposed,
+                    "write_arguments": write_arguments,
+                },
+                config=config or {},
+            ),
+            timeout=VERIFY_LLM_TIMEOUT_SECONDS,
         )
         decision = parse_verify_output(getattr(result, "content", "") or "")
         logger.debug("Pre-execute VERIFY gate={} alert={!r}", decision.gate, decision.alert)

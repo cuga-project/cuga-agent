@@ -968,3 +968,39 @@ async def test_under_the_total_cap_the_gate_still_runs():
             max_chars=1000,
         )
     assert decision.gate == "revise"
+
+
+# ── a hung verify provider must not stall execution ────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hung_verify_call_times_out_and_the_block_runs():
+    """The gate runs before the block, so a hang here costs the work, not a summary."""
+    import asyncio as _asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+
+    async def never_returns(*_a, **_kw):
+        await _asyncio.sleep(60)
+
+    model = MagicMock(spec=[])
+    with (
+        patch.object(pe, "VERIFY_LLM_TIMEOUT_SECONDS", 0.05),
+        patch.object(pe, "verify_task") as verify,
+    ):
+        verify.return_value.ainvoke = never_returns
+        decision = await pe.decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "unknown", "a timeout must fail open, not block the block"
