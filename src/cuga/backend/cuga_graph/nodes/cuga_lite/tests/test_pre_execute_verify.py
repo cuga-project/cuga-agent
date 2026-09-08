@@ -1066,3 +1066,23 @@ def test_parse_verify_output_ignores_reasoning_scratch():
     r = parse_verify_output("<think>hmm ALERT: scratch\nGATE: revise</think>\nGATE: ok")
     assert r.gate == "ok"
     assert r.alert == ""
+
+
+# ── folded rows and the whole section are bounded ───────────────────────────
+
+
+@pytest.mark.unit
+def test_folded_long_literal_row_is_clipped():
+    row = describe_write_arguments("note = '\\n' * 3000\nawait pay_post(note=note)").splitlines()[0]
+    assert len(row) < 400, "a folded value must be clipped like an unfolded one"
+    assert row.endswith("...")
+
+
+@pytest.mark.unit
+def test_write_arguments_section_has_a_ceiling():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _MAX_SECTION_CHARS
+
+    code = "\n".join(f"s{i} = 'x' * 400\nawait pay_post(note=s{i}, a={i})" for i in range(20))
+    out = describe_write_arguments(code)
+    assert len(out) <= _MAX_SECTION_CHARS + 200
+    assert "section truncated" in out

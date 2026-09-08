@@ -86,6 +86,9 @@ _MAX_EXPANSION_DEPTH = 8
 _MAX_EXPAND_VISITS = 256
 _MAX_EXPR_CHARS = 300
 _MAX_ROWS = 20
+# Whole-section ceiling, since this text is not passed through the context
+# truncator before it reaches the verifier prompt.
+_MAX_SECTION_CHARS = 6000
 
 
 def _call_name(node: ast.Call) -> str:
@@ -731,7 +734,10 @@ def describe_write_arguments(code: Optional[str]) -> str:
                 expanded_src = source
             folded = _fold(expanded)
             if folded is not None:
-                call_rows.append(f"{name}({arg_name}=) -> {folded}")
+                # Folded values are clipped like unfolded ones. A long string
+                # literal in a write (an email body, a note) otherwise became one
+                # uncapped row; measured at 6,021 chars for a 3,000-char literal.
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(str(folded))}")
             elif expanded_src != source:
                 call_rows.append(f"{name}({arg_name}=) -> {_clip(expanded_src)}")
                 unresolved |= _free_names(expanded) - set(_FOLD_NAMESPACE)
@@ -766,6 +772,9 @@ def describe_write_arguments(code: Optional[str]) -> str:
     if omitted:
         rows.append(f"({omitted} further write argument(s) not shown — verify the source directly)")
     out = "\n".join(rows)
+    if len(out) > _MAX_SECTION_CHARS:
+        out = out[:_MAX_SECTION_CHARS].rsplit("\n", 1)[0]
+        out += "\n(section truncated — verify the source directly)"
     if unresolved:
         out += "\n\nFrom earlier blocks (check these against Variables): " + ", ".join(
             sorted(unresolved)[:15]
