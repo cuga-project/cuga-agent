@@ -771,3 +771,75 @@ def test_policy_user_input_skips_empty_response_correction():
     )
     ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
     assert ctx.user_input == "split the bill"
+
+# ── shadowed names must never fold (issue: fabricated literal write values) ──
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (  # noqa: E402
+    describe_write_arguments,
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        # loop target re-binds a name an earlier line assigned
+        (
+            'email = "roommate@example.com"\n'
+            'for email in [r["email"] for r in roommates]:\n'
+            "    await venmo_create_payment_request_payment_requests_post(user_email=email)",
+            "roommate@example.com",
+        ),
+        # the call is inside a def whose parameter shadows the module-level name
+        (
+            "total = 140.0\n"
+            "async def pay(total):\n"
+            "    await venmo_create_transaction_transactions_post(amount=total)",
+            "140.0",
+        ),
+        # comprehension target
+        ("x = 5\n[await send_money_post(amount=x) for x in amounts]", "5"),
+        # walrus rebinds before the call
+        (
+            "amount = 35.0\n"
+            "if (amount := 46.67) > 0:\n"
+            "    await venmo_create_transaction_transactions_post(amount=amount)",
+            "35.0",
+        ),
+        # except ... as binds the exception, not the earlier string
+        (
+            'e = "old@example.com"\n'
+            "try:\n"
+            "    pass\n"
+            "except Exception as e:\n"
+            "    await gmail_send_email_post(to=e)",
+            "old@example.com",
+        ),
+        # with ... as binds the context manager
+        ('f = 1.0\nwith open("x") as f:\n    await docs_write_post(data=f)', "1.0"),
+    ],
+)
+def test_shadowed_name_is_not_folded_to_the_stale_value(code, stale):
+    """A name re-bound by a non-assignment binder must stay unresolved.
+
+    Folding it produced a literal the block never sends, which the verifier then
+    judged as ungrounded — a false revise manufactured by our own analysis.
+    """
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_straight_line_assignment_still_folds():
+    """The shadowing guard must not cost us the resolution the gate exists for."""
+    out = describe_write_arguments(
+        "share = round(140.0 / 4, 2)\nawait venmo_create_payment_request_payment_requests_post(amount=share)"
+    )
+    assert "35.0" in out
+
+
+@pytest.mark.unit
+def test_block_local_names_are_not_reported_as_from_earlier_blocks():
+    out = describe_write_arguments('for email in recipients:\n    await gmail_send_email_post(to=email)')
+    assert "From earlier blocks" not in out
+    out = describe_write_arguments("await gmail_send_email_post(to=prior_recipient)")
+    assert "prior_recipient" in out.split("From earlier blocks")[1]

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import ast
 import operator
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Calls that never mutate state. Anything not listed here and not ending in
 # ``_get`` counts as a write, so an unrecognised tool is verified rather than
@@ -297,11 +297,72 @@ def _unreliable_names(tree: ast.AST) -> set:
     return unreliable
 
 
+def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
+    """Names bound by something other than a straight-line assignment, per scope.
+
+    ``_unreliable_names`` only models ``Assign``/``AnnAssign``/``AugAssign``.
+    Every other binding form was invisible to it, so a name re-bound by a loop,
+    a ``with``, a comprehension, a walrus, an ``except ... as``, an import alias
+    or a function parameter still folded to whatever an earlier assignment gave
+    it. That produced literal write values the block never sends -- a fabricated
+    email address in place of the loop variable, for instance -- which the
+    verifier then judged as ungrounded. Anything here is never folded.
+
+    Keyed by enclosing scope, and consulted for every scope on the call's chain,
+    so a parameter shadowing a module-level name of the same name also counts.
+    """
+    out: Dict[Optional[int], set] = {}
+
+    def add(scope: Optional[int], names: Iterable[str]) -> None:
+        out.setdefault(scope, set()).update(names)
+
+    def visit(node: ast.AST, scope: Optional[int]) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.For, ast.AsyncFor)):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, (ast.With, ast.AsyncWith)):
+                for item in child.items:
+                    if item.optional_vars is not None:
+                        add(scope, _target_names(item.optional_vars))
+            elif isinstance(child, ast.comprehension):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, ast.NamedExpr):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, ast.ExceptHandler):
+                if child.name:
+                    add(scope, [child.name])
+            elif isinstance(child, (ast.Import, ast.ImportFrom)):
+                add(scope, [(alias.asname or alias.name).split(".")[0] for alias in child.names])
+            elif isinstance(child, (ast.Global, ast.Nonlocal)):
+                add(scope, child.names)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                add(scope, [child.name])
+            if isinstance(child, _SCOPE_NODES):
+                inner = id(child)
+                params = getattr(child, "args", None)
+                if params is not None:
+                    names = [
+                        arg.arg
+                        for group in (params.posonlyargs, params.args, params.kwonlyargs)
+                        for arg in group
+                    ]
+                    for extra in (params.vararg, params.kwarg):
+                        if extra is not None:
+                            names.append(extra.arg)
+                    add(inner, names)
+            visit(child, inner)
+
+    visit(tree, None)
+    return out
+
+
 def _env_before(
     assigns: List[_Assignment],
     lineno: int,
     chain: Tuple[ast.AST, ...],
     unreliable: set,
+    shadowed: Optional[Dict[Optional[int], set]] = None,
 ) -> Dict[str, ast.expr]:
     """Straight-line assignments visible at ``lineno`` from the call's scope.
 
@@ -311,6 +372,11 @@ def _env_before(
     bindings stay unresolved instead of folding to a fake constant.
     """
     visible = {id(scope) for scope in chain}
+    # A name shadowed anywhere on the call's own scope chain is not the name the
+    # earlier assignment bound, so its value must not be substituted.
+    shadow_names: set = set()
+    for scope_key in ({None} | visible) if shadowed else ():
+        shadow_names |= shadowed.get(scope_key, set())
     env: Dict[str, ast.expr] = {}
     skipped: set = set()
     for line, name, value, scope in assigns:
@@ -319,7 +385,7 @@ def _env_before(
         if scope is not None and id(scope) not in visible:
             continue
         key = (id(scope) if scope is not None else None, name)
-        if key in unreliable:
+        if key in unreliable or name in shadow_names:
             skipped.add(name)
             continue
         env[name] = value
@@ -584,6 +650,7 @@ def describe_write_arguments(code: Optional[str]) -> str:
     chains = _scope_chains(tree)
     assigns = _assignments(tree, chains)
     unreliable = _unreliable_names(tree)
+    shadowed = _shadowed_names(tree)
     local_names = _bound_names(tree)
     rows: List[str] = []
     unresolved: set = set()
@@ -592,7 +659,7 @@ def describe_write_arguments(code: Optional[str]) -> str:
         if not isinstance(node, ast.Call) or not _is_write_call(node, local_names):
             continue
         name = _call_name(node) or "<call>"
-        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable)
+        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable, shadowed)
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
         args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
         if not args:
@@ -624,6 +691,13 @@ def describe_write_arguments(code: Optional[str]) -> str:
 
     if not rows:
         return "(no write calls)"
+    # Names this block binds itself are not "from earlier blocks" — telling the
+    # verifier to look them up in Variables sends it after something that was
+    # never there. Refusing to fold shadowed names (above) makes many more
+    # names unresolved, so this label has to be right.
+    unresolved -= local_names
+    for names in shadowed.values():
+        unresolved -= names
     out = "\n".join(rows)
     if unresolved:
         out += "\n\nFrom earlier blocks (check these against Variables): " + ", ".join(
