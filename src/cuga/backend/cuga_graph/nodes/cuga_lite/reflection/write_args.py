@@ -697,9 +697,11 @@ def describe_write_arguments(code: Optional[str]) -> str:
     rows: List[str] = []
     unresolved: set = set()
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_write_call(node, local_names):
-            continue
+    write_calls = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_write_call(node, local_names)
+    ]
+    omitted = 0
+    for node in write_calls:
         name = _call_name(node) or "<call>"
         env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable, shadowed)
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
@@ -707,11 +709,23 @@ def describe_write_arguments(code: Optional[str]) -> str:
         if not args:
             rows.append(f"{name}() — no arguments")
             continue
+        # Breadth-first: every write call gets at least one row before any call
+        # gets a second. Filling rows call-by-call let an unrolled loop of eight
+        # payment requests show only the first six, hiding a wrong value in the
+        # last two behind a limit the verifier is never told about.
+        budget = max(1, _MAX_ROWS // max(1, len(write_calls)))
+        shown = 0
         for arg_name, value in args:
+            # Per-call budget keeps every call represented; the absolute cap keeps
+            # a block with very many write calls from flooding the prompt.
+            if shown >= budget or len(rows) >= _MAX_ROWS:
+                omitted += len(args) - shown
+                break
             try:
                 source = ast.unparse(value)
             except Exception:
                 continue
+            shown += 1
             expanded = _expand(value, env)
             try:
                 expanded_src = ast.unparse(expanded)
@@ -726,10 +740,6 @@ def describe_write_arguments(code: Optional[str]) -> str:
             else:
                 rows.append(f"{name}({arg_name}=) -> {_clip(source)}")
                 unresolved |= _free_names(value) - set(_FOLD_NAMESPACE)
-            if len(rows) >= _MAX_ROWS:
-                break
-        if len(rows) >= _MAX_ROWS:
-            break
 
     if not rows:
         return "(no write calls)"
@@ -740,6 +750,8 @@ def describe_write_arguments(code: Optional[str]) -> str:
     unresolved -= local_names
     for names in shadowed.values():
         unresolved -= names
+    if omitted:
+        rows.append(f"({omitted} further write argument(s) not shown — verify the source directly)")
     out = "\n".join(rows)
     if unresolved:
         out += "\n\nFrom earlier blocks (check these against Variables): " + ", ".join(

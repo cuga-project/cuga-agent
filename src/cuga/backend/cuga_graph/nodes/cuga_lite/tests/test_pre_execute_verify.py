@@ -871,3 +871,38 @@ def test_mutated_object_is_not_folded_to_its_initial_value(code, stale):
 def test_unmutated_container_still_folds():
     out = describe_write_arguments('p = {"a": 1}\nawait pay_post(amount=p["a"])')
     assert "p[" not in out
+
+
+# ── row budget must be visible and must not hide whole calls ────────────────
+
+
+@pytest.mark.unit
+def test_every_write_call_is_represented_and_truncation_is_declared():
+    """Silently dropping calls is a false negative through the gate's own channel."""
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post('
+        f'user_email="u{i}@x.com", amount={i}.0, description="d{i}")'
+        for i in range(10)
+    )
+    out = describe_write_arguments(code)
+    assert "u0@x.com" in out
+    assert "u9@x.com" in out, "the last call must not vanish behind the row budget"
+    assert "not shown" in out, "truncation must be declared to the verifier"
+
+
+@pytest.mark.unit
+def test_row_budget_is_bounded_for_many_write_calls():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _MAX_ROWS
+
+    code = "\n".join(f'await pay_post(amount={i}.0, note="n{i}")' for i in range(30))
+    data_rows = [
+        line
+        for line in describe_write_arguments(code).splitlines()
+        if line.strip() and "not shown" not in line
+    ]
+    assert len(data_rows) <= _MAX_ROWS
+
+
+@pytest.mark.unit
+def test_small_block_has_no_truncation_notice():
+    assert "not shown" not in describe_write_arguments("await pay_post(amount=5.0)")
