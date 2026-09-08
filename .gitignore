@@ -116,6 +116,23 @@ demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+results/
+results/run_logs*
+.ap.env
+.box_since.json
+src/cuga/frontend/dist/*.map
+
+# events focused venv (build/test)
+.venv-events/
+.events.db
+
+
+# Code Engine deploy secrets / generated URLs
+deploy/ce/.env.ce
+deploy/ce/.ce_urls.env
 
 # Roo AI assistant
 .roo/
+events/deploy/.env.ce
+events/deploy/.ce_urls_split.env
+events/deploy/.ce_urls.env
