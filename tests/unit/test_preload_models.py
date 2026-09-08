@@ -24,6 +24,8 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "PRELOAD_EVOLVE_MODELS=1" in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
+    assert "AS model-cache" in dockerfile
+    assert "COPY --from=model-cache /app/.cache /app/.cache" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "UV_OFFLINE=1" in dockerfile
     assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile

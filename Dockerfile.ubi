@@ -4,6 +4,8 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
 ARG EVOLVE_REF=af3e1310134b3397302e260cb3504b23a732fead
 
+FROM --platform=$BUILDPLATFORM ${UV_IMAGE} AS build-uv-tools
+
 FROM ${UV_IMAGE} AS uv-tools
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend-builder
@@ -14,6 +16,35 @@ RUN corepack enable \
     && corepack prepare pnpm@10.28.0 --activate \
     && pnpm install --frozen-lockfile \
     && NODE_ENV=production pnpm --filter ./frontend build
+
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS model-cache
+
+ARG EVOLVE_REF
+
+COPY --from=build-uv-tools /uv /usr/local/bin/uv
+COPY --from=build-uv-tools /uvx /usr/local/bin/uvx
+
+ENV PATH=/usr/local/bin:$PATH \
+    FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
+    HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
+    MODEL_PRELOAD_STRICT=1 \
+    PRELOAD_EVOLVE_MODELS=1
+
+USER root
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ ./src/
+
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
+    && uv sync --no-editable --no-dev \
+    && uv pip install --python /app/.venv/bin/python \
+        "altk-evolve[hooks,pii-regex] @ https://github.com/AgentToolkit/altk-evolve/archive/${EVOLVE_REF}.tar.gz" \
+    && uv pip install --python /app/.venv/bin/python einops==0.8.1
+
+RUN uv run --no-sync python src/scripts/preload_models.py
 
 FROM ${BASE_IMAGE} AS builder
 
@@ -53,15 +84,9 @@ RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --s
 # Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
 RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright install --only-shell chromium
 
-# Bake ML model weights into the image for airgapped operation.
-# Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
-ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
-    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
-    HF_HOME=/app/.cache/huggingface \
-    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
-    MODEL_PRELOAD_STRICT=1 \
-    PRELOAD_EVOLVE_MODELS=1
-RUN uv run --no-sync python src/scripts/preload_models.py
+# Model files are architecture-independent. Preload them natively on the build host so
+# cross-platform builds do not execute ONNX or PyTorch initialization through QEMU.
+COPY --from=model-cache /app/.cache /app/.cache
 
 # Remove Python bytecode cache — regenerated on first run, adds nothing at build time
 RUN find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
