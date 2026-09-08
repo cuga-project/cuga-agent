@@ -247,6 +247,46 @@ def test_finalization_flag_is_per_turn_not_historical():
     assert _finalization_ran({}) is False
 
 
+def test_checkpointed_flag_does_not_leak_into_next_turn():
+    # Turn 2+ on an existing thread rebuilds AgentState from the checkpoint
+    # dump, which carries final_answer_finalized=True from turn 1. invoke()'s
+    # new-user-message path must reset it (review: sami-marreed) — this test
+    # mimics that block exactly.
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+    from cuga.sdk import _empty_answer_is_final
+
+    turn1 = AgentState(input="q1", url="", final_answer="", final_answer_finalized=True)
+    dumped = turn1.model_dump()
+    dumped["input"] = "q2"
+
+    # the leak this guards against: raw reconstruction keeps True
+    assert AgentState(**dumped).final_answer_finalized is True
+
+    # invoke()'s new-message reset (sdk.py, existing_state.model_dump() block)
+    dumped["final_answer_finalized"] = False
+    turn2 = AgentState(**dumped)
+    assert turn2.final_answer_finalized is False
+    # a turn-2 interrupt/error/empty answer must not skip recovery
+    assert _empty_answer_is_final(turn2.model_dump(), formatter_configured=True) is False
+
+
+def test_fallback_shim_strips_harmony_before_function():
+    # invoke()'s transcript-recovery fallback must hand the function the same
+    # input shape as finalize_answer: harmony-stripped (review: sami-marreed /
+    # coderabbitai consistency gap).
+    from cuga.sdk import _apply_answer_function_to_text
+
+    seen = {}
+
+    def probe(text):
+        seen["input"] = text
+        return text
+
+    out = _apply_answer_function_to_text("The total is 42<|return|>", probe)
+    assert seen["input"] == "The total is 42"
+    assert out == "The total is 42"
+
+
 def test_terminal_branches_set_the_finalized_flag():
     state = _state("[[42]]")
     state.final_answer_finalized = False
