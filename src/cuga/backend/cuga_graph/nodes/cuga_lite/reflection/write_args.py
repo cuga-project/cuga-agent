@@ -400,6 +400,26 @@ def _mutated_names(tree: ast.AST) -> set:
                 root = _receiver_root(node.func.value)
                 if root:
                     names.add(root)
+    # A helper defined in the block that mutates its parameter mutates the
+    # argument: fill(payload) after def fill(p): p["amount"] = 46.67 changed
+    # payload, but only p was seen above, so payload still folded to its
+    # initial value -- the exact stale-0.0 the gate exists to prevent, one
+    # call deep. Map arguments onto parameters and carry the mutation across.
+    helpers = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        fn = helpers.get(node.func.id)
+        if fn is None:
+            continue
+        inner = _mutated_names(fn)  # mutations inside the helper, keyed by its own names
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+        for i, arg in enumerate(node.args):
+            if isinstance(arg, ast.Name) and i < len(params) and params[i] in inner:
+                names.add(arg.id)
+        for kw in node.keywords:
+            if isinstance(kw.value, ast.Name) and kw.arg in inner:
+                names.add(kw.value.id)
     return names
 
 

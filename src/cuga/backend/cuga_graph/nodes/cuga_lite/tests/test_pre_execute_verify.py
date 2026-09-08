@@ -1119,3 +1119,50 @@ def test_lambda_body_still_folds_genuine_outer_names():
         "an outer name the lambda does not bind must still resolve"
     )
     assert "2" in out
+
+
+# ── mutation through a block-local helper ──────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            "payload = {'amount': 0.0}\ndef fill(p):\n    p['amount'] = 46.67\nfill(payload)\n"
+            "await pay_post(**payload)",
+            "0.0",
+        ),
+        (
+            "payload = {'amount': 0.0}\ndef fill(p):\n    p['amount'] = 46.67\nfill(p=payload)\n"
+            "await pay_post(**payload)",
+            "0.0",
+        ),
+        ("xs = []\ndef add(q):\n    q.append(46.67)\nadd(xs)\nawait pay_post(amount=xs[0])", "[]["),
+    ],
+)
+def test_argument_mutated_inside_a_local_helper_is_not_folded(code, stale):
+    """The stale-0.0 case the branch exists to prevent, one call deep."""
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_argument_only_read_by_a_local_helper_still_folds():
+    out = describe_write_arguments(
+        "payload = {'amount': 5.0}\ndef show(p):\n    print(p['amount'])\nshow(payload)\n"
+        "await pay_post(**payload)"
+    )
+    assert "{'amount': 5.0}" in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code",
+    [
+        "node = {'x': 0}\ndef walk(n):\n    n['x'] = 1\n    walk(n)\nwalk(node)\nawait pay_post(**node)",
+        "node = {'x': 0}\ndef a(n):\n    b(n)\ndef b(n):\n    n['x'] = 1\n    a(n)\na(node)\nawait pay_post(**node)",
+    ],
+)
+def test_recursive_helpers_terminate_and_still_mark_the_argument(code):
+    out = describe_write_arguments(code)
+    assert "{'x': 0}" not in out
