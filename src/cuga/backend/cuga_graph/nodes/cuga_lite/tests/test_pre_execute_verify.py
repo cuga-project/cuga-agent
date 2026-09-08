@@ -843,3 +843,31 @@ def test_block_local_names_are_not_reported_as_from_earlier_blocks():
     assert "From earlier blocks" not in out
     out = describe_write_arguments("await gmail_send_email_post(to=prior_recipient)")
     assert "prior_recipient" in out.split("From earlier blocks")[1]
+
+
+# ── in-place mutation invalidates the folded value ──────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            'payload = {"amount": 0.0}\n'
+            'payload["amount"] = 46.67\n'
+            "await venmo_create_transaction_transactions_post(**payload)",
+            "0.0",
+        ),
+        ("amounts = []\namounts.append(46.67)\nawait pay_post(amount=amounts[0])", "[]["),
+        ("cfg = Config()\ncfg.amount = 46.67\nawait pay_post(amount=cfg.amount)", "Config()."),
+    ],
+)
+def test_mutated_object_is_not_folded_to_its_initial_value(code, stale):
+    """Showing the pre-mutation value contradicts what the prompt promises."""
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_unmutated_container_still_folds():
+    out = describe_write_arguments('p = {"a": 1}\nawait pay_post(amount=p["a"])')
+    assert "p[" not in out

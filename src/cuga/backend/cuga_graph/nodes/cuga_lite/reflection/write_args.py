@@ -357,6 +357,45 @@ def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
     return out
 
 
+def _mutated_names(tree: ast.AST) -> set:
+    """Names whose object is changed in place somewhere in the block.
+
+    ``_unreliable_names`` counts only rebinding of the *name*. ``payload["x"] =
+    46.67`` is an ``Assign`` whose target is a ``Subscript``, so ``payload``
+    still looked like a unique straight-line assignment and folded to its
+    initial value; ``amounts.append(46.67)`` was not considered at all. The
+    verifier was then shown the value before the mutation while being told it is
+    "the expression it will actually evaluate to".
+
+    Block-wide rather than per-scope on purpose: a mutation inside a helper or a
+    loop body still invalidates the outer binding.
+    """
+    names: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, (ast.Subscript, ast.Attribute)):
+                    root = _receiver_root(target)
+                    if root:
+                        names.add(root)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            if isinstance(node.target, (ast.Subscript, ast.Attribute)):
+                root = _receiver_root(node.target)
+                if root:
+                    names.add(root)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                root = _receiver_root(target)
+                if root:
+                    names.add(root)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in LOCAL_MUTATORS:
+                root = _receiver_root(node.func.value)
+                if root:
+                    names.add(root)
+    return names
+
+
 def _env_before(
     assigns: List[_Assignment],
     lineno: int,
@@ -651,6 +690,9 @@ def describe_write_arguments(code: Optional[str]) -> str:
     assigns = _assignments(tree, chains)
     unreliable = _unreliable_names(tree)
     shadowed = _shadowed_names(tree)
+    mutated = _mutated_names(tree)
+    if mutated:
+        shadowed.setdefault(None, set()).update(mutated)
     local_names = _bound_names(tree)
     rows: List[str] = []
     unresolved: set = set()
