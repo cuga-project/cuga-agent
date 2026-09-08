@@ -227,7 +227,14 @@ def has_write_call(code: Optional[str]) -> bool:
         if not isinstance(node, ast.Call):
             continue
         for value in list(node.args) + [kw.value for kw in node.keywords]:
-            if isinstance(value, ast.Name) and value.id.endswith(_MUTATING_SUFFIXES):
+            # A name the block itself binds is a variable (tools_delete = await
+            # find_tools(...)), whatever its suffix; registry tools are never
+            # assigned in a block.
+            if (
+                isinstance(value, ast.Name)
+                and value.id.endswith(_MUTATING_SUFFIXES)
+                and value.id not in local_names
+            ):
                 return True
     return False
 

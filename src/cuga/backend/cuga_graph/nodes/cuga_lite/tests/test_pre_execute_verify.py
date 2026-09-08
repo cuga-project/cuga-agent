@@ -1217,3 +1217,11 @@ async def test_model_factory_success_path_is_used_for_the_verify_call():
         )
     assert decision.gate == "ok"
     assert verify.call_args.kwargs["llm"] is sentinel
+
+
+@pytest.mark.unit
+def test_locally_bound_name_with_a_verb_suffix_is_not_a_write():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    code = 'tools_delete = await find_tools("delete expense", "splitwise")\nprint(tools_delete)'
+    assert has_write_call(code) is False, "a variable is not a tool, whatever it is called"
