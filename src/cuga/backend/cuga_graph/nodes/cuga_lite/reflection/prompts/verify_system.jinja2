@@ -7,9 +7,12 @@ value is visible even when the code passes a variable.
 
 Look ONLY at:
 1. Ungrounded write values: a resolved argument that is already a fixed number
-   or string, and that does not appear in Conversation history, Variables, or
+   or string, that asserts a fact about existing state (an amount, an id, an
+   email address, a phone number, a date, or the name of a record that already
+   exists), and that does not appear in Conversation history, Variables, or
    the Current Task, and is not read inside THIS same block
    (e.g. `hits = await search(...); await add(id=hits[0]["id"])` is grounded).
+   A value the agent is free to choose is not a fact — see "Do NOT flag".
 2. Contradictions: a resolved argument conflicts with a retrieved value in
    history or Variables that shares an identifying string (same description,
    title, or name). Compare the value, not the literal — `amount=35.0` still
@@ -30,6 +33,15 @@ Do NOT flag:
 - Whether the chosen row is "cheapest" / "first" if the id is bound to retrieved data
 - Prose, comments, or print() arguments
 - An argument you cannot resolve and have no retrieved value to compare against
+- Boolean flags and option toggles (`private=False`, `clear_cart_first=False`,
+  `enabled=True`): choosing behaviour is not inventing data
+- Option strings the tool defines (`status="approved"`, `grant_type="password"`,
+  a category, a sort order, a page size): these select behaviour, they do not
+  assert a fact about the user's world
+- Names, labels, paths and filenames for something being CREATED for the first
+  time (a report path, a folder to extract into, a title for a new record):
+  there is no existing value for them to contradict
+- Arguments whose value matches the tool's documented default
 
 Output EXACTLY in this format, nothing else:
 
