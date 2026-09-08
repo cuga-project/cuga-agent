@@ -331,6 +331,7 @@ def test_malformed_env_does_not_break_import():
 
     env = dict(os.environ)
     env["DYNACONF_FINAL_ANSWER__FUNCTION"] = "1"
+    env["DYNACONF_FINAL_ANSWER__INSTRUCTIONS"] = "1"
     proc = subprocess.run(
         [sys.executable, "-c", "import cuga.config; print('OK')"],
         capture_output=True,
@@ -406,6 +407,178 @@ def test_invoke_turn2_resets_flag_and_recovers_transcript(monkeypatch):
     # Recovery ran (not skipped by turn-1's leaked flag) and the formatter
     # shaped the recovered transcript text.
     assert result.answer == "turn-2 recovered"
+
+
+def _lifecycle_agent(monkeypatch, **agent_kwargs):
+    import cuga
+
+    agent = cuga.CugaAgent(auto_load_policies=False, **agent_kwargs)
+
+    async def _noop_initialized():
+        return None
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+    return agent
+
+
+class _CannedGraph:
+    """Stub compiled graph: canned checkpoint values + canned ainvoke result."""
+
+    def __init__(self, result: dict, checkpoint: dict | None = None, next_nodes=()):
+        self._result = result
+        self._checkpoint = checkpoint
+        self._next = tuple(next_nodes)
+
+    async def ainvoke(self, *_a, **_k):
+        return self._result
+
+    def get_state(self, *_a, **_k):
+        return SimpleNamespace(values=self._checkpoint, next=self._next)
+
+
+def _graph_result(**overrides) -> dict:
+    base = {
+        "final_answer": "",
+        "final_answer_finalized": False,
+        "chat_messages": [],
+        "messages": [],
+        "tool_calls": [],
+        "sources": [],
+        "variables_storage": {},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_invoke_default_empty_answer_still_recovers(monkeypatch):
+    """Harold's regression, locked at the invoke() boundary: with NO formatter
+    configured, an empty answer recovers from the transcript even on a turn
+    that finalized (the gate must never fire without a formatter)."""
+    import asyncio
+
+    from langchain_core.messages import AIMessage
+
+    agent = _lifecycle_agent(monkeypatch)  # no final_answer anywhere
+    agent._compiled_graph = _CannedGraph(
+        _graph_result(
+            final_answer_finalized=True,
+            chat_messages=[AIMessage(content="recovered from transcript")],
+        )
+    )
+    result = asyncio.run(agent.invoke("q", thread_id="t-default-recovery"))
+    assert result.answer == "recovered from transcript"
+
+
+def test_invoke_formatter_empty_string_delivered_as_is(monkeypatch):
+    """Sami's finding, locked end-to-end: formatter configured + finalized
+    turn + empty answer -> "" is the delivered result; transcript text must
+    NOT replace it and the function must not run again."""
+    import asyncio
+
+    from langchain_core.messages import AIMessage
+
+    calls = []
+
+    def fn(text):
+        calls.append(text)
+        return text
+
+    agent = _lifecycle_agent(monkeypatch, final_answer=fn)
+    agent._compiled_graph = _CannedGraph(
+        _graph_result(
+            final_answer_finalized=True,
+            chat_messages=[AIMessage(content="must not surface")],
+        )
+    )
+    result = asyncio.run(agent.invoke("q", thread_id="t-empty-final"))
+    assert result.answer == ""
+    assert calls == []  # once-only: not re-applied post-graph
+
+
+def test_resume_formatter_empty_string_skips_error_substitution(monkeypatch):
+    """Resume path gate, direction 1: finalized "" with a formatter must not
+    be replaced by a stale error or the pause message."""
+    import asyncio
+
+    agent = _lifecycle_agent(monkeypatch, final_answer=_strip_brackets)
+    agent._compiled_graph = _CannedGraph(
+        _graph_result(final_answer_finalized=True, error="stale turn error"),
+        next_nodes=("SomeNode",),  # even 'interrupted' must not override
+    )
+    result = asyncio.run(agent.invoke(None, thread_id="t-resume-final"))
+    assert result.answer == ""
+    assert result.error is None
+
+
+def test_resume_default_error_substitution_preserved(monkeypatch):
+    """Resume path gate, direction 2: without a formatter the pre-existing
+    error substitution still runs on an unfinalized empty answer."""
+    import asyncio
+
+    agent = _lifecycle_agent(monkeypatch)
+    agent._compiled_graph = _CannedGraph(_graph_result(error="boom"))
+    result = asyncio.run(agent.invoke(None, thread_id="t-resume-default"))
+    assert result.answer == "Error: boom"
+    assert result.error == "boom"
+
+
+# --- node_handler terminal branches (post-#581 graph) --------------------------
+
+
+class _NodeState(SimpleNamespace):
+    def model_dump(self):
+        return {"final_answer": self.final_answer, "final_answer_finalized": self.final_answer_finalized}
+
+
+def _node_state(sender, answer, **extra):
+    from cuga.backend.cuga_graph.utils.nodes_names import NodeNames  # noqa: F401
+
+    return _NodeState(
+        sender=sender,
+        final_answer=answer,
+        final_answer_finalized=False,
+        thread_id="t-node",
+        sources=[],
+        messages=[],
+        chat_agent_messages=[],
+        last_planner_answer=None,
+        **extra,
+    )
+
+
+def test_node_cuga_lite_branch_applies_function_and_sets_flag():
+    import asyncio
+
+    from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+    state = _node_state(NodeNames.CUGA_LITE, "[[42]]")
+    cmd = asyncio.run(
+        FinalAnswerNode.node_handler(
+            state, agent=None, name="FinalAnswerAgent", hitl_handler=None, answer_function=_strip_brackets
+        )
+    )
+    assert state.final_answer == "42"
+    assert state.final_answer_finalized is True
+    assert cmd.goto == "__end__"
+
+
+def test_node_supervisor_forward_skips_function_but_sets_flag():
+    """Single-application contract at the node boundary: the supervisor
+    forward branch must NOT apply the function (sub-agent already did),
+    while still marking the turn finalized."""
+    import asyncio
+
+    from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+    settings.set("final_answer.function", "json.dumps")
+    state = _node_state(NodeNames.CUGA_SUPERVISOR, "already shaped")
+    asyncio.run(
+        FinalAnswerNode.node_handler(
+            state, agent=None, name="FinalAnswerAgent", hitl_handler=None, answer_function=None
+        )
+    )
+    assert state.final_answer == "already shaped"  # not '"already shaped"'
+    assert state.final_answer_finalized is True
 
 
 # --- SDK surface --------------------------------------------------------------
