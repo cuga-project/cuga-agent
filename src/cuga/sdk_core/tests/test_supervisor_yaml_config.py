@@ -283,6 +283,62 @@ agents:
             os.unlink(temp_path)
 
 
+class TestToolProviderScoping:
+    """A sub-agent gets ONLY the registry apps it names.
+
+    Scoping on `apps:` is upstream behaviour, settled in #433 — `app_names=app_names or None`. What
+    is new here is that `mcp_servers:` entries count as named apps too. They did not before, so an
+    agent declaring only `mcp_servers:` — which is every agent in the events roster — produced an
+    empty list, fell through to `or None`, and received the entire registry; the declaration was
+    decorative. That is the one narrowing, and it is deliberate.
+
+    Names are otherwise passed through verbatim — see tests/unit/test_supervisor_tool_scoping.py,
+    which guards that specifically.
+    """
+
+    @pytest.mark.asyncio
+    async def test_named_apps_are_the_only_ones_loaded(self, monkeypatch):
+        from cuga.supervisor_utils import supervisor_config as sc
+
+        seen = {}
+
+        class _Provider:
+            def __init__(self, app_names=None, **kw):
+                seen["app_names"] = app_names
+
+            async def initialize(self):
+                seen["initialized"] = True
+
+        monkeypatch.setattr(sc, "CombinedToolProvider", _Provider)
+
+        provider = await sc._create_tool_provider(
+            apps=[{"name": "cuga_finance"}], mcp_servers=[{"name": "cuga_web"}]
+        )
+
+        assert provider is not None and seen["initialized"] is True
+        # `apps:` first, then `mcp_servers:`, each exactly as declared.
+        assert seen["app_names"] == ["cuga_finance", "cuga_web"]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_that_names_nothing_still_gets_everything(self, monkeypatch):
+        """The unchanged half of the contract — declaring no apps is not the same as declaring none."""
+        from cuga.supervisor_utils import supervisor_config as sc
+
+        called = {"n": 0}
+
+        class _Provider:
+            def __init__(self, app_names=None, **kw):
+                called["n"] += 1
+
+            async def initialize(self):  # pragma: no cover - not reached
+                pass
+
+        monkeypatch.setattr(sc, "CombinedToolProvider", _Provider)
+
+        assert await sc._create_tool_provider(apps=[], mcp_servers=[]) is None
+        assert called["n"] == 0, "no apps and no servers must not build a scoped provider at all"
+
+
 @pytest.mark.unit
 class TestBuildAgentsFromStoredSubAgents:
     """build_agents_from_stored_subagents — the manage-UI store-sourced loader (issue #101)."""

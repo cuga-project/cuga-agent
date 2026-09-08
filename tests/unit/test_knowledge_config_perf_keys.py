@@ -71,7 +71,12 @@ def test_from_settings_default_profile_owns_perf_knobs() -> None:
     # These values come from configurations/knowledge/knowledge_profiles/standard.toml.
     # If you change that TOML, update this assertion deliberately.
     assert cfg.rag_profile == "standard"
-    assert cfg.embedding_batch_size == 128
+    # Lowered 128 -> 32 in #712: at 128 the ONNX intermediate tensors
+    # (batch x sequence^2, held by an arena that never returns memory)
+    # peaked at 4,642 MB and OOM-killed a 4 GB pod on five 100KB uploads.
+    # 32 peaks at 2,610 MB for ~3% more wall time. The budget is enforced
+    # in test_knowledge_profile_memory_budget.py.
+    assert cfg.embedding_batch_size == 32
     assert cfg.vector_insert_batch_size == 500
     assert cfg.docling_pdf_mode == "balanced"
     assert cfg.search_hybrid_mode == "auto"
