@@ -6,7 +6,7 @@ import http.server
 import socketserver
 import time
 
-from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
 from cuga.config import PACKAGE_ROOT
 from langchain_core.runnables.graph import Graph
 

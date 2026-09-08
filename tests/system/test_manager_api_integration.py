@@ -900,11 +900,20 @@ class TestManagerAPIWorkflow:
 
         publish_response = http_client.post(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": f"{TEST_AGENT_ID}-policy"},
+            params={"agent_id": TEST_AGENT_ID},
             json={"config": v1_config_with_policy},
         )
         assert publish_response.status_code == 200, f"Failed to publish v1: {publish_response.text}"
         logger.info("✅ Published v1 with different intent guard policy")
+
+        # Publish copies the published config into draft. Restore the draft-only
+        # delete guard so later steps still compare draft vs production isolation.
+        restore_draft = http_client.post(
+            f"{MANAGE_API_URL}/config/draft",
+            params={"agent_id": TEST_AGENT_ID},
+            json={"config": draft_config_with_policy},
+        )
+        assert restore_draft.status_code == 200, f"Failed to restore draft policy: {restore_draft.text}"
 
         # Wait for policy system to reload
         logger.info("Waiting 8 seconds for v1 policy system initialization...")

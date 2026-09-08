@@ -76,12 +76,6 @@ class BrowserPlannerAgent(BaseAgent):
         return result
 
     async def run(self, input_variables: AgentState) -> AIMessage:
-        if (
-            (input_variables.current_app == "gitlab" or input_variables.current_app == "shopping_admin")
-            and len(input_variables.stm_steps_history) == 0
-            and len(input_variables.task_decomposition.task_decomposition) == 1
-        ):
-            pass
         data = input_variables.model_dump()
         data.update({"use_vision": self.use_vision_effective})
         if settings.advanced_features.mode == "hybrid":

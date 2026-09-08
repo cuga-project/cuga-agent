@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 import aiohttp
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -29,10 +29,19 @@ tracker = ActivityTracker()
 
 
 @tool
-def execute_task(task: str, relevant_variables: List[str]) -> str:
+def execute_task(
+    task: str,
+    relevant_variables: List[str],
+    task_type: Literal["api", "web", "hybrid"] = "api",
+    api_task: str = "",
+    web_task: str = "",
+) -> str:
     """
     :param task: task to execute
     :param relevant_variables: relevant variables from history
+    :param task_type: execution target: API tools, browser, or both
+    :param api_task: API/tool portion when task_type is hybrid
+    :param web_task: browser portion when task_type is hybrid
     :return:
     """
     logger.debug(f"called execute task {task}")
@@ -104,12 +113,10 @@ class ChatAgent(BaseAgent):
         self.sse_available = await check_sse_availability(self.sse_url)
         self.use_regular_chat = os.getenv('USE_LEGACY_EXECUTION', 'false').lower() == 'true'
 
-        # If SSE is not available, force regular chat mode
         if not self.sse_available:
             logger.info(
                 f"SSE endpoint at {self.sse_url} is not available. Falling back to regular chat mode."
             )
-        if not settings.features.save_reuse:
             self.use_regular_chat = True
 
         if self.use_regular_chat:

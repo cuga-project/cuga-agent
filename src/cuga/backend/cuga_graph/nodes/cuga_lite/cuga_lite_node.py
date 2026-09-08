@@ -10,10 +10,8 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
-from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
+from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ActionName
-from cuga.backend.cuga_graph.state.api_planner_history import CoderAgentHistoricalOutput
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 from langchain_core.messages import HumanMessage
 from cuga.backend.llm.utils.helpers import load_one_prompt
@@ -248,16 +246,14 @@ class CugaLiteNode(BaseNode):
 
     async def node(
         self, state: AgentState
-    ) -> Command[
-        Literal['FinalAnswerAgent', 'PlanControllerAgent', 'CugaLiteSubgraph', 'SuggestHumanActions']
-    ]:
+    ) -> Command[Literal["FinalAnswerAgent", "CugaLiteSubgraph", "SuggestHumanActions"]]:
         """Execute CugaLite graph wrapper and process results.
 
         Args:
             state: Current agent state
 
         Returns:
-            Command to route to FinalAnswerAgent, PlanControllerAgent, or CugaLiteSubgraph
+            Command to route to FinalAnswerAgent, SuggestHumanActions, or CugaLiteSubgraph
         """
         # Handle human-in-the-loop responses
 
@@ -373,9 +369,7 @@ class CugaLiteNode(BaseNode):
 
     async def callback_node(
         self, state: AgentState, config: Optional[RunnableConfig] = None
-    ) -> Command[
-        Literal['FinalAnswerAgent', 'PlanControllerAgent', 'SuggestHumanActions', 'CugaLiteSubgraph']
-    ]:
+    ) -> Command[Literal["FinalAnswerAgent", "SuggestHumanActions", "CugaLiteSubgraph"]]:
         """Process results after CugaLite subgraph execution."""
         logger.info("CugaLite callback node - processing subgraph results")
         logger.info(f"  - Current state.sender: {state.sender}")
@@ -402,7 +396,7 @@ class CugaLiteNode(BaseNode):
         # Save trajectory to Evolve if enabled
         from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 
-        if EvolveIntegration.is_enabled() and state.chat_messages:
+        if EvolveIntegration.is_enabled() and state.chat_messages and state.hybrid_phase != "api":
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"
@@ -465,138 +459,36 @@ class CugaLiteNode(BaseNode):
         initial_var_names: List[str],
         is_autonomous_subtask: bool,
         config: Optional[RunnableConfig] = None,
-    ) -> Command[Literal['FinalAnswerAgent', 'PlanControllerAgent']]:
-        """Process results from CugaLite graph execution and route to appropriate next node.
-
-        Args:
-            state: Agent state
-            answer: Final answer from graph execution
-            initial_var_names: Variable names before execution
-            is_autonomous_subtask: Whether this is a subtask
-
-        Returns:
-            Command to route to FinalAnswerAgent or PlanControllerAgent
-        """
+    ) -> Command[Literal["FinalAnswerAgent", "CugaBrowser"]]:
+        """Process results from CugaLite graph execution."""
         logger.info("Processing CugaLite execution results")
         logger.info(f"Answer: {answer[:200] if answer else 'None'}...")
-        is_autonomous_subtask = settings.advanced_features.force_autonomous_mode or (
-            state.sub_task is not None and state.sub_task.strip() != ""
-        )
-        # Check for errors
-        has_error = self._has_error(answer)
-        if has_error:
-            logger.warning(f"Detected error in answer content: {answer[:200]}...")
 
-        if has_error:
+        if self._has_error(answer):
             logger.error("CugaLite execution failed with error")
-            logger.error(f"Full answer: {answer}")
 
-            # Update state with error information
-            if is_autonomous_subtask:
-                # For sub-tasks, add error to history and return to plan controller
-
-                if state.api_planner_history:
-                    state.api_planner_history[-1].agent_output = CoderAgentHistoricalOutput(
-                        variables_summary="Execution failed",
-                        final_output=answer,
-                    )
-
-                state.stm_all_history.append(
-                    SubTaskHistory(
-                        sub_task=state.format_subtask(),
-                        steps=[],
-                        final_answer=answer,
-                    )
-                )
-                state.last_planner_answer = answer
-                state.sender = self.name
-                logger.info("CugaLite sub-task execution failed, returning error to PlanControllerAgent")
-                return Command(update=state.model_dump(), goto="PlanControllerAgent")
-            else:
-                # For regular execution, set final answer with error
-                state.final_answer = answer
-                state.sender = NodeNames.CUGA_LITE
-
-                # Apply OutputFormatter policies before routing to FinalAnswerAgent
-                await self._apply_output_formatter(state, config)
-
-                logger.info("CugaLite execution failed, proceeding to FinalAnswerAgent with error")
-                logger.info(f"  - Set state.sender = {state.sender} (should be '{NodeNames.CUGA_LITE}')")
-                logger.info("  - Routing to: FinalAnswerAgent")
-                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
-
-        # chat_messages should already be synced since it's a shared key
-        # But ensure they're properly formatted as BaseMessage objects
         if state.chat_messages:
             logger.info(f"Chat messages synced from subgraph: {len(state.chat_messages)} messages")
 
-        # Variables are already synced via variables_storage (shared key)
         new_var_names = self._get_new_variable_names(state, initial_var_names)
-        logger.info(
-            f"After execution, variables_manager has {state.variables_manager.get_variable_count()} variables ({len(new_var_names)} new)"
-        )
-
-        # Check if answer is empty and provide a fallback
         if not answer or not answer.strip():
             logger.warning("Empty final answer detected, using fallback")
             answer = self._generate_fallback_answer(state, new_var_names)
 
-        # Check if we're executing a sub-task
-        if is_autonomous_subtask:
-            # Sub-task execution - return to PlanControllerAgent
-
-            # Keep only last N generated variables
-            keep_last_n = settings.advanced_features.sub_task_keep_last_n
-            if len(new_var_names) > keep_last_n:
-                original_count = len(new_var_names)
-                vars_to_keep = new_var_names[-keep_last_n:]
-                vars_to_remove = new_var_names[:-keep_last_n]
-                for var_name in vars_to_remove:
-                    if state.variables_manager.remove_variable(var_name):
-                        logger.debug(
-                            f"Removed variable '{var_name}' to keep only last {keep_last_n} generated variables"
-                        )
-                new_var_names = vars_to_keep
-                logger.info(f"Kept only last {keep_last_n} of {original_count} generated variables")
-
-            state.api_last_step = ActionName.CONCLUDE_TASK
-            state.guidance = None
-
-            # Update api_planner_history with CoderAgentHistoricalOutput
-            if state.api_planner_history:
-                state.api_planner_history[-1].agent_output = CoderAgentHistoricalOutput(
-                    variables_summary=state.variables_manager.get_variables_summary(
-                        new_var_names, max_length=5000
-                    )
-                    if new_var_names
-                    else "No new variables",
-                    final_output=answer,
-                )
-
-            state.stm_all_history.append(
-                SubTaskHistory(
-                    sub_task=state.format_subtask(),
-                    steps=[],
-                    final_answer=answer,
-                )
-            )
-            state.last_planner_answer = answer
-            state.sender = self.name
-
-            logger.info("CugaLite sub-task execution successful, proceeding to PlanControllerAgent")
-            return Command(update=state.model_dump(), goto="PlanControllerAgent")
-        else:
-            # Regular execution - proceed to FinalAnswerAgent
-            state.final_answer = answer
-            state.sender = NodeNames.CUGA_LITE
-
-            # Apply OutputFormatter policies before routing to FinalAnswerAgent
-            await self._apply_output_formatter(state, config)
-
-            logger.info("CugaLite execution successful, proceeding to FinalAnswerAgent")
-            logger.info(f"  - Set state.sender = {state.sender} (should be '{NodeNames.CUGA_LITE}')")
-            logger.info(
-                f"  - state.final_answer length: {len(state.final_answer) if state.final_answer else 0}"
-            )
-            logger.info("  - Routing to: FinalAnswerAgent")
-            return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+        state.final_answer = answer
+        state.sender = NodeNames.CUGA_LITE
+        if state.hybrid_phase == "api":
+            state.hybrid_api_answer = answer
+            state.hybrid_phase = "web"
+            state.sub_task_type = "hybrid"
+            browser_task = state.hybrid_web_task or state.hybrid_original_task or state.input
+            api_context = answer.strip()
+            state.input = browser_task
+            if api_context:
+                state.input = f"{browser_task}\n\nResult from the API phase:\n{api_context}"
+            state.final_answer = ""
+            state.last_planner_answer = None
+            logger.info("Hybrid API phase complete - routing to CugaBrowser")
+            return Command(update=state.model_dump(), goto=NodeNames.CUGA_BROWSER)
+        await self._apply_output_formatter(state, config)
+        return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)
