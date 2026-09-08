@@ -72,6 +72,7 @@ def _state(**kwargs):
         reflection_skills_enabled=False,
         reflection_skills_prompt_section="",
         verify_revise_streak=0,
+        verify_revise_total=0,
         tool_calls_used_run=0,
         tool_calls_used_thread=0,
         sub_task="split the amazon prime bill",
@@ -130,6 +131,7 @@ async def test_verify_revise_skips_executor_ok_runs():
         eval_mock.assert_not_called()
         assert VERIFY_BLOCKED_PREFIX in skipped["chat_messages"][-1].content
         assert skipped["verify_revise_streak"] == 1
+        assert skipped["verify_revise_total"] == 1, "the run-wide cap counts every revise"
         verify_steps = [
             c.kwargs["step"]
             for c in adapter._tracker.collect_step.call_args_list
@@ -1186,3 +1188,32 @@ def test_write_tool_passed_as_a_value_reaches_the_gate(code, expected):
     from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
 
     assert has_write_call(code) is expected
+
+
+# ── the run-wide cap is wired at both integration points ───────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_model_factory_success_path_is_used_for_the_verify_call():
+    """Production passes no llm in configurable; the factory's model must reach verify_task."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import decide_pre_execute_verify
+
+    sentinel = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: ok"))
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=None,
+            model_factory=lambda: sentinel,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok"
+    assert verify.call_args.kwargs["llm"] is sentinel
