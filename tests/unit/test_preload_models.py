@@ -10,6 +10,28 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.unit
+def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile.ubi").read_text()
+    entrypoint = (REPO_ROOT / "scripts/docker-entrypoint.sh").read_text()
+
+    assert "pnpm --filter ./frontend build" in dockerfile
+    assert "altk-evolve[hooks,pii-regex]" in dockerfile
+    assert "EVOLVE_REF=af3e1310134b3397302e260cb3504b23a732fead" in dockerfile
+    assert "PRELOAD_EVOLVE_MODELS=1" in dockerfile
+    assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
+    assert "uv run --no-sync playwright install" in dockerfile
+    assert "TRANSFORMERS_OFFLINE=1" in dockerfile
+    assert "UV_OFFLINE=1" in dockerfile
+    assert "CUGA_EMBEDDED_EVOLVE=false" in dockerfile
+    assert "embedded-evolve-supervisor.py" in dockerfile
+    assert "CUGA_EMBEDDED_EVOLVE:-false" in entrypoint
+    assert not (REPO_ROOT / "Dockerfile.memory").exists()
+
+
 @pytest.mark.unit
 def test_preload_docling_downloads_onnx_layout_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(tmp_path))

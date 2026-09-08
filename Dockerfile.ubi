@@ -1,10 +1,27 @@
 # Multi-stage: builder installs deps, runtime keeps only what's needed
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
+ARG NODE_IMAGE=node:22-bookworm-slim
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
+ARG EVOLVE_REF=af3e1310134b3397302e260cb3504b23a732fead
+
+FROM ${UV_IMAGE} AS uv-tools
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS frontend-builder
+
+WORKDIR /workspace
+COPY src/frontend_workspaces/ ./
+RUN corepack enable \
+    && corepack prepare pnpm@10.28.0 --activate \
+    && pnpm install --frozen-lockfile \
+    && NODE_ENV=production pnpm --filter ./frontend build
+
 FROM ${BASE_IMAGE} AS builder
 
+ARG EVOLVE_REF
+
 # Use official uv image to avoid curl+tar dance
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+COPY --from=uv-tools /uv /usr/local/bin/uv
+COPY --from=uv-tools /uvx /usr/local/bin/uvx
 
 ENV PATH="/usr/local/bin:$PATH"
 
@@ -14,9 +31,16 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
+COPY --from=frontend-builder /workspace/frontend/dist/ ./src/cuga/frontend/dist/
 
 # Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
-RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + \
+    && uv sync --no-editable --no-dev --extra observability \
+    && uv pip install --python /app/.venv/bin/python \
+        "altk-evolve[hooks,pii-regex] @ https://github.com/AgentToolkit/altk-evolve/archive/${EVOLVE_REF}.tar.gz"
+
+# Required by the trusted model code shipped with nomic-ai/CodeRankEmbed.
+RUN uv pip install --python /app/.venv/bin/python einops==0.8.1
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
@@ -27,13 +51,16 @@ RUN rm -rf /app/.venv/lib/python3.12/site-packages/torch/test \
 RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
 # Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
-RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-shell chromium
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run --no-sync playwright install --only-shell chromium
 
 # Bake ML model weights into the image for airgapped operation.
 # Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
-    HF_HOME=/app/.cache/huggingface
+    HF_HOME=/app/.cache/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
+    MODEL_PRELOAD_STRICT=1 \
+    PRELOAD_EVOLVE_MODELS=1
 RUN uv run --no-sync python src/scripts/preload_models.py
 
 # Remove Python bytecode cache — regenerated on first run, adds nothing at build time
@@ -74,8 +101,8 @@ RUN microdnf install -y \
     microdnf clean all
 
 # Use official uv image — no tar/gzip/curl needed
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+COPY --from=uv-tools /uv /usr/local/bin/uv
+COPY --from=uv-tools /uvx /usr/local/bin/uvx
 
 ENV PATH="/usr/local/bin:$PATH"
 
@@ -84,7 +111,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
-RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \
+RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs /data/evolve && \
     chown -R 1001:0 /data /app/.cuga && \
     chmod -R g+rwX /app/.cuga
 
@@ -101,6 +128,7 @@ COPY --chown=1001:0 --chmod=0775 \
   src/cuga/demo_tools/huggingface/sovereign_core_overview.pdf \
   /app/cuga_workspace/
 COPY --chown=1001:0 --chmod=0775 scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
+COPY --chown=1001:0 --chmod=0755 scripts/embedded-evolve-supervisor.py /app/scripts/embedded-evolve-supervisor.py
 
 USER 1001
 
@@ -111,6 +139,7 @@ ENV LOGNAME=cuga
 ENV CUGA_HOST=0.0.0.0
 ENV DYNACONF_SERVER_PORTS__DEMO=7860
 ENV CUGA_DEMO_MODE=default
+ENV CUGA_EMBEDDED_EVOLVE=false
 ENV HOME=/tmp
 ENV UV_CACHE_DIR=/tmp/uv-cache
 ENV UV_TOOL_DIR=/tmp/uv-tools
@@ -121,7 +150,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
     DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
     HF_HOME=/app/.cache/huggingface \
-    HF_HUB_OFFLINE=1
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    LITELLM_LOCAL_MODEL_COST_MAP=true \
+    UV_OFFLINE=1 \
+    PIP_NO_INDEX=1
 
 ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
 CMD []

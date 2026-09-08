@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run Evolve and CUGA together for the local memory integration image."""
+"""Run the optional embedded Evolve service alongside CUGA."""
 
 from __future__ import annotations
 
+import os
 import signal
 import socket
 import subprocess
@@ -28,7 +29,7 @@ def stop_processes() -> None:
 
 
 def handle_signal(signum: int, _frame: object) -> None:
-    print(f"[memory-image] received signal {signum}", flush=True)
+    print(f"[embedded-evolve] received signal {signum}", flush=True)
     stop_processes()
 
 
@@ -63,9 +64,22 @@ def main() -> int:
     )
     PROCESSES.append(evolve)
     wait_for_evolve(evolve)
-    print("[memory-image] Evolve ready", flush=True)
+    print("[embedded-evolve] Evolve ready", flush=True)
 
-    cuga = subprocess.Popen(["/bin/sh", "/app/scripts/docker-entrypoint.sh"], cwd="/app")
+    cuga_env = os.environ.copy()
+    cuga_env.update(
+        {
+            "CUGA_EMBEDDED_EVOLVE": "false",
+            "DYNACONF_EVOLVE__ENABLED": "true",
+            "DYNACONF_EVOLVE__MODE": "direct",
+            "DYNACONF_EVOLVE__URL": "http://127.0.0.1:8201/sse",
+        }
+    )
+    cuga = subprocess.Popen(
+        ["/bin/sh", "/app/scripts/docker-entrypoint.sh"],
+        cwd="/app",
+        env=cuga_env,
+    )
     PROCESSES.append(cuga)
 
     while True:
@@ -81,6 +95,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
-        print(f"[memory-image] startup failed: {error}", file=sys.stderr, flush=True)
+        print(f"[embedded-evolve] startup failed: {error}", file=sys.stderr, flush=True)
         stop_processes()
         raise

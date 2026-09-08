@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+if [ "${CUGA_EMBEDDED_EVOLVE:-false}" = "true" ]; then
+  exec /app/.venv/bin/python /app/scripts/embedded-evolve-supervisor.py
+fi
+
 MODE="${CUGA_DEMO_MODE:-default}"
 
 # Use the cuga binary directly from the venv to avoid uv reinstalling workspace
