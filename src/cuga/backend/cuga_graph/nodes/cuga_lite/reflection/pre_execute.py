@@ -32,7 +32,12 @@ VERIFY_REVISE_TOTAL_CAP = 5
 # The gate runs *before* the block, so unlike post-execution reflection a hung
 # provider stalls the work rather than just delaying a summary. Every other
 # failure here degrades to "run the block"; without this, a hang did not.
-VERIFY_LLM_TIMEOUT_SECONDS = 15.0
+# 60s, not 15: on Gemini 3.8 Flash at default reasoning, 15s fired on ~1% of
+# verify calls (12 of 1,266) -- and they concentrate on the largest write
+# blocks, whose histories are longest, so the gate failed open on exactly the
+# writes it exists to judge. A hang is the case this guards; a slow verdict is
+# not, and the post-execution reflection call has no timeout at all.
+VERIFY_LLM_TIMEOUT_SECONDS = 60.0
 
 
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
@@ -133,6 +138,13 @@ async def decide_pre_execute_verify(
         decision = parse_verify_output(getattr(result, "content", "") or "")
         logger.debug("Pre-execute VERIFY gate={} alert={!r}", decision.gate, decision.alert)
         return decision
+    except asyncio.TimeoutError:
+        # str(TimeoutError()) is empty; an unnamed failure is undiagnosable.
+        logger.warning(
+            "Pre-execute VERIFY timed out after {}s -- running the block unverified",
+            VERIFY_LLM_TIMEOUT_SECONDS,
+        )
+        return VerifyDecision(gate="unknown", alert="verify timed out")
     except Exception as e:
         logger.warning(f"Pre-execute VERIFY failed: {e}")
         return VerifyDecision(gate="unknown", alert=str(e))
