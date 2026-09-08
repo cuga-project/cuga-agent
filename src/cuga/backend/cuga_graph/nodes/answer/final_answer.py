@@ -9,29 +9,19 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import FinalAnswerAgent
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import FinalAnswerOutput
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
-from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
-    create_save_reuse_action,
-    create_get_more_utterances,
-)
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
 from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
-from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds, MessagePrefixes
+from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, MessagePrefixes
 
 tracker = ActivityTracker()
-
-# Feature flag for human-in-the-loop functionality
-ENABLE_SAVE_REUSE = settings.features.save_reuse
 
 
 class HumanInTheLoopHandler:
     """Simple handler for human-in-the-loop interactions"""
 
     def __init__(self):
-        self._action_handlers: Dict[str, Callable] = {
-            ActionIds.SAVE_REUSE: self._handle_save_reuse,
-            ActionIds.SAVE_REUSE_INTENT: self._handle_save_reuse_intent,
-        }
+        self._action_handlers: Dict[str, Callable] = {}
 
     def handle_human_response(self, state: AgentState, node_name: str) -> Command:
         """Handle any human response based on action_id"""
@@ -49,17 +39,6 @@ class HumanInTheLoopHandler:
     def add_action_handler(self, action_id: str, handler: Callable):
         """Add a custom action handler"""
         self._action_handlers[action_id] = handler
-
-    def _handle_save_reuse(self, state: AgentState, node_name: str) -> Command:
-        """Handle save/reuse action - get more utterances"""
-        state.hitl_action = create_get_more_utterances()
-        state.sender = node_name
-        return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
-
-    def _handle_save_reuse_intent(self, state: AgentState, node_name: str) -> Command:
-        """Handle save/reuse intent - go to reuse agent"""
-        state.sender = node_name
-        return Command(update=state.model_dump(), goto=NodeNames.REUSE_AGENT)
 
 
 class FinalAnswerNode(BaseNode):
@@ -138,11 +117,7 @@ class FinalAnswerNode(BaseNode):
     @staticmethod
     async def node_handler(
         state: AgentState, agent: FinalAnswerAgent, name: str, hitl_handler: HumanInTheLoopHandler
-    ) -> Command[Literal["__end__", "SuggestHumanActions", "ReuseAgent"]]:
-        # Handle human responses (only if HITL is enabled)
-        if ENABLE_SAVE_REUSE and state.sender == NodeNames.WAIT_FOR_RESPONSE:
-            return hitl_handler.handle_human_response(state, name)
-
+    ) -> Command[Literal["__end__", "SuggestHumanActions"]]:
         # Handle direct chat calls (no processing needed)
         if state.sender == NodeNames.CHAT_AGENT:
             state.sender = name
@@ -156,8 +131,8 @@ class FinalAnswerNode(BaseNode):
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
             return Command(update=state.model_dump(), goto=NodeNames.END)
 
-        # Handle TaskAnalyzerAgent when final_answer is already set (no apps matched)
-        if state.sender == NodeNames.TASK_ANALYZER_AGENT and state.final_answer:
+        # Handle EntryRouter when final_answer is already set (no apps matched)
+        if state.sender == NodeNames.ENTRY_ROUTER and state.final_answer:
             state.sender = name
             FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
@@ -213,15 +188,7 @@ class FinalAnswerNode(BaseNode):
 
         # Main processing: generate final answer
         await FinalAnswerNode._generate_final_answer(state, agent, name)
-
-        # Route based on sender (only suggest human actions if HITL is enabled)
-        # Allow save/reuse from both PlanControllerAgent (task decomposition mode) and ChatAgent (chat mode)
-        if ENABLE_SAVE_REUSE and state.sender == NodeNames.PLAN_CONTROLLER_AGENT:
-            state.hitl_action = create_save_reuse_action()
-            state.sender = name
-            return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
-        else:
-            return Command(update=state.model_dump(), goto=NodeNames.END)
+        return Command(update=state.model_dump(), goto=NodeNames.END)
 
     @staticmethod
     async def _generate_final_answer(state: AgentState, agent: FinalAnswerAgent, name: str):

@@ -1,0 +1,65 @@
+{
+  "src/cuga/backend/server/agents_routes.py": {
+    "HTTPException(status_code=500, detail=str(e))": 1
+  },
+  "src/cuga/backend/server/main.py": {
+    "HTTPException( status_code=503, detail=str(e) or \"IAM proxy token exchange failed (connection error)\", )": 1,
+    "HTTPException(status_code=400, detail=msg)": 1,
+    "HTTPException(status_code=400, detail=str(e))": 3,
+    "HTTPException(status_code=401, detail=f\"IAM token validation failed: {e}\")": 1,
+    "HTTPException(status_code=413, detail=msg)": 1,
+    "HTTPException(status_code=422, detail=f\"Invalid ActionResponse JSON: {e.errors()}\")": 1,
+    "HTTPException(status_code=422, detail=f\"Invalid ChatRequest JSON: {e.errors()}\")": 1,
+    "HTTPException(status_code=422, detail=f\"Invalid attachment metadata: {e.errors()}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to create conversation: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to delete conversation: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to download file: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get agent state: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get conversation messages: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get conversation stream events: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get conversation threads: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get tools list: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to get tools status: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load conversations: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load file: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load memory config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load model config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load sub-agents config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load tools config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to load workspace tree: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to proxy function call: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to reset agent state: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to retrieve state: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save agent mode: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save memory config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save mode: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save model config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save sub-agents config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to save tools config: {str(e)}\")": 1,
+    "HTTPException(status_code=500, detail=f\"Failed to upload file: {str(e)}\")": 1,
+    "HTTPException(status_code=503, detail=f\"Registry service unavailable: {str(e)}\")": 1,
+    "HTTPException(status_code=503, detail=str(e))": 1,
+    "JSONResponse({\"type\": \"agent_error\", \"message\": e.detail}, status_code=e.status_code)": 1
+  },
+  "src/cuga/backend/server/manage_routes/config_routes.py": {
+    "HTTPException(status_code=400, detail=f\"Invalid knowledge config: {ve}\")": 1,
+    "HTTPException(status_code=500, detail=str(e))": 3
+  },
+  "src/cuga/backend/server/manage_routes/draft_routes.py": {
+    "HTTPException(status_code=500, detail=str(e))": 7
+  },
+  "src/cuga/backend/server/manage_routes/knowledge_routes.py": {
+    "HTTPException( status_code=409, detail={ \"error\": \"reindex_in_progress\", \"collections\": sorted(live_engine._reindex_in_progress), \"message\": str(rip_err) or \"Re-index is running. Wait for it to finish before changing knowledge settings.\", }, )": 1,
+    "HTTPException(status_code=400, detail=f\"Engine validation failed: {ve}\")": 1,
+    "HTTPException(status_code=400, detail=str(ve))": 1,
+    "HTTPException(status_code=500, detail=str(e))": 2
+  },
+  "src/cuga/backend/server/manage_routes/llm_routes.py": {
+    "HTTPException(status_code=400, detail=f\"Invalid LLM configuration: {e}\")": 1,
+    "HTTPException(status_code=502, detail=f\"Models fetch failed: {str(ex)}\")": 1
+  },
+  "src/cuga/backend/server/secrets_routes.py": {
+    "HTTPException(status_code=400, detail=str(e))": 1,
+    "HTTPException(status_code=503, detail=str(e))": 1
+  }
+}

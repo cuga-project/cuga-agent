@@ -15,6 +15,7 @@ _STATIC_ENV_SEED_MAP: dict[str, str] = {
     "MINIMAX_API_KEY": "minimax-api-key",
     "RITS_API_KEY_RESTRICT": "rits-api-key",
     "WATSONX_APIKEY": "watsonx-api-key",
+    "WXO_API_KEY": "wxo-api-key",
     "AZURE_OPENAI_API_KEY": "azure-openai-api-key",
     "LITELLM_API_KEY": "litellm-api-key",
 }
@@ -125,8 +126,57 @@ def seed_secrets_from_env_sync() -> None:
         asyncio.run(seed_secrets_from_env())
 
 
+_PLATFORM_API_KEY_SLUG: dict[str, str] = {
+    "groq": "groq-api-key",
+    "openai": "openai-api-key",
+    "anthropic": "anthropic-api-key",
+    "google-genai": "google-api-key",
+    "openrouter": "openrouter-api-key",
+    "minimax": "minimax-api-key",
+    "rits": "rits-api-key",
+    "watsonx": "watsonx-api-key",
+    "wxo": "wxo-api-key",
+    "azure": "azure-openai-api-key",
+    "litellm": "litellm-api-key",
+}
+
+
+def _active_platform() -> str | None:
+    """Return the platform configured for the `code` agent role, or None if unavailable.
+
+    Mirrors the local-mode platform resolution in ``create_llm_from_config``.
+    """
+    try:
+        from cuga.config import settings
+
+        code_model = settings.agent.code.model
+        if not code_model:
+            return None
+        platform = (
+            code_model.get("platform")
+            if hasattr(code_model, "get")
+            else getattr(code_model, "platform", None)
+        )
+        return str(platform).lower() if platform else None
+    except Exception:
+        return None
+
+
 def resolve_llm_api_key_ref() -> str:
-    """Return the db:// reference for the active LLM provider's API key, or ''."""
+    """Return the db:// reference for the active LLM provider's API key, or ''.
+
+    Checks the actively configured platform first (e.g. TOML `platform = "wxo"`), before
+    falling back to guessing from the MODEL_NAME env var. The guess is a substring match
+    that can misfire when one provider's model id embeds another provider's name (e.g. a
+    wxO model override like "groq/openai/gpt-oss-120b" contains "openai" as a substring),
+    so it is only a fallback for when the active platform can't be determined.
+    """
+    active_platform = _active_platform()
+    if active_platform:
+        slug = _PLATFORM_API_KEY_SLUG.get(active_platform)
+        if slug:
+            return f"db://{slug}"
+
     model_name = os.environ.get("MODEL_NAME", "").lower()
     provider_hints = {
         "groq": "groq-api-key",
@@ -140,6 +190,7 @@ def resolve_llm_api_key_ref() -> str:
         "minimax": "minimax-api-key",
         "rits": "rits-api-key",
         "watsonx": "watsonx-api-key",
+        "wxo": "wxo-api-key",
         "azure": "azure-openai-api-key",
         "litellm": "litellm-api-key",
     }

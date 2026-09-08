@@ -12,7 +12,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
     CugaLiteState,
 )
-from cuga.backend.cuga_graph.graph import DynamicAgentGraph
+from cuga.backend.cuga_graph.entry_graph import CugaEntryGraph as DynamicAgentGraph
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse
 from cuga.backend.llm.models import LLMManager
@@ -394,26 +394,13 @@ def create_agent_initial_state(
     user_input: str,
     thread_id: str,
     user_id: str = "test_user",
-    lite_mode: bool = True,
     url: str = "https://example.com",
 ) -> AgentState:
-    """Create initial AgentState for full agent graph testing.
-
-    Args:
-        user_input: The user's query/message
-        thread_id: Unique thread identifier
-        user_id: User identifier
-        lite_mode: Whether to use lite mode
-        url: Initial URL for the agent state
-
-    Returns:
-        AgentState instance
-    """
+    """Create initial AgentState for entry graph testing."""
     return AgentState(
         user_id=user_id,
         thread_id=thread_id,
         input=user_input,
-        lite_mode=lite_mode,
         url=url,
     )
 

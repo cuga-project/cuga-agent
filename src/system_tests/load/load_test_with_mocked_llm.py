@@ -40,7 +40,6 @@ class LoadTestWithMockedLLM(BaseTestServerStream):
         "DYNACONF_SERVER_PORTS__REGISTRY": "8001",
         "DYNACONF_SERVER_PORTS__DEMO": "7860",
         "DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED": "false",
-        "DYNACONF_ADVANCED_FEATURES__LITE_MODE": "true",
     }
 
     test_state_isolation = True

@@ -9,20 +9,12 @@ from langgraph.types import Command
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import format_tools
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.plan_controller_agent.prompts.load_prompt import (
-    PlanControllerOutput,
-)
-from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_prompt import NextAgentPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.browser_models import NextAgentPlan
 from cuga.backend.cuga_graph.nodes.browser.qa_agent.prompts.load_prompt import QaAgentOutput
-from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decomposition_agent.prompts.load_prompt import (
-    TaskDecompositionPlan,
-    TaskDecompositionMultiOutput,
-)
 from cuga.backend.browser_env.browser.gym_env_async import BrowserEnvGymAsync
 from cuga.config import settings
-from pydantic import TypeAdapter
 import logging
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, List, Optional
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, ToolCall
@@ -380,7 +372,14 @@ class AgentLoop:
             if namespace:
                 logger.info(f"Processing subgraph node: {node_name} from namespace: {namespace}")
 
-                # Handle call_model node from CugaLite subgraph
+                # Messages live under different state keys per subgraph: CugaLite uses
+                # ``chat_messages``; the CugaSupervisor subgraph uses ``supervisor_chat_messages``.
+                # Read whichever is populated so supervisor steps stream to the UI too (#101).
+                subgraph_messages = (
+                    state_data.get("chat_messages") or state_data.get("supervisor_chat_messages") or []
+                )
+
+                # Handle call_model node (shared by CugaLite and CugaSupervisor subgraphs)
                 if node_name == "call_model":
                     logger.debug("Detected call_model node")
                     # Check if it generated code or text
@@ -398,7 +397,7 @@ class AgentLoop:
                     else:
                         # Text/reasoning output - only when last chat turn is a non-empty assistant message
                         logger.info("call_model generated text response (no code)")
-                        messages = state_data.get("chat_messages", [])
+                        messages = subgraph_messages
                         if messages:
                             last_msg = messages[-1]
                             if hasattr(last_msg, 'content'):
@@ -414,15 +413,16 @@ class AgentLoop:
                         logger.debug("Skipping empty call_model event")
                         return StreamEvent(name="", data="")
 
-                # Handle sandbox node from CugaLite subgraph
-                elif node_name == "sandbox":
-                    logger.info("Detected sandbox node - formatting execution output")
+                # Handle the execute node: ``sandbox`` for CugaLite, ``execute_agent_tool`` for
+                # the CugaSupervisor subgraph. Both append an "Execution output:\n..." message.
+                elif node_name in ("sandbox", "execute_agent_tool"):
+                    logger.info(f"Detected execute node '{node_name}' - formatting execution output")
 
-                    # Extract execution output from chat_messages
+                    # Extract execution output from the subgraph's messages
                     execution_output = ""
-                    messages = state_data.get("chat_messages", [])
+                    messages = subgraph_messages
                     if messages:
-                        logger.debug(f"Found {len(messages)} messages in sandbox state")
+                        logger.debug(f"Found {len(messages)} messages in execute state")
                         for msg in reversed(messages):
                             # Handle both BaseMessage objects and dicts
                             if hasattr(msg, 'content'):
@@ -527,9 +527,6 @@ class AgentLoop:
             event_val = json.dumps(state_obj.previous_steps[-1].model_dump())
         if first_key == "ActionAgent":
             event_val = json.dumps(messages[-1].tool_calls)
-        if first_key == 'ReuseAgent':
-            event_val = messages[-1].content
-        # Override CugaLite to display as CodeAgent for consistency
         if first_key == "CugaLite":
             first_key = "CodeAgent"
         logger.debug("Current Agent: {}".format(list(event.keys())))
@@ -620,16 +617,6 @@ class AgentLoop:
                 )
             else:
                 return AgentLoopAnswer(end=True, interrupt=True, has_tools=False, answer=answer, tools=[])
-
-        if "ReuseAgent" in event_keys:
-            logger.debug("Detected ReuseAgent in event_keys")
-            return AgentLoopAnswer(
-                end=True,
-                has_tools=False,
-                answer=f"Done!\n---\n [Click here for an explained walkthrough of the flow](http://localhost:{settings.server_ports.demo}/flows/flow.html)",
-                flow_generalized=True,
-                tools=msg.tool_calls,
-            )
 
         if "FinalAnswerAgent" in event_keys or "CodeAgent" in event_keys:
             logger.debug(
@@ -842,15 +829,6 @@ class AgentLoop:
 
     async def show_chat_even(self, event: StreamEvent):
         if self.env_pointer and self.env_pointer.chat:
-            if event.name == "TaskDecompositionAgent":
-                msg = "TaskDecompositionAgent\n:"
-                DataType = TypeAdapter(Union[TaskDecompositionPlan, TaskDecompositionMultiOutput])
-                task_decomposition_plan = DataType.validate_json(event.data)
-                msg += self.get_output_of_obj(task_decomposition_plan.model_dump())
-                await self.env_pointer.send_chat_message(
-                    role="assistant",
-                    content=msg,
-                )
             if event.name == "BrowserPlannerAgent":
                 msg = "PlannerAgent:\n"
                 p = NextAgentPlan(**json.loads(event.data))
@@ -868,11 +846,6 @@ class AgentLoop:
                 p = QaAgentOutput(**json.loads(event.data))
                 await self.env_pointer.send_chat_message(
                     role="assistant", content="{} - {}".format(p.name, p.answer)
-                )
-            if event.name == "PlanControllerAgent":
-                p = PlanControllerOutput(**json.loads(event.data))
-                await self.env_pointer.send_chat_message(
-                    role="assistant", content="Plan Controller - next subtask is: {}".format(p.next_subtask)
                 )
 
     async def run(self, state: Optional[AgentState] = None, resume=None):

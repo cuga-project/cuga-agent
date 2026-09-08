@@ -25,12 +25,6 @@
 # return empty content; if that appears, it is a budget artifact, not a model result.
 # See cuga-agent#622 for making both knobs first-class instead of extra_params.
 
-[agent.task_decomposition.model]
-platform = "openai"
-temperature = 0.1
-max_tokens = 16000
-extra_params = { reasoning_effort = "high" }
-
 [agent.planner.model]
 platform = "openai"
 temperature = 0.1
@@ -43,18 +37,6 @@ temperature = 0.1
 max_tokens = 16000
 extra_params = { reasoning_effort = "high" }
 
-[agent.shortlister.model]
-platform = "openai"
-temperature = 0.1
-max_tokens = 16000
-extra_params = { reasoning_effort = "high" }
-
-[agent.plan_controller.model]
-platform = "openai"
-temperature = 0.1
-max_tokens = 16000
-extra_params = { reasoning_effort = "high" }
-
 [agent.final_answer.model]
 platform = "openai"
 temperature = 0.1
@@ -62,12 +44,6 @@ max_tokens = 16000
 extra_params = { reasoning_effort = "high" }
 
 [agent.code.model]
-platform = "openai"
-temperature = 0.1
-max_tokens = 16000
-extra_params = { reasoning_effort = "high" }
-
-[agent.code_planner.model]
 platform = "openai"
 temperature = 0.1
 max_tokens = 16000

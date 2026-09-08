@@ -1,11 +1,3 @@
-[agent.task_decomposition.model]
-platform = "rits"
-model_name = "rits/openai/gpt-oss-120b"
-url="http://localhost:4000"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-max_tokens = 1000
-
 [agent.planner.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
@@ -14,15 +6,6 @@ apikey_name = "RITS_API_KEY"
 temperature = 0.1
 max_tokens = 7000
 
-[agent.shortlister.model]
-platform = "rits"
-model_name = "rits/openai/gpt-oss-120b"
-url="http://localhost:4000"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-max_tokens = 7000
-
-
 [agent.chat.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
@@ -30,15 +13,6 @@ url="http://localhost:4000"
 apikey_name = "RITS_API_KEY"
 temperature = 0.1
 max_tokens = 5000
-
-[agent.plan_controller.model]
-platform = "rits"
-model_name = "rits/openai/gpt-oss-120b"
-url="http://localhost:4000"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-max_tokens = 5000
-
 
 [agent.final_answer.model]
 platform = "rits"
@@ -49,14 +23,6 @@ temperature = 0.1
 max_tokens = 15000
 
 [agent.code.model]
-platform = "rits"
-model_name = "rits/openai/gpt-oss-120b"
-url="http://localhost:4000"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-max_tokens = 3000
-
-[agent.code_planner.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
 url="http://localhost:4000"

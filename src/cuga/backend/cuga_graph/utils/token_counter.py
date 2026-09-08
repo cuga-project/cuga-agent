@@ -201,14 +201,19 @@ MODEL_CONTEXT_SIZES = {
     # ============================================================================
     # Google Gemma 4 Models
     # ============================================================================
-    # Deployment cap, not the 262,144 native window: the RITS vLLM deployment serves
-    # max_model_len=131072 (probed via GET .../v1/models, 2026-07-28). Registering the
-    # native window put the 70% summarization trigger (~183k) beyond the deployment's
-    # 131k cliff, so summarization could never engage on Gemma (issue #563).
-    "gemma-4-31B-it": 131072,
-    "gemma-4-31b-it": 131072,
-    "google/gemma-4-31B-it": 131072,
-    "google/gemma-4-31b-it": 131072,
+    # Matches the RITS vLLM deployment, which now serves max_model_len=262144 — the
+    # full native window (probed via GET .../v1/models, 2026-08-27; enforced, and
+    # verified with a live 144k-token request).
+    #
+    # This was pinned to 131072 under #563, when the deployment capped the window at
+    # half the native size and registering 262144 put the 70% summarization trigger
+    # (~183k) beyond that 131k cliff. The cap has since been lifted, so the pin now
+    # errs the other way: it would summarize at ~92k and waste ~130k of usable window.
+    # These are deployment facts, not model facts — re-probe before trusting them.
+    "gemma-4-31B-it": 262144,
+    "gemma-4-31b-it": 262144,
+    "google/gemma-4-31B-it": 262144,
+    "google/gemma-4-31b-it": 262144,
     # ============================================================================
     # Meta Llama Models
     # ============================================================================
@@ -247,6 +252,15 @@ MODEL_CONTEXT_SIZES = {
     "mistral-large": 128000,
     "mistral-large-latest": 128000,
     "mistral-large-2411": 128000,
+    # Needed because lookup falls back to a longest-prefix match: without this specific
+    # key, the 3.5 model matches the generic "mistral-medium" below and inherits its
+    # 32000 — an 8x underestimate, and a silent one, since the "unknown model" warning
+    # only fires when nothing matches at all. (Longest key wins, so dict order here is
+    # irrelevant.) "128B" is the parameter count, not the window:
+    # the RITS deployment serves max_model_len=262144 (probed 2026-08-27; enforced, and
+    # verified with a live 182k-token request).
+    "mistral-medium-3.5-128b": 262144,
+    "mistralai/mistral-medium-3.5-128b": 262144,
     "mistral-medium": 32000,
     "mistral-small": 32000,
     "mistral-7b": 32000,

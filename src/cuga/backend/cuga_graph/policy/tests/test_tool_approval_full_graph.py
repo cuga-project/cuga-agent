@@ -26,6 +26,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+pytestmark = pytest.mark.e2e
+
 
 def _normalize_final_answer_text(text: str) -> str:
     """Normalize LLM final answers for stable substring assertions."""
@@ -165,7 +167,6 @@ async def test_tool_approval_approve_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -302,7 +303,6 @@ async def test_tool_approval_deny_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -418,7 +418,6 @@ async def test_tool_approval_modification_flow():
             user_input="Get my top account from digital sales",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -476,7 +475,6 @@ async def test_tool_approval_modification_flow():
             user_input="Get my top account from digital sales and show the account name",
             thread_id=thread_id_2,
             user_id="test_user",
-            lite_mode=True,
         )
 
         # Run until second interrupt

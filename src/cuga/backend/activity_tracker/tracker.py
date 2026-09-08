@@ -10,7 +10,7 @@ import time
 import pandas as pd
 
 
-from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.code_agent_output import CodeAgentOutput
 
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
 from cuga.backend.utils.id_utils import mask_with_timestamp, random_id_with_timestamp
@@ -568,7 +568,7 @@ class ActivityTracker(object):
             except Exception:
                 step.image_before = None
         if AGENT_ANALYTICS:
-            if step.name == "TaskAnalyzerAgent":
+            if step.name == "EntryRouter":
                 AIEventRecorder.record_data_annotation(
                     name=step.name,
                     annotation_type=DataAnnotation.Type.RAW_TEXT,
