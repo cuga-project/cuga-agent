@@ -90,7 +90,10 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
 def test_preload_evolve_sentence_transformers_warms_all_required_models(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from scripts.preload_models import EVOLVE_SENTENCE_TRANSFORMER_MODELS, preload_evolve_sentence_transformers
+    from scripts.preload_models import (
+        EVOLVE_SENTENCE_TRANSFORMER_MODELS,
+        preload_evolve_sentence_transformers,
+    )
 
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(tmp_path))
     models = [MagicMock() for _ in EVOLVE_SENTENCE_TRANSFORMER_MODELS]
