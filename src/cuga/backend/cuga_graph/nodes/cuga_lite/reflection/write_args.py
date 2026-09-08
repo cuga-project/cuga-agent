@@ -376,7 +376,7 @@ def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
     return out
 
 
-def _mutated_names(tree: ast.AST) -> set:
+def _mutated_names(tree: ast.AST, _seen: frozenset = frozenset()) -> set:
     """Names whose object is changed in place somewhere in the block.
 
     ``_unreliable_names`` counts only rebinding of the *name*. ``payload["x"] =
@@ -417,14 +417,21 @@ def _mutated_names(tree: ast.AST) -> set:
     # payload, but only p was seen above, so payload still folded to its
     # initial value -- the exact stale-0.0 the gate exists to prevent, one
     # call deep. Map arguments onto parameters and carry the mutation across.
-    helpers = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    helpers = {
+        n.name: n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not tree
+    }
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
         fn = helpers.get(node.func.id)
-        if fn is None:
+        # ast.walk yields the root, so a helper that calls itself (or two that
+        # call each other) recursed without bound. Caught by replay on real
+        # blocks, not by the unit tests.
+        if fn is None or id(fn) in _seen:
             continue
-        inner = _mutated_names(fn)  # mutations inside the helper, keyed by its own names
+        inner = _mutated_names(fn, _seen | {id(fn), id(tree)})
         params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
         for i, arg in enumerate(node.args):
             if isinstance(arg, ast.Name) and i < len(params) and params[i] in inner:
