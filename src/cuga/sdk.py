@@ -1728,12 +1728,30 @@ class PoliciesManager:
 def _finalization_ran(result: dict) -> bool:
     """Whether a FinalAnswerNode terminal branch delivered THIS turn's answer.
 
-    Reads AgentState.final_answer_finalized — a per-invocation flag set by
-    every FinalAnswerNode terminal branch and reset by each turn's fresh
-    input state, so historical turns can never false-positive (review:
-    haroldship + coderabbitai on #707).
+    Reads AgentState.final_answer_finalized — set by every FinalAnswerNode
+    terminal branch. invoke() explicitly resets it to False on each new user
+    message (checkpointed state carries it across turns otherwise); the HITL
+    resume path deliberately keeps the interrupted turn's value (review:
+    haroldship + coderabbitai + sami-marreed on #707).
     """
     return bool(result.get("final_answer_finalized", False))
+
+
+def _apply_answer_function_to_text(text: str, answer_function) -> str:
+    """Mirror finalize_answer's ordering for out-of-graph text: strip harmony
+    tokens first, then apply the answer function. Used by invoke()'s
+    transcript-recovery fallback so the function sees the same input shape
+    as on the terminal path."""
+    from types import SimpleNamespace as _NS
+
+    from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
+    from cuga.backend.cuga_graph.utils.harmony import strip_harmony_tokens
+
+    if "<|" in text:
+        text = strip_harmony_tokens(text)
+    _shim = _NS(final_answer=text)
+    apply_answer_function(_shim, answer_function)
+    return _shim.final_answer
 
 
 def _empty_answer_is_final(result: dict, formatter_configured: bool) -> bool:
@@ -2846,6 +2864,12 @@ class CugaAgent:
             initial_state_dict["cuga_lite_metadata"] = _reset_policy_decisions(
                 initial_state_dict.get("cuga_lite_metadata")
             )
+            # Per-turn, not thread-scoped: a checkpointed True from turn N must
+            # not mark turn N+1 as finalized (it would skip pause/error/
+            # transcript recovery when a formatter is configured). HITL resume
+            # bypasses this branch, deliberately keeping the interrupted
+            # turn's flag (review: sami-marreed on #707).
+            initial_state_dict["final_answer_finalized"] = False
 
             # Update user_context (pi) if provided
             if user_context:
@@ -2948,13 +2972,7 @@ class CugaAgent:
             # finalize_answer here: answer function first, then citation
             # resolution, before returning it to the caller.
             if final_answer:
-                from types import SimpleNamespace as _NS
-
-                from cuga.backend.cuga_graph.nodes.answer.answer_function import apply_answer_function
-
-                _shim = _NS(final_answer=final_answer)
-                apply_answer_function(_shim, self._answer_function)
-                final_answer = _shim.final_answer
+                final_answer = _apply_answer_function_to_text(final_answer, self._answer_function)
 
             from cuga.backend.knowledge.sources import (
                 get_ledger,
