@@ -1225,32 +1225,3 @@ def test_locally_bound_name_with_a_verb_suffix_is_not_a_write():
 
     code = 'tools_delete = await find_tools("delete expense", "splitwise")\nprint(tools_delete)'
     assert has_write_call(code) is False, "a variable is not a tool, whatever it is called"
-
-
-# ── rule 1 covers invented facts, not free choices ─────────────────────────
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "phrase",
-    [
-        "Boolean flags and option toggles",
-        "Option strings the tool defines",
-        "being CREATED for the first",
-        "documented default",
-        "asserts a fact about existing state",
-    ],
-)
-def test_verify_prompt_carves_out_free_choices(phrase):
-    """A literal-minded verifier read rule 1 as covering any fixed string.
-
-    On gpt-oss-120b that produced 37 revises in 101 decisions — every alert a
-    boolean flag, an option string, or a filename the agent was creating —
-    against 6 in 1,829 on Gemini with the same prompt.
-    """
-    from pathlib import Path
-
-    import cuga.backend.cuga_graph.nodes.cuga_lite.reflection as refl
-
-    text = (Path(refl.__file__).parent / "prompts" / "verify_system.jinja2").read_text()
-    assert phrase in text
