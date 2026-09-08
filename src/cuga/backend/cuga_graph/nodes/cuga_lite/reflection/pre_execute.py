@@ -22,6 +22,11 @@ from cuga.backend.cuga_graph.utils.context_management_utils import prepare_verif
 from cuga.backend.cuga_graph.utils.token_counter import clamp_watsonx_completion_for_messages
 
 VERIFY_REVISE_STREAK_CAP = 2
+# The streak above only counts *consecutive* revises and is reset by any successful
+# execution, so revise/ok/revise/ok never trips it. Each revise still costs a step
+# against cuga_lite_max_steps plus two LLM calls, so a task could spend its whole
+# budget in the gate and never reach its own work. This is the bound that holds.
+VERIFY_REVISE_TOTAL_CAP = 5
 
 
 def log_pre_execute_verify(tracker: Any, decision: VerifyDecision) -> bool:
@@ -50,6 +55,7 @@ async def decide_pre_execute_verify(
     *,
     enabled: bool,
     streak: int,
+    total_revises: int = 0,
     script: Optional[str],
     chat_messages: list,
     variables_snapshot: str,
@@ -61,13 +67,17 @@ async def decide_pre_execute_verify(
 ) -> VerifyDecision:
     """Return whether the proposed script should run.
 
-    ``ok`` / ``unknown`` → execute. ``revise`` → skip. Fail open on errors
-    and after ``VERIFY_REVISE_STREAK_CAP`` consecutive revises.
+    ``ok`` / ``unknown`` → execute. ``revise`` → skip. Fail open on errors,
+    after ``VERIFY_REVISE_STREAK_CAP`` consecutive revises, and after
+    ``VERIFY_REVISE_TOTAL_CAP`` revises in the run however they are spaced.
     """
     if not enabled or not (script or "").strip():
         return VerifyDecision(gate="ok")
     if streak >= VERIFY_REVISE_STREAK_CAP:
         logger.info("Pre-execute VERIFY skipped: revise streak {}", streak)
+        return VerifyDecision(gate="ok")
+    if total_revises >= VERIFY_REVISE_TOTAL_CAP:
+        logger.info("Pre-execute VERIFY disabled for the rest of the run: {} revises", total_revises)
         return VerifyDecision(gate="ok")
     try:
         if not has_write_call(script):

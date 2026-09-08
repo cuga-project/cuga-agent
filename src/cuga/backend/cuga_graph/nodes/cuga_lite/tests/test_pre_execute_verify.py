@@ -906,3 +906,65 @@ def test_row_budget_is_bounded_for_many_write_calls():
 @pytest.mark.unit
 def test_small_block_has_no_truncation_notice():
     assert "not shown" not in describe_write_arguments("await pay_post(amount=5.0)")
+
+
+# ── the run-wide revise cap (the consecutive streak bounds nothing) ─────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_alternating_revise_ok_is_bounded_by_the_total_cap():
+    """revise/ok/revise/ok never trips the consecutive streak; it must still end."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        VERIFY_REVISE_TOTAL_CAP,
+        decide_pre_execute_verify,
+    )
+
+    model = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(content="GATE: revise\nALERT: no")
+        )
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,  # never consecutive
+            total_revises=VERIFY_REVISE_TOTAL_CAP,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok", "past the run cap the gate must fail open"
+    verify.return_value.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_under_the_total_cap_the_gate_still_runs():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    model = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(content="GATE: revise\nALERT: ungrounded")
+        )
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "revise"

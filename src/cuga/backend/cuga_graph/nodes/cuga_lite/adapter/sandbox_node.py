@@ -181,6 +181,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                     decision = await decide_pre_execute_verify(
                         enabled=True,
                         streak=int(getattr(state, "verify_revise_streak", 0) or 0),
+                        total_revises=int(getattr(state, "verify_revise_total", 0) or 0),
                         script=state.script,
                         chat_messages=list(state.chat_messages or []),
                         variables_snapshot=var_snapshot,
@@ -214,6 +215,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                         "variable_counter_state": state.variable_counter_state,
                         "variable_creation_order": state.variable_creation_order,
                         "verify_revise_streak": int(getattr(state, "verify_revise_streak", 0) or 0) + 1,
+                        "verify_revise_total": int(getattr(state, "verify_revise_total", 0) or 0) + 1,
                         "tool_calls": state.tool_calls or [],
                         **_budget_updates(),
                     }
