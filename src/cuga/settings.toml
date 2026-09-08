@@ -144,6 +144,9 @@ enabled = false  # Enable CugaSupervisor for multi-agent coordination
 config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
 agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
+# Internal sub-agent MemorySaver scope. "conversation" reuses one child checkpoint
+# per parent conversation. "call" starts a fresh checkpoint on every delegation.
+sub_agent_memory_scope = "conversation"
 # Manage-UI multi-agent registry: create/list extra agents and route /stream via X-Agent-ID.
 # Default off so a tenant/instance stays one runnable agent. Turned on by
 # `cuga start demo_supervisor` and `cuga start manager --seed-supervisor-demo`.

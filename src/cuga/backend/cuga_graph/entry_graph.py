@@ -56,6 +56,7 @@ class CugaEntryGraph:
         supervisor_agents: Optional[dict] = None,
         supervisor_enabled: Optional[bool] = None,
         supervisor_plan_approval: bool = False,
+        supervisor_id: Optional[str] = None,
     ):
         self.final_answer_agent = FinalAnswerNode(FinalAnswerAgent.create())
         self.followup = SuggestHumanActions()
@@ -88,6 +89,7 @@ class CugaEntryGraph:
         self.supervisor_agents: Optional[dict] = supervisor_agents
         self.supervisor_enabled: Optional[bool] = supervisor_enabled
         self.supervisor_plan_approval = supervisor_plan_approval
+        self.supervisor_id = supervisor_id
         self.graph = None
 
     def _supervisor_is_enabled(self) -> bool:
@@ -236,6 +238,7 @@ class CugaEntryGraph:
                 agents=agents,
                 special_instructions=supervisor_special_instructions,
                 plan_approval=self.supervisor_plan_approval,
+                supervisor_id=self.supervisor_id,
             )
             compiled_supervisor_subgraph = supervisor_subgraph.compile()
             graph.add_node("CugaSupervisorSubgraph", compiled_supervisor_subgraph)
