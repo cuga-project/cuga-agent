@@ -1004,3 +1004,21 @@ async def test_hung_verify_call_times_out_and_the_block_runs():
             max_chars=1000,
         )
     assert decision.gate == "unknown", "a timeout must fail open, not block the block"
+
+
+@pytest.mark.unit
+def test_row_budget_does_not_drop_later_arguments_of_a_small_block():
+    """Round-robin must spend the whole budget, not a fixed slice per call.
+
+    A fixed per-call budget kept every call represented but silently dropped the
+    later arguments of each one — the same loss moved sideways.
+    """
+    code = "\n".join(
+        f"await amazon_add_payment_card_payment_cards_post("
+        f'card_name="c{i}", owner_name="o{i}", card_number="{i}", '
+        f'expiry_month={i}, cvv_number="{i}{i}{i}")'
+        for i in range(3)
+    )
+    out = describe_write_arguments(code)
+    assert "cvv_number" in out, "later arguments must not be dropped while budget remains"
+    assert "not shown" not in out

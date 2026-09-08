@@ -701,31 +701,29 @@ def describe_write_arguments(code: Optional[str]) -> str:
         node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_write_call(node, local_names)
     ]
     omitted = 0
+
+    # Render every argument of every write call first, then allocate the row
+    # budget in round-robin passes: call 1 arg 1, call 2 arg 1, ..., call 1 arg 2.
+    # Filling call-by-call let an unrolled loop of eight payment requests show
+    # only the first six, hiding a wrong value in the last two behind a limit the
+    # verifier is never told about. Allocating a fixed slice per call instead
+    # would drop later arguments of every call, which is the same loss moved
+    # sideways -- rounds spend the whole budget and only drop what does not fit.
+    per_call: List[List[str]] = []
     for node in write_calls:
         name = _call_name(node) or "<call>"
         env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable, shadowed)
         args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
         args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
         if not args:
-            rows.append(f"{name}() — no arguments")
+            per_call.append([f"{name}() — no arguments"])
             continue
-        # Breadth-first: every write call gets at least one row before any call
-        # gets a second. Filling rows call-by-call let an unrolled loop of eight
-        # payment requests show only the first six, hiding a wrong value in the
-        # last two behind a limit the verifier is never told about.
-        budget = max(1, _MAX_ROWS // max(1, len(write_calls)))
-        shown = 0
+        call_rows: List[str] = []
         for arg_name, value in args:
-            # Per-call budget keeps every call represented; the absolute cap keeps
-            # a block with very many write calls from flooding the prompt.
-            if shown >= budget or len(rows) >= _MAX_ROWS:
-                omitted += len(args) - shown
-                break
             try:
                 source = ast.unparse(value)
             except Exception:
                 continue
-            shown += 1
             expanded = _expand(value, env)
             try:
                 expanded_src = ast.unparse(expanded)
@@ -733,13 +731,28 @@ def describe_write_arguments(code: Optional[str]) -> str:
                 expanded_src = source
             folded = _fold(expanded)
             if folded is not None:
-                rows.append(f"{name}({arg_name}=) -> {folded}")
+                call_rows.append(f"{name}({arg_name}=) -> {folded}")
             elif expanded_src != source:
-                rows.append(f"{name}({arg_name}=) -> {_clip(expanded_src)}")
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(expanded_src)}")
                 unresolved |= _free_names(expanded) - set(_FOLD_NAMESPACE)
             else:
-                rows.append(f"{name}({arg_name}=) -> {_clip(source)}")
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(source)}")
                 unresolved |= _free_names(value) - set(_FOLD_NAMESPACE)
+        per_call.append(call_rows)
+
+    taken = [0] * len(per_call)
+    while len(rows) < _MAX_ROWS and any(taken[i] < len(c) for i, c in enumerate(per_call)):
+        progressed = False
+        for i, call_rows in enumerate(per_call):
+            if len(rows) >= _MAX_ROWS:
+                break
+            if taken[i] < len(call_rows):
+                rows.append(call_rows[taken[i]])
+                taken[i] += 1
+                progressed = True
+        if not progressed:
+            break
+    omitted = sum(len(c) - taken[i] for i, c in enumerate(per_call))
 
     if not rows:
         return "(no write calls)"
