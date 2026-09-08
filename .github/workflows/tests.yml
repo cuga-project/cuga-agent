@@ -81,6 +81,25 @@ jobs:
           uv run pytest tests/unit tests/integration
           -m "not manual and not pgvector and not load and not e2e and not stability"
 
+  events:
+    name: Events (offline)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cuga
+      # The event-driven agents layer, OFFLINE. Every test uses a TestClient with fake creds and
+      # engine=None (Activepieces off), so it needs no secrets and is safe here. The live channel
+      # harnesses (tests/events/live_*.py) are LOCAL-only — they require real Slack/Telegram/
+      # Discord credentials — and are never collected by this job.
+      - name: Run events tests (offline, no creds)
+        run: uv run pytest tests/events -q
+        env:
+          PYTHONUNBUFFERED: "1"
+
   policy-a:
     name: Policy (e2e)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
