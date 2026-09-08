@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -82,3 +84,39 @@ def test_airgap_preload_covers_cuga_layout_engine_repos() -> None:
         f"Airgap preload missing layout repos required at runtime: {sorted(missing)}. "
         f"required={sorted(required)} preloaded={sorted(preloaded)}"
     )
+
+
+@pytest.mark.unit
+def test_preload_evolve_sentence_transformers_warms_all_required_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.preload_models import EVOLVE_SENTENCE_TRANSFORMER_MODELS, preload_evolve_sentence_transformers
+
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(tmp_path))
+    models = [MagicMock() for _ in EVOLVE_SENTENCE_TRANSFORMER_MODELS]
+
+    sentence_transformer = MagicMock(side_effect=models)
+    fake_module = SimpleNamespace(SentenceTransformer=sentence_transformer)
+    with patch.dict(sys.modules, {"sentence_transformers": fake_module}):
+        preload_evolve_sentence_transformers()
+
+    assert sentence_transformer.call_args_list == [
+        call(
+            model_name,
+            cache_folder=str(tmp_path),
+            trust_remote_code=trust_remote_code,
+        )
+        for model_name, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS
+    ]
+    for model in models:
+        model.encode.assert_called_once_with(["warmup"])
+
+
+@pytest.mark.unit
+def test_strict_preload_turns_optional_failure_into_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.preload_models import handle_preload_error
+
+    monkeypatch.setenv("MODEL_PRELOAD_STRICT", "1")
+
+    with pytest.raises(RuntimeError, match="docling preload failed"):
+        handle_preload_error("docling", ValueError("download unavailable"))

@@ -11,6 +11,24 @@ import os
 import sys
 
 
+EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
+    ("sentence-transformers/all-MiniLM-L6-v2", False),
+    ("nomic-ai/CodeRankEmbed", True),
+)
+
+
+def strict_preload_enabled() -> bool:
+    """Return whether a missing model should fail the preload process."""
+    return os.environ.get("MODEL_PRELOAD_STRICT", "0") == "1"
+
+
+def handle_preload_error(component: str, error: Exception) -> None:
+    """Report an optional preload failure, or make it fatal in strict mode."""
+    if strict_preload_enabled():
+        raise RuntimeError(f"{component} preload failed") from error
+    print(f"  ! {component} preload skipped: {error}")
+
+
 def docling_transformers_layout_repo_id() -> str:
     """HF repo that ``download_models(with_layout=True)`` caches for layout."""
     from docling.datamodel.pipeline_options import LayoutOptions
@@ -59,8 +77,8 @@ def preload_fastembed() -> None:
             # Run one inference pass to ensure ONNX runtime initializes
             list(model.embed(["warmup"]))
             print(f"  ✓ {model_name}")
-    except ImportError:
-        print("  ✗ fastembed not installed, skipping")
+    except Exception as error:
+        handle_preload_error("fastembed", error)
 
 
 def preload_docling() -> None:
@@ -91,10 +109,8 @@ def preload_docling() -> None:
             local_dir=onnx_dir,
         )
         print("  ✓ docling models ready")
-    except ImportError:
-        print("  ✗ docling not installed, skipping")
-    except Exception as e:
-        print(f"  ✗ docling download failed: {e}")
+    except Exception as error:
+        handle_preload_error("docling", error)
 
 
 def preload_fastembed_tokenizer() -> None:
@@ -107,8 +123,28 @@ def preload_fastembed_tokenizer() -> None:
         model = OnnxTextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache_dir)
         _ = model.tokenizer
         print("  ✓ tokenizer ready")
-    except Exception as e:
-        print(f"  ! tokenizer pre-warm skipped: {e}")
+    except Exception as error:
+        handle_preload_error("fastembed tokenizer", error)
+
+
+def preload_evolve_sentence_transformers() -> None:
+    """Cache every SentenceTransformer model used by the pinned Evolve build."""
+    print("→ Preloading Evolve sentence-transformer models...")
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+        for model_name, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
+            print(f"  Downloading {model_name}...")
+            model = SentenceTransformer(
+                model_name,
+                cache_folder=cache_dir,
+                trust_remote_code=trust_remote_code,
+            )
+            model.encode(["warmup"])
+            print(f"  ✓ {model_name}")
+    except Exception as error:
+        handle_preload_error("Evolve sentence-transformer", error)
 
 
 if __name__ == "__main__":
@@ -116,5 +152,7 @@ if __name__ == "__main__":
     preload_fastembed()
     preload_fastembed_tokenizer()
     preload_docling()
+    if os.environ.get("PRELOAD_EVOLVE_MODELS", "0") == "1":
+        preload_evolve_sentence_transformers()
     print("\nDone. Set HF_HUB_OFFLINE=1 at runtime to enforce airgap.")
     sys.exit(0)
