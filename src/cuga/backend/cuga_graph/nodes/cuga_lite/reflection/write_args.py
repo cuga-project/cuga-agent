@@ -86,6 +86,8 @@ _MAX_EXPANSION_DEPTH = 8
 _MAX_EXPAND_VISITS = 256
 _MAX_EXPR_CHARS = 300
 _MAX_ROWS = 20
+# Registry tool names end in their HTTP verb (…_post, …_patch); these mutate.
+_MUTATING_SUFFIXES = ("_post", "_patch", "_put", "_delete")
 # Whole-section ceiling, since this text is not passed through the context
 # truncator before it reaches the verifier prompt.
 _MAX_SECTION_CHARS = 6000
@@ -217,6 +219,16 @@ def has_write_call(code: Optional[str]) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _is_write_call(node, local_names):
             return True
+    # map(pay_post, amounts) contains no Call node for pay_post, and map itself
+    # is read-only, so the writes ran without ever reaching the gate. A registry
+    # tool name ending in a mutating HTTP verb, passed as a value rather than
+    # called, is treated as a write.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for value in list(node.args) + [kw.value for kw in node.keywords]:
+            if isinstance(value, ast.Name) and value.id.endswith(_MUTATING_SUFFIXES):
+                return True
     return False
 
 

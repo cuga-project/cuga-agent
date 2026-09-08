@@ -1166,3 +1166,23 @@ def test_argument_only_read_by_a_local_helper_still_folds():
 def test_recursive_helpers_terminate_and_still_mark_the_argument(code):
     out = describe_write_arguments(code)
     assert "{'x': 0}" not in out
+
+
+# ── a mutating tool passed as a value still counts as a write ──────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("results = [await c for c in map(pay_post, amounts)]", True),
+        ("list(map(venmo_create_transaction_transactions_post, amounts))", True),
+        ("names = list(map(str, ids))", False),
+        ("fmt = lambda t: t\nout = sorted(rows, key=fmt)", False),
+        ("list(map(amazon_show_product_products_product_id_get, ids))", False),
+    ],
+)
+def test_write_tool_passed_as_a_value_reaches_the_gate(code, expected):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    assert has_write_call(code) is expected
