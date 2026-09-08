@@ -342,6 +342,72 @@ def test_malformed_env_does_not_break_import():
     assert "OK" in proc.stdout
 
 
+# --- invoke() lifecycle: the boundary the unit tests kept missing -------------
+
+
+def test_invoke_turn2_resets_flag_and_recovers_transcript(monkeypatch):
+    """Full invoke() over a stubbed graph, across the checkpoint boundary.
+
+    Turn-1 checkpoint carries final_answer_finalized=True. On the turn-2 user
+    message, invoke() must (1) hand the graph an input state with the flag
+    reset to False, and (2) when the turn ends unfinalized with an empty
+    answer, still run transcript recovery — with the formatter applied to the
+    recovered text. This is the exact leak sami-marreed reproduced; a helper-
+    only test cannot catch it.
+    """
+    import asyncio
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    import cuga
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+    agent = cuga.CugaAgent(auto_load_policies=False, final_answer=_strip_brackets)
+
+    async def _noop_initialized():
+        return None
+
+    monkeypatch.setattr(agent, "_ensure_initialized", _noop_initialized)
+
+    turn1 = AgentState(
+        input="q1",
+        url="",
+        final_answer="[[done]]",
+        final_answer_finalized=True,
+        chat_messages=[HumanMessage(content="q1"), AIMessage(content="turn-1 answer")],
+    )
+
+    captured = {}
+
+    class _CheckpointedGraph:
+        def get_state(self, *_a, **_k):
+            return SimpleNamespace(values=turn1.model_dump(), next=())
+
+        async def ainvoke(self, input_state, *_a, **_k):
+            captured["input"] = input_state
+            # Turn 2 ends unfinalized, empty answer, recoverable transcript.
+            result = dict(input_state if isinstance(input_state, dict) else input_state.model_dump())
+            result["final_answer"] = ""
+            result["final_answer_finalized"] = False
+            result["chat_messages"] = list(result.get("chat_messages") or []) + [
+                AIMessage(content="[[turn-2 recovered]]")
+            ]
+            result.setdefault("tool_calls", [])
+            result.setdefault("sources", [])
+            result.setdefault("variables_storage", {})
+            return result
+
+    agent._compiled_graph = _CheckpointedGraph()
+    result = asyncio.run(agent.invoke("q2", thread_id="t-lifecycle"))
+
+    sent = captured["input"]
+    sent_flag = sent["final_answer_finalized"] if isinstance(sent, dict) else sent.final_answer_finalized
+    assert sent_flag is False, "turn-2 input state must reset the checkpointed flag"
+    # Recovery ran (not skipped by turn-1's leaked flag) and the formatter
+    # shaped the recovered transcript text.
+    assert result.answer == "turn-2 recovered"
+
+
 # --- SDK surface --------------------------------------------------------------
 
 
