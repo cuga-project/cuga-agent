@@ -1086,3 +1086,36 @@ def test_write_arguments_section_has_a_ceiling():
     out = describe_write_arguments(code)
     assert len(out) <= _MAX_SECTION_CHARS + 200
     assert "section truncated" in out
+
+
+# ── lambda parameters and global declarations ──────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            "amount = 35.0\ndef bump():\n    global amount\n    amount = 46.67\nbump()\n"
+            "await pay_post(amount=amount)",
+            "35.0",
+        ),
+        (
+            "x = 35.0\ncheapest = sorted(items, key=lambda x: x['price'])[0]\n"
+            "await pay_post(amount=cheapest['price'])",
+            "35.0['price']",
+        ),
+        ("x = 35.0\nawait pay_post(amount=(lambda x: x * 2)(46.67))", "35.0 * 2"),
+    ],
+)
+def test_lambda_params_and_global_rebinding_are_not_folded(code, stale):
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_lambda_body_still_folds_genuine_outer_names():
+    out = describe_write_arguments("rate = 2\nawait pay_post(amount=(lambda v: v * rate)(5))")
+    assert "rate" not in out.split("From earlier")[0], (
+        "an outer name the lambda does not bind must still resolve"
+    )
+    assert "2" in out

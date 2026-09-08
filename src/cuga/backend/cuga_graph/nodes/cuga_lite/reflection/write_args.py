@@ -338,7 +338,11 @@ def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
             elif isinstance(child, (ast.Import, ast.ImportFrom)):
                 add(scope, [(alias.asname or alias.name).split(".")[0] for alias in child.names])
             elif isinstance(child, (ast.Global, ast.Nonlocal)):
+                # The declaration sits inside the function, but what it re-binds is
+                # the *enclosing* name -- so a module-level call after `bump()` must
+                # see `amount` as shadowed even though its chain never enters `bump`.
                 add(scope, child.names)
+                add(None, child.names)
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 add(scope, [child.name])
             if isinstance(child, _SCOPE_NODES):
@@ -452,6 +456,24 @@ class _Expander(ast.NodeTransformer):
         if self.visits[0] > _MAX_EXPAND_VISITS:
             raise _ExpandBudgetExceeded
         return super().visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:  # noqa: N802
+        """A lambda's parameters are bound by the lambda, not by the block.
+
+        A lambda inside a call argument is a child of the call, never on its
+        scope chain, so ``_env_before`` did not know to skip its parameter names
+        and ``key=lambda x: x['price']`` after an earlier ``x = 35.0`` rendered
+        as ``35.0['price']``. Defaults still expand with the outer environment.
+        """
+        a = node.args
+        bound = {arg.arg for arg in a.posonlyargs + a.args + a.kwonlyargs}
+        for extra in (a.vararg, a.kwarg):
+            if extra is not None:
+                bound.add(extra.arg)
+        node.args = self.generic_visit(a)  # type: ignore[assignment]
+        inner_env = {k: v for k, v in self.env.items() if k not in bound}
+        node.body = _Expander(inner_env, self.seen, self.depth, self.visits).visit(node.body)
+        return node
 
     def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
         if self.depth >= _MAX_EXPANSION_DEPTH or node.id in self.seen:
