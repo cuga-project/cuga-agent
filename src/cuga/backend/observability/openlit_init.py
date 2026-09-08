@@ -12,11 +12,11 @@ In settings.toml:
 
 ## Install
 
-    pip install cuga
+OpenLit is an optional extra — not installed by default (it pins openai<2,
+which conflicts with litellm's openai>=2, so it cannot be a core dependency):
+    pip install cuga[observability]
     # or:
-    uv pip install cuga
-
-Note: OpenLit is included as a core dependency and does not require an extra install.
+    uv pip install "cuga[observability]"
 
 ## Configure OTLP endpoint
 
