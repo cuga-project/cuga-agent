@@ -1365,7 +1365,10 @@ def start(
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
-        os.environ["MCP_SERVERS_FILE"] = "none"
+        # An operator who exports MCP_SERVERS_FILE means it — don't overwrite it. Unset still means
+        # "none" (managed-config-db mode, serving the demo app), which is what the demo wants.
+        if not (os.environ.get("MCP_SERVERS_FILE", "") or "").strip():
+            os.environ["MCP_SERVERS_FILE"] = "none"
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
