@@ -1022,3 +1022,47 @@ def test_row_budget_does_not_drop_later_arguments_of_a_small_block():
     out = describe_write_arguments(code)
     assert "cvv_number" in out, "later arguments must not be dropped while budget remains"
     assert "not shown" not in out
+
+
+# ── the GATE line as models actually write it ───────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text,gate",
+    [
+        ("GATE: revise.", "revise"),
+        ("**GATE**: revise\n**ALERT**: x", "revise"),
+        ("GATE : revise\nALERT : x", "revise"),
+        ("GATE: **revise**\nALERT: x", "revise"),
+        ("- GATE: revise\n- ALERT: x", "revise"),
+        ("GATE: revise (amount)\nALERT: amount 35.0", "revise"),
+        ("GATE: ok — values match history", "ok"),
+        ("GATE: ok.", "ok"),
+        ("GATE:revise", "revise"),
+        ("gate: ok", "ok"),
+        ("ALERT: x\nGATE: revise", "revise"),
+        ("GATE: ok\nGATE: revise", "revise"),
+        ("GATE:\nrevise", "unknown"),
+        ("the gate: ok is fine\nGATE: revise", "revise"),
+        ("", "unknown"),
+    ],
+)
+def test_parse_verify_output_tolerates_decorated_gate_lines(text, gate):
+    """unknown runs the block, so a decorated verdict silently turned the gate off."""
+    assert parse_verify_output(text).gate == gate
+
+
+@pytest.mark.unit
+def test_parse_verify_output_drops_code_fences_from_the_alert():
+    r = parse_verify_output("```\nGATE: revise\nALERT: amount 35.0\nuse 46.67\n```")
+    assert r.gate == "revise"
+    assert "```" not in r.alert
+    assert r.alert == "amount 35.0\nuse 46.67"
+
+
+@pytest.mark.unit
+def test_parse_verify_output_ignores_reasoning_scratch():
+    r = parse_verify_output("<think>hmm ALERT: scratch\nGATE: revise</think>\nGATE: ok")
+    assert r.gate == "ok"
+    assert r.alert == ""
