@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -61,6 +60,7 @@ class MemoryAccessRequest(BaseModel):
 class RetentionRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    policy_id: str = Field(min_length=1, max_length=128)
     as_of: Optional[str] = None
     scan_limit: Optional[int] = Field(default=None, ge=1, le=100_000)
 
@@ -219,62 +219,34 @@ async def _list_retention_inventory(*, agent_id: str, scan_limit: Optional[int])
     return entities
 
 
-async def _apply_orphaned_memory_retention(
-    report: dict[str, Any],
-    orphaned: list[dict[str, Any]],
-    *,
-    agent_id: str,
-) -> dict[str, Any]:
-    from cuga.backend.evolve.retention import memory_title
+async def _retention_policies() -> list[dict[str, Any]]:
+    """Return the Evolve catalog, registering CUGA's built-in policy once."""
+    from cuga.backend.evolve.retention import (
+        DEFAULT_RETENTION_POLICY,
+        DEFAULT_RETENTION_POLICY_DESCRIPTION,
+        DEFAULT_RETENTION_POLICY_ID,
+        DEFAULT_RETENTION_POLICY_NAME,
+    )
 
-    merged = {
-        **report,
-        **{
-            bucket: [item for item in report.get(bucket, []) if isinstance(item, dict)]
-            for bucket in ("flagged", "deleted", "skipped")
-        },
-    }
-    deleted_ids = {str(item.get("entity_id") or "") for item in merged["deleted"]}
-    orphan_ids = {str(entity.get("id") or "") for entity in orphaned}
-    superseded_ids = orphan_ids - deleted_ids
-    for bucket in ("flagged", "skipped"):
-        merged[bucket] = [
-            item for item in merged[bucket] if str(item.get("entity_id") or "") not in superseded_ids
-        ]
-
-    for entity in orphaned:
-        entity_id = str(entity.get("id") or "")
-        if not entity_id or entity_id in deleted_ids:
-            continue
-        item = {
-            "entity_id": entity_id,
-            "entity_type": entity.get("type"),
-            "created_at": entity.get("created_at"),
-            "action": "delete",
-            "reason": "orphaned_conversation",
-            "rule": "orphaned-conversations",
-            **({"title": title} if (title := memory_title(entity)) else {}),
-        }
-        try:
-            deletion = _memory_result(
-                await EvolveIntegration.delete_entity(
-                    entity_id,
-                    agent_id=agent_id,
-                    namespace_id=_namespace_id(),
-                )
-            )
-        except Exception:
-            deletion = {}
-        if deletion.get("success"):
-            merged["deleted"].append({**item, "outcome": "deleted"})
-        else:
-            merged["skipped"].append({**item, "outcome": "skipped", "reason": "delete_failed"})
-            errors = merged.setdefault("errors", [])
-            if isinstance(errors, list):
-                errors.append("An orphaned memory could not be deleted")
-            else:
-                merged["errors"] = ["An orphaned memory could not be deleted"]
-    return merged
+    result = _memory_result(
+        await EvolveIntegration.list_retention_policies(
+            namespace_id=_namespace_id(),
+            include_disabled=True,
+        )
+    )
+    policies = [item for item in result.get("items", []) if isinstance(item, dict)]
+    if any(policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID for policy in policies):
+        return policies
+    created = _memory_result(
+        await EvolveIntegration.put_retention_policy(
+            DEFAULT_RETENTION_POLICY_ID,
+            DEFAULT_RETENTION_POLICY_NAME,
+            DEFAULT_RETENTION_POLICY,
+            description=DEFAULT_RETENTION_POLICY_DESCRIPTION,
+            namespace_id=_namespace_id(),
+        )
+    )
+    return [*policies, created]
 
 
 @router.get("/memory/entities")
@@ -536,6 +508,16 @@ async def get_admin_memory_retention(
     )
 
 
+@router.get("/manage/memory/retention/policies")
+async def list_admin_retention_policies(
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
+):
+    from cuga.backend.evolve.retention import project_retention_policy
+
+    policies = await _retention_policies()
+    return JSONResponse({"items": [project_retention_policy(policy) for policy in policies]})
+
+
 @router.post("/manage/memory/retention/validate")
 async def validate_admin_retention_policy(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
@@ -555,16 +537,14 @@ async def run_admin_memory_retention(
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
     from cuga.backend.evolve.retention import (
-        DEFAULT_RETENTION_POLICY,
+        DEFAULT_RETENTION_POLICY_ID,
         find_orphaned_memory_entities,
         project_retention_report,
         retention_reference_time,
         sanitize_retention_report,
     )
-    from cuga.backend.evolve.retention_store import save_retention_run
     from cuga.backend.server.conversation_history import get_conversation_db
 
-    run_id = str(uuid.uuid4())
     try:
         reference_time = retention_reference_time(body.as_of)
     except ValueError as exc:
@@ -572,29 +552,30 @@ async def run_admin_memory_retention(
     inventory = await _list_retention_inventory(agent_id=agent_id, scan_limit=body.scan_limit)
     conversation_keys = await get_conversation_db().get_thread_owners_for_agent(agent_id)
     orphaned = find_orphaned_memory_entities(inventory, conversation_keys, now=reference_time)
-    provider_report = _memory_result(
+    if body.policy_id == DEFAULT_RETENTION_POLICY_ID:
+        await _retention_policies()
+    result = _memory_result(
         await EvolveIntegration.run_retention(
-            DEFAULT_RETENTION_POLICY,
+            body.policy_id,
             dry_run=False,
             as_of=body.as_of,
             scan_limit=body.scan_limit,
-            run_id=run_id,
             namespace_id=_namespace_id(),
             metadata_filters={"agent_id": agent_id},
+            additional_matches=[
+                {
+                    "entity_id": str(entity.get("id") or ""),
+                    "rule": "orphaned-conversations",
+                    "reason": "orphaned_conversation",
+                    "detail": "source conversation remained unavailable beyond the grace period",
+                }
+                for entity in orphaned
+                if str(entity.get("id") or "")
+            ],
+            actor_id=_user_id(current_user),
         )
     )
-    result = await _apply_orphaned_memory_retention(
-        provider_report,
-        orphaned,
-        agent_id=agent_id,
-    )
-    sanitized = sanitize_retention_report({**result, "run_id": run_id})
-    await save_retention_run(
-        run_id=run_id,
-        agent_id=agent_id,
-        actor_id=_user_id(current_user),
-        report=sanitized,
-    )
+    sanitized = sanitize_retention_report(result)
     return JSONResponse(project_retention_report(sanitized))
 
 
@@ -604,15 +585,31 @@ async def list_admin_memory_retention_runs(
     limit: int = Query(default=50, ge=1, le=200),
     current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    from cuga.backend.evolve.retention import project_retention_report
-    from cuga.backend.evolve.retention_store import list_retention_runs
+    from cuga.backend.evolve.retention import project_retention_report, sanitize_retention_report
 
-    rows = await list_retention_runs(agent_id=agent_id, limit=limit)
+    result = _memory_result(
+        await EvolveIntegration.list_retention_runs(
+            agent_id=agent_id,
+            namespace_id=_namespace_id(),
+            limit=limit,
+        )
+    )
+    rows = [row for row in result.get("items", []) if isinstance(row, dict)]
     return JSONResponse(
         {
             "items": [
-                {key: row[key] for key in ("run_id", "actor_id", "status", "created_at")}
-                | {"report": project_retention_report(row["report"])}
+                {
+                    key: row[key]
+                    for key in ("run_id", "policy_id", "actor_id", "status", "created_at")
+                    if key in row
+                }
+                | {
+                    "report": project_retention_report(
+                        sanitize_retention_report(
+                            row["report"] if isinstance(row.get("report"), dict) else {}
+                        )
+                    )
+                }
                 for row in rows
             ]
         }

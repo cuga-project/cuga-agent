@@ -29,6 +29,9 @@ DEFAULT_RETENTION_POLICY: dict[str, Any] = {
         },
     ]
 }
+DEFAULT_RETENTION_POLICY_ID = "cuga-standard"
+DEFAULT_RETENTION_POLICY_NAME = "Standard retention"
+DEFAULT_RETENTION_POLICY_DESCRIPTION = "CUGA's default memory lifecycle policy"
 
 ORPHANED_CONVERSATION_GRACE_DAYS = 7
 ORPHANED_CONVERSATION_RULE: dict[str, Any] = {
@@ -40,8 +43,11 @@ ORPHANED_CONVERSATION_RULE: dict[str, Any] = {
 }
 
 _REPORT_FIELDS = {
+    "actor_id",
     "as_of",
     "completed_at",
+    "policy_id",
+    "policy_name",
     "run_id",
     "started_at",
 }
@@ -228,7 +234,11 @@ def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
         for bucket in ("flagged", "deleted", "skipped")
     }
     return {
-        **{key: report[key] for key in ("run_id", "started_at", "completed_at") if key in report},
+        **{
+            key: report[key]
+            for key in ("run_id", "policy_id", "policy_name", "actor_id", "started_at", "completed_at")
+            if key in report
+        },
         **buckets,
         "summary": (
             f"Retention flagged {len(buckets['flagged'])} for review, "
@@ -239,6 +249,34 @@ def project_retention_report(report: dict[str, Any]) -> dict[str, Any]:
         "warnings": ["Some memories were evaluated with incomplete usage data."]
         if report.get("warning_count")
         else [],
+    }
+
+
+def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    """Project an Evolve policy record without backend or namespace details."""
+    definition = policy.get("policy")
+    rules = definition.get("rules", []) if isinstance(definition, dict) else []
+    return {
+        key: policy.get(key)
+        for key in ("policy_id", "name", "description", "enabled", "created_at", "updated_at")
+    } | {
+        "rules": [
+            {
+                key: rule[key]
+                for key in (
+                    "name",
+                    "entity_type",
+                    "max_age_days",
+                    "max_unused_days",
+                    "action",
+                    "on_missing_access_signal",
+                    "cascade_derived",
+                )
+                if key in rule
+            }
+            for rule in rules
+            if isinstance(rule, dict)
+        ]
     }
 
 
