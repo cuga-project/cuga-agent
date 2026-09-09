@@ -22,15 +22,25 @@ def get_latest_memory_query(messages: Sequence[BaseMessage] | None) -> str:
     if not messages:
         return ""
 
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+        EXECUTION_OUTPUT_PREFIX,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import (
+        VERIFY_BLOCKED_PREFIX,
+    )
+
     for msg in reversed(messages):
         if not isinstance(msg, HumanMessage):
             continue
         content = getattr(msg, "content", "") or ""
         if not isinstance(content, str):
             content = str(content)
-        if content.startswith("Execution output:"):
+        if content.startswith(EXECUTION_OUTPUT_PREFIX):
             continue
-        if content.startswith("VERIFY blocked this code block before execution."):
+        if content.startswith(VERIFY_BLOCKED_PREFIX):
+            continue
+        if content.startswith(EMPTY_RESPONSE_CORRECTION):
             continue
         if content:
             return content

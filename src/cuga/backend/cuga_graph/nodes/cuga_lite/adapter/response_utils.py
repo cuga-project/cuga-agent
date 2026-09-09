@@ -7,13 +7,17 @@ from typing import Any, Dict, Optional
 
 from langchain_core.messages import HumanMessage
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import EXECUTION_OUTPUT_PREFIX
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EMPTY_RESPONSE_CORRECTION,
+    EMPTY_RESPONSE_CORRECTION_KEY,
+    EXECUTION_OUTPUT_PREFIX,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VERIFY_BLOCKED_PREFIX
 
 
 def clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     cleaned = {**(meta or {})}
-    cleaned.pop("_empty_response_correction", None)
+    cleaned.pop(EMPTY_RESPONSE_CORRECTION_KEY, None)
     return cleaned
 
 
@@ -22,7 +26,11 @@ def reflection_current_task(state: Any) -> str:
     if (state.sub_task or "").strip():
         return state.sub_task.strip()
     if state.chat_messages:
-        feedback_prefixes = (EXECUTION_OUTPUT_PREFIX, VERIFY_BLOCKED_PREFIX)
+        feedback_prefixes = (
+            EXECUTION_OUTPUT_PREFIX,
+            VERIFY_BLOCKED_PREFIX,
+            EMPTY_RESPONSE_CORRECTION,
+        )
         for msg in reversed(state.chat_messages):
             if isinstance(msg, HumanMessage):
                 content = (msg.content or "").strip()

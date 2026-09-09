@@ -265,9 +265,13 @@ def test_on_response_processed_nl_branch_records_content():
 
 def test_build_metadata_update_cleans_empty_response_meta():
     adapter = _make_adapter()
-    state = SimpleNamespace(cuga_lite_metadata={"_empty_response_correction": True, "other_key": 1})
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION_KEY,
+    )
+
+    state = SimpleNamespace(cuga_lite_metadata={EMPTY_RESPONSE_CORRECTION_KEY: True, "other_key": 1})
     result = adapter.build_metadata_update(state, playbook_fired=False)
-    assert "_empty_response_correction" not in result
+    assert EMPTY_RESPONSE_CORRECTION_KEY not in result
     assert result["other_key"] == 1
 
 

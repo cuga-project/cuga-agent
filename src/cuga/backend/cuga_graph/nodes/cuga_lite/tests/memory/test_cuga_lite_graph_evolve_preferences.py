@@ -44,6 +44,20 @@ def test_get_latest_memory_query_skips_verify_blocked_feedback():
     assert get_latest_memory_query(messages) == "user preference"
 
 
+@pytest.mark.unit
+def test_get_latest_memory_query_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+
+    messages = [
+        HumanMessage(content="user preference"),
+        HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
+    ]
+
+    assert get_latest_memory_query(messages) == "user preference"
+
+
 def test_format_evolve_user_preference_keeps_preference_section_separate():
     formatted = format_evolve_user_preference(
         {

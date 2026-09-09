@@ -33,6 +33,8 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction imp
     extract_code_from_model_response,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+    EMPTY_RESPONSE_CORRECTION,
+    EMPTY_RESPONSE_CORRECTION_KEY,
     EXECUTION_OUTPUT_PREFIX,
     CoreGraphAdapter,
     enforce_step_limit,
@@ -50,17 +52,6 @@ TOOL_BUDGET_EXHAUSTED_INSTRUCTION = (
     "and no tools are available to you on this turn. Write the final answer now, in prose, "
     "using only the data already retrieved. Do not write code. If the data is incomplete, "
     "answer with what you have and state plainly what is missing and why."
-)
-
-# One-shot marker: set when an empty reply has already been retried, cleared by
-# ``build_metadata_update`` on the following turn. Consumer predates the producer
-# — ``clean_empty_response_retry_meta`` has popped this key since #178 while
-# nothing ever set it.
-EMPTY_RESPONSE_CORRECTION_KEY = "_empty_response_correction"
-
-EMPTY_RESPONSE_CORRECTION = (
-    "Your last reply was empty. Continue the task: either emit the next code "
-    "block, or state the final answer."
 )
 
 

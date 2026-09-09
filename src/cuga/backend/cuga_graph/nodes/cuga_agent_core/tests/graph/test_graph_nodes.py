@@ -55,6 +55,25 @@ def test_sandbox_step_execution_output_ignores_stale_output_after_verify_block()
     assert sandbox_step_execution_output([messages[0]]) == "paid 46.67"
 
 
+@pytest.mark.unit
+def test_sandbox_step_execution_output_keeps_output_before_step_limit_message():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
+        sandbox_step_execution_output,
+    )
+
+    messages = [
+        HumanMessage(content=execution_output_text("paid 46.67")),
+        AIMessage(
+            content=(
+                "Maximum step limit (2) reached. "
+                "The task has exceeded the allowed number of execution cycles. "
+                "Please simplify your request or break it into smaller tasks."
+            )
+        ),
+    ]
+    assert sandbox_step_execution_output(messages) == "paid 46.67"
+
+
 # ─── CoreGraphAdapter.get_variable_manager default + override ────────────────
 
 

@@ -533,6 +533,25 @@ def test_reflection_current_task_skips_verify_feedback():
 
 
 @pytest.mark.unit
+def test_reflection_current_task_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
+        reflection_current_task,
+    )
+
+    state = SimpleNamespace(
+        sub_task="",
+        chat_messages=[
+            HumanMessage(content="split the amazon prime bill"),
+            HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
+        ],
+    )
+    assert reflection_current_task(state) == "split the amazon prime bill"
+
+
+@pytest.mark.unit
 def test_describe_write_arguments_does_not_fold_loop_accumulators():
     from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
         describe_write_arguments,
@@ -712,6 +731,34 @@ def test_policy_user_input_skips_verify_feedback():
         chat_messages=[
             HumanMessage(content="split the bill"),
             HumanMessage(content=f"{VERIFY_BLOCKED_PREFIX}\namount 35.0"),
+        ],
+        tools=None,
+        apps=None,
+        current_agent=None,
+        current_node=None,
+        sub_task=None,
+        current_task=None,
+        final_answer=None,
+        messages=None,
+    )
+    ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
+    assert ctx.user_input == "split the bill"
+
+
+@pytest.mark.unit
+def test_policy_user_input_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+    state = SimpleNamespace(
+        intent=None,
+        goal=None,
+        input=None,
+        chat_messages=[
+            HumanMessage(content="split the bill"),
+            HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
         ],
         tools=None,
         apps=None,
