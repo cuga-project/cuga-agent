@@ -124,18 +124,16 @@ async def test_cuga_lite_node_detects_error_in_answer(monkeypatch):
             state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
         )
 
-    assert command.goto == "PlanControllerAgent"
+    assert command.goto == "FinalAnswerAgent"
     assert _attrs(exporter)["cuga.cuga_lite.answer_has_error"] is True
 
 
 @pytest.mark.asyncio
 async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
-    from cuga.backend.cuga_graph.nodes.cuga_lite import cuga_lite_node as cuga_lite_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
     from cuga.backend.cuga_graph.state.agent_state import AgentState
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(cuga_lite_node_module.settings.advanced_features, "sub_task_keep_last_n", 100)
 
     node = object.__new__(CugaLiteNode)
     node.name = "CugaLite"
@@ -157,7 +155,7 @@ async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
             state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
         )
 
-    assert command.goto == "PlanControllerAgent"
+    assert command.goto == "FinalAnswerAgent"
     attrs = _attrs(exporter)
     assert attrs["cuga.cuga_lite.answer_has_error"] is False
     assert attrs["cuga.cuga_lite.fallback_answer_used"] is False
@@ -165,12 +163,10 @@ async def test_cuga_lite_node_no_error_no_fallback_needed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cuga_lite_node_empty_answer_uses_fallback(monkeypatch):
-    from cuga.backend.cuga_graph.nodes.cuga_lite import cuga_lite_node as cuga_lite_node_module
     from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
     from cuga.backend.cuga_graph.state.agent_state import AgentState
 
     tracer, exporter = _start_recording_span(monkeypatch)
-    monkeypatch.setattr(cuga_lite_node_module.settings.advanced_features, "sub_task_keep_last_n", 100)
 
     node = object.__new__(CugaLiteNode)
     node.name = "CugaLite"
@@ -192,7 +188,7 @@ async def test_cuga_lite_node_empty_answer_uses_fallback(monkeypatch):
             state=state, answer=state.final_answer, initial_var_names=[], is_autonomous_subtask=True
         )
 
-    assert command.goto == "PlanControllerAgent"
+    assert command.goto == "FinalAnswerAgent"
     attrs = _attrs(exporter)
     assert attrs["cuga.cuga_lite.answer_has_error"] is False
     assert attrs["cuga.cuga_lite.fallback_answer_used"] is True
