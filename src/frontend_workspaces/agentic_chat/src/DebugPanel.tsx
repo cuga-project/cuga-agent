@@ -10,7 +10,6 @@ interface AgentState {
     url?: string;
     current_app?: string;
     chat_messages_count?: number;
-    lite_mode?: boolean | null;
   } | null;
   variables: Record<string, any>;
   variables_count: number;
@@ -174,17 +173,6 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
                 </div>
                 {agentState.state ? (
                   <>
-                    <div className="debug-state-item">
-                      <span className="debug-label">Lite Mode:</span>
-                      <span className="debug-value" style={{ 
-                        color: agentState.state.lite_mode === null ? '#94a3b8' : 
-                               agentState.state.lite_mode ? '#10b981' : '#f59e0b',
-                        fontWeight: 600
-                      }}>
-                        {agentState.state.lite_mode === null ? 'Not Set (using settings)' : 
-                         agentState.state.lite_mode ? 'True (Fast/Lite)' : 'False (Balanced)'}
-                      </span>
-                    </div>
                     <div className="debug-state-item">
                       <span className="debug-label">Current App:</span>
                       <span className="debug-value">{agentState.state.current_app || "N/A"}</span>

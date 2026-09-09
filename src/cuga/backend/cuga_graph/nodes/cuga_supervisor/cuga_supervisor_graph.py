@@ -64,6 +64,7 @@ def create_cuga_supervisor_graph(
     tool_provider: Optional[ToolProviderInterface] = None,
     prompt: Optional[str] = None,
     callbacks: Optional[List[BaseCallbackHandler]] = None,
+    plan_approval: bool = False,
 ) -> StateGraph:
     """
     Create supervisor subgraph that orchestrates multiple CugaAgent instances.
@@ -75,6 +76,8 @@ def create_cuga_supervisor_graph(
         tool_provider: Optional provider for MCP/external tools available to the supervisor directly
         prompt: Optional static base prompt prepended to the supervisor template
         callbacks: Optional LangChain callback handlers for supervisor model calls
+        plan_approval: When True, pause for human approval (via the existing AGENT_APPROVAL
+            HITL interrupt) before delegating to any sub-agent each turn.
 
     Returns:
         StateGraph implementing the CugaSupervisor architecture
@@ -85,6 +88,7 @@ def create_cuga_supervisor_graph(
         tool_provider=tool_provider,
         base_callbacks=callbacks or [],
         static_prompt=prompt,
+        plan_approval=plan_approval,
     )
     prepare_node = sup_adapter.build_prepare_node()
     execute_node = sup_adapter.build_execute_node()

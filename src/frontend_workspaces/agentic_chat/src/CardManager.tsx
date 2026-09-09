@@ -12,12 +12,7 @@ interface ChatInstance {
 import "./CardManager.css";
 import "./CustomResponseStyles.css";
 // Import components from CustomResponseExample
-import TaskStatusDashboard from "./task_status_component";
-import ActionStatusDashboard from "./action_status_component";
 import CoderAgentOutput from "./coder_agent_output";
-import AppAnalyzerComponent from "./app_analyzer_component";
-import TaskDecompositionComponent from "./task_decomposition";
-import ShortlisterComponent from "./shortlister";
 import SingleExpandableContent from "./generic_component";
 import ActionAgent from "./action_agent";
 import QaAgentComponent from "./qa_agent";
@@ -479,61 +474,6 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
   // Function to generate natural language descriptions for each case
   const getCaseDescription = (stepId: string, stepTitle: string, parsedContent: any) => {
     switch (stepTitle) {
-      case "PlanControllerAgent":
-        if (parsedContent.subtasks_progress && parsedContent.next_subtask) {
-          const completed = parsedContent.subtasks_progress.filter((status: string) => status === "completed").length;
-          const total = parsedContent.subtasks_progress.length;
-
-          if (total === 0) {
-            return `I'm managing the overall task progress. There's <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">one next task</span>. ${
-              parsedContent.conclude_task
-                ? "The task is ready to be concluded."
-                : `Next up: <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${parsedContent.next_subtask}</span>`
-            }`;
-          }
-
-          return `I'm managing the overall task progress. Currently <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${completed} out of ${total} subtasks</span> are completed. ${
-            parsedContent.conclude_task
-              ? "The task is ready to be concluded."
-              : `Next up: <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${parsedContent.next_subtask}</span>`
-          }`;
-        }
-        return "I'm analyzing the task structure and planning the execution approach.";
-
-      case "TaskDecompositionAgent":
-        const taskCount = parsedContent.task_decomposition?.length || 0;
-        return `I've broken down your request into <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${taskCount} manageable steps</span>. Each step is designed to work with specific applications and accomplish a specific part of your overall goal.`;
-
-      case "APIPlannerAgent":
-        if (
-          parsedContent.action &&
-          (parsedContent.action_input_coder_agent ||
-            parsedContent.action_input_shortlisting_agent ||
-            parsedContent.action_input_conclude_task)
-        ) {
-          const actionType = parsedContent.action;
-          if (actionType === "CoderAgent") {
-            return `I'm preparing to write code for you. The task involves: <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${
-              parsedContent.action_input_coder_agent?.task_description || "Code generation task"
-            }</span>`;
-          } else if (actionType === "ApiShortlistingAgent") {
-            const taskDesc = parsedContent.action_input_shortlisting_agent?.task_description;
-            if (taskDesc) {
-              const preview = taskDesc.length > 60 ? taskDesc.substring(0, 60) + "..." : taskDesc;
-              return `I'm analyzing available APIs, <span style="color:${HIGHLIGHT_COLOR}; font-weight:500;">${preview}</span>`;
-            }
-            return `I'm analyzing available APIs to find the best options for your request. This will help me understand what tools are available to accomplish your task.`;
-          } else if (actionType === "ConcludeTask") {
-            const taskDesc = parsedContent.action_input_conclude_task?.final_response;
-            if (taskDesc) {
-              const preview = taskDesc.length > 60 ? taskDesc.substring(0, 60) + "..." : taskDesc;
-              return `I'm ready to provide you with the final answer based on all the work completed so far. <span style="color:${HIGHLIGHT_COLOR}; font-weight:500;">${preview}</span>`;
-            }
-            return `I'm ready to provide you with the final answer based on all the work completed so far.`;
-          }
-        }
-        return "I'm reflecting on the code and planning the next steps in the workflow.";
-
       case "Policy":
         // Handle all policy events with unified display
         if (parsedContent && parsedContent.type === "policy") {
@@ -803,28 +743,6 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
         // Return null to skip rendering empty CodeAgent_Reasoning events
         return null;
 
-      case "ShortlisterAgent":
-        if (parsedContent.result) {
-          const apiCount = parsedContent.result.length;
-          const topResult = parsedContent.result[0];
-          const topScore = topResult?.relevance_score || 0;
-          const apiName = topResult?.name || topResult?.title || "Unknown API";
-          const truncatedName = apiName.length > 30 ? apiName.substring(0, 30) + "..." : apiName;
-          return `I've analyzed and shortlisted <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${apiCount} relevant APIs</span> for your request. The top match is <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${truncatedName}</span> with a <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${Math.round(
-            topScore * 100
-          )}% relevance score</span>.`;
-        }
-        return "I'm analyzing available APIs to find the most relevant ones for your request.";
-
-      case "TaskAnalyzerAgent":
-        if (parsedContent && Array.isArray(parsedContent)) {
-          const appNames = parsedContent
-            .map((app) => `<span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${app.name}</span>`)
-            .join(", ");
-          return `I've identified <span style="color:${HIGHLIGHT_COLOR}; font-weight: 600;">${parsedContent.length} integrated applications</span> that can help with your request: ${appNames}. These apps are ready to be used in the workflow.`;
-        }
-        return "I'm analyzing the available applications to understand what tools we can use.";
-
       case "PlannerAgent":
         return `I'm planning the next action in the workflow. This involves determining the best approach to continue working on your request.`;
 
@@ -844,19 +762,11 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
         }
         return "I'm preparing the final answer to your request.";
 
-      case "ReuseAgent":
-        if (typeof parsedContent === "string") return parsedContent.split("\n")[0];
-        return "Save and reuse operation completed.";
-
       case "SuggestHumanActions":
         if (parsedContent.action_id) {
           return "I'm waiting for your input to continue. Please review the suggested action and let me know how you'd like to proceed.";
         }
         return "I'm preparing suggestions for your next action.";
-      case "APICodePlannerAgent":
-        const contentPreview = typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent);
-        const preview = contentPreview.length > 80 ? contentPreview.substring(0, 80) + "..." : contentPreview;
-        return `I've generated a plan for the coding agent to follow. Plan preview: <span style="color:${HIGHLIGHT_COLOR}; font-weight:500;">${preview}</span>`;
       default:
         return "";
     }
@@ -1051,26 +961,6 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
         let mainElement = null;
 
         switch (step.title) {
-          case "PlanControllerAgent":
-            if (parsedContent.subtasks_progress && parsedContent.next_subtask) {
-              mainElement = <TaskStatusDashboard taskData={parsedContent} />;
-            }
-            break;
-          case "TaskDecompositionAgent":
-            mainElement = <TaskDecompositionComponent decompositionData={parsedContent} />;
-            break;
-          case "APIPlannerAgent":
-            if (
-              parsedContent.action &&
-              (parsedContent.action_input_coder_agent ||
-                parsedContent.action_input_shortlisting_agent ||
-                parsedContent.action_input_conclude_task)
-            ) {
-              mainElement = <ActionStatusDashboard actionData={parsedContent} />;
-            } else {
-              mainElement = <SingleExpandableContent title={"Code Reflection"} content={parsedContent} />;
-            }
-            break;
           case "CodeAgent":
             if (parsedContent.code || parsedContent.execution_output) {
               mainElement = <CoderAgentOutput coderData={parsedContent} />;
@@ -1169,18 +1059,8 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
               );
             }
             break;
-          case "ShortlisterAgent":
-            if (parsedContent) {
-              mainElement = <ShortlisterComponent shortlisterData={parsedContent} />;
-            }
-            break;
           case "WaitForResponse":
             return null;
-          case "TaskAnalyzerAgent":
-            if (parsedContent && Array.isArray(parsedContent)) {
-              mainElement = <AppAnalyzerComponent appData={parsedContent} />;
-            }
-            break;
           case "PlannerAgent":
             if (parsedContent) {
               mainElement = <ActionAgent agentData={parsedContent} />;
@@ -1886,19 +1766,13 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
     }
 
     const titleMap = {
-      TaskDecompositionAgent: "Decomposed task into steps",
-      TaskAnalyzerAgent: "Analyzed available applications",
-      PlanControllerAgent: "Controlled task execution",
       SuggestHumanActions: (
         <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <div className="w-4 h-4 border-2 border-blue-200 border-t-blue-500 rounded-full animate-spin"></div>
           <span>Waiting for your input</span>
         </span>
       ),
-      APIPlannerAgent: "Planned API actions",
-      APICodePlannerAgent: "Planned steps for coding agent",
       CodeAgent_Reasoning: "Reasoning about approach",
-      ShortlisterAgent: "Shortlisted relevant APIs",
       QaAgent: "Answered question",
       FinalAnswerAgent: "Completed final answer",
       Answer: "Answer",

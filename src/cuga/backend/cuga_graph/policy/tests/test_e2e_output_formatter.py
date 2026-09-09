@@ -121,7 +121,6 @@ Make it professional and easy to read.""",
             user_input="Provide a summary of the main features of this system",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
 
         print(f"  User query: {initial_state.input}")
@@ -813,7 +812,6 @@ async def test_e2e_output_formatter_sensitive_data_blocking():
             user_input="Get the top account",
             thread_id=thread_id,
             user_id="test_user",
-            lite_mode=True,
         )
         print(f"  User query: {initial_state.input}")
         print(f"  Thread ID: {initial_state.thread_id}")

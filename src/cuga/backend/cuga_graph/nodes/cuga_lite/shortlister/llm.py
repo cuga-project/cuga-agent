@@ -45,7 +45,7 @@ class LLMShortlister:
 
     async def shortlist(self, request: ShortlistRequest) -> ShortlistResult:
         from cuga.backend.llm.models import LLMManager
-        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.schemas.shortlister import (
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent

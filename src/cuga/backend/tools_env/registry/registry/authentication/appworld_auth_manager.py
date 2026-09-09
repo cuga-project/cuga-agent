@@ -1,8 +1,71 @@
 import json
+from typing import Any
+
 import httpx
 from cuga.backend.tools_env.registry.registry.authentication.base_auth_manager import BaseAuthManager
 from loguru import logger
 from cuga.config import settings
+
+
+# Headers whose values are sign-in credentials rather than useful detail.
+_SENSITIVE_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key"}
+)
+
+
+def _redact_headers(headers: Any) -> dict[str, str]:
+    """Copy the headers, replacing any credential values with a placeholder."""
+    return {
+        key: ("***" if key.lower() in _SENSITIVE_HEADERS else value) for key, value in dict(headers).items()
+    }
+
+
+def _mask_identifier(value: str) -> str:
+    """Hide most of an email address or phone number kept for troubleshooting.
+
+    Enough is left to tell two accounts apart when reading a log, but not enough
+    to identify the person or to be used to sign in.
+    """
+    if not value or len(value) <= 2:
+        return "***"
+    return f"{value[0]}***{value[-1]}"
+
+
+def _log_http_status_error(
+    exc: httpx.HTTPStatusError,
+    what: str,
+    *,
+    request_body: str | None = None,
+) -> Any:
+    """Write details of a failed request to the log, and return the response body.
+
+    The three places below all report failures the same way, and each used to
+    carry its own copy of this code. Two things are deliberately never read here:
+
+    * The body that was sent. Each of these requests is either a sign-in form,
+      which contains a username and password, or a request for stored account
+      passwords, so the body itself is a credential. Where a summary of the body
+      helps, the caller passes one in that it has written itself.
+    * The original headers. Any header holding a credential is replaced first.
+
+    Email addresses and phone numbers passed in by the caller should be put
+    through :func:`_mask_identifier` first.
+    """
+    try:
+        response_body = exc.response.json()
+    except Exception:
+        response_body = exc.response.text
+
+    body_str = json.dumps(response_body, indent=2) if isinstance(response_body, dict) else str(response_body)
+    logger.error(f"HTTP error {what}:")
+    logger.error(f"  Status Code: {exc.response.status_code}")
+    logger.error(f"  URL: {exc.request.url}")
+    logger.error(f"  Method: {exc.request.method}")
+    logger.error(f"  Headers: {json.dumps(_redact_headers(exc.request.headers), indent=2)}")
+    logger.error(f"  Response Body:\n{body_str}")
+    if request_body:
+        logger.error(f"  Request Body: {request_body}")
+    return response_body
 
 
 class TokenFetchError(Exception):
@@ -72,44 +135,7 @@ class AppWorldAuthManager(BaseAuthManager):
                 r.raise_for_status()
                 return r.json()
         except httpx.HTTPStatusError as e:
-            error_detail = {
-                "status_code": e.response.status_code,
-                "url": str(e.request.url),
-                "method": e.request.method,
-                "headers": dict(e.request.headers),
-            }
-            try:
-                error_detail["response_body"] = e.response.json()
-            except Exception:
-                error_detail["response_body"] = e.response.text
-            try:
-                error_detail["request_body"] = e.request.content.decode() if e.request.content else None
-            except Exception:
-                error_detail["request_body"] = None
-            logger.error(f"HTTP error fetching user profile: {error_detail}")
-            response_body_str = (
-                json.dumps(error_detail['response_body'], indent=2)
-                if isinstance(error_detail['response_body'], dict)
-                else str(error_detail['response_body'])
-            )
-            logger.error("HTTP error fetching user profile:")
-            logger.error(f"  Status Code: {error_detail['status_code']}")
-            logger.error(f"  URL: {error_detail['url']}")
-            logger.error(f"  Method: {error_detail['method']}")
-            logger.error(f"  Response Body:\n{response_body_str}")
-            if error_detail['request_body']:
-                logger.error(f"  Request Body: {error_detail['request_body']}")
-            print(f"\n{'=' * 60}")
-            print("HTTP ERROR: Fetching user profile failed")
-            print(f"{'=' * 60}")
-            print(f"Status Code: {error_detail['status_code']}")
-            print(f"URL: {error_detail['url']}")
-            print(f"Method: {error_detail['method']}")
-            print("Response Body:")
-            print(response_body_str)
-            if error_detail['request_body']:
-                print(f"Request Body: {error_detail['request_body']}")
-            print(f"{'=' * 60}\n")
+            _log_http_status_error(e, "fetching user profile")
             logger.warning(
                 "Supervisor profile not available yet. This is normal if AppWorld supervisor hasn't been initialized."
             )
@@ -165,44 +191,7 @@ class AppWorldAuthManager(BaseAuthManager):
                     if item.get("account_name") and item.get("password")
                 }
         except httpx.HTTPStatusError as e:
-            error_detail = {
-                "status_code": e.response.status_code,
-                "url": str(e.request.url),
-                "method": e.request.method,
-                "headers": dict(e.request.headers),
-            }
-            try:
-                error_detail["response_body"] = e.response.json()
-            except Exception:
-                error_detail["response_body"] = e.response.text
-            try:
-                error_detail["request_body"] = e.request.content.decode() if e.request.content else None
-            except Exception:
-                error_detail["request_body"] = None
-            logger.error(f"HTTP error fetching app credentials: {error_detail}")
-            response_body_str = (
-                json.dumps(error_detail['response_body'], indent=2)
-                if isinstance(error_detail['response_body'], dict)
-                else str(error_detail['response_body'])
-            )
-            logger.error("HTTP error fetching app credentials:")
-            logger.error(f"  Status Code: {error_detail['status_code']}")
-            logger.error(f"  URL: {error_detail['url']}")
-            logger.error(f"  Method: {error_detail['method']}")
-            logger.error(f"  Response Body:\n{response_body_str}")
-            if error_detail['request_body']:
-                logger.error(f"  Request Body: {error_detail['request_body']}")
-            print(f"\n{'=' * 60}")
-            print("HTTP ERROR: Fetching app credentials failed")
-            print(f"{'=' * 60}")
-            print(f"Status Code: {error_detail['status_code']}")
-            print(f"URL: {error_detail['url']}")
-            print(f"Method: {error_detail['method']}")
-            print("Response Body:")
-            print(response_body_str)
-            if error_detail['request_body']:
-                print(f"Request Body: {error_detail['request_body']}")
-            print(f"{'=' * 60}\n")
+            _log_http_status_error(e, "fetching app credentials")
             logger.warning(
                 "Account passwords not available yet. This is normal if AppWorld supervisor hasn't been initialized."
             )
@@ -239,7 +228,6 @@ class AppWorldAuthManager(BaseAuthManager):
 
         user_name = profile["phone_number"] if app_name == "phone" else profile["email"]
         logger.debug(f"username: {user_name}")
-        logger.debug(f"password: {password}")
 
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -247,74 +235,32 @@ class AppWorldAuthManager(BaseAuthManager):
                 r.raise_for_status()
                 return r.json()
         except httpx.HTTPStatusError as e:
-            error_detail = {
-                "status_code": e.response.status_code,
-                "url": str(e.request.url),
-                "method": e.request.method,
-                "headers": dict(e.request.headers),
-            }
-            try:
-                error_detail["response_body"] = e.response.json()
-            except Exception:
-                error_detail["response_body"] = e.response.text
-            try:
-                # Get request body (form data)
-                if e.request.content:
-                    error_detail["request_body"] = e.request.content.decode()
-                else:
-                    # For form data, we need to reconstruct it
-                    error_detail["request_body"] = f"username={user_name}&password=***"
-            except Exception:
-                error_detail["request_body"] = None
-
-            logger.error(f"HTTP error fetching token for {app_name}: {error_detail}")
-            response_body_str = (
-                json.dumps(error_detail['response_body'], indent=2)
-                if isinstance(error_detail['response_body'], dict)
-                else str(error_detail['response_body'])
+            response_body = _log_http_status_error(
+                e,
+                f"fetching token for {app_name}",
+                # Written here rather than read from the request, whose real
+                # body contains the username and the password.
+                request_body=f"username={_mask_identifier(user_name)}&password=***",
             )
-            logger.error(f"HTTP error fetching token for {app_name}:")
-            logger.error(f"  Status Code: {error_detail['status_code']}")
-            logger.error(f"  URL: {error_detail['url']}")
-            logger.error(f"  Method: {error_detail['method']}")
-            logger.error(f"  Username: {user_name}")
-            logger.error(f"  Response Body:\n{response_body_str}")
-            if error_detail['request_body']:
-                logger.error(f"  Request Body: {error_detail['request_body']}")
-            logger.error(f"  Headers: {json.dumps(error_detail['headers'], indent=2)}")
-
-            print(f"\n{'=' * 60}")
-            print(f"HTTP ERROR: Fetching token for {app_name} failed")
-            print(f"{'=' * 60}")
-            print(f"Status Code: {error_detail['status_code']}")
-            print(f"URL: {error_detail['url']}")
-            print(f"Method: {error_detail['method']}")
-            print(f"Username: {user_name}")
-            print("Response Body:")
-            print(response_body_str)
-            if error_detail['request_body']:
-                print(f"Request Body: {error_detail['request_body']}")
-            print(f"Headers: {json.dumps(error_detail['headers'], indent=2)}")
-            print(f"{'=' * 60}\n")
 
             # Extract detailed error message from response body
-            detailed_message = f"HTTP {error_detail['status_code']} error fetching token for {app_name}"
-            if isinstance(error_detail['response_body'], dict):
-                if "message" in error_detail['response_body']:
-                    detailed_message = error_detail['response_body']["message"]
-                elif "detail" in error_detail['response_body']:
-                    detailed_message = error_detail['response_body']["detail"]
+            detailed_message = f"HTTP {e.response.status_code} error fetching token for {app_name}"
+            if isinstance(response_body, dict):
+                if "message" in response_body:
+                    detailed_message = response_body["message"]
+                elif "detail" in response_body:
+                    detailed_message = response_body["detail"]
                 else:
-                    detailed_message = json.dumps(error_detail['response_body'])
-            elif isinstance(error_detail['response_body'], str):
-                detailed_message = error_detail['response_body']
+                    detailed_message = json.dumps(response_body)
+            elif isinstance(response_body, str):
+                detailed_message = response_body
 
             # Raise custom exception with detailed error information
             raise TokenFetchError(
                 message=detailed_message,
-                status_code=error_detail['status_code'],
-                response_body=error_detail['response_body'],
-                url=error_detail['url'],
+                status_code=e.response.status_code,
+                response_body=response_body,
+                url=str(e.request.url),
             )
         except httpx.RequestError as e:
             logger.error(f"Request error fetching token for {app_name}: {e}")
