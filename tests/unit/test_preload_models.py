@@ -20,7 +20,7 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
 
     assert "pnpm --filter ./frontend build" in dockerfile
     assert "altk-evolve[hooks,pii-regex]" in dockerfile
-    assert "EVOLVE_REF=376b45453aa23388c12043832ccd2a7838c041f4" in dockerfile
+    assert "EVOLVE_REF=60a3420cf069983dc075267dcf02af054d4e944f" in dockerfile
     assert "PRELOAD_EVOLVE_MODELS=1" in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile

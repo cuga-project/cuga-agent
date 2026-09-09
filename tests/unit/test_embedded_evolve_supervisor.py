@@ -29,7 +29,9 @@ def test_evolve_namespace_is_the_service_instance_id(monkeypatch: pytest.MonkeyP
 
 
 def test_embedded_evolve_rejects_missing_service_instance_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DYNACONF_SERVICE__INSTANCE_ID", raising=False)
+    import cuga.config
+
+    monkeypatch.setattr(cuga.config, "get_service_instance_id", lambda: "")
 
     with pytest.raises(RuntimeError, match="DYNACONF_SERVICE__INSTANCE_ID is required"):
         _load_supervisor().evolve_environment()
