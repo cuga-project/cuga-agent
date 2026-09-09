@@ -63,8 +63,10 @@ TRACEBACK_FUNCS = frozenset({"format_exc", "print_exc", "format_exception", "for
 # for a given expression — an `except ... as x` binding does not cross a function boundary.
 _SCOPE_BOUNDARIES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
 
-# Default source tree to scan.
-DEFAULT_TARGET = "src/cuga/backend/server"
+# Default source trees to scan. `events/` builds its own responses the same way `server/`
+# does (JSONResponse/HTTPException), so it needs the same check — it was left out when this
+# check was introduced and 14 new offenders landed there unseen (see #602, #217).
+DEFAULT_TARGETS = ("src/cuga/backend/server", "src/cuga/backend/events")
 DEFAULT_BASELINE = "scripts/checks/exc_in_responses_baseline.json"
 
 
@@ -399,12 +401,12 @@ def _relpath(path: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", default=[DEFAULT_TARGET])
+    parser.add_argument("paths", nargs="*", default=list(DEFAULT_TARGETS))
     parser.add_argument("--baseline", default=DEFAULT_BASELINE)
     parser.add_argument("--update", action="store_true", help="regenerate the baseline from current sources")
     args = parser.parse_args(argv)
 
-    paths = args.paths or [DEFAULT_TARGET]
+    paths = args.paths or list(DEFAULT_TARGETS)
     by_file: dict[str, list[Violation]] = {}
     for file in _iter_py_files(paths):
         try:
