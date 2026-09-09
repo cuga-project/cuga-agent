@@ -1457,3 +1457,46 @@ def test_acyclic_helper_fan_out_is_still_analyzed_not_bailed():
     # Memoized, so it stays cheap and the mutation is still reported.
     assert "unreliable" not in out.lower()
     assert "0.0" not in out
+
+
+# ── VERIFY rule 1 scope ────────────────────────────────────────────────────
+#
+# Rule 1 was written for invented facts (an id or amount the agent made up) but
+# read as "any literal". On AppWorld hard it revised quantity=1,
+# clear_cart_first=True, snooze_minutes=0 and a regex pattern — choices and code
+# constants, not claims about the world — and the model complied, which cost
+# two tasks outright (a 7-item order, a dropped repeat_days).
+
+
+def _verify_prompt_text() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).resolve().parents[1] / "reflection" / "prompts" / "verify_system.jinja2"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_rule_one_is_scoped_to_identifying_or_quantitative_values():
+    text = _verify_prompt_text()
+    assert "identifies a record or" in text
+    assert "states a quantity" in text
+
+
+@pytest.mark.unit
+def test_choices_and_code_constants_are_listed_as_do_not_flag():
+    text = _verify_prompt_text().split("Do NOT flag:", 1)[1]
+    for phrase in ("booleans and flags", "documented default", "regular expressions"):
+        assert phrase in text, f"missing carve-out: {phrase}"
+
+
+@pytest.mark.unit
+def test_values_seen_in_the_latest_output_count_as_grounded():
+    assert "appears verbatim in the most recent execution output" in _verify_prompt_text()
+
+
+@pytest.mark.unit
+def test_extra_field_rule_requires_an_explicit_restriction():
+    text = _verify_prompt_text()
+    assert "explicitly restricts which" in text
+    assert 'follows from the task or from retrieved\n   data is not "extra"' in text
