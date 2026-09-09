@@ -212,6 +212,11 @@ async def _list_retention_inventory(*, agent_id: str, scan_limit: Optional[int])
         entities.extend(page[:remaining])
         remaining -= len(page)
         next_cursor = result.get("next_cursor")
+        if remaining <= 0 and isinstance(next_cursor, str) and next_cursor:
+            raise HTTPException(
+                status_code=409,
+                detail="Retention cannot safely evaluate source conversations within the scan limit",
+            )
         if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
             break
         seen_cursors.add(next_cursor)
@@ -568,7 +573,7 @@ async def run_admin_memory_retention(
                     "entity_id": str(entity.get("id") or ""),
                     "rule": "orphaned-conversations",
                     "reason": "orphaned_conversation",
-                    "detail": "source conversation remained unavailable beyond the grace period",
+                    "detail": "memory is older than 7 days and its source conversation is unavailable",
                 }
                 for entity in orphaned
                 if str(entity.get("id") or "")
