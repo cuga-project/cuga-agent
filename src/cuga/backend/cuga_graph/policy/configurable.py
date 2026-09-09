@@ -20,10 +20,9 @@ def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool
     Default agent (or None / 'cuga-default') maps to 'cuga_policies' (or 'cuga_policies_draft').
     Named agents map to 'cuga_policies_<clean_agent_id>' (or 'cuga_policies_<clean_agent_id>_draft').
     """
-    from cuga.backend.server.config_store import _parse_agent_id
-
     base_name = getattr(settings.policy, "collection_name", None) or "cuga_policies"
-    clean_id = _parse_agent_id(agent_id) if agent_id else None
+    # Strip any '--version' suffix that config_store appends to draft agent IDs (e.g. 'crm--draft-3').
+    clean_id = agent_id.split("--")[0] if agent_id else None
     if not clean_id or clean_id == "cuga-default":
         return f"{base_name}_draft" if draft else base_name
     safe_id = clean_id.replace("-", "_").replace(".", "_")

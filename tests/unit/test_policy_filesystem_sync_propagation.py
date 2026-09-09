@@ -28,7 +28,10 @@ def test_filesystem_sync_initialized_when_folder_does_not_exist(monkeypatch, tmp
         initialize=AsyncMock(),
     )
 
-    # Simulate startup _init_policy block
+    # NOTE: _init_policy is nested inside lifespan() and cannot be called in isolation without
+    # a full FastAPI app. This test simulates the relevant conditional block verbatim so that
+    # the contract (sync object is created even when the folder is absent) is verifiable without
+    # an integration harness. If _init_policy's startup logic changes, update this simulation too.
     cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
     filesystem_sync_enabled = settings.policy.filesystem_sync
 
