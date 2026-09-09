@@ -6,7 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cuga.backend.evolve.integration import EvolveIntegration
-from cuga.backend.evolve.retention import DEFAULT_RETENTION_POLICY, find_orphaned_memory_entities
+from cuga.backend.evolve.retention import (
+    DEFAULT_RETENTION_POLICY,
+    DEFAULT_RETENTION_POLICY_ID,
+    find_orphaned_memory_entities,
+)
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.main import app
@@ -38,21 +42,23 @@ async def test_run_retention_serializes_server_scope():
         ) as call_tool,
     ):
         await EvolveIntegration.run_retention(
-            DEFAULT_RETENTION_POLICY,
+            "standard",
             dry_run=False,
             run_id="run-a",
             namespace_id="namespace-a",
             metadata_filters={"agent_id": "agent-a"},
+            actor_id="admin-a",
         )
 
     call_tool.assert_awaited_once_with(
         "run_retention",
         {
-            "policy": json.dumps(DEFAULT_RETENTION_POLICY),
+            "policy_id": "standard",
             "dry_run": False,
             "run_id": "run-a",
             "namespace_id": "namespace-a",
             "metadata_filters": json.dumps({"agent_id": "agent-a"}),
+            "actor_id": "admin-a",
         },
     )
 
@@ -102,25 +108,20 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
             new=AsyncMock(return_value=provider_report),
         ) as run_retention,
         patch(
-            "cuga.backend.evolve.retention_store.save_retention_run",
-            new=AsyncMock(),
-        ) as save_run,
-        patch(
             "cuga.backend.server.memory_routes._list_retention_inventory",
             new=AsyncMock(return_value=[]),
         ),
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
         patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
-        patch("cuga.backend.server.memory_routes.uuid.uuid4", return_value="run-a"),
     ):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
         response = client.post(
             "/api/manage/memory/retention/runs?agent_id=agent-a",
-            json={},
+            json={"policy_id": "policy-a"},
         )
 
     assert response.status_code == 200
-    assert response.json()["run_id"] == "run-a"
+    assert response.json()["run_id"] == "provider-run"
     assert "dry_run" not in response.json()
     assert response.json()["deleted"] == [
         {
@@ -143,23 +144,15 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
     assert "private memory" not in response.text
     assert "user-9" not in response.text
     run_retention.assert_awaited_once_with(
-        DEFAULT_RETENTION_POLICY,
+        "policy-a",
         dry_run=False,
         as_of=None,
         scan_limit=None,
-        run_id="run-a",
         namespace_id="namespace-a",
         metadata_filters={"agent_id": "agent-a"},
+        additional_matches=[],
+        actor_id="admin-1",
     )
-    assert save_run.await_args.kwargs["actor_id"] == "admin-1"
-    assert save_run.await_args.kwargs["agent_id"] == "agent-a"
-    persisted_report = json.dumps(save_run.await_args.kwargs["report"])
-    assert "private memory" not in persisted_report
-    assert "user-9" not in persisted_report
-    assert "private-session" not in persisted_report
-    assert "private-task" not in persisted_report
-    assert save_run.await_args.kwargs["report"]["error_count"] == 1
-    assert save_run.await_args.kwargs["report"]["warning_count"] == 1
     assert response.json()["errors"] == ["One or more memories could not be evaluated."]
     assert response.json()["warnings"] == ["Some memories were evaluated with incomplete usage data."]
 
@@ -175,17 +168,13 @@ def test_manual_run_always_applies_retention(client):
             new=AsyncMock(return_value={"flagged": [], "deleted": [], "skipped": [], "errors": []}),
         ) as run_retention,
         patch(
-            "cuga.backend.evolve.retention_store.save_retention_run",
-            new=AsyncMock(),
-        ),
-        patch(
             "cuga.backend.server.memory_routes._list_retention_inventory",
             new=AsyncMock(return_value=[]),
         ),
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
     ):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
-        response = client.post("/api/manage/memory/retention/runs", json={})
+        response = client.post("/api/manage/memory/retention/runs", json={"policy_id": "policy-a"})
 
     assert response.status_code == 200
     assert run_retention.await_args.kwargs["dry_run"] is False
@@ -204,7 +193,7 @@ def test_manual_run_rejects_removed_preview_option(client):
     ):
         response = client.post(
             "/api/manage/memory/retention/runs",
-            json={"dry_run": True},
+            json={"policy_id": "policy-a", "dry_run": True},
         )
 
     assert response.status_code == 422
@@ -277,27 +266,36 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
         ),
         patch(
             "cuga.backend.server.memory_routes.EvolveIntegration.run_retention",
-            new=AsyncMock(return_value={"flagged": [], "deleted": [], "skipped": [], "errors": []}),
-        ),
-        patch(
-            "cuga.backend.server.memory_routes.EvolveIntegration.delete_entity",
-            new=AsyncMock(return_value={"success": True}),
-        ) as delete_entity,
+            new=AsyncMock(
+                return_value={
+                    "flagged": [],
+                    "deleted": [
+                        {
+                            "entity_id": "orphan-a",
+                            "entity_type": "fact",
+                            "action": "delete",
+                            "outcome": "deleted",
+                            "title": "Orphaned preference",
+                            "reason": "orphaned_conversation",
+                            "rule": "orphaned-conversations",
+                        }
+                    ],
+                    "skipped": [],
+                    "errors": [],
+                }
+            ),
+        ) as run_retention,
         patch(
             "cuga.backend.server.memory_routes._list_retention_inventory",
             new=AsyncMock(return_value=[orphan]),
         ),
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
-        patch(
-            "cuga.backend.evolve.retention_store.save_retention_run",
-            new=AsyncMock(),
-        ),
         patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
     ):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
         response = client.post(
             "/api/manage/memory/retention/runs?agent_id=agent-a",
-            json={"as_of": "2026-09-03T00:00:00Z"},
+            json={"policy_id": "policy-a", "as_of": "2026-09-03T00:00:00Z"},
         )
 
     assert response.status_code == 200
@@ -312,10 +310,93 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
         }
     ]
     assert "private memory content" not in response.text
-    delete_entity.assert_awaited_once_with(
-        "orphan-a",
+    assert run_retention.await_args.kwargs["additional_matches"] == [
+        {
+            "entity_id": "orphan-a",
+            "rule": "orphaned-conversations",
+            "reason": "orphaned_conversation",
+            "detail": "source conversation remained unavailable beyond the grace period",
+        }
+    ]
+
+
+def test_admin_can_list_evolve_owned_retention_policies(client):
+    custom_policy = {
+        "policy_id": "strict",
+        "name": "Strict retention",
+        "description": "Short-lived records",
+        "enabled": True,
+        "policy": {"rules": [{"name": "old", "max_age_days": 30, "action": "delete"}]},
+    }
+    default_policy = {
+        "policy_id": DEFAULT_RETENTION_POLICY_ID,
+        "name": "Standard retention",
+        "description": "Default lifecycle policy",
+        "enabled": True,
+        "policy": DEFAULT_RETENTION_POLICY,
+    }
+    with (
+        patch("cuga.backend.server.memory_routes.EvolveIntegration.is_enabled", return_value=True),
+        patch(
+            "cuga.backend.server.memory_routes.EvolveIntegration.list_retention_policies",
+            new=AsyncMock(return_value={"items": [custom_policy]}),
+        ) as list_policies,
+        patch(
+            "cuga.backend.server.memory_routes.EvolveIntegration.put_retention_policy",
+            new=AsyncMock(return_value=default_policy),
+        ) as put_policy,
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
+    ):
+        response = client.get("/api/manage/memory/retention/policies")
+
+    assert response.status_code == 200
+    assert [item["policy_id"] for item in response.json()["items"]] == ["strict", DEFAULT_RETENTION_POLICY_ID]
+    assert response.json()["items"][0]["rules"] == [{"name": "old", "max_age_days": 30, "action": "delete"}]
+    list_policies.assert_awaited_once_with(namespace_id="namespace-a", include_disabled=True)
+    assert put_policy.await_args.args[:2] == (DEFAULT_RETENTION_POLICY_ID, "Standard retention")
+    assert put_policy.await_args.kwargs["namespace_id"] == "namespace-a"
+
+
+def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
+    with (
+        patch("cuga.backend.server.memory_routes.EvolveIntegration.is_enabled", return_value=True),
+        patch(
+            "cuga.backend.server.memory_routes.EvolveIntegration.list_retention_runs",
+            new=AsyncMock(
+                return_value={
+                    "items": [
+                        {
+                            "run_id": "run-a",
+                            "policy_id": "strict",
+                            "actor_id": "admin-1",
+                            "status": "completed",
+                            "created_at": "2026-09-09T12:00:00Z",
+                            "report": {
+                                "run_id": "run-a",
+                                "policy_id": "strict",
+                                "deleted": [],
+                                "flagged": [],
+                                "skipped": [],
+                                "errors": [],
+                                "warnings": [],
+                                "policy": {"private": True},
+                            },
+                        }
+                    ]
+                }
+            ),
+        ) as list_runs,
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
+    ):
+        response = client.get("/api/manage/memory/retention/runs?agent_id=agent-a&limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["policy_id"] == "strict"
+    assert "private" not in response.text
+    list_runs.assert_awaited_once_with(
         agent_id="agent-a",
         namespace_id="namespace-a",
+        limit=20,
     )
 
 
