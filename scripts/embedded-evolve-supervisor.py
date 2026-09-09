@@ -14,6 +14,17 @@ from pathlib import Path
 PROCESSES: list[subprocess.Popen[bytes]] = []
 
 
+def evolve_environment() -> dict[str, str]:
+    from cuga.config import get_service_instance_id
+
+    environment = os.environ.copy()
+    service_instance_id = get_service_instance_id().strip()
+    if not service_instance_id:
+        raise RuntimeError("DYNACONF_SERVICE__INSTANCE_ID is required when CUGA_EMBEDDED_EVOLVE=true")
+    environment["EVOLVE_NAMESPACE_ID"] = service_instance_id
+    return environment
+
+
 def stop_processes() -> None:
     for process in reversed(PROCESSES):
         if process.poll() is None:
@@ -46,6 +57,7 @@ def wait_for_evolve(process: subprocess.Popen[bytes]) -> None:
 
 
 def main() -> int:
+    evolve_env = evolve_environment()
     Path("/data/evolve").mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
@@ -61,6 +73,7 @@ def main() -> int:
             "8201",
         ],
         cwd="/data/evolve",
+        env=evolve_env,
     )
     PROCESSES.append(evolve)
     wait_for_evolve(evolve)
