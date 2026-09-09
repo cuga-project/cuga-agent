@@ -47,7 +47,7 @@ export type MemoryPage = {
 
 export type RetentionRule = {
   name: string;
-  entityType: string;
+  entityType?: string;
   action: string;
   description?: string;
   maxAgeDays?: number;
@@ -58,6 +58,16 @@ export type RetentionCapabilities = {
   available: boolean;
   schedulingSupported: boolean;
   scheduleLabel: string;
+  rules: RetentionRule[];
+};
+
+export type RetentionPolicy = {
+  policyId: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
   rules: RetentionRule[];
 };
 
@@ -72,6 +82,8 @@ export type RetentionReportItem = {
 
 export type RetentionReport = {
   runId?: string;
+  policyId?: string;
+  policyName?: string;
   startedAt?: string;
   completedAt?: string;
   summary: string;

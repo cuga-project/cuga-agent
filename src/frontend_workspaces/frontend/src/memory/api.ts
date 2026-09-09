@@ -5,6 +5,7 @@ import {
   type MemoryState,
   type ProtectionStatus,
   type RetentionCapabilities,
+  type RetentionPolicy,
   type RetentionReport,
   type RetentionReportItem,
   type RetentionRun,
@@ -50,7 +51,7 @@ type RetentionCapabilitiesResponse = {
   schedule?: { state: string; label: string };
   rules?: Array<{
     name: string;
-    entity_type: string;
+    entity_type?: string | null;
     action: string;
     description?: string;
     max_age_days?: number;
@@ -69,6 +70,8 @@ type RetentionReportItemResponse = {
 
 type RetentionReportResponse = {
   run_id?: string;
+  policy_id?: string;
+  policy_name?: string;
   started_at?: string;
   completed_at?: string;
   summary?: string;
@@ -81,10 +84,21 @@ type RetentionReportResponse = {
 
 type RetentionRunResponse = {
   run_id: string;
+  policy_id: string;
   actor_id: string;
   status: string;
   created_at: string;
   report: RetentionReportResponse;
+};
+
+type RetentionPolicyResponse = {
+  policy_id: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+  rules?: RetentionCapabilitiesResponse["rules"];
 };
 
 async function readJson<T>(response: Response, fallback: string): Promise<T> {
@@ -228,6 +242,8 @@ function mapReportItem(item: RetentionReportItemResponse): RetentionReportItem {
 function mapReport(report: RetentionReportResponse): RetentionReport {
   return {
     runId: report.run_id,
+    policyId: report.policy_id,
+    policyName: report.policy_name,
     startedAt: report.started_at,
     completedAt: report.completed_at,
     summary: report.summary ?? "Retention completed.",
@@ -236,6 +252,17 @@ function mapReport(report: RetentionReportResponse): RetentionReport {
     skipped: (report.skipped ?? []).map(mapReportItem),
     errors: report.errors ?? [],
     warnings: report.warnings ?? [],
+  };
+}
+
+function mapRule(rule: NonNullable<RetentionCapabilitiesResponse["rules"]>[number]) {
+  return {
+    name: rule.name,
+    entityType: rule.entity_type ?? undefined,
+    action: rule.action,
+    description: rule.description,
+    maxAgeDays: rule.max_age_days,
+    maxUnusedDays: rule.max_unused_days,
   };
 }
 
@@ -300,15 +327,23 @@ export async function loadRetentionCapabilities(): Promise<RetentionCapabilities
     available: response.retention_available,
     schedulingSupported: response.scheduling_supported,
     scheduleLabel: response.schedule?.label ?? "Scheduling unavailable",
-    rules: (response.rules ?? []).map((rule) => ({
-      name: rule.name,
-      entityType: rule.entity_type,
-      action: rule.action,
-      description: rule.description,
-      maxAgeDays: rule.max_age_days,
-      maxUnusedDays: rule.max_unused_days,
-    })),
+    rules: (response.rules ?? []).map(mapRule),
   };
+}
+
+export async function loadRetentionPolicies(): Promise<RetentionPolicy[]> {
+  const response = await requestJson<{ items: RetentionPolicyResponse[] }>(
+    "/api/manage/memory/retention/policies",
+  );
+  return (response.items ?? []).map((policy) => ({
+    policyId: policy.policy_id,
+    name: policy.name,
+    description: policy.description ?? undefined,
+    enabled: policy.enabled,
+    createdAt: policy.created_at,
+    updatedAt: policy.updated_at,
+    rules: (policy.rules ?? []).map(mapRule),
+  }));
 }
 
 export async function loadRetentionRuns(agentId: string): Promise<RetentionRun[]> {
@@ -318,18 +353,19 @@ export async function loadRetentionRuns(agentId: string): Promise<RetentionRun[]
   return (response.items ?? []).map((run) => ({
     ...mapReport(run.report),
     runId: run.run_id,
+    policyId: run.report.policy_id ?? run.policy_id,
     actorId: run.actor_id,
     status: run.status,
     createdAt: run.created_at,
   }));
 }
 
-export async function runRetention(agentId: string): Promise<RetentionReport> {
+export async function runRetention(agentId: string, policyId: string): Promise<RetentionReport> {
   const response = await requestJson<RetentionReportResponse>(
     scopedPath("/api/manage/memory/retention/runs", agentId),
     {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ policy_id: policyId }),
     },
   );
   return mapReport(response);

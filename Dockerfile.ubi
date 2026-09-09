@@ -2,7 +2,7 @@
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
 ARG NODE_IMAGE=node:22-bookworm-slim
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
-ARG EVOLVE_REF=af3e1310134b3397302e260cb3504b23a732fead
+ARG EVOLVE_REF=fde88da02b903671f133d64059710aff108d76d6
 
 FROM --platform=$BUILDPLATFORM ${UV_IMAGE} AS build-uv-tools
 

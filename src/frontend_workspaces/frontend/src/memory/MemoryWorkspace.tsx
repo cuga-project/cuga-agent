@@ -14,6 +14,7 @@ import {
   loadMemoryPage,
   loadProtectionStatus,
   loadRetentionCapabilities,
+  loadRetentionPolicies,
   loadRetentionRuns,
   runRetention,
 } from "./api";
@@ -21,6 +22,7 @@ import {
   type MemoryRecord,
   type ProtectionStatus,
   type RetentionCapabilities,
+  type RetentionPolicy,
   type RetentionReportItem,
   type RetentionRun,
 } from "./types";
@@ -35,7 +37,7 @@ type MemorySort =
   | "name";
 
 type AdminTab = "automation" | "memory" | "activity";
-type AutomationId = ProtectionStatus["id"] | "retention" | "events";
+type AutomationId = string;
 
 type AutomationItem = {
   id: AutomationId;
@@ -47,6 +49,7 @@ type AutomationItem = {
   enabled: boolean;
   healthy?: boolean;
   pluginCount?: number;
+  policy?: RetentionPolicy;
 };
 
 type MemoryWorkspaceProps = {
@@ -85,7 +88,8 @@ function formatRule(rule: RetentionCapabilities["rules"][number]): string {
   const action = rule.action === "delete" ? "Delete" : rule.action === "flag" ? "Flag" : displayType(rule.action);
   const days = rule.maxUnusedDays ?? rule.maxAgeDays;
   const qualifier = rule.maxUnusedDays != null ? " without use" : "";
-  return `${action} ${displayType(rule.entityType).toLowerCase()} memories${days != null ? ` after ${days} days${qualifier}` : ""}`;
+  const entityType = rule.entityType ? `${displayType(rule.entityType).toLowerCase()} memories` : "all memories";
+  return `${action} ${entityType}${days != null ? ` after ${days} days${qualifier}` : ""}`;
 }
 
 function memoryStatusDetail(
@@ -95,7 +99,7 @@ function memoryStatusDetail(
   if (memory.state !== "Needs attention") return memory.statusDetail;
   const rule = capabilities?.rules.find((candidate) => candidate.name === memory.retentionRule);
   if (!rule) return memory.statusDetail;
-  const memoryType = displayType(rule.entityType).toLowerCase();
+  const memoryType = rule.entityType ? displayType(rule.entityType).toLowerCase() : "matching";
   if (rule.maxUnusedDays != null) {
     return `Flagged because this ${memoryType} memory has not been used for ${rule.maxUnusedDays} days.`;
   }
@@ -384,7 +388,13 @@ function AutomationDetail({
   runningRetention: boolean;
   onRunRetention: () => void;
 }) {
-  const latestLabel = latestRun ? new Date(latestRun.createdAt).toLocaleString() : "None recorded";
+  const policy = automation.policy;
+  const latestPolicyRun = policy
+    ? latestRun?.policyId === policy.policyId ? latestRun : undefined
+    : latestRun;
+  const latestLabel = latestPolicyRun
+    ? new Date(latestPolicyRun.createdAt).toLocaleString()
+    : "None recorded";
   return (
     <>
       <DetailHeader eyebrow="Automation" title={automation.title} status={automation.status} />
@@ -417,8 +427,8 @@ function AutomationDetail({
             />
             <section className="memory-workspace__rules">
               <h3>Published rules</h3>
-              {capabilities?.rules.length ? (
-                <ul>{capabilities.rules.map((rule) => <li key={rule.name}>{formatRule(rule)}</li>)}</ul>
+              {policy?.rules.length ? (
+                <ul>{policy.rules.map((rule) => <li key={rule.name}>{formatRule(rule)}</li>)}</ul>
               ) : <p>No retention rules are available.</p>}
             </section>
           </>
@@ -441,7 +451,12 @@ function AutomationDetail({
         <div className="memory-workspace__detail-actions">
           {automation.kind === "retention" && (
             <>
-              <Button kind="danger--tertiary" size="sm" disabled={runningRetention || !capabilities?.available} onClick={onRunRetention}>
+              <Button
+                kind="danger--tertiary"
+                size="sm"
+                disabled={runningRetention || !capabilities?.available || !policy?.enabled}
+                onClick={onRunRetention}
+              >
                 {runningRetention ? "Running..." : "Run retention now"}
               </Button>
               <Button kind="secondary" size="sm" disabled>Edit schedule</Button>
@@ -540,6 +555,7 @@ function RetentionRunDetail({
         <DefinitionList
           items={[
             { label: "Run ID", value: run.runId },
+            { label: "Policy", value: run.policyName ?? run.policyId ?? "Unavailable" },
             { label: "Mode", value: "Applied changes" },
             { label: "Requested by", value: run.actorId || "Service administrator" },
             { label: "Result", value: status },
@@ -570,6 +586,7 @@ export function MemoryWorkspace({
   const [memoryTotal, setMemoryTotal] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<RetentionCapabilities | null>(null);
+  const [retentionPolicies, setRetentionPolicies] = useState<RetentionPolicy[]>([]);
   const [protections, setProtections] = useState<ProtectionStatus[]>([]);
   const [adminMemories, setAdminMemories] = useState<MemoryRecord[]>([]);
   const [adminMemoryTotal, setAdminMemoryTotal] = useState(0);
@@ -594,9 +611,10 @@ export function MemoryWorkspace({
   const refreshData = React.useCallback(async () => {
     setLoading(true);
     try {
-      const [page, retention, history, adminPage, protectionStatus] = await Promise.all([
+      const [page, retention, policies, history, adminPage, protectionStatus] = await Promise.all([
         loadMemoryPage(agentId),
         loadRetentionCapabilities(),
+        canManage ? loadRetentionPolicies() : Promise.resolve([]),
         canManage ? loadRetentionRuns(agentId) : Promise.resolve([]),
         canManage ? loadAdminMemoryPage(agentId) : Promise.resolve(null),
         canManage ? loadProtectionStatus() : Promise.resolve([]),
@@ -604,7 +622,10 @@ export function MemoryWorkspace({
       setMemories(page.items);
       setMemoryTotal(page.total);
       setNextCursor(page.nextCursor);
-      setCapabilities(retention);
+      const rulesByName = new Map(retention.rules.map((rule) => [rule.name, rule]));
+      policies.flatMap((policy) => policy.rules).forEach((rule) => rulesByName.set(rule.name, rule));
+      setCapabilities({ ...retention, rules: Array.from(rulesByName.values()) });
+      setRetentionPolicies(policies);
       setRuns(history);
       setProtections(protectionStatus);
       if (adminPage) {
@@ -680,17 +701,19 @@ export function MemoryWorkspace({
         pluginCount: protection?.pluginCount ?? 0,
       };
     });
+    const retentionItems: AutomationItem[] = retentionPolicies.map((policy) => ({
+      id: `retention:${policy.policyId}`,
+      title: policy.name,
+      description: policy.description ?? "Evaluates this published retention policy on demand.",
+      status: !capabilities?.available ? "Unavailable" : policy.enabled ? "Available for manual runs" : "Disabled",
+      detail: `${policy.rules.length} published ${policy.rules.length === 1 ? "rule" : "rules"}`,
+      kind: "retention",
+      enabled: Boolean(capabilities?.available && policy.enabled),
+      policy,
+    }));
     return [
       ...protectionItems,
-      {
-        id: "retention",
-        title: "Retention",
-        description: "Evaluates the published retention rules on demand.",
-        status: capabilities?.available ? "Available for manual runs" : "Unavailable",
-        detail: "Manual only",
-        kind: "retention",
-        enabled: capabilities?.available ?? false,
-      },
+      ...retentionItems,
       {
         id: "events",
         title: "Lifecycle event delivery",
@@ -701,7 +724,7 @@ export function MemoryWorkspace({
         enabled: false,
       },
     ];
-  }, [capabilities?.available, protections]);
+  }, [capabilities?.available, protections, retentionPolicies]);
 
   const visibleMemories = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -810,14 +833,15 @@ export function MemoryWorkspace({
   };
 
   const executeRetention = async () => {
-    if (runningRetention || !capabilities?.available) return;
+    const policy = selectedAutomation?.policy;
+    if (runningRetention || !capabilities?.available || !policy?.enabled) return;
     if (!window.confirm(
       "Run retention now? Memories matching deletion rules may be permanently deleted.",
     )) return;
     setRunningRetention(true);
     setMessage("Running retention...");
     try {
-      const report = await runRetention(agentId);
+      const report = await runRetention(agentId, policy.policyId);
       await refreshData();
       setSelectedRunId(report.runId ?? "");
       setMessage("Retention run completed");
@@ -1058,7 +1082,7 @@ export function MemoryWorkspace({
                     <AutomationDetail
                       automation={selectedAutomation}
                       capabilities={capabilities}
-                      latestRun={runs[0]}
+                      latestRun={runs.find((run) => run.policyId === selectedAutomation.policy?.policyId)}
                       runningRetention={runningRetention}
                       onRunRetention={() => void executeRetention()}
                     />
@@ -1085,7 +1109,7 @@ export function MemoryWorkspace({
                             id={run.runId}
                             scope="latest"
                             selected={false}
-                            title="Retention run"
+                            title={run.policyName ?? "Retention run"}
                             meta={`${new Date(run.createdAt).toLocaleString()} / ${run.runId}`}
                             status={runStatus(run)}
                             detail={run.summary}
