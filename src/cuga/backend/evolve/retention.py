@@ -256,28 +256,29 @@ def project_retention_policy(policy: dict[str, Any]) -> dict[str, Any]:
     """Project an Evolve policy record without backend or namespace details."""
     definition = policy.get("policy")
     rules = definition.get("rules", []) if isinstance(definition, dict) else []
+    projected_rules = [
+        {
+            key: rule[key]
+            for key in (
+                "name",
+                "entity_type",
+                "max_age_days",
+                "max_unused_days",
+                "action",
+                "on_missing_access_signal",
+                "cascade_derived",
+            )
+            if key in rule
+        }
+        for rule in rules
+        if isinstance(rule, dict)
+    ]
+    if policy.get("policy_id") == DEFAULT_RETENTION_POLICY_ID:
+        projected_rules.append(ORPHANED_CONVERSATION_RULE)
     return {
         key: policy.get(key)
         for key in ("policy_id", "name", "description", "enabled", "created_at", "updated_at")
-    } | {
-        "rules": [
-            {
-                key: rule[key]
-                for key in (
-                    "name",
-                    "entity_type",
-                    "max_age_days",
-                    "max_unused_days",
-                    "action",
-                    "on_missing_access_signal",
-                    "cascade_derived",
-                )
-                if key in rule
-            }
-            for rule in rules
-            if isinstance(rule, dict)
-        ]
-    }
+    } | {"rules": projected_rules}
 
 
 def retention_capabilities(*, retention_available: bool) -> dict[str, Any]:

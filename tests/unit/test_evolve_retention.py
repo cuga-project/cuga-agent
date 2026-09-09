@@ -110,7 +110,7 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
         patch(
             "cuga.backend.server.memory_routes._list_retention_inventory",
             new=AsyncMock(return_value=[]),
-        ),
+        ) as list_inventory,
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
         patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
     ):
@@ -155,6 +155,8 @@ def test_manual_run_uses_server_policy_scope_and_sanitizes_report(client):
     )
     assert response.json()["errors"] == ["One or more memories could not be evaluated."]
     assert response.json()["warnings"] == ["Some memories were evaluated with incomplete usage data."]
+    list_inventory.assert_not_awaited()
+    get_conversation_db.assert_not_called()
 
 
 def test_manual_run_always_applies_retention(client):
@@ -289,13 +291,17 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
             "cuga.backend.server.memory_routes._list_retention_inventory",
             new=AsyncMock(return_value=[orphan]),
         ),
+        patch(
+            "cuga.backend.server.memory_routes._retention_policies",
+            new=AsyncMock(return_value=[]),
+        ),
         patch("cuga.backend.server.conversation_history.get_conversation_db") as get_conversation_db,
         patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
     ):
         get_conversation_db.return_value.get_thread_owners_for_agent = AsyncMock(return_value=set())
         response = client.post(
             "/api/manage/memory/retention/runs?agent_id=agent-a",
-            json={"policy_id": "policy-a", "as_of": "2026-09-03T00:00:00Z"},
+            json={"policy_id": DEFAULT_RETENTION_POLICY_ID, "as_of": "2026-09-03T00:00:00Z"},
         )
 
     assert response.status_code == 200
