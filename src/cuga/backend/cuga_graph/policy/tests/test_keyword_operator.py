@@ -6,6 +6,8 @@ from cuga.backend.cuga_graph.policy.models import IntentGuard, IntentGuardRespon
 from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.asyncio
 async def test_keyword_trigger_and_operator():
