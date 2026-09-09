@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Forge API orchestration for 03-configure-forge.sh — poc-plan.md Track B.
+"""Forge API orchestration for 03-configure-forge.sh — Track B.
 
 Stdlib only (urllib) so it runs without extra deps on whatever machine runs
 the deploy scripts. Idempotent via a small JSON state file: re-running

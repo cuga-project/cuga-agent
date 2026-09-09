@@ -2,7 +2,7 @@
 set -uo pipefail
 # (not -e: we want every assertion to run and report, not stop at the first failure)
 
-# Runs poc-plan.md's six Track B assertions against the deployed stack.
+# Runs the six Track B assertions against the deployed stack.
 # Usage: ./05-validate.sh [path/to/forge.env]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

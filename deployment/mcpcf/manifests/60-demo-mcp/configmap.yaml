@@ -5,7 +5,7 @@ metadata:
   namespace: ${NAMESPACE}
 data:
   server.py: |
-    # Tiny demo MCP server for the MCPCF PoC (poc-plan.md Track A).
+    # Tiny demo MCP server for the MCPCF PoC (Track A).
     # Runs on the CUGA image — fastmcp is already a dependency there, so no
     # new image build is needed for this piece.
     from fastmcp import FastMCP

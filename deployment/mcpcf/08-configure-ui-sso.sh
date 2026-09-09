@@ -71,7 +71,8 @@ oc whoami &>/dev/null || { echo "ERROR: not logged in (KUBECONFIG -> spoke)"; ex
 # is /auth/sso/callback/{provider_id}, so the id is baked into the redirect URI we
 # hand to IVIA. Changing it later means re-registering the client.
 : "${UI_PROVIDER_ID:=ivia-apps}"
-: "${IVIA_ISSUER:=https://ivia-apps-wrp.apps.gori-agent-hub.cp.fyre.ibm.com/iviaop/oauth2}"
+: "${HUB_DOMAIN:?set HUB_DOMAIN in forge.env (apps domain of the hub cluster)}"
+: "${IVIA_ISSUER:=https://ivia-apps-wrp.apps.${HUB_DOMAIN}/iviaop/oauth2}"
 
 # Which IVIA group grants membership of the workspace team. IVIA emits directory
 # groups; it does NOT emit the platform's ServiceOwner/ServiceAdmin/ServiceUser —
@@ -139,7 +140,7 @@ fi
 #
 # $CRED_FILE holds, once obtained: {client_id, client_secret, _discovery{...}}.
 # ---------------------------------------------------------------------------
-: "${IAM_BASE:=https://account-iam.apps.gori-agent-hub.cp.fyre.ibm.com}"
+: "${IAM_BASE:=https://account-iam.apps.${HUB_DOMAIN}}"
 : "${IAM_TENANT_TYPE:=apps}"   # the <isvTenantType> in /api/2.0/<type>/clients
 ATTACH_DISCOVERY='
 import json, sys, httpx

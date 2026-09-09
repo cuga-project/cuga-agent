@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tear down everything this PoC created. See poc-plan.md's runbook step 9.
+# Tear down everything this PoC created. See QUICKSTART.md step 5.
 # Currently covers Track A (Forge namespace + demo MCP server) and, once
 # 10-clone-agent.sh exists, the cloned agent Deployment/Service/Route in the
 # tenant namespace — added here as that script lands.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy the PoC-only mock OIDC broker (poc-plan.md Track B, BROKER_MODE=mock)
+# Deploy the PoC-only mock OIDC broker (Track B, BROKER_MODE=mock)
 # and fill BROKER_ISSUER/BROKER_JWKS_URI into forge.env if they're empty.
 # Skipped entirely when BROKER_MODE=real — see forge.env's BROKER_MODE.
 #

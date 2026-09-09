@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Clone a running CUGA agent onto the PoC image, in the same tenant, with the
-# Context Forge tool browser turned on. See ../../cuga_mcpcf_poc/poc-plan.md
+# Context Forge tool browser turned on. See QUICKSTART.md step 4
 # Track E.
 #
 # The clone is a plain Deployment with NO CugaAgent owner reference, so the

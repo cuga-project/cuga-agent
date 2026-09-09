@@ -1,18 +1,19 @@
 # MCPCF PoC deployment
 
 Deploys Context Forge into its own namespace in the same tenant as a running
-CUGA agent, wires Option A auth, and (once Track E lands) runs a cloned CUGA
-agent with a settings-driven Forge tool browser. Full design and rationale:
-[`../../cuga_mcpcf_poc/poc-plan.md`](../../cuga_mcpcf_poc/poc-plan.md).
-Live progress: [`../../cuga_mcpcf_poc/scratchpad.md`](../../cuga_mcpcf_poc/scratchpad.md).
+CUGA agent, wires Option A auth, and runs a cloned CUGA
+agent with a settings-driven Forge tool browser.
+
+**To deploy it, follow [`QUICKSTART.md`](QUICKSTART.md).** This file records
+why each non-obvious choice is what it is.
 
 ## Status
 
-Tracks A–D are done and live-verified on `gori-cuga-agent1`, namespace
-`mcpcf-poc`; Track E's clone script is written. Several real bugs were found
-and fixed by running each stage live rather than trusting the authored
-manifests — **read `../../cuga_mcpcf_poc/scratchpad.md` before changing
-anything here**, it explains why each non-obvious choice is what it is.
+Tracks A–D are done and were verified live on an OpenShift dev topology in
+namespace `mcpcf-poc`; Track E's clone script is written. Several real bugs
+were found and fixed by running each stage live rather than trusting the
+authored manifests — the constraints below are the result, and each one
+matters. **Read them before changing anything here.**
 
 | Track | What | State |
 |---|---|---|
@@ -30,10 +31,9 @@ tokens on every REST endpoint — upstream bug
 
 ## Prerequisites
 
-- `oc` logged in to the target cluster's spoke — see `.claude/skills/cuga-sovereign/`
-  for how to reach it. On the dev topology (e.g. `gori-cuga-agent1`), that's
-  a direct `oc login -u kubeadmin -p '<password>' --server=https://api.<domain>:6443
-  --insecure-skip-tls-verify=true`, no tunnel.
+- `oc` logged in to the target cluster's **spoke**. On a dev topology that is
+  a direct `oc login --server=https://api.<cluster-domain>:6443`; other
+  topologies may require a tunnel.
 - `envsubst` (part of `gettext`).
 - `cp forge.env.example forge.env` and fill it in. **Never commit `forge.env`**
   — it holds real secrets. Generate `JWT_SECRET_KEY` / `AUTH_ENCRYPTION_SECRET`
@@ -54,7 +54,7 @@ cp forge.env.example forge.env    # fill in secrets, NAMESPACE, CLUSTER_DOMAIN, 
     # Dockerfile and the GHCR workflow do NOT build the UI; they ship whatever
     # is committed at src/cuga/frontend/dist.
 # then build that tree into an image (in-cluster BuildConfig, or GHCR) and put
-# the resulting ref in CLONE_IMAGE — see scratchpad.md Track D.
+# the resulting ref in CLONE_IMAGE — see QUICKSTART.md step 4.
 ./10-clone-agent.sh forge.env     # clone a running agent onto that image
 ./99-cleanup.sh forge.env         # tears the Forge namespace back down
 ```
@@ -72,8 +72,8 @@ Postgres, model and CA config automatically. It overrides only:
 - **auth off, plain HTTP behind an edge route** — the clone gets a new
   hostname that the Verify app has no registered redirect URI for, and the
   source's TLS cert is issued for the source's host. The PoC exercises Forge
-  auth, not CUGA login, so `poc-plan.md` Track E's sanctioned option
-  (`auth.enabled=false`) is taken. Do not carry this to anything real.
+  auth, not CUGA login, so the sanctioned option (`auth.enabled=false`) is
+  taken. Do not carry this to anything real.
 - **no `ownerReferences`** — that is the whole point: the operator must not
   manage or revert it. The script asserts afterwards that no `CugaAgent` CR
   with the clone's name exists.
@@ -81,11 +81,11 @@ Postgres, model and CA config automatically. It overrides only:
 The Forge token it injects is broker-minted and, in mock mode, expires in an
 hour. Re-run `04-mint-token.sh` then `10-clone-agent.sh` to refresh it.
 
-## Notes specific to this cluster (gori dev topology)
+## Notes specific to this topology (OpenShift, hub + spoke)
 
 - **SCC.** The tenant's namespaces run `restricted-v2` with a per-namespace
-  auto-assigned UID range (confirmed live, not from the upstream docs — see
-  scratchpad.md). None of these manifests set `runAsUser` or `fsGroup`;
+  auto-assigned UID range (confirmed live, not from the upstream docs).
+  None of these manifests set `runAsUser` or `fsGroup`;
   OpenShift assigns both from the new namespace's range at admission. This
   is why Postgres uses `quay.io/sclorg/postgresql-16-c9s` (built for
   arbitrary-UID operation) instead of the vanilla `postgres` image, and Redis

@@ -5,7 +5,7 @@ metadata:
   namespace: ${NAMESPACE}
 data:
   broker.py: |
-    # PoC-only mock OIDC broker (poc-plan.md Track B, BROKER_MODE=mock).
+    # PoC-only mock OIDC broker (Track B, BROKER_MODE=mock).
     # Serves /.well-known/openid-configuration and /jwks from the same RSA
     # keypair 04-mint-token.sh signs tokens with — unblocks Option A without
     # the real IAM proxy emitting aud+groups. Runs on the CUGA image

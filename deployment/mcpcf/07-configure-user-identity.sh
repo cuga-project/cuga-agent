@@ -5,7 +5,7 @@ set -euo pipefail
 # provider in Forge, so a user's own login token authenticates them directly.
 #
 # Why this works without a broker — all verified on this cluster against a real
-# login token (see scratchpad.md, "Three bugs, stacked"):
+# login token (three stacked bugs; see README.md):
 #   * account-iam already puts the role in the token, but as a DICT bucketed by
 #     scope: roles: {"SERVICE": ["ServiceOwner"]} — not a flat list. Stock Forge
 #     drops that shape silently (list/str only) and every team_mapping no-ops,
@@ -30,8 +30,9 @@ set -a; source "$ENV_FILE"; set +a
 
 oc whoami &>/dev/null || { echo "ERROR: not logged in (KUBECONFIG -> spoke)"; exit 1; }
 
-: "${IAM_ISSUER:=https://account-iam.apps.gori-agent-hub.cp.fyre.ibm.com/account-iam/api/2.0}"
-: "${IAM_JWKS:=https://account-iam.apps.gori-agent-hub.cp.fyre.ibm.com/api/2.0/jwks}"
+: "${HUB_DOMAIN:?set HUB_DOMAIN in forge.env (apps domain of the hub cluster)}"
+: "${IAM_ISSUER:=https://account-iam.apps.${HUB_DOMAIN}/account-iam/api/2.0}"
+: "${IAM_JWKS:=https://account-iam.apps.${HUB_DOMAIN}/api/2.0/jwks}"
 
 # The audience Forge validates against. This is NOT the bare instance id, even
 # though the instance id is what the token is "bound to": account-iam issues

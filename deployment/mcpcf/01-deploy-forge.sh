@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Deploy Context Forge (+ its own Postgres/Redis) into a fresh namespace in
-# the mcpcf-poc tenant. See ../../cuga_mcpcf_poc/poc-plan.md Track A.
+# the mcpcf-poc tenant. See QUICKSTART.md step 2.
 #
 # Usage:
 #   ./01-deploy-forge.sh [path/to/forge.env]
@@ -84,7 +84,7 @@ oc rollout status deployment/forge-redis -n "$NAMESPACE" --timeout=120s
 
 echo
 echo "==> 5/7  Router CA bundle (Forge needs to trust this cluster's internally-signed"
-echo "         route certs for its own outbound OIDC calls — Track B, see scratchpad.md)"
+echo "         route certs for its own outbound OIDC calls — Track B, see README.md)"
 if oc get configmap router-ca-bundle -n "$NAMESPACE" &>/dev/null; then
   echo "    router-ca-bundle already exists, reusing it"
 else

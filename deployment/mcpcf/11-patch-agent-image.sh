@@ -10,7 +10,7 @@ set -euo pipefail
 # for a Deployment it doesn't own), so roles — ServiceOwner / ServiceAdmin /
 # ServiceUser — can only be exercised this way.
 #
-# NOTE: poc-plan.md claims an image change "would be reverted or blocked by
+# NOTE: the original PoC plan claimed an image change "would be reverted or blocked by
 # the operator". That is not so: patching spec.patches[0] is the supported
 # path — see .claude/skills/cuga-sovereign/references/change-agent.md.
 #
@@ -119,7 +119,7 @@ echo "==> Minting a Forge token for the agent"
 if [[ -z "${SPOKE_KUBECONFIG:-}" ]]; then
   echo "ERROR: SPOKE_KUBECONFIG must be set — the Forge mock broker runs on the agent cluster,"
   echo "       not the hub this script patches. Example:"
-  echo "         export SPOKE_KUBECONFIG=~/dev/sov-core/cuga_mcpcf_poc/.scratch-kube/agent-kubeconfig"
+  echo "         export SPOKE_KUBECONFIG=<path-to-your-spoke-kubeconfig>"
   exit 1
 fi
 KUBECONFIG="$SPOKE_KUBECONFIG" "${SCRIPT_DIR}/04-mint-token.sh" "$ENV_FILE" >/dev/null

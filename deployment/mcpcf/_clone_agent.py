@@ -6,7 +6,7 @@ on stdout. Derived from the running Deployment rather than hand-authored so the
 clone inherits Vault, Postgres, model and CA config automatically — the only
 things overridden are identity, image, auth, TLS and the Forge wiring.
 
-See ../../cuga_mcpcf_poc/poc-plan.md Track E.
+See QUICKSTART.md step 4.
 """
 
 import argparse
@@ -127,7 +127,7 @@ def main() -> None:
         "spec": {
             "selector": labels,
             # Named port — an unnamed one renders a router backend with zero
-            # server lines and 503s forever with no diagnostic (see scratchpad.md).
+            # server lines and 503s forever with no diagnostic (see README.md).
             "ports": [{"name": "http", "port": 80, "targetPort": "http"}],
         },
     }

@@ -53,7 +53,7 @@ data:
   # password_change_required regardless of password strength — fine for a
   # real deployment, just friction for this PoC's scripted Track B login.
   PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"
-  # Option A wiring — mapping doc §1 (poc-plan.md Track A "Forge settings").
+  # Option A wiring — Track A, Forge settings. See ../../README.md.
   # SSO_ENABLED isn't in that list but turned out to be required anyway —
   # without it the whole SSO router (including the admin provider endpoints
   # Track B needs) isn't mounted at all ("SSO router not included - SSO

@@ -6,7 +6,7 @@ set -euo pipefail
 # "sovereign-broker" SSO provider (issuer/jwks_uri/api_audience/team_mapping/
 # role_mappings). Idempotent — state persisted to .mcpcf-state.json (gitignored)
 # so re-runs update existing objects instead of creating duplicates.
-# See ../../cuga_mcpcf_poc/poc-plan.md Track B.
+# See QUICKSTART.md step 2.
 #
 # Usage: ./03-configure-forge.sh [path/to/forge.env]
 

@@ -43,7 +43,7 @@ spec:
             # of that setting. Confirmed live: external-IdP token validation
             # failed with CERTIFICATE_VERIFY_FAILED against the mock
             # broker's own (edge-TLS, internal-CA-signed) route until this
-            # was added. See scratchpad.md Track B.
+            # was added. See ../../README.md, Track B.
             - name: SSL_CERT_FILE
               value: /etc/mcpcf-ca/ca.pem
           volumeMounts:

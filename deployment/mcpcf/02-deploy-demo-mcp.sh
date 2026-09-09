@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Deploy the tiny demo MCP server (manifests/60-demo-mcp), reusing the CUGA
 # image already in the cluster registry — no new image build needed.
-# See ../../cuga_mcpcf_poc/poc-plan.md Track A.
+# See QUICKSTART.md step 2.
 #
 # Usage: ./02-deploy-demo-mcp.sh [path/to/forge.env]
 

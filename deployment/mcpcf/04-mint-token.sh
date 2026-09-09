@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Mint an agent bearer token asserting aud=$MCP_AUDIENCE and the workspace
-# group claim, per Option A (poc-plan.md Track B). Two modes via forge.env's
+# group claim, per Option A (Track B). Two modes via forge.env's
 # BROKER_MODE:
 #   mock — signs locally (inside the mock-broker pod, which already holds
 #          the RSA key Forge's SSO provider trusts) with PyJWT. PoC only.

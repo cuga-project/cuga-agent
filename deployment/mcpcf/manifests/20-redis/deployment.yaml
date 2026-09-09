@@ -34,7 +34,7 @@ spec:
         - name: redis
           # Bitnami retired versioned tags on the free Docker Hub tier —
           # `latest` is what's actually pullable now. Confirmed live against
-          # this cluster (see scratchpad.md); pin to a digest if this needs
+          # this cluster (see ../../README.md); pin to a digest if this needs
           # to be reproducible later.
           image: docker.io/bitnami/redis:latest
           ports:

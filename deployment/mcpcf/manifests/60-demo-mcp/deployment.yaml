@@ -17,7 +17,7 @@ spec:
     spec:
       # imagePullSecrets intentionally omitted — the tenant's own CUGA agent
       # pods pull this same image with no per-pod pull secret (see
-      # scratchpad.md "Image pull path"). Add one here (from $PULL_SECRET in
+      # ../../README.md, image pull path). Add one here (from $PULL_SECRET in
       # forge.env) if this namespace turns out to need it.
       securityContext:
         seccompProfile:
