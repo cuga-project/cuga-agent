@@ -133,7 +133,7 @@ async def test_multi_user_params_flow_end_to_end():
     mock_get_guidelines.assert_awaited_once_with(
         "fetch all users",
         user_id="user-123",
-        namespace_id="tenant-789",
+        namespace_id="inst-1",
         session_id="thread-456",
     )
 

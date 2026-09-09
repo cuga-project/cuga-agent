@@ -123,7 +123,7 @@ async def test_callback_node_passes_multi_user_params_to_save_trajectory():
     # Verify keyword arguments for multi-user parameters
     kwargs = call_args.kwargs
     assert kwargs["user_id"] == "user-123"
-    assert kwargs["namespace_id"] == "tenant-789"
+    assert kwargs["namespace_id"] == "inst-1"
     assert kwargs["session_id"] == "thread-456"
 
 

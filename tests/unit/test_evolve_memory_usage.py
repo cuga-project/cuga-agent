@@ -15,7 +15,8 @@ async def test_prompt_context_records_exact_attributed_memory_ids():
         chat_messages=[],
         user_id="user-a",
         service_scope={
-            "tenant_id": "namespace-a",
+            "tenant_id": "tenant-a",
+            "instance_id": "namespace-a",
             "agent_id": "agent-a",
             "memory_turn_id": "turn-a",
         },
@@ -88,7 +89,8 @@ async def test_empty_attributed_guideline_text_is_not_recorded_as_used():
         chat_messages=[],
         user_id="user-a",
         service_scope={
-            "tenant_id": "namespace-a",
+            "tenant_id": "tenant-a",
+            "instance_id": "namespace-a",
             "agent_id": "agent-a",
             "memory_turn_id": "turn-a",
         },
