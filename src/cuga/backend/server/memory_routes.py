@@ -16,7 +16,7 @@ from cuga.backend.evolve.memory_store import (
 )
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
-from cuga.config import get_tenant_id
+from cuga.config import get_service_instance_id
 
 
 def require_evolve_memory() -> None:
@@ -62,7 +62,7 @@ def _user_id(current_user: Optional[UserInfo]) -> str:
 
 
 def _namespace_id() -> Optional[str]:
-    return get_tenant_id() or None
+    return get_service_instance_id() or None
 
 
 def _memory_result(result: Optional[dict[str, Any]]) -> dict[str, Any]:

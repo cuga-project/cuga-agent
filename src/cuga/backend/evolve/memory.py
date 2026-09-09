@@ -49,7 +49,7 @@ async def build_evolve_special_instructions_extension(
         try:
             # Extract multi-user parameters from state for Evolve attribution
             _evolve_user_id = normalize_evolve_identifier(getattr(state, 'user_id', None))
-            _evolve_namespace_id = service_scope.get("tenant_id") or None
+            _evolve_namespace_id = service_scope.get("instance_id") or None
             _evolve_session_id = getattr(state, 'thread_id', None)
 
             attributed_guidelines = await asyncio.wait_for(
@@ -158,7 +158,7 @@ async def build_evolve_special_instructions_extension(
                 unique_entity_ids,
                 user_id=current_user_id,
                 agent_id=agent_id,
-                namespace_id=service_scope.get("tenant_id") or None,
+                namespace_id=service_scope.get("instance_id") or None,
             )
         except Exception as exc:
             logger.warning(f"Evolve: failed to record memory usage (non-fatal): {exc}")

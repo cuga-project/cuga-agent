@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.main import app
+from cuga.backend.server.memory_routes import _namespace_id
 
 pytestmark = pytest.mark.unit
 
@@ -21,6 +22,14 @@ def auth_overrides():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def test_namespace_id_is_the_service_instance_id():
+    with patch(
+        "cuga.backend.server.memory_routes.get_service_instance_id",
+        return_value="service-instance-1",
+    ):
+        assert _namespace_id() == "service-instance-1"
 
 
 def test_disabled_feature_returns_not_found_without_calling_evolve(client):

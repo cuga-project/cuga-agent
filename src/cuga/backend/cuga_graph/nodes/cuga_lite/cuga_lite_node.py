@@ -404,7 +404,7 @@ class CugaLiteNode(BaseNode):
             success = not (self._has_error(state.final_answer or "") or bool(state_error))
             messages_snapshot = list(state.chat_messages)
             _evolve_user_id = normalize_evolve_identifier(state.user_id)
-            _evolve_namespace_id = (state.service_scope or {}).get("tenant_id") or None
+            _evolve_namespace_id = (state.service_scope or {}).get("instance_id") or None
             _evolve_session_id = state.thread_id or None
             if settings.evolve.async_save:
                 task = _asyncio.create_task(
