@@ -14,6 +14,66 @@ from cuga.backend.llm.models import LLMManager
 from cuga.config import settings, DBS_DIR
 
 
+def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool = False) -> str:
+    """Return the policy collection name scoped to an agent_id.
+
+    Default agent (or None / 'cuga-default') maps to 'cuga_policies' (or 'cuga_policies_draft').
+    Named agents map to 'cuga_policies_<clean_agent_id>' (or 'cuga_policies_<clean_agent_id>_draft').
+    """
+    from cuga.backend.server.config_store import _parse_agent_id
+
+    base_name = getattr(settings.policy, "collection_name", None) or "cuga_policies"
+    clean_id = _parse_agent_id(agent_id) if agent_id else None
+    if not clean_id or clean_id == "cuga-default":
+        return f"{base_name}_draft" if draft else base_name
+    safe_id = clean_id.replace("-", "_").replace(".", "_")
+    prefix = f"{base_name}_{safe_id}"
+    return f"{prefix}_draft" if draft else prefix
+
+
+async def create_agent_policy_system(
+    agent_id: Optional[str] = None,
+    draft: bool = False,
+    policies_data: Optional[List[Dict[str, Any]]] = None,
+) -> "PolicyConfigurable":
+    """Create and initialize a PolicyConfigurable instance scoped to an agent_id."""
+    from cuga.backend.storage.embedding import get_embedding_config
+
+    collection = get_agent_policy_collection_name(agent_id, draft=draft)
+    emb_cfg = get_embedding_config()
+    storage = PolicyStorage(
+        collection_name=collection,
+        embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+        or os.getenv("POLICY_EMBEDDING_PROVIDER")
+        or emb_cfg["provider"],
+        embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+        or os.getenv("POLICY_EMBEDDING_MODEL")
+        or emb_cfg["model"],
+        embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+        or os.getenv("POLICY_EMBEDDING_BASE_URL")
+        or emb_cfg["base_url"],
+        embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+        or os.getenv("POLICY_EMBEDDING_API_KEY")
+        or emb_cfg["api_key"],
+    )
+    await storage.initialize_async()
+    ps = PolicyConfigurable(storage=storage)
+    await ps.initialize()
+
+    if policies_data is not None:
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+        await apply_policies_data_to_storage(
+            storage,
+            policies_data,
+            clear_existing=True,
+            filesystem_sync=None,
+        )
+        await ps.initialize()
+
+    return ps
+
+
 class PolicyConfigurable:
     """
     Configurable policy system for LangGraph integration.

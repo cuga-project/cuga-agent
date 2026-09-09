@@ -400,6 +400,21 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 await rebuild_production_agent(state, config or {})
             except Exception as rebuild_err:
                 logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
+        else:
+            raw_policies = (config or {}).get("policies")
+            if raw_policies is not None:
+                try:
+                    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+                    from cuga.backend.server.manage_routes.helpers import policies_list_from_config
+
+                    policies_list = policies_list_from_config(raw_policies)
+                    await create_agent_policy_system(
+                        agent_id=agent_id,
+                        draft=False,
+                        policies_data=policies_list,
+                    )
+                except Exception as policy_err:
+                    logger.warning(f"Failed to apply non-default agent policies on publish: {policy_err}")
 
         response_data: dict[str, Any] = {"status": "success", "version": ver, "agent_id": agent_id}
 

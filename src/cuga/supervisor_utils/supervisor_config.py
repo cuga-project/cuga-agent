@@ -125,9 +125,11 @@ async def build_agents_from_list(
             # README, plus cuga_graph/graph.py), so hardcoding False disabled policy loading for
             # every downstream supervisor user regardless of their settings — with no error to
             # notice. Headless callers now ask for it explicitly instead of imposing it on all.
+            policy_system = agent_config.get("policy_system")
             agent = CugaAgent(
                 tools=tools,
                 tool_provider=tool_provider,
+                policy_system=policy_system,
                 special_instructions=agent_config.get("special_instructions"),
                 model=model,
                 auto_load_policies=agent_config.get("auto_load_policies", auto_load_policies),
@@ -169,7 +171,10 @@ async def load_supervisor_config(
 
 
 async def build_agents_from_stored_subagents(
-    sub_agents: List[Dict[str, Any]], *, auto_load_policies: Optional[bool] = None
+    sub_agents: List[Dict[str, Any]],
+    *,
+    auto_load_policies: Optional[bool] = None,
+    use_draft: bool = False,
 ) -> Dict[str, Any]:
     """
     Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
@@ -188,8 +193,12 @@ async def build_agents_from_stored_subagents(
     """
     import os
 
-    from cuga.backend.server.config_store import load_config
-    from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
+    from cuga.backend.server.config_store import load_config, load_draft
+    from cuga.backend.server.manage_routes.helpers import (
+        extract_agent_feature_overrides,
+        policies_list_from_config,
+    )
+    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
     agent_configs: List[Dict[str, Any]] = []
 
@@ -199,9 +208,16 @@ async def build_agents_from_stored_subagents(
             ref = entry.get("ref")
             if not ref:
                 continue
-            ref_config, _ = await load_config(None, ref)
+            if use_draft:
+                ref_config = await load_draft(ref)
+                if not ref_config:
+                    ref_config, _ = await load_config(None, ref)
+            else:
+                ref_config, _ = await load_config(None, ref)
             if not ref_config:
-                logger.warning(f"Supervisor sub-agent '{ref}': no published config found, skipping")
+                logger.warning(
+                    f"Supervisor sub-agent '{ref}': no {'draft' if use_draft else 'published'} config found, skipping"
+                )
                 continue
             agent_meta = ref_config.get("agent") or {}
             tools_list = ref_config.get("tools") or []
@@ -210,6 +226,15 @@ async def build_agents_from_stored_subagents(
                 for t in tools_list
                 if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
             } or None
+
+            raw_policies = ref_config.get("policies")
+            policies_list = policies_list_from_config(raw_policies) if raw_policies is not None else None
+            sub_policy_system = await create_agent_policy_system(
+                agent_id=ref,
+                draft=use_draft,
+                policies_data=policies_list,
+            )
+
             # ref_config["tools"] holds registry-app entries (name + include filter), not
             # loadable langchain tool defs — pass app names through `apps` and skip the
             # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
@@ -223,6 +248,7 @@ async def build_agents_from_stored_subagents(
                     or agent_meta.get("description"),
                     "model": _model_config_from_stored_llm(ref_config.get("llm")),
                     "feature_overrides": extract_agent_feature_overrides(ref_config),
+                    "policy_system": sub_policy_system,
                 }
             )
         elif kind == "a2a":

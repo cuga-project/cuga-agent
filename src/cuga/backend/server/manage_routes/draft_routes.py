@@ -405,6 +405,18 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                 except Exception as policy_err:
                     logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         else:
+            raw_policies = full_draft.get("policies")
+            policies_list = policies_list_from_config(raw_policies)
+            try:
+                from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+
+                await create_agent_policy_system(
+                    agent_id=agent_id,
+                    draft=True,
+                    policies_data=policies_list,
+                )
+            except Exception as policy_err:
+                logger.warning(f"Failed to apply non-default agent policies from PATCH: {policy_err}")
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
