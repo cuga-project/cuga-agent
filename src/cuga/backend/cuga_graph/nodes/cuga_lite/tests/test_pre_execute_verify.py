@@ -774,6 +774,7 @@ def test_policy_user_input_skips_empty_response_correction():
     ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
     assert ctx.user_input == "split the bill"
 
+
 # ── shadowed names must never fold (issue: fabricated literal write values) ──
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (  # noqa: E402
