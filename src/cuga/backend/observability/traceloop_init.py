@@ -29,7 +29,10 @@ Two exporter modes, via settings.toml [observability] traceloop_exporter:
     "otlp" — sends spans over OTLP/HTTP to a real collector, configured via
         the standard env vars:
             OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-            OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>
+            OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<token>
+        Header values must be URL-encoded (OTLP exporter spec) — write the
+        space in "Basic <base64>" as "Basic%20<base64>", or parse_env_headers()
+        drops the header and the collector 401s with no spans stored.
 
 ## Content capture
 

@@ -264,7 +264,7 @@ def init_openlit() -> None:
         if _openlit is None:
             logger.warning(
                 "OpenLit observability is enabled in settings but 'openlit' is not installed. "
-                "This should not happen as openlit is a core dependency. Please reinstall cuga."
+                "Install the optional extra: pip install cuga[observability]"
             )
             return
 

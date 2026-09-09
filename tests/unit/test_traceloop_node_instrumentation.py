@@ -45,9 +45,26 @@ def _start_recording_span(monkeypatch):
 
 
 def _attrs(exporter) -> dict:
+    """Merge attributes from every finished span in the exporter.
+
+    The manual `cuga.<node>.<attr>` attributes under test are always set via
+    `opentelemetry.trace.get_current_span()` on whatever span is current at the
+    instrumented line. That is usually the test's own `test-node-span`, but when
+    a developer runs with Traceloop enabled in their environment
+    (`DYNACONF_OBSERVABILITY__TRACELOOP=true`), the SDK's HTTP/LangChain
+    auto-instrumentation is already active process-wide and interleaves its own
+    spans (`GET`, `execute_tool <name>`, ...) — one of which can finish first and
+    is not the one carrying the `cuga.*` attribute. CI runs with Traceloop off so
+    this never bit there, but merging keeps the assertions correct either way.
+    The `cuga.*` keys never collide with the auto-instrumentation's own
+    (`http.*`, `gen_ai.*`, ...), so a flat merge is unambiguous.
+    """
     spans = exporter.get_finished_spans()
     assert spans, "expected at least one finished span"
-    return dict(spans[0].attributes)
+    merged: dict = {}
+    for span in spans:
+        merged.update(span.attributes)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -392,8 +409,13 @@ async def test_toolguard_policy_violation_blocked_reason(monkeypatch):
 
     guarded_tool = (await provider.get_tools("runtime_tools"))[0]
 
+    # Invoke the raw coroutine directly, like the sandbox/CodeAct caller does
+    # (and like test_toolguard_unexpected_arguments_blocked_reason above) — going
+    # through StructuredTool.ainvoke() would open a nested `execute_tool` span
+    # under any active LangChain auto-instrumentation, and the instrumented
+    # get_current_span().set_attribute() would land on that nested span instead.
     with tracer.start_as_current_span("test-node-span"):
-        result = await guarded_tool.ainvoke({"user_id": "uid_1", "flight_id": "AB12", "passengers": 4})
+        result = await guarded_tool.coroutine(user_id="uid_1", flight_id="AB12", passengers=4)
 
     assert result["blocked_by_policy"] is True
     assert calls == []

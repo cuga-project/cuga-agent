@@ -186,12 +186,17 @@ DYNACONF_OBSERVABILITY__TRACELOOP_EXPORTER=otlp
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 # Langfuse OTLP endpoint additionally needs Basic auth:
 # OTEL_EXPORTER_OTLP_ENDPOINT=https://us.cloud.langfuse.com/api/public/otel
-# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <base64(public_key:secret_key)>
+# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<base64(public_key:secret_key)>
 ```
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the **base URL — no `/v1/traces` suffix**.
 The exporter appends the signal path itself. (Passing a full
 `.../v1/traces` URL will double the suffix and silently 404.)
+
+`OTEL_EXPORTER_OTLP_HEADERS` values must be **URL-encoded** per the OTLP
+exporter spec — the space in `Basic <base64>` has to be written `Basic%20…`.
+The un-encoded form is silently dropped (the header never gets sent, and the
+collector returns 401 with no spans stored).
 
 For a full hand-run walkthrough of `otlp` mode against the bundled OTel
 Collector + Tempo + Grafana stack — and how to adapt it for Langfuse — see
@@ -296,7 +301,7 @@ fine but produces parallel duplicate LLM spans.
 | Variable | Used by | Meaning |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenLit, Traceloop `otlp` | Collector **base** URL (no `/v1/traces`). Default `http://localhost:4318` |
-| `OTEL_EXPORTER_OTLP_HEADERS` | OpenLit, Traceloop `otlp` | e.g. `Authorization=Basic <...>` for Langfuse OTLP |
+| `OTEL_EXPORTER_OTLP_HEADERS` | OpenLit, Traceloop `otlp` | URL-encoded, e.g. `Authorization=Basic%20<base64>` for Langfuse OTLP (the space must be `%20` or the header is silently dropped) |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | OpenLit | `http/protobuf` (default), `grpc`, `http/json` |
 | `OTEL_SERVICE_NAME` | all | `service.name` resource attr. Default `cuga` |
 | `OTEL_RESOURCE_ATTRIBUTES` | all | extra resource attrs; CUGA merges `agent.id`, `service.version`, `tenant.id`, `service.instance.id` |

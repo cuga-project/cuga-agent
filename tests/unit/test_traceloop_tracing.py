@@ -217,6 +217,32 @@ def _all_spans(trace_file) -> list[dict]:
     return spans
 
 
+def _force_flush_spans() -> None:
+    """Flush the active span processor to its exporter before reading the trace
+    file. `disable_batch=True` already makes export synchronous, but calling
+    force_flush() is harmless and keeps the read-after-write ordering explicit."""
+    from opentelemetry import trace as otel_trace_module
+
+    try:
+        provider = otel_trace_module.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush()
+    except Exception:
+        pass
+
+
+def _span_attrs(span: dict) -> dict:
+    """An OTLP-JSON span's attributes as a {key: value-object} dict, where each
+    value-object is the raw `{"stringValue": ...}` / `{"intValue": ...}` form."""
+    return {a["key"]: a["value"] for a in span.get("attributes", [])}
+
+
+def _find_named_span(spans: list[dict], name: str) -> dict:
+    matches = [span for span in spans if span.get("name", "") == name]
+    assert matches, f"expected a span named {name!r}, got names: {[s.get('name', '') for s in spans]}"
+    return matches[0]
+
+
 def _reset_langchain_instrumentation(monkeypatch):
     """Make a second real Traceloop.init() in the same process actually rebind
     LangChain/LangGraph instrumentation to the new TracerProvider.
@@ -353,29 +379,12 @@ def test_nested_graph_call_produces_one_coherent_trace(monkeypatch, tmp_path):
 
     from langgraph.graph import END, StateGraph
 
-    from cuga.backend.observability import traceloop_init
-    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
-    from cuga.config import settings as real_settings
-
-    _reset_tracer_provider(monkeypatch)
-    monkeypatch.setattr(traceloop_init, "_initialized", False)
-    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
-
-    trace_file = tmp_path / "spans.jsonl"
-    monkeypatch.setattr(real_settings.observability, "traceloop", True)
-    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
-    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
-
-    from traceloop.sdk import Traceloop
-
-    exporter = LocalOtlpFileSpanExporter(str(trace_file))
-    Traceloop.init(
-        app_name="cuga-test",
-        exporter=exporter,
-        disable_batch=True,
-        instruments=None,
-        block_instruments=None,
-    )
+    # Shared real-init helper: resets the OTel provider, traceloop-sdk's
+    # TracerWrapper singleton AND the LangChain instrumentor's captured-tracer
+    # singleton before init — the last one is what keeps this test coherent when
+    # another real-init traceloop test ran earlier in the same process (or when
+    # the developer has Traceloop enabled in their environment).
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test")
 
     class SubState(TypedDict):
         task: str
@@ -445,6 +454,65 @@ def test_nested_graph_call_produces_one_coherent_trace(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
+def test_dp3_traceloop_attaches_to_a_preexisting_tracer_provider(monkeypatch, tmp_path):
+    """DP3 regression tripwire: init_traceloop() must attach its span processor
+    even when another library (OpenLit / Langfuse) already installed the global
+    TracerProvider before it ran.
+
+    The failure mode this guards against: re-adding an
+    `if isinstance(get_tracer_provider(), SdkTracerProvider): return` early-exit
+    to init_traceloop() (a pattern some other agent codebases' wrappers use).
+    That guard makes Traceloop a silent no-op whenever OpenLit wins the init
+    race — exactly the bug DP3 documents. Phase 11 verified this against a real
+    OpenLit + collector stack; this is the cheap unit-level version so a
+    regression trips in CI, not only in a manual matrix run.
+    """
+    import opentelemetry.trace as otel_trace_module
+    from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from traceloop.sdk.tracing.tracing import TracerWrapper
+
+    from cuga.backend.observability import traceloop_init
+    from cuga.config import settings as real_settings
+
+    # Hermetic reset of the two process-wide singletons, but NOT via
+    # _init_traceloop_to_file — that nulls _TRACER_PROVIDER, and this test's
+    # whole point is that a provider is already installed when init runs.
+    monkeypatch.setattr(otel_trace_module, "_TRACER_PROVIDER", None)
+    monkeypatch.setattr(otel_trace_module._TRACER_PROVIDER_SET_ONCE, "_done", False)
+    if hasattr(TracerWrapper, "instance"):
+        monkeypatch.delattr(TracerWrapper, "instance")
+
+    # Simulate OpenLit having won the init race: a real SDK TracerProvider is
+    # already the global one, with its own processor, before init_traceloop().
+    prior_provider = SdkTracerProvider()
+    prior_provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    otel_trace_module.set_tracer_provider(prior_provider)
+
+    monkeypatch.setattr(traceloop_init, "_initialized", False)
+    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
+    trace_file = tmp_path / "spans.jsonl"
+    monkeypatch.setattr(real_settings.observability, "traceloop", True)
+    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
+    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
+
+    traceloop_init.init_traceloop()
+    assert traceloop_init._initialized is True, "init_traceloop() bailed when a provider already existed"
+
+    tracer = otel_trace_module.get_tracer("dp3-test")
+    with tracer.start_as_current_span("dp3-probe"):
+        pass
+    _force_flush_spans()
+
+    span_names = [span.get("name", "") for span in _all_spans(trace_file)]
+    assert "dp3-probe" in span_names, (
+        "init_traceloop() did not attach a span exporter when a TracerProvider "
+        f"already existed — DP3 'attach, don't fight' guarantee regressed. Got: {span_names}"
+    )
+
+
+@pytest.mark.unit
 def test_traceloop_init_module_self_initializes_on_import(monkeypatch, tmp_path):
     """traceloop_init.py must self-initialize at module import time, mirroring
     openlit_init.py's existing pattern — the web UI / A2A-simple / evaluate-CLI
@@ -478,29 +546,8 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
     from langchain_core.tools import StructuredTool
 
     from cuga.backend.activity_tracker.tracker import ActivityTracker
-    from cuga.backend.observability import traceloop_init
-    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
-    from cuga.config import settings as real_settings
 
-    _reset_tracer_provider(monkeypatch)
-    monkeypatch.setattr(traceloop_init, "_initialized", False)
-    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
-
-    trace_file = tmp_path / "spans.jsonl"
-    monkeypatch.setattr(real_settings.observability, "traceloop", True)
-    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
-    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
-
-    from traceloop.sdk import Traceloop
-
-    exporter = LocalOtlpFileSpanExporter(str(trace_file))
-    Traceloop.init(
-        app_name="cuga-test-invoke-tool",
-        exporter=exporter,
-        disable_batch=True,
-        instruments=None,
-        block_instruments=None,
-    )
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-invoke-tool")
 
     # Create a simple tool: add two integers
     def add_numbers(a: int, b: int) -> int:
@@ -509,38 +556,15 @@ def test_invoke_tool_produces_span_with_dp9_attributes(monkeypatch, tmp_path):
 
     tool = StructuredTool.from_function(add_numbers)
 
-    # Get ActivityTracker singleton and register the tool. `tools` is a class
-    # attribute shared process-wide, so use monkeypatch.setitem to revert this
-    # entry on teardown instead of permanently mutating the singleton.
-    tracker = ActivityTracker()
+    # `ActivityTracker.tools` is a class attribute shared process-wide — use
+    # monkeypatch.setitem so the entry is reverted on teardown.
     monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
 
-    # Call invoke_tool and verify return value
-    result = asyncio.run(tracker.invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
+    result = asyncio.run(ActivityTracker().invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
     assert result == 7, f"expected result 7, got {result}"
 
-    # Force flush of spans to file
-    from opentelemetry import trace as otel_trace_module
-
-    try:
-        provider = otel_trace_module.get_tracer_provider()
-        if hasattr(provider, 'force_flush'):
-            provider.force_flush()
-    except Exception:
-        pass
-
-    # Parse exported spans
-    spans = _all_spans(trace_file)
-
-    # Find the tool span (should be named "invoke_tool.tool" based on decorator config)
-    tool_spans = [span for span in spans if span.get("name", "") == "invoke_tool.tool"]
-    assert len(tool_spans) > 0, (
-        f"expected to find a tool span named 'invoke_tool.tool', got span names: "
-        f"{[span.get('name', '') for span in spans]}"
-    )
-
-    tool_span = tool_spans[0]
-    attrs = {a["key"]: a["value"] for a in tool_span.get("attributes", [])}
+    _force_flush_spans()
+    attrs = _span_attrs(_find_named_span(_all_spans(trace_file), "invoke_tool.tool"))
 
     # Assert decorator's own attributes
     assert attrs.get("traceloop.span.kind", {}).get("stringValue") == "tool", (
@@ -581,29 +605,8 @@ def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_pat
     from langchain_core.tools import StructuredTool
 
     from cuga.backend.activity_tracker.tracker import ActivityTracker
-    from cuga.backend.observability import traceloop_init
-    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
-    from cuga.config import settings as real_settings
 
-    _reset_tracer_provider(monkeypatch)
-    monkeypatch.setattr(traceloop_init, "_initialized", False)
-    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
-
-    trace_file = tmp_path / "spans.jsonl"
-    monkeypatch.setattr(real_settings.observability, "traceloop", True)
-    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
-    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
-
-    from traceloop.sdk import Traceloop
-
-    exporter = LocalOtlpFileSpanExporter(str(trace_file))
-    Traceloop.init(
-        app_name="cuga-test-invoke-tool-sync",
-        exporter=exporter,
-        disable_batch=True,
-        instruments=None,
-        block_instruments=None,
-    )
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-invoke-tool-sync")
 
     # Create a simple tool: add two integers
     def add_numbers(a: int, b: int) -> int:
@@ -612,38 +615,15 @@ def test_invoke_tool_sync_produces_span_with_dp9_attributes(monkeypatch, tmp_pat
 
     tool = StructuredTool.from_function(add_numbers)
 
-    # Get ActivityTracker singleton and register the tool. `tools` is a class
-    # attribute shared process-wide, so use monkeypatch.setitem to revert this
-    # entry on teardown instead of permanently mutating the singleton.
-    tracker = ActivityTracker()
+    # `ActivityTracker.tools` is a class attribute shared process-wide — use
+    # monkeypatch.setitem so the entry is reverted on teardown.
     monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
 
-    # Call invoke_tool_sync and verify return value
-    result = tracker.invoke_tool_sync("test_server", tool.name, {"a": 3, "b": 4})
+    result = ActivityTracker().invoke_tool_sync("test_server", tool.name, {"a": 3, "b": 4})
     assert result == 7, f"expected result 7, got {result}"
 
-    # Force flush of spans to file
-    from opentelemetry import trace as otel_trace_module
-
-    try:
-        provider = otel_trace_module.get_tracer_provider()
-        if hasattr(provider, 'force_flush'):
-            provider.force_flush()
-    except Exception:
-        pass
-
-    # Parse exported spans
-    spans = _all_spans(trace_file)
-
-    # Find the tool span (should be named "invoke_tool_sync.tool" based on decorator config)
-    tool_spans = [span for span in spans if span.get("name", "") == "invoke_tool_sync.tool"]
-    assert len(tool_spans) > 0, (
-        f"expected to find a tool span named 'invoke_tool_sync.tool', got span names: "
-        f"{[span.get('name', '') for span in spans]}"
-    )
-
-    tool_span = tool_spans[0]
-    attrs = {a["key"]: a["value"] for a in tool_span.get("attributes", [])}
+    _force_flush_spans()
+    attrs = _span_attrs(_find_named_span(_all_spans(trace_file), "invoke_tool_sync.tool"))
 
     # Assert decorator's own attributes
     assert attrs.get("traceloop.span.kind", {}).get("stringValue") == "tool", (
@@ -686,30 +666,9 @@ def test_invoke_tool_respects_trace_content_opt_out(monkeypatch, tmp_path):
     from langchain_core.tools import StructuredTool
 
     from cuga.backend.activity_tracker.tracker import ActivityTracker
-    from cuga.backend.observability import traceloop_init
-    from cuga.backend.observability.local_otlp_file_exporter import LocalOtlpFileSpanExporter
-    from cuga.config import settings as real_settings
 
-    _reset_tracer_provider(monkeypatch)
-    monkeypatch.setattr(traceloop_init, "_initialized", False)
-    monkeypatch.setattr(traceloop_init, "_init_attempted", False)
     monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
-
-    trace_file = tmp_path / "spans.jsonl"
-    monkeypatch.setattr(real_settings.observability, "traceloop", True)
-    monkeypatch.setattr(real_settings.observability, "traceloop_exporter", "file")
-    monkeypatch.setattr(real_settings.observability, "traceloop_file_path", str(trace_file))
-
-    from traceloop.sdk import Traceloop
-
-    exporter = LocalOtlpFileSpanExporter(str(trace_file))
-    Traceloop.init(
-        app_name="cuga-test-invoke-tool-content-opt-out",
-        exporter=exporter,
-        disable_batch=True,
-        instruments=None,
-        block_instruments=None,
-    )
+    trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-invoke-tool-content-opt-out")
 
     # Create a simple tool: add two integers
     def add_numbers(a: int, b: int) -> int:
@@ -718,37 +677,15 @@ def test_invoke_tool_respects_trace_content_opt_out(monkeypatch, tmp_path):
 
     tool = StructuredTool.from_function(add_numbers)
 
-    # Get ActivityTracker singleton and register the tool. `tools` is a class
-    # attribute shared process-wide, so use monkeypatch.setitem to revert this
-    # entry on teardown instead of permanently mutating the singleton.
-    tracker = ActivityTracker()
+    # `ActivityTracker.tools` is a class attribute shared process-wide — use
+    # monkeypatch.setitem so the entry is reverted on teardown.
     monkeypatch.setitem(ActivityTracker.tools, "test_server", [tool])
 
-    # Call invoke_tool and verify return value
-    result = asyncio.run(tracker.invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
+    result = asyncio.run(ActivityTracker().invoke_tool("test_server", tool.name, {"a": 3, "b": 4}))
     assert result == 7, f"expected result 7, got {result}"
 
-    # Force flush of spans to file
-    from opentelemetry import trace as otel_trace_module
-
-    try:
-        provider = otel_trace_module.get_tracer_provider()
-        if hasattr(provider, 'force_flush'):
-            provider.force_flush()
-    except Exception:
-        pass
-
-    # Parse exported spans
-    spans = _all_spans(trace_file)
-
-    tool_spans = [span for span in spans if span.get("name", "") == "invoke_tool.tool"]
-    assert len(tool_spans) > 0, (
-        f"expected to find a tool span named 'invoke_tool.tool', got span names: "
-        f"{[span.get('name', '') for span in spans]}"
-    )
-
-    tool_span = tool_spans[0]
-    attrs = {a["key"]: a["value"] for a in tool_span.get("attributes", [])}
+    _force_flush_spans()
+    attrs = _span_attrs(_find_named_span(_all_spans(trace_file), "invoke_tool.tool"))
 
     # Tool identity attributes must still be present with content capture off.
     assert attrs.get("tool.name", {}).get("stringValue") == tool.name, (
@@ -879,9 +816,13 @@ def test_dp14_shortlister_chain_ainvoke_stays_in_outer_trace(monkeypatch, tmp_pa
     # The shortlister's real chain returns a structured object with `.result`;
     # this tail mirrors that contract without needing a provider that can do
     # structured output.
-    chain = prompt | llm | RunnableLambda(
-        lambda message: SimpleNamespace(
-            result=[SimpleNamespace(name=message.content, reasoning="because")]
+    chain = (
+        prompt
+        | llm
+        | RunnableLambda(
+            lambda message: SimpleNamespace(
+                result=[SimpleNamespace(name=message.content, reasoning="because")]
+            )
         )
     )
 
@@ -916,9 +857,7 @@ def test_dp14_nl_auto_continue_ainvoke_stays_in_outer_trace(monkeypatch, tmp_pat
     trace_file = _init_traceloop_to_file(monkeypatch, tmp_path, "cuga-test-dp14-nl-auto-continue")
 
     # Off by default in settings.toml; the LLM branch is unreachable without it.
-    monkeypatch.setattr(
-        classifier_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True
-    )
+    monkeypatch.setattr(classifier_module.settings.advanced_features, "cuga_lite_nl_auto_continue", True)
 
     llm = GenericFakeChatModel(messages=iter([AIMessage(content='{"auto_continue": true}')]))
 
@@ -982,9 +921,7 @@ def test_dp14_output_formatter_ainvoke_stays_in_outer_trace(monkeypatch, tmp_pat
     context.user_input = "what is the answer"
 
     async def node(_state):
-        _cmd, metadata = await PolicyEnactment._enact_format_output(
-            state, policy_match, MagicMock(), context
-        )
+        _cmd, metadata = await PolicyEnactment._enact_format_output(state, policy_match, MagicMock(), context)
         assert metadata is not None
         return {"result": "done"}
 
@@ -1118,8 +1055,7 @@ def test_dp14_remote_call_api_code_sends_traceparent(monkeypatch, tmp_path):
 
     traceparent = captured_headers[0].get("traceparent")
     assert traceparent, (
-        f"generated remote call_api must send a traceparent header, got: "
-        f"{sorted(captured_headers[0])}"
+        f"generated remote call_api must send a traceparent header, got: {sorted(captured_headers[0])}"
     )
     # Format: 00-<32 hex trace_id>-<16 hex span_id>-<flags>
     parts = traceparent.split("-")
