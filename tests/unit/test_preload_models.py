@@ -21,6 +21,13 @@ def test_supported_image_builds_memory_ui_and_bakes_evolve_for_offline_runtime()
     assert "pnpm --filter ./frontend build" in dockerfile
     assert "altk-evolve[hooks,pii-regex]" in dockerfile
     assert "EVOLVE_REF=60a3420cf069983dc075267dcf02af054d4e944f" in dockerfile
+    assert dockerfile.count("@sha256:") >= 3
+    assert (
+        "ARG BASE_IMAGE=" in dockerfile
+        and "ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal@sha256:" in dockerfile
+    )
+    assert "ARG NODE_IMAGE=node:22-bookworm-slim@sha256:" in dockerfile
+    assert "ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest@sha256:" in dockerfile
     assert "PRELOAD_EVOLVE_MODELS=1" in dockerfile
     assert "SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers" in dockerfile
     assert "uv run --no-sync playwright install" in dockerfile
@@ -131,9 +138,10 @@ def test_preload_evolve_sentence_transformers_warms_all_required_models(
         call(
             model_name,
             cache_folder=str(tmp_path),
+            revision=revision,
             trust_remote_code=trust_remote_code,
         )
-        for model_name, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS
+        for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS
     ]
     for model in models:
         model.encode.assert_called_once_with(["warmup"])

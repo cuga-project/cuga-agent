@@ -12,8 +12,8 @@ import sys
 
 
 EVOLVE_SENTENCE_TRANSFORMER_MODELS = (
-    ("sentence-transformers/all-MiniLM-L6-v2", False),
-    ("nomic-ai/CodeRankEmbed", True),
+    ("sentence-transformers/all-MiniLM-L6-v2", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41", False),
+    ("nomic-ai/CodeRankEmbed", "3c4b60807d71f79b43f3c4363786d9493691f8b1", True),
 )
 
 
@@ -134,11 +134,12 @@ def preload_evolve_sentence_transformers() -> None:
         from sentence_transformers import SentenceTransformer
 
         cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-        for model_name, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
+        for model_name, revision, trust_remote_code in EVOLVE_SENTENCE_TRANSFORMER_MODELS:
             print(f"  Downloading {model_name}...")
             model = SentenceTransformer(
                 model_name,
                 cache_folder=cache_dir,
+                revision=revision,
                 trust_remote_code=trust_remote_code,
             )
             model.encode(["warmup"])
