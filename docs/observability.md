@@ -255,11 +255,12 @@ shows up in the same trace as its caller:
   inbound requests. Both `message/send` and `message/stream` are covered.
   Requires the peer to also run compatible OTel instrumentation (another
   Traceloop-enabled CUGA does).
-- **MCP** (CUGA's own demo / save-and-reuse MCP servers): context rides in the
-  JSON-RPC `_meta` field (works across stdio, SSE, streamable HTTP). Each MCP
-  server process must also have Traceloop enabled — CUGA's shipped demo
-  servers self-initialise it on import. Third-party MCP servers link only if
-  they independently implement the SEP-414 `_meta` convention.
+- **MCP** (CUGA's own demo MCP servers — docs, knowledge, email, CRM):
+  context rides in the JSON-RPC `_meta` field (works across stdio, SSE,
+  streamable HTTP). Each MCP server process must also have Traceloop enabled —
+  CUGA's shipped demo servers self-initialise it on import. Third-party MCP
+  servers link only if they independently implement the SEP-414 `_meta`
+  convention.
 
 ---
 
