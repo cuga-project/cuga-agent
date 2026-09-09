@@ -792,6 +792,28 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
     return out
 
 
+def drop_examples_using_absent_helpers(
+    examples: Optional[List[Dict[str, str]]], *, filesystem_enabled: bool
+) -> List[Dict[str, str]]:
+    """Remove few-shot turns that demonstrate helpers the executor will not inject.
+
+    A few-shot example is a demonstration the model imitates. Showing
+    ``await read_file(...)`` while the filesystem helpers are disabled teaches a
+    call that raises ``NameError`` at runtime, so those turns are dropped rather
+    than left to mislead.
+    """
+    if filesystem_enabled or not examples:
+        return list(examples or [])
+    absent = ("read_file", "write_file", "list_files")
+    kept = [ex for ex in examples if not any(name in str(ex.get("content", "")) for name in absent)]
+    if len(kept) != len(examples):
+        logger.debug(
+            "Dropped {} few-shot turn(s) demonstrating disabled filesystem helpers",
+            len(examples) - len(kept),
+        )
+    return kept
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -808,6 +830,7 @@ def create_mcp_prompt(
     skills_enabled: bool = False,
     skills_prompt_section: str = "",
     enable_shell_tool: bool = False,
+    enable_filesystem_tools: bool = False,
     sandbox_workspace: str = "/workspace",
     sandbox_env_info: str = "",
     has_knowledge=False,
@@ -834,6 +857,7 @@ def create_mcp_prompt(
         skills_enabled: If True, render the skills block (load_skill, available skills list)
         skills_prompt_section: Pre-formatted markdown/XML block from the skills registry
         enable_shell_tool: If True, include run_command / npm / sandbox workspace bullets in the prompt (OpenSandbox shell tools; defaults False in settings)
+        enable_filesystem_tools: If True, the workspace filesystem helpers (read_file, write_file, list_files) are injected into the execution context and may be described in the prompt. Defaults False, matching settings.toml.
         sandbox_workspace: Path prefix shown to the agent for sandbox files. Use "/workspace" for opensandbox/e2b (real Docker path) and "." for native/local (relative cwd).
         sandbox_env_info: Human-readable OS/environment string shown to the model when shell tools are enabled (e.g. "macOS 14.5" or "Linux (Ubuntu, Docker container)").
         has_knowledge: If True, include knowledge-base search guidance in the prompt
@@ -889,6 +913,7 @@ def create_mcp_prompt(
             "skills_enabled": skills_enabled,
             "skills_prompt_section": skills_prompt_section,
             "enable_shell_tool": enable_shell_tool,
+            "enable_filesystem_tools": enable_filesystem_tools,
             "sandbox_workspace": sandbox_workspace,
             "sandbox_env_info": sandbox_env_info,
             "has_knowledge": has_knowledge,
