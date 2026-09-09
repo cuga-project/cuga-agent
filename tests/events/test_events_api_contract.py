@@ -581,6 +581,7 @@ def test_concierge_without_flow_param_makes_no_ap_call():
     assert [c for c in eng.calls if c[0] == "get_flow"] == []
 
 
+@pytest.mark.unit
 def test_concierge_error_is_500_with_trace_id():
     """The caller gets a 500 with a trace id to report — not the exception text itself
     (py/stack-trace-exposure, CWE-209; see error_responses.py's rule for server/)."""
@@ -975,6 +976,7 @@ def test_connect_token_without_ap_is_501():
     assert r.status_code == 501 and "AP not configured" in r.json()["error"]
 
 
+@pytest.mark.unit
 def test_connect_token_ap_failure_is_500_not_a_crash():
     """The caller gets a 500 with a reference code — not the exception text itself
     (py/stack-trace-exposure, CWE-209; see error_responses.py's rule for server/)."""
