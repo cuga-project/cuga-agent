@@ -549,11 +549,12 @@ async def run_admin_memory_retention(
         reference_time = retention_reference_time(body.as_of)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="as_of must be an ISO-8601 timestamp") from exc
-    inventory = await _list_retention_inventory(agent_id=agent_id, scan_limit=body.scan_limit)
-    conversation_keys = await get_conversation_db().get_thread_owners_for_agent(agent_id)
-    orphaned = find_orphaned_memory_entities(inventory, conversation_keys, now=reference_time)
+    orphaned: list[dict[str, Any]] = []
     if body.policy_id == DEFAULT_RETENTION_POLICY_ID:
         await _retention_policies()
+        inventory = await _list_retention_inventory(agent_id=agent_id, scan_limit=body.scan_limit)
+        conversation_keys = await get_conversation_db().get_thread_owners_for_agent(agent_id)
+        orphaned = find_orphaned_memory_entities(inventory, conversation_keys, now=reference_time)
     result = _memory_result(
         await EvolveIntegration.run_retention(
             body.policy_id,
