@@ -33,13 +33,13 @@ DEFAULT_RETENTION_POLICY_ID = "cuga-standard"
 DEFAULT_RETENTION_POLICY_NAME = "Standard retention"
 DEFAULT_RETENTION_POLICY_DESCRIPTION = "CUGA's default memory lifecycle policy"
 
-ORPHANED_CONVERSATION_GRACE_DAYS = 7
+ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS = 7
 ORPHANED_CONVERSATION_RULE: dict[str, Any] = {
     "name": "orphaned-conversations",
     "entity_type": "memory",
     "action": "delete",
-    "max_age_days": ORPHANED_CONVERSATION_GRACE_DAYS,
-    "description": ("Delete memories whose source conversation remains unavailable after 7 days"),
+    "max_age_days": ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS,
+    "description": "Delete memories older than 7 days when their source conversation is unavailable",
 }
 
 _REPORT_FIELDS = {
@@ -115,7 +115,9 @@ def _safe_report_reason(item: dict[str, Any], bucket: str) -> str | None:
     if isinstance(reason, str) and reason.startswith("cascade:"):
         return "Deleted because it was derived from a conversation deleted by the retention policy."
     if rule == "orphaned-conversations" and reason == "orphaned_conversation":
-        return "Deleted because its source conversation had been unavailable for more than 7 days."
+        return (
+            "Deleted because the memory was more than 7 days old and its source conversation was unavailable."
+        )
     return "Deleted because it matched a deletion rule in the retention policy."
 
 
@@ -131,7 +133,7 @@ def find_orphaned_memory_entities(
         effective_now = effective_now.replace(tzinfo=timezone.utc)
     else:
         effective_now = effective_now.astimezone(timezone.utc)
-    cutoff = effective_now - timedelta(days=ORPHANED_CONVERSATION_GRACE_DAYS)
+    cutoff = effective_now - timedelta(days=ORPHANED_CONVERSATION_MINIMUM_AGE_DAYS)
 
     trajectory_sources: dict[str, set[str]] = {}
     for entity in entities:
@@ -199,8 +201,12 @@ def sanitize_retention_report(report: dict[str, Any]) -> dict[str, Any]:
     sanitized = {key: report[key] for key in _REPORT_FIELDS if key in report}
     errors = report.get("errors")
     warnings = report.get("warnings")
-    sanitized["error_count"] = len(errors) if isinstance(errors, list) else int(bool(errors))
-    sanitized["warning_count"] = len(warnings) if isinstance(warnings, list) else int(bool(warnings))
+    sanitized["error_count"] = (
+        len(errors) if isinstance(errors, list) else int(report.get("error_count") or bool(errors))
+    )
+    sanitized["warning_count"] = (
+        len(warnings) if isinstance(warnings, list) else int(report.get("warning_count") or bool(warnings))
+    )
     for bucket in ("flagged", "deleted", "skipped"):
         sanitized_items = []
         for item in report.get(bucket, []):
