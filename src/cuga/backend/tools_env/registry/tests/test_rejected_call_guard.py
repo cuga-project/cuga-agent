@@ -412,13 +412,46 @@ def test_other_endpoints_are_unaffected(monkeypatch):
 
 
 @pytest.mark.unit
-def test_successful_mutating_call_clears_the_endpoint_tier(monkeypatch):
+def test_success_on_the_same_endpoint_clears_its_tally(monkeypatch):
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+    guard.record_success("shop", "POST", function_name="place_order")
+    assert guard.check("shop", "place_order", {"card": 4}) is None
+
+
+@pytest.mark.unit
+def test_success_elsewhere_does_not_reset_the_endpoint_tally(monkeypatch):
+    """The observed failure mode: a successful add_to_cart between failing
+    order attempts reset the count before it could ever be reached."""
+    _set_all_thresholds(monkeypatch)
+    guard = RejectedCallGuard()
+    for card in (1, 2, 3):
+        _reject_card(guard, card)
+        guard.record_success("shop", "POST", function_name="add_to_cart")
+    assert guard.check("shop", "place_order", {"card": 4}) is not None
+
+
+@pytest.mark.unit
+def test_success_still_clears_the_exact_signature_tiers(monkeypatch):
+    """State changed, so a specific call that failed may now be valid."""
+    _set_all_thresholds(monkeypatch, block_after=1)
+    guard = RejectedCallGuard()
+    _reject_card(guard, 1)
+    assert guard.check("shop", "place_order", {"card": 1}) is not None
+    guard.record_success("shop", "POST", function_name="add_to_cart")
+    assert guard.check("shop", "place_order", {"card": 1}) is None
+
+
+@pytest.mark.unit
+def test_success_without_a_function_name_leaves_the_endpoint_tier_intact(monkeypatch):
     _set_all_thresholds(monkeypatch)
     guard = RejectedCallGuard()
     for card in (1, 2, 3):
         _reject_card(guard, card)
     guard.record_success("shop", "POST")
-    assert guard.check("shop", "place_order", {"card": 4}) is None
+    assert guard.check("shop", "place_order", {"card": 4}) is not None
 
 
 @pytest.mark.unit

@@ -290,12 +290,31 @@ class RejectedCallGuard:
             f"change the arguments or the approach. Error: {message}"
         )
 
-    def record_success(self, app_name: str, method: Optional[str]) -> None:
-        """Clear all rejection counters after a successful mutating call.
+    def record_success(
+        self,
+        app_name: str,
+        method: Optional[str],
+        function_name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> None:
+        """Clear rejection counters after a successful mutating call.
 
         A missing/unknown method is treated as mutating: wrongly clearing only
         weakens the guard for a while, whereas wrongly keeping a block could
         forbid a call that has become valid.
+
+        The two tiers clear differently, because they claim different things:
+
+        * The per-signature tiers claim "this exact call failed". Any state
+          change anywhere can make it valid — the precondition fix often lives
+          in another app — so a success clears them globally.
+        * The endpoint tier claims "this endpoint rejects every argument set
+          with this error". A success elsewhere is no evidence against that, and
+          clearing on one resets the count before it can ever be reached: an
+          agent that succeeds at adding to a cart between failing order attempts
+          never accumulates three. Only a success *on the same endpoint* refutes
+          the claim, so only that clears it. Without a function name the caller
+          cannot say which endpoint succeeded, and the tier is left intact.
         """
         if (method or "").upper() in ("GET", "HEAD"):
             return
@@ -306,7 +325,16 @@ class RejectedCallGuard:
                     f"successful mutating call to '{app_name}'"
                 )
                 self._rejections.clear()
-            self._endpoint_errors.clear()
+            if function_name:
+                prefix = self._endpoint_prefix(app_name, function_name, agent_id)
+                cleared = [k for k in self._endpoint_errors if k.startswith(prefix)]
+                for k in cleared:
+                    del self._endpoint_errors[k]
+                if cleared:
+                    logger.debug(
+                        f"Clearing {len(cleared)} endpoint-error tally/tallies for "
+                        f"'{function_name}' ({app_name}) after it succeeded"
+                    )
 
     def reset(self) -> None:
         """Forget everything (task boundary — wired into ``/api/reset``)."""
