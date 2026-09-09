@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from cuga.backend.evolve.integration import EvolveIntegration
@@ -14,6 +15,7 @@ from cuga.backend.evolve.retention import (
 from cuga.backend.server.auth import require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.main import app
+from cuga.backend.server.memory_routes import _list_retention_inventory
 
 pytestmark = pytest.mark.unit
 
@@ -312,7 +314,7 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
             "action": "delete",
             "outcome": "deleted",
             "title": "Orphaned preference",
-            "reason": "Deleted because its source conversation had been unavailable for more than 7 days.",
+            "reason": "Deleted because the memory was more than 7 days old and its source conversation was unavailable.",
         }
     ]
     assert "private memory content" not in response.text
@@ -321,11 +323,12 @@ def test_manual_run_deletes_orphaned_memories_and_keeps_a_safe_title(client):
             "entity_id": "orphan-a",
             "rule": "orphaned-conversations",
             "reason": "orphaned_conversation",
-            "detail": "source conversation remained unavailable beyond the grace period",
+            "detail": "memory is older than 7 days and its source conversation is unavailable",
         }
     ]
 
 
+@pytest.mark.unit
 def test_admin_can_list_evolve_owned_retention_policies(client):
     custom_policy = {
         "policy_id": "strict",
@@ -363,6 +366,7 @@ def test_admin_can_list_evolve_owned_retention_policies(client):
     assert put_policy.await_args.kwargs["namespace_id"] == "namespace-a"
 
 
+@pytest.mark.unit
 def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
     with (
         patch("cuga.backend.server.memory_routes.EvolveIntegration.is_enabled", return_value=True),
@@ -406,6 +410,28 @@ def test_admin_run_history_is_read_from_evolve_and_sanitized(client):
     )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_orphan_inventory_fails_closed_when_scan_limit_truncates_provenance():
+    with (
+        patch.object(
+            EvolveIntegration,
+            "list_entities",
+            new=AsyncMock(
+                return_value={
+                    "items": [{"id": "one", "type": "guideline"}],
+                    "next_cursor": "more",
+                }
+            ),
+        ),
+        patch("cuga.backend.server.memory_routes._namespace_id", return_value="namespace-a"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _list_retention_inventory(agent_id="agent-a", scan_limit=1)
+
+    assert exc_info.value.status_code == 409
+
+
 def test_retention_capabilities_report_scheduling_as_unsupported(client):
     with (
         patch(
@@ -428,7 +454,7 @@ def test_retention_capabilities_report_scheduling_as_unsupported(client):
         "entity_type": "memory",
         "action": "delete",
         "max_age_days": 7,
-        "description": "Delete memories whose source conversation remains unavailable after 7 days",
+        "description": "Delete memories older than 7 days when their source conversation is unavailable",
     }
 
 
