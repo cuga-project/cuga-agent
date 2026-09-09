@@ -33,7 +33,7 @@ type EvolveEntity = {
 
 type EntityInventory = {
   items: EvolveEntity[];
-  total: number;
+  total?: number;
   next_cursor?: string | null;
 };
 
@@ -202,7 +202,10 @@ function mapEntity(entity: EvolveEntity, includeContent = true, includeOwner = f
           "Owner unavailable",
         )
       : undefined,
-    sourceConversationId: entity.source_available === false ? undefined : threadId || undefined,
+    sourceConversationId:
+      (includeOwner ? entity.source_available === true : entity.source_available !== false)
+        ? threadId || undefined
+        : undefined,
     sourceLabel: threadId ? `Conversation ${shortReference(threadId)}` : "No available source conversation",
     createdAt,
     createdLabel: relativeDate(createdAt, "Saved date unavailable"),
@@ -276,9 +279,16 @@ export async function loadMemoryPage(agentId: string, cursor?: string): Promise<
   const inventory = await requestJson<EntityInventory>(`/api/memory/entities?${params}`);
   return {
     items: (inventory.items ?? []).map((entity) => mapEntity(entity)),
-    total: inventory.total,
+    total: inventory.total ?? 0,
     nextCursor: inventory.next_cursor ?? null,
   };
+}
+
+export async function loadMemoryEntity(agentId: string, entityId: string): Promise<MemoryRecord> {
+  const entity = await requestJson<EvolveEntity>(
+    scopedPath(`/api/memory/entities/${encodeURIComponent(entityId)}`, agentId),
+  );
+  return mapEntity(entity);
 }
 
 export async function loadAdminMemoryPage(agentId: string, cursor?: string): Promise<MemoryPage> {
@@ -287,7 +297,7 @@ export async function loadAdminMemoryPage(agentId: string, cursor?: string): Pro
   const inventory = await requestJson<EntityInventory>(`/api/manage/memory/entities?${params}`);
   return {
     items: (inventory.items ?? []).map((entity) => mapEntity(entity, false, true)),
-    total: inventory.total,
+    total: inventory.total ?? 0,
     nextCursor: inventory.next_cursor ?? null,
   };
 }

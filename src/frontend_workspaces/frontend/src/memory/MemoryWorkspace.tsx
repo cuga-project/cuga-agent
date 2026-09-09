@@ -11,6 +11,7 @@ import { ArrowRight, Close, Renew } from "@carbon/icons-react";
 import {
   deleteMemory,
   loadAdminMemoryPage,
+  loadMemoryEntity,
   loadMemoryPage,
   loadProtectionStatus,
   loadRetentionCapabilities,
@@ -580,6 +581,8 @@ export function MemoryWorkspace({
   onOpenConversation,
 }: MemoryWorkspaceProps) {
   const rootRef = React.useRef<HTMLElement>(null);
+  const requestGenerationRef = React.useRef(0);
+  const activeAgentRef = React.useRef(agentId);
   const [view, setView] = useState<"user" | "admin">("user");
   const [adminTab, setAdminTab] = useState<AdminTab>("automation");
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
@@ -607,47 +610,137 @@ export function MemoryWorkspace({
   const [deleting, setDeleting] = useState(false);
   const [runningRetention, setRunningRetention] = useState(false);
   const [message, setMessage] = useState("");
+  const focusEntityKey = Array.from(new Set(focusEntityIds.filter(Boolean))).join("\0");
+
+  React.useLayoutEffect(() => {
+    if (activeAgentRef.current === agentId) return;
+    activeAgentRef.current = agentId;
+    requestGenerationRef.current += 1;
+    setMemories([]);
+    setMemoryTotal(0);
+    setNextCursor(null);
+    setCapabilities(null);
+    setRetentionPolicies([]);
+    setProtections([]);
+    setAdminMemories([]);
+    setAdminMemoryTotal(0);
+    setAdminNextCursor(null);
+    setRuns([]);
+    setSelectedMemoryId("");
+    setSelectedAdminMemoryId("");
+    setSelectedRunId("");
+    setDetailOpen(false);
+    setLoadingMore(false);
+    setDeleting(false);
+    setRunningRetention(false);
+  }, [agentId]);
 
   const refreshData = React.useCallback(async () => {
+    const generation = ++requestGenerationRef.current;
+    const scopeChanged = activeAgentRef.current !== agentId;
+    activeAgentRef.current = agentId;
     setLoading(true);
-    try {
-      const [page, retention, policies, history, adminPage, protectionStatus] = await Promise.all([
+    setLoadingMore(false);
+    if (scopeChanged) {
+      setMemories([]);
+      setMemoryTotal(0);
+      setNextCursor(null);
+      setCapabilities(null);
+      setRetentionPolicies([]);
+      setProtections([]);
+      setAdminMemories([]);
+      setAdminMemoryTotal(0);
+      setAdminNextCursor(null);
+      setRuns([]);
+      setSelectedMemoryId("");
+      setSelectedAdminMemoryId("");
+      setSelectedRunId("");
+      setDetailOpen(false);
+      setLoadingMore(false);
+      setDeleting(false);
+      setRunningRetention(false);
+    }
+    const focusedEntityIds = focusEntityKey ? focusEntityKey.split("\0") : [];
+    const results = await Promise.allSettled([
         loadMemoryPage(agentId),
         loadRetentionCapabilities(),
         canManage ? loadRetentionPolicies() : Promise.resolve([]),
         canManage ? loadRetentionRuns(agentId) : Promise.resolve([]),
         canManage ? loadAdminMemoryPage(agentId) : Promise.resolve(null),
         canManage ? loadProtectionStatus() : Promise.resolve([]),
-      ]);
-      setMemories(page.items);
-      setMemoryTotal(page.total);
-      setNextCursor(page.nextCursor);
-      const rulesByName = new Map(retention.rules.map((rule) => [rule.name, rule]));
-      policies.flatMap((policy) => policy.rules).forEach((rule) => rulesByName.set(rule.name, rule));
-      setCapabilities({ ...retention, rules: Array.from(rulesByName.values()) });
-      setRetentionPolicies(policies);
-      setRuns(history);
-      setProtections(protectionStatus);
-      if (adminPage) {
-        setAdminMemories(adminPage.items);
-        setAdminMemoryTotal(adminPage.total);
-        setAdminNextCursor(adminPage.nextCursor);
-        setSelectedAdminMemoryId((current) =>
-          adminPage.items.some((memory) => memory.id === current) ? current : adminPage.items[0]?.id ?? "",
-        );
-      }
+        Promise.allSettled(focusedEntityIds.map((entityId) => loadMemoryEntity(agentId, entityId))),
+      ] as const);
+    if (generation !== requestGenerationRef.current) return;
+
+    const [page, retention, policies, history, adminPage, protectionStatus, focused] = results;
+    const errors: string[] = [];
+    const focusedMemories = focused.status === "fulfilled"
+      ? focused.value
+        .filter((result): result is PromiseFulfilledResult<MemoryRecord> => result.status === "fulfilled")
+        .map((result) => result.value)
+      : [];
+    const unavailableFocusedCount = focused.status === "fulfilled"
+      ? focused.value.filter((result) => result.status === "rejected").length
+      : focusedEntityIds.length;
+
+    if (page.status === "fulfilled" || focusedMemories.length > 0) {
+      const byId = new Map<string, MemoryRecord>();
+      if (page.status === "fulfilled") page.value.items.forEach((memory) => byId.set(memory.id, memory));
+      focusedMemories.forEach((memory) => byId.set(memory.id, memory));
+      const items = Array.from(byId.values());
+      setMemories(items);
+      setMemoryTotal(page.status === "fulfilled" ? Math.max(page.value.total, items.length) : items.length);
+      setNextCursor(page.status === "fulfilled" ? page.value.nextCursor : null);
       setSelectedMemoryId((current) =>
-        page.items.some((memory) => memory.id === current) ? current : page.items[0]?.id ?? "",
+        items.some((memory) => memory.id === current) ? current : items[0]?.id ?? "",
       );
-      setSelectedRunId((current) =>
-        history.some((run) => run.runId === current) ? current : history[0]?.runId ?? "",
-      );
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Memory data is unavailable");
-    } finally {
-      setLoading(false);
+    } else {
+      errors.push("Memory inventory is unavailable");
     }
-  }, [agentId, canManage]);
+    if (unavailableFocusedCount > 0) {
+      errors.push(`${unavailableFocusedCount} referenced ${unavailableFocusedCount === 1 ? "memory is" : "memories are"} no longer available`);
+    }
+
+    if (retention.status === "fulfilled") {
+      const policyRules = policies.status === "fulfilled" ? policies.value.flatMap((policy) => policy.rules) : [];
+      const rulesByName = new Map(retention.value.rules.map((rule) => [rule.name, rule]));
+      policyRules.forEach((rule) => rulesByName.set(rule.name, rule));
+      setCapabilities({ ...retention.value, rules: Array.from(rulesByName.values()) });
+    } else {
+      errors.push("Retention status is unavailable");
+    }
+    if (policies.status === "fulfilled") {
+      setRetentionPolicies(policies.value);
+    } else {
+      errors.push("Retention policies are unavailable");
+    }
+    if (history.status === "fulfilled") {
+      setRuns(history.value);
+      setSelectedRunId((current) =>
+        history.value.some((run) => run.runId === current) ? current : history.value[0]?.runId ?? "",
+      );
+    } else {
+      errors.push("Retention history is unavailable");
+    }
+    if (protectionStatus.status === "fulfilled") {
+      setProtections(protectionStatus.value);
+    } else {
+      errors.push("Protection status is unavailable");
+    }
+    if (adminPage.status === "fulfilled" && adminPage.value) {
+      const loadedAdminPage = adminPage.value;
+      setAdminMemories(loadedAdminPage.items);
+      setAdminMemoryTotal(loadedAdminPage.total);
+      setAdminNextCursor(loadedAdminPage.nextCursor);
+      setSelectedAdminMemoryId((current) =>
+        loadedAdminPage.items.some((memory) => memory.id === current) ? current : loadedAdminPage.items[0]?.id ?? "",
+      );
+    } else if (adminPage.status === "rejected") {
+      errors.push("Administrator memory inventory is unavailable");
+    }
+    setMessage(errors.join(". "));
+    setLoading(false);
+  }, [agentId, canManage, focusEntityKey]);
 
   React.useEffect(() => {
     void refreshData();
@@ -776,9 +869,11 @@ export function MemoryWorkspace({
 
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return;
+    const generation = requestGenerationRef.current;
     setLoadingMore(true);
     try {
       const page = await loadMemoryPage(agentId, nextCursor);
+      if (generation !== requestGenerationRef.current) return;
       setMemories((current) => {
         const byId = new Map(current.map((memory) => [memory.id, memory]));
         page.items.forEach((memory) => byId.set(memory.id, memory));
@@ -787,17 +882,20 @@ export function MemoryWorkspace({
       setMemoryTotal(page.total);
       setNextCursor(page.nextCursor);
     } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "More memories could not be loaded");
     } finally {
-      setLoadingMore(false);
+      if (generation === requestGenerationRef.current) setLoadingMore(false);
     }
   };
 
   const loadMoreAdminMemories = async () => {
     if (!adminNextCursor || loadingMore) return;
+    const generation = requestGenerationRef.current;
     setLoadingMore(true);
     try {
       const page = await loadAdminMemoryPage(agentId, adminNextCursor);
+      if (generation !== requestGenerationRef.current) return;
       setAdminMemories((current) => {
         const byId = new Map(current.map((memory) => [memory.id, memory]));
         page.items.forEach((memory) => byId.set(memory.id, memory));
@@ -806,9 +904,10 @@ export function MemoryWorkspace({
       setAdminMemoryTotal(page.total);
       setAdminNextCursor(page.nextCursor);
     } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "More memories could not be loaded");
     } finally {
-      setLoadingMore(false);
+      if (generation === requestGenerationRef.current) setLoadingMore(false);
     }
   };
 
@@ -819,16 +918,19 @@ export function MemoryWorkspace({
       return;
     }
     if (!window.confirm("Forget this memory? Its source conversation will remain available.")) return;
+    const generation = requestGenerationRef.current;
     setDeleting(true);
     try {
       await deleteMemory(selectedMemory.entityId, agentId);
+      if (generation !== requestGenerationRef.current) return;
       setMessage("Memory deleted");
       setDetailOpen(false);
       await refreshData();
     } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "Memory could not be deleted");
     } finally {
-      setDeleting(false);
+      if (activeAgentRef.current === agentId) setDeleting(false);
     }
   };
 
@@ -838,17 +940,21 @@ export function MemoryWorkspace({
     if (!window.confirm(
       "Run retention now? Memories matching deletion rules may be permanently deleted.",
     )) return;
+    const generation = requestGenerationRef.current;
     setRunningRetention(true);
     setMessage("Running retention...");
     try {
       const report = await runRetention(agentId, policy.policyId);
+      if (generation !== requestGenerationRef.current) return;
       await refreshData();
+      if (activeAgentRef.current !== agentId) return;
       setSelectedRunId(report.runId ?? "");
       setMessage("Retention run completed");
     } catch (error) {
+      if (generation !== requestGenerationRef.current) return;
       setMessage(error instanceof Error ? error.message : "Retention could not be completed");
     } finally {
-      setRunningRetention(false);
+      if (activeAgentRef.current === agentId) setRunningRetention(false);
     }
   };
 
@@ -1262,6 +1368,8 @@ export function MemoryWorkspace({
                     memories={adminMemories}
                     capabilities={capabilities}
                     onOpenMemory={(memoryId) => {
+                      setAdminOwner("all");
+                      setAdminState("all");
                       setSelectedAdminMemoryId(memoryId);
                       setAdminTab("memory");
                       setDetailOpen(true);

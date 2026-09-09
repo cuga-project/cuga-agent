@@ -73,6 +73,13 @@ def _get_chat_roles() -> list[str]:
         return ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
 
 
+def has_manage_access(user: Optional[UserInfo]) -> bool:
+    """Return the same effective management permission enforced by the API."""
+    if not _authorization_enabled() or user is None:
+        return True
+    return any(role in _get_manage_roles() for role in (user.roles or []))
+
+
 def _session_cookie_name() -> str:
     try:
         from cuga.config import settings
@@ -271,11 +278,8 @@ async def require_manage_access(request: Request) -> Optional[UserInfo]:
     if user is None:
         return user
 
-    # Check if user has any of the required manage roles
-    manage_roles = _get_manage_roles()
-    user_roles = user.roles or []
-
-    if not any(role in manage_roles for role in user_roles):
+    if not has_manage_access(user):
+        manage_roles = _get_manage_roles()
         raise HTTPException(
             status_code=403, detail=f"Access denied. Required roles: {', '.join(manage_roles)}"
         )

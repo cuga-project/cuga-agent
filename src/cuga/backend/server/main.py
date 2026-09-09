@@ -84,7 +84,7 @@ from cuga.backend.server.workspace_sandbox import (
     workspace_tree_is_sandbox_backed,
 )
 from cuga.backend.server.auth import require_auth, require_chat_access
-from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled, has_manage_access
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.tool_guard_generation import (
     build_tool_guard_generation_agent,
@@ -2412,8 +2412,8 @@ async def auth_userinfo(request: Request):
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if user is None:
-        return JSONResponse({"sub": DEFAULT_USER_ID})
-    return JSONResponse(user.model_dump())
+        return JSONResponse({"sub": DEFAULT_USER_ID, "can_manage": True})
+    return JSONResponse(user.model_dump() | {"can_manage": has_manage_access(user)})
 
 
 if getattr(settings.advanced_features, "use_extension", False):

@@ -370,8 +370,7 @@ export function ChatLanding() {
   const effectiveChatAgentId = agentRegistry === false ? "cuga-default" : (routeAgentId || "cuga-default");
   const canManageMemory =
     !authLoading &&
-    (!authorizationEnabled ||
-      (user?.roles ?? []).some((role) => role === "ServiceOwner" || role === "ServiceAdmin"));
+    (!authorizationEnabled || user?.canManage === true);
   useLayoutEffect(() => {
     api.setKnowledgeAgentId(effectiveChatAgentId);
   }, [effectiveChatAgentId]);
