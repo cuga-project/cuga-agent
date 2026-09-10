@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from loguru import logger
+from cuga.backend.server.error_responses import log_error_ref
 
 # ── the slash forwarder: main-chat arming, without mounting the events layer ───────────────────
 # CUGA core does not know how to arm anything, and shouldn't. But a user typing "/automate …" in
@@ -154,8 +154,10 @@ async def forward_slash_to_events(
             return f"The eventing service returned HTTP {r.status_code}. Nothing was armed."
         data = r.json() if r.content else {}
     except Exception as e:  # noqa: BLE001 — a down events service must not break chat
-        logger.warning(f"slash forward to {base} failed: {e}")
-        return f"Couldn't reach the eventing service at {base} ({e}). Nothing was armed."
+        # The reply below reaches the end user verbatim (via /run and /stream). `e` can carry a
+        # stack trace, so it stays in the log only — CodeQL py/stack-trace-exposure, alert #217.
+        ref = log_error_ref(e, context=f"forward_slash_to_events → {base}")
+        return f"Couldn't reach the eventing service at {base}. Nothing was armed. (ref {ref})"
     state = (data.get("state") or "").lower()
     if thread_id:
         if state in ("confirm", "needs_input"):
