@@ -153,6 +153,18 @@ constraint-dependencies = [
     "joserfc>=1.6.8",  # GHSA-gg9x-qcx2-xmrh: empty/nil HMAC key accepted for HS* verify (<=1.6.7)
     "json-repair>=0.60.1",  # GHSA-xf7x-x43h-rpqh: circular JSON Schema $ref DoS (<=0.60.0)
     "datamodel-code-generator>=0.64.0",  # GHSA-5578-w22f-pfx9 and related code-injection / SSRF / path-read CVEs
+    "transformers>=5.10.0",  # GHSA-xrqw-3rrv-vx5w: save_pretrained path traversal via chat template names (<5.10.0)
+    # >=2.12.0 fixes GHSA-h4x7-gw46-3wm6, GHSA-pf96-p4fj-6566 (multipart header injection /
+    # conflicting Content-Length+Transfer-Encoding, both <2.11.0) and GHSA-8xx6-hgc6-gc2m
+    # (unbounded streaming-decompression memory amplification, <2.12.0).
+    "httpx2>=2.12.0",
+    # NOTE: accelerate has an open path-traversal/DoS advisory (GHSA-4j2p-28q2-5m79,
+    # load_checkpoint_in_model / load_checkpoint_and_dispatch trusting sharded-checkpoint
+    # weight_map entries) with no patched release yet — 1.14.0 (latest on PyPI) is still in the
+    # vulnerable range. CUGA never calls these APIs directly (grepped clean); reachability
+    # through transformers' internal sharded-checkpoint loading for local/HF-cached models is
+    # unconfirmed but considered low-risk since model paths aren't attacker-controlled here.
+    # Dependabot alert #636 can't close via a version bump; revisit once accelerate ships a fix.
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
@@ -257,7 +269,19 @@ dev = [
     "ruff>=0.9.4",
     "tabulate",
     "beartype",
-    "nltk>=3.10.0",  # GHSA-p4gq-832x-fm9v and related path traversal / ReDoS / SSRF in <=3.9.x
+    # >=3.10.3 fixes a batch of GHSAs disclosed 2026-09-02: GHSA-x99w-6fgc-pmfw (pickle allowlist
+    # bypass RCE), GHSA-m4rf-3fr8-xwx3 (Stanford wrapper JVM arg injection, incomplete fix of
+    # CVE-2026-12841), GHSA-3gq4-3j92-5w49 (corpus sandbox bypass), GHSA-p4rw-rvv2-7xwr (symlink
+    # pathsec bypass), GHSA-6ww7-3frv-cqxh (proxy SSRF bypass), GHSA-cv22-g7mw-8v73 (Crubadan
+    # path traversal), GHSA-5gh2-94qg-qppq (allowlist dotted-name RCE), GHSA-f794-5jv7-7672
+    # (hardlink overwrite), GHSA-6hwm-xvph-95vm (Graphviz dot search-path hijack), plus DoS fixes
+    # GHSA-97qj-x29f-37w7, GHSA-ww6m-cw3f-q94g, GHSA-vp2x-qp44-57v7, GHSA-ff5c-cp5c-9wjf,
+    # GHSA-cw6x-m8jw-qmrh. See https://github.com/nltk/nltk/security/advisories for details.
+    # NOTE: GHSA-8mgp-746c-j5xp (model-artifact APIs bypassing pathsec: TransitionParser,
+    # AveragedPerceptron, PerceptronTagger, save_maxent_params) has no patched version as of
+    # 3.10.3 upstream. CUGA does not call these model train/save/load APIs (grepped clean), so
+    # it isn't reachable here, but the Dependabot alert (#619) can't be closed by a version bump.
+    "nltk>=3.10.3",  # GHSA-p4gq-832x-fm9v and related path traversal / ReDoS / SSRF in <=3.9.x
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",
