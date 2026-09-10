@@ -387,8 +387,19 @@ def _mutated_names(
     tree: ast.AST,
     _seen: frozenset = frozenset(),
     _helpers: Optional[Dict[str, ast.AST]] = None,
-    _memo: Optional[Dict[int, set]] = None,
+    _memo: Optional[Dict[int, tuple]] = None,
 ) -> set:
+    """Names whose object is changed in place somewhere in the block."""
+    names, _ = _mutated_names_impl(tree, _seen, _helpers, _memo)
+    return names
+
+
+def _mutated_names_impl(
+    tree: ast.AST,
+    _seen: frozenset = frozenset(),
+    _helpers: Optional[Dict[str, ast.AST]] = None,
+    _memo: Optional[Dict[int, tuple]] = None,
+) -> tuple:
     """Names whose object is changed in place somewhere in the block.
 
     ``_unreliable_names`` counts only rebinding of the *name*. ``payload["x"] =
@@ -405,13 +416,21 @@ def _mutated_names(
     helper is re-analyzed once per call site, so M call sites at chain depth D
     cost ~M^D: a 48-line block of two-line helpers measured 261 s, and this runs
     synchronously before the sandbox on model-generated code. With the cache
-    every helper is analyzed once. A helper first reached through a cycle is
-    cached with the result the cycle guard produced, which can be a subset —
-    the same order-dependence the guard already had, now bounded.
+    every helper is analyzed once.
+
+    Only *complete* analyses are cached. A result computed while a cycle partner
+    was on the stack is cut short by the ``_seen`` guard, and caching that
+    truncated set would serve it to later call sites outside the cycle — losing
+    mutations the per-call-site recomputation used to find, which is the false
+    ok this analysis exists to prevent. Entries carry a completeness flag and an
+    incomplete one is recomputed rather than reused.
     """
     names: set = set()
     if _memo is None:
         _memo = {}
+    # Set when this analysis (or one nested inside it) was cut short by the
+    # cycle guard, which makes the result a subset and unsafe to cache.
+    truncated = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -455,13 +474,22 @@ def _mutated_names(
         # ast.walk yields the root, so a helper that calls itself (or two that
         # call each other) recursed without bound. Caught by replay on real
         # blocks, not by the unit tests.
-        if fn is None or id(fn) in _seen:
+        if fn is None:
             continue
-        cached = _memo.get(id(fn))
-        if cached is None:
-            cached = _mutated_names(fn, _seen | {id(fn), id(tree)}, helpers, _memo)
-            _memo[id(fn)] = cached
-        inner = cached
+        if id(fn) in _seen:
+            # A cycle: this branch is not followed, so whatever we return is a
+            # subset of the true answer.
+            truncated = True
+            continue
+        entry = _memo.get(id(fn))
+        if entry is not None and entry[1]:
+            inner = entry[0]
+        else:
+            inner, complete = _mutated_names_impl(fn, _seen | {id(fn), id(tree)}, helpers, _memo)
+            if complete:
+                _memo[id(fn)] = (inner, True)
+            else:
+                truncated = True
         params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
         for i, arg in enumerate(node.args):
             if isinstance(arg, ast.Name) and i < len(params) and params[i] in inner:
@@ -469,7 +497,7 @@ def _mutated_names(
         for kw in node.keywords:
             if isinstance(kw.value, ast.Name) and kw.arg in inner:
                 names.add(kw.value.id)
-    return names
+    return names, not truncated
 
 
 def _env_before(

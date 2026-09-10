@@ -1315,3 +1315,43 @@ def test_round_robin_still_reaches_every_call_under_the_row_cap():
     )
     out = describe_write_arguments(code)
     assert "u11@x.com" in out, "the last call vanished — the fixed-slice regression is back"
+
+
+# ── the helper memo must not serve cycle-truncated results ─────────────────
+#
+# The memo is keyed by function identity, but a result computed while a cycle
+# partner was on the stack is cut short. Caching that truncated set and serving
+# it to a later call site *outside* the cycle loses mutations the pre-memo
+# per-call-site recomputation found — a false ok in the analysis that exists to
+# prevent exactly that.
+
+
+@pytest.mark.unit
+def test_cycle_truncated_result_is_not_reused_at_other_call_sites():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    # z is analyzed first with y on the stack, so y's own analysis is cut short.
+    source = "def y(b): z(b)\ndef z(a):\n    y(a)\n    a['k'] = 1\nz(tmp)\ny(payload)"
+    names = _mutated_names(ast.parse(source))
+    assert "tmp" in names
+    assert "payload" in names, "cycle-truncated cache served to an unrelated call site"
+
+
+@pytest.mark.unit
+def test_mutation_through_a_cycle_reaches_the_verify_section():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    source = (
+        "payload = {'amount': 0.0}\n"
+        "def y(b): z(b)\n"
+        "def z(a):\n    y(a)\n    a['amount'] = 99.99\n"
+        "z(tmp)\n"
+        "y(payload)\n"
+        "await venmo_create_transaction_transactions_post(amount=payload['amount'])"
+    )
+    out = describe_write_arguments(source)
+    assert "0.0" not in out.split("venmo_create_transaction")[-1], (
+        "verifier shown the pre-mutation value as what the write will send:\n" + out
+    )
