@@ -34,7 +34,12 @@ def test_agent_policy_collection_name_scoping():
 
     assert get_agent_policy_collection_name("crm-agent", draft=False) == "cuga_policies_crm_agent"
     assert get_agent_policy_collection_name("crm-agent", draft=True) == "cuga_policies_crm_agent_draft"
-    assert get_agent_policy_collection_name("finance.bot", draft=False) == "cuga_policies_finance_bot"
+
+    # Registry-issued IDs are [a-z0-9-] only (see _slugify in agents_routes.py), so the
+    # hyphen→underscore substitution is injective for all legitimate agent IDs.
+    assert get_agent_policy_collection_name("sales-eu", draft=False) != get_agent_policy_collection_name(
+        "sales-us", draft=False
+    )
 
 
 @pytest.mark.asyncio
@@ -128,7 +133,15 @@ async def test_resolve_stream_agent_creates_isolated_policy_system():
 
 @pytest.mark.asyncio
 async def test_supervisor_subagents_have_isolated_policy_systems():
-    """Supervisor subagents resolved via build_agents_from_stored_subagents get isolated policy systems."""
+    """Supervisor subagents resolved via build_agents_from_stored_subagents get isolated policy systems.
+
+    build_agents_from_stored_subagents intentionally does NOT seed the policy collection from
+    ref_config: passing policies_data to create_agent_policy_system would clear and repopulate
+    persistent storage on every supervisor build, potentially overwriting more-recent saves.
+    The test therefore verifies that the subagent receives a policy system scoped to the correct
+    per-agent collection; population of that collection is the responsibility of the save/publish
+    flows, not of subagent construction.
+    """
     crm_config = {
         "agent": {"name": "CRM Agent"},
         "tools": [],
@@ -157,7 +170,9 @@ async def test_supervisor_subagents_have_isolated_policy_systems():
     assert "crm-sub" in agents_dict
     agent = agents_dict["crm-sub"]
     assert agent._policy_system is not None
+    # Verify the policy system is scoped to the correct per-agent collection.
     assert agent._policy_system.storage.collection_name == "cuga_policies_crm_sub"
+    # The supervisor build does NOT seed the collection from ref_config (to avoid overwriting
+    # more-recent saves); the collection is empty at construction time.
     policies = await agent._policy_system.storage.list_policies(enabled_only=False)
-    assert len(policies) == 1
-    assert policies[0].id == "subagent-crm-policy"
+    assert len(policies) == 0

@@ -18,7 +18,12 @@ def get_agent_policy_collection_name(agent_id: Optional[str] = None, draft: bool
     """Return the policy collection name scoped to an agent_id.
 
     Default agent (or None / 'cuga-default') maps to 'cuga_policies' (or 'cuga_policies_draft').
-    Named agents map to 'cuga_policies_<clean_agent_id>' (or 'cuga_policies_<clean_agent_id>_draft').
+    Named agents map to 'cuga_policies_<safe_agent_id>' (or 'cuga_policies_<safe_agent_id>_draft').
+
+    Assumes agent_id is a registry-issued slugified ID ([a-z0-9-]+). The hyphen-to-underscore
+    substitution is injective for that character set. Callers that accept agent IDs from external
+    input (e.g. X-Agent-ID header) must validate the ID against the registry before calling this
+    function to prevent distinct IDs mapping to the same collection.
     """
     base_name = getattr(settings.policy, "collection_name", None) or "cuga_policies"
     # Strip any '--version' suffix that config_store appends to draft agent IDs (e.g. 'crm--draft-3').

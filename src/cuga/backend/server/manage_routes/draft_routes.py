@@ -375,8 +375,8 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
     try:
         data = await request.json()
         policies = data.get("policies", data)
-        full_draft = await load_and_patch_draft(agent_id, "policies", policies)
         if is_default_agent(agent_id):
+            full_draft = await load_and_patch_draft(agent_id, "policies", policies)
             state = getattr(request.app.state, "draft_app_state", None)
             if state and state.policy_system and state.policy_system.storage:
                 raw_policies = full_draft.get("policies")
@@ -405,18 +405,23 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                 except Exception as policy_err:
                     logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         else:
-            raw_policies = full_draft.get("policies")
-            policies_list = policies_list_from_config(raw_policies)
-            try:
-                from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
+            # Hold the lock across both the config-store write and the policy-collection
+            # replacement so a concurrent save cannot produce a diverged state: the
+            # collection is always populated from the exact draft that was just persisted.
+            async with agent_draft_lock(agent_id):
+                full_draft = await save_draft_section_unlocked(agent_id, "policies", policies)
+                raw_policies = full_draft.get("policies")
+                policies_list = policies_list_from_config(raw_policies)
+                try:
+                    from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
-                await create_agent_policy_system(
-                    agent_id=agent_id,
-                    draft=True,
-                    policies_data=policies_list,
-                )
-            except Exception as policy_err:
-                logger.warning(f"Failed to apply non-default agent policies from PATCH: {policy_err}")
+                    await create_agent_policy_system(
+                        agent_id=agent_id,
+                        draft=True,
+                        policies_data=policies_list,
+                    )
+                except Exception as policy_err:
+                    logger.warning(f"Failed to apply non-default agent policies from PATCH: {policy_err}")
             await invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:

@@ -3230,6 +3230,20 @@ async def get_policies_config(
 
     resolved_agent_id = agent_id or request.headers.get("X-Agent-ID") or "cuga-default"
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
+    # Reject unrecognised agent IDs supplied via the header so a crafted value
+    # cannot map to an existing agent's collection (IDOR / CWE-639).
+    if (
+        resolved_agent_id
+        and resolved_agent_id != "cuga-default"
+        and agent_registry.is_agent_registry_enabled()
+    ):
+        from cuga.backend.server.config_store import list_agents_with_configs
+
+        known_ids = {r["agent_id"] for r in await list_agents_with_configs()}
+        if resolved_agent_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
@@ -3296,6 +3310,20 @@ async def save_policies_config(
 
     resolved_agent_id = agent_id or request.headers.get("X-Agent-ID") or "cuga-default"
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+
+    # Reject unrecognised agent IDs supplied via the header so a crafted value
+    # cannot clear or overwrite an existing agent's policy collection (IDOR / CWE-639).
+    if (
+        resolved_agent_id
+        and resolved_agent_id != "cuga-default"
+        and agent_registry.is_agent_registry_enabled()
+    ):
+        from cuga.backend.server.config_store import list_agents_with_configs
+
+        known_ids = {r["agent_id"] for r in await list_agents_with_configs()}
+        if resolved_agent_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Agent '{resolved_agent_id}' not found")
+
     try:
         from cuga.backend.cuga_graph.policy.configurable import get_agent_policy_collection_name
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage

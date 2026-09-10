@@ -196,7 +196,6 @@ async def build_agents_from_stored_subagents(
     from cuga.backend.server.config_store import load_config, load_draft
     from cuga.backend.server.manage_routes.helpers import (
         extract_agent_feature_overrides,
-        policies_list_from_config,
     )
     from cuga.backend.cuga_graph.policy.configurable import create_agent_policy_system
 
@@ -227,12 +226,13 @@ async def build_agents_from_stored_subagents(
                 if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
             } or None
 
-            raw_policies = ref_config.get("policies")
-            policies_list = policies_list_from_config(raw_policies) if raw_policies is not None else None
+            # Do not pass policies_data here: create_agent_policy_system with policies_data
+            # clears and repopulates persistent storage, which would overwrite any more-recent
+            # save with the snapshot in ref_config. Supervisor subagent construction is a
+            # read-only operation; the already-persisted collection is used as-is.
             sub_policy_system = await create_agent_policy_system(
                 agent_id=ref,
                 draft=use_draft,
-                policies_data=policies_list,
             )
 
             # ref_config["tools"] holds registry-app entries (name + include filter), not
