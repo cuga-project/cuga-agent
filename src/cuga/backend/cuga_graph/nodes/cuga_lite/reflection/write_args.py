@@ -837,18 +837,24 @@ def describe_write_arguments(code: Optional[str]) -> str:
                 unresolved |= _free_names(value) - set(_FOLD_NAMESPACE)
         per_call.append(call_rows)
 
+    # Select round-robin, emit grouped. Selection decides *which* rows fit;
+    # order decides whether the verifier can pair them. Emitting in selection
+    # order interleaved the calls -- eight user_email rows, then eight amount
+    # rows -- so two amounts swapped between recipients were invisible in the
+    # very section the system prompt tells the verifier to judge.
     taken = [0] * len(per_call)
-    while len(rows) < _MAX_ROWS and any(taken[i] < len(c) for i, c in enumerate(per_call)):
-        progressed = False
-        for i, call_rows in enumerate(per_call):
-            if len(rows) >= _MAX_ROWS:
-                break
-            if taken[i] < len(call_rows):
-                rows.append(call_rows[taken[i]])
-                taken[i] += 1
-                progressed = True
-        if not progressed:
+    budget = _MAX_ROWS
+    for depth in range(max((len(c) for c in per_call), default=0)):
+        if budget <= 0:
             break
+        for i, call_rows in enumerate(per_call):
+            if budget <= 0:
+                break
+            if depth < len(call_rows):
+                taken[i] += 1
+                budget -= 1
+    for i, call_rows in enumerate(per_call):
+        rows.extend(call_rows[: taken[i]])
     omitted = sum(len(c) - taken[i] for i, c in enumerate(per_call))
 
     if not rows:

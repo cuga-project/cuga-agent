@@ -1273,3 +1273,45 @@ def test_helper_mutation_is_still_carried_through_a_chain():
 
     source = "def inner(q):\n    q['a'] = 1\n\ndef outer(p):\n    inner(p)\n\nouter(payload)"
     assert "payload" in _mutated_names(ast.parse(source))
+
+
+# ── a call's arguments must stay together ──────────────────────────────────
+#
+# Round-robin allocation spends the row budget fairly across calls, but emitting
+# in that order interleaves them: eight payment requests render eight
+# user_email rows and then eight amount rows. The verifier is told to "judge the
+# values in Resolved write arguments", so two amounts swapped between recipients
+# become structurally invisible — a false ok in the cross-call error class the
+# gate exists for.
+
+
+@pytest.mark.unit
+def test_rows_of_one_call_are_emitted_together():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post(user_email="u{i}@x.com", amount={10 + i}.0)'
+        for i in range(4)
+    )
+    lines = [ln for ln in describe_write_arguments(code).splitlines() if "->" in ln]
+    # Each recipient must be adjacent to its own amount.
+    for i in range(4):
+        idx = next(j for j, ln in enumerate(lines) if f"u{i}@x.com" in ln)
+        assert f"{10 + i}.0" in lines[idx + 1], f"amount for u{i} is not next to it:\n" + "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_round_robin_still_reaches_every_call_under_the_row_cap():
+    """Grouping must not bring back the old failure: later calls dropped whole."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post(user_email="u{i}@x.com", amount={i}.0, note="n{i}")'
+        for i in range(12)
+    )
+    out = describe_write_arguments(code)
+    assert "u11@x.com" in out, "the last call vanished — the fixed-slice regression is back"
