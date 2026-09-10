@@ -1,0 +1,907 @@
+"""Static analysis of the write arguments in a proposed code block.
+
+VERIFY used to see only the source text, so a wrong value assigned to a
+variable first became invisible to it: ``amount=share_per_person`` carries no
+literal, and both the "ungrounded literal" and the "contradiction" rule are
+written in terms of literals. This module resolves each write argument back to
+the expression it will actually evaluate to, folding it to a constant when the
+whole expression is constant, so the verifier compares values rather than
+syntax.
+"""
+
+from __future__ import annotations
+
+import ast
+import operator
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+# Calls that never mutate state. Anything not listed here and not ending in
+# ``_get`` counts as a write, so an unrecognised tool is verified rather than
+# skipped.
+READ_ONLY_CALLS = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "dir",
+        "divmod",
+        "enumerate",
+        "filter",
+        "find_tools",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "hasattr",
+        "int",
+        "isinstance",
+        "items",
+        "iter",
+        "join",
+        "keys",
+        "len",
+        "list",
+        "lower",
+        "map",
+        "max",
+        "min",
+        "next",
+        "print",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "setdefault",
+        "sorted",
+        "split",
+        "str",
+        "strip",
+        "sum",
+        "tuple",
+        "type",
+        "upper",
+        "values",
+        "zip",
+    }
+)
+
+# Only these may run during constant folding.
+_FOLD_NAMESPACE: Dict[str, Any] = {
+    "abs": abs,
+    "divmod": divmod,
+    "float": float,
+    "int": int,
+    "len": len,
+    "max": max,
+    "min": min,
+    "round": round,
+    "str": str,
+    "sum": sum,
+}
+
+_MAX_EXPANSION_DEPTH = 8
+_MAX_EXPAND_VISITS = 256
+_MAX_EXPR_CHARS = 300
+_MAX_ROWS = 20
+# Registry tool names end in their HTTP verb (…_post, …_patch); these mutate.
+_MUTATING_SUFFIXES = ("_post", "_patch", "_put", "_delete")
+# Whole-section ceiling, since this text is not passed through the context
+# truncator before it reaches the verifier prompt.
+_MAX_SECTION_CHARS = 6000
+
+
+def _call_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+# Methods that only read their receiver. Exempt on any receiver: ``client.get``
+# is a read even when the receiver came from outside the block.
+READ_ONLY_METHODS = frozenset(
+    {
+        "copy",
+        "count",
+        "encode",
+        "endswith",
+        "find",
+        "format",
+        "get",
+        "index",
+        "items",
+        "join",
+        "keys",
+        "lower",
+        "lstrip",
+        "replace",
+        "rsplit",
+        "rstrip",
+        "split",
+        "startswith",
+        "strip",
+        "title",
+        "upper",
+        "values",
+    }
+)
+
+# Methods that mutate their receiver. Exempt only when the receiver is a name
+# bound in this block: ``rows.append(x)`` on a local list is skipped, while
+# ``client.update(...)`` on an object from outside the block is verified.
+LOCAL_MUTATORS = frozenset(
+    {
+        "add",
+        "append",
+        "clear",
+        "extend",
+        "insert",
+        "pop",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+    }
+)
+
+CONTAINER_METHODS = READ_ONLY_METHODS | LOCAL_MUTATORS
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+_BRANCHING = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try)
+
+
+def _receiver_root(expr: ast.expr) -> Optional[str]:
+    """Name at the root of ``a.b[0].c`` — None when the receiver is not a name."""
+    while isinstance(expr, (ast.Attribute, ast.Subscript)):
+        expr = expr.value
+    return expr.id if isinstance(expr, ast.Name) else None
+
+
+def _target_names(target: ast.expr) -> List[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for elt in target.elts for n in _target_names(elt)]
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    return []
+
+
+def _bound_names(tree: ast.AST) -> set:
+    """Names this block binds itself (assignments, loop and with targets)."""
+    names: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign,)):
+            for target in node.targets:
+                names.update(_target_names(target))
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension)):
+            names.update(_target_names(node.target))
+        elif isinstance(node, ast.NamedExpr):
+            names.update(_target_names(node.target))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    names.update(_target_names(item.optional_vars))
+    return names
+
+
+def _is_write_call(node: ast.Call, local_names: set) -> bool:
+    name = _call_name(node)
+    if not name:
+        return True
+    if isinstance(node.func, ast.Attribute):
+        if name in READ_ONLY_METHODS:
+            return False
+        if name in LOCAL_MUTATORS:
+            root = _receiver_root(node.func.value)
+            return root is None or root not in local_names
+    if name.endswith("_get"):
+        return False
+    return name not in READ_ONLY_CALLS
+
+
+def has_write_call(code: Optional[str]) -> bool:
+    """True when the block may mutate state. Unparseable code counts as a write."""
+    text = (code or "").strip()
+    if not text:
+        return False
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True
+    local_names = _bound_names(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_write_call(node, local_names):
+            return True
+    # map(pay_post, amounts) contains no Call node for pay_post, and map itself
+    # is read-only, so the writes ran without ever reaching the gate. A registry
+    # tool name ending in a mutating HTTP verb, passed as a value rather than
+    # called, is treated as a write.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for value in list(node.args) + [kw.value for kw in node.keywords]:
+            # A name the block itself binds is a variable (tools_delete = await
+            # find_tools(...)), whatever its suffix; registry tools are never
+            # assigned in a block.
+            if (
+                isinstance(value, ast.Name)
+                and value.id.endswith(_MUTATING_SUFFIXES)
+                and value.id not in local_names
+            ):
+                return True
+    return False
+
+
+_Scope = Optional[ast.AST]
+_Assignment = Tuple[int, str, ast.expr, _Scope]
+
+
+def _scope_chains(tree: ast.AST) -> Dict[int, Tuple[ast.AST, ...]]:
+    """id(node) -> enclosing function/class/lambda nodes, innermost first.
+
+    An empty chain means module level. A ``def`` statement itself belongs to
+    the scope that contains it; only its body is inside the new scope.
+    """
+    chains: Dict[int, Tuple[ast.AST, ...]] = {}
+
+    def visit(node: ast.AST, chain: Tuple[ast.AST, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            chains[id(child)] = chain
+            visit(child, (child,) + chain if isinstance(child, _SCOPE_NODES) else chain)
+
+    visit(tree, ())
+    return chains
+
+
+def _assignments(tree: ast.AST, chains: Dict[int, Tuple[ast.AST, ...]]) -> List[_Assignment]:
+    """Single-target name assignments with their lexical scope, in source order."""
+    out: List[_Assignment] = []
+    for node in ast.walk(tree):
+        chain = chains.get(id(node), ())
+        scope: _Scope = chain[0] if chain else None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                out.append((getattr(node, "lineno", 0), target.id, node.value, scope))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            out.append((getattr(node, "lineno", 0), node.target.id, node.value, scope))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def _unreliable_names(tree: ast.AST) -> set:
+    """Names that are not a unique straight-line assignment in their scope.
+
+    AugAssign, a second assignment, or an assignment inside if/for/while/try
+    means the value is not a proven constant. VERIFY must not fold those to
+    a fake literal.
+    """
+    counts: Dict[Tuple[Optional[int], str], int] = {}
+    unreliable: set = set()
+
+    def visit(node: ast.AST, branched: bool, chain: Tuple[ast.AST, ...]) -> None:
+        next_chain = (node,) + chain if isinstance(node, _SCOPE_NODES) else chain
+        next_branched = False if isinstance(node, _SCOPE_NODES) else branched
+        if isinstance(node, _BRANCHING):
+            for child in ast.iter_child_nodes(node):
+                visit(child, True, next_chain)
+            return
+        scope_key = id(chain[0]) if chain else None
+        if isinstance(node, ast.AugAssign):
+            for name in _target_names(node.target):
+                unreliable.add((scope_key, name))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in _target_names(target):
+                    key = (scope_key, name)
+                    counts[key] = counts.get(key, 0) + 1
+                    if branched:
+                        unreliable.add(key)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            key = (scope_key, node.target.id)
+            counts[key] = counts.get(key, 0) + 1
+            if branched:
+                unreliable.add(key)
+        for child in ast.iter_child_nodes(node):
+            visit(child, next_branched, next_chain)
+
+    visit(tree, False, ())
+    for key, n in counts.items():
+        if n > 1:
+            unreliable.add(key)
+    return unreliable
+
+
+def _shadowed_names(tree: ast.AST) -> Dict[Optional[int], set]:
+    """Names bound by something other than a straight-line assignment, per scope.
+
+    ``_unreliable_names`` only models ``Assign``/``AnnAssign``/``AugAssign``.
+    Every other binding form was invisible to it, so a name re-bound by a loop,
+    a ``with``, a comprehension, a walrus, an ``except ... as``, an import alias
+    or a function parameter still folded to whatever an earlier assignment gave
+    it. That produced literal write values the block never sends -- a fabricated
+    email address in place of the loop variable, for instance -- which the
+    verifier then judged as ungrounded. Anything here is never folded.
+
+    Keyed by enclosing scope, and consulted for every scope on the call's chain,
+    so a parameter shadowing a module-level name of the same name also counts.
+    """
+    out: Dict[Optional[int], set] = {}
+
+    def add(scope: Optional[int], names: Iterable[str]) -> None:
+        out.setdefault(scope, set()).update(names)
+
+    def visit(node: ast.AST, scope: Optional[int]) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.For, ast.AsyncFor)):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, (ast.With, ast.AsyncWith)):
+                for item in child.items:
+                    if item.optional_vars is not None:
+                        add(scope, _target_names(item.optional_vars))
+            elif isinstance(child, ast.comprehension):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, ast.NamedExpr):
+                add(scope, _target_names(child.target))
+            elif isinstance(child, ast.ExceptHandler):
+                if child.name:
+                    add(scope, [child.name])
+            elif isinstance(child, (ast.Import, ast.ImportFrom)):
+                add(scope, [(alias.asname or alias.name).split(".")[0] for alias in child.names])
+            elif isinstance(child, (ast.Global, ast.Nonlocal)):
+                # The declaration sits inside the function, but what it re-binds is
+                # the *enclosing* name -- so a module-level call after `bump()` must
+                # see `amount` as shadowed even though its chain never enters `bump`.
+                add(scope, child.names)
+                add(None, child.names)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                add(scope, [child.name])
+            if isinstance(child, _SCOPE_NODES):
+                inner = id(child)
+                params = getattr(child, "args", None)
+                if params is not None:
+                    names = [
+                        arg.arg
+                        for group in (params.posonlyargs, params.args, params.kwonlyargs)
+                        for arg in group
+                    ]
+                    for extra in (params.vararg, params.kwarg):
+                        if extra is not None:
+                            names.append(extra.arg)
+                    add(inner, names)
+            visit(child, inner)
+
+    visit(tree, None)
+    return out
+
+
+def _mutated_names(
+    tree: ast.AST,
+    _seen: frozenset = frozenset(),
+    _helpers: Optional[Dict[str, ast.AST]] = None,
+    _memo: Optional[Dict[int, tuple]] = None,
+) -> set:
+    """Names whose object is changed in place somewhere in the block."""
+    names, _ = _mutated_names_impl(tree, _seen, _helpers, _memo)
+    return names
+
+
+def _mutated_names_impl(
+    tree: ast.AST,
+    _seen: frozenset = frozenset(),
+    _helpers: Optional[Dict[str, ast.AST]] = None,
+    _memo: Optional[Dict[int, tuple]] = None,
+) -> tuple:
+    """Names whose object is changed in place somewhere in the block.
+
+    ``_unreliable_names`` counts only rebinding of the *name*. ``payload["x"] =
+    46.67`` is an ``Assign`` whose target is a ``Subscript``, so ``payload``
+    still looked like a unique straight-line assignment and folded to its
+    initial value; ``amounts.append(46.67)`` was not considered at all. The
+    verifier was then shown the value before the mutation while being told it is
+    "the expression it will actually evaluate to".
+
+    Block-wide rather than per-scope on purpose: a mutation inside a helper or a
+    loop body still invalidates the outer binding.
+
+    ``_memo`` caches each helper's result by identity. Without it the body of a
+    helper is re-analyzed once per call site, so M call sites at chain depth D
+    cost ~M^D: a 48-line block of two-line helpers measured 261 s, and this runs
+    synchronously before the sandbox on model-generated code. With the cache
+    every helper is analyzed once.
+
+    Only *complete* analyses are cached. A result computed while a cycle partner
+    was on the stack is cut short by the ``_seen`` guard, and caching that
+    truncated set would serve it to later call sites outside the cycle — losing
+    mutations the per-call-site recomputation used to find, which is the false
+    ok this analysis exists to prevent. Entries carry a completeness flag and an
+    incomplete one is recomputed rather than reused.
+    """
+    names: set = set()
+    if _memo is None:
+        _memo = {}
+    # Set when this analysis (or one nested inside it) was cut short by the
+    # cycle guard, which makes the result a subset and unsafe to cache.
+    truncated = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, (ast.Subscript, ast.Attribute)):
+                    root = _receiver_root(target)
+                    if root:
+                        names.add(root)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            if isinstance(node.target, (ast.Subscript, ast.Attribute)):
+                root = _receiver_root(node.target)
+                if root:
+                    names.add(root)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                root = _receiver_root(target)
+                if root:
+                    names.add(root)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in LOCAL_MUTATORS:
+                root = _receiver_root(node.func.value)
+                if root:
+                    names.add(root)
+    # A helper defined in the block that mutates its parameter mutates the
+    # argument: fill(payload) after def fill(p): p["amount"] = 46.67 changed
+    # payload, but only p was seen above, so payload still folded to its
+    # initial value -- the exact stale-0.0 the gate exists to prevent, one
+    # call deep. Map arguments onto parameters and carry the mutation across.
+    # Helpers are looked up in the *block's* map at every depth: a helper that
+    # calls a sibling defined beside it (a -> b -> a) must still find b.
+    helpers = _helpers
+    if helpers is None:
+        helpers = {
+            n.name: n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not tree
+        }
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        fn = helpers.get(node.func.id)
+        # ast.walk yields the root, so a helper that calls itself (or two that
+        # call each other) recursed without bound. Caught by replay on real
+        # blocks, not by the unit tests.
+        if fn is None:
+            continue
+        if id(fn) in _seen:
+            # A cycle: this branch is not followed, so whatever we return is a
+            # subset of the true answer.
+            truncated = True
+            continue
+        entry = _memo.get(id(fn))
+        if entry is not None and entry[1]:
+            inner = entry[0]
+        else:
+            inner, complete = _mutated_names_impl(fn, _seen | {id(fn), id(tree)}, helpers, _memo)
+            if complete:
+                _memo[id(fn)] = (inner, True)
+            else:
+                truncated = True
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+        for i, arg in enumerate(node.args):
+            if isinstance(arg, ast.Name) and i < len(params) and params[i] in inner:
+                names.add(arg.id)
+        for kw in node.keywords:
+            if isinstance(kw.value, ast.Name) and kw.arg in inner:
+                names.add(kw.value.id)
+    return names, not truncated
+
+
+def _env_before(
+    assigns: List[_Assignment],
+    lineno: int,
+    chain: Tuple[ast.AST, ...],
+    unreliable: set,
+    shadowed: Optional[Dict[Optional[int], set]] = None,
+) -> Dict[str, ast.expr]:
+    """Straight-line assignments visible at ``lineno`` from the call's scope.
+
+    A name bound inside a nested ``def`` is not visible to a call outside it,
+    so a helper's local ``amount`` never overrides the module-level one.
+    Names in ``unreliable`` are omitted so loop accumulators and if/else
+    bindings stay unresolved instead of folding to a fake constant.
+    """
+    visible = {id(scope) for scope in chain}
+    # A name shadowed anywhere on the call's own scope chain is not the name the
+    # earlier assignment bound, so its value must not be substituted.
+    shadow_names: set = set()
+    for scope_key in ({None} | visible) if shadowed else ():
+        shadow_names |= shadowed.get(scope_key, set())
+    env: Dict[str, ast.expr] = {}
+    skipped: set = set()
+    for line, name, value, scope in assigns:
+        if line >= lineno:
+            continue
+        if scope is not None and id(scope) not in visible:
+            continue
+        key = (id(scope) if scope is not None else None, name)
+        if key in unreliable or name in shadow_names:
+            skipped.add(name)
+            continue
+        env[name] = value
+    for name in skipped:
+        env.pop(name, None)
+    return env
+
+
+class _ExpandBudgetExceeded(Exception):
+    pass
+
+
+class _Expander(ast.NodeTransformer):
+    def __init__(self, env: Dict[str, ast.expr], seen: frozenset, depth: int, visits: List[int]):
+        self.env = env
+        self.seen = seen
+        self.depth = depth
+        self.visits = visits
+
+    def visit(self, node: ast.AST) -> ast.AST:
+        self.visits[0] += 1
+        if self.visits[0] > _MAX_EXPAND_VISITS:
+            raise _ExpandBudgetExceeded
+        return super().visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:  # noqa: N802
+        """A lambda's parameters are bound by the lambda, not by the block.
+
+        A lambda inside a call argument is a child of the call, never on its
+        scope chain, so ``_env_before`` did not know to skip its parameter names
+        and ``key=lambda x: x['price']`` after an earlier ``x = 35.0`` rendered
+        as ``35.0['price']``. Defaults still expand with the outer environment.
+        """
+        a = node.args
+        bound = {arg.arg for arg in a.posonlyargs + a.args + a.kwonlyargs}
+        for extra in (a.vararg, a.kwarg):
+            if extra is not None:
+                bound.add(extra.arg)
+        node.args = self.generic_visit(a)  # type: ignore[assignment]
+        inner_env = {k: v for k, v in self.env.items() if k not in bound}
+        node.body = _Expander(inner_env, self.seen, self.depth, self.visits).visit(node.body)
+        return node
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
+        if self.depth >= _MAX_EXPANSION_DEPTH or node.id in self.seen:
+            return node
+        value = self.env.get(node.id)
+        if value is None:
+            return node
+        return _Expander(self.env, self.seen | {node.id}, self.depth + 1, self.visits).visit(
+            ast.parse(ast.unparse(value), mode="eval").body
+        )
+
+
+def _expand(node: ast.expr, env: Dict[str, ast.expr]) -> ast.expr:
+    try:
+        return _Expander(env, frozenset(), 0, [0]).visit(ast.parse(ast.unparse(node), mode="eval").body)
+    except Exception:
+        return node
+
+
+def _free_names(node: ast.expr) -> set:
+    bound: set = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            for gen in sub.generators:
+                for name in ast.walk(gen.target):
+                    if isinstance(name, ast.Name):
+                        bound.add(name.id)
+        elif isinstance(sub, ast.Lambda):
+            for arg in sub.args.args:
+                bound.add(arg.arg)
+    return {s.id for s in ast.walk(node) if isinstance(s, ast.Name)} - bound
+
+
+_BIN_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_UNARY_OPS = {ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Not: operator.not_}
+_MAX_POW_EXPONENT = 64
+_MAX_FOLDED_STR = 4096
+_MAX_FOLDED_INT_BITS = 4096
+_MAX_FOLD_NODES = 128
+_MAX_FOLDED_AGGREGATE_SIZE = 16_384
+
+
+def _validate_folded_value(value: Any) -> Any:
+    """Reject intermediates that could make host-side folding expensive."""
+    remaining = _MAX_FOLDED_AGGREGATE_SIZE
+
+    def charge(amount: int) -> None:
+        nonlocal remaining
+        remaining -= amount
+        if remaining < 0:
+            raise ValueError("folded aggregate too large")
+
+    def visit(item: Any) -> None:
+        if isinstance(item, bool) or item is None:
+            charge(1)
+            return
+        if isinstance(item, int):
+            if item.bit_length() > _MAX_FOLDED_INT_BITS:
+                raise ValueError("folded integer too large")
+            charge(max(1, (item.bit_length() + 7) // 8))
+            return
+        if isinstance(item, float):
+            charge(8)
+            return
+        if isinstance(item, str):
+            if len(item) > _MAX_FOLDED_STR:
+                raise ValueError("folded string too large")
+            charge(max(1, len(item)))
+            return
+        if isinstance(item, (list, tuple)):
+            if len(item) > _MAX_FOLDED_STR:
+                raise ValueError("folded sequence too large")
+            charge(max(1, len(item)))
+            for child in item:
+                visit(child)
+            return
+        raise ValueError(f"unsupported folded value {type(item).__name__}")
+
+    visit(value)
+    return value
+
+
+def _validate_percent_format(format_string: str) -> None:
+    """Allow small scalar percent-formatting without unbounded widths."""
+    if len(format_string) > 256:
+        raise ValueError("format string too large")
+    index = 0
+    projected_width = 0
+    conversions = 0
+    while index < len(format_string):
+        if format_string[index] != "%":
+            index += 1
+            continue
+        index += 1
+        if index < len(format_string) and format_string[index] == "%":
+            index += 1
+            continue
+        if index < len(format_string) and format_string[index] == "(":
+            raise ValueError("mapping percent-formatting is not folded")
+        while index < len(format_string) and format_string[index] in "#0- +":
+            index += 1
+        if index < len(format_string) and format_string[index] == "*":
+            raise ValueError("dynamic format width is not folded")
+        width_start = index
+        while index < len(format_string) and format_string[index].isdigit():
+            index += 1
+        width = int(format_string[width_start:index] or "0")
+        precision = 0
+        if index < len(format_string) and format_string[index] == ".":
+            index += 1
+            if index < len(format_string) and format_string[index] == "*":
+                raise ValueError("dynamic format precision is not folded")
+            precision_start = index
+            while index < len(format_string) and format_string[index].isdigit():
+                index += 1
+            precision = int(format_string[precision_start:index] or "0")
+        while index < len(format_string) and format_string[index] in "hlL":
+            index += 1
+        if index >= len(format_string) or format_string[index] not in "diouxXeEfFgGcrsa":
+            raise ValueError("unsupported percent-format specifier")
+        index += 1
+        conversions += 1
+        projected_width += max(1, width, precision)
+        if conversions > 32 or projected_width > _MAX_FOLDED_STR:
+            raise ValueError("formatted value too large")
+
+
+def _validate_binop_before_eval(op: ast.operator, left: Any, right: Any) -> None:
+    """Reject operations whose result would exceed the folding limits."""
+    if isinstance(op, ast.Mod) and isinstance(left, str):
+        _validate_percent_format(left)
+    if isinstance(op, ast.Mult):
+        sequence: Optional[Any] = None
+        multiplier: Optional[int] = None
+        if isinstance(left, (str, list, tuple)) and isinstance(right, int):
+            sequence, multiplier = left, right
+        elif isinstance(right, (str, list, tuple)) and isinstance(left, int):
+            sequence, multiplier = right, left
+        if sequence is not None and multiplier is not None:
+            result_length = len(sequence) * max(multiplier, 0)
+            if result_length > _MAX_FOLDED_STR:
+                raise ValueError("folded sequence too large")
+    if (
+        isinstance(op, ast.Pow)
+        and isinstance(left, int)
+        and isinstance(right, int)
+        and right > 0
+        and left not in (-1, 0, 1)
+        and left.bit_length() * right > _MAX_FOLDED_INT_BITS
+    ):
+        raise ValueError("folded integer too large")
+
+
+def _safe_eval(node: ast.AST) -> Any:
+    """Evaluate literals, arithmetic and direct ``_FOLD_NAMESPACE`` calls only.
+
+    The proposed code is model-generated and has not run in the sandbox yet,
+    so this never hands it to ``eval``: attribute access, subscripts,
+    comprehensions, lambdas and indirect calls are rejected outright.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float, str, bool)) or node.value is None:
+            return _validate_folded_value(node.value)
+        raise ValueError("unsupported constant")
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
+        return _validate_folded_value(_UNARY_OPS[type(node.op)](_safe_eval(node.operand)))
+    if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
+        left, right = _safe_eval(node.left), _safe_eval(node.right)
+        if isinstance(node.op, ast.Pow) and (
+            not isinstance(right, (int, float)) or abs(right) > _MAX_POW_EXPONENT
+        ):
+            raise ValueError("exponent too large")
+        _validate_binop_before_eval(node.op, left, right)
+        value = _BIN_OPS[type(node.op)](left, right)
+        return _validate_folded_value(value)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        items = [_safe_eval(elt) for elt in node.elts]
+        return _validate_folded_value(tuple(items) if isinstance(node, ast.Tuple) else items)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FOLD_NAMESPACE:
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            kw.arg is None for kw in node.keywords
+        ):
+            raise ValueError("star arguments are not folded")
+        args = [_safe_eval(arg) for arg in node.args]
+        kwargs = {kw.arg: _safe_eval(kw.value) for kw in node.keywords if kw.arg}
+        if node.func.id == "sum":
+            values = args[0] if args else kwargs.get("iterable")
+            start = args[1] if len(args) > 1 else kwargs.get("start", 0)
+            if not isinstance(values, (list, tuple)) or not all(
+                isinstance(item, (int, float, bool)) for item in values
+            ):
+                raise ValueError("only numeric sequences are summed")
+            if not isinstance(start, (int, float, bool)):
+                raise ValueError("sum start must be numeric")
+        if node.func.id == "round":
+            ndigits = args[1] if len(args) > 1 else kwargs.get("ndigits")
+            if ndigits is not None and (not isinstance(ndigits, int) or abs(ndigits) > 1000):
+                raise ValueError("round precision too large")
+        return _validate_folded_value(_FOLD_NAMESPACE[node.func.id](*args, **kwargs))
+    raise ValueError(f"unsupported node {type(node).__name__}")
+
+
+def _fold(node: ast.expr) -> Optional[str]:
+    """Evaluate the expression when it depends on nothing outside the block."""
+    try:
+        if sum(1 for _ in ast.walk(node)) > _MAX_FOLD_NODES:
+            return None
+        value = _safe_eval(node)
+    except Exception:
+        return None
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return repr(value)
+    return None
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= _MAX_EXPR_CHARS else text[: _MAX_EXPR_CHARS - 3] + "..."
+
+
+def describe_write_arguments(code: Optional[str]) -> str:
+    """Render each write argument as the value it will actually be given."""
+    text = (code or "").strip()
+    if not text:
+        return "(no write calls)"
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return "(code does not parse; verify the source directly)"
+
+    chains = _scope_chains(tree)
+    assigns = _assignments(tree, chains)
+    unreliable = _unreliable_names(tree)
+    shadowed = _shadowed_names(tree)
+    mutated = _mutated_names(tree)
+    if mutated:
+        shadowed.setdefault(None, set()).update(mutated)
+    local_names = _bound_names(tree)
+    rows: List[str] = []
+    unresolved: set = set()
+
+    write_calls = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_write_call(node, local_names)
+    ]
+    omitted = 0
+
+    # Render every argument of every write call first, then allocate the row
+    # budget in round-robin passes: call 1 arg 1, call 2 arg 1, ..., call 1 arg 2.
+    # Filling call-by-call let an unrolled loop of eight payment requests show
+    # only the first six, hiding a wrong value in the last two behind a limit the
+    # verifier is never told about. Allocating a fixed slice per call instead
+    # would drop later arguments of every call, which is the same loss moved
+    # sideways -- rounds spend the whole budget and only drop what does not fit.
+    per_call: List[List[str]] = []
+    for node in write_calls:
+        name = _call_name(node) or "<call>"
+        env = _env_before(assigns, getattr(node, "lineno", 0), chains.get(id(node), ()), unreliable, shadowed)
+        args: List[Tuple[str, ast.expr]] = [(kw.arg or "**kwargs", kw.value) for kw in node.keywords]
+        args += [(f"arg{i}", value) for i, value in enumerate(node.args)]
+        if not args:
+            per_call.append([f"{name}() — no arguments"])
+            continue
+        call_rows: List[str] = []
+        for arg_name, value in args:
+            try:
+                source = ast.unparse(value)
+            except Exception:
+                continue
+            expanded = _expand(value, env)
+            try:
+                expanded_src = ast.unparse(expanded)
+            except Exception:
+                expanded_src = source
+            folded = _fold(expanded)
+            if folded is not None:
+                # Folded values are clipped like unfolded ones. A long string
+                # literal in a write (an email body, a note) otherwise became one
+                # uncapped row; measured at 6,021 chars for a 3,000-char literal.
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(str(folded))}")
+            elif expanded_src != source:
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(expanded_src)}")
+                unresolved |= _free_names(expanded) - set(_FOLD_NAMESPACE)
+            else:
+                call_rows.append(f"{name}({arg_name}=) -> {_clip(source)}")
+                unresolved |= _free_names(value) - set(_FOLD_NAMESPACE)
+        per_call.append(call_rows)
+
+    # Select round-robin, emit grouped. Selection decides *which* rows fit;
+    # order decides whether the verifier can pair them. Emitting in selection
+    # order interleaved the calls -- eight user_email rows, then eight amount
+    # rows -- so two amounts swapped between recipients were invisible in the
+    # very section the system prompt tells the verifier to judge.
+    taken = [0] * len(per_call)
+    budget = _MAX_ROWS
+    for depth in range(max((len(c) for c in per_call), default=0)):
+        if budget <= 0:
+            break
+        for i, call_rows in enumerate(per_call):
+            if budget <= 0:
+                break
+            if depth < len(call_rows):
+                taken[i] += 1
+                budget -= 1
+    for i, call_rows in enumerate(per_call):
+        rows.extend(call_rows[: taken[i]])
+    omitted = sum(len(c) - taken[i] for i, c in enumerate(per_call))
+
+    if not rows:
+        return "(no write calls)"
+    # Names this block binds itself are not "from earlier blocks" — telling the
+    # verifier to look them up in Variables sends it after something that was
+    # never there. Refusing to fold shadowed names (above) makes many more
+    # names unresolved, so this label has to be right.
+    unresolved -= local_names
+    for names in shadowed.values():
+        unresolved -= names
+    if omitted:
+        rows.append(f"({omitted} further write argument(s) not shown — verify the source directly)")
+    out = "\n".join(rows)
+    if len(out) > _MAX_SECTION_CHARS:
+        out = out[:_MAX_SECTION_CHARS].rsplit("\n", 1)[0]
+        out += "\n(section truncated — verify the source directly)"
+    if unresolved:
+        out += "\n\nFrom earlier blocks (check these against Variables): " + ", ".join(
+            sorted(unresolved)[:15]
+        )
+    return out

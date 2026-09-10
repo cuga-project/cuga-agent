@@ -1,0 +1,1357 @@
+"""Pre-execute VERIFY: skip ungrounded writes; fail open otherwise."""
+
+from __future__ import annotations
+
+import ast
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from langchain_core.messages import HumanMessage
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import VERIFY_BLOCKED_PREFIX
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import parse_verify_output
+
+
+@pytest.mark.unit
+def test_parse_verify_output_ok_revise_unknown():
+    assert parse_verify_output("GATE: ok").gate == "ok"
+    revise = parse_verify_output("GATE: revise\nALERT: amount 35.0 contradicts 46.67")
+    assert revise.gate == "revise"
+    assert "46.67" in revise.alert
+    assert parse_verify_output("ship it").gate == "unknown"
+
+
+@pytest.mark.unit
+def test_verify_telemetry_failure_is_non_blocking():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        log_pre_execute_verify,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.verify_result import VerifyDecision
+
+    tracker = MagicMock()
+    tracker.collect_step.side_effect = RuntimeError("tracker unavailable")
+
+    recorded = log_pre_execute_verify(tracker, VerifyDecision(gate="unknown"))
+
+    assert recorded is False
+    tracker.collect_step.assert_called_once()
+
+
+def _adapter():
+    adapter = MagicMock()
+    adapter._tools_context = {}
+    adapter._weak_schema_tool_names = frozenset()
+    adapter._observed_tool_shapes = {}
+    adapter._tracker = MagicMock()
+    adapter.messages_key = "chat_messages"
+    adapter.get_messages = MagicMock(return_value=[])
+    adapter.resolve_max_steps = MagicMock(return_value=1000)
+    return adapter
+
+
+def _state(**kwargs):
+    variables_manager = MagicMock()
+    variables_manager.get_variable_names = MagicMock(return_value=[])
+    variables_manager.get_variable = MagicMock(return_value=None)
+    variables_manager.remove_variable = MagicMock()
+    variables_manager.add_variable = MagicMock()
+    variables_manager.get_variables_summary = MagicMock(return_value="txn 8216 amount=46.67")
+    base = dict(
+        variables_manager=variables_manager,
+        chat_messages=[HumanMessage(content="split the amazon prime bill")],
+        tool_calls=[],
+        step_count=0,
+        script="await pay(amount=35.0)",
+        thread_id="t",
+        variables_storage={},
+        variable_counter_state=0,
+        variable_creation_order=[],
+        reflection_apps=[],
+        reflection_enable_find_tools=False,
+        reflection_skills_enabled=False,
+        reflection_skills_prompt_section="",
+        verify_revise_streak=0,
+        verify_revise_total=0,
+        tool_calls_used_run=0,
+        tool_calls_used_thread=0,
+        sub_task="split the amazon prime bill",
+    )
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_revise_skips_executor_ok_runs():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    revise_chain = MagicMock()
+    revise_chain.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="GATE: revise\nALERT: amount 35.0 contradicts 46.67")
+    )
+    ok_chain = MagicMock()
+    ok_chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: ok"))
+    noop_plan = MagicMock()
+    noop_plan.ainvoke = AsyncMock(return_value=SimpleNamespace(content=""))
+
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+    patches = (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=noop_plan,
+        ),
+    )
+
+    with patches[0], patches[1], patches[2]:
+        with patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=revise_chain,
+        ):
+            skipped = await node(
+                _state(),
+                config={
+                    "configurable": {
+                        "reflection_enabled": True,
+                        "pre_execute_verify_enabled": True,
+                        "llm": MagicMock(spec=[]),
+                    }
+                },
+            )
+        eval_mock.assert_not_called()
+        assert VERIFY_BLOCKED_PREFIX in skipped["chat_messages"][-1].content
+        assert skipped["verify_revise_streak"] == 1
+        assert skipped["verify_revise_total"] == 1, "the run-wide cap counts every revise"
+        verify_steps = [
+            c.kwargs["step"]
+            for c in adapter._tracker.collect_step.call_args_list
+            if c.kwargs.get("step") and c.kwargs["step"].name == "PreExecuteVerify"
+        ]
+        assert verify_steps
+        assert "revise" in (verify_steps[0].data or "")
+
+        eval_mock.reset_mock()
+        with patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=ok_chain,
+        ):
+            ran = await node(
+                _state(),
+                config={
+                    "configurable": {
+                        "reflection_enabled": True,
+                        "pre_execute_verify_enabled": True,
+                        "llm": MagicMock(spec=[]),
+                    }
+                },
+            )
+        eval_mock.assert_awaited()
+        assert ran["verify_revise_streak"] == 0
+        assert "executed" in ran["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+def test_has_write_call_skips_read_only_blocks():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    assert not has_write_call('tools = await find_tools("x", "phone")\nprint(tools)')
+    assert not has_write_call("orders = await amazon_show_orders_orders_get(page_index=0)")
+    assert has_write_call("await venmo_create_payment_request_payment_requests_post(amount=1)")
+    # unknown callables and unparseable code are verified, never skipped
+    assert has_write_call("await pay(amount=35.0)")
+    assert has_write_call("this is not python(")
+    assert not has_write_call("")
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_resolves_values_through_variables():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # 92fe421_1: the wrong share is invisible at the call site.
+    out = describe_write_arguments(
+        "total_paid = 140.0\n"
+        "total_people = len(roommates) + 1\n"
+        "share = round(total_paid / total_people, 2)\n"
+        'await venmo_create_payment_request_payment_requests_post('
+        'user_email=e, amount=share, description="Amazon Subscription")\n'
+    )
+    assert "round(140.0 / (len(roommates) + 1), 2)" in out
+    assert "'Amazon Subscription'" in out
+    assert "roommates" in out  # flagged as coming from an earlier block
+
+    # A fully constant expression folds to the value that will be written.
+    folded = describe_write_arguments("n = 4\nawait send_money(amount=round(140.0 / n, 2))")
+    assert "-> 35.0" in folded
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_exposes_aggregation_source():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # fa327a6_1: summing every transaction, not only the Amazon one.
+    out = describe_write_arguments(
+        'paid = sum(tx["amount"] for tx in brenda_txs)\n'
+        'total = sum(o["paid_amount"] for o in amazon_orders)\n'
+        "diff = round(total - paid, 2)\n"
+        "await venmo_create_transaction_transactions_post(receiver_email=e, amount=abs(diff))\n"
+    )
+    assert "brenda_txs" in out and "amazon_orders" in out
+    assert "sum(" in out
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_read_only_block_skips_the_verify_call():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    chain = MagicMock()
+    chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    model_factory = MagicMock(side_effect=RuntimeError("model should not be resolved"))
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script='tools = await find_tools("orders", "amazon")\nprint(tools)',
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=None,
+            model_factory=model_factory,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok"
+    chain.ainvoke.assert_not_called()
+    model_factory.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_model_resolution_failure_fails_open_to_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node._llm_manager.get_model",
+            side_effect=RuntimeError("verify model unavailable"),
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={"configurable": {"reflection_enabled": True, "pre_execute_verify_enabled": True}},
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result.get("execution_complete", False) is False
+    assert "executed" in result["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_setup_failure_fails_open_to_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_current_task",
+            side_effect=RuntimeError("task context unavailable"),
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result.get("execution_complete", False) is False
+    assert "executed" in result["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_telemetry_failure_downgrades_revise_and_runs_executor():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    revise_chain = MagicMock()
+    revise_chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    noop_plan = MagicMock()
+    noop_plan.ainvoke = AsyncMock(return_value=SimpleNamespace(content=""))
+    adapter = _adapter()
+    adapter._tracker.collect_step.side_effect = [RuntimeError("tracker unavailable"), None, None, None]
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=noop_plan,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=revise_chain,
+        ),
+    ):
+        result = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+
+    eval_mock.assert_awaited_once()
+    assert result["verify_revise_streak"] == 0
+    assert "executed" in result["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+def test_fold_never_evaluates_attribute_chains_or_subscripts():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    # No free names, so a name-based check would let this reach eval().
+    hostile = (
+        "await pay(amount=(c for c in ().__class__.__base__.__subclasses__() "
+        "if c.__name__ == 'catch_warnings').__next__())"
+    )
+    out = describe_write_arguments(hostile)
+    assert "__subclasses__" in out and "->" in out
+    assert "pay(amount=) -> <" not in out  # not folded to an object repr
+    assert "-> 35.0" in describe_write_arguments("await pay(amount=round(140.0 / 4, 2))")
+    assert "-> 2" in describe_write_arguments("await pay(n=len([1, 2]))")
+    assert "-> " + repr(10**64) not in describe_write_arguments("await pay(n=10 ** 64 ** 2)")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("expression", ['"x" * 1_000_000_000', "[0] * 1_000_000_000"])
+def test_fold_rejects_oversized_sequences_before_multiplication(expression):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    multiply = MagicMock(side_effect=AssertionError("oversized multiplication was evaluated"))
+    with patch.dict(_BIN_OPS, {ast.Mult: multiply}):
+        with pytest.raises(ValueError, match="folded sequence too large"):
+            _safe_eval(ast.parse(expression, mode="eval").body)
+    multiply.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_rejects_unbounded_string_formatting_before_modulo():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    modulo = MagicMock(side_effect=AssertionError("string formatting was evaluated"))
+    with patch.dict(_BIN_OPS, {ast.Mod: modulo}):
+        with pytest.raises(ValueError, match="formatted value too large"):
+            _safe_eval(ast.parse('"%1000000000s" % "x"', mode="eval").body)
+    modulo.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_preserves_small_percent_formatting():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _safe_eval
+
+    assert _safe_eval(ast.parse('"hello %s" % "world"', mode="eval").body) == "hello world"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("expression", "function_name"),
+    [
+        ('str([["x" * 4096] * 4096] * 4096)', "str"),
+        ("sum([[0] * 4096] * 4096, [])", "sum"),
+    ],
+)
+def test_fold_rejects_nested_aggregate_amplification_before_builtin(expression, function_name):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _FOLD_NAMESPACE,
+        _safe_eval,
+    )
+
+    function = MagicMock(side_effect=AssertionError(f"{function_name} was evaluated"))
+    with patch.dict(_FOLD_NAMESPACE, {function_name: function}):
+        with pytest.raises(ValueError, match="folded aggregate too large"):
+            _safe_eval(ast.parse(expression, mode="eval").body)
+    function.assert_not_called()
+
+
+@pytest.mark.unit
+def test_fold_rejects_oversized_integer_before_final_power():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        _BIN_OPS,
+        _safe_eval,
+    )
+
+    power = MagicMock(side_effect=_BIN_OPS[ast.Pow])
+    with patch.dict(_BIN_OPS, {ast.Pow: power}):
+        with pytest.raises(ValueError, match="folded integer too large"):
+            _safe_eval(ast.parse("(10 ** 64) ** 64", mode="eval").body)
+    assert power.call_count == 1
+
+
+@pytest.mark.unit
+def test_nested_scope_assignment_does_not_shadow_the_call_scope():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    outer_call = (
+        "async def helper():\n"
+        "    amount = 46.67\n"
+        "    return amount\n"
+        "amount = 35.0\n"
+        "await pay(amount=amount)\n"
+    )
+    assert "pay(amount=) -> 35.0" in describe_write_arguments(outer_call)
+
+    inner_call = "amount = 35.0\nasync def helper():\n    amount = 46.67\n    await pay(amount=amount)\n"
+    assert "pay(amount=) -> 46.67" in describe_write_arguments(inner_call)
+
+
+@pytest.mark.unit
+def test_mutator_method_on_unknown_receiver_is_a_write():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    assert has_write_call("await client.update(amount=35.0)")
+    assert has_write_call("state.items.append(x)")
+    assert not has_write_call("rows = []\nrows.append(1)")
+    assert not has_write_call("d = {}\nd.update(a=1)\nd.get('a')")
+    assert not has_write_call("for req in reqs:\n    req['items'].append(1)")
+    assert not has_write_call("await client.get(url)")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_revise_streak_cap_fails_open_without_calling_the_verifier():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        VERIFY_REVISE_STREAK_CAP,
+        decide_pre_execute_verify,
+    )
+
+    chain = MagicMock()
+    chain.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: revise\nALERT: x"))
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=VERIFY_REVISE_STREAK_CAP,
+            script="await pay(amount=35.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=MagicMock(spec=[]),
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok"
+    chain.ainvoke.assert_not_called()
+
+
+@pytest.mark.unit
+def test_reflection_current_task_skips_verify_feedback():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
+        reflection_current_task,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        verify_blocked_message,
+    )
+
+    state = SimpleNamespace(
+        sub_task="",
+        chat_messages=[
+            HumanMessage(content="split the amazon prime bill"),
+            HumanMessage(content=verify_blocked_message("amount 35.0 contradicts 46.67")),
+            HumanMessage(content=verify_blocked_message("still ungrounded")),
+        ],
+    )
+    assert reflection_current_task(state) == "split the amazon prime bill"
+
+
+@pytest.mark.unit
+def test_reflection_current_task_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
+        reflection_current_task,
+    )
+
+    state = SimpleNamespace(
+        sub_task="",
+        chat_messages=[
+            HumanMessage(content="split the amazon prime bill"),
+            HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
+        ],
+    )
+    assert reflection_current_task(state) == "split the amazon prime bill"
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_does_not_fold_loop_accumulators():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    out = describe_write_arguments(
+        "total = 0\n"
+        "for tx in txs:\n"
+        '    total += tx["amount"]\n'
+        'await venmo_send_payment(amount=total, note="split")\n'
+    )
+    assert "-> 0" not in out
+    assert "amount=) -> total" in out
+
+
+@pytest.mark.unit
+def test_describe_write_arguments_does_not_fold_if_else_assignments():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    fallback = describe_write_arguments(
+        "amount = 0.0\n"
+        "if found:\n"
+        '    amount = round(found["total"] / n, 2)\n'
+        "else:\n"
+        "    amount = 0.0\n"
+        "await venmo_send_payment(amount=amount)\n"
+    )
+    assert "-> 0.0" not in fallback
+    assert "amount=) -> amount" in fallback
+
+    branched = describe_write_arguments(
+        "amount = 35.0\nif cond:\n    amount = 46.67\nawait venmo_send_payment(amount=amount)\n"
+    )
+    assert "-> 35.0" not in branched
+    assert "-> 46.67" not in branched
+    assert "amount=) -> amount" in branched
+
+
+@pytest.mark.unit
+def test_expander_visit_budget_keeps_diamond_fanout_unexpanded():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    lines = ["v0 = (1, 1, 1, 1, 1, 1, 1, 1)"]
+    for i in range(1, 4):
+        prev = f"v{i - 1}"
+        lines.append(f"v{i} = ({', '.join([prev] * 8)})")
+    lines.append("await pay(amount=v3)")
+    out = describe_write_arguments("\n".join(lines))
+    assert "pay(amount=) -> v3" in out
+
+
+@pytest.mark.unit
+def test_verify_blocked_message_does_not_tell_model_to_change_the_value():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        verify_blocked_message,
+    )
+
+    msg = verify_blocked_message("amount 35.0 contradicts 46.67")
+    assert VERIFY_BLOCKED_PREFIX in msg
+    assert "Do not re-send the same value" not in msg
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_history_drops_blocked_feedback():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+        verify_blocked_message,
+    )
+
+    captured = {}
+    chain = MagicMock()
+
+    async def _ainvoke(payload, config=None):
+        captured.update(payload)
+        return SimpleNamespace(content="GATE: ok")
+
+    chain.ainvoke = _ainvoke
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+        return_value=chain,
+    ):
+        await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            script="await pay(amount=35.0)",
+            chat_messages=[
+                HumanMessage(content="split the amazon prime bill"),
+                HumanMessage(content=verify_blocked_message("amount 35.0 is ungrounded")),
+            ],
+            variables_snapshot="",
+            current_task="split the amazon prime bill",
+            model=MagicMock(spec=[]),
+            config={},
+            max_chars=10_000,
+        )
+    history = captured.get("agent_history", "")
+    assert "split the amazon prime bill" in history
+    assert VERIFY_BLOCKED_PREFIX not in history
+    assert "35.0 is ungrounded" not in history
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_verify_flag_is_independent_of_reflection():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
+
+    eval_mock = AsyncMock(return_value=("executed", {}))
+    revise_chain = MagicMock()
+    revise_chain.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content="GATE: revise\nALERT: amount 35.0 contradicts 46.67")
+    )
+    noop_plan = MagicMock()
+    noop_plan.ainvoke = AsyncMock(return_value=SimpleNamespace(content=""))
+    adapter = _adapter()
+    node = create_sandbox_node(adapter, base_thread_id="t", base_apps_list=[])
+    patches = (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.CodeExecutor.eval_with_tools_async",
+            eval_mock,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.settings.policy.enabled",
+            False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node.reflection_task",
+            return_value=noop_plan,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task",
+            return_value=revise_chain,
+        ),
+    )
+    with patches[0], patches[1], patches[2], patches[3]:
+        held_out = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": True,
+                    "pre_execute_verify_enabled": False,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+        eval_mock.assert_awaited()
+        assert VERIFY_BLOCKED_PREFIX not in held_out["chat_messages"][-1].content
+        revise_chain.ainvoke.assert_not_called()
+
+        eval_mock.reset_mock()
+        blocked = await node(
+            _state(),
+            config={
+                "configurable": {
+                    "reflection_enabled": False,
+                    "pre_execute_verify_enabled": True,
+                    "llm": MagicMock(spec=[]),
+                }
+            },
+        )
+        eval_mock.assert_not_called()
+        assert VERIFY_BLOCKED_PREFIX in blocked["chat_messages"][-1].content
+
+
+@pytest.mark.unit
+def test_policy_user_input_skips_verify_feedback():
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+    state = SimpleNamespace(
+        intent=None,
+        goal=None,
+        input=None,
+        chat_messages=[
+            HumanMessage(content="split the bill"),
+            HumanMessage(content=f"{VERIFY_BLOCKED_PREFIX}\namount 35.0"),
+        ],
+        tools=None,
+        apps=None,
+        current_agent=None,
+        current_node=None,
+        sub_task=None,
+        current_task=None,
+        final_answer=None,
+        messages=None,
+    )
+    ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
+    assert ctx.user_input == "split the bill"
+
+
+@pytest.mark.unit
+def test_policy_user_input_skips_empty_response_correction():
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
+        EMPTY_RESPONSE_CORRECTION,
+    )
+    from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+    state = SimpleNamespace(
+        intent=None,
+        goal=None,
+        input=None,
+        chat_messages=[
+            HumanMessage(content="split the bill"),
+            HumanMessage(content=EMPTY_RESPONSE_CORRECTION),
+        ],
+        tools=None,
+        apps=None,
+        current_agent=None,
+        current_node=None,
+        sub_task=None,
+        current_task=None,
+        final_answer=None,
+        messages=None,
+    )
+    ctx = PolicyConfigurable.create_context_from_state(state, {"configurable": {}})
+    assert ctx.user_input == "split the bill"
+
+
+# ── shadowed names must never fold (issue: fabricated literal write values) ──
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (  # noqa: E402
+    describe_write_arguments,
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        # loop target re-binds a name an earlier line assigned
+        (
+            'email = "roommate@example.com"\n'
+            'for email in [r["email"] for r in roommates]:\n'
+            "    await venmo_create_payment_request_payment_requests_post(user_email=email)",
+            "roommate@example.com",
+        ),
+        # the call is inside a def whose parameter shadows the module-level name
+        (
+            "total = 140.0\n"
+            "async def pay(total):\n"
+            "    await venmo_create_transaction_transactions_post(amount=total)",
+            "140.0",
+        ),
+        # comprehension target
+        ("x = 5\n[await send_money_post(amount=x) for x in amounts]", "5"),
+        # walrus rebinds before the call
+        (
+            "amount = 35.0\n"
+            "if (amount := 46.67) > 0:\n"
+            "    await venmo_create_transaction_transactions_post(amount=amount)",
+            "35.0",
+        ),
+        # except ... as binds the exception, not the earlier string
+        (
+            'e = "old@example.com"\n'
+            "try:\n"
+            "    pass\n"
+            "except Exception as e:\n"
+            "    await gmail_send_email_post(to=e)",
+            "old@example.com",
+        ),
+        # with ... as binds the context manager
+        ('f = 1.0\nwith open("x") as f:\n    await docs_write_post(data=f)', "1.0"),
+    ],
+)
+def test_shadowed_name_is_not_folded_to_the_stale_value(code, stale):
+    """A name re-bound by a non-assignment binder must stay unresolved.
+
+    Folding it produced a literal the block never sends, which the verifier then
+    judged as ungrounded — a false revise manufactured by our own analysis.
+    """
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_straight_line_assignment_still_folds():
+    """The shadowing guard must not cost us the resolution the gate exists for."""
+    out = describe_write_arguments(
+        "share = round(140.0 / 4, 2)\nawait venmo_create_payment_request_payment_requests_post(amount=share)"
+    )
+    assert "35.0" in out
+
+
+@pytest.mark.unit
+def test_block_local_names_are_not_reported_as_from_earlier_blocks():
+    out = describe_write_arguments('for email in recipients:\n    await gmail_send_email_post(to=email)')
+    assert "From earlier blocks" not in out
+    out = describe_write_arguments("await gmail_send_email_post(to=prior_recipient)")
+    assert "prior_recipient" in out.split("From earlier blocks")[1]
+
+
+# ── in-place mutation invalidates the folded value ──────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            'payload = {"amount": 0.0}\n'
+            'payload["amount"] = 46.67\n'
+            "await venmo_create_transaction_transactions_post(**payload)",
+            "0.0",
+        ),
+        ("amounts = []\namounts.append(46.67)\nawait pay_post(amount=amounts[0])", "[]["),
+        ("cfg = Config()\ncfg.amount = 46.67\nawait pay_post(amount=cfg.amount)", "Config()."),
+    ],
+)
+def test_mutated_object_is_not_folded_to_its_initial_value(code, stale):
+    """Showing the pre-mutation value contradicts what the prompt promises."""
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_unmutated_container_still_folds():
+    out = describe_write_arguments('p = {"a": 1}\nawait pay_post(amount=p["a"])')
+    assert "p[" not in out
+
+
+# ── row budget must be visible and must not hide whole calls ────────────────
+
+
+@pytest.mark.unit
+def test_every_write_call_is_represented_and_truncation_is_declared():
+    """Silently dropping calls is a false negative through the gate's own channel."""
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post('
+        f'user_email="u{i}@x.com", amount={i}.0, description="d{i}")'
+        for i in range(10)
+    )
+    out = describe_write_arguments(code)
+    assert "u0@x.com" in out
+    assert "u9@x.com" in out, "the last call must not vanish behind the row budget"
+    assert "not shown" in out, "truncation must be declared to the verifier"
+
+
+@pytest.mark.unit
+def test_row_budget_is_bounded_for_many_write_calls():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _MAX_ROWS
+
+    code = "\n".join(f'await pay_post(amount={i}.0, note="n{i}")' for i in range(30))
+    data_rows = [
+        line
+        for line in describe_write_arguments(code).splitlines()
+        if line.strip() and "not shown" not in line
+    ]
+    assert len(data_rows) <= _MAX_ROWS
+
+
+@pytest.mark.unit
+def test_small_block_has_no_truncation_notice():
+    assert "not shown" not in describe_write_arguments("await pay_post(amount=5.0)")
+
+
+# ── the run-wide revise cap (the consecutive streak bounds nothing) ─────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_alternating_revise_ok_is_bounded_by_the_total_cap():
+    """revise/ok/revise/ok never trips the consecutive streak; it must still end."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        VERIFY_REVISE_TOTAL_CAP,
+        decide_pre_execute_verify,
+    )
+
+    model = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(content="GATE: revise\nALERT: no")
+        )
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,  # never consecutive
+            total_revises=VERIFY_REVISE_TOTAL_CAP,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok", "past the run cap the gate must fail open"
+    verify.return_value.ainvoke.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_under_the_total_cap_the_gate_still_runs():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import (
+        decide_pre_execute_verify,
+    )
+
+    model = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(content="GATE: revise\nALERT: ungrounded")
+        )
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "revise"
+
+
+# ── a hung verify provider must not stall execution ────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hung_verify_call_times_out_and_the_block_runs():
+    """The gate runs before the block, so a hang here costs the work, not a summary."""
+    import asyncio as _asyncio
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection import pre_execute as pe
+
+    async def never_returns(*_a, **_kw):
+        await _asyncio.sleep(60)
+
+    model = MagicMock(spec=[])
+    with (
+        patch.object(pe, "VERIFY_LLM_TIMEOUT_SECONDS", 0.05),
+        patch.object(pe, "verify_task") as verify,
+    ):
+        verify.return_value.ainvoke = never_returns
+        decision = await pe.decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=model,
+            model_factory=None,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "unknown", "a timeout must fail open, not block the block"
+
+
+@pytest.mark.unit
+def test_row_budget_does_not_drop_later_arguments_of_a_small_block():
+    """Round-robin must spend the whole budget, not a fixed slice per call.
+
+    A fixed per-call budget kept every call represented but silently dropped the
+    later arguments of each one — the same loss moved sideways.
+    """
+    code = "\n".join(
+        f"await amazon_add_payment_card_payment_cards_post("
+        f'card_name="c{i}", owner_name="o{i}", card_number="{i}", '
+        f'expiry_month={i}, cvv_number="{i}{i}{i}")'
+        for i in range(3)
+    )
+    out = describe_write_arguments(code)
+    assert "cvv_number" in out, "later arguments must not be dropped while budget remains"
+    assert "not shown" not in out
+
+
+# ── the GATE line as models actually write it ───────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text,gate",
+    [
+        ("GATE: revise.", "revise"),
+        ("**GATE**: revise\n**ALERT**: x", "revise"),
+        ("GATE : revise\nALERT : x", "revise"),
+        ("GATE: **revise**\nALERT: x", "revise"),
+        ("- GATE: revise\n- ALERT: x", "revise"),
+        ("GATE: revise (amount)\nALERT: amount 35.0", "revise"),
+        ("GATE: ok — values match history", "ok"),
+        ("GATE: ok.", "ok"),
+        ("GATE:revise", "revise"),
+        ("gate: ok", "ok"),
+        ("ALERT: x\nGATE: revise", "revise"),
+        ("GATE: ok\nGATE: revise", "revise"),
+        ("GATE:\nrevise", "unknown"),
+        ("the gate: ok is fine\nGATE: revise", "revise"),
+        ("", "unknown"),
+    ],
+)
+def test_parse_verify_output_tolerates_decorated_gate_lines(text, gate):
+    """unknown runs the block, so a decorated verdict silently turned the gate off."""
+    assert parse_verify_output(text).gate == gate
+
+
+@pytest.mark.unit
+def test_parse_verify_output_drops_code_fences_from_the_alert():
+    r = parse_verify_output("```\nGATE: revise\nALERT: amount 35.0\nuse 46.67\n```")
+    assert r.gate == "revise"
+    assert "```" not in r.alert
+    assert r.alert == "amount 35.0\nuse 46.67"
+
+
+@pytest.mark.unit
+def test_parse_verify_output_ignores_reasoning_scratch():
+    r = parse_verify_output("<think>hmm ALERT: scratch\nGATE: revise</think>\nGATE: ok")
+    assert r.gate == "ok"
+    assert r.alert == ""
+
+
+# ── folded rows and the whole section are bounded ───────────────────────────
+
+
+@pytest.mark.unit
+def test_folded_long_literal_row_is_clipped():
+    row = describe_write_arguments("note = '\\n' * 3000\nawait pay_post(note=note)").splitlines()[0]
+    assert len(row) < 400, "a folded value must be clipped like an unfolded one"
+    assert row.endswith("...")
+
+
+@pytest.mark.unit
+def test_write_arguments_section_has_a_ceiling():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _MAX_SECTION_CHARS
+
+    code = "\n".join(f"s{i} = 'x' * 400\nawait pay_post(note=s{i}, a={i})" for i in range(20))
+    out = describe_write_arguments(code)
+    assert len(out) <= _MAX_SECTION_CHARS + 200
+    assert "section truncated" in out
+
+
+# ── lambda parameters and global declarations ──────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            "amount = 35.0\ndef bump():\n    global amount\n    amount = 46.67\nbump()\n"
+            "await pay_post(amount=amount)",
+            "35.0",
+        ),
+        (
+            "x = 35.0\ncheapest = sorted(items, key=lambda x: x['price'])[0]\n"
+            "await pay_post(amount=cheapest['price'])",
+            "35.0['price']",
+        ),
+        ("x = 35.0\nawait pay_post(amount=(lambda x: x * 2)(46.67))", "35.0 * 2"),
+    ],
+)
+def test_lambda_params_and_global_rebinding_are_not_folded(code, stale):
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_lambda_body_still_folds_genuine_outer_names():
+    out = describe_write_arguments("rate = 2\nawait pay_post(amount=(lambda v: v * rate)(5))")
+    assert "rate" not in out.split("From earlier")[0], (
+        "an outer name the lambda does not bind must still resolve"
+    )
+    assert "2" in out
+
+
+# ── mutation through a block-local helper ──────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,stale",
+    [
+        (
+            "payload = {'amount': 0.0}\ndef fill(p):\n    p['amount'] = 46.67\nfill(payload)\n"
+            "await pay_post(**payload)",
+            "0.0",
+        ),
+        (
+            "payload = {'amount': 0.0}\ndef fill(p):\n    p['amount'] = 46.67\nfill(p=payload)\n"
+            "await pay_post(**payload)",
+            "0.0",
+        ),
+        ("xs = []\ndef add(q):\n    q.append(46.67)\nadd(xs)\nawait pay_post(amount=xs[0])", "[]["),
+    ],
+)
+def test_argument_mutated_inside_a_local_helper_is_not_folded(code, stale):
+    """The stale-0.0 case the branch exists to prevent, one call deep."""
+    assert stale not in describe_write_arguments(code)
+
+
+@pytest.mark.unit
+def test_argument_only_read_by_a_local_helper_still_folds():
+    out = describe_write_arguments(
+        "payload = {'amount': 5.0}\ndef show(p):\n    print(p['amount'])\nshow(payload)\n"
+        "await pay_post(**payload)"
+    )
+    assert "{'amount': 5.0}" in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code",
+    [
+        "node = {'x': 0}\ndef walk(n):\n    n['x'] = 1\n    walk(n)\nwalk(node)\nawait pay_post(**node)",
+        "node = {'x': 0}\ndef a(n):\n    b(n)\ndef b(n):\n    n['x'] = 1\n    a(n)\na(node)\nawait pay_post(**node)",
+    ],
+)
+def test_recursive_helpers_terminate_and_still_mark_the_argument(code):
+    out = describe_write_arguments(code)
+    assert "{'x': 0}" not in out
+
+
+# ── a mutating tool passed as a value still counts as a write ──────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("results = [await c for c in map(pay_post, amounts)]", True),
+        ("list(map(venmo_create_transaction_transactions_post, amounts))", True),
+        ("names = list(map(str, ids))", False),
+        ("fmt = lambda t: t\nout = sorted(rows, key=fmt)", False),
+        ("list(map(amazon_show_product_products_product_id_get, ids))", False),
+    ],
+)
+def test_write_tool_passed_as_a_value_reaches_the_gate(code, expected):
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    assert has_write_call(code) is expected
+
+
+# ── the run-wide cap is wired at both integration points ───────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_model_factory_success_path_is_used_for_the_verify_call():
+    """Production passes no llm in configurable; the factory's model must reach verify_task."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute import decide_pre_execute_verify
+
+    sentinel = MagicMock(spec=[])
+    with patch("cuga.backend.cuga_graph.nodes.cuga_lite.reflection.pre_execute.verify_task") as verify:
+        verify.return_value.ainvoke = AsyncMock(return_value=SimpleNamespace(content="GATE: ok"))
+        decision = await decide_pre_execute_verify(
+            enabled=True,
+            streak=0,
+            total_revises=0,
+            script="await venmo_create_transaction_transactions_post(amount=1.0)",
+            chat_messages=[],
+            variables_snapshot="",
+            current_task="t",
+            model=None,
+            model_factory=lambda: sentinel,
+            config={},
+            max_chars=1000,
+        )
+    assert decision.gate == "ok"
+    assert verify.call_args.kwargs["llm"] is sentinel
+
+
+@pytest.mark.unit
+def test_locally_bound_name_with_a_verb_suffix_is_not_a_write():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import has_write_call
+
+    code = 'tools_delete = await find_tools("delete expense", "splitwise")\nprint(tools_delete)'
+    assert has_write_call(code) is False, "a variable is not a tool, whatever it is called"
+
+
+# ── the resolver must stay cheap on adversarial shapes ──────────────────────
+#
+# _mutated_names re-analyzed a helper's body once per call site with no memo,
+# so M call sites at chain depth D cost ~M^D. Measured before the fix: a
+# 48-line block of two-line helpers took 14.8 s, growing about 4x per level.
+# It runs synchronously inside decide_pre_execute_verify, and the asyncio
+# timeout there wraps only the LLM call — so this froze the gate, on code
+# generated from untrusted task and tool content.
+
+
+def _helper_chain(fan_out: int, depth: int) -> str:
+    """`depth` helpers, each calling the next `fan_out` times."""
+    parts = []
+    for d in range(depth):
+        body = (
+            "\n".join(f"    h{d + 1}(p)" for _ in range(fan_out))
+            if d < depth - 1
+            else "    p['amount'] = 46.67"
+        )
+        parts.append(f"def h{d}(p):\n{body}")
+    parts.append("h0(payload)")
+    return "\n".join(parts)
+
+
+@pytest.mark.unit
+def test_helper_mutation_analysis_stays_fast_on_deep_chains():
+    import time
+
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    source = _helper_chain(fan_out=4, depth=12)
+    assert len(source.splitlines()) < 80, "guard: this must stay a plausibly small block"
+    started = time.monotonic()
+    _mutated_names(ast.parse(source))
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"helper analysis took {elapsed:.1f}s on a {len(source.splitlines())}-line block"
+
+
+@pytest.mark.unit
+def test_helper_mutation_is_still_carried_through_a_chain():
+    """The budget must not cost us the propagation the analysis exists for."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    source = "def inner(q):\n    q['a'] = 1\n\ndef outer(p):\n    inner(p)\n\nouter(payload)"
+    assert "payload" in _mutated_names(ast.parse(source))
+
+
+# ── a call's arguments must stay together ──────────────────────────────────
+#
+# Round-robin allocation spends the row budget fairly across calls, but emitting
+# in that order interleaves them: eight payment requests render eight
+# user_email rows and then eight amount rows. The verifier is told to "judge the
+# values in Resolved write arguments", so two amounts swapped between recipients
+# become structurally invisible — a false ok in the cross-call error class the
+# gate exists for.
+
+
+@pytest.mark.unit
+def test_rows_of_one_call_are_emitted_together():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post(user_email="u{i}@x.com", amount={10 + i}.0)'
+        for i in range(4)
+    )
+    lines = [ln for ln in describe_write_arguments(code).splitlines() if "->" in ln]
+    # Each recipient must be adjacent to its own amount.
+    for i in range(4):
+        idx = next(j for j, ln in enumerate(lines) if f"u{i}@x.com" in ln)
+        assert f"{10 + i}.0" in lines[idx + 1], f"amount for u{i} is not next to it:\n" + "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_round_robin_still_reaches_every_call_under_the_row_cap():
+    """Grouping must not bring back the old failure: later calls dropped whole."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    code = "\n".join(
+        f'await venmo_create_payment_request_payment_requests_post(user_email="u{i}@x.com", amount={i}.0, note="n{i}")'
+        for i in range(12)
+    )
+    out = describe_write_arguments(code)
+    assert "u11@x.com" in out, "the last call vanished — the fixed-slice regression is back"
+
+
+# ── the helper memo must not serve cycle-truncated results ─────────────────
+#
+# The memo is keyed by function identity, but a result computed while a cycle
+# partner was on the stack is cut short. Caching that truncated set and serving
+# it to a later call site *outside* the cycle loses mutations the pre-memo
+# per-call-site recomputation found — a false ok in the analysis that exists to
+# prevent exactly that.
+
+
+@pytest.mark.unit
+def test_cycle_truncated_result_is_not_reused_at_other_call_sites():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import _mutated_names
+
+    # z is analyzed first with y on the stack, so y's own analysis is cut short.
+    source = "def y(b): z(b)\ndef z(a):\n    y(a)\n    a['k'] = 1\nz(tmp)\ny(payload)"
+    names = _mutated_names(ast.parse(source))
+    assert "tmp" in names
+    assert "payload" in names, "cycle-truncated cache served to an unrelated call site"
+
+
+@pytest.mark.unit
+def test_mutation_through_a_cycle_reaches_the_verify_section():
+    from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.write_args import (
+        describe_write_arguments,
+    )
+
+    source = (
+        "payload = {'amount': 0.0}\n"
+        "def y(b): z(b)\n"
+        "def z(a):\n    y(a)\n    a['amount'] = 99.99\n"
+        "z(tmp)\n"
+        "y(payload)\n"
+        "await venmo_create_transaction_transactions_post(amount=payload['amount'])"
+    )
+    out = describe_write_arguments(source)
+    assert "0.0" not in out.split("venmo_create_transaction")[-1], (
+        "verifier shown the pre-mutation value as what the write will send:\n" + out
+    )

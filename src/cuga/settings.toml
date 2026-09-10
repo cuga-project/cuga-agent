@@ -27,6 +27,7 @@ shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools e
 cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
+pre_execute_verify_enabled = false  # Independent of reflection; eval can hold VERIFY without dropping PLAN reflection
 enable_filesystem_tools = false  # Enable workspace filesystem tools (read_file, write_file, etc.)
 e2b_sandbox = false           # use E2B cloud sandbox for code execution
 opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
