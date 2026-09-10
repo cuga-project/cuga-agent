@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from typer.testing import CliRunner
@@ -16,6 +18,16 @@ from cuga.cli.main import app
 from cuga.backend.storage import service_instance_cleanup
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def isolated_cleanup_settings(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        service_instance_cleanup,
+        "settings",
+        SimpleNamespace(knowledge={"persist_dir": str(tmp_path / "knowledge")}, policy=None),
+        raising=False,
+    )
 
 
 runner = CliRunner()
@@ -321,3 +333,135 @@ def test_purge_service_instance_records_cli(monkeypatch):
         "deleted_records": 3,
         "tables": {"agent_configs": 2, "conversation_history": 1},
     }
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_preserves_exact_instance_id(monkeypatch, tmp_path, dry_run):
+    path = tmp_path / "primary.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE records (instance_id TEXT)")
+        conn.executemany("INSERT INTO records VALUES (?)", [("instance-1",), (" instance-1 ",)])
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("local", str(path), "")
+    )
+    result = asyncio.run(
+        service_instance_cleanup.delete_service_instance_records(" instance-1 ", dry_run=dry_run)
+    )
+    assert result.service_instance_id == " instance-1 "
+    assert result.deleted_records == 1
+    assert _instance_ids(path, "records") == ([" instance-1 ", "instance-1"] if dry_run else ["instance-1"])
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_purges_separate_knowledge_and_policy_databases(monkeypatch, tmp_path, dry_run):
+    from langchain_core.documents import Document
+    from langchain_core.embeddings import DeterministicFakeEmbedding
+    from cuga.backend.knowledge.vector_store import create_vector_store
+    from cuga.backend.knowledge.storage import adapter
+
+    primary = tmp_path / "primary.db"
+    policy = tmp_path / "policy.db"
+    for path in (primary, policy):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE records (instance_id TEXT)")
+            conn.executemany("INSERT INTO records VALUES (?)", [("instance-1",), ("instance-2",)])
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("local", str(primary), "")
+    )
+    monkeypatch.setattr(service_instance_cleanup, "DBS_DIR", str(tmp_path), raising=False)
+    service_instance_cleanup.settings.policy = SimpleNamespace(policy_db_path="policy.db")
+    vectors = create_vector_store(
+        "storage_local", "knowledge_chunks", DeterministicFakeEmbedding(size=4), tmp_path / "knowledge"
+    )
+    for instance_id in ("instance-1", "instance-2"):
+        monkeypatch.setattr(adapter, "get_service_instance_id", lambda: instance_id)
+        vectors.add_documents([Document(page_content=instance_id, metadata={"source": instance_id})])
+
+    result = asyncio.run(
+        service_instance_cleanup.delete_service_instance_records("instance-1", dry_run=dry_run)
+    )
+    expected = ["instance-1", "instance-2"] if dry_run else ["instance-2"]
+    assert _instance_ids(primary, "records") == expected
+    assert _instance_ids(policy, "records") == expected
+    assert (
+        asyncio.run(_vector_instance_ids(tmp_path / "knowledge" / "knowledge_vectors.db", "knowledge_chunks"))
+        == expected
+    )
+    assert result.deleted_records == 3
+    assert result.tables["records"] == 2
+    assert result.tables["knowledge_chunks"] == 1
+
+
+@pytest.mark.parametrize("separate", [True, False])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_postgres_targets_are_deduplicated(monkeypatch, separate, dry_run):
+    primary = "postgresql://localhost/primary"
+    knowledge = "postgresql://localhost/knowledge" if separate else primary
+    service_instance_cleanup.settings.knowledge = {"pgvector_connection_string": knowledge}
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("prod", "", primary)
+    )
+    delete = AsyncMock(return_value={"chunks": 2})
+    monkeypatch.setattr(service_instance_cleanup, "_delete_postgres_service_instance_records", delete)
+    result = asyncio.run(
+        service_instance_cleanup.delete_service_instance_records(" instance-1 ", dry_run=dry_run)
+    )
+    assert [call.args for call in delete.call_args_list] == [
+        (url, " instance-1 ") for url in ([primary, knowledge] if separate else [primary])
+    ]
+    assert all(call.kwargs == {"dry_run": dry_run} for call in delete.call_args_list)
+    assert result.deleted_records == (4 if separate else 2)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_shared_sqlite_targets_are_counted_once(monkeypatch, tmp_path, dry_run):
+    knowledge_dir = tmp_path / "knowledge"
+    knowledge_dir.mkdir()
+    path = knowledge_dir / "knowledge_vectors.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE records (instance_id TEXT)")
+        conn.execute("INSERT INTO records VALUES ('instance-1')")
+    alias = tmp_path / "policy.db"
+    alias.symlink_to(path)
+    service_instance_cleanup.settings.policy = SimpleNamespace(policy_db_path=str(alias))
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("local", str(path), "")
+    )
+    result = asyncio.run(
+        service_instance_cleanup.delete_service_instance_records("instance-1", dry_run=dry_run)
+    )
+    assert result.tables == {"records": 1}
+    assert _count(path, "records") == (1 if dry_run else 0)
+
+
+def test_default_knowledge_path_and_missing_optional_stores(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    service_instance_cleanup.settings.knowledge = {}
+    service_instance_cleanup.settings.policy = SimpleNamespace(policy_db_path=str(tmp_path / "missing.db"))
+    primary = tmp_path / "primary.db"
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("local", str(primary), "")
+    )
+    assert service_instance_cleanup._configured_storage_targets() == [("local", str(primary.resolve()))]
+    assert not (tmp_path / "missing.db").exists()
+    knowledge = tmp_path / ".cuga" / "knowledge" / "knowledge_vectors.db"
+    knowledge.parent.mkdir(parents=True)
+    knowledge.touch()
+    assert service_instance_cleanup._configured_storage_targets() == [
+        ("local", str(primary.resolve())),
+        ("local", str(knowledge.resolve())),
+    ]
+
+
+def test_prod_uses_primary_fallback_and_local_policy_override(monkeypatch, tmp_path):
+    primary = "postgresql://localhost/primary"
+    policy = tmp_path / "policy.db"
+    policy.touch()
+    service_instance_cleanup.settings.policy = SimpleNamespace(policy_db_path=str(policy))
+    monkeypatch.setattr(
+        service_instance_cleanup, "get_storage_connection_params", lambda: ("prod", "", primary)
+    )
+    assert service_instance_cleanup._configured_storage_targets() == [
+        ("prod", primary),
+        ("local", str(policy.resolve())),
+    ]
