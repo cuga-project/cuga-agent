@@ -90,3 +90,18 @@ async def test_save_stream_events_tolerates_non_list_stored_payload(tmp_path):
     assert history is not None
     assert [e.event_name for e in history.events] == ["Answer"]
     assert [e.sequence for e in history.events] == [0]
+
+
+@pytest.mark.asyncio
+async def test_get_thread_owners_for_agent_returns_distinct_scoped_keys(tmp_path):
+    db = _make_db(tmp_path)
+
+    assert await db.save_conversation("agent-a", "thread-a", 1, "user-a", [])
+    assert await db.save_conversation("agent-a", "thread-a", 2, "user-a", [])
+    assert await db.save_conversation("agent-a", "thread-a", 1, "user-b", [])
+    assert await db.save_conversation("agent-b", "thread-b", 1, "user-a", [])
+
+    assert await db.get_thread_owners_for_agent("agent-a") == {
+        ("thread-a", "user-a"),
+        ("thread-a", "user-b"),
+    }
